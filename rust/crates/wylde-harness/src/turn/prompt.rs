@@ -24,13 +24,18 @@
 //! content, so a model that follows the instruction lands cleanly in
 //! the salvage path.
 //!
-//! TODO(phase-6-native-tools): some Ollama builds ignore in-content
-//! tool calls and only honour the native `tools:` request field. If
-//! the system-prompt-only approach proves insufficient in the wild,
-//! add the native function-calling shape transform in a follow-up
-//! slice (out of scope here per the diagnostic).
+//! ## Native `tools:` field (phase-6-native-tools)
+//!
+//! Smaller models emit in-content tool-call JSON the salvage parser
+//! recovers; capable models (qwen2.5:7b, the llama3.2 family, …) ignore
+//! the prompt instruction and only honour Ollama's native `tools:`
+//! request field, replying on `message.tool_calls`. Both paths now
+//! coexist: [`build_system_prompt`] drives the salvage path and
+//! [`build_tools_field`] builds the OpenAI-style function specs Ollama
+//! accepts on the request body. The two are built from the same catalog
+//! payload and apply the same deferred-tool filter.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// Cap on the number of tools listed in the catalog block. Mirrors
 /// Python's `tools_catalog[:60]` — bounded to keep the prompt small.
@@ -124,6 +129,108 @@ fn render_arg_schema(parameters: Option<&Value>) -> String {
     parts.join(", ")
 }
 
+/// Build the native Ollama `tools:` request field from a `tools.list`
+/// catalog payload — the OpenAI-style function-calling shape Ollama
+/// accepts:
+///
+/// ```json
+/// [{"type": "function",
+///   "function": {"name": "time.now", "description": "...",
+///                "parameters": {"type": "object", "properties": {...},
+///                               "required": [...]}}}]
+/// ```
+///
+/// Capable models reply on `message.tool_calls` when this field is
+/// present; the salvage path stays the fallback for models that emit
+/// the call as content instead. Deferred tools are skipped (same filter
+/// as [`build_system_prompt`]) and the same `MAX_CATALOG_TOOLS` cap
+/// applies, so the two advertised tool sets stay in lockstep.
+pub fn build_tools_field(catalog: &[Value]) -> Vec<Value> {
+    let mut tools: Vec<Value> = Vec::new();
+
+    for tool in catalog.iter().take(MAX_CATALOG_TOOLS) {
+        if tool.get("status").and_then(Value::as_str) != Some("active") {
+            continue;
+        }
+        let name = tool
+            .get("name")
+            .and_then(Value::as_str)
+            .or_else(|| tool.get("id").and_then(Value::as_str))
+            .unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        let desc = tool
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        tools.push(json!({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": desc,
+                "parameters": json_schema_for(tool.get("parameters")),
+            },
+        }));
+    }
+
+    tools
+}
+
+/// Translate a tool's `parameters` array (`[{name, type, required,
+/// description, default}, ...]`) into a JSON-schema `object` node:
+/// `{type: "object", properties: {...}, required: [...]}`.
+///
+/// Param `type` strings are normalised to JSON-schema primitive names
+/// via [`json_schema_type`]. An absent/non-array `parameters` yields an
+/// empty-object schema so the model knows the tool takes no arguments.
+fn json_schema_for(parameters: Option<&Value>) -> Value {
+    let mut properties = serde_json::Map::new();
+    let mut required: Vec<Value> = Vec::new();
+
+    if let Some(Value::Array(params)) = parameters {
+        for p in params {
+            let pname = p.get("name").and_then(Value::as_str).unwrap_or("");
+            if pname.is_empty() {
+                continue;
+            }
+            let ptype = p.get("type").and_then(Value::as_str).unwrap_or("string");
+            let desc = p.get("description").and_then(Value::as_str).unwrap_or("");
+            properties.insert(
+                pname.to_owned(),
+                json!({"type": json_schema_type(ptype), "description": desc}),
+            );
+            if p.get("required").and_then(Value::as_bool).unwrap_or(false) {
+                required.push(Value::String(pname.to_owned()));
+            }
+        }
+    }
+
+    json!({
+        "type": "object",
+        "properties": Value::Object(properties),
+        "required": Value::Array(required),
+    })
+}
+
+/// Normalise a catalog param `type` string to a JSON-schema primitive
+/// type. The Rust tool catalog already uses JSON-schema names
+/// (`string`, `number`, `array`, `boolean`); the extra aliases keep the
+/// translation robust if a manifest-sourced type leaks a Python-ish
+/// spelling (`int`, `bool`, `list`, `dict`). Unknown types fall back to
+/// `string` — the safe default for an LLM arg.
+fn json_schema_type(t: &str) -> &str {
+    match t {
+        "string" | "str" => "string",
+        "number" | "float" | "double" => "number",
+        "integer" | "int" => "integer",
+        "boolean" | "bool" => "boolean",
+        "array" | "list" => "array",
+        "object" | "dict" | "map" => "object",
+        _ => "string",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,5 +312,66 @@ mod tests {
     fn render_arg_schema_empty_for_no_params() {
         assert_eq!(render_arg_schema(Some(&json!([]))), "");
         assert_eq!(render_arg_schema(None), "");
+    }
+
+    // ── Fix B: native Ollama `tools:` field ──────────────────────────────
+
+    #[test]
+    fn tools_field_emits_openai_function_shape() {
+        let tools = build_tools_field(&sample_catalog());
+        // Only the active tool surfaces; the deferred one is filtered.
+        assert_eq!(tools.len(), 1, "expected one active tool: {tools:?}");
+        let t = &tools[0];
+        assert_eq!(t["type"], "function");
+        assert_eq!(t["function"]["name"], "fs.read_file");
+        assert_eq!(t["function"]["description"], "Read the text contents of a file.");
+    }
+
+    #[test]
+    fn tools_field_translates_params_to_json_schema() {
+        let tools = build_tools_field(&sample_catalog());
+        let params = &tools[0]["function"]["parameters"];
+        assert_eq!(params["type"], "object");
+        // `path` is a required string parameter.
+        assert_eq!(params["properties"]["path"]["type"], "string");
+        let required = params["required"].as_array().expect("required array");
+        assert!(required.contains(&json!("path")));
+    }
+
+    #[test]
+    fn tools_field_skips_deferred_tools() {
+        let tools = build_tools_field(&sample_catalog());
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str())
+            .collect();
+        assert!(
+            !names.contains(&"visual.caption"),
+            "deferred tools must not be advertised: {names:?}"
+        );
+    }
+
+    #[test]
+    fn tools_field_no_params_yields_empty_object_schema() {
+        let catalog = vec![json!({
+            "id": "now", "name": "time.now", "group": "time",
+            "description": "Current time.", "parameters": [],
+            "destructive": false, "status": "active", "deferred_phase": null,
+        })];
+        let tools = build_tools_field(&catalog);
+        let params = &tools[0]["function"]["parameters"];
+        assert_eq!(params["type"], "object");
+        assert_eq!(params["properties"], json!({}));
+        assert_eq!(params["required"], json!([]));
+    }
+
+    #[test]
+    fn json_schema_type_normalises_aliases() {
+        assert_eq!(json_schema_type("int"), "integer");
+        assert_eq!(json_schema_type("bool"), "boolean");
+        assert_eq!(json_schema_type("list"), "array");
+        assert_eq!(json_schema_type("number"), "number");
+        // Unknown → safe string default.
+        assert_eq!(json_schema_type("widget"), "string");
     }
 }

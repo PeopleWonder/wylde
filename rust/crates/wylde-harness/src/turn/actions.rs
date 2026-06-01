@@ -95,6 +95,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     let handle = state::register_turn(turn_id.clone(), conversation_id.clone());
 
     let mut messages = initial_messages(&user_message);
+    let tools = tools_payload();
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
     let mut final_text = String::new();
@@ -108,6 +109,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
         let body = json!({
             "model": model,
             "messages": messages,
+            "tools": tools,
             "priority": cfg.default_chat_priority,
             "stream": false,
             "keep_alive": "24h",
@@ -126,7 +128,12 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
         final_text = salvage_result.cleaned_text.clone();
         emit_unrecognised(&handle, &salvage_result).await;
 
-        let calls = recovered_to_calls(&salvage_result);
+        // Native path first (capable models), salvage as fallback (small
+        // models that emit the call as content). Per-turn dedupe in the
+        // round loop coalesces any overlap.
+        let native = native_tool_calls(&extract_native_tool_calls(&upstream), &alias_map);
+        let mut calls = native;
+        calls.extend(recovered_to_calls(&salvage_result));
         if calls.is_empty() {
             completed_naturally = true;
             break;
@@ -357,6 +364,7 @@ async fn drive_streaming_turn(
     device_tier: String,
 ) {
     let mut messages = initial_messages(&user_message);
+    let tools = tools_payload();
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
 
@@ -379,6 +387,7 @@ async fn drive_streaming_turn(
         let body = json!({
             "model": model,
             "messages": messages,
+            "tools": tools,
             "priority": cfg.default_chat_priority,
             "stream": true,
             "keep_alive": "24h",
@@ -386,6 +395,10 @@ async fn drive_streaming_turn(
 
         let mut stream = ipc::send_action_stream(&cfg.ollama_service, "ollama.chat_stream", body);
         let mut accumulated = String::new();
+        // Native `message.tool_calls` may arrive on any chunk (Ollama
+        // typically emits them whole on the final chunk); accumulate
+        // across the stream and decode after it completes.
+        let mut native_raw: Vec<Value> = Vec::new();
         let mut errored: Option<String> = None;
         let mut cancelled_mid_round = false;
 
@@ -406,6 +419,7 @@ async fn drive_streaming_turn(
                             if let Some(piece) = extract_chunk_content(&chunk) {
                                 accumulated.push_str(&piece);
                             }
+                            native_raw.extend(extract_native_tool_calls(&chunk));
                         }
                     }
                 }
@@ -433,7 +447,11 @@ async fn drive_streaming_turn(
         let final_text = salvage_result.cleaned_text.clone();
         emit_unrecognised(&handle, &salvage_result).await;
 
-        let calls = recovered_to_calls(&salvage_result);
+        // Native path first (capable models), salvage as fallback (small
+        // models that emit the call as content). Per-turn dedupe in the
+        // round loop coalesces any overlap.
+        let mut calls = native_tool_calls(&native_raw, &alias_map);
+        calls.extend(recovered_to_calls(&salvage_result));
 
         if calls.is_empty() {
             // No tool calls — emit the cleaned text as a single Token
@@ -598,6 +616,80 @@ fn initial_messages(user_message: &str) -> Vec<Value> {
         json!({"role": "system", "content": system_prompt}),
         json!({"role": "user", "content": user_message}),
     ]
+}
+
+/// Build the native Ollama `tools:` request field from the live tool
+/// registry. Capable models reply on `message.tool_calls` when this is
+/// present; the salvage path stays the fallback. Built from the same
+/// catalog the system prompt uses so both advertised tool sets match.
+fn tools_payload() -> Vec<Value> {
+    let catalog = crate::tooling::runner::catalog_payload(crate::tooling::registry::global());
+    prompt::build_tools_field(&catalog)
+}
+
+/// Parse a native Ollama `message.tool_calls` array into dispatchable
+/// [`ToolCall`]s. Each entry is `{["id"], "function": {"name",
+/// "arguments"}}` (Ollama nests under `function`; some builds inline
+/// `name`/`arguments`). `arguments` arrives as an object, but a
+/// string-encoded object is re-parsed defensively. The emitted name is
+/// resolved to its canonical id via `alias_map` so dedupe + summary
+/// rows match the salvage path; unknown names pass through verbatim and
+/// the dispatcher's registry lookup surfaces the `not_found`. Synthetic
+/// ids reset per round (`call_native_<i>`), mirroring the salvage
+/// parser's per-round `call_text_<n>` numbering.
+fn native_tool_calls(tool_calls: &[Value], alias_map: &HashMap<String, String>) -> Vec<ToolCall> {
+    let mut out: Vec<ToolCall> = Vec::new();
+    for (i, tc) in tool_calls.iter().enumerate() {
+        let func = tc.get("function").unwrap_or(tc);
+        let name = match func.get("name").and_then(Value::as_str) {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
+        let raw_args = func
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let args = coerce_native_args(raw_args);
+        let canonical = alias_map.get(name).cloned().unwrap_or_else(|| name.to_owned());
+        let id = tc
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("call_native_{}", i + 1));
+        out.push(ToolCall {
+            id,
+            name: canonical,
+            args,
+        });
+    }
+    out
+}
+
+/// Coerce a native `arguments` value into a JSON object. Ollama emits an
+/// object; a string-encoded object is re-parsed; any non-object falls
+/// back to `{}` (the model gave us nothing usable).
+fn coerce_native_args(v: Value) -> Value {
+    let v = match v {
+        Value::String(s) => serde_json::from_str::<Value>(&s).unwrap_or(Value::Null),
+        other => other,
+    };
+    if v.is_object() {
+        v
+    } else {
+        json!({})
+    }
+}
+
+/// Pull `message.tool_calls` out of an Ollama reply/chunk as a slice of
+/// raw call values, or an empty Vec when absent.
+fn extract_native_tool_calls(message_owner: &Value) -> Vec<Value> {
+    message_owner
+        .get("message")
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn recovered_to_calls(salvage: &SalvageResult) -> Vec<ToolCall> {
@@ -985,6 +1077,78 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("fs.read_file"));
+    }
+
+    // ── Fix B: native Ollama `tools:` field + tool_calls parsing ─────────
+
+    #[test]
+    fn request_body_carries_tools_field_with_json_schema() {
+        // Mirror the body construction in handle_run_turn /
+        // drive_streaming_turn: tools = tools_payload(), folded into the
+        // request body. Assert the wire shape Ollama expects.
+        let tools = tools_payload();
+        let body = json!({
+            "model": "stub-model",
+            "messages": initial_messages("hi"),
+            "tools": tools,
+            "stream": false,
+        });
+        let arr = body["tools"].as_array().expect("tools array present");
+        assert!(!arr.is_empty(), "at least one active tool advertised");
+
+        // Every entry is an OpenAI-style function spec.
+        for t in arr {
+            assert_eq!(t["type"], "function");
+            assert!(t["function"]["name"].as_str().is_some());
+            assert_eq!(t["function"]["parameters"]["type"], "object");
+        }
+
+        // fs.read_file is a known active tool — find it and check its
+        // `path` arg surfaces as a JSON-schema string property.
+        let read_file = arr
+            .iter()
+            .find(|t| t["function"]["name"] == "fs.read_file")
+            .expect("fs.read_file advertised in tools field");
+        let params = &read_file["function"]["parameters"];
+        assert_eq!(params["properties"]["path"]["type"], "string");
+        assert!(params["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("path")));
+    }
+
+    #[test]
+    fn native_tool_calls_parses_ollama_function_shape() {
+        let alias_map = build_alias_map();
+        let raw = vec![json!({
+            "function": {"name": "fs.read_file", "arguments": {"path": "README.md"}},
+        })];
+        let calls = native_tool_calls(&raw, &alias_map);
+        assert_eq!(calls.len(), 1);
+        // Name resolves to canonical id via the alias map.
+        assert_eq!(calls[0].name, "read_file");
+        assert_eq!(calls[0].args, json!({"path": "README.md"}));
+        assert_eq!(calls[0].id, "call_native_1");
+    }
+
+    #[test]
+    fn native_tool_calls_reparses_string_arguments_and_skips_nameless() {
+        let alias_map = build_alias_map();
+        let raw = vec![
+            json!({"function": {"name": "fs.read_file", "arguments": "{\"path\": \"x\"}"}}),
+            json!({"function": {"arguments": {"path": "y"}}}), // no name → skipped
+        ];
+        let calls = native_tool_calls(&raw, &alias_map);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].args, json!({"path": "x"}));
+    }
+
+    #[test]
+    fn extract_native_tool_calls_returns_empty_when_absent() {
+        let v = json!({"message": {"role": "assistant", "content": "hi"}});
+        assert!(extract_native_tool_calls(&v).is_empty());
+        let v = json!({"message": {"tool_calls": [{"function": {"name": "x"}}]}});
+        assert_eq!(extract_native_tool_calls(&v).len(), 1);
     }
 
     #[tokio::test]

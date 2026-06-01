@@ -14,8 +14,14 @@
 //! 1. Fenced JSON — ```` ```json {...} ``` ````
 //! 2. Tag-wrapped — `<tool_call>...</tool_call>`, `<function_call>...`,
 //!    `<tool_use>...`
-//! 3. Bare balanced-brace JSON — requires a `"name"` substring guard so
-//!    prose JSON like `{"weather": "sunny"}` is not scrubbed.
+//! 3. Bare balanced-brace JSON — a structural guard (object carries a
+//!    `name`/`function` key, or is a single-key object) keeps prose
+//!    JSON like `{"weather": "sunny", "temp": 72}` from being scrubbed.
+//!
+//! Two malformed shapes smaller models emit are recovered via a bounded
+//! single-level unwrap (see [`unwrap_single_key`]): single-key wrapper
+//! objects (`{"tool_search": {"name": ...}}`) and dotted-flattened keys
+//! (`{"search.file_list.path": "."}`).
 //!
 //! Parity with the Python implementation is enforced by mirroring the
 //! same byte sequences the Python test_streaming.py uses (see
@@ -175,6 +181,63 @@ pub fn parse_one_call(obj: &Value) -> Option<(String, Value)> {
     Some((name, args))
 }
 
+/// Attempt to recover a tool call from a single-key object that
+/// [`parse_one_call`] doesn't directly understand. Handles the two
+/// malformed shapes observed from small models (e.g. qwen2.5:0.5b),
+/// bounded to a single level of unwrap:
+///
+/// 1. **Single-key wrapper** — `{"tool_search": {"name": "time.now",
+///    "arguments": {}}}`. The outer key is a non-canonical wrapper name
+///    (`tool_call`, `tool_search`, `function_call`, `call`, `action`,
+///    `tool`, …); the value is itself an object. Unwrap one level and
+///    parse the inner object as a tool call. The unwrap calls
+///    [`parse_one_call`] (NOT itself) on the inner object, so a
+///    double-wrap stops here rather than recursing.
+/// 2. **Dotted flattened key** — `{"search.file_list.path": "."}`. The
+///    single key is `<tool_name>.<arg_name>` and the value is the arg
+///    value. Tool names themselves contain dots, so the split point is
+///    disambiguated against `alias_map`: split on the last `.`, and
+///    accept only when the prefix resolves to a known tool. Reconstruct
+///    as `{"name": "search.file_list", "arguments": {"path": "."}}`.
+///
+/// Returns `None` for anything else (multi-key objects, unknown
+/// prefixes, non-object wrapper values) so callers stay conservative.
+fn unwrap_single_key(
+    obj: &Value,
+    alias_map: &std::collections::HashMap<String, String>,
+) -> Option<(String, Value)> {
+    let map = obj.as_object()?;
+    if map.len() != 1 {
+        return None;
+    }
+    let (key, value) = map.iter().next()?;
+
+    // Shape 1 — wrapper object. Unwrap one level and parse the inner
+    // object directly. Bounded: parse_one_call does not recurse, so a
+    // double-wrap (`{"a": {"b": {"name": ...}}}`) yields None here.
+    if value.is_object() {
+        if let Some(call) = parse_one_call(value) {
+            return Some(call);
+        }
+    }
+
+    // Shape 2 — dotted flattened key. Arg names don't contain dots, so
+    // the tool/arg boundary is the last `.`; the prefix must resolve to
+    // a known tool in the alias map (canonical id, dotted, or snake
+    // form) for the split to be accepted.
+    if let Some(pos) = key.rfind('.') {
+        let tool = &key[..pos];
+        let arg = &key[pos + 1..];
+        if !tool.is_empty() && !arg.is_empty() && alias_map.contains_key(tool) {
+            let mut args = Map::new();
+            args.insert(arg.to_string(), value.clone());
+            return Some((tool.to_string(), Value::Object(args)));
+        }
+    }
+
+    None
+}
+
 /// String → JSON re-parse + dict-or-`{_raw}` fallback. Matches Python's
 /// `_parse_one_call` args-shape coercion exactly.
 fn coerce_args(v: Value) -> Value {
@@ -225,7 +288,11 @@ pub fn extract_tool_calls_from_content(
     let mut seq: u32 = 0;
 
     let mut consume = |parsed: &Value| -> bool {
-        let Some((name, args)) = parse_one_call(parsed) else {
+        // Canonical `{name, arguments}` / `{function: {...}}` first;
+        // fall back to the single-level unwrap for wrapper / dotted
+        // shapes the small models emit.
+        let call = parse_one_call(parsed).or_else(|| unwrap_single_key(parsed, alias_map));
+        let Some((name, args)) = call else {
             return false;
         };
         seq += 1;
@@ -269,20 +336,26 @@ pub fn extract_tool_calls_from_content(
         });
     }
 
-    // Pass 3 — bare balanced-brace JSON. The `"name"` substring guard
-    // is the cheap filter against prose JSON.
+    // Pass 3 — bare balanced-brace JSON. Each span is parsed and run
+    // through a cheap structural guard before `consume` so prose JSON
+    // (`{"weather": "sunny", "temp": 72}`) is never scrubbed: an object
+    // is a tool-call candidate only if it carries a `name`/`function`
+    // key (canonical or wrapper shapes) OR it is a single-key object
+    // (the wrapper / dotted-flattened shapes `unwrap_single_key`
+    // handles). `consume` itself is conservative — it returns false
+    // (leaving the span intact) for anything that doesn't resolve.
     let spans = find_balanced_braces(&working);
     let mut spans_to_remove: Vec<(usize, usize)> = Vec::new();
     for (start, end) in spans {
         let span = &working[start..end];
-        if !span.contains("\"name\"") {
-            continue;
-        }
         let obj: Value = match serde_json::from_str(span) {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if !matches!(&obj, Value::Object(m) if m.contains_key("name")) {
+        let Value::Object(m) = &obj else { continue };
+        let looks_like_call =
+            m.contains_key("name") || m.contains_key("function") || m.len() == 1;
+        if !looks_like_call {
             continue;
         }
         if consume(&obj) {
@@ -607,5 +680,90 @@ mod tests {
         let r = extract_tool_calls_from_content(text, &map);
         assert_eq!(r.recovered.len(), 1);
         assert_eq!(r.recovered[0].args, serde_json::json!({"k": 1}));
+    }
+
+    // ── Fix A: single-key wrapper + dotted-flattened unwrap ──────────────
+
+    #[test]
+    fn unwrap_canonical_happy_path_unchanged() {
+        // A well-formed `{name, arguments}` object never hits the
+        // unwrap path — parse_one_call handles it directly.
+        let map = alias(&[("time.now", "time_now")]);
+        let text = r#"{"name": "time.now", "arguments": {}}"#;
+        let r = extract_tool_calls_from_content(text, &map);
+        assert_eq!(r.recovered.len(), 1);
+        assert_eq!(r.recovered[0].name, "time_now");
+        assert_eq!(r.recovered[0].raw_name, "time.now");
+        assert_eq!(r.cleaned_text, "");
+    }
+
+    #[test]
+    fn unwrap_single_key_wrapper_recovers() {
+        // qwen2.5:0.5b shape: tool call buried under a wrapper key.
+        let map = alias(&[("time.now", "time_now")]);
+        let text = r#"{"tool_search": {"name": "time.now", "arguments": {}}}"#;
+        let r = extract_tool_calls_from_content(text, &map);
+        assert_eq!(r.recovered.len(), 1, "recovered: {:?}", r.recovered);
+        assert_eq!(r.recovered[0].name, "time_now");
+        assert_eq!(r.recovered[0].raw_name, "time.now");
+        assert_eq!(r.recovered[0].args, serde_json::json!({}));
+        assert_eq!(r.cleaned_text, "");
+    }
+
+    #[test]
+    fn unwrap_dotted_flattened_key_recovers() {
+        // Flattened `<tool>.<arg>: value` shape. The tool name itself
+        // contains a dot, so the split is disambiguated against the
+        // alias map (last dot, prefix must be a known tool).
+        let map = alias(&[
+            ("search.file_list", "file_list"),
+            ("search_file_list", "file_list"),
+        ]);
+        let text = r#"{"search.file_list.path": "."}"#;
+        let r = extract_tool_calls_from_content(text, &map);
+        assert_eq!(r.recovered.len(), 1, "recovered: {:?}", r.recovered);
+        assert_eq!(r.recovered[0].name, "file_list");
+        assert_eq!(r.recovered[0].raw_name, "search.file_list");
+        assert_eq!(r.recovered[0].args, serde_json::json!({"path": "."}));
+        assert_eq!(r.cleaned_text, "");
+    }
+
+    #[test]
+    fn unwrap_double_wrap_stops_at_one_level() {
+        // Two layers of wrapper — the inner object is itself a wrapper,
+        // not a `{name, arguments}` call. The bounded unwrap parses one
+        // level then gives up, so nothing is recovered.
+        let map = alias(&[("time.now", "time_now")]);
+        let inner = serde_json::json!({"tool_call": {"name": "time.now", "arguments": {}}});
+        let double = serde_json::json!({"wrapper": inner});
+        assert!(
+            unwrap_single_key(&double, &map).is_none(),
+            "double-wrap must not recover"
+        );
+    }
+
+    #[test]
+    fn unwrap_bogus_shapes_return_no_call() {
+        let map = alias(&[("search.file_list", "file_list")]);
+        // Multi-key prose object — not single-key, no name/function.
+        assert!(unwrap_single_key(&serde_json::json!({"a": 1, "b": 2}), &map).is_none());
+        // Single-key wrapper whose value isn't a tool call.
+        assert!(unwrap_single_key(&serde_json::json!({"weather": {"temp": 72}}), &map).is_none());
+        // Dotted key whose prefix isn't a known tool.
+        assert!(unwrap_single_key(&serde_json::json!({"unknown.path": "."}), &map).is_none());
+        // Single-key scalar with no dot — nothing to unwrap.
+        assert!(unwrap_single_key(&serde_json::json!({"answer": 42}), &map).is_none());
+    }
+
+    #[test]
+    fn unwrap_does_not_scrub_single_key_prose() {
+        // A single-key object that isn't a tool call must survive in
+        // cleaned_text — consume() returns false, so the span stays.
+        let map = alias(&[("git_status", "git_status")]);
+        let text = r#"The result is {"answer": 42}. Done."#;
+        let r = extract_tool_calls_from_content(text, &map);
+        assert_eq!(r.cleaned_text, text.trim());
+        assert!(r.recovered.is_empty());
+        assert!(r.unrecognised.is_empty());
     }
 }
