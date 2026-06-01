@@ -46,6 +46,7 @@ use wylde_shared::ipc::{self, IpcError, Reply, StreamSender};
 use crate::config::Config;
 use crate::events::{AbortReason, ToolErrorReason, ToolEvent, TurnEvent};
 use crate::state::{self, TurnHandle};
+use crate::turn::prompt;
 use crate::turn::salvage::{self, RecoveredCall, SalvageResult};
 use crate::turn::tool_round::{self, ToolCall, ToolRoundState};
 
@@ -93,7 +94,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     // mid-run_turn still sees them).
     let handle = state::register_turn(turn_id.clone(), conversation_id.clone());
 
-    let mut messages: Vec<Value> = vec![json!({"role": "user", "content": user_message})];
+    let mut messages = initial_messages(&user_message);
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
     let mut final_text = String::new();
@@ -355,7 +356,7 @@ async fn drive_streaming_turn(
     model: String,
     device_tier: String,
 ) {
-    let mut messages: Vec<Value> = vec![json!({"role": "user", "content": user_message})];
+    let mut messages = initial_messages(&user_message);
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
 
@@ -580,6 +581,23 @@ fn build_alias_map() -> HashMap<String, String> {
         map.entry(ns.clone()).or_insert_with(|| ns.clone());
     }
     map
+}
+
+/// Build the opening `messages` array for a chat turn:
+/// `[{role:"system", ...tool catalog...}, {role:"user", ...}]`.
+///
+/// The system message is the Phase-6 prompt port — without it the
+/// model is never told tools exist, never emits tool-call JSON, and
+/// the salvage parser has nothing to recover. The catalog is read from
+/// the in-process registry so the prompt always reflects the live tool
+/// set.
+fn initial_messages(user_message: &str) -> Vec<Value> {
+    let catalog = crate::tooling::runner::catalog_payload(crate::tooling::registry::global());
+    let system_prompt = prompt::build_system_prompt(&catalog);
+    vec![
+        json!({"role": "system", "content": system_prompt}),
+        json!({"role": "user", "content": user_message}),
+    ]
 }
 
 fn recovered_to_calls(salvage: &SalvageResult) -> Vec<ToolCall> {
@@ -918,6 +936,55 @@ mod tests {
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].id, "call_text_1");
         assert_eq!(calls[1].name, "git.status");
+    }
+
+    // ── Phase 6 system-prompt injection tests ───────────────────────────
+
+    #[test]
+    fn initial_messages_prepends_system_tool_catalog() {
+        // The opening messages array must be [system, user], and the
+        // system content must advertise tools (a known tool name from
+        // the live registry) so the model emits tool-call JSON instead
+        // of claiming it has no tools.
+        let messages = initial_messages("What time is it?");
+        assert_eq!(messages.len(), 2, "expected [system, user]: {messages:?}");
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], "What time is it?");
+
+        let system = messages[0]["content"]
+            .as_str()
+            .expect("system content is a string");
+        assert!(
+            system.contains("Available tools:"),
+            "system prompt must list tools: {system}"
+        );
+        // `fs.read_file` is an active tool registered in the global
+        // registry — it must surface in the catalog block.
+        assert!(
+            system.contains("fs.read_file"),
+            "system prompt must mention a known tool name: {system}"
+        );
+    }
+
+    #[test]
+    fn run_turn_request_body_carries_system_then_user() {
+        // Mirror the exact body construction in handle_run_turn /
+        // drive_streaming_turn: messages = initial_messages(...), then
+        // folded into the Ollama request body. Assert the wire shape.
+        let messages = initial_messages("Read the README and tell me the license");
+        let body = json!({
+            "model": "stub-model",
+            "messages": messages,
+            "stream": false,
+        });
+        let msgs = body["messages"].as_array().expect("messages array");
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[1]["role"], "user");
+        assert!(msgs[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("fs.read_file"));
     }
 
     #[tokio::test]

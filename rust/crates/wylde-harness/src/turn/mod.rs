@@ -43,5 +43,6 @@
 //!   `not_implemented`).
 
 pub mod actions;
+pub mod prompt;
 pub mod salvage;
 pub mod tool_round;
