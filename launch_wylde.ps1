@@ -14,7 +14,7 @@
 # debugged without keeping a console window open.
 
 $ErrorActionPreference = 'Stop'
-$WyldeRoot   = '%USERPROFILE%\Documents\Obsidian Vault\Wylde'
+$WyldeRoot   = $PSScriptRoot
 $WyldeParent = Split-Path -Parent $WyldeRoot
 $LogPath     = Join-Path $env:TEMP 'wylde-launch.log'
 

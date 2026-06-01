@@ -16,7 +16,7 @@
 $ErrorActionPreference = 'Stop'
 $lnk    = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Wylde.lnk'
 $ps     = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-$root   = '%USERPROFILE%\Documents\Obsidian Vault\Wylde'
+$root   = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $script = Join-Path $root 'launch_wylde.ps1'
 $icon   = Join-Path $root 'Core\GUI\target\release\wylde-gui.exe'
 
