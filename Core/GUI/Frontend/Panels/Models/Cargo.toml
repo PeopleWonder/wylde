@@ -22,6 +22,14 @@ wylde-gui-pipe = { path = "../../Pipe" }
 # Native gpui TextInput widget — backs the "pull new model" name field.
 wylde-gpui-input = { path = "../../Input" }
 
+# Fuzzy matcher for the client-side model search box.  `nucleo-matcher`
+# is the standalone matching primitive from the `nucleo` project Zed
+# uses — the umbrella `nucleo` crate adds a multithreaded worker pool we
+# don't need for synchronously scoring a short, already-loaded list.
+# Declared here (not at workspace level) because Models is the only
+# consumer; keeps the dep's blast radius bounded to this panel.
+nucleo-matcher = "0.3"
+
 # Tokio for sleeps + bridge handle used by the stream consumer.
 tokio.workspace = true
 

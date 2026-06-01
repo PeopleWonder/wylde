@@ -26,6 +26,8 @@ use gpui::{
     div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, Entity,
     FontWeight, IntoElement, Render, SharedString, Stateful, Subscription, Window,
 };
+use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
 use wylde_gpui_input::{InputEvent, SubmitMode, TextInput};
 use wylde_theme::colors::{
     BORDER_DEFAULT, BORDER_EMPHASIS, BORDER_SUBTLE, BRAND, BRAND_DIM, SURFACE_800, SURFACE_900,
@@ -420,18 +422,12 @@ impl Render for ModelsPanel {
             column = column.child(empty_installed_state());
         } else {
             column = column.child(search_strip(self, cx));
-            let q = self.search_query.trim().to_lowercase();
-            let filtered: Vec<InstalledModel> = self
-                .installed
-                .iter()
-                .filter(|m| model_matches(m, &q))
-                .cloned()
-                .collect();
-            if filtered.is_empty() {
+            let ranked = fuzzy_rank(&self.installed, &self.search_query);
+            if ranked.is_empty() {
                 column = column.child(no_match_state(self.search_query.trim()));
             } else {
-                for m in filtered {
-                    column = column.child(installed_row(self, &m, cx));
+                for m in ranked {
+                    column = column.child(installed_row(self, m, cx));
                 }
             }
         }
@@ -1062,19 +1058,58 @@ fn error_strip(msg: &str) -> gpui::Div {
 
 // ── Pure projections (unit-testable) ─────────────────────────────────
 
-/// Client-side filter predicate for the search box.  `query_lower` is
-/// the trimmed, lower-cased query; an empty query matches everything.
-/// Matches across the fields the row surfaces — name, family, parameter
-/// size, quantization — so a search for "qwen", "7b", or "q4" all narrow
-/// the list the way a user would expect.
-pub(crate) fn model_matches(m: &InstalledModel, query_lower: &str) -> bool {
-    if query_lower.is_empty() {
-        return true;
+/// The text a model is matched against: its name plus the same
+/// metadata the row surfaces (family, parameter size, quantization),
+/// space-joined.  Folding them into one haystack lets a query like
+/// "qwen", "7b", or "q4" hit whichever field carries it.
+pub(crate) fn searchable_text(m: &InstalledModel) -> String {
+    let mut s = m.name.clone();
+    for extra in [&m.family, &m.param_size, &m.quantization] {
+        if !extra.is_empty() {
+            s.push(' ');
+            s.push_str(extra);
+        }
     }
-    m.name.to_lowercase().contains(query_lower)
-        || m.family.to_lowercase().contains(query_lower)
-        || m.param_size.to_lowercase().contains(query_lower)
-        || m.quantization.to_lowercase().contains(query_lower)
+    s
+}
+
+/// Fuzzy-rank installed models against `query` for the search box.
+///
+///   * Empty / whitespace query → every model, original order preserved.
+///   * Otherwise → only the models whose `searchable_text` fuzzily
+///     matches, sorted by descending nucleo relevance score (best first).
+///     Equal scores fall back to name order so the list is deterministic
+///     across renders instead of jittering.
+///
+/// Fuzzy (subsequence) matching gives the UX Aaron asked for: "qwen"
+/// matches every qwen tag, the typo "lama" still hits "llama3.2" (l-a-m-a
+/// is a subsequence), and a fragment like "32b" narrows to the 32b tags —
+/// all ranked rather than an unordered substring set.
+pub(crate) fn fuzzy_rank<'a>(
+    models: &'a [InstalledModel],
+    query: &str,
+) -> Vec<&'a InstalledModel> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return models.iter().collect();
+    }
+
+    let mut matcher = Matcher::new(Config::DEFAULT);
+    let pattern = Pattern::parse(trimmed, CaseMatching::Smart, Normalization::Smart);
+    // One scratch buffer reused across haystacks — `Utf32Str::new` clears
+    // it per call (and skips it entirely for ASCII), so reuse is safe.
+    let mut buf: Vec<char> = Vec::new();
+
+    let mut scored: Vec<(u32, &InstalledModel)> = models
+        .iter()
+        .filter_map(|m| {
+            let haystack = searchable_text(m);
+            let utf = Utf32Str::new(&haystack, &mut buf);
+            pattern.score(utf, &mut matcher).map(|score| (score, m))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    scored.into_iter().map(|(_, m)| m).collect()
 }
 
 pub(crate) fn model_meta(m: &InstalledModel) -> String {
@@ -1169,30 +1204,78 @@ mod tests {
         assert_eq!(model_meta(&m), "qwen2.5 · 1.5B · Q4_K_M · 1.4 GB");
     }
 
-    #[test]
-    fn model_matches_empty_query_passes_everything() {
-        let m = InstalledModel {
-            name: "qwen2.5:1.5b".into(),
+    fn model(name: &str, family: &str, param: &str, quant: &str) -> InstalledModel {
+        InstalledModel {
+            name: name.into(),
+            family: family.into(),
+            param_size: param.into(),
+            quantization: quant.into(),
             ..Default::default()
-        };
-        assert!(model_matches(&m, ""));
+        }
+    }
+
+    fn names(ranked: &[&InstalledModel]) -> Vec<String> {
+        ranked.iter().map(|m| m.name.clone()).collect()
     }
 
     #[test]
-    fn model_matches_is_case_insensitive_across_fields() {
-        let m = InstalledModel {
-            name: "Qwen2.5:7B".into(),
-            family: "qwen2.5".into(),
-            param_size: "7B".into(),
-            quantization: "Q4_K_M".into(),
-            ..Default::default()
-        };
-        // Caller lower-cases the query; the predicate lower-cases each
-        // field. Hits on name, family, param size, and quantization.
-        assert!(model_matches(&m, "qwen"));
-        assert!(model_matches(&m, "7b"));
-        assert!(model_matches(&m, "q4_k"));
-        assert!(!model_matches(&m, "llama"));
+    fn fuzzy_rank_empty_query_preserves_original_order() {
+        let models = vec![
+            model("qwen2.5:7b", "qwen2.5", "7B", "Q4_K_M"),
+            model("llama3.2", "llama", "", ""),
+            model("qwen3:32b", "qwen3", "32B", "Q4_K_M"),
+        ];
+        // Empty and whitespace-only both short-circuit to "show all".
+        assert_eq!(names(&fuzzy_rank(&models, "")), names(&models.iter().collect::<Vec<_>>()));
+        assert_eq!(names(&fuzzy_rank(&models, "   ")), names(&models.iter().collect::<Vec<_>>()));
+    }
+
+    #[test]
+    fn fuzzy_rank_clean_prefix_keeps_only_matching_family() {
+        let models = vec![
+            model("qwen2.5:7b", "qwen2.5", "7B", "Q4_K_M"),
+            model("llama3.2", "llama", "", ""),
+            model("qwen3:32b", "qwen3", "32B", "Q4_K_M"),
+        ];
+        let got = names(&fuzzy_rank(&models, "qwen"));
+        assert!(got.iter().all(|n| n.contains("qwen")), "only qwen tags: {got:?}");
+        assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn fuzzy_rank_tolerates_typo() {
+        // "lama" is a subsequence of "llama3.2" (l-a-m-a) but matches no
+        // qwen tag — the dropped 'l' is forgiven without false positives.
+        let models = vec![
+            model("qwen2.5:7b", "qwen2.5", "7B", "Q4_K_M"),
+            model("llama3.2", "llama", "", ""),
+        ];
+        let got = names(&fuzzy_rank(&models, "lama"));
+        assert_eq!(got, vec!["llama3.2".to_owned()]);
+    }
+
+    #[test]
+    fn fuzzy_rank_fragment_matches_quant_and_param() {
+        // "32b" narrows to the 32b tag; the 7b tag has no '3' to match.
+        let models = vec![
+            model("qwen2.5:7b", "qwen2.5", "7B", "Q4_K_M"),
+            model("qwen3:32b", "qwen3", "32B", "Q4_K_M"),
+        ];
+        let got = names(&fuzzy_rank(&models, "32b"));
+        assert_eq!(got, vec!["qwen3:32b".to_owned()]);
+    }
+
+    #[test]
+    fn fuzzy_rank_sorts_descending_by_score() {
+        // Both match "qwen", but a leading-prefix match outscores one
+        // buried mid-name. Input order is the reverse of the expected
+        // ranking, so a pass proves the sort reorders by score.
+        let models = vec![
+            model("zzz-qwen-custom", "", "", ""),
+            model("qwen2.5:7b", "qwen2.5", "7B", "Q4_K_M"),
+        ];
+        let got = names(&fuzzy_rank(&models, "qwen"));
+        assert_eq!(got, vec!["qwen2.5:7b".to_owned(), "zzz-qwen-custom".to_owned()]);
     }
 
     #[test]
