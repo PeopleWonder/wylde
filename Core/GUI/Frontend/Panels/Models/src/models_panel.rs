@@ -48,6 +48,15 @@ pub struct ModelsPanel {
     pub installed: Vec<InstalledModel>,
     pub loaded: Vec<String>,
     pub pull_input: Entity<TextInput>,
+    /// Single-line input owning the live filter query.  Pure
+    /// presentation — the backend always serves the full installed list;
+    /// this box only narrows what the View renders.  Empty means "show
+    /// everything".
+    pub search_input: Entity<TextInput>,
+    /// Mirror of `search_input`'s text, updated on every `Changed` so the
+    /// filter is a plain field read in render (no reaching into the input
+    /// handle per row).
+    pub search_query: String,
     pub active_pull: Option<PullState>,
     pub confirm_delete: Option<String>,
     pub session_default: Option<String>,
@@ -56,6 +65,7 @@ pub struct ModelsPanel {
     pub loading_installed: bool,
     pub loading_hardware: bool,
     _input_sub: Subscription,
+    _search_sub: Subscription,
 }
 
 /// In-flight pull bookkeeping.  The `stream` field holds the
@@ -89,10 +99,29 @@ impl ModelsPanel {
             },
         );
 
+        let search_input = cx.new(|input_cx| {
+            TextInput::single_line(input_cx)
+                .with_placeholder("Search models…")
+                .with_submit_mode(SubmitMode::Never)
+                .with_min_height(32.0)
+                .with_element_key("models-search")
+        });
+        let search_sub = cx.subscribe(
+            &search_input,
+            move |this: &mut Self, _entity, event: &InputEvent, cx: &mut Context<Self>| {
+                if let InputEvent::Changed(text) = event {
+                    this.search_query = text.clone();
+                    cx.notify();
+                }
+            },
+        );
+
         Self {
             installed: Vec::new(),
             loaded: Vec::new(),
             pull_input,
+            search_input,
+            search_query: String::new(),
             active_pull: None,
             confirm_delete: None,
             session_default: None,
@@ -101,6 +130,7 @@ impl ModelsPanel {
             loading_installed: true,
             loading_hardware: true,
             _input_sub: input_sub,
+            _search_sub: search_sub,
         }
     }
 
@@ -284,6 +314,17 @@ impl ModelsPanel {
         }
     }
 
+    /// Reset the filter — clears both the mirrored query and the input
+    /// buffer.  Wired to the inline ✕ affordance and to Escape while the
+    /// search box holds focus.  `input.clear` re-emits `Changed("")`,
+    /// which the subscription folds back into `search_query`; setting it
+    /// here too keeps the field correct even if that event is deferred.
+    pub fn clear_search(&mut self, cx: &mut Context<Self>) {
+        self.search_query.clear();
+        self.search_input.update(cx, |input, cx| input.clear(cx));
+        cx.notify();
+    }
+
     /// Inline confirm-delete — first click stages the confirmation,
     /// second confirms.  Cancel clears the staged state.
     pub fn request_delete(&mut self, name: String, cx: &mut Context<Self>) {
@@ -378,8 +419,20 @@ impl Render for ModelsPanel {
         } else if self.installed.is_empty() {
             column = column.child(empty_installed_state());
         } else {
-            for m in self.installed.clone() {
-                column = column.child(installed_row(self, &m, cx));
+            column = column.child(search_strip(self, cx));
+            let q = self.search_query.trim().to_lowercase();
+            let filtered: Vec<InstalledModel> = self
+                .installed
+                .iter()
+                .filter(|m| model_matches(m, &q))
+                .cloned()
+                .collect();
+            if filtered.is_empty() {
+                column = column.child(no_match_state(self.search_query.trim()));
+            } else {
+                for m in filtered {
+                    column = column.child(installed_row(self, &m, cx));
+                }
             }
         }
 
@@ -878,6 +931,83 @@ where
         .child(SharedString::from("Delete"))
 }
 
+/// Live filter box above the installed list.  The input owns its own
+/// chrome; this wrapper lays it out beside the conditional ✕ clear
+/// affordance and catches Escape (bubbled up from the focused input) to
+/// reset the query — matching the keyboard behaviour of the other
+/// panels' inputs without piercing the shared `TextInput`.
+fn search_strip(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
+    let mut row = div()
+        .flex()
+        .flex_row()
+        .gap_2()
+        .items_center()
+        .child(div().flex_1().child(panel.search_input.clone()));
+
+    if !panel.search_query.trim().is_empty() {
+        row = row.child(clear_search_button(cx));
+    }
+
+    div()
+        .id(ElementId::Name("models-search-strip".into()))
+        .on_key_down(cx.listener(
+            |this: &mut ModelsPanel, ev: &gpui::KeyDownEvent, _window, cx| {
+                if ev.keystroke.key.as_str() == "escape" && !this.search_query.is_empty() {
+                    this.clear_search(cx);
+                }
+            },
+        ))
+        .child(row)
+}
+
+fn clear_search_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
+    div()
+        .id(ElementId::Name("models-search-clear".into()))
+        .w(px(28.0))
+        .h(px(28.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .cursor_pointer()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::SM))
+        .text_color(rgb(pack(TEXT_SECONDARY)))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|this: &mut ModelsPanel, _ev, _window, cx| {
+                this.clear_search(cx);
+            }),
+        )
+        .child(SharedString::from("✕"))
+}
+
+/// In-list empty state when the filter excludes every installed model.
+/// Subtle (same card as the no-models state) rather than a full-panel
+/// takeover — the search box stays visible above it so the user can
+/// adjust the query.
+fn no_match_state(query: &str) -> gpui::Div {
+    div()
+        .bg(rgb(pack(SURFACE_800)))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .rounded(px(6.0))
+        .p_6()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(format!("No models match “{query}”."))),
+        )
+}
+
 fn empty_installed_state() -> gpui::Div {
     div()
         .bg(rgb(pack(SURFACE_800)))
@@ -931,6 +1061,21 @@ fn error_strip(msg: &str) -> gpui::Div {
 }
 
 // ── Pure projections (unit-testable) ─────────────────────────────────
+
+/// Client-side filter predicate for the search box.  `query_lower` is
+/// the trimmed, lower-cased query; an empty query matches everything.
+/// Matches across the fields the row surfaces — name, family, parameter
+/// size, quantization — so a search for "qwen", "7b", or "q4" all narrow
+/// the list the way a user would expect.
+pub(crate) fn model_matches(m: &InstalledModel, query_lower: &str) -> bool {
+    if query_lower.is_empty() {
+        return true;
+    }
+    m.name.to_lowercase().contains(query_lower)
+        || m.family.to_lowercase().contains(query_lower)
+        || m.param_size.to_lowercase().contains(query_lower)
+        || m.quantization.to_lowercase().contains(query_lower)
+}
 
 pub(crate) fn model_meta(m: &InstalledModel) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -1022,6 +1167,32 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(model_meta(&m), "qwen2.5 · 1.5B · Q4_K_M · 1.4 GB");
+    }
+
+    #[test]
+    fn model_matches_empty_query_passes_everything() {
+        let m = InstalledModel {
+            name: "qwen2.5:1.5b".into(),
+            ..Default::default()
+        };
+        assert!(model_matches(&m, ""));
+    }
+
+    #[test]
+    fn model_matches_is_case_insensitive_across_fields() {
+        let m = InstalledModel {
+            name: "Qwen2.5:7B".into(),
+            family: "qwen2.5".into(),
+            param_size: "7B".into(),
+            quantization: "Q4_K_M".into(),
+            ..Default::default()
+        };
+        // Caller lower-cases the query; the predicate lower-cases each
+        // field. Hits on name, family, param size, and quantization.
+        assert!(model_matches(&m, "qwen"));
+        assert!(model_matches(&m, "7b"));
+        assert!(model_matches(&m, "q4_k"));
+        assert!(!model_matches(&m, "llama"));
     }
 
     #[test]
