@@ -48,6 +48,12 @@ pub const TEXT_DIM: Rgba = rgb_const(0x334155);
 pub const BORDER_SUBTLE: Rgba = rgba_const(0x0e7490, 0.10);
 pub const BORDER_DEFAULT: Rgba = rgba_const(0x0e7490, 0.16);
 pub const BORDER_EMPHASIS: Rgba = rgba_const(0x0e7490, 0.28);
+/// Focused-input border ring.  Same brand hue as the other border
+/// tokens, but a strong alpha so a focused field reads as a clear (not
+/// hairline) outline once rendered alpha-correctly.  Only meaningful for
+/// consumers that pass the `Rgba` through to `border_color` directly;
+/// the `rgb(pack(..))` idiom used elsewhere drops the alpha.
+pub const BORDER_FOCUSED: Rgba = rgba_const(0x0e7490, 0.75);
 
 // ── Const-time constructors ──────────────────────────────────────────
 //

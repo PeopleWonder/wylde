@@ -50,12 +50,15 @@
 
 pub mod buffer;
 
+use std::time::Duration;
+
 use gpui::{
     div, prelude::*, px, rgb, App, ClipboardItem, Context, ElementId, EventEmitter, FocusHandle,
     Focusable, IntoElement, KeyDownEvent, Render, SharedString, Stateful, Window,
 };
 use wylde_theme::colors::{
-    BORDER_EMPHASIS, BORDER_SUBTLE, BRAND, SURFACE_700, SURFACE_900, TEXT_MUTED, TEXT_PRIMARY,
+    BORDER_EMPHASIS, BORDER_FOCUSED, BORDER_SUBTLE, SURFACE_700, SURFACE_900, TEXT_MUTED,
+    TEXT_PRIMARY,
 };
 use wylde_theme::typography::{size as text_size, FAMILY_INTER};
 
@@ -65,6 +68,11 @@ pub use buffer::TextBuffer;
 /// single undo snapshot before a forced break.  Without it a 5000-char
 /// paragraph would undo in one step (annoying).
 const UNDO_BURST_FORCE: usize = 200;
+
+/// Caret blink half-period.  At 530 ms the caret is on ~530 ms, off
+/// ~530 ms — the familiar text-field cadence.  Slightly off 500 so it
+/// doesn't beat against other 500 ms timers.
+const CARET_BLINK_MS: u64 = 530;
 
 // ── Public configuration ─────────────────────────────────────────────
 
@@ -118,6 +126,14 @@ pub struct TextInput {
     element_key: SharedString,
     /// Snapshot bookkeeping — collapse typing bursts into one undo step.
     burst_inserts_since_snapshot: usize,
+    /// Caret blink state.  `caret_visible` is the current on/off phase;
+    /// `blink_epoch` invalidates in-flight timer ticks when the cycle is
+    /// restarted (focus change, keystroke); `blinking` mirrors whether a
+    /// blink loop is currently live so `render` only starts/stops it on a
+    /// focus transition, not every frame.
+    caret_visible: bool,
+    blink_epoch: usize,
+    blinking: bool,
 }
 
 impl TextInput {
@@ -136,6 +152,9 @@ impl TextInput {
             chrome: true,
             element_key: SharedString::from("wylde-input"),
             burst_inserts_since_snapshot: 0,
+            caret_visible: true,
+            blink_epoch: 0,
+            blinking: false,
         }
     }
 
@@ -154,6 +173,9 @@ impl TextInput {
             chrome: true,
             element_key: SharedString::from("wylde-input"),
             burst_inserts_since_snapshot: 0,
+            caret_visible: true,
+            blink_epoch: 0,
+            blinking: false,
         }
     }
 
@@ -401,6 +423,12 @@ impl TextInput {
         if changed {
             cx.emit(InputEvent::Changed(self.buffer.text().to_owned()));
         }
+        // Keep the caret solid through a burst of typing/navigation, then
+        // resume blinking — matches native text-field behaviour.  Only
+        // when a blink loop is already live (i.e. the input is focused).
+        if self.blinking {
+            self.restart_blink(cx);
+        }
         cx.notify();
     }
 
@@ -429,6 +457,50 @@ impl TextInput {
         }
         self.burst_inserts_since_snapshot += 1;
     }
+
+    // ── Caret blink ────────────────────────────────────────────────
+    //
+    // A self-driven blink loop (no separate model): each tick toggles
+    // `caret_visible` and reschedules itself on the background timer.  An
+    // epoch counter invalidates stale ticks, so a focus change or a
+    // keystroke can reset the phase without leaving orphaned timers
+    // toggling the caret.  The loop costs one pending timer per focused
+    // input and self-terminates as soon as the epoch advances past it.
+
+    /// Show the caret now and (re)start the blink cycle from the on
+    /// phase.  Called when focus is gained and after every keystroke so
+    /// the caret is solid while typing, then resumes blinking.
+    fn restart_blink(&mut self, cx: &mut Context<Self>) {
+        self.caret_visible = true;
+        self.blink_epoch = self.blink_epoch.wrapping_add(1);
+        let epoch = self.blink_epoch;
+        self.schedule_blink(epoch, cx);
+    }
+
+    fn schedule_blink(&mut self, epoch: usize, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(CARET_BLINK_MS))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                // A newer cycle (focus change / keystroke) superseded us.
+                if epoch != this.blink_epoch {
+                    return;
+                }
+                this.caret_visible = !this.caret_visible;
+                cx.notify();
+                this.schedule_blink(epoch, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Halt the blink loop and leave the caret solid.  Used when focus is
+    /// lost — bumping the epoch strands any in-flight tick.
+    fn stop_blink(&mut self) {
+        self.blink_epoch = self.blink_epoch.wrapping_add(1);
+        self.caret_visible = true;
+    }
 }
 
 impl Focusable for TextInput {
@@ -444,17 +516,34 @@ impl EventEmitter<InputEvent> for TextInput {}
 impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
+
+        // Start/stop the caret blink loop on focus transitions only.
+        if focused && !self.blinking {
+            self.blinking = true;
+            self.restart_blink(cx);
+        } else if !focused && self.blinking {
+            self.blinking = false;
+            self.stop_blink();
+        }
+
+        // Focus ring.  Passed straight through (no `pack`) so the token's
+        // alpha survives: a near-invisible hairline when unfocused, a
+        // clear brand-hue outline when focused.  `pack` would drop the
+        // alpha and make both states an identical opaque line.
         let chrome_border = if focused {
-            BORDER_EMPHASIS
+            BORDER_FOCUSED
         } else {
             BORDER_SUBTLE
         };
         let bg = if self.disabled { SURFACE_700 } else { SURFACE_900 };
 
+        // Caret is drawn only while focused and in the blink "on" phase.
+        let show_caret = focused && self.caret_visible;
+
         let body = if self.buffer.is_empty() {
-            placeholder_node(&self.placeholder)
+            empty_body(&self.placeholder, show_caret)
         } else {
-            content_node(&self.buffer, focused)
+            content_node(&self.buffer, show_caret)
         };
 
         let mut root = div()
@@ -483,7 +572,10 @@ impl Render for TextInput {
                 .py_2()
                 .rounded(px(8.0))
                 .border_1()
-                .border_color(rgb(pack(chrome_border)))
+                // `chrome_border` is an alpha-bearing `Rgba`; pass it as-is
+                // (`Rgba: Into<Hsla>`) so the focus alpha is composited over
+                // the surface instead of being flattened by `pack`.
+                .border_color(chrome_border)
                 .bg(rgb(pack(bg)));
         }
 
@@ -503,9 +595,27 @@ fn placeholder_node(placeholder: &SharedString) -> gpui::Div {
         .child(placeholder.clone())
 }
 
+/// Body shown when the buffer is empty: the caret (at offset 0) followed
+/// by the muted placeholder.  Without this an empty focused input — the
+/// chat prompt's resting state — would render the placeholder with *no*
+/// caret, so focus had no visible affordance at all.
+fn empty_body(placeholder: &SharedString, show_caret: bool) -> gpui::Div {
+    let mut row = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .w_full()
+        .min_h(px(20.0));
+    if show_caret {
+        row = row.child(caret_bar());
+    }
+    row.child(placeholder_node(placeholder))
+}
+
 /// Render the buffer's text broken into lines, with caret + selection
-/// highlight inserted at the relevant byte offsets.
-fn content_node(buffer: &TextBuffer, focused: bool) -> gpui::Div {
+/// highlight inserted at the relevant byte offsets.  `show_caret` gates
+/// the caret bar (focused *and* in the blink "on" phase).
+fn content_node(buffer: &TextBuffer, show_caret: bool) -> gpui::Div {
     let text = buffer.text();
     let cursor = buffer.cursor();
     let selection = buffer.selection();
@@ -513,14 +623,14 @@ fn content_node(buffer: &TextBuffer, focused: bool) -> gpui::Div {
     let mut col = div().flex().flex_col().w_full().gap(px(0.0));
 
     if buffer.is_single_line() {
-        col = col.child(line_row(text, 0, text.len(), cursor, selection, focused));
+        col = col.child(line_row(text, 0, text.len(), cursor, selection, show_caret));
         return col;
     }
 
     let mut line_start = 0;
     for (i, ch) in text.char_indices() {
         if ch == '\n' {
-            col = col.child(line_row(text, line_start, i, cursor, selection, focused));
+            col = col.child(line_row(text, line_start, i, cursor, selection, show_caret));
             line_start = i + 1;
         }
     }
@@ -531,7 +641,7 @@ fn content_node(buffer: &TextBuffer, focused: bool) -> gpui::Div {
         text.len(),
         cursor,
         selection,
-        focused,
+        show_caret,
     ));
     col
 }
@@ -545,7 +655,7 @@ fn line_row(
     line_end: usize,
     cursor: usize,
     selection: Option<(usize, usize)>,
-    focused: bool,
+    show_caret: bool,
 ) -> Stateful<gpui::Div> {
     let line_id = ElementId::Name(format!("wylde-input-line::{line_start}").into());
 
@@ -560,7 +670,7 @@ fn line_row(
             splits.push((e, SplitKind::SelEnd));
         }
     }
-    if focused && cursor >= line_start && cursor <= line_end {
+    if show_caret && cursor >= line_start && cursor <= line_end {
         splits.push((cursor, SplitKind::Cursor));
     }
     splits.sort_by_key(|(b, _)| *b);
@@ -652,8 +762,12 @@ fn span_run(text: &str, in_sel: bool) -> gpui::Div {
     d
 }
 
+/// The insertion caret: a slim, high-contrast vertical bar.  Uses
+/// `TEXT_PRIMARY` (near-white) rather than the brand teal so it reads as
+/// the familiar OS-style text cursor against the dark input, not a
+/// decorative accent.
 fn caret_bar() -> gpui::Div {
-    div().w(px(2.0)).h(px(18.0)).bg(rgb(pack(BRAND)))
+    div().w(px(2.0)).h(px(18.0)).bg(rgb(pack(TEXT_PRIMARY)))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -702,6 +816,10 @@ pub(crate) fn pack(c: gpui::Rgba) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `BRAND` is no longer used by prod code (the caret moved to
+    // `TEXT_PRIMARY`); the pack round-trip test still pins it as a known
+    // value, so import it here rather than in the prod `use`.
+    use wylde_theme::colors::BRAND;
 
     #[test]
     fn single_printable_filters_named_keys() {
