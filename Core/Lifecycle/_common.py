@@ -115,7 +115,12 @@ def load_services() -> list[dict[str, Any]]:
 
 
 def save_services(services: list[dict[str, Any]]) -> None:
-    """Write services.yaml atomically. Preserves the leading comment block."""
+    """Atomically write services.yaml.
+
+    Writes machine-read runtime state — no comment header. (The canonical
+    header lives in services.yaml.seed; safe_dump would strip any comments
+    here on every rewrite anyway, and no consumer reads them.)
+    """
     NETWORK_DIR.mkdir(parents=True, exist_ok=True)
     payload = {"services": services}
     body = yaml.safe_dump(payload, sort_keys=False, default_flow_style=False)

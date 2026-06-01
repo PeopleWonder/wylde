@@ -417,11 +417,20 @@ RUST_HARDCODED_SERVICE_ARRAY_RE = re.compile(
 # roster.
 GPUI_SHUTDOWN_DELEGATE_TOKEN: str = "lifecycle.shutdown_all"
 
-# Top-level dirs that are NOT discoverable services. Mirrors
-# Core/Lifecycle/_common.EXCLUDED_TOP_LEVEL. `Core` holds a legitimate
-# infra rollup manifest (Core/manifest.json); `data`/`logs`/`docs` are
-# runtime/archive dirs that must never carry a service manifest.
-SERVICE_MANIFEST_EXCLUDED_TOP_LEVEL: Tuple[str, ...] = ("Core", "data", "logs", "docs")
+# Top-level dirs that are NOT discoverable services. Source of truth is
+# Core/Lifecycle/_common.EXCLUDED_TOP_LEVEL — keep this in sync when that
+# set changes (this module is deliberately import-free, so the mirror is
+# manual). `Core` holds a legitimate infra rollup manifest
+# (Core/manifest.json); `data`/`logs`/`docs` are runtime/archive dirs and
+# `rust`/`tools` are build/dev folders — none may carry a service manifest.
+SERVICE_MANIFEST_EXCLUDED_TOP_LEVEL: Tuple[str, ...] = (
+    "Core",
+    "data",
+    "logs",
+    "docs",
+    "rust",
+    "tools",
+)
 SERVICE_MANIFEST_NONSERVICE_DIRS: Tuple[str, ...] = ("data", "logs", "docs")
 
 # Required keys on a top-level service manifest (rule 47). `entry_point`
