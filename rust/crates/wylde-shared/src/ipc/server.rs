@@ -354,6 +354,29 @@ async fn handle_client(
             continue;
         }
 
+        // Built-in liveness: GET /health. Every Python service answers
+        // this (the lifecycle daemon's stub app and each service's Flask
+        // surface), and the lifecycle `service.health` action probes it
+        // with `ipc.send(name, "/health", http_verb="GET")`. The Rust
+        // port had no route table, so non-action `/health` fell through
+        // to the `no_handler` 404 below — which is exactly what painted
+        // an otherwise-up Rust service (e.g. wylde-vram-broker) red on
+        // the dashboard. Answer it here, alongside the other built-in
+        // control methods, so the reply shape matches Python's
+        // `{ok: true, service: <name>}` for every Rust service at once.
+        if method == "/health" || method == "health" {
+            let frame = rmp_serde::to_vec_named(&ReplyFrame {
+                id: &req_id,
+                ok: true,
+                data: Some(serde_json::json!({"ok": true, "service": service.clone()})),
+                error: None,
+            })?;
+            if write_frame(&mut peer, &frame).await.is_err() {
+                return Ok(());
+            }
+            continue;
+        }
+
         // Action dispatch
         if method == ACTION_DISPATCH_PATH {
             // Peek the envelope: if the client set `stream: true` and the

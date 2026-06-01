@@ -53,6 +53,17 @@ def _get(app: Flask, path: str) -> tuple[int, Any]:
     return resp.status_code, resp.get_json()
 
 
+def test_health_returns_ok(app: Flask) -> None:
+    # The lifecycle `service.health` action probes every service with a
+    # GET /health; the broker shipped only /vram/* routes, so that GET
+    # 404'd and painted an up broker red on the dashboard. Pin the
+    # restored route + its {ok, service} shape.
+    status, body = _get(app, "/health")
+    assert status == 200
+    assert body["ok"] is True
+    assert body["service"] == "wylde-vram-broker"
+
+
 def test_reserve_grants_when_fits(app: Flask) -> None:
     status, body = _post(
         app,

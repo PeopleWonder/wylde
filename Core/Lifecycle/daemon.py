@@ -59,9 +59,60 @@ from .daemon_state import (
 
 
 def _setup_logging(level: int = logging.INFO) -> None:
+    r"""Configure root logging + a persistent daemon log file.
+
+    The launcher spawns the daemon detached with ``-WindowStyle Hidden``
+    (see ``launch_wylde.ps1``), so its console stdout/stderr go nowhere —
+    which is why a boot-time ``register_with_ipc`` failure (or any other
+    daemon exception) left no trace and could only be guessed at. The
+    shared ``configure_logging`` installs a StreamHandler on that same
+    discarded console; here we ALSO attach a ``FileHandler`` so every
+    ``wylde.lifecycle`` log record (including ``logger.exception(...)``
+    tracebacks) lands in ``logs/lifecycle.daemon.log`` regardless of how
+    the daemon was launched.
+
+    Daemon-only on purpose: the file handler hangs off this entry point
+    rather than the shared ``configure_logging`` so the tier=core child
+    processes (which call ``configure_logging`` themselves) don't all
+    pile into the same file.
+    """
     from Core.shared.logging_setup import configure_logging
 
     configure_logging(level=level)
+
+    # Append (don't truncate) so a crash-loop's successive boots stay in
+    # one file — the timestamps make the boundaries obvious. The log dir
+    # is created lazily; failure to open the file must never stop the
+    # daemon from booting, so this is best-effort.
+    try:
+        from . import _common
+
+        log_dir = _common.WYLDE_ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(
+            log_dir / "lifecycle.daemon.log", encoding="utf-8"
+        )
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s %(name)s: %(message)s"
+            )
+        )
+        root = logging.getLogger()
+        # Guard against double-attach if _setup_logging runs twice in one
+        # process (e.g. a test importing the module then calling main).
+        already = any(
+            isinstance(h, logging.FileHandler)
+            and getattr(h, "baseFilename", "").endswith("lifecycle.daemon.log")
+            for h in root.handlers
+        )
+        if not already:
+            root.addHandler(handler)
+    except OSError:
+        _lc_logger.warning(
+            "daemon: could not open logs/lifecycle.daemon.log — "
+            "continuing with console logging only",
+            exc_info=True,
+        )
 
 
 def _resolve_pipe_service_name() -> str:

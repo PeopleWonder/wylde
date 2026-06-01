@@ -38,6 +38,12 @@ pub const MONITORED_SERVICES: &[&str] = &[
     "wylde-memgraph",
     "wylde-voice",
     "wylde-extension-bridge",
+    // Device Gate is a top-level tier=core service (device pairing +
+    // 3-tier permissions; Gateway calls device_gate.verify on every
+    // external request). Discovery + the daemon's Phase-2f start
+    // sequence both know about it, so it belongs on the strip too —
+    // it was the one daemon-managed service missing from this list.
+    "wylde-device-gate",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

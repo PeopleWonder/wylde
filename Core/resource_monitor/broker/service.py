@@ -78,6 +78,19 @@ def install(app: Flask, gpu_available: bool = True) -> None:
         _init_nvml()
         _refresh_nvml()
 
+    @app.route("/health", methods=["GET"])
+    def _health() -> tuple[Response, int]:
+        """Liveness probe.
+
+        The lifecycle ``service.health`` action probes every service with
+        ``ipc.send(name, "/health", http_verb="GET")``; the broker shipped
+        only ``/vram/*`` routes, so that GET fell through to Flask's 404 —
+        which is what painted an otherwise-up vram-broker red on the
+        dashboard. Mirror the ``{ok, service}`` shape every other Wylde
+        service returns.
+        """
+        return jsonify({"ok": True, "service": "wylde-vram-broker"}), 200
+
     @app.route("/vram/reserve", methods=["POST"])
     def _vram_reserve() -> tuple[Response, int]:
         req = request.get_json(silent=True) or {}
