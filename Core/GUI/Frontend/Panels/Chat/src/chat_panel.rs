@@ -37,8 +37,8 @@ use gpui::{
 };
 use wylde_gpui_input::{InputEvent, SubmitMode, TextInput};
 use wylde_theme::colors::{
-    BORDER_DEFAULT, BORDER_EMPHASIS, BORDER_SUBTLE, BRAND, BRAND_DIM, SURFACE_700, SURFACE_800,
-    SURFACE_900, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    BORDER_DEFAULT, BORDER_EMPHASIS, BORDER_SUBTLE, BRAND, BRAND_DIM, BRAND_LIGHT, SURFACE_700,
+    SURFACE_800, SURFACE_900, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
@@ -845,8 +845,8 @@ fn apply_turn_chunk(
 }
 
 impl Render for ChatPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let inference_bar = inference_bar(self, cx);
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let inference_bar = inference_bar(self, window, cx);
         let log = message_log(self, cx);
         let consent_strip = consent_card_strip(self, cx);
         let tool_strip = tool_activity_strip(self);
@@ -1121,7 +1121,7 @@ fn tool_activity_strip(panel: &ChatPanel) -> gpui::Div {
     strip
 }
 
-fn inference_bar(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
+fn inference_bar(panel: &ChatPanel, window: &Window, cx: &mut Context<ChatPanel>) -> gpui::Div {
     let mut bar = div()
         .flex()
         .flex_col()
@@ -1142,7 +1142,7 @@ fn inference_bar(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
     }
 
     // Second row: prompt input + send/stop button.
-    bar = bar.child(prompt_row(panel, cx));
+    bar = bar.child(prompt_row(panel, window, cx));
     bar
 }
 
@@ -1292,7 +1292,7 @@ where
         .child(label)
 }
 
-fn prompt_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
+fn prompt_row(panel: &ChatPanel, window: &Window, cx: &mut Context<ChatPanel>) -> gpui::Div {
     let streaming = panel.active_turn_id.is_some();
 
     // Right-hand button: Stop while streaming, Send otherwise.  Both
@@ -1303,12 +1303,34 @@ fn prompt_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
         send_button(panel.prompt_input.clone(), cx)
     };
 
+    // Keyboard-focus indicator: a 2px accent line directly under the
+    // prompt input.  Always rendered at the same height (so focus
+    // transitions never shift layout); only its colour changes — lit to
+    // the brand accent when the input holds focus, and blended into the
+    // InferenceBar surface (invisible) when not.  `pack` drops alpha, so
+    // we match the surface rather than use a translucent token.
+    let focused = panel.prompt_input.read(cx).focus_handle.is_focused(window);
+    let focus_bar_color = if focused { BRAND_LIGHT } else { SURFACE_800 };
+    let focus_bar = div()
+        .h(px(2.0))
+        .w_full()
+        .rounded(px(1.0))
+        .bg(rgb(pack(focus_bar_color)));
+
+    let input_column = div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(panel.prompt_input.clone())
+        .child(focus_bar);
+
     div()
         .flex()
         .flex_row()
         .gap_2()
         .items_end()
-        .child(div().flex_1().child(panel.prompt_input.clone()))
+        .child(input_column)
         .child(button)
 }
 
