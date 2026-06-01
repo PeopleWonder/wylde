@@ -402,6 +402,18 @@ async fn service_health_action(payload: Value) -> Reply {
         Ok(n) => n,
         Err(e) => return Reply::err(e),
     };
+    // Memgraph special-case: the service deliberately retired its
+    // named-pipe surface in the 2026-05-26 direct-Bolt cutover. The
+    // wrapper (`Core/Memgraph/run.py`) now only supervises the Neo4j
+    // JVM; the harness reads/writes the graph over Bolt directly, and
+    // nothing binds `\\.\pipe\wylde-memgraph` anymore. Probing
+    // `/__ping__` over that pipe therefore ALWAYS fails, false-reddening
+    // the dashboard tile even though Neo4j is up. The honest liveness
+    // signal for memgraph is "is Neo4j accepting Bolt connections?" —
+    // probe the Bolt port instead of the dead pipe.
+    if name == service_name::MEMGRAPH {
+        return memgraph_health().await;
+    }
     let reply = send_with_verb(&name, LIVENESS_METHOD, "GET", Value::Null, HEALTH_PROBE_TIMEOUT).await;
     if reply.ok {
         return Reply::ok(json!({
@@ -424,6 +436,36 @@ async fn service_health_action(payload: Value) -> Reply {
         )
     };
     Reply::err(IpcError::new(code, msg))
+}
+
+/// Bolt-port liveness for `wylde-memgraph`. See [`service_health_action`]
+/// for why memgraph is probed over Bolt rather than its (retired) pipe.
+///
+/// Honours `GRAPH_BOLT_PORT` (default 7687) to mirror the port
+/// `Core/Memgraph/run.py` waits on and writes into the manifest. The
+/// blocking TCP connect runs on a `spawn_blocking` thread so a slow
+/// connect can't stall the daemon's async reactor; the success envelope
+/// mirrors the `{pong: true, ...}` shape a pipe `/__ping__` would return
+/// so the GUI's forgiving health projection treats it as healthy.
+async fn memgraph_health() -> Reply {
+    let port: i64 = std::env::var("GRAPH_BOLT_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7687);
+    let alive = tokio::task::spawn_blocking(move || registry::port_alive(Some(port)))
+        .await
+        .unwrap_or(false);
+    if alive {
+        Reply::ok(json!({
+            "name": service_name::MEMGRAPH,
+            "reply": { "pong": true, "transport": "bolt", "port": port },
+        }))
+    } else {
+        Reply::err(IpcError::new(
+            "probe_failed",
+            format!("memgraph bolt probe failed: nothing accepting on 127.0.0.1:{port}"),
+        ))
+    }
 }
 
 /// Production spawn for a daemon-managed service. Idempotent on

@@ -355,12 +355,20 @@ struct StranglerService {
 
 const STRANGLER_SERVICES: &[StranglerService] = &[
     StranglerService {
+        // Default flipped python → rust (2026-06-01): the in-tree
+        // Python `device_gate` runs under the user's `py -3` (Python
+        // 3.14), which is missing `passlib`, so the Python impl can't
+        // verify htpasswd hashes and the service comes up dead. The Rust
+        // port carries its own hash verification (bcrypt / sha-crypt /
+        // inline APR1), no interpreter deps. Python stays as the rollback
+        // path via `WYLDE_WYLDE_DEVICE_GATE_IMPL=python`.
         name: service_name::DEVICE_GATE,
         python_module: "device_gate.run",
-        default_impl: ImplLang::Python,
+        default_impl: ImplLang::Rust,
         missing_binary_warn:
-            "device_gate: WYLDE_WYLDE_DEVICE_GATE_IMPL=rust but no binary found; \
-             falling back to python",
+            "device_gate: default impl=rust but no binary found; falling back to \
+             python (rollback path) — build with `cargo build --release -p \
+             wylde-device-gate` to engage rust",
     },
     StranglerService {
         // Default flipped python → rust (2026-05-31): only the Rust broker
@@ -386,12 +394,20 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
              binary found; falling back to python",
     },
     StranglerService {
+        // Default flipped python → rust (2026-06-01): the in-tree Python
+        // `Gateway` package was removed, so `python -m Gateway.run` has
+        // no module to import and the service comes up dead. The Rust
+        // `wylde-gateway` (axum) is now the only working impl; Python is
+        // retained as a nominal rollback string via
+        // `WYLDE_WYLDE_GATEWAY_IMPL=python` but the package no longer
+        // exists on disk.
         name: service_name::GATEWAY,
         python_module: "Gateway.run",
-        default_impl: ImplLang::Python,
+        default_impl: ImplLang::Rust,
         missing_binary_warn:
-            "gateway: WYLDE_WYLDE_GATEWAY_IMPL=rust but no binary found; falling \
-             back to python",
+            "gateway: default impl=rust but no binary found; falling back to \
+             python (rollback path, but the Gateway package was removed) — build \
+             with `cargo build --release -p wylde-gateway` to engage rust",
     },
     StranglerService {
         name: service_name::VOICE,
@@ -1050,14 +1066,15 @@ mod tests {
 
     #[test]
     fn strangler_defs_carry_expected_module_and_default() {
-        // Module + default impl per row. Voice (Phase 11.E) and
-        // vram_broker (2026-05-31) have their default flipped to Rust;
-        // the rest default Python.
+        // Module + default impl per row. Voice (Phase 11.E),
+        // vram_broker (2026-05-31), and device_gate + gateway
+        // (2026-06-01) have their default flipped to Rust; the rest
+        // default Python.
         let cases = [
             (
                 service_name::DEVICE_GATE,
                 "device_gate.run",
-                ImplLang::Python,
+                ImplLang::Rust,
             ),
             (
                 service_name::VRAM_BROKER,
@@ -1069,7 +1086,7 @@ mod tests {
                 "Extensions.extension_bridge.run",
                 ImplLang::Python,
             ),
-            (service_name::GATEWAY, "Gateway.run", ImplLang::Python),
+            (service_name::GATEWAY, "Gateway.run", ImplLang::Rust),
             (service_name::VOICE, "Voice.run", ImplLang::Rust),
         ];
         for (name, module, default) in cases {
