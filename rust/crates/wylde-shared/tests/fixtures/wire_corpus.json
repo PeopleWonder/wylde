@@ -1,0 +1,122 @@
+{
+  "cases": [
+    {
+      "name": "ok_reply_with_data",
+      "payload": {
+        "id": "abc",
+        "ok": true,
+        "data": {
+          "pong": true,
+          "ver": 1
+        }
+      },
+      "msgpack_b64": "g6JpZKNhYmOib2vDpGRhdGGCpHBvbmfDo3ZlcgE="
+    },
+    {
+      "name": "ok_reply_null_data",
+      "payload": {
+        "id": "x",
+        "ok": true,
+        "data": null
+      },
+      "msgpack_b64": "g6JpZKF4om9rw6RkYXRhwA=="
+    },
+    {
+      "name": "err_reply",
+      "payload": {
+        "id": "y",
+        "ok": false,
+        "error": {
+          "code": "pipe_connect",
+          "message": "could not connect"
+        }
+      },
+      "msgpack_b64": "g6JpZKF5om9rwqVlcnJvcoKkY29kZaxwaXBlX2Nvbm5lY3SnbWVzc2FnZbFjb3VsZCBub3QgY29ubmVjdA=="
+    },
+    {
+      "name": "request_envelope",
+      "payload": {
+        "ver": 1,
+        "id": "deadbeef",
+        "method": "/echo",
+        "http_verb": "POST",
+        "data": {
+          "hello": "world",
+          "n": 42
+        },
+        "meta": {
+          "deadline_ms": 30000,
+          "caller": "test-caller"
+        }
+      },
+      "msgpack_b64": "hqN2ZXIBomlkqGRlYWRiZWVmpm1ldGhvZKUvZWNob6lodHRwX3ZlcmKkUE9TVKRkYXRhgqVoZWxsb6V3b3JsZKFuKqRtZXRhgqtkZWFkbGluZV9tc811MKZjYWxsZXKrdGVzdC1jYWxsZXI="
+    },
+    {
+      "name": "handshake_client",
+      "payload": {
+        "wylde_ipc": 1,
+        "caller": "rust-test",
+        "service": "demo"
+      },
+      "msgpack_b64": "g6l3eWxkZV9pcGMBpmNhbGxlcqlydXN0LXRlc3Snc2VydmljZaRkZW1v"
+    },
+    {
+      "name": "handshake_server_ok",
+      "payload": {
+        "wylde_ipc": 1,
+        "ok": true,
+        "service": "demo"
+      },
+      "msgpack_b64": "g6l3eWxkZV9pcGMBom9rw6dzZXJ2aWNlpGRlbW8="
+    },
+    {
+      "name": "handshake_server_reject",
+      "payload": {
+        "wylde_ipc": 1,
+        "ok": false,
+        "service": "demo",
+        "error": {
+          "code": "version_mismatch",
+          "message": "client ipc version 99 not supported"
+        }
+      },
+      "msgpack_b64": "hKl3eWxkZV9pcGMBom9rwqdzZXJ2aWNlpGRlbW+lZXJyb3KCpGNvZGWwdmVyc2lvbl9taXNtYXRjaKdtZXNzYWdl2SNjbGllbnQgaXBjIHZlcnNpb24gOTkgbm90IHN1cHBvcnRlZA=="
+    },
+    {
+      "name": "action_envelope",
+      "payload": {
+        "action": "harness.health",
+        "payload": null
+      },
+      "msgpack_b64": "gqZhY3Rpb26uaGFybmVzcy5oZWFsdGincGF5bG9hZMA="
+    },
+    {
+      "name": "action_dispatch_request",
+      "payload": {
+        "ver": 1,
+        "id": "act-1",
+        "method": "/__action__",
+        "http_verb": "POST",
+        "data": {
+          "action": "harness.health",
+          "payload": {
+            "check": true
+          }
+        },
+        "meta": {
+          "deadline_ms": 5000,
+          "caller": "rust-test"
+        }
+      },
+      "msgpack_b64": "hqN2ZXIBomlkpWFjdC0xpm1ldGhvZKsvX19hY3Rpb25fX6lodHRwX3ZlcmKkUE9TVKRkYXRhgqZhY3Rpb26uaGFybmVzcy5oZWFsdGincGF5bG9hZIGlY2hlY2vDpG1ldGGCq2RlYWRsaW5lX21zzROIpmNhbGxlcqlydXN0LXRlc3Q="
+    },
+    {
+      "name": "string_with_utf8",
+      "payload": {
+        "ok": true,
+        "data": "h\u00e9llo \u2603 world"
+      },
+      "msgpack_b64": "gqJva8OkZGF0YbBow6lsbG8g4piDIHdvcmxk"
+    }
+  ]
+}

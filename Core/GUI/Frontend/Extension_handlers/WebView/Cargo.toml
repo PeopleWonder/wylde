@@ -1,0 +1,35 @@
+[package]
+name = "wylde-webview"
+description = "WebView host for extension `iframe` panels in the gpui-era Wylde GUI.  Wraps `wry`: lazily creates a WebView2/WKWebView/WebKitGTK child window parented to gpui's `Window`, runs an HTTP HEAD probe for health-check, and translates iframe `sandbox` attrs to wry capability flags."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# gpui — the host's `mount` API takes a `&gpui::Window` so the WebView
+# can parent itself to the native window the Shell renders into.
+gpui.workspace = true
+
+# wry — the actual WebView crate.  See `Core/GUI/Cargo.toml` for the
+# rationale on picking wry over gpui-component.
+wry.workspace = true
+
+# Window-handle abstraction wry consumes.  Pinned here so a future wry
+# / gpui bump surfaces here rather than as a silent ABI break.
+raw-window-handle.workspace = true
+
+# HTTP HEAD probe for the iframe health-check.  rustls-only — no
+# system OpenSSL.
+reqwest.workspace = true
+
+# Async + serde live in the workspace; we use tokio for the HEAD
+# probe's timeout.
+tokio.workspace      = true
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

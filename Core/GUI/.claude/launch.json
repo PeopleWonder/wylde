@@ -1,0 +1,10 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "wylde-gui",
+      "runtimeExecutable": "cargo",
+      "runtimeArgs": ["run", "-p", "wylde-gui"]
+    }
+  ]
+}

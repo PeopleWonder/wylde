@@ -1,0 +1,35 @@
+[package]
+name = "wylde-panel-settings"
+description = "Wylde Settings panel — gpui-era port of Core/GUI/src/pages/Settings.svelte.  Updates, Startup (autostart), Ollama inference defaults, and the per-tool Consent surface (Phase 12.2 + 12.6)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Theme tokens — every colour/spacing constant comes from the shared
+# Theme crate so a Wylde-wide palette change touches one file.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — the panel reaches the harness through the in-process
+# `HarnessApi` short-circuit + over-the-wire pipe verbs.  Slice 2 only
+# needs the wire surface (`pipe::call`); streaming verbs come with
+# Chat in a later slice.
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# gpui — every panel imports the same set: div builders, Render, etc.
+# Pinned through the workspace dep so a rev bump touches one place.
+gpui.workspace = true
+
+# Autostart toggle — Phase 12.3 default-off semantics preserved.  In
+# the Svelte alpha this was a tauri-plugin call; the gpui edition uses
+# the same `auto-launch` crate slice 1 declared.
+auto-launch.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

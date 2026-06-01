@@ -1,0 +1,43 @@
+[package]
+name = "wylde-panel-registry"
+description = "Panel manifest schema (v2), build-time aggregator, runtime registry, and gui.list_tabs handler for the gpui-era Wylde GUI."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "wylde-panel-aggregator"
+path = "src/bin/wylde_panel_aggregator.rs"
+
+[dependencies]
+# Panel types reference gpui's Window/App/AnyView; factory closures take
+# those by mutable reference and return an AnyView per the §5.2 design.
+gpui.workspace = true
+
+# Types + serialization.  serde_json is the runtime-facing format; we
+# accept manifest.json files on disk and we expose the registry as JSON
+# through `gui.list_tabs`.
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true
+
+# Owned panel crates.  Adding a new first-party panel means: (a) a new
+# entry here, (b) a new `manifest.json` under `Frontend/Panels/<Name>/`,
+# (c) a fresh aggregator run.  Extension panels do NOT appear here —
+# they come in via the runtime overlay (`extensions.list_panels`).
+wylde-panel-settings   = { path = "../../Frontend/Panels/Settings" }
+wylde-panel-workspaces = { path = "../../Frontend/Panels/Workspaces" }
+wylde-panel-tools      = { path = "../../Frontend/Panels/Tools" }
+wylde-panel-memory     = { path = "../../Frontend/Panels/Memory" }
+wylde-panel-chat       = { path = "../../Frontend/Panels/Chat" }
+wylde-panel-models     = { path = "../../Frontend/Panels/Models" }
+wylde-panel-dashboard  = { path = "../../Frontend/Panels/Dashboard" }
+wylde-panel-devices    = { path = "../../Frontend/Panels/Devices" }
+wylde-panel-remote-access = { path = "../../Frontend/Panels/RemoteAccess" }
+wylde-panel-images     = { path = "../../Frontend/Panels/Images" }
+wylde-panel-training   = { path = "../../Frontend/Panels/Training" }

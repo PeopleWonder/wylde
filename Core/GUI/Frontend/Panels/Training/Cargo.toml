@@ -1,0 +1,38 @@
+[package]
+name = "wylde-panel-training"
+description = "Wylde Training panel — gpui-era surface over the `\\\\.\\pipe\\wylde-trainer` LLaMA-Factory wrapper: active runs strip with per-run progress + cancel, past runs list with bar-histogram loss curves and resume-from-checkpoint, and a start-new-training form with LoRA / optimiser params."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — Training speaks the HTTP envelope over the wylde-trainer
+# pipe directly.  The Python Gateway training routes were retired in the
+# "trainer surface moved to chat-driven flows" decision (see
+# Gateway/routes/__init__.py); the GUI is expected to talk to the trainer
+# pipe directly when the surface lands.  `request_nav` powers the base-
+# model jump to the Models panel.
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# Shared TextInput widget — every numeric field in the start-new-training
+# form is a single-line TextInput with numeric validation done in-panel.
+wylde-gpui-input = { path = "../../Input" }
+
+# Async runtime — driven by the pipe call layer; needed for the periodic
+# polling task that refreshes the active-runs strip.
+tokio.workspace = true
+
+# gpui — every panel imports the same set: div builders, Render, etc.
+gpui.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

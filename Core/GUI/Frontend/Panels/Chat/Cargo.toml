@@ -1,0 +1,47 @@
+[package]
+name = "wylde-panel-chat"
+description = "Wylde Chat panel — gpui-era port of `Core/GUI/src/components/InferenceBar.svelte`.  Primary chat surface: streaming message log, prompt input, workspace MRU + folder picker, inline consent prompts."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens — every panel imports the same palette so a
+# Wylde-wide colour change touches one file.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — Chat talks to the harness via `chat.*` (start_turn +
+# stream_turn), `memory.workspaces.recent` (MRU dropdown), and
+# `consent.*` (stream_pending subscription + respond).
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# Native gpui TextInput widget — replaces the hand-rolled key dispatch
+# the slice-5 cut shipped for the prompt field.  Per the crate's README
+# this is opt-in; Chat happens to be the first adopter.
+wylde-gpui-input = { path = "../../Input" }
+
+# gpui — every panel imports the same set: div builders, Render, etc.
+gpui.workspace = true
+
+# Native folder picker.  Workspace MRU's "+" button opens it, then
+# fires `rag.workspaces.activate` against the harness — same flow the
+# Workspaces panel ships in slice 3.
+rfd.workspace = true
+
+# Tokio for `spawn_blocking` — the rfd folder picker is blocking, so we
+# run it on the blocking pool instead of stalling the gpui dispatcher.
+tokio.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true
+uuid.workspace       = true
+
+# Open a URL in the OS default handler — for markdown link clicks in
+# the message log.  cross-platform; the Windows backend uses ShellExecute.
+opener.workspace = true

@@ -1,0 +1,13 @@
+{
+  "id": "lint_svelte",
+  "name": "lint_svelte",
+  "description": "Run svelte-check + eslint against Core/GUI/src/. Returns normalised findings. Underlying engines: svelte-check, eslint (via npx; must be present in Core/GUI/node_modules).",
+  "version": "1.0",
+  "service": "harness",
+  "group": "dev",
+  "entrypoint": "run_lint_svelte",
+  "tags": ["dev", "lint", "svelte", "javascript"],
+  "parameters": [
+    {"name": "skip_eslint", "type": "boolean", "required": false, "default": false, "description": "Skip the eslint pass; run only svelte-check."}
+  ]
+}

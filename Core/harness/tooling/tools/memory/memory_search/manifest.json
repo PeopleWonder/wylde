@@ -1,0 +1,15 @@
+{
+  "id": "memory_search",
+  "name": "memory.search",
+  "description": "Query memories by scope. Use 'long_term' for global memory, 'workspace' for the active workspace's memory. Returns ranked hits with similarity, importance, and recency-decay folded into a single score.",
+  "version": "1.0",
+  "service": "harness",
+  "group": "memory",
+  "entrypoint": "run_memory_search",
+  "tags": ["memory", "search"],
+  "parameters": [
+    {"name": "scope", "type": "string", "required": true, "description": "'long_term' | 'workspace'"},
+    {"name": "query", "type": "string", "required": true, "description": "Search text."},
+    {"name": "k", "type": "number", "required": false, "default": 5, "description": "Max hits to return (1-50)."}
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "browser_text",
+  "name": "browser_text",
+  "description": "Read inner text of a CSS-selected element (default: page body) via Playwright. Output capped at 10 KiB; truncation flag set when the source is longer.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "visual",
+  "entrypoint": "run_browser_text",
+  "tags": ["visual", "browser", "text", "playwright"],
+  "parameters": [
+    {"name": "selector", "type": "string", "required": false, "default": "body", "description": "CSS selector. Defaults to the page body."},
+    {"name": "timeout", "type": "number", "required": false, "default": 10000, "description": "Locator timeout in milliseconds"}
+  ]
+}

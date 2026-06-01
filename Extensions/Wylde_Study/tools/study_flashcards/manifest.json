@@ -1,0 +1,16 @@
+{
+  "id": "study_flashcards",
+  "name": "study_flashcards",
+  "description": "Generate Q/A flashcards from the supplied text via the LLM. Returns a list of {front, back} objects.",
+  "version": "1.0",
+  "service": "extension",
+  "group": "study",
+  "extension": "Wylde_Study",
+  "entrypoint": "flashcards",
+  "tags": ["study", "flashcards", "llm"],
+  "parameters": [
+    {"name": "text", "type": "string", "required": true, "description": "Source material"},
+    {"name": "count", "type": "number", "required": false, "default": 8, "description": "How many cards to generate (1..50)"},
+    {"name": "model", "type": "string", "required": false, "description": "Model name (defaults to harness default)"}
+  ]
+}

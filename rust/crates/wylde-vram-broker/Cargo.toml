@@ -1,0 +1,52 @@
+[package]
+name = "wylde-vram-broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wylde-vram-broker"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# Pre-build guard — fails the build loud if a wylde-* daemon is still
+# alive (Windows holds a sharing lock on the running .exe; without this
+# the linker fails opaquely with `os error 32` 100+ turns into a build).
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+uuid = { version = "1", features = ["v4"] }
+nvml-wrapper = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# sysinfo: system DRAM accounting (Phase 0.5) + Phase-12.2 host inventory
+# (CPU model, disk kind/space). The `system` feature carries CPU + memory;
+# `disk` adds the volume probe used by `system.inventory`. Network +
+# component probes stay off — we don't need them.
+sysinfo = { version = "0.32", default-features = false, features = ["system", "disk"] }
+
+# DXGI adapter enumeration (Phase 12.4) — surfaces Intel iGPU / Arc and AMD
+# GPU/APU into `system.inventory` so the first-run LLM can pick a model
+# variant that fits the host. NVML covers NVIDIA; everything else comes
+# through here. Windows-only; the inventory probe is a no-op on other
+# platforms (Wylde is Windows-first; Linux uses a sysfs fallback).
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"

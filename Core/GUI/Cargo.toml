@@ -1,0 +1,148 @@
+#  Wylde GPUI workspace.
+#
+#  The Tauri+Svelte tree (`src/`, `src-tauri/`) was DELETED at the
+#  slice-11 cutover (2026-05-29) — gpui is now the only GUI.  This
+#  workspace owns the gpui-era crates under `Shell/` and `Frontend/`;
+#  `wylde-gui` (the `Shell` crate) is the shipped binary.  The leftover
+#  npm/Vite build config + output (`node_modules/`, `dist/`, `public/`,
+#  `scripts/`, `package.json`, `vite.config.js`, …) were swept in the
+#  slice-11.1 housekeeping pass (2026-05-29); only gpui-relevant files
+#  remain, so the `exclude` list below is now empty.
+#
+#  This workspace deliberately does NOT nest into `rust/Cargo.toml`.  The
+#  reason is the §10 "don't bump unrelated crates" guard: gpui pulls in
+#  heavy graphics deps whose version-unification could ripple into the
+#  backend workspace.  Keeping it separate keeps the backend lock file
+#  untouched and the failure-blast-radius bounded to the GUI tree.
+
+[workspace]
+resolver = "2"
+members = [
+    "Shell",
+    "Frontend/Theme",
+    "Frontend/Pipe",
+    "Frontend/Input",
+    "Frontend/Extension_handlers/WebView",
+    "Frontend/Panels/Settings",
+    "Frontend/Panels/Workspaces",
+    "Frontend/Panels/Tools",
+    "Frontend/Panels/Memory",
+    "Frontend/Panels/Chat",
+    "Frontend/Panels/Models",
+    "Frontend/Panels/Dashboard",
+    "Frontend/Panels/Devices",
+    "Frontend/Panels/RemoteAccess",
+    "Frontend/Panels/Images",
+    "Frontend/Panels/Training",
+    "Manifest/Extension_handlers",
+]
+# `src-tauri` + `src` are gone (slice-11 cutover) and the orphaned
+# npm/Vite tooling that only ever built the deleted Svelte `src/` →
+# `dist/` was deleted in slice-11.1.  Nothing non-crate remains under
+# this root, so there is nothing left to exclude.
+exclude = []
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+authors = ["Wylde User <user@example.com>"]
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+# Backend crates the GUI calls through the in-process HarnessApi
+# short-circuit (Phase 12.1).  The harness binary still listens on its
+# pipe for MCP / CLI clients — the GUI just sidesteps the IPC hop.
+wylde-harness = { path = "../../rust/crates/wylde-harness" }
+wylde-shared  = { path = "../../rust/crates/wylde-shared" }
+
+# Async runtime + IPC primitives.  Feature set matches src-tauri so a
+# verb that worked there works here.
+tokio       = { version = "1", features = ["io-util", "net", "time", "sync", "macros", "rt-multi-thread"] }
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+rmp-serde   = "1"
+uuid        = { version = "1", features = ["v4"] }
+async-trait = "0.1"
+anyhow      = "1"
+
+# Tray icon — cross-platform Shell_NotifyIcon / NSStatusItem / AppIndicator.
+# Replaces tauri::tray.
+tray-icon = "0.19"
+
+# Autostart toggle (HKCU\…\Run on Windows, LaunchAgent on macOS, .desktop
+# on Linux).  Not wired in this slice; declared here so the path is
+# confirmed for the slice that ports Settings.
+auto-launch = "0.5"
+
+# Updater driver — `self_update` for the existing endpoint signing flow
+# (Phase 12.5), `self-replace` for the in-place binary swap.  Not wired
+# in this slice; declared so version conflicts surface now, not later.
+self_update  = { version = "0.41", default-features = false, features = ["rustls", "compression-zip-deflate"] }
+self-replace = "1"
+
+# Native folder/file picker — used by the Workspaces panel's "Add
+# workspace" flow (replaces the Tauri dialog plugin the Svelte alpha
+# uses).  `rfd` 0.15 supports the gpui-era Windows/macOS targets.
+rfd = { version = "0.15", default-features = false, features = ["common-controls-v6"] }
+
+# gpui.  Lives in the Zed monorepo and is not published to crates.io.
+# §10's risk register calls for a pinned rev; slice 1 left it on
+# `branch = "main"` with a TODO; this slice (panel registry + Settings
+# port) pins to a known-good commit so the next gpui bump is a *single*
+# `Cargo.toml` change rather than a tree-wide hunt for breaking surface.
+#
+# When bumping, also verify `gpui-component`'s WebView path still
+# compiles (gpui-component tracks gpui main; lags by ~1 week) and that
+# `Frontend/Panels/Settings/` still types after the swap.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "b3d93d44", default-features = false }
+# gpui_platform is the OS-platform shim — `gpui::Application::new()`
+# is gone in the 0.2.x rev we're tracking; the `application()` factory
+# that resolves the OS-default platform lives in this sibling crate.
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "b3d93d44", default-features = false, features = ["font-kit"] }
+
+# WebView host for extension `iframe` panels.  Slice 4 picks `wry`
+# directly rather than `gpui-component::WebView`:
+#
+#   * gpui-component tracks gpui main; pulling it in would tie us to a
+#     moving rev that drifts from `b3d93d44` within ~a week.
+#   * gpui-component is a 30-crate UI library; one widget isn't worth
+#     the cone-of-influence.
+#   * wry is the WebView2/WKWebView/WebKitGTK wrapper Tauri itself
+#     ships, so the loopback-only embed path is well-trodden.
+#
+# Both gpui and wry use raw-window-handle 0.6; wry's `build_as_child`
+# accepts gpui's `Window` directly (`impl HasWindowHandle`).
+wry = "0.54"
+
+# HTTP client for iframe health probes.  Picked over `ureq` because
+# reqwest is already a transitive dep of every wylde-* crate that
+# touches the model registry; pinning the same version here avoids
+# duplicate crate graphs in the GUI workspace's lock file.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# Raw window handle re-export — pinned to the same version gpui and
+# wry agree on so a future wry / gpui bump surfaces here, not as a
+# silent ABI break inside slot.rs.
+raw-window-handle = "0.6"
+
+# Cross-platform "open URL / file in the OS default handler".  Used by
+# the Chat panel's markdown link renderer; declared at workspace level
+# so future panels (Settings docs links, Workspaces "Reveal in
+# Explorer", ...) reach for the same version.
+opener = "0.7"
+
+# Pure-Rust QR encoder, no_std-friendly.  Used by the Devices panel to
+# render a scannable code next to the 6-digit pairing PIN, and by the
+# RemoteAccess panel for the WyldeLink pair URI.  `default-features =
+# false` drops `image`/`svg` rendering — we walk the boolean matrix
+# ourselves and paint cells with gpui `div` primitives, so the extra
+# format backends would just inflate the dep graph.
+qrcode = { version = "0.14", default-features = false }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

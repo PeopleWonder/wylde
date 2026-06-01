@@ -1,0 +1,47 @@
+[package]
+name = "wylde-device-gate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wylde-device-gate"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# Pre-build guard — fails the build loud if a wylde-* daemon is still
+# alive (Windows holds a sharing lock on the running .exe; without this
+# the linker fails opaquely with `os error 32` 100+ turns into a build).
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+
+# htpasswd hash verification — passlib equivalents.
+# `bcrypt` covers $2*$; `sha-crypt` covers $5$/$6$; `md-5` powers the inline
+# APR1 implementation in auth.rs (no first-class crate for apr_md5_crypt).
+bcrypt = "0.15"
+sha-crypt = "0.5"
+md-5 = "0.10"
+
+# Token + pairing code generation.
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+
+# Constant-time comparison for pairing codes / tokens.
+subtle = "2.5"
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"

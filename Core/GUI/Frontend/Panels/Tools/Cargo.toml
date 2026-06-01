@@ -1,0 +1,29 @@
+[package]
+name = "wylde-panel-tools"
+description = "Wylde Tools panel — gpui-era extension manager.  Lists installed MCP extensions via `ext.list`, surfaces an enable/disable toggle per extension, and shows the union of declared UI panels (`extensions.list_panels`) so the user can see which extensions contribute panels without having to navigate to each one."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens — every panel imports the same palette so a
+# Wylde-wide colour change touches one file.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — Tools reaches the extension bridge through the shared
+# wire client.  The bridge's pipe (`wylde-extension-bridge`) is a
+# separate service from the harness, so the short-circuit doesn't apply
+# here — every call goes over the wire.
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# gpui — every panel imports the same set: div builders, Render, etc.
+gpui.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

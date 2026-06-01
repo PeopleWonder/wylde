@@ -1,0 +1,17 @@
+{
+  "id": "git_diff",
+  "name": "git_diff",
+  "description": "Run `git diff`. Defaults to unstaged changes; pass `staged=true` for `--cached`, or `base`+`head` for a commit-range diff.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "git",
+  "entrypoint": "run_git_diff",
+  "tags": ["git", "vcs", "diff"],
+  "parameters": [
+    {"name": "path", "type": "string", "required": false, "default": ".", "description": "Working tree path"},
+    {"name": "staged", "type": "boolean", "required": false, "default": false, "description": "Diff staged (`--cached`) instead of unstaged"},
+    {"name": "base", "type": "string", "required": false, "description": "Base ref (e.g. 'HEAD~1')"},
+    {"name": "head", "type": "string", "required": false, "description": "Head ref (use with base for base..head)"},
+    {"name": "file", "type": "string", "required": false, "description": "Limit diff to a single file"}
+  ]
+}

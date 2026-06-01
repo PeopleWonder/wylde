@@ -1,0 +1,16 @@
+{
+  "id": "study_explain",
+  "name": "study_explain",
+  "description": "Explain a concept or selection of text in plain language via the LLM. Returns explanation + analogy.",
+  "version": "1.0",
+  "service": "extension",
+  "group": "study",
+  "extension": "Wylde_Study",
+  "entrypoint": "explain",
+  "tags": ["study", "explain", "llm"],
+  "parameters": [
+    {"name": "text", "type": "string", "required": true, "description": "Concept or excerpt to explain"},
+    {"name": "audience", "type": "string", "required": false, "default": "general", "description": "Audience hint, e.g. 'high school', 'expert'"},
+    {"name": "model", "type": "string", "required": false, "description": "Model name (defaults to harness default)"}
+  ]
+}

@@ -1,0 +1,40 @@
+[package]
+name = "wylde-ollama"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wylde-ollama"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# Pre-build guard — fails the build loud if `wylde-ollama.exe` is still
+# alive in the process table. Windows holds an exclusive sharing lock on
+# a running binary; without the guard the linker fails opaquely with
+# `os error 32` deep into a build.
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+# JSON streaming + HTTP. `stream` feature enables `Response::bytes_stream()`
+# which we use for NDJSON parsing on /api/chat and /api/pull.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+futures = "0.3"
+# UUID for client_nonce / lease correlation
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"

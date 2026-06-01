@@ -1,0 +1,69 @@
+[package]
+name = "wylde-gateway"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wylde-gateway"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# Pre-build guard — fails the build loud if a wylde-* daemon is still
+# alive (Windows holds a sharing lock on the running .exe; without this
+# the linker fails opaquely with `os error 32` 100+ turns into a build).
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+
+# HTTP server stack — axum is the framework, tower-http supplies the
+# middleware (CORS, trace, request-id, body limit). hyper is the
+# underlying server we bind manually for graceful-shutdown control.
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors", "limit", "request-id", "util"] }
+hyper = { version = "1", features = ["full"] }
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+futures = "0.3"
+async-stream = "0.3"
+
+# Outbound HTTP client (Gateway's egress subsystem + sibling-service proxies).
+# `blocking` powers the Vault secrets backend: SecretsProvider::get is a sync
+# trait method, so the KV-v2 read uses reqwest's blocking client (own runtime
+# on a background thread) rather than blocking an axum worker.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "blocking"] }
+
+# CIDR matching for the auth.local tier — equivalent to Python ipaddress.
+ipnet = "2"
+
+# Base64 — `/api/images/library/:id` returns image bytes inline as
+# `data_b64`. Already in the workspace lockfile via reqwest's tls
+# deps; declared explicitly so the gateway can use the public API.
+base64 = "0.22"
+
+# Per-bucket rate-limit timestamps — chrono is overkill for monotonic
+# windowing; std::time::Instant is the right tool.
+
+# UUID for request-id middleware.
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# `util` powers `tower::ServiceExt::oneshot`, used by the router unit tests.
+tower = { version = "0.5", features = ["util"] }

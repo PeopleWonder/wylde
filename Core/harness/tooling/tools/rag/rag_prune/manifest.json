@@ -1,0 +1,17 @@
+{
+  "id": "rag_prune",
+  "name": "rag_prune",
+  "description": "Delete memories from the vector store matching the supplied filters. At least one filter (before_ts, memory_type, score_lt) is required. Without confirm=true the tool dry-runs and reports what would be deleted. Renamed from legacy memory_prune.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "rag",
+  "entrypoint": "run_rag_prune",
+  "tags": ["rag", "prune", "memory", "admin", "destructive"],
+  "parameters": [
+    {"name": "confirm", "type": "boolean", "required": false, "default": false, "description": "Must be true to actually delete. False (default) returns a dry-run count."},
+    {"name": "before_ts", "type": "number", "required": false, "description": "Delete memories created before this unix timestamp."},
+    {"name": "memory_type", "type": "string", "required": false, "description": "Delete only memories of this tier/type (e.g. 'core', 'episodic', 'semantic', 'procedural')."},
+    {"name": "score_lt", "type": "number", "required": false, "description": "Delete memories whose score is strictly below this value."},
+    {"name": "max_delete", "type": "number", "required": false, "default": 500, "description": "Safety cap: max rows to delete in one call (clamped 1..10000)."}
+  ]
+}

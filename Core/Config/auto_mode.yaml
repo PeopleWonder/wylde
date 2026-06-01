@@ -1,0 +1,18 @@
+# Auto-mode toggle (Wylde Design Principle #12 — confirmation gate).
+#
+# When set to true, the harness tool_runner bypasses the confirmation
+# gate for tools that declare `requires_confirmation: true` in their
+# manifest. The gate is intended for high-stakes LLM actions (workflow
+# create/edit/delete, etc.) where the user normally wants to see and
+# approve the action before it runs. Auto-mode trades that approval
+# step for throughput and is appropriate when the agent is running an
+# audited, repeatable script.
+#
+# Default: false (gate is enforced; caller must obtain user confirmation
+# and re-dispatch with confirm=True).
+#
+# Override per-process by setting WYLDE_AUTO_MODE=true in the env before
+# launching Wylde — env always wins over file values per the Config
+# loader's documented pattern.
+
+WYLDE_AUTO_MODE: false

@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/wylde-shared",
+    "crates/wylde-vram-broker",
+    "crates/wylde-device-gate",
+    "crates/wylde-gateway",
+    "crates/wylde-lifecycle",
+    "crates/wylde-ollama",
+    "crates/wylde-trainer",
+    "crates/wylde-vpn",
+    "crates/wylde-extension-bridge",
+    "crates/wylde-harness",
+    "crates/wylde-voice",
+    # `crates/wylde-memgraph` removed 2026-05-25 — the memgraph client is
+    # an in-process submodule of `wylde-harness/src/memory/memgraph/` per
+    # the one-crate harness convention; the bundled Neo4j JVM stays
+    # supervised by `Core/Memgraph/` (Python) until a follow-up cleanup
+    # slice migrates that lifecycle ownership.
+    # Build-script helper crate. Lives outside `crates/` because the
+    # spawn-restriction linter (`no_external_process_spawn_rust`) only
+    # walks `rust/crates/<crate>/src/` — keeping this here means the
+    # tasklist spawn doesn't need a linter exemption.
+    "build-support/wylde-prebuild-guard",
+]
+# The cross-language parity suite is a standalone package, deliberately not a
+# workspace member: it is an opt-in cutover gate that pulls in heavier deps
+# (reqwest) and depends on the *built* service binaries. Excluding it keeps
+# `cargo build` / `cargo test` for the four service crates unaffected. Run it
+# explicitly — see rust/tests/parity/README.md.
+exclude = ["tests/parity"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+authors = ["Wylde User"]
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmp-serde = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+anyhow = "1"
+thiserror = "1"
+chrono = { version = "0.4", features = ["serde"] }
+windows = { version = "0.58", features = ["Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_Security", "Win32_Foundation"] }

@@ -1,0 +1,17 @@
+{
+  "id": "study_index_page",
+  "name": "study_index_page",
+  "description": "Index a web page (title + URL + extracted text) into the Wylde memory graph as an episodic memory. Source URL is preserved in source_path so RAG hits can be traced back.",
+  "version": "1.0",
+  "service": "extension",
+  "group": "study",
+  "extension": "Wylde_Study",
+  "entrypoint": "index_page",
+  "tags": ["study", "memory", "ingest"],
+  "parameters": [
+    {"name": "url", "type": "string", "required": true, "description": "Page URL"},
+    {"name": "title", "type": "string", "required": false, "description": "Page title"},
+    {"name": "text", "type": "string", "required": true, "description": "Extracted text content"},
+    {"name": "session_id", "type": "string", "required": false, "description": "Session id grouping pages indexed together"}
+  ]
+}

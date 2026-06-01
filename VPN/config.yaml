@@ -1,0 +1,72 @@
+# Wylde VPN — runtime configuration.
+#
+# The launcher (run.py / entrypoint.sh) reads this file once at startup
+# and applies every value to the process environment. Anything not
+# overridden here falls back to the defaults baked into config.py.
+#
+# Two top-level groups removed in Phase 9:
+#
+#   * `gateway:` block — Gateway is its own service now (see
+#     Wylde/Gateway/manifest.json). Tunnel-bound HTTP routes that used
+#     to be served from this process moved to Gateway/routes/*.
+#   * `consul:` block — Wylde uses manifest-based discovery
+#     (data/manifests/*.json) instead of Consul. The old keys are gone
+#     so a stray reference can't accidentally re-enable Consul.
+
+service:
+  port: 8020
+
+vpn:
+  enabled: false
+  endpoint: ''
+  peer_pubkey: ''
+  private_key: ''
+  tunnel_addr: 10.8.0.2/24
+  dns: 1.1.1.1
+  allowed_ips: 0.0.0.0/0, ::/0
+
+link:
+  enabled: false
+  private_key: ''
+  tunnel_addr: 192.0.2.1/24
+  listen_port: 51821
+  stun_servers: stun.l.google.com:19302,stun1.l.google.com:19302
+  data_dir: null
+  token_ttl: 300
+  pair_rate_max: 5
+  pair_rate_win: 60
+  peer_subnet: 192.0.2.0/24
+  public_host: ''
+  relay:
+    host: ''
+    port: 3478
+    user: wylde
+    password: ''
+    realm: wylde.local
+    lifetime: 600
+
+dns_stub:
+  host: 0.0.0.0
+  port: 5300
+
+discovery:
+  ddns:
+    enabled: false
+    provider: duckdns
+    domain: ''
+    token: ''
+    update_interval_s: 300
+  mdns:
+    enabled: true
+    service_name: _wylde-link._udp
+    instance_name: Wylde Desktop
+
+nat:
+  stun_probe_interval_s: 300
+  hole_punch_timeout_s: 10
+  upnp_enabled: true
+
+monitoring:
+  heartbeat_interval_s: 15
+  latency_probe_interval_s: 60
+  metrics_retention_s: 3600

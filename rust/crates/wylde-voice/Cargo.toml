@@ -1,0 +1,109 @@
+[package]
+name = "wylde-voice"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wylde-voice"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# Pre-build guard — fails the build loud if `wylde-voice.exe` is still
+# alive in the process table. Same policy as the other service crates.
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
+
+[features]
+# Default build: pure-Rust pipe service + WAV I/O + log-mel preprocessing.
+# Whisper inference compiles in but is GATED at runtime on the
+# `onnxruntime.dll` being discoverable via ORT_DYLIB_PATH (per spike
+# findings). Without the DLL bundle the encoder load returns a clean
+# `model_not_loaded` error and the pipe service stays up.
+default = []
+
+# `openvino` — enables the OpenVINO Execution Provider register codepath
+# in `ort`. Required for NPU inference on the Wylde user's Arrow Lake hardware.
+# Disabled by default so a vanilla `cargo build` doesn't pull in the
+# OpenVINO crate transitively (build-time only — the DLL still has to
+# be present at runtime regardless of this feature).
+openvino = ["ort/openvino"]
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+
+# UUID for client_nonce / lease correlation — same use as wylde-ollama.
+uuid = { version = "1", features = ["v4"] }
+
+# ONNX Runtime via the `ort` crate. Exact version pinned to the build
+# that worked in `rust/spikes/voice-npu-spike/` (Phase 10 findings,
+# §"Versions actually used"). `load-dynamic` + `api-24` is the
+# spike-verified feature set; the OpenVINO EP itself is gated behind
+# the `openvino` cargo feature so non-NPU build hosts can compile.
+ort = { version = "=2.0.0-rc.12", default-features = false,
+        features = ["ndarray", "std", "load-dynamic", "api-24"] }
+
+# WAV decoder for `voice.transcribe` input audio. Lightweight pure-Rust
+# crate; supports 16-bit PCM mono/stereo at any sample rate.
+hound = "3.5"
+
+# FFT for log-mel preprocessing. `rustfft` is the de-facto Rust FFT crate
+# (no_std-friendly, vectorised). 400-pt FFT × 3000 frames per 30 s of audio
+# is the hot path; benchmarks show ~3 ms cold and ~1 ms warm on AVX2.
+rustfft = "6"
+
+# Hugging Face's Rust tokenizer — same library Python's `transformers` uses
+# under the hood, so BPE merges round-trip bit-exact with the Python
+# Whisper pipeline. Loads from the `tokenizer.json` shipped in every
+# onnx-community Whisper snapshot.
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+
+# n-dim array views for the encoder/decoder tensor plumbing. The `ort` crate
+# already pulls `ndarray` (matched version in workspace lockfile via the
+# `ort` "ndarray" feature); declaring it here makes the dependency explicit
+# so `transcribe::decoder` can use `Array*` types directly.
+ndarray = "0.16"
+
+# Cross-platform audio capture (Slice 11.D) + playback (Slice 11.E).
+# Used by `mic` to open the default input device (for both stand-alone
+# `voice.mic.*` callers and the wake-word listener) and by `playback`
+# to open the default output device for the orchestrator's TTS hop.
+# `Stream` is intentionally !Send + !Sync on every backend
+# (WASAPI/CoreAudio/ALSA) — see `mic::start_capture` and
+# `playback::run_playback` for the dedicated-worker-thread pattern that
+# wraps that around the async action handlers.
+cpal = "0.15"
+
+# Slice 11.E orchestrator port. Async trait objects for the three
+# behaviours the orchestrator depends on (capture, playback, harness
+# chat) so unit tests can substitute mocks without spinning up real
+# audio devices or the harness pipe.
+async-trait = "0.1"
+
+# Base64 decode for the orchestrator's TTS → playback hop. Encoding is
+# done in-tree (`synth::wav::encode_base64`); the decode path uses the
+# established `base64` crate (same version wylde-shared / wylde-gateway
+# / wylde-vpn use, so there's no extra build cost).
+base64 = "0.22"
+
+# Wake-word bundle downloader (Slice 11.E+ — `wakeword::download`).
+# Shells-out-to-curl was rejected by `wylde_check` rule 31
+# (no_external_process_spawn_rust). A native HTTP client keeps the
+# downloader inside the Rust ring without lifecycle-pipe round-trips.
+# `default-features = false` drops the cookies/multipart/native-tls
+# feature set we don't need; `rustls-tls` keeps the pure-Rust TLS path
+# (matches wylde-ollama / wylde-gateway).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"

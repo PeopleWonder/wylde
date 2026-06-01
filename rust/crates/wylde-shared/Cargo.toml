@@ -1,0 +1,32 @@
+[package]
+name = "wylde-shared"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rmp-serde.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+windows.workspace = true
+uuid = { version = "1", features = ["v4"] }
+futures = "0.3"
+
+# Win32 security API (GetNamedSecurityInfoW / SetNamedSecurityInfoW +
+# the DACL builders) for secure_file's owner-only ACL hardening. Layered
+# on top of the workspace's Win32 feature set — same pattern as
+# wylde-lifecycle adding Threading + Console.
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = ["Win32_Security_Authorization"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"
+base64 = "0.22"

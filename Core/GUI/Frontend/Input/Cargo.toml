@@ -1,0 +1,23 @@
+[package]
+name = "wylde-gpui-input"
+description = "Native gpui TextInput widget for Wylde panels — single-line + multi-line variants with cursor / selection / clipboard / undo, theme-integrated styling, no external text-input dep."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens so the input visually matches every other Wylde
+# surface (border colours, text scale, etc.).
+wylde-theme = { path = "../Theme" }
+
+# gpui — Render trait, div builders, KeyDownEvent, ClipboardItem.
+gpui.workspace = true
+
+# Grapheme-aware traversal so backspace/arrow keys move by user-perceived
+# character rather than by raw byte index.
+unicode-segmentation = "1"

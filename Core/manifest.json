@@ -1,0 +1,7 @@
+{
+  "name": "Core",
+  "description": "Wylde core infrastructure (lifecycle, harness, memgraph, memory scheduler)",
+  "tier": "core",
+  "enabled": true,
+  "constituent_pipes": ["wylde-lifecycle", "wylde-harness", "wylde-memgraph", "wylde-vram-broker"]
+}

@@ -1,0 +1,13 @@
+{
+  "id": "git_status",
+  "name": "git_status",
+  "description": "Run `git status` in a working tree. Returns the current branch and a list of changed files (each with porcelain-v1 status code).",
+  "version": "2.0",
+  "service": "harness",
+  "group": "git",
+  "entrypoint": "run_git_status",
+  "tags": ["git", "vcs", "status"],
+  "parameters": [
+    {"name": "path", "type": "string", "required": false, "default": ".", "description": "Working tree path"}
+  ]
+}

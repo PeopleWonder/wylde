@@ -1,0 +1,28 @@
+[package]
+name = "wylde-parity"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+publish = false
+description = "Cross-language parity gate: diffs Python vs Rust service responses."
+
+[features]
+# Opt-in. The parity tests are slow and require both the Python .venv and the
+# release Rust service binaries to be built. Every test file is gated behind
+# `#![cfg(feature = "parity")]`, so a plain `cargo test` here is a no-op —
+# run `cargo test --features parity` to actually exercise them.
+parity = []
+
+[dependencies]
+wylde-shared = { path = "../../crates/wylde-shared" }
+# Phase 5.D harness/turn parity test calls the Rust salvage parser /
+# call_hash / find_balanced_braces in-process and diffs against Python.
+# The dependency does fire wylde-harness's build.rs prebuild guard at
+# first build, so make sure `wylde-harness.exe` is not running when
+# you `cargo test --features parity`.
+wylde-harness = { path = "../../crates/wylde-harness" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+pretty_assertions = "1"

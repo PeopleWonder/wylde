@@ -1,0 +1,23 @@
+[package]
+name = "voice-npu-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Out-of-workspace. The top-level rust/Cargo.toml must NOT list this path.
+[workspace]
+
+[features]
+default = []
+openvino = ["ort/openvino"]
+cpu = []
+loaddyn = ["ort/load-dynamic"]
+
+[dependencies]
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["ndarray", "std", "load-dynamic", "api-24"] }
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

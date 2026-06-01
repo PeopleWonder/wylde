@@ -1,0 +1,15 @@
+{
+  "id": "study_query",
+  "name": "study_query",
+  "description": "Answer a question against the indexed corpus. Wraps rag.search and returns top-k matching chunks for the LLM (or extension UI) to ground on.",
+  "version": "1.0",
+  "service": "extension",
+  "group": "study",
+  "extension": "Wylde_Study",
+  "entrypoint": "query",
+  "tags": ["study", "rag", "search"],
+  "parameters": [
+    {"name": "q", "type": "string", "required": true, "description": "Question"},
+    {"name": "limit", "type": "number", "required": false, "default": 8, "description": "Max chunks (1..50)"}
+  ]
+}

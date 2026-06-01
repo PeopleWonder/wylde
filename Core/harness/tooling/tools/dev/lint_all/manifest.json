@@ -1,0 +1,13 @@
+{
+  "id": "lint_all",
+  "name": "lint_all",
+  "description": "Run lint_python (ruff), lint_svelte (svelte-check + eslint), lint_rust (clippy), and wylde_check (custom architectural rules) and consolidate findings. Returns a single envelope with the union of all findings.",
+  "version": "1.0",
+  "service": "harness",
+  "group": "dev",
+  "entrypoint": "run_lint_all",
+  "tags": ["dev", "lint", "consolidated"],
+  "parameters": [
+    {"name": "skip", "type": "array", "required": false, "description": "List of sub-tools to skip (any of 'python', 'svelte', 'rust', 'wylde_check')."}
+  ]
+}

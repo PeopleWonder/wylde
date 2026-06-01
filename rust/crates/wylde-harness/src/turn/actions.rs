@@ -1,0 +1,949 @@
+//! `chat.*` action handlers.
+//!
+//! ## Slice 5.A: `chat.run_turn`
+//!
+//! Single LLM round trip — no tool decode, no memory layer, no
+//! conversation history persistence.
+//!
+//! ## Slice 5.B: streaming surface
+//!
+//! `chat.start_turn` returns a `turn_id` and spawns the turn-driving
+//! task. The task drives [`send_action_stream`] against
+//! `wylde-ollama`'s `ollama.chat_stream`, translates each chunk into a
+//! `TurnEvent::Token`, and appends to the [`state::TurnHandle`]'s
+//! per-turn event buffer.
+//!
+//! `chat.cancel` flips the per-turn cancel flag; the turn task
+//! observes it between chunks and emits a final
+//! `TurnEvent::TurnAborted` before marking done.
+//!
+//! `chat.stream_turn` / `chat.stream_tools` are STREAMING actions.
+//! Each subscribes to a turn's event buffer and emits one IPC stream
+//! chunk per event, exiting when the turn is done AND the subscriber
+//! has drained past the buffer end.
+//!
+//! ## Slice 5.C: tool-call decode + dispatch
+//!
+//! The streaming driver now accumulates assistant text silently
+//! (Option A — matches Python's `_driver.py:303-311`) and at
+//! stream-complete runs the salvage parser. Recovered tool calls are
+//! deduped, dispatched via [`crate::dispatch`], and the results fed
+//! back into the next round. The loop bails out after
+//! [`tool_round::MAX_TOOL_LOOPS`] rounds.
+//!
+//! `chat.run_turn` mirrors the same loop using the unary `ollama.chat`
+//! action; both handlers populate `tool_calls_summary` from
+//! [`tool_round::ToolRoundState::tool_calls_summary_values`].
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use futures::StreamExt;
+use serde_json::{json, Value};
+use wylde_shared::ipc::{self, IpcError, Reply, StreamSender};
+
+use crate::config::Config;
+use crate::events::{AbortReason, ToolErrorReason, ToolEvent, TurnEvent};
+use crate::state::{self, TurnHandle};
+use crate::turn::salvage::{self, RecoveredCall, SalvageResult};
+use crate::turn::tool_round::{self, ToolCall, ToolRoundState};
+
+/// `chat.run_turn` — synchronous chat turn with the 5.C tool-round
+/// loop. Drives the LLM → salvage → dispatch cycle up to
+/// [`tool_round::MAX_TOOL_LOOPS`] rounds, then returns the final
+/// message + a [`tool_round::ToolSummary`] list.
+pub async fn handle_run_turn(payload: Value) -> Reply {
+    let cfg = Config::get();
+
+    let user_message = match string_field(&payload, "user_message") {
+        Ok(s) => s,
+        Err(e) => return Reply::err(e),
+    };
+    let conversation_id = match string_field(&payload, "conversation_id") {
+        Ok(s) => s,
+        Err(e) => return Reply::err(e),
+    };
+    let model = resolve_model(&payload, cfg);
+    if model.is_empty() {
+        return Reply::err(IpcError::new(
+            "bad_request",
+            "model is required (none provided and WYLDE_DEFAULT_MODEL is unset)",
+        ));
+    }
+
+    let turn_id = optional_string(&payload, "turn_id").unwrap_or_else(state::new_turn_id);
+    let device_tier = optional_string(&payload, "device_tier").unwrap_or_default();
+    let normalised_tier = tool_round::normalise_device_tier(if device_tier.is_empty() {
+        None
+    } else {
+        Some(device_tier.as_str())
+    });
+
+    tracing::debug!(
+        turn_id = %turn_id,
+        conversation_id = %conversation_id,
+        model = %model,
+        device_tier = %normalised_tier,
+        "harness: run_turn entered"
+    );
+
+    // Register a handle so dispatch can emit tool events into the
+    // standard per-turn buffer (a subscriber that polls stream_tools
+    // mid-run_turn still sees them).
+    let handle = state::register_turn(turn_id.clone(), conversation_id.clone());
+
+    let mut messages: Vec<Value> = vec![json!({"role": "user", "content": user_message})];
+    let mut round_state = ToolRoundState::new();
+    let alias_map = build_alias_map();
+    let mut final_text = String::new();
+    let mut completed_naturally = false;
+    let mut abort_reason: Option<AbortReason> = None;
+    let mut abort_error: Option<String> = None;
+
+    for round in 0..tool_round::MAX_TOOL_LOOPS {
+        round_state.rounds = round + 1;
+
+        let body = json!({
+            "model": model,
+            "messages": messages,
+            "priority": cfg.default_chat_priority,
+            "stream": false,
+            "keep_alive": "24h",
+        });
+
+        let upstream = match ipc::call_action(&cfg.ollama_service, "ollama.chat", body).await {
+            Ok(v) => v,
+            Err(e) => {
+                abort_reason = Some(AbortReason::Error);
+                abort_error = Some(format!("{}: {}", e.code, e.message));
+                break;
+            }
+        };
+        let raw_text = extract_assistant_content(&upstream);
+        let salvage_result = salvage::extract_tool_calls_from_content(&raw_text, &alias_map);
+        final_text = salvage_result.cleaned_text.clone();
+        emit_unrecognised(&handle, &salvage_result).await;
+
+        let calls = recovered_to_calls(&salvage_result);
+        if calls.is_empty() {
+            completed_naturally = true;
+            break;
+        }
+
+        // Append the assistant message that carried the tool calls so
+        // the next round has the right context.
+        messages.push(json!({
+            "role": "assistant",
+            "content": salvage_result.cleaned_text,
+            "tool_calls": tool_calls_wire(&calls),
+        }));
+
+        for call in &calls {
+            if tool_round::dedupe_and_maybe_emit(&handle, &mut round_state, call).await {
+                continue;
+            }
+            let tool_msg = tool_round::run_one_tool(
+                cfg,
+                &handle,
+                &mut round_state,
+                normalised_tier,
+                crate::tooling::registry::global(),
+                call,
+            )
+            .await;
+            messages.push(tool_msg);
+        }
+    }
+
+    let summary = round_state.tool_calls_summary_values();
+    if !completed_naturally && abort_reason.is_none() {
+        abort_reason = Some(AbortReason::ToolLoopLimit);
+        abort_error = Some(format!(
+            "exceeded {} tool-call iterations without a final response",
+            tool_round::MAX_TOOL_LOOPS
+        ));
+    }
+    let aborted_now = abort_reason.is_some();
+
+    // Drop the handle slot — run_turn is fully synchronous, no
+    // subscribers can race after this point.
+    handle.mark_done();
+    state::remove_turn(&turn_id);
+
+    Reply::ok(json!({
+        "turn_id": turn_id,
+        "conversation_id": conversation_id,
+        "final_message": final_text,
+        "tool_calls_summary": summary,
+        "aborted": aborted_now,
+        "abort_reason": abort_reason
+            .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
+            .unwrap_or(Value::Null),
+        "abort_error": abort_error.map(Value::String).unwrap_or(Value::Null),
+    }))
+}
+
+/// `chat.start_turn` — non-blocking kick-off (5.B). Validates inputs,
+/// registers a turn handle, spawns the driving task, and returns the
+/// turn id immediately.
+pub async fn handle_start_turn(payload: Value) -> Reply {
+    let cfg = Config::get();
+
+    let user_message = match string_field(&payload, "user_message") {
+        Ok(s) => s,
+        Err(e) => return Reply::err(e),
+    };
+    let conversation_id = match string_field(&payload, "conversation_id") {
+        Ok(s) => s,
+        Err(e) => return Reply::err(e),
+    };
+    let model = resolve_model(&payload, cfg);
+    if model.is_empty() {
+        return Reply::err(IpcError::new(
+            "bad_request",
+            "model is required (none provided and WYLDE_DEFAULT_MODEL is unset)",
+        ));
+    }
+    let device_tier = optional_string(&payload, "device_tier").unwrap_or_default();
+    let normalised_tier = tool_round::normalise_device_tier(if device_tier.is_empty() {
+        None
+    } else {
+        Some(device_tier.as_str())
+    });
+
+    let turn_id = optional_string(&payload, "turn_id").unwrap_or_else(state::new_turn_id);
+    let handle = state::register_turn(turn_id.clone(), conversation_id.clone());
+
+    let drive_handle = Arc::clone(&handle);
+    let drive_turn_id = turn_id.clone();
+    let drive_model = model.clone();
+    let drive_user_message = user_message.clone();
+    let drive_tier = normalised_tier.to_owned();
+
+    tokio::spawn(async move {
+        drive_streaming_turn(
+            cfg,
+            drive_handle,
+            drive_turn_id,
+            drive_user_message,
+            drive_model,
+            drive_tier,
+        )
+        .await;
+    });
+
+    Reply::ok(json!({
+        "turn_id": turn_id,
+        "conversation_id": conversation_id,
+    }))
+}
+
+/// `chat.cancel` — flips the per-turn cancel flag (5.B).
+pub async fn handle_cancel(payload: Value) -> Reply {
+    let turn_id = match string_field(&payload, "turn_id") {
+        Ok(s) => s,
+        Err(e) => return Reply::err(e),
+    };
+    let cancelled = state::cancel_turn(&turn_id);
+    Reply::ok(json!({
+        "turn_id": turn_id,
+        "cancelled": cancelled,
+    }))
+}
+
+/// `chat.stream_turn` — STREAMING handler (5.B). Emits one chunk per
+/// user-facing event from cursor=0.
+pub async fn handle_stream_turn(payload: Value, sender: StreamSender) {
+    let turn_id = match string_field(&payload, "turn_id") {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = sender.send(Err(e)).await; // wylde-check: discard-result-ok
+            return;
+        }
+    };
+    let Some(handle) = state::get_turn(&turn_id) else {
+        let _ = sender // wylde-check: discard-result-ok
+            .send(Err(IpcError::new(
+                "not_found",
+                format!("turn {turn_id:?} not found"),
+            )))
+            .await;
+        return;
+    };
+    stream_events(handle, sender, Source::Turn).await;
+}
+
+/// `chat.stream_tools` — STREAMING handler (5.C). Emits one chunk per
+/// tool-activity event from cursor=0.
+pub async fn handle_stream_tools(payload: Value, sender: StreamSender) {
+    let turn_id = match string_field(&payload, "turn_id") {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = sender.send(Err(e)).await; // wylde-check: discard-result-ok
+            return;
+        }
+    };
+    let Some(handle) = state::get_turn(&turn_id) else {
+        let _ = sender // wylde-check: discard-result-ok
+            .send(Err(IpcError::new(
+                "not_found",
+                format!("turn {turn_id:?} not found"),
+            )))
+            .await;
+        return;
+    };
+    stream_events(handle, sender, Source::Tool).await;
+}
+
+#[derive(Clone, Copy)]
+enum Source {
+    Turn,
+    Tool,
+}
+
+async fn stream_events(handle: Arc<TurnHandle>, sender: StreamSender, source: Source) {
+    let mut cursor: usize = 0;
+
+    loop {
+        let wake = handle.notify.notified();
+        tokio::pin!(wake);
+
+        let new_chunks: Vec<Value> = match source {
+            Source::Turn => {
+                let buf = handle.turn_events.lock().await;
+                buf.iter()
+                    .skip(cursor)
+                    .map(|ev| serde_json::to_value(ev).expect("TurnEvent serialises"))
+                    .collect()
+            }
+            Source::Tool => {
+                let buf = handle.tool_events.lock().await;
+                buf.iter()
+                    .skip(cursor)
+                    .map(|ev| serde_json::to_value(ev).expect("ToolEvent serialises"))
+                    .collect()
+            }
+        };
+
+        for chunk in new_chunks {
+            cursor += 1;
+            if sender.send(Ok(chunk)).await.is_err() {
+                return;
+            }
+        }
+
+        if handle.is_done() {
+            return;
+        }
+
+        wake.await;
+    }
+}
+
+/// Streaming turn driver — the spawned task `chat.start_turn` kicks
+/// off. Each round opens a fresh `ollama.chat_stream`, accumulates
+/// assistant text silently (Option A), salvages tool calls at
+/// stream-complete, dispatches them, and feeds the results back into
+/// the next round. Bails out at [`tool_round::MAX_TOOL_LOOPS`] or
+/// when there are no more tool calls.
+async fn drive_streaming_turn(
+    cfg: &'static Config,
+    handle: Arc<TurnHandle>,
+    turn_id: String,
+    user_message: String,
+    model: String,
+    device_tier: String,
+) {
+    let mut messages: Vec<Value> = vec![json!({"role": "user", "content": user_message})];
+    let mut round_state = ToolRoundState::new();
+    let alias_map = build_alias_map();
+
+    let normalised_tier = tool_round::normalise_device_tier(if device_tier.is_empty() {
+        None
+    } else {
+        Some(device_tier.as_str())
+    });
+
+    for round in 0..tool_round::MAX_TOOL_LOOPS {
+        round_state.rounds = round + 1;
+
+        if handle.is_cancelled() {
+            emit_aborted(&handle, &turn_id, AbortReason::Cancelled, None).await;
+            handle.mark_done();
+            schedule_eviction(turn_id.clone());
+            return;
+        }
+
+        let body = json!({
+            "model": model,
+            "messages": messages,
+            "priority": cfg.default_chat_priority,
+            "stream": true,
+            "keep_alive": "24h",
+        });
+
+        let mut stream = ipc::send_action_stream(&cfg.ollama_service, "ollama.chat_stream", body);
+        let mut accumulated = String::new();
+        let mut errored: Option<String> = None;
+        let mut cancelled_mid_round = false;
+
+        loop {
+            tokio::select! {
+                _ = handle.cancel.notified() => {
+                    cancelled_mid_round = true;
+                    break;
+                }
+                next = stream.next() => {
+                    match next {
+                        None => break,
+                        Some(Err(e)) => {
+                            errored = Some(format!("{}: {}", e.code, e.message));
+                            break;
+                        }
+                        Some(Ok(chunk)) => {
+                            if let Some(piece) = extract_chunk_content(&chunk) {
+                                accumulated.push_str(&piece);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        drop(stream);
+
+        if cancelled_mid_round || handle.is_cancelled() {
+            emit_aborted(&handle, &turn_id, AbortReason::Cancelled, None).await;
+            handle.mark_done();
+            schedule_eviction(turn_id);
+            return;
+        }
+        if let Some(err) = errored {
+            emit_aborted(&handle, &turn_id, AbortReason::Error, Some(err)).await;
+            handle.mark_done();
+            schedule_eviction(turn_id);
+            return;
+        }
+
+        // Salvage tool calls from the assistant content. Option A:
+        // text is emitted post-salvage so the JSON never leaks to the
+        // user-facing stream.
+        let salvage_result = salvage::extract_tool_calls_from_content(&accumulated, &alias_map);
+        let final_text = salvage_result.cleaned_text.clone();
+        emit_unrecognised(&handle, &salvage_result).await;
+
+        let calls = recovered_to_calls(&salvage_result);
+
+        if calls.is_empty() {
+            // No tool calls — emit the cleaned text as a single Token
+            // event (bulk emit; mirrors Python's no-stream-token path
+            // in `_driver.py:416-419`) and finish.
+            if !final_text.is_empty() {
+                handle
+                    .push_turn_event(TurnEvent::Token {
+                        turn_id: turn_id.clone(),
+                        text: final_text.clone(),
+                    })
+                    .await;
+            }
+            handle
+                .push_turn_event(TurnEvent::TurnComplete {
+                    turn_id: turn_id.clone(),
+                    final_message: final_text,
+                })
+                .await;
+            handle.mark_done();
+            schedule_eviction(turn_id);
+            return;
+        }
+
+        // Tool calls present — emit any pre-call text (the "let me
+        // look that up" mid-stream), then dispatch each call.
+        if !final_text.is_empty() {
+            handle
+                .push_turn_event(TurnEvent::Token {
+                    turn_id: turn_id.clone(),
+                    text: final_text.clone(),
+                })
+                .await;
+        }
+
+        messages.push(json!({
+            "role": "assistant",
+            "content": final_text.clone(),
+            "tool_calls": tool_calls_wire(&calls),
+        }));
+
+        for call in &calls {
+            if handle.is_cancelled() {
+                emit_aborted(&handle, &turn_id, AbortReason::Cancelled, None).await;
+                handle.mark_done();
+                schedule_eviction(turn_id);
+                return;
+            }
+            if tool_round::dedupe_and_maybe_emit(&handle, &mut round_state, call).await {
+                continue;
+            }
+            let tool_msg = tool_round::run_one_tool(
+                cfg,
+                &handle,
+                &mut round_state,
+                normalised_tier,
+                crate::tooling::registry::global(),
+                call,
+            )
+            .await;
+            messages.push(tool_msg);
+        }
+    }
+
+    // Hit the loop cap.
+    emit_aborted(
+        &handle,
+        &turn_id,
+        AbortReason::ToolLoopLimit,
+        Some(format!(
+            "exceeded {} tool-call iterations without a final response",
+            tool_round::MAX_TOOL_LOOPS
+        )),
+    )
+    .await;
+    handle.mark_done();
+    schedule_eviction(turn_id);
+}
+
+async fn emit_aborted(
+    handle: &Arc<TurnHandle>,
+    turn_id: &str,
+    reason: AbortReason,
+    error: Option<String>,
+) {
+    handle
+        .push_turn_event(TurnEvent::TurnAborted {
+            turn_id: turn_id.to_owned(),
+            reason,
+            error,
+        })
+        .await;
+}
+
+/// Spawn a delayed registry eviction so subscribers that poll just
+/// after `mark_done()` still find the handle.
+fn schedule_eviction(turn_id: String) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        state::remove_turn(&turn_id);
+    });
+}
+
+async fn emit_unrecognised(handle: &Arc<TurnHandle>, salvage: &SalvageResult) {
+    for u in &salvage.unrecognised {
+        handle
+            .push_tool_event(ToolEvent::ToolError {
+                turn_id: handle.turn_id.clone(),
+                call_id: u.id.clone(),
+                name: u.name.clone(),
+                error: format!(
+                    "model emitted tool call {:?} in content but the name \
+                     doesn't resolve to a known tool",
+                    u.name
+                ),
+                reason: Some(ToolErrorReason::ToolCallTextUnrecognised),
+                duration_ms: 0.0,
+            })
+            .await;
+    }
+}
+
+/// Build the alias map the salvage parser uses to resolve a
+/// model-emitted tool name (dotted, snake-cased, or manifest name) to
+/// a canonical tool id.
+///
+/// Phase 6 populates the map from the in-process tool registry. Every
+/// canonical id and every alias key form (dotted, snake, dot/snake
+/// inverses) is included so salvage results route into the registry's
+/// `lookup` instead of the unrecognised pile.
+///
+/// MCP-extension namespaces are also seeded so an `extension.tool`
+/// name from a model echo isn't dropped into the unrecognised bucket
+/// purely on alias-map grounds; the dispatcher then routes via
+/// [`crate::dispatch::route`] against `Config::mcp_namespaces`.
+fn build_alias_map() -> HashMap<String, String> {
+    let mut map = crate::tooling::registry::global().alias_map();
+    let cfg = Config::get();
+    for ns in &cfg.mcp_namespaces {
+        // Seed identity entries for every extension namespace so an
+        // emitted call like `webcrawler.scrape` survives salvage as a
+        // known token. The dispatcher resolves the actual handler via
+        // MCP — alias presence just keeps the call out of
+        // `unrecognised`.
+        map.entry(ns.clone()).or_insert_with(|| ns.clone());
+    }
+    map
+}
+
+fn recovered_to_calls(salvage: &SalvageResult) -> Vec<ToolCall> {
+    salvage
+        .recovered
+        .iter()
+        .cloned()
+        .map(RecoveredCall::into)
+        .collect()
+}
+
+fn tool_calls_wire(calls: &[ToolCall]) -> Vec<Value> {
+    calls
+        .iter()
+        .map(|c| {
+            json!({
+                "id": c.id,
+                "function": {"name": c.name, "arguments": c.args},
+            })
+        })
+        .collect()
+}
+
+fn string_field(payload: &Value, key: &str) -> Result<String, IpcError> {
+    match payload.get(key) {
+        Some(Value::String(s)) if !s.is_empty() => Ok(s.clone()),
+        _ => Err(IpcError::new(
+            "bad_request",
+            format!("{key} is required (non-empty string)"),
+        )),
+    }
+}
+
+fn optional_string(payload: &Value, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+fn resolve_model(payload: &Value, cfg: &Config) -> String {
+    optional_string(payload, "model").unwrap_or_else(|| cfg.default_model.clone())
+}
+
+/// Pull `message.content` out of an Ollama `/api/chat` (stream=false)
+/// reply for `chat.run_turn`.
+fn extract_assistant_content(upstream: &Value) -> String {
+    upstream
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// Pull the incremental `message.content` piece out of a streaming
+/// `ollama.chat_stream` NDJSON chunk.
+fn extract_chunk_content(chunk: &Value) -> Option<String> {
+    chunk
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{get_turn, register_turn};
+
+    // ── 5.A/5.B unary action tests (unchanged) ──────────────────────────
+
+    #[tokio::test]
+    async fn run_turn_rejects_missing_user_message() {
+        let reply = handle_run_turn(json!({"conversation_id": "c1"})).await;
+        assert!(!reply.ok);
+        let err = reply.error.unwrap();
+        assert_eq!(err.code, "bad_request");
+        assert!(err.message.contains("user_message"));
+    }
+
+    #[tokio::test]
+    async fn run_turn_rejects_missing_conversation_id() {
+        let reply = handle_run_turn(json!({"user_message": "hi"})).await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "bad_request");
+    }
+
+    #[tokio::test]
+    async fn run_turn_rejects_empty_strings() {
+        let reply = handle_run_turn(json!({
+            "user_message": "",
+            "conversation_id": "c1",
+        }))
+        .await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "bad_request");
+    }
+
+    #[test]
+    fn extracts_assistant_content_or_empty_string() {
+        let v = json!({"message": {"role": "assistant", "content": "hello"}});
+        assert_eq!(extract_assistant_content(&v), "hello");
+        let v = json!({"message": {"role": "assistant"}});
+        assert_eq!(extract_assistant_content(&v), "");
+        let v = json!({});
+        assert_eq!(extract_assistant_content(&v), "");
+    }
+
+    #[test]
+    fn extract_chunk_content_returns_incremental_piece() {
+        let v = json!({"message": {"role": "assistant", "content": "Hel"}, "done": false});
+        assert_eq!(extract_chunk_content(&v), Some("Hel".to_owned()));
+        let v = json!({"done": true});
+        assert_eq!(extract_chunk_content(&v), None);
+    }
+
+    #[tokio::test]
+    async fn cancel_rejects_missing_turn_id() {
+        let reply = handle_cancel(json!({})).await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "bad_request");
+    }
+
+    #[tokio::test]
+    async fn cancel_unknown_turn_returns_cancelled_false() {
+        let reply = handle_cancel(json!({"turn_id": "no-such-turn-actions-test"})).await;
+        assert!(reply.ok);
+        assert_eq!(reply.data["cancelled"], false);
+        assert_eq!(reply.data["turn_id"], "no-such-turn-actions-test");
+    }
+
+    #[tokio::test]
+    async fn cancel_in_flight_turn_returns_cancelled_true() {
+        let id = state::new_turn_id();
+        let _ = register_turn(id.clone(), "c1".into());
+
+        let reply = handle_cancel(json!({"turn_id": id.clone()})).await;
+        assert!(reply.ok);
+        assert_eq!(reply.data["cancelled"], true);
+        assert_eq!(reply.data["turn_id"], id);
+
+        let reply = handle_cancel(json!({"turn_id": id.clone()})).await;
+        assert!(reply.ok);
+        assert_eq!(reply.data["cancelled"], false);
+
+        state::remove_turn(&id);
+    }
+
+    #[tokio::test]
+    async fn stream_turn_rejects_missing_turn_id() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        handle_stream_turn(json!({}), tx).await;
+        let first = rx.recv().await.expect("at least one frame");
+        assert!(first.is_err());
+        assert_eq!(first.unwrap_err().code, "bad_request");
+    }
+
+    #[tokio::test]
+    async fn stream_turn_returns_not_found_for_unknown_turn() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        handle_stream_turn(json!({"turn_id": "no-such-turn-stream-test"}), tx).await;
+        let first = rx.recv().await.expect("at least one frame");
+        assert!(first.is_err());
+        assert_eq!(first.unwrap_err().code, "not_found");
+    }
+
+    #[tokio::test]
+    async fn stream_turn_emits_buffered_events_and_exits_on_done() {
+        let id = state::new_turn_id();
+        let handle = register_turn(id.clone(), "c1".into());
+
+        handle
+            .push_turn_event(TurnEvent::Token {
+                turn_id: id.clone(),
+                text: "Hel".into(),
+            })
+            .await;
+        handle
+            .push_turn_event(TurnEvent::Token {
+                turn_id: id.clone(),
+                text: "lo".into(),
+            })
+            .await;
+        handle
+            .push_turn_event(TurnEvent::TurnComplete {
+                turn_id: id.clone(),
+                final_message: "Hello".into(),
+            })
+            .await;
+        handle.mark_done();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        handle_stream_turn(json!({"turn_id": id.clone()}), tx).await;
+
+        let mut got: Vec<Value> = Vec::new();
+        while let Some(item) = rx.recv().await {
+            got.push(item.expect("ok chunk"));
+        }
+        assert_eq!(got.len(), 3, "expected 3 buffered events, got {got:?}");
+        assert_eq!(got[0]["type"], "token");
+        assert_eq!(got[0]["text"], "Hel");
+        assert_eq!(got[1]["type"], "token");
+        assert_eq!(got[1]["text"], "lo");
+        assert_eq!(got[2]["type"], "turn_complete");
+        assert_eq!(got[2]["final_message"], "Hello");
+
+        state::remove_turn(&id);
+    }
+
+    #[tokio::test]
+    async fn stream_tools_can_emit_chunks_in_5c() {
+        // 5.C: ToolEvents land on the tool buffer. Manually push one
+        // through the handle (the dispatch path that produces them
+        // lives in tool_round.rs and is exercised by that module's
+        // tests; this test pins the stream surface).
+        let id = state::new_turn_id();
+        let handle = register_turn(id.clone(), "c1".into());
+
+        handle
+            .push_tool_event(ToolEvent::ToolDispatched {
+                turn_id: id.clone(),
+                call_id: "c1".into(),
+                name: "fs.read".into(),
+                args: json!({"path": "foo"}),
+            })
+            .await;
+        handle.mark_done();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        handle_stream_tools(json!({"turn_id": id.clone()}), tx).await;
+
+        let mut got = Vec::new();
+        while let Some(item) = rx.recv().await {
+            got.push(item.expect("ok"));
+        }
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["type"], "tool_dispatched");
+        assert_eq!(got[0]["name"], "fs.read");
+        state::remove_turn(&id);
+    }
+
+    #[tokio::test]
+    async fn stream_turn_supports_multiple_subscribers_per_turn() {
+        let id = state::new_turn_id();
+        let handle = register_turn(id.clone(), "c1".into());
+
+        handle
+            .push_turn_event(TurnEvent::Token {
+                turn_id: id.clone(),
+                text: "x".into(),
+            })
+            .await;
+        handle.mark_done();
+
+        for _ in 0..2 {
+            let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+            handle_stream_turn(json!({"turn_id": id.clone()}), tx).await;
+            let mut got = Vec::new();
+            while let Some(item) = rx.recv().await {
+                got.push(item.expect("ok"));
+            }
+            assert_eq!(got.len(), 1);
+            assert_eq!(got[0]["text"], "x");
+        }
+
+        state::remove_turn(&id);
+    }
+
+    #[tokio::test]
+    async fn start_turn_rejects_missing_fields() {
+        let reply = handle_start_turn(json!({})).await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "bad_request");
+    }
+
+    #[tokio::test]
+    async fn start_turn_returns_turn_id_immediately_when_inputs_valid() {
+        let id = state::new_turn_id();
+        let reply = handle_start_turn(json!({
+            "user_message": "hi",
+            "conversation_id": "c1",
+            "turn_id": id.clone(),
+            "model": "stub-model",
+        }))
+        .await;
+
+        assert!(reply.ok, "start_turn should accept valid inputs: {reply:?}");
+        assert_eq!(reply.data["turn_id"], id);
+        assert_eq!(reply.data["conversation_id"], "c1");
+        assert!(get_turn(&id).is_some());
+
+        state::cancel_turn(&id);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        state::remove_turn(&id);
+    }
+
+    // ── 5.C wire-shape tests ─────────────────────────────────────────────
+
+    #[test]
+    fn tool_calls_wire_shape_matches_ollama_function_form() {
+        let calls = vec![ToolCall {
+            id: "c1".into(),
+            name: "fs.read".into(),
+            args: json!({"path": "foo"}),
+        }];
+        let wire = tool_calls_wire(&calls);
+        assert_eq!(wire.len(), 1);
+        assert_eq!(wire[0]["id"], "c1");
+        assert_eq!(wire[0]["function"]["name"], "fs.read");
+        assert_eq!(wire[0]["function"]["arguments"]["path"], "foo");
+    }
+
+    #[test]
+    fn recovered_to_calls_preserves_order_and_args() {
+        let salvage = SalvageResult {
+            cleaned_text: String::new(),
+            recovered: vec![
+                RecoveredCall {
+                    id: "call_text_1".into(),
+                    name: "fs.read".into(),
+                    args: json!({"a": 1}),
+                    raw_name: "fs.read".into(),
+                },
+                RecoveredCall {
+                    id: "call_text_2".into(),
+                    name: "git.status".into(),
+                    args: json!({}),
+                    raw_name: "git.status".into(),
+                },
+            ],
+            unrecognised: Vec::new(),
+        };
+        let calls = recovered_to_calls(&salvage);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].id, "call_text_1");
+        assert_eq!(calls[1].name, "git.status");
+    }
+
+    #[tokio::test]
+    async fn emit_unrecognised_fires_one_tool_error_per_entry() {
+        let id = state::new_turn_id();
+        let handle = register_turn(id.clone(), "c1".into());
+        let salvage = SalvageResult {
+            cleaned_text: String::new(),
+            recovered: Vec::new(),
+            unrecognised: vec![crate::turn::salvage::UnrecognisedCall {
+                id: "call_text_1".into(),
+                name: "nonexistent".into(),
+                args: json!({}),
+            }],
+        };
+        emit_unrecognised(&handle, &salvage).await;
+        let buf = handle.tool_events.lock().await;
+        assert_eq!(buf.len(), 1);
+        assert!(matches!(
+            buf[0],
+            ToolEvent::ToolError {
+                reason: Some(ToolErrorReason::ToolCallTextUnrecognised),
+                ..
+            }
+        ));
+        drop(buf);
+        state::remove_turn(&id);
+    }
+}

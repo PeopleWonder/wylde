@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# uv-managed virtualenv (uv.lock is committed, .venv is not)
+.venv/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# gpui GUI build output (the Tauri+Svelte tree was deleted at the
+# slice-11 cutover; the standalone Core/GUI/ Cargo workspace builds here)
+Core/GUI/target/
+
+# Cargo build artifacts (backend Rust workspace at rust/)
+rust/target/
+
+# Any other Cargo target dirs (catch-all)
+target/
+
+# Local data (runtime state — never committed)
+data/
+logs/
+*.log
+.wylde/
+
+# Editors / IDEs
+.vscode/
+.idea/
+
+# Environment variables / secrets — never committed
+# (.env.example / .env.sample stay tracked as templates)
+.env
+.env.local
+.env.*.local
+*.local.env
+secrets.yaml
+secrets.toml
+secrets.json
+*.secret
+*.secret.*
+
+Core/Memgraph/vendor/

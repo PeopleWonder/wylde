@@ -1,0 +1,23 @@
+[package]
+name = "wylde-prebuild-guard"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Build-script guard that fails loud when a wylde-*.exe is still alive in the process table, so cargo doesn't blow up at link time with a sharing-violation."
+
+# This crate lives **outside `rust/crates/`** on purpose: it has to
+# `Command::new("tasklist")` to enumerate live daemons, and
+# `no_external_process_spawn_rust` (in `Core/harness/dev/`) restricts
+# spawn to the wylde-lifecycle runtime crate. The linter only walks
+# `rust/crates/<crate>/src/`, so this location keeps the policy in
+# tree without expanding the spawn allowlist.
+
+[dependencies]
+wylde-shared = { path = "../../crates/wylde-shared" }
+
+[dev-dependencies]
+tempfile = "3"
+# Tests synthesise fresh/stale heartbeat strings; chrono is already in
+# the lockfile transitively via wylde-shared so this is essentially free.
+chrono.workspace = true

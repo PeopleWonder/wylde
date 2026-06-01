@@ -1,0 +1,37 @@
+[package]
+name = "wylde-panel-workspaces"
+description = "Wylde Workspaces panel — gpui-era port of Core/GUI/src/pages/Workspaces.svelte.  Lists RAG workspaces in MRU order, adds a workspace via the native folder picker, activates / reindexes / removes."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens — every panel imports the same palette so a
+# Wylde-wide colour change touches one file.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — workspaces lives behind `rag.workspaces.*` verbs on
+# `\\.\pipe\wylde-harness`; the panel reaches it through the shared
+# wire client.
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# gpui — every panel imports the same set: div builders, Render, etc.
+gpui.workspace = true
+
+# Native folder picker.  Replaces the Tauri dialog plugin the Svelte
+# alpha uses; declared once at the workspace root.
+rfd.workspace = true
+
+# Tokio for `spawn_blocking` — the rfd folder picker is a blocking
+# native call, so we run it on the blocking pool instead of stalling
+# the gpui dispatcher.
+tokio.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

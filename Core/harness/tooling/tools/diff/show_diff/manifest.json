@@ -1,0 +1,19 @@
+{
+  "id": "show_diff",
+  "name": "show_diff",
+  "description": "Generate a unified diff between two files (a_path/b_path) or two strings (a/b). Returns the diff text and a `changed` flag.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "diff",
+  "entrypoint": "run_show_diff",
+  "tags": ["diff", "compare"],
+  "parameters": [
+    {"name": "a_path", "type": "string", "required": false, "description": "Path to file A"},
+    {"name": "b_path", "type": "string", "required": false, "description": "Path to file B"},
+    {"name": "a", "type": "string", "required": false, "description": "Content A (alt to a_path)"},
+    {"name": "b", "type": "string", "required": false, "description": "Content B (alt to b_path)"},
+    {"name": "a_label", "type": "string", "required": false, "default": "a"},
+    {"name": "b_label", "type": "string", "required": false, "default": "b"},
+    {"name": "context", "type": "number", "required": false, "default": 3, "description": "Lines of context"}
+  ]
+}

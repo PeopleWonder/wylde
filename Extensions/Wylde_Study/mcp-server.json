@@ -1,0 +1,24 @@
+{
+  "name": "Wylde_Study",
+  "description": "Chrome browser-side study assistant — page indexing + RAG + LLM summarize/explain/flashcards. Migrated to MCP via wylde_mcp_py_shim; browser_extension/ (MV3) is untouched and still talks back over Gateway /extensions/Wylde_Study/<endpoint>.",
+  "version": "0.2.0",
+  "enabled": false,
+  "transport": "stdio",
+  "command": [
+    "${WYLDE_PYTHON}",
+    "-m",
+    "Extensions._shim.server",
+    "--extension",
+    "Wylde_Study"
+  ],
+  "cwd": "${WYLDE_ROOT}",
+  "env": {
+    "PYTHONPATH": "${WYLDE_ROOT}"
+  },
+  "capabilities": ["ingress.browser", "egress.browser"],
+  "health": {
+    "method": "ping",
+    "interval_s": 30,
+    "timeout_s": 5
+  }
+}

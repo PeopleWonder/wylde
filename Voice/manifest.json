@@ -1,0 +1,38 @@
+{
+  "name": "Voice",
+  "description": "Voice-driven interaction service. Owns audio I/O (mic + speakers), wake-word detection, and the per-turn orchestration loop (capture \u2192 harness STT \u2192 harness chat \u2192 harness TTS \u2192 play). STT/TTS/wake-word engines run on the harness side; Voice talks to them only through \\\\.\\pipe\\wylde-harness.",
+  "version": "1.0.0",
+  "enabled": true,
+  "entry_point": "py -3 -m Voice.run",
+  "depends_on": [],
+  "tier": "core",
+  "pipe": "wylde-voice",
+  "models": [
+    {
+      "id": "openai/whisper-small",
+      "kind": "stt",
+      "required": true,
+      "chat_visible": false
+    },
+    {
+      "id": "onnx-community/Kokoro-82M-v1.0-ONNX",
+      "kind": "tts",
+      "required": true,
+      "chat_visible": false
+    }
+  ],
+  "actions": [
+    "voice.toggle",
+    "voice.start_session",
+    "voice.end_session",
+    "voice.set_mode",
+    "voice.get_mode",
+    "voice.set_active_conversation",
+    "voice.get_status",
+    "voice.check_wake_word_model",
+    "voice.pull_wake_word_model",
+    "voice.subscribe_status"
+  ],
+  "shutdown_order": 30,
+  "health_check": null
+}

@@ -1,0 +1,14 @@
+{
+  "id": "preload_model",
+  "name": "preload_model",
+  "description": "Load an Ollama model into VRAM without generating tokens. `keep_alive` defaults to `24h`; pass `0` to immediately evict.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "ollama",
+  "entrypoint": "run_preload_model",
+  "tags": ["ollama", "vram", "preload"],
+  "parameters": [
+    {"name": "model", "type": "string", "required": true, "description": "Model name, e.g. 'gemma3:27b'"},
+    {"name": "keep_alive", "type": "string", "required": false, "default": "24h", "description": "Ollama keep_alive (e.g. '24h', '30m', '0' to immediately evict)"}
+  ]
+}

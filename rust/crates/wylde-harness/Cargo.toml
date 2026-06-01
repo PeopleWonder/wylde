@@ -1,0 +1,88 @@
+[package]
+name = "wylde-harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wylde-harness"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# Pre-build guard — fails the build loud if `wylde-harness.exe` is still
+# alive in the process table (Windows holds an exclusive sharing lock on
+# running binaries; without the guard the linker fails opaquely with
+# `os error 32`). Same pattern as wylde-ollama.
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+# UUID for turn-id generation. The Python side uses `uuid.uuid4().hex`;
+# we mirror with v4 + simple (no hyphens) formatting in state.rs.
+uuid = { version = "1", features = ["v4"] }
+# Streaming primitives used by the slice-5.B turn registry + stream
+# subscribers. `broadcast` for fan-out to multiple subscribers,
+# `Notify` (already in tokio::sync via the `full` feature) for cancel.
+futures = "0.3"
+# Salvage parser (5.C) — Python uses re.DOTALL for fenced JSON / tag
+# patterns. The Rust port mirrors via the `regex` crate; the lookaround
+# subset Python uses is fully supported.
+regex = "1"
+once_cell = "1"
+# SHA-256 for the per-turn (name, args) dedupe hash — mirrors Python's
+# hashlib.sha256(...).hexdigest(). Kept tiny: `sha2` is already in the
+# tree transitively via the workspace's hyper/reqwest deps so this only
+# adds a feature flag, no new crate fetch.
+sha2 = "0.10"
+# Pure-Rust binary serialisation for the Phase 7.B long-term vector
+# store. Chosen over `instant-distance` / `hnsw_rs` / `usearch` because
+# (a) Wylde's long-term layer is curated/sparse (low thousands of
+# records max), so a linear cosine scan over an Aligned-vector arena is
+# faster than HNSW build/query for that scale, (b) bincode + serde is
+# already in the dep closure (transitively via `tracing-subscriber`),
+# (c) tiny surface means no 0.x-API churn risk, and (d) the on-disk
+# format is just `len + repeated (id, embedding bytes)` — trivially
+# documentable and deterministic across runs. If scale balloons, swap
+# the inner `query_topk` for HNSW behind the same trait.
+bincode = "1.3"
+# Random number generation for the per-record id. Already in tree.
+rand = "0.8"
+# Hex encoding for the per-record id — mirrors Python's
+# `secrets.token_hex(8)`. Already in tree.
+hex = "0.4"
+# Bolt driver for the direct-to-Neo4j path in
+# `memory/memgraph/bolt.rs`. The bundled DB the Python
+# `Core/Memgraph/` service supervises is **Neo4j Community 5.x** via
+# `vendor/neo4j/bin/neo4j.bat`, not the Memgraph product — so the
+# Phase 7.A handoff's `rsmgclient` suggestion (which wraps Memgraph's
+# `libmgclient.dll`) does not apply. neo4rs is pure Rust, tokio-async,
+# Windows-clean, and matches the same Bolt server the Python
+# `_driver.py::_get_driver()` already opens. The Python service path
+# stays in place as the strangler-fig `python` fallback; this dep
+# powers the `rust` impl branch.
+neo4rs = "0.8"
+# Per-verb async methods on `HarnessApi` are object-safe via
+# `async-trait` (Phase 12.1 in-process trait restructuring). Already in
+# the dep tree transitively via tracing/hyper, so no new download.
+async-trait = "0.1"
+# HTTP client for the N8N ingest webhook trigger (Seam 4 of the
+# 2026-05-28 cleanup slice). Minimal feature set — JSON body + rustls
+# TLS — matches the rest of the workspace (wylde-vpn, wylde-voice,
+# wylde-vram-broker all use this same flag set). No `blocking` feature;
+# every call site is already async.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"

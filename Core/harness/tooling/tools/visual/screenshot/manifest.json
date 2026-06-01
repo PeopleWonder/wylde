@@ -1,0 +1,13 @@
+{
+  "id": "screenshot",
+  "name": "screenshot",
+  "description": "Take a screenshot of the entire screen or a region. Returns a base64-encoded PNG suitable for multimodal LLM input.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "visual",
+  "entrypoint": "run_screenshot",
+  "tags": ["visual", "screenshot", "desktop", "pyautogui"],
+  "parameters": [
+    {"name": "region", "type": "array", "required": false, "description": "[x, y, width, height] to capture a specific area. Omit for full screen."}
+  ]
+}

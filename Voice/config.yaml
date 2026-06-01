@@ -1,0 +1,24 @@
+audio:
+  input_device: null      # null = system default; integer index to override
+  output_device: null
+  sample_rate: 16000      # microphone capture rate (Whisper expects 16k)
+  tts_sample_rate: 24000  # Kokoro produces 24 kHz audio
+
+vad:
+  threshold: 0.65         # speech-prob threshold; ZCR gate pre-filters broadband noise
+  silence_timeout_ms: 1800  # consecutive silence before treating recording as done
+
+stt:
+  # backend: "cpu" or "npu".
+  #   cpu — faster-whisper; no compilation step, runs on any CPU.
+  #   npu — optimum.intel + OpenVINO with a static-shape encoder. Only one
+  #         backend is bundled at install time; switch by re-running
+  #         download_models.py with --backend npu.
+  backend: "cpu"
+  model: "openai/whisper-small"   # HF repo id; default-installed weights
+  language: "en"
+  load_in_8bit: true              # weight-compress when exporting to OpenVINO IR (NPU only)
+
+tts:
+  voice: "af_heart"   # Kokoro voice name
+  speed: 1.0

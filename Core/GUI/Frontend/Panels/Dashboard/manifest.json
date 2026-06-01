@@ -1,0 +1,19 @@
+{
+  "schema_version": 2,
+  "service": "core",
+  "wylde_check_opt_outs": ["required_services_includes_called_services"],
+  "panels": [
+    {
+      "id": "dashboard",
+      "title": "Dashboard",
+      "icon": "gauge",
+      "order": 8,
+      "version": "0.1.0",
+      "required_services": [],
+      "source": {
+        "kind": "gpui_view",
+        "factory": "wylde_panel_dashboard::DashboardPanel::view"
+      }
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+[package]
+name = "wylde-panel-models"
+description = "Wylde Models panel — gpui-era surface over the Ollama model registry.  Lists installed models, pulls new ones with live progress, deletes with inline confirmation, and surfaces hardware-aware recommendations."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens — every panel imports the same palette.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — Models talks to wylde-ollama for the install/pull/delete
+# surface and to wylde-vram-broker for `system.inventory` (the hardware-
+# aware recommendation hint).
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# Native gpui TextInput widget — backs the "pull new model" name field.
+wylde-gpui-input = { path = "../../Input" }
+
+# Tokio for sleeps + bridge handle used by the stream consumer.
+tokio.workspace = true
+
+# gpui — every panel imports the same set: div builders, Render, etc.
+gpui.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

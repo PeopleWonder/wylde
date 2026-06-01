@@ -1,0 +1,19 @@
+{
+  "id": "code_search",
+  "name": "code_search",
+  "description": "Search file contents for a regex pattern. Uses ripgrep when available, falls back to Python's `re` (skipping the usual noise dirs) when not. Returns a list of matches with path/line/text.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "search",
+  "entrypoint": "run_code_search",
+  "tags": ["search", "code", "ripgrep", "regex"],
+  "parameters": [
+    {"name": "pattern", "type": "string", "required": true, "description": "Regex pattern to search for"},
+    {"name": "path", "type": "string", "required": false, "default": ".", "description": "Directory to search"},
+    {"name": "file_type", "type": "string", "required": false, "description": "ripgrep file-type (e.g. 'py', 'js')"},
+    {"name": "glob", "type": "string", "required": false, "description": "Glob to filter files (e.g. '*.svelte')"},
+    {"name": "context", "type": "number", "required": false, "default": 0, "description": "Lines of context around each match"},
+    {"name": "case_insensitive", "type": "boolean", "required": false, "default": false},
+    {"name": "max_count", "type": "number", "required": false, "default": 500, "description": "Max matches to return"}
+  ]
+}

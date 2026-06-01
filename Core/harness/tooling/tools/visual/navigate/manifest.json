@@ -1,0 +1,15 @@
+{
+  "id": "navigate",
+  "name": "navigate",
+  "description": "Navigate the browser to a URL via Playwright. Returns the resolved URL and page title.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "visual",
+  "entrypoint": "run_navigate",
+  "tags": ["visual", "browser", "navigate", "playwright"],
+  "parameters": [
+    {"name": "url", "type": "string", "required": true, "description": "URL to navigate to"},
+    {"name": "wait_until", "type": "string", "required": false, "default": "load", "description": "'load', 'domcontentloaded', 'networkidle', or 'commit'"},
+    {"name": "timeout", "type": "number", "required": false, "default": 30000, "description": "Navigation timeout in milliseconds"}
+  ]
+}

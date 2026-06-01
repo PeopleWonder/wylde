@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "service": "core",
+  "panels": [
+    {
+      "id": "remote_access",
+      "title": "Remote Access",
+      "icon": "globe",
+      "order": 65,
+      "version": "0.1.0",
+      "required_services": ["wylde-vpn"],
+      "source": {
+        "kind": "gpui_view",
+        "factory": "wylde_panel_remote_access::RemoteAccessPanel::view"
+      }
+    }
+  ]
+}

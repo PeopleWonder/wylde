@@ -1,0 +1,14 @@
+{
+  "id": "git_add",
+  "name": "git_add",
+  "description": "Stage one or more files for commit. Accepts a string or list of paths.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "git",
+  "entrypoint": "run_git_add",
+  "tags": ["git", "vcs", "add", "stage"],
+  "parameters": [
+    {"name": "path", "type": "string", "required": false, "default": ".", "description": "Working tree path"},
+    {"name": "files", "type": "array", "required": true, "description": "Filenames to stage"}
+  ]
+}

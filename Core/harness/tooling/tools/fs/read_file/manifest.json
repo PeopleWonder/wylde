@@ -1,0 +1,13 @@
+{
+  "id": "read_file",
+  "name": "read_file",
+  "description": "Read the text contents of a file. Returns up to 100 KiB; sets `truncated=true` if the file was larger.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "fs",
+  "entrypoint": "run_read_file",
+  "tags": ["fs", "file", "read"],
+  "parameters": [
+    {"name": "path", "type": "string", "required": true, "description": "Path to the file"}
+  ]
+}

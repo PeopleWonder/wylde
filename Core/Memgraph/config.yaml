@@ -1,0 +1,40 @@
+service:
+  name: "wylde-memgraph"
+  # Knowledge graph service backing wylde-rag.
+  #
+  # External interface: \\.\pipe\wylde-memgraph  (Wylde named-pipe IPC)
+  # Internal backing:   Neo4j Community Edition 2026.03.1 (GPL v3)
+  #                     on bolt://127.0.0.1:7687  (127.0.0.1 only, not exposed)
+  #
+  # wylde-rag talks to this service via ipc.send("wylde-memgraph", ...) — never
+  # directly to the Bolt port. The Bolt port stays loopback-only and is purely
+  # an internal implementation detail.
+
+bolt:
+  listen_address: "127.0.0.1"
+  port: 7687
+  auth_enabled: false
+
+http:
+  # Neo4j HTTP management — disabled. wylde-rag uses the named pipe exclusively.
+  enabled: false
+  listen_address: "127.0.0.1"
+  port: 7474
+
+memory:
+  heap_initial_mb: 512
+  heap_max_mb: 1024
+  pagecache_mb: 512
+
+paths:
+  # null => <service_dir>/vendor/jdk and <service_dir>/vendor/neo4j.
+  # Populated on first run by start_graph.bat.
+  jdk_dir:   null
+  neo4j_dir: null
+  # null => <service_dir>/data (graph database files — persistent).
+  data_dir:  null
+  # null => <service_dir>/logs
+  log_dir:   null
+
+supervisor:
+  tier: 1

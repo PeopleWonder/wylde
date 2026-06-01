@@ -1,0 +1,13 @@
+{
+  "id": "hotkey",
+  "name": "hotkey",
+  "description": "Press a keyboard shortcut via PyAutoGUI (e.g. 'ctrl s', 'alt f4', 'ctrl shift t').",
+  "version": "2.0",
+  "service": "harness",
+  "group": "visual",
+  "entrypoint": "run_hotkey",
+  "tags": ["visual", "hotkey", "keyboard", "desktop", "pyautogui"],
+  "parameters": [
+    {"name": "keys", "type": "string", "required": true, "description": "Space-separated key names, e.g. 'ctrl s', 'ctrl shift t'"}
+  ]
+}

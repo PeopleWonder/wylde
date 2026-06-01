@@ -1,0 +1,15 @@
+{
+  "id": "run_tests",
+  "name": "run_tests",
+  "description": "Run the project's test suite. Auto-detects pytest / vitest / jest from project marker files (pytest.ini, pyproject.toml, package.json devDeps).",
+  "version": "2.0",
+  "service": "harness",
+  "group": "test",
+  "entrypoint": "run_run_tests",
+  "tags": ["test", "pytest", "vitest", "jest"],
+  "parameters": [
+    {"name": "path", "type": "string", "required": false, "default": ".", "description": "Project root"},
+    {"name": "framework", "type": "string", "required": false, "description": "pytest | vitest | jest (auto-detected if omitted)"},
+    {"name": "timeout", "type": "number", "required": false, "default": 300, "description": "Max seconds before the run is killed"}
+  ]
+}

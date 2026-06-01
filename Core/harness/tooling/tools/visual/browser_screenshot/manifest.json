@@ -1,0 +1,14 @@
+{
+  "id": "browser_screenshot",
+  "name": "browser_screenshot",
+  "description": "Take a screenshot of the browser viewport (or a specific element by selector). Returns a base64-encoded PNG.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "visual",
+  "entrypoint": "run_browser_screenshot",
+  "tags": ["visual", "browser", "screenshot", "playwright"],
+  "parameters": [
+    {"name": "full_page", "type": "boolean", "required": false, "default": false, "description": "Capture the full scrollable page"},
+    {"name": "selector", "type": "string", "required": false, "description": "CSS selector for element-only screenshot"}
+  ]
+}

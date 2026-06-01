@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "service": "core",
+  "panels": [
+    {
+      "id": "tools",
+      "title": "Tools",
+      "icon": "wrench",
+      "order": 50,
+      "version": "0.1.0",
+      "required_services": ["wylde-extension-bridge"],
+      "source": {
+        "kind": "gpui_view",
+        "factory": "wylde_panel_tools::ToolsPanel::view"
+      }
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "id": "edit_file",
+  "name": "edit_file",
+  "description": "Replace every occurrence of a literal substring in a file. Errors if the pattern is not found. Returns the number of replacements applied. The path is recorded on the active chat turn; the architectural wylde_check sweep runs once at end-of-turn against every file the turn wrote (no per-edit block — see docs/wylde_check_rules.md).",
+  "version": "2.2",
+  "service": "harness",
+  "group": "fs",
+  "entrypoint": "run_edit_file",
+  "tags": ["fs", "file", "edit"],
+  "parameters": [
+    {"name": "path", "type": "string", "required": true, "description": "Path to the file"},
+    {"name": "old_text", "type": "string", "required": true, "description": "Literal text to replace"},
+    {"name": "new_text", "type": "string", "required": true, "description": "Replacement text"}
+  ]
+}

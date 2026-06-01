@@ -1,0 +1,250 @@
+//! Per-panel IPC helpers for the Memory panel.
+//!
+//! Wraps the harness's `memory.long_term.*` + `memory.workspaces.*`
+//! verbs into typed reads.  Writes (delete, persona edit) live in the
+//! Settings panel today and are intentionally absent here — see the
+//! crate-level note in `lib.rs`.
+
+use serde_json::{json, Value};
+
+pub const SVC_HARNESS: &str = "wylde-harness";
+
+/// One curated long-term memory.  Mirrors `memory::long_term::records::LongTermMemory`
+/// from `wylde-harness`; we keep the shape inlined here so the panel
+/// doesn't pull the harness crate in just to read serde-derived fields.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LongTermRecord {
+    pub id: String,
+    pub body: String,
+    pub source: String,
+    /// 1..=10 importance — the harness sort-key.
+    pub importance: i32,
+    /// Unix seconds.  Used for the recency strip.
+    pub created_at: f64,
+    pub last_used_at: f64,
+    pub tags: Vec<String>,
+}
+
+impl LongTermRecord {
+    pub fn from_value(v: &Value) -> Self {
+        Self {
+            id: v
+                .get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            body: v
+                .get("body")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            source: v
+                .get("source")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            importance: v
+                .get("importance")
+                .and_then(|x| x.as_i64())
+                .map(|n| n as i32)
+                .unwrap_or(0),
+            created_at: v.get("created_at").and_then(|x| x.as_f64()).unwrap_or(0.0),
+            last_used_at: v
+                .get("last_used_at")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0),
+            tags: v
+                .get("tags")
+                .and_then(|x| x.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|t| t.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// One workspace summary as `memory.workspaces.recent` reports it.  The
+/// shape lines up with `rag.workspaces.*` so a future namespace merge
+/// (deferred per the §9 punchlist) won't ripple into the panel.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WorkspaceSummary {
+    pub id: String,
+    pub path: String,
+    pub persona: Option<String>,
+    pub last_activated_at: Option<String>,
+}
+
+impl WorkspaceSummary {
+    pub fn from_value(v: &Value) -> Self {
+        Self {
+            id: v
+                .get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            path: v
+                .get("path")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            persona: v
+                .get("persona")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_owned()),
+            last_activated_at: v
+                .get("last_activated_at")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_owned()),
+        }
+    }
+}
+
+/// Read the curated long-term list, importance-desc.
+pub async fn list_long_term() -> Result<Vec<LongTermRecord>, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "memory.long_term.list", "payload": {} })),
+    )
+    .await?;
+    Ok(parse_record_array(&v))
+}
+
+/// Vector-search long-term.  Empty/whitespace queries are rejected by
+/// the harness with `bad_request`; the panel guards against that
+/// up-front so the user sees the empty state rather than a "query is
+/// empty after trim" error toast.
+pub async fn search_long_term(query: &str, limit: u32) -> Result<Vec<LongTermRecord>, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "memory.long_term.search",
+            "payload": { "query": query, "limit": limit },
+        })),
+    )
+    .await?;
+    // search emits `{results: [...], count}` with each entry carrying
+    // the same field set as `list` + `similarity` + `score`.  We only
+    // keep the fields the panel renders, so the same `from_value`
+    // parser works on both shapes.
+    let Some(arr) = v.get("results").and_then(|x| x.as_array()) else {
+        return Ok(Vec::new());
+    };
+    Ok(arr.iter().map(LongTermRecord::from_value).collect())
+}
+
+/// Read up to `limit` most-recent workspaces.
+pub async fn recent_workspaces(limit: u32) -> Result<Vec<WorkspaceSummary>, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "memory.workspaces.recent",
+            "payload": { "limit": limit },
+        })),
+    )
+    .await?;
+    Ok(parse_workspace_array(&v))
+}
+
+fn parse_record_array(v: &Value) -> Vec<LongTermRecord> {
+    let Some(arr) = v.get("memories").and_then(|x| x.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter().map(LongTermRecord::from_value).collect()
+}
+
+fn parse_workspace_array(v: &Value) -> Vec<WorkspaceSummary> {
+    let Some(arr) = v.get("workspaces").and_then(|x| x.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter().map(WorkspaceSummary::from_value).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn long_term_record_parses_full_payload() {
+        let v = json!({
+            "id": "abcd1234",
+            "body": "remember: prefer Bash over PowerShell",
+            "source": "settings_ui",
+            "importance": 7,
+            "created_at": 1_700_000_000.0,
+            "last_used_at": 1_700_001_000.0,
+            "tags": ["env", "preference"],
+        });
+        let r = LongTermRecord::from_value(&v);
+        assert_eq!(r.id, "abcd1234");
+        assert_eq!(r.importance, 7);
+        assert_eq!(r.tags, vec!["env".to_owned(), "preference".to_owned()]);
+    }
+
+    #[test]
+    fn long_term_record_defaults_missing_fields() {
+        let r = LongTermRecord::from_value(&json!({}));
+        assert!(r.id.is_empty());
+        assert_eq!(r.importance, 0);
+        assert!(r.tags.is_empty());
+    }
+
+    #[test]
+    fn workspace_summary_parses_full_payload() {
+        let v = json!({
+            "id": "wylde",
+            "path": "%USERPROFILE%/Documents/Obsidian Vault/Wylde",
+            "persona": "careful architect",
+            "last_activated_at": "2026-05-28T12:00:00Z",
+        });
+        let s = WorkspaceSummary::from_value(&v);
+        assert_eq!(s.id, "wylde");
+        assert_eq!(s.persona.as_deref(), Some("careful architect"));
+        assert_eq!(s.last_activated_at.as_deref(), Some("2026-05-28T12:00:00Z"));
+    }
+
+    #[test]
+    fn parse_record_array_unwraps_envelope() {
+        let v = json!({
+            "memories": [
+                {"id": "a", "body": "x", "importance": 5},
+                {"id": "b", "body": "y", "importance": 3},
+            ]
+        });
+        let out = parse_record_array(&v);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, "a");
+        assert_eq!(out[1].importance, 3);
+    }
+
+    #[test]
+    fn parse_record_array_handles_missing_key() {
+        assert!(parse_record_array(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn parse_workspace_array_handles_missing_key() {
+        assert!(parse_workspace_array(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn harness_service_name_matches_pipe_prefix() {
+        assert_eq!(SVC_HARNESS, "wylde-harness");
+    }
+
+    #[test]
+    fn each_pipe_call_uses_expected_verb() {
+        // Build-time witness — same pattern Settings / Workspaces use.
+        let _ = list_long_term;
+        let _ = search_long_term;
+        let _ = recent_workspaces;
+    }
+}

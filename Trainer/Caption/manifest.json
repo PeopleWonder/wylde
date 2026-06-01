@@ -1,0 +1,12 @@
+{
+  "name": "Caption",
+  "description": "Florence-2 image / video captioning service. Produces caption text for LoRA training datasets via in-process Florence-2 (MIT). Optional Qwen2.5-VL and JoyCaption backends are supported by the same module but are not declared as required models.",
+  "version": "0.1.0",
+  "enabled": false,
+  "entry_point": "python run.py",
+  "depends_on": [],
+  "tier": "standard",
+  "models": [
+    {"id": "microsoft/Florence-2-large", "kind": "vision", "required": true}
+  ]
+}

@@ -1,0 +1,770 @@
+//! Daemon-managed subprocess + scheduler handles.
+//!
+//! Rust port of `Core/Lifecycle/daemon_state/__init__.py`. Owns the
+//! shared state every part of the daemon reads from:
+//!
+//! * Per-service [`tokio::process::Child`] handles. Submodules mutate
+//!   these via [`set_service_proc`] / [`take_service_proc`] so the
+//!   unified teardown sees the same instances.
+//! * The main-loop stop event ([`register_stop_event`],
+//!   [`request_daemon_exit`]). Action handlers use this to flip the
+//!   daemon out of `serve_forever` after their reply has been flushed
+//!   to the caller.
+//! * Spawn records — the daemon's "I started this thing" register the
+//!   orphan sweep walks for failed-to-launch detection.
+//!
+//! Layout note: in the Python package the state globals live on
+//! `daemon_state/__init__.py` because monkeypatched tests on the
+//! package namespace need to reach them. Rust has no equivalent
+//! monkeypatch surface, but we keep the same shape — one module owns
+//! the state, sibling modules reach in via the helpers below — so the
+//! file-per-Python-module mapping holds (the Wylde user's standing instruction).
+//!
+//! Submodules:
+//! * [`manifest`] — Core's runtime manifest writer + heartbeat thread.
+//! * [`orphan_sweep`] — 60s tick that walks `data/manifests/*.json`.
+//! * [`services`] — seven `start_<service>` / `stop_<service>` pairs
+//!   and the env-var dispatch that picks Python vs Rust per service.
+
+pub mod manifest;
+pub mod orphan_sweep;
+pub mod services;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+use tokio::process::Child;
+use tokio::sync::Notify;
+
+pub use crate::state::manifest::{register_core_manifest, unregister_core_manifest};
+pub use crate::state::orphan_sweep::{
+    boot_orphan_sweep, start_orphan_sweep, stop_orphan_sweep, sweep_orphans,
+};
+
+/// Canonical names for the seven daemon-managed services. Used both as
+/// the key into [`STATE`]'s process map and as the manifest filename
+/// (without the `.json` suffix) so the orphan sweep agrees with the
+/// services map on which manifests belong to which child.
+pub mod service_name {
+    pub const MEMGRAPH: &str = "wylde-memgraph";
+    pub const VOICE: &str = "wylde-voice";
+    pub const VRAM_BROKER: &str = "wylde-vram-broker";
+    pub const DEVICE_GATE: &str = "wylde-device-gate";
+    pub const EXTENSION_BRIDGE: &str = "wylde-extension-bridge";
+    pub const GATEWAY: &str = "wylde-gateway";
+    pub const OLLAMA: &str = "wylde-ollama";
+    /// WyldeLink VPN. Phase 2 of the Rust migration — `WYLDE_WYLDE_VPN_IMPL`
+    /// defaults to `python`; the Rust impl is a foundation slice (control
+    /// plane + 16 actions, with tunnel/NAT/discovery stubbed).
+    pub const VPN: &str = "wylde-vpn";
+    /// Trainer — Caption sub-service. Phase 3 of the Rust migration —
+    /// `WYLDE_WYLDE_TRAINER_IMPL` defaults to `python` (in-process
+    /// captioner, no daemon-managed subprocess); set to `rust` to spawn
+    /// the Rust binary fronting Florence-2 over `\\.\pipe\wylde-trainer`.
+    pub const TRAINER: &str = "wylde-trainer";
+    /// Trainer worker — Python inference engine the Rust `wylde-trainer`
+    /// talks to over `\\.\pipe\wylde-trainer-worker`. Lifecycle-managed
+    /// (the spawn rule `no_external_process_spawn_rust` pins
+    /// `Command::new` to this crate), spawned only when
+    /// `WYLDE_WYLDE_TRAINER_IMPL=rust`.
+    pub const TRAINER_WORKER: &str = "wylde-trainer-worker";
+    pub const MEMORY_SCHEDULER: &str = "wylde-memory-scheduler";
+    /// Wylde harness — chat-turn driver. Phase 5 of the Rust
+    /// migration. Slice 5.D (2026-05-25) flipped
+    /// `WYLDE_WYLDE_HARNESS_IMPL`'s default from `python` to `rust`:
+    /// the lifecycle daemon now spawns the consolidated
+    /// `wylde-harness.exe` fronting the chat.* action surface over
+    /// `\\.\pipe\wylde-harness`. Set
+    /// `WYLDE_WYLDE_HARNESS_IMPL=python` to revert to the in-tree
+    /// `Core/harness/turn/` driver during the rollback window.
+    pub const HARNESS: &str = "wylde-harness";
+}
+
+/// Window after spawn within which the service is expected to publish
+/// its manifest. Past this with no manifest visible the daemon emits a
+/// failed-to-launch warning. Matches the 30s value in
+/// `daemon_state/__init__.py::_SPAWN_GRACE_SECONDS`.
+pub const SPAWN_GRACE_SECONDS: f64 = 30.0;
+
+/// Cadence for the orphan-detection sweep. Matches the unified 60s
+/// heartbeat tick so observed liveness signals are roughly synchronous.
+pub const ORPHAN_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The daemon's runtime state. Owned by a process-global `OnceLock` so
+/// every submodule reaches the same instance — the equivalent of the
+/// Python `daemon_state` module's namespace globals.
+struct State {
+    procs: HashMap<String, Child>,
+    spawn_records: HashMap<String, SpawnRecord>,
+    manifest_dir: PathBuf,
+    stop: Option<std::sync::Arc<Notify>>,
+    orphan_sweep_stop: Option<std::sync::Arc<Notify>>,
+    /// No-spawn mode flag — see the no-spawn section below.
+    nospawn: bool,
+    /// "Would-have-spawned" registry (name → impl lang). Populated by the
+    /// `services::start_<service>` no-spawn short-circuit instead of a real
+    /// child. Only ever non-empty when [`nospawn`] is set.
+    nospawn_services: HashMap<String, String>,
+}
+
+impl State {
+    fn new() -> Self {
+        let root = std::env::var_os("WYLDE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+        Self {
+            procs: HashMap::new(),
+            spawn_records: HashMap::new(),
+            manifest_dir: root.join("data").join("manifests"),
+            stop: None,
+            orphan_sweep_stop: None,
+            nospawn: false,
+            nospawn_services: HashMap::new(),
+        }
+    }
+}
+
+fn state() -> &'static Mutex<State> {
+    static S: OnceLock<Mutex<State>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(State::new()))
+}
+
+// ── No-spawn (parity / test) mode ──────────────────────────────────────
+//
+// No-spawn mode is a TEST-AND-PARITY-ONLY switch. When enabled (env
+// `WYLDE_LIFECYCLE_NOSPAWN=1` or the `--no-spawn` CLI flag) the daemon
+// brings up its full control surface — the `\\.\pipe\wylde-lifecycle`
+// pipe, every registered action — but the `services::start_<service>`
+// functions DO NOT fork child processes. Each records a
+// "would-have-spawned" entry in `nospawn_services` so the `lifecycle.*`
+// parity actions (and `service.shutdown_all`) report what the daemon
+// *would* have done.
+//
+// A no-spawn daemon also leaves the host-wide `data/manifests/core.json`
+// untouched — neither written at boot nor deleted at shutdown — so a
+// parity run never clobbers a production daemon's manifest. Combined
+// with the `WYLDE_LIFECYCLE_PIPE_NAME` isolated-pipe override, a parity
+// run is safe to perform while the real Wylde stack is up.
+//
+// ⚠️  THIS MUST NEVER BE ENABLED IN PRODUCTION. ⚠️
+// A no-spawn daemon supervises nothing — Memgraph, Voice, the VRAM
+// broker, the gateway and device_gate never start. It exists solely so
+// the cross-language parity suite (`rust/tests/parity/tests/lifecycle.rs`)
+// can exercise the control + manifest surfaces without booting Wylde's
+// entire tier=core stack. It is the byte-for-byte counterpart of the
+// Python daemon's no-spawn mode (`Core/Lifecycle/daemon_state`).
+
+/// Enable / disable no-spawn mode. Set once at daemon boot.
+///
+/// TEST/PARITY ONLY — see the no-spawn warning above. Production daemons
+/// never call this; the flag defaults to `false`.
+pub fn set_nospawn(enabled: bool) {
+    if let Ok(mut s) = state().lock() {
+        s.nospawn = enabled;
+    }
+}
+
+/// True when no-spawn mode is active (`start_<service>` short-circuits).
+///
+/// TEST/PARITY ONLY — see the no-spawn warning above.
+pub fn nospawn_enabled() -> bool {
+    state().lock().map(|s| s.nospawn).unwrap_or(false)
+}
+
+/// Record that `name` would-have-been-spawned (`impl_lang` is `"python"`
+/// or `"rust"`). The no-spawn analogue of a real spawn + [`record_spawn`].
+pub fn nospawn_record(name: &str, impl_lang: &str) {
+    if let Ok(mut s) = state().lock() {
+        s.nospawn_services
+            .insert(name.to_owned(), impl_lang.to_owned());
+    }
+}
+
+/// Drop a would-have-spawned record; returns whether it was present.
+/// The no-spawn analogue of taking a real [`Child`] out for teardown.
+pub fn nospawn_take(name: &str) -> bool {
+    state()
+        .lock()
+        .ok()
+        .map(|mut s| s.nospawn_services.remove(name).is_some())
+        .unwrap_or(false)
+}
+
+/// Sorted snapshot of every would-have-spawned service name — diagnostics.
+pub fn nospawn_snapshot() -> Vec<String> {
+    let mut names: Vec<String> = state()
+        .lock()
+        .map(|s| s.nospawn_services.keys().cloned().collect())
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// Spawn-record entry tracked per child. The orphan sweep reads these
+/// to distinguish "we spawned this and it vanished" from "we never
+/// tried to spawn this".
+#[derive(Debug, Clone)]
+pub struct SpawnRecord {
+    pub pid: u32,
+    pub spawn_time: Instant,
+    pub impl_lang: String,
+    pub grace_satisfied: bool,
+}
+
+/// Tell orphan-detection that the daemon just spawned `name`.
+///
+/// `impl_lang` records which implementation language is running
+/// (`"python"` or `"rust"`) so dashboards and the orphan-sweep log can
+/// distinguish the two during the strangler-fig migration.
+pub fn record_spawn(name: &str, pid: u32, impl_lang: &str) {
+    if let Ok(mut s) = state().lock() {
+        s.spawn_records.insert(
+            name.to_owned(),
+            SpawnRecord {
+                pid,
+                spawn_time: Instant::now(),
+                impl_lang: impl_lang.to_owned(),
+                grace_satisfied: false,
+            },
+        );
+    }
+}
+
+/// Clear the spawn record on graceful stop. Stops orphan-detection
+/// from flagging a deliberately-stopped service as failed.
+pub fn forget_spawn(name: &str) {
+    if let Ok(mut s) = state().lock() {
+        s.spawn_records.remove(name);
+    }
+}
+
+/// Snapshot of every active spawn record. The orphan sweep iterates
+/// this map (taking the lock again per write-back) to mark records
+/// past the grace window as `grace_satisfied`.
+pub fn spawn_records_snapshot() -> Vec<(String, SpawnRecord)> {
+    state()
+        .lock()
+        .map(|s| {
+            s.spawn_records
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Flip the `grace_satisfied` flag for a spawn record so the
+/// failed-to-launch warning fires once and not on every tick.
+pub fn mark_grace_satisfied(name: &str) {
+    if let Ok(mut s) = state().lock() {
+        if let Some(rec) = s.spawn_records.get_mut(name) {
+            rec.grace_satisfied = true;
+        }
+    }
+}
+
+/// Store the Child handle for `name`. Overwrites any prior handle —
+/// the only legitimate caller is `services::start_<service>`, which
+/// guards against double-spawn before reaching here.
+pub fn set_service_proc(name: &str, child: Child) {
+    if let Ok(mut s) = state().lock() {
+        s.procs.insert(name.to_owned(), child);
+    }
+}
+
+/// Pull the Child handle for `name` out of the state map. Returns
+/// `None` if the service was never spawned (or was already taken by an
+/// earlier teardown).
+pub fn take_service_proc(name: &str) -> Option<Child> {
+    state().lock().ok().and_then(|mut s| s.procs.remove(name))
+}
+
+/// Quick "is `name` running?" check. Returns `false` if no handle is
+/// recorded or the child has exited; locks briefly to consult the
+/// kernel via [`Child::try_wait`].
+///
+/// In no-spawn mode there are no real children — aliveness is read from
+/// the `nospawn_services` would-have-spawned registry instead.
+pub fn is_service_alive(name: &str) -> bool {
+    if let Ok(mut s) = state().lock() {
+        if s.nospawn {
+            return s.nospawn_services.contains_key(name);
+        }
+        if let Some(child) = s.procs.get_mut(name) {
+            return matches!(child.try_wait(), Ok(None));
+        }
+    }
+    false
+}
+
+/// Pid for `name` if a Child is currently tracked. `None` if the
+/// service was never spawned or has been taken out for shutdown.
+pub fn service_pid(name: &str) -> Option<u32> {
+    state()
+        .lock()
+        .ok()
+        .and_then(|s| s.procs.get(name).and_then(Child::id))
+}
+
+/// Best-effort pid recorded in `name`'s on-disk manifest.
+///
+/// Reads `status.pid` from `data/manifests/<name>.json`. Returns `None`
+/// when the manifest is missing, unparseable, or carries no positive
+/// pid. The `start_<service>` already-alive log lines use this so the
+/// operator can see which pid the daemon believes still owns the slot —
+/// the diagnostic that was missing when five services silently failed to
+/// spawn behind stale manifests (2026-05-31).
+pub fn manifest_pid(name: &str) -> Option<u32> {
+    let path = manifest_path_for(name);
+    let raw = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let pid = v.get("status")?.get("pid")?.as_u64()?;
+    (pid > 0 && pid <= u64::from(u32::MAX)).then_some(pid as u32)
+}
+
+/// Read the manifest directory the orphan sweep walks. Resolved from
+/// `WYLDE_ROOT` once at state init.
+pub fn manifest_dir() -> PathBuf {
+    state()
+        .lock()
+        .map(|s| s.manifest_dir.clone())
+        .unwrap_or_else(|_| PathBuf::from("data/manifests"))
+}
+
+/// Manifest path for `name`. Mirrors the Python `_manifest_path`
+/// special-case: `wylde-core` lands at `core.json` rather than
+/// `wylde-core.json` so it stays at the canonical path the dashboard
+/// knows.
+pub fn manifest_path_for(name: &str) -> PathBuf {
+    let dir = manifest_dir();
+    if name == "wylde-core" {
+        dir.join("core.json")
+    } else {
+        dir.join(format!("{name}.json"))
+    }
+}
+
+/// Hand the daemon's main-loop stop event to this module so action
+/// handlers can request a graceful exit. Idempotent — re-registering
+/// just replaces the reference.
+pub fn register_stop_event(notify: std::sync::Arc<Notify>) {
+    if let Ok(mut s) = state().lock() {
+        s.stop = Some(notify);
+    }
+}
+
+/// Ask the daemon to exit cleanly after a brief delay.
+///
+/// The delay matters: the action that triggers this is mid-response.
+/// If we flip the notify synchronously the daemon's main task can
+/// reach `notified()` and start tearing the pipe server down before
+/// the worker task has flushed the reply frame to the caller. Half a
+/// second is more than enough for an msgpack envelope to make it
+/// across a named pipe on the local box.
+///
+/// Returns `true` if a stop event is registered (i.e., the daemon
+/// will exit), `false` if no event was registered (called outside a
+/// running daemon — e.g., from a unit test).
+pub fn request_daemon_exit(after: Duration) -> bool {
+    let notify = match state().lock().ok().and_then(|s| s.stop.clone()) {
+        Some(n) => n,
+        None => return false,
+    };
+    tokio::spawn(async move {
+        tokio::time::sleep(after).await;
+        notify.notify_waiters();
+    });
+    true
+}
+
+/// Store the orphan-sweep cancellation handle so [`stop_orphan_sweep`]
+/// can drain the loop on shutdown.
+pub(crate) fn register_orphan_sweep_stop(notify: std::sync::Arc<Notify>) {
+    if let Ok(mut s) = state().lock() {
+        s.orphan_sweep_stop = Some(notify);
+    }
+}
+
+/// Take the orphan-sweep stop notify so a duplicate
+/// [`start_orphan_sweep`] can detect it's already running and drop
+/// out, and [`stop_orphan_sweep`] can fire the notify.
+pub(crate) fn take_orphan_sweep_stop() -> Option<std::sync::Arc<Notify>> {
+    state()
+        .lock()
+        .ok()
+        .and_then(|mut s| s.orphan_sweep_stop.take())
+}
+
+/// Is the orphan sweep currently registered? Cheap read of the same
+/// slot [`register_orphan_sweep_stop`] writes.
+pub(crate) fn orphan_sweep_running() -> bool {
+    state()
+        .lock()
+        .map(|s| s.orphan_sweep_stop.is_some())
+        .unwrap_or(false)
+}
+
+/// Stop every long-lived child the daemon spawned outside the
+/// launcher's tracked-services set.
+///
+/// Captures the running set first (so the response payload is honest
+/// about what was alive), runs each stop in the documented order —
+/// orphan sweep first, then scheduler → gateway → extension_bridge →
+/// voice → device_gate → vram_broker → memgraph — swallows individual
+/// stop failures (each gets logged), and returns a structured summary.
+///
+/// Both the ctrl_c handler and the `service.shutdown_all` action go
+/// through here, so external invocation and Ctrl-C tear down the same
+/// way.
+pub async fn stop_all_daemon_managed() -> ShutdownSummary {
+    let mut stopped: Vec<String> = Vec::new();
+    let mut failed: Vec<ShutdownFailure> = Vec::new();
+
+    // Halt orphan-detection BEFORE stopping services — otherwise an
+    // in-flight sweep could flag a service mid-teardown as a "dead
+    // orphan" and rewrite its manifest to dead-orphan after the
+    // service already wrote `stopped`.
+    stop_orphan_sweep();
+
+    // Gateway first — it's the outward-facing surface, taking it down
+    // before its dependents (extension_bridge + Voice + device_gate)
+    // reduces the blast radius if a teardown hangs. Memgraph last so
+    // anything still holding a Bolt driver releases first.
+    async fn run_step(name: &str, result: anyhow::Result<()>) -> Result<(), ShutdownFailure> {
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::error!("daemon: stop {} raised: {:#}", name, e);
+                Err(ShutdownFailure {
+                    name: name.to_owned(),
+                    error: format!("{e:#}"),
+                })
+            }
+        }
+    }
+
+    let nospawn = nospawn_enabled();
+
+    // Each tuple captures `was_alive` BEFORE its stop runs — tuple elements
+    // evaluate left-to-right, so `is_service_alive` is read before the
+    // adjacent `stop_<service>` future is awaited. This mirrors the Python
+    // `stop_all_daemon_managed`'s `_try(name, alive, fn)` ordering.
+    // Shutdown order (per master plan Phase 1 §6a, extended for VPN +
+    // Trainer + TrainerWorker + Harness):
+    //   Gateway → ExtensionBridge → Harness → Voice → DeviceGate →
+    //   Ollama → Trainer → TrainerWorker → VPN → VramBroker → Memgraph
+    //
+    // Harness stops AFTER Gateway/ExtensionBridge (its callers are
+    // gone) but BEFORE Ollama (its primary downstream — Ollama drains
+    // any final lease cleanly after the turn driver releases its
+    // last in-flight call). Voice/DeviceGate are unrelated and stop
+    // independently. Ollama + Trainer go BEFORE the broker so in-flight
+    // VRAM leases and Florence-2 weights are released cleanly; the
+    // broker then has nothing to reap. TrainerWorker stops AFTER
+    // Trainer so trainer's last in-flight inference call drains
+    // cleanly. VPN sits between TrainerWorker and the broker —
+    // independent of either, but ordering it after the VRAM consumers
+    // keeps the broker the last "infrastructure" service torn down
+    // before Memgraph. Memgraph last so anything still holding a Bolt
+    // driver releases first.
+    let steps: [(&str, bool, anyhow::Result<()>); 11] = [
+        (
+            service_name::GATEWAY,
+            is_service_alive(service_name::GATEWAY),
+            services::stop_gateway().await,
+        ),
+        (
+            service_name::EXTENSION_BRIDGE,
+            is_service_alive(service_name::EXTENSION_BRIDGE),
+            services::stop_extension_bridge().await,
+        ),
+        (
+            service_name::HARNESS,
+            is_service_alive(service_name::HARNESS),
+            services::stop_harness().await,
+        ),
+        (
+            service_name::VOICE,
+            is_service_alive(service_name::VOICE),
+            services::stop_voice().await,
+        ),
+        (
+            service_name::DEVICE_GATE,
+            is_service_alive(service_name::DEVICE_GATE),
+            services::stop_device_gate().await,
+        ),
+        (
+            service_name::OLLAMA,
+            is_service_alive(service_name::OLLAMA),
+            services::stop_ollama().await,
+        ),
+        (
+            service_name::TRAINER,
+            is_service_alive(service_name::TRAINER),
+            services::stop_trainer().await,
+        ),
+        (
+            service_name::TRAINER_WORKER,
+            is_service_alive(service_name::TRAINER_WORKER),
+            services::stop_trainer_worker().await,
+        ),
+        (
+            service_name::VPN,
+            is_service_alive(service_name::VPN),
+            services::stop_vpn().await,
+        ),
+        (
+            service_name::VRAM_BROKER,
+            is_service_alive(service_name::VRAM_BROKER),
+            services::stop_vram_broker().await,
+        ),
+        (
+            service_name::MEMGRAPH,
+            is_service_alive(service_name::MEMGRAPH),
+            services::stop_memgraph().await,
+        ),
+    ];
+    for (name, was_alive, result) in steps {
+        match run_step(name, result).await {
+            Ok(()) => {
+                // No-spawn: a service counts as "stopped" iff it was a
+                // recorded would-have-spawned entry alive at call time.
+                // Real mode keeps the manifest-existence proxy unchanged.
+                let include = if nospawn {
+                    was_alive
+                } else {
+                    is_or_was_tracked(name)
+                };
+                if include {
+                    stopped.push(name.to_owned());
+                }
+            }
+            Err(failure) => failed.push(failure),
+        }
+    }
+
+    // Core's runtime manifest cleanup runs out-of-band — it's not a
+    // subprocess that "stopped", just a JSON file we remove so the
+    // next service.list doesn't surface a Core entry with a stale
+    // heartbeat.
+    //
+    // Skipped under no-spawn: core.json is host-wide shared state. A
+    // no-spawn (parity) daemon never wrote it, and deleting it here
+    // would clobber a production daemon's manifest if one is running on
+    // the same box.
+    if !nospawn {
+        if let Err(e) = unregister_core_manifest() {
+            tracing::error!("daemon: unregister_core_manifest raised: {:#}", e);
+        }
+    }
+
+    let count = stopped.len();
+    ShutdownSummary {
+        stopped,
+        failed,
+        count,
+    }
+}
+
+/// Was the service ever recorded in the state map? Used by
+/// [`stop_all_daemon_managed`] to decide whether to include the name
+/// in the `stopped` list — services we never spawned shouldn't appear.
+fn is_or_was_tracked(name: &str) -> bool {
+    // The Child handle is taken out by the per-service stop_fn, so by
+    // the time we get here the proc slot is empty. Use the spawn
+    // record's presence-history as a proxy — `forget_spawn` clears
+    // them on graceful stop, so if we see one missing it was either
+    // never spawned or just torn down successfully. Both cases count
+    // as "the service is gone", so return true if either condition
+    // holds. Concretely: any name we route through `stop_<service>`
+    // was either alive (now stopped → tracked) or never spawned (no
+    // change → not tracked).
+    //
+    // Cheap proxy: check the manifest file. Services that booted
+    // wrote one; services that never spawned didn't.
+    let path = manifest_path_for(name);
+    path.exists()
+}
+
+/// Payload returned by [`stop_all_daemon_managed`] — matches the dict
+/// shape the Python `stop_all_daemon_managed` returns so the pipe
+/// envelope is identical regardless of which daemon answered.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ShutdownSummary {
+    pub stopped: Vec<String>,
+    pub failed: Vec<ShutdownFailure>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ShutdownFailure {
+    pub name: String,
+    pub error: String,
+}
+
+/// Probe the kernel to see whether `pid` is still running.
+///
+/// Uses `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, ...)` on
+/// Windows — succeeds for any process the current user can observe,
+/// including zombies. Returns `false` on any error path so a missing
+/// pid never falsely keeps a manifest in the alive bucket. Off-Windows
+/// returns `false` (the daemon is Windows-only).
+pub fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{CloseHandle, HANDLE, STILL_ACTIVE};
+        use windows::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // SAFETY: passing valid feature flag + pid; we close the handle below.
+        let handle: HANDLE =
+            match unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) } {
+                Ok(h) if !h.is_invalid() => h,
+                _ => return false,
+            };
+        let mut code: u32 = 0;
+        // SAFETY: handle is non-null, we hold ownership and close below.
+        let alive = unsafe { GetExitCodeProcess(handle, &mut code as *mut u32) }.is_ok()
+            && code == STILL_ACTIVE.0 as u32;
+        // SAFETY: handle came from OpenProcess and hasn't been closed.
+        unsafe {
+            let _ = CloseHandle(handle);
+        };
+        alive
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
+
+    /// Serialise tests that mutate the process-wide [`STATE`] singleton.
+    /// Without this, the parallel cargo test threads' calls to
+    /// `record_spawn` / `register_stop_event` / `set_nospawn` clobber each
+    /// other's expected snapshots. Reachable from sibling modules' test
+    /// suites (e.g. `control`'s `shutdown_all` test) so they can serialise
+    /// against the same singleton.
+    pub(crate) async fn state_guard() -> MutexGuard<'static, ()> {
+        static LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
+        LOCK.lock().await
+    }
+
+    fn reset_state() {
+        if let Ok(mut s) = state().lock() {
+            s.procs.clear();
+            s.spawn_records.clear();
+            s.stop = None;
+            s.orphan_sweep_stop = None;
+            s.nospawn = false;
+            s.nospawn_services.clear();
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_record_lifecycle() {
+        let _g = state_guard().await;
+        reset_state();
+        record_spawn("svc-a", 1234, "rust");
+        let snap = spawn_records_snapshot();
+        assert!(snap
+            .iter()
+            .any(|(k, v)| k == "svc-a" && v.pid == 1234 && v.impl_lang == "rust"));
+
+        mark_grace_satisfied("svc-a");
+        let snap = spawn_records_snapshot();
+        assert!(snap.iter().any(|(k, v)| k == "svc-a" && v.grace_satisfied));
+
+        forget_spawn("svc-a");
+        let snap = spawn_records_snapshot();
+        assert!(!snap.iter().any(|(k, _)| k == "svc-a"));
+    }
+
+    #[tokio::test]
+    async fn nospawn_registry_lifecycle() {
+        let _g = state_guard().await;
+        reset_state();
+        assert!(!nospawn_enabled(), "no-spawn defaults off");
+
+        set_nospawn(true);
+        assert!(nospawn_enabled());
+
+        nospawn_record("wylde-gateway", "rust");
+        nospawn_record("wylde-voice", "python");
+        // In no-spawn mode aliveness reads the would-have-spawned registry.
+        assert!(is_service_alive("wylde-gateway"));
+        assert!(is_service_alive("wylde-voice"));
+        assert!(!is_service_alive("wylde-memgraph"));
+        assert_eq!(
+            nospawn_snapshot(),
+            vec!["wylde-gateway".to_string(), "wylde-voice".to_string()]
+        );
+
+        assert!(nospawn_take("wylde-gateway"));
+        assert!(!nospawn_take("wylde-gateway"), "take is idempotent");
+        assert!(!is_service_alive("wylde-gateway"));
+
+        reset_state();
+        assert!(!nospawn_enabled(), "reset clears the flag");
+    }
+
+    #[test]
+    fn manifest_path_special_cases_core() {
+        let p = manifest_path_for("wylde-core");
+        assert!(p.ends_with("core.json"));
+        let p = manifest_path_for("wylde-voice");
+        assert!(p.ends_with("wylde-voice.json"));
+    }
+
+    #[test]
+    fn pid_alive_returns_false_for_pid_zero() {
+        assert!(!pid_alive(0));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pid_alive_returns_true_for_self() {
+        let me = std::process::id();
+        assert!(pid_alive(me));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pid_alive_returns_false_for_nonexistent() {
+        // Pick a pid extremely unlikely to exist. 0xFFFFFFFE is well past
+        // Windows' 32-bit pid space.
+        assert!(!pid_alive(0xFFFFFFFE));
+    }
+
+    #[tokio::test]
+    async fn request_daemon_exit_returns_false_when_unregistered() {
+        let _g = state_guard().await;
+        reset_state();
+        assert!(!request_daemon_exit(Duration::from_millis(10)));
+    }
+
+    #[tokio::test]
+    async fn request_daemon_exit_notifies_after_delay() {
+        let _g = state_guard().await;
+        reset_state();
+        let notify = std::sync::Arc::new(Notify::new());
+        register_stop_event(notify.clone());
+
+        assert!(request_daemon_exit(Duration::from_millis(10)));
+        tokio::time::timeout(Duration::from_millis(500), notify.notified())
+            .await
+            .expect("stop notify should fire");
+        reset_state();
+    }
+}

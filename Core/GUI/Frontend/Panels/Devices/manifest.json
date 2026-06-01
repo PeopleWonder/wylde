@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "service": "core",
+  "panels": [
+    {
+      "id": "devices",
+      "title": "Devices",
+      "icon": "smartphone",
+      "order": 60,
+      "version": "0.1.0",
+      "required_services": ["wylde-device-gate"],
+      "source": {
+        "kind": "gpui_view",
+        "factory": "wylde_panel_devices::DevicesPanel::view"
+      }
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+[package]
+name = "wylde-vpn"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wylde-vpn"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# Pre-build guard — fails the build loud if `wylde-vpn.exe` is still
+# alive in the process table. Windows holds an exclusive sharing lock on
+# a running binary; without the guard the linker fails opaquely with
+# `os error 32` deep into a build.
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+# Phase 2 deps:
+# * serde_yaml: parse + patch VPN/config.yaml without disturbing keys this
+#   service doesn't own (vpn:, dns_stub:, discovery:, nat:, monitoring:).
+# * axum + tower: HTTP control plane on 127.0.0.1:8020, mirroring Flask.
+# * x25519-dalek + rand_core + base64: WireGuard keypair generation +
+#   urlsafe pairing tokens (mirrors Python's `secrets.token_urlsafe(20)`).
+# * qrcode: link.qr — render the pairing URI as SVG bytes.
+# * uuid: lease-id style ephemeral identifiers (not pairing tokens — those
+#   use rand_core directly so the on-wire shape matches Python).
+# * boringtun (2.B): Cloudflare userspace WireGuard. Default features only;
+#   we drive our own I/O loops on top of `Tunn::{encapsulate, decapsulate,
+#   update_timers}` rather than using their `device` subsystem.
+# * wintun (Windows-only, 2.B): WintunNetwork TUN adapter for Windows.
+#   Requires `wintun.dll` at runtime, alongside the binary or in PATH;
+#   resolved with `load_from_path` so a missing DLL surfaces a clean error
+#   from `vpn.enable` rather than a panic.
+# * md-5 + sha1 + hmac (2.C): TURN long-term credential mechanism wants
+#   HMAC-SHA1(MESSAGE-INTEGRITY) over an MD5(user:realm:pass) key.
+#   RustCrypto primitives — tiny, audited, no transitive bloat.
+#   STUN + TURN protocol code itself is hand-rolled in src/nat/ — the
+#   master plan flagged "STUN classification drift" as a real risk and
+#   the cheapest mitigation is to match VPN/nat/stun.py byte-for-byte
+#   instead of routing through stun-rs's category abstractions.
+# * mdns-sd (2.D): WyldeLink LAN advertisement on
+#   `_wylde-link._udp.local.`. Single transitive (`if-addrs`); owns its
+#   own thread. Replaces Python's `zeroconf` package.
+# * reqwest + async-trait (2.D): async HTTP for the four DDNS providers
+#   (DuckDNS / No-IP / Cloudflare / Afraid) and for the peer push
+#   webhook POSTs. `rustls-tls` + `json` features, default-features off
+#   so we don't pull native-tls/openssl on Windows. `async-trait` lets
+#   the modules' HTTP client + webhook traits stay object-safe so unit
+#   tests can stub the network without opening a socket.
+serde_yaml = "0.9"
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace"] }
+http = "1"
+x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+base64 = "0.22"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+uuid = { version = "1", features = ["v4"] }
+boringtun = { version = "0.7", default-features = false }
+parking_lot = "0.12"
+md-5 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+mdns-sd = { version = "0.13", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+async-trait = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+# wintun is Windows-only. Pinned to 0.5 — the API used here
+# (`Adapter::create`, `start_session`, `try_receive`, `allocate_send_packet`)
+# is stable across 0.5.x.
+wintun = "0.5"
+
+[dev-dependencies]
+tempfile = "3"

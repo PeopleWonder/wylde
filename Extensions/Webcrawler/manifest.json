@@ -1,0 +1,116 @@
+{
+  "name": "Webcrawler",
+  "description": "Fetch raw URL contents, scrape HTML pages with optional CSS selectors, and extract structured data via rule sets. All external HTTP egress routes through Wylde.Gateway.client so allowlist + kill-switch + audit log apply uniformly.",
+  "version": "1.0",
+  "enabled": false,
+  "transport": "http",
+  "handler": "handler",
+  "capabilities": [
+    "egress.web"
+  ],
+  "egress": [
+    {
+      "key": "web",
+      "url_prefix": "https://",
+      "purpose": "Web scraping (arbitrary HTTPS targets)"
+    }
+  ],
+  "tools": [
+    {
+      "tool_id": "scrape",
+      "group": "web",
+      "endpoint": "run_scrape",
+      "description": "Scrape HTML content from a URL with optional CSS selectors. Returns the raw page plus selector-extracted text values.",
+      "parameters": [
+        {
+          "name": "url",
+          "type": "string",
+          "required": true,
+          "description": "URL to scrape"
+        },
+        {
+          "name": "selectors",
+          "type": "array",
+          "required": false,
+          "description": "CSS selectors to extract (optional)"
+        },
+        {
+          "name": "timeout",
+          "type": "number",
+          "required": false,
+          "default": 10,
+          "description": "Request timeout in seconds"
+        }
+      ],
+      "tags": [
+        "web",
+        "scraping",
+        "html"
+      ]
+    },
+    {
+      "tool_id": "fetch",
+      "group": "web",
+      "endpoint": "run_fetch",
+      "description": "Fetch raw contents from a URL. Returns the body as text or parsed JSON depending on the format parameter.",
+      "parameters": [
+        {
+          "name": "url",
+          "type": "string",
+          "required": true,
+          "description": "URL to fetch"
+        },
+        {
+          "name": "format",
+          "type": "string",
+          "required": false,
+          "default": "text",
+          "description": "Response format: 'text' or 'json'"
+        },
+        {
+          "name": "timeout",
+          "type": "number",
+          "required": false,
+          "default": 10,
+          "description": "Request timeout in seconds"
+        }
+      ],
+      "tags": [
+        "web",
+        "fetch",
+        "http"
+      ]
+    },
+    {
+      "tool_id": "extract",
+      "group": "web",
+      "endpoint": "run_extract",
+      "description": "Extract structured data from HTML using a rule set ({field: {selector, attribute, multiple}}). Accepts either a 'url' to fetch first or raw 'html'.",
+      "parameters": [
+        {
+          "name": "url",
+          "type": "string",
+          "required": false,
+          "description": "URL to fetch and extract from (or use html parameter)"
+        },
+        {
+          "name": "html",
+          "type": "string",
+          "required": false,
+          "description": "Raw HTML content (alternative to url)"
+        },
+        {
+          "name": "extraction_rules",
+          "type": "object",
+          "required": true,
+          "description": "Rules for extracting structured data"
+        }
+      ],
+      "tags": [
+        "web",
+        "extraction",
+        "parsing"
+      ]
+    }
+  ]
+}

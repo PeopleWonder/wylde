@@ -1,0 +1,37 @@
+[package]
+name = "wylde-gui"
+description = "Wylde GUI — the gpui-native desktop control panel.  Replaced the Tauri+Svelte alpha (was at `Core/GUI/src-tauri/`) at the slice-11 cutover (2026-05-29)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "wylde-gui"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+wylde-gui-pipe     = { path = "../Frontend/Pipe" }
+wylde-theme        = { path = "../Frontend/Theme" }
+wylde-webview      = { path = "../Frontend/Extension_handlers/WebView" }
+# Panel registry — the Shell installs the process-wide registry at
+# startup and reads it during render to drive the sidebar + slot.
+wylde-panel-registry = { path = "../Manifest/Extension_handlers" }
+
+gpui.workspace          = true
+gpui_platform.workspace = true
+tray-icon.workspace     = true
+tokio.workspace       = true
+serde.workspace       = true
+serde_json.workspace  = true
+async-trait.workspace = true
+anyhow.workspace      = true
+
+# Auto-launch isn't wired in this slice — the dep is declared so the
+# path is confirmed and the next slice's Settings port can pull it in
+# without a workspace bump.
+auto-launch.workspace = true

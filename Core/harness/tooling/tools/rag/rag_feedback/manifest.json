@@ -1,0 +1,14 @@
+{
+  "id": "rag_feedback",
+  "name": "rag_feedback",
+  "description": "Attach user feedback (+1 helpful, 0 neutral, -1 bad) to a prior rag_ask query_id. Persisted via the miss_log memory layer; returns whether the feedback was recorded.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "rag",
+  "entrypoint": "run_rag_feedback",
+  "tags": ["rag", "feedback", "training", "memory"],
+  "parameters": [
+    {"name": "query_id", "type": "number", "required": true, "description": "query_id returned by a prior rag_ask call"},
+    {"name": "score", "type": "number", "required": true, "description": "-1, 0, or 1"}
+  ]
+}

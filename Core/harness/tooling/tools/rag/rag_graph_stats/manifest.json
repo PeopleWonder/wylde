@@ -1,0 +1,11 @@
+{
+  "id": "rag_graph_stats",
+  "name": "rag_graph_stats",
+  "description": "Report node/edge counts (entities, chunks, mentions) in the Memgraph service. Safe to call when the graph backend is unreachable — returns reachable=false with zeros rather than raising.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "rag",
+  "entrypoint": "run_rag_graph_stats",
+  "tags": ["rag", "graph", "knowledge-graph", "status", "memory"],
+  "parameters": []
+}

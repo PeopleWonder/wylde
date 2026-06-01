@@ -1,0 +1,42 @@
+[package]
+name = "wylde-lifecycle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wylde-lifecycle"
+path = "src/main.rs"
+
+# Pre-build guard — fails the build loud if a wylde-* daemon is still
+# alive (Windows holds a sharing lock on the running .exe; without this
+# the linker fails opaquely with `os error 32` 100+ turns into a build).
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+
+# OpenProcess / GetExitCodeProcess / GenerateConsoleCtrlEvent for the
+# orphan sweep's pid-liveness probe and graceful Windows shutdown. We
+# add Threading + Console on top of the workspace's Win32 feature set.
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_System_Threading",
+    "Win32_System_Console",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio-test = "0.4"

@@ -1,0 +1,16 @@
+# Wylde service registry — auto-managed by Core/Lifecycle/
+#
+# This file is the canonical port/endpoint/state table for all Wylde services.
+# Discovery walks Wylde/ subfolders and populates this list. Launcher reads it
+# to spawn enabled services. The GUI toggles `enabled` to start/stop services.
+#
+# Schema per entry:
+#   name:        folder name under Wylde/
+#   port:        assigned port (sequential from 8000–8999, slot reuse)
+#   endpoint:    http://localhost:<port>
+#   enabled:     true → launcher starts on app boot; false → ignore
+#   status:      last-known runtime state (running, stopped, crashed)
+#   entry_point: command to launch this service (optional; absent = library/internal)
+#   depends_on:  list of service names that must be running first (optional)
+
+services: []

@@ -1,0 +1,15 @@
+{
+  "id": "code_search_files",
+  "name": "code_search_files",
+  "description": "Find files matching a glob (e.g. `*.py`, `src/**/*.tsx`). Uses ripgrep when available, falls back to `os.walk + fnmatch` (skipping the usual noise dirs) when not.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "search",
+  "entrypoint": "run_code_search_files",
+  "tags": ["search", "files", "glob"],
+  "parameters": [
+    {"name": "glob", "type": "string", "required": true, "description": "Glob pattern (e.g. '*.py', 'src/**/*.tsx')"},
+    {"name": "path", "type": "string", "required": false, "default": ".", "description": "Directory to search"},
+    {"name": "max_count", "type": "number", "required": false, "default": 500, "description": "Max files to return"}
+  ]
+}

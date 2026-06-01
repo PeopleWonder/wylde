@@ -1,0 +1,11 @@
+{
+  "name": "N8N",
+  "description": "",
+  "version": "0.1.0",
+  "enabled": false,
+  "entry_point": null,
+  "depends_on": [],
+  "tier": "standard",
+  "shutdown_order": 40,
+  "health_check": null
+}

@@ -1,0 +1,37 @@
+[package]
+name = "wylde-panel-memory"
+description = "Wylde Memory panel — gpui-era surface over the three-layer memory architecture (long-term / workspace / short-term).  Lists curated long-term records with importance + recency scoring, the active workspace's memory, and the rolling short-term buffer."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens — every panel imports the same palette so a
+# Wylde-wide colour change touches one file.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — Memory talks to the harness via `memory.long_term.*`
+# and `memory.workspaces.*` verbs (active in the Rust harness as of
+# Phase 9 + the 2026-05-28 cleanup slice that added
+# `memory.long_term.search`).
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# Native gpui TextInput widget — backs the long-term search field with
+# debounced live search.  Replaces the slice-5 "search via the Settings
+# panel" workaround.
+wylde-gpui-input = { path = "../../Input" }
+
+# Tokio handle for spawn_after / sleep used by the 300 ms debounce.
+tokio.workspace = true
+
+# gpui — every panel imports the same set: div builders, Render, etc.
+gpui.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

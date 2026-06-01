@@ -1,0 +1,14 @@
+{
+  "id": "rag_chunk_usage",
+  "name": "rag_chunk_usage",
+  "description": "Per-chunk retrieval counts from the miss_log memory layer. That layer tracks retrieval frequency only, so dead_only is preserved on the surface but no longer filters results.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "rag",
+  "entrypoint": "run_rag_chunk_usage",
+  "tags": ["rag", "analytics", "training", "memory"],
+  "parameters": [
+    {"name": "dead_only", "type": "boolean", "required": false, "default": false, "description": "If true, return only chunks with zero citations"},
+    {"name": "limit", "type": "number", "required": false, "default": 100, "description": "Max rows to return (clamped 1..10000)"}
+  ]
+}

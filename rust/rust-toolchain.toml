@@ -1,0 +1,8 @@
+[toolchain]
+# Spec called for "1.78+" — strict 1.78 pin fails because rmp 0.8.15 (a
+# transitive dep) requires the edition2024 cargo feature, stabilized in
+# 1.85. Using stable keeps the workspace portable; rust-version below
+# declares the real MSRV.
+channel = "stable"
+components = ["rustfmt", "clippy"]
+profile = "default"

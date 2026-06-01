@@ -1,0 +1,14 @@
+{
+  "id": "rag_reindex",
+  "name": "rag_reindex",
+  "description": "Wipe the existing index and rebuild from scratch. Heavier than rag_index — only use when the index is structurally stale (chunker/embedder change, schema migration, etc.). Runs asynchronously via N8N.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "rag",
+  "entrypoint": "run_rag_reindex",
+  "tags": ["rag", "index", "memory", "ingest", "destructive"],
+  "parameters": [
+    {"name": "target_path", "type": "string", "required": false, "description": "Workspace root to rebuild against. Defaults to $WYLDE_WORKSPACE_ROOT or the current working directory."},
+    {"name": "workspace_id", "type": "string", "required": false, "default": "default", "description": "Logical workspace bucket."}
+  ]
+}

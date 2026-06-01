@@ -1,0 +1,297 @@
+[project]
+name = "wylde"
+version = "0.1.0"
+description = "Wylde — personal AI assistant platform (Gateway, Voice, VPN, Trainer, resource_monitor, Memgraph, harness)."
+requires-python = ">=3.11"
+license = {text = "GPL-3.0-or-later"}
+
+# Core runtime dependencies — pulled in by every service.
+#
+# Every entry below has at least one direct import in live source. Deps
+# only used transitively by other packages (e.g. starlette via fastapi,
+# werkzeug via flask) are intentionally not declared here — let pip
+# resolve them via the upstream packages.
+dependencies = [
+    # Gateway web framework + ASGI server (Gateway/app.py + 26 other files).
+    "fastapi>=0.136",
+    "uvicorn[standard]>=0.44",
+
+    # Pydantic settings + validation (Gateway/settings.py, Gateway/routes/egress.py).
+    "pydantic>=2.12",
+    "pydantic-settings>=2.13",
+
+    # Async HTTP client (Gateway/proxy_core.py + 3 other files).
+    "httpx>=0.28",
+
+    # Sync HTTP client (Core/harness/backend/*, Core/Memgraph ipc, VPN, ...).
+    "requests>=2.31",
+
+    # YAML config loader (Core/Config/__init__.py + 6 other files).
+    "pyyaml>=6.0",
+
+    # Named-pipe IPC wire format (Core/shared/ipc.py + 3 other files).
+    "msgpack>=1.0",
+
+    # Windows pipe transport — imported as win32api/win32file/win32pipe in
+    # Core/shared/ipc.py, Core/Memgraph/ipc.py, Core/harness/memory/memgraph.py.
+    # Marker keeps non-Windows installs working (pipe layer falls through).
+    "pywin32>=306; platform_system == 'Windows'",
+
+    # htpasswd hash verification (device_gate/auth.py). Stdlib ``crypt`` was
+    # removed in Python 3.13, so passlib is the only portable verifier for
+    # APR1 (the default htpasswd format) plus the legacy $6$/$5$/$2*$ hashes
+    # the gate accepts. Hard dep — not optional — because device_gate boots
+    # for every Wylde deployment and silently rejecting all but $apr1$ hashes
+    # under 3.13 would be a quiet capability regression.
+    "passlib>=1.7.4",
+]
+
+[project.optional-dependencies]
+# resource_monitor — VRAM/GPU broker.
+# Flask serves the broker HTTP API; pynvml drives the NVML device probe in
+# Core/resource_monitor/broker/registry.py. The historical sysmon.py with
+# its docker / psutil container probe was dissolved — those deps are gone.
+resource-monitor = [
+    "flask>=3.0.0",
+    "pynvml>=11.5.0",
+]
+
+# Memgraph — Neo4j-backed knowledge graph.
+# (Werkzeug is pulled in transitively by flask — not declared here.)
+memgraph = [
+    "flask>=3.0.0",
+    "neo4j>=5.20",
+]
+
+# VPN — WyldeLink management API + mDNS pairing.
+vpn = [
+    "flask>=3.0.0",
+    "qrcode==8.0",
+    "zeroconf>=0.131.0",
+]
+
+# Voice — STT (faster-whisper) + TTS (kokoro-onnx).
+# onnxruntime is pulled in transitively by kokoro-onnx — not declared here.
+voice = [
+    "numpy>=1.24",
+    "sounddevice>=0.4.6",
+    "huggingface_hub>=0.23",
+    "faster-whisper>=1.0",
+    "kokoro-onnx>=0.3.0",
+]
+
+# Trainer — captioning stack. Heavy GPU/ML deps; install only when working
+# on Caption fine-tuning or inference.
+#
+# Transitive ML packages (safetensors, torchvision, einops, timm) are
+# pulled in by transformers when the model that needs them is loaded —
+# not declared here. Two transitive deps DO need explicit declaration:
+#
+#   * accelerate — required by transformers when `device_map="auto"`
+#     is set (Trainer/Caption/captioner.py:283).
+#   * bitsandbytes — required by transformers when `load_in_4bit=True`
+#     (Trainer/Caption/captioner.py:277 via BitsAndBytesConfig); the
+#     JoyCaption backend uses this by default.
+#
+# torch is pinned >=2.5 but Blackwell (RTX 50-series, sm_120) may need
+# the CUDA 12.6/12.8 nightly wheel installed out-of-band.
+trainer = [
+    "torch>=2.5.0",
+    "transformers>=4.49.0,<5.0.0",
+    "accelerate>=0.33.0",
+    "bitsandbytes>=0.43.0",
+    "qwen-vl-utils>=0.0.8",
+    "pillow>=10.0.0",
+    "opencv-python>=4.9.0",
+    "numpy>=1.24.0",
+    "tqdm>=4.66.0",
+]
+
+# Webcrawler extension — HTML scraping / extraction.
+# beautifulsoup4 is the only external dep; extractor.py imports it directly.
+# Optional because Webcrawler defaults to disabled — only installed when the
+# extension is actually used.
+webcrawler = [
+    "beautifulsoup4>=4.12",
+]
+
+# Harness — in-process tooling layer (Core/harness/) plus memory bindings.
+# pyautogui + playwright are lazy-imported in
+# Core/harness/tooling/tools/visual/_visual_lib.py so the tool catalog
+# still resolves without them installed.
+harness = [
+    "lancedb",
+    "pyarrow",
+    "sentence-transformers",
+    "pyautogui",
+    "Pillow",
+    "playwright",
+]
+
+# Dev — test runner + lint/type CLIs.
+# ruff and mypy aren't imported anywhere; they're invoked as CLIs in
+# upcoming F1 (ruff format) and M1-M6 (mypy strict) phases. Bundled here
+# so the dev env is ready before those phases land.
+dev = [
+    "pytest>=8.0",
+    "ruff",
+    "mypy",
+]
+
+[tool.pytest.ini_options]
+# Use the importlib import mode so multiple ``tests/`` packages can
+# coexist without colliding on the top-level ``tests`` module name.
+# Without this, two sibling ``tests/`` packages each with their own
+# ``__init__.py`` (Core/harness/tests vs Core/shared/tests etc.) load
+# as the same ``tests.*`` module — the misroute rule 21 documents.
+# Passed via addopts because this pytest version does not accept
+# ``importmode`` as an ini key (only the ``--import-mode`` CLI flag).
+addopts = "--import-mode=importlib"
+
+# Skip directories that should never be walked for tests:
+#   * target/ — Rust build output (rust/target, Core/GUI/target). The dirs
+#     hold no Python, but the name keeps pytest from descending into them.
+#   * refactor-archive — historical docs, not code.
+norecursedirs = [
+    "target",
+    "refactor-archive",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".ruff_cache",
+]
+
+[tool.mypy]
+# Baseline observability config (M1). Permissive on purpose — we want to
+# see what mypy detects out of the box without strict mode. Strictness
+# (disallow_untyped_defs, strict_optional, etc.) gets layered in at M6
+# once per-service annotation work (M3-M5) is done.
+python_version = "3.11"
+ignore_missing_imports = true
+follow_imports = "normal"
+# Core/ is a namespace package (no __init__.py); without this, modules
+# like Core/Memgraph/manifest.py and Core/Lifecycle/manifest.py collide.
+explicit_package_bases = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+show_error_codes = true
+exclude = [
+    "docs/refactor-archive/",
+    "\\.venv/",
+    "rust/",
+]
+
+# M3 first wave — strict mode for services that are already mypy-clean
+# under the permissive baseline. N8N is the only walkable clean service
+# today; the rename of the three space-named services unlocks them as
+# package-addressable [[overrides]] targets — strict-mode rollout for
+# device_gate / resource_monitor / extension_bridge lands as a follow-up.
+[[tool.mypy.overrides]]
+module = ["N8N.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+# M3 second wave — strict for the three services that were mypy-clean
+# under permissive after the M2 unused-ignore sweep. The space-named-dir
+# rename landed before this; the modules below are now addressable from
+# the repo root and can be targeted by [[overrides]] directly.
+[[tool.mypy.overrides]]
+module = ["device_gate.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["Core.resource_monitor.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["Extensions.extension_bridge.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+# M4 — strict for the remaining services after annotation work.
+[[tool.mypy.overrides]]
+module = ["Core.Memgraph.*", "Memgraph.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["Voice.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["VPN.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["Trainer.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["Gateway.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["Extensions.Webcrawler.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["Extensions.Wylde_Study.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = ["Core.*"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+strict_equality = true
+
+[tool.ruff]
+exclude = [
+    "__pycache__",
+    "vendor",
+    "docs/refactor-archive",
+    ".venv",
+]
+extend-exclude = [
+    "rust",  # Cargo workspace — Rust sources, not Python.
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# This project is a multi-service monorepo, not a single shippable package.
+# We use uv purely as a dependency manager — there's no library to install.
+bypass-selection = true

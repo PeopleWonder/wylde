@@ -1,0 +1,30 @@
+[package]
+name = "wylde-panel-remote-access"
+description = "Wylde Remote Access panel — gpui-era surface over `wylde-vpn` (WyldeLink): interface status, peer list with 5 s auto-refresh, DDNS state, port-forwarding hint, DNS rewrites.  Degrades gracefully when wylde-vpn isn't running."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — RemoteAccess talks to `wylde-vpn` over its named pipe
+# (HTTP-over-pipe envelope, not the action verb shape).  Also hosts
+# the cross-panel nav bus the peer rows use to jump to Devices.
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# Tokio for the 5 s peer-list refresh loop.
+tokio.workspace = true
+
+# gpui.
+gpui.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

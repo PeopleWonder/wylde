@@ -1,0 +1,21 @@
+[package]
+name = "wylde-gui-pipe"
+description = "Wylde named-pipe IPC client + in-process HarnessApi short-circuit.  Hoisted from `Core/GUI/src-tauri/src/pipe/` for the gpui-era GUI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+wylde-harness.workspace = true
+wylde-shared.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rmp-serde.workspace = true
+uuid.workspace = true
+async-trait.workspace = true

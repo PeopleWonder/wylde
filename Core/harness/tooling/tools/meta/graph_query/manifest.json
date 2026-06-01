@@ -1,0 +1,38 @@
+{
+  "id": "graph_query",
+  "name": "graph_query",
+  "description": "Traverse the knowledge graph from a set of entities (or auto-extracted from a free-form query) and return the related chunks. Use this when you need code or context anchored to specific symbols, files, or named entities — not for general semantic search.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "meta",
+  "entrypoint": "run_graph_query",
+  "tags": ["meta", "memory", "graph", "knowledge-graph", "traversal", "retrieval"],
+  "parameters": [
+    {
+      "name": "q",
+      "type": "string",
+      "description": "Natural-language query. Entities will be auto-extracted from this when 'entities' is not provided.",
+      "required": false
+    },
+    {
+      "name": "entities",
+      "type": "array",
+      "description": "Explicit list of entity names to anchor the traversal. Overrides 'q' when both are provided.",
+      "required": false
+    },
+    {
+      "name": "max_hops",
+      "type": "number",
+      "description": "Maximum traversal depth (clamped to 1..4, default 2).",
+      "required": false,
+      "default": 2
+    },
+    {
+      "name": "limit",
+      "type": "number",
+      "description": "Maximum chunks to return (clamped to 1..50, default 10).",
+      "required": false,
+      "default": 10
+    }
+  ]
+}

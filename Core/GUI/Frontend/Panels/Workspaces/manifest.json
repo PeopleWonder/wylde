@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "service": "core",
+  "panels": [
+    {
+      "id": "workspaces",
+      "title": "Workspaces",
+      "icon": "folder",
+      "order": 30,
+      "version": "0.1.0",
+      "required_services": ["wylde-harness"],
+      "source": {
+        "kind": "gpui_view",
+        "factory": "wylde_panel_workspaces::WorkspacesPanel::view"
+      }
+    }
+  ]
+}

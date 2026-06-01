@@ -1,0 +1,16 @@
+# Embedding subsystem tunables.
+#
+# Values declared here are exported as environment variables at app startup
+# (via Wylde/Core/Config/__init__.py's load_all_to_env). The harness reads them
+# from the env so individual modules don't depend on this file directly.
+#
+# Override per-machine by editing this file, OR by setting the corresponding
+# env var directly before launching Wylde (env always wins over file values).
+
+WYLDE_EMBED_MODEL: nomic-embed-text
+WYLDE_EMBED_DIMS: 768                 # native dimensions of nomic-embed-text
+WYLDE_EMBED_TRUNCATE_DIMS: 0          # 0 = no Matryoshka truncation; e.g. 512 to truncate
+WYLDE_EMBED_BATCH_SIZE: 16
+WYLDE_EMBED_RETRY_MAX: 3
+WYLDE_EMBED_RETRY_DELAY_MS: 250
+WYLDE_EMBED_TIMEOUT_S: 30

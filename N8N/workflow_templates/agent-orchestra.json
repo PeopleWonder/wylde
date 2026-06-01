@@ -1,0 +1,210 @@
+{
+  "name": "Agent Orchestra",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent-orchestra",
+        "responseMode": "responseNode",
+        "options": {
+          "responseData": "allEntries"
+        }
+      },
+      "id": "node_webhook",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 400],
+      "notes": "POST {task: '...'} to /webhook/agent-orchestra to kick off a run.\nReturns the final summary when the orchestrator finishes."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalise the incoming task + optional overrides.\nconst body = $input.first().json.body || $input.first().json || {};\nconst task = (body.task || body.query || '').toString().trim();\nif (!task) {\n  throw new Error(\"'task' is required in the webhook body\");\n}\nreturn [{\n  json: {\n    task,\n    requested_by: body.requested_by || 'n8n',\n    trace_hint:   body.trace_hint   || '',\n    poll_max:     body.poll_max     || 180,\n    poll_every_s: body.poll_every_s || 5\n  }\n}];"
+      },
+      "id": "node_normalize",
+      "name": "Normalise Inputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://wylde-rag:8008/api/memory_search",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ JSON.stringify({ params: { q: $json.task, memory_type: 'lesson', limit: 5 } }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node_lessons",
+      "name": "Pre-flight: Lessons Lookup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [640, 280],
+      "notes": "Surfaces past lessons before the orchestrator starts — lets us log them to the\ntrace and short-circuit if a critical past failure applies. Non-blocking: continues on error.",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://wylde-orchestrator:8010/workflow/run",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow_id: 'agent_orchestra', inputs: { task: $('Normalise Inputs').first().json.task } }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node_start",
+      "name": "Start Orchestra Run",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [860, 400],
+      "notes": "Kicks off the native agent_orchestra execution. The orchestrator handles:\n - Spec/Preview, Context Gather, Planner\n - Plan gate (human-in-the-loop)\n - Architect → Test Writer → Coder → Debugger (delegation loop, 5 rounds)\n - Docs Checker, Adversarial Critic, Critic Gate\n - Experiential Logger, Summariser"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Remember the execution_id + seed the poll counter.\nconst start = $input.first().json;\nreturn [{\n  json: {\n    execution_id: start.execution_id,\n    workflow_id:  start.workflow_id,\n    stream_url:   start.stream_url,\n    status:       start.status,\n    poll_count:   0,\n    poll_max:     $('Normalise Inputs').first().json.poll_max,\n    poll_every_s: $('Normalise Inputs').first().json.poll_every_s\n  }\n}];"
+      },
+      "id": "node_seed",
+      "name": "Seed Poll State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 400]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.poll_every_s }}",
+        "unit": "seconds"
+      },
+      "id": "node_wait",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1300, 400],
+      "webhookId": "agent-orchestra-wait"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://wylde-orchestrator:8010/workflow/{{ $json.execution_id }}/status",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node_poll",
+      "name": "Poll Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1520, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge the latest status with the polling state from upstream.\nconst status = $input.first().json;\nconst seed   = $('Seed Poll State').first().json;\nconst count  = (seed.poll_count || 0) + 1;\nconst done   = ['completed','complete','success','failed','error','cancelled'].includes(\n  (status.status || '').toLowerCase()\n);\nconst exceeded = count >= seed.poll_max;\nreturn [{\n  json: {\n    ...seed,\n    ...status,\n    poll_count:    count,\n    done,\n    exceeded,\n    proceed:       done || exceeded\n  }\n}];"
+      },
+      "id": "node_tick",
+      "name": "Evaluate Status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1740, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond_proceed",
+              "leftValue": "={{ $json.proceed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node_if",
+      "name": "Done?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1960, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pick the summariser output (last node) from the full state.\nconst st = $input.first().json;\nconst nodes = st.nodes || st.node_outputs || {};\nconst summary = nodes.summariser?.output || nodes.summariser || null;\nconst debugger_ = nodes.debugger?.output || nodes.debugger || null;\nconst critic = nodes.adversarial_critic?.output || nodes.adversarial_critic || null;\nreturn [{\n  json: {\n    execution_id:    st.execution_id,\n    workflow_id:     st.workflow_id,\n    status:          st.status,\n    ended_reason:    st.exceeded ? 'poll_budget_exceeded' : 'orchestrator_finished',\n    summary,\n    tests_passed:    debugger_?.tests_pass ?? null,\n    debug_rounds:    debugger_?.rounds_used ?? null,\n    critic_verdict:  critic?.verdict ?? null,\n    critic_findings: critic?.findings ?? [],\n    lessons_seen:    $('Pre-flight: Lessons Lookup').first().json?.result?.data?.results || []\n  }\n}];"
+      },
+      "id": "node_pack",
+      "name": "Package Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2180, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {}
+      },
+      "id": "node_respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2400, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{"node": "Normalise Inputs", "type": "main", "index": 0}]]
+    },
+    "Normalise Inputs": {
+      "main": [[
+        {"node": "Pre-flight: Lessons Lookup", "type": "main", "index": 0},
+        {"node": "Start Orchestra Run", "type": "main", "index": 0}
+      ]]
+    },
+    "Start Orchestra Run": {
+      "main": [[{"node": "Seed Poll State", "type": "main", "index": 0}]]
+    },
+    "Seed Poll State": {
+      "main": [[{"node": "Wait", "type": "main", "index": 0}]]
+    },
+    "Wait": {
+      "main": [[{"node": "Poll Status", "type": "main", "index": 0}]]
+    },
+    "Poll Status": {
+      "main": [[{"node": "Evaluate Status", "type": "main", "index": 0}]]
+    },
+    "Evaluate Status": {
+      "main": [[{"node": "Done?", "type": "main", "index": 0}]]
+    },
+    "Done?": {
+      "main": [
+        [{"node": "Package Result", "type": "main", "index": 0}],
+        [{"node": "Wait", "type": "main", "index": 0}]
+      ]
+    },
+    "Package Result": {
+      "main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true
+  },
+  "tags": [
+    {"name": "wylde"},
+    {"name": "multi-agent"},
+    {"name": "coding"}
+  ]
+}

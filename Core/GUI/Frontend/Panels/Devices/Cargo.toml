@@ -1,0 +1,37 @@
+[package]
+name = "wylde-panel-devices"
+description = "Wylde Devices panel — gpui-era surface over `device_gate`: paired-device list, pair-a-new-device flow with countdown + QR, three-tier permissions (read_only / tool_use / destructive_tool_access), inline revoke confirmation."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens — every panel imports the same palette.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — Devices talks to `wylde-device-gate` over its named
+# pipe.  Also hosts the cross-panel nav bus (`request_nav`) that wires
+# the panel's "View activity" affordance to peer rows in the
+# RemoteAccess panel once the user clicks through.
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# QR encoder — renders the pairing payload (`wylde://pair?code=…`) into
+# a scannable matrix.  The panel walks the bool grid manually and
+# paints cells with gpui `div` primitives (no SVG support at gpui
+# `b3d93d44`).
+qrcode.workspace = true
+
+# Tokio for the pairing-window countdown tick.
+tokio.workspace = true
+
+# gpui — every panel imports the same set: div builders, Render, etc.
+gpui.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

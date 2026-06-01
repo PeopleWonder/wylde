@@ -1,0 +1,32 @@
+[package]
+name = "wylde-panel-dashboard"
+description = "Wylde Dashboard panel — gpui-era at-a-glance view: service health strip, hardware inventory, active model, recent activity.  Auto-refreshes every 5 s.  Degrades gracefully when individual services are down."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — health probes go through wylde-lifecycle, hardware
+# through wylde-vram-broker, recent memory through wylde-harness,
+# loaded model through wylde-ollama.  Also hosts the cross-panel nav
+# bus (`request_nav`) — leaves the panel free of a registry dep,
+# which would create a cycle through the factory wiring.
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# Tokio for the auto-refresh loop's sleep.
+tokio.workspace = true
+
+# gpui.
+gpui.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

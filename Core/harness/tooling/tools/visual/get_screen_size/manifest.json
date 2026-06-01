@@ -1,0 +1,11 @@
+{
+  "id": "get_screen_size",
+  "name": "get_screen_size",
+  "description": "Return the primary monitor's pixel resolution as {width, height}.",
+  "version": "2.0",
+  "service": "harness",
+  "group": "visual",
+  "entrypoint": "run_get_screen_size",
+  "tags": ["visual", "screen", "desktop", "pyautogui"],
+  "parameters": []
+}

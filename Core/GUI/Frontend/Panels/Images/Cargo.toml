@@ -1,0 +1,42 @@
+[package]
+name = "wylde-panel-images"
+description = "Wylde Images panel — gpui-era surface over the `wylde-gateway` /api/images library: gallery grid with thumbnail cache, date/workspace/model filters, metadata pane, inline delete confirmation, and an optional generate-new entry bar that streams progress when the image-gen service is up."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — Images speaks the HTTP envelope over the wylde-gateway
+# pipe (the gateway proxies /api/images routes through to the ComfyUI
+# image-gen service + its on-disk library directory).  We also use
+# `request_nav` for the workspace-tag jump to the Workspaces panel.
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# Shared TextInput widget — the generate-new prompt + the date / filter
+# text fields all reuse it.
+wylde-gpui-input = { path = "../../Input" }
+
+# Async runtime — driven by the pipe call layer; needed for the
+# generate-now streaming task.
+tokio.workspace = true
+
+# Base64 decoder — the gateway returns library bytes inline as base64
+# under the `data_b64` field.  base64 is already a transitive dep of
+# every wylde-* crate that touches device pairing or the gateway, so
+# pinning the same version avoids a duplicate crate graph.
+base64 = "0.22"
+
+# gpui — every panel imports the same set: div builders, Render, etc.
+gpui.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

@@ -1,0 +1,18 @@
+{
+  "id": "caption_image",
+  "name": "caption_image",
+  "description": "Generate a single caption for one image using the Caption module's Florence-2 captioner (or the configured backend). Returns the caption string. Optionally writes a sidecar .txt next to the image.",
+  "version": "1.0",
+  "service": "Caption",
+  "group": "caption",
+  "entrypoint": "run_caption_image",
+  "tags": ["vision", "caption", "image", "florence-2"],
+  "parameters": [
+    {"name": "image_path", "type": "string",  "required": true,  "description": "Absolute path to an image file (.jpg/.png/.webp/.bmp)"},
+    {"name": "detail",     "type": "string",  "required": false, "default": "detailed", "description": "Caption length: brief | normal | detailed"},
+    {"name": "trigger",    "type": "string",  "required": false, "description": "Optional trigger word prefix prepended to the caption"},
+    {"name": "backend",    "type": "string",  "required": false, "description": "Force a backend: florence | qwen | joycaption (else config default)"},
+    {"name": "write_txt",  "type": "boolean", "required": false, "default": false, "description": "Write the caption to <image>.txt alongside the image"},
+    {"name": "overwrite",  "type": "boolean", "required": false, "default": false, "description": "If write_txt=true and the .txt exists, overwrite it"}
+  ]
+}

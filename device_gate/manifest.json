@@ -1,0 +1,24 @@
+{
+  "name": "device_gate",
+  "description": "Per-device pairing + permission tiers. Issues tokens that Gateway verifies on every external request. Three tiers: read_only (chat view), tool_use (non-destructive), destructive_tool_access (full). Pipe: \\\\.\\pipe\\wylde-device-gate.",
+  "version": "1.0.0",
+  "enabled": true,
+  "entry_point": "py -3 \"device_gate/run.py\"",
+  "depends_on": [],
+  "tier": "core",
+  "pipe": "wylde-device-gate",
+  "actions": [
+    "device_gate.list_devices",
+    "device_gate.start_pairing",
+    "device_gate.cancel_pairing",
+    "device_gate.get_pairing_status",
+    "device_gate.complete_pairing",
+    "device_gate.verify",
+    "device_gate.set_tier",
+    "device_gate.rotate_token",
+    "device_gate.revoke",
+    "device_gate.consume_pending_events"
+  ],
+  "shutdown_order": 80,
+  "health_check": null
+}

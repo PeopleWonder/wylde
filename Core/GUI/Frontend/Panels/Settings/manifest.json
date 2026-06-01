@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "service": "core",
+  "panels": [
+    {
+      "id": "settings",
+      "title": "Settings",
+      "icon": "settings",
+      "order": 95,
+      "version": "0.1.0",
+      "required_services": ["wylde-harness"],
+      "source": {
+        "kind": "gpui_view",
+        "factory": "wylde_panel_settings::SettingsPanel::view"
+      }
+    }
+  ]
+}

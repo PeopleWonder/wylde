@@ -1,0 +1,3 @@
+# gpui workspace build output (slice-11 cutover: Tauri+Svelte tree deleted).
+target/
+.env
