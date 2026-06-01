@@ -24,6 +24,11 @@ WYLDE_ROOT: Path = Path(__file__).resolve().parent.parent.parent
 CORE_DIR: Path = WYLDE_ROOT / "Core"
 NETWORK_DIR: Path = CORE_DIR / "Network"
 SERVICES_YAML: Path = NETWORK_DIR / "services.yaml"
+# Committed template for services.yaml. The live file is runtime state
+# (gitignored, rewritten by discovery on every boot); this seed carries the
+# canonical comment header + empty roster and is copied into place on first
+# boot. See ensure_services_file().
+SERVICES_SEED: Path = NETWORK_DIR / "services.yaml.seed"
 
 CACHE_DIR: Path = WYLDE_ROOT / ".wylde"
 DISCOVERY_CACHE: Path = CACHE_DIR / "discovery.cache"
@@ -34,13 +39,17 @@ DISCOVERY_CACHE: Path = CACHE_DIR / "discovery.cache"
 # rather than launchable processes.
 #
 # `data`, `logs`, and `docs` are runtime / archive directories that hold
-# state — not services. Without explicit exclusion, discovery's automatic
-# manifest generator would mint a service entry for each on first boot
-# (observed during the Phase-9 audit) and the launcher would try to spawn
-# them. Adding to the exclusion set is the simplest fix; the alternative
-# (require manifest.json before registering) would break the auto-discover
-# story for genuinely-new service folders.
-EXCLUDED_TOP_LEVEL: frozenset[str] = frozenset({"Core", "data", "logs", "docs"})
+# state — not services. `rust` (the backend Cargo workspace) and `tools`
+# (loose PowerShell setup scripts) are build/dev folders, not launchable
+# processes. Without explicit exclusion, discovery's automatic manifest
+# generator would mint a service entry for each on first boot (observed
+# during the Phase-9 audit, and again for rust/tools) and the launcher
+# would try to spawn them. Adding to the exclusion set is the simplest
+# fix; the alternative (require manifest.json before registering) would
+# break the auto-discover story for genuinely-new service folders.
+EXCLUDED_TOP_LEVEL: frozenset[str] = frozenset(
+    {"Core", "data", "logs", "docs", "rust", "tools"}
+)
 EXCLUDED_PREFIXES: tuple[str, ...] = ("_", ".")
 
 
@@ -62,6 +71,31 @@ DEFAULT_SHUTDOWN_ORDER: int = 100
 
 
 # ─── services.yaml IO ─────────────────────────────────────────────────────
+
+
+def ensure_services_file() -> None:
+    """Seed services.yaml from its committed template on first boot.
+
+    services.yaml is runtime state (gitignored, rewritten by discovery), so a
+    fresh clone — or a machine where the live file was wiped — has no roster
+    file at all. Copy the committed seed into place so downstream readers find
+    a well-formed file with the canonical comment header intact. No-op once the
+    live file exists; discovery owns it from there.
+    """
+    if SERVICES_YAML.exists():
+        return
+    if not SERVICES_SEED.exists():
+        logger.warning(
+            "services.yaml.seed missing at %s; discovery will create the "
+            "roster from scratch (no comment header)",
+            SERVICES_SEED,
+        )
+        return
+    NETWORK_DIR.mkdir(parents=True, exist_ok=True)
+    SERVICES_YAML.write_text(
+        SERVICES_SEED.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    logger.info("seeded services.yaml from services.yaml.seed")
 
 
 def load_services() -> list[dict[str, Any]]:

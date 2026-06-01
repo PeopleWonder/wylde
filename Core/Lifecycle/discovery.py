@@ -25,6 +25,7 @@ import time
 from . import manifest
 from ._common import (
     assign_port,
+    ensure_services_file,
     find_service,
     list_service_folders,
     load_services,
@@ -42,6 +43,11 @@ def discover() -> None:
     Slow path (changes detected): spawns a daemon thread that integrates
     additions/removals in the background. The caller proceeds immediately.
     """
+    # Seed the roster file on first boot (before any read), so a fresh clone
+    # or a wiped live file starts from the committed template, not an empty
+    # auto-generated stub. No-op once services.yaml exists.
+    ensure_services_file()
+
     current = _snapshot_current_folders()
     cached = read_discovery_cache()
 
