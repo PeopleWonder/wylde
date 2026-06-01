@@ -50,8 +50,6 @@
 
 pub mod buffer;
 
-use std::time::Duration;
-
 use gpui::{
     div, prelude::*, px, rgb, App, ClipboardItem, Context, ElementId, EventEmitter, FocusHandle,
     Focusable, IntoElement, KeyDownEvent, Render, SharedString, Stateful, Window,
@@ -68,11 +66,6 @@ pub use buffer::TextBuffer;
 /// single undo snapshot before a forced break.  Without it a 5000-char
 /// paragraph would undo in one step (annoying).
 const UNDO_BURST_FORCE: usize = 200;
-
-/// Caret blink half-period.  At 530 ms the caret is on ~530 ms, off
-/// ~530 ms — the familiar text-field cadence.  Slightly off 500 so it
-/// doesn't beat against other 500 ms timers.
-const CARET_BLINK_MS: u64 = 530;
 
 // ── Public configuration ─────────────────────────────────────────────
 
@@ -126,14 +119,6 @@ pub struct TextInput {
     element_key: SharedString,
     /// Snapshot bookkeeping — collapse typing bursts into one undo step.
     burst_inserts_since_snapshot: usize,
-    /// Caret blink state.  `caret_visible` is the current on/off phase;
-    /// `blink_epoch` invalidates in-flight timer ticks when the cycle is
-    /// restarted (focus change, keystroke); `blinking` mirrors whether a
-    /// blink loop is currently live so `render` only starts/stops it on a
-    /// focus transition, not every frame.
-    caret_visible: bool,
-    blink_epoch: usize,
-    blinking: bool,
 }
 
 impl TextInput {
@@ -152,9 +137,6 @@ impl TextInput {
             chrome: true,
             element_key: SharedString::from("wylde-input"),
             burst_inserts_since_snapshot: 0,
-            caret_visible: true,
-            blink_epoch: 0,
-            blinking: false,
         }
     }
 
@@ -173,9 +155,6 @@ impl TextInput {
             chrome: true,
             element_key: SharedString::from("wylde-input"),
             burst_inserts_since_snapshot: 0,
-            caret_visible: true,
-            blink_epoch: 0,
-            blinking: false,
         }
     }
 
@@ -423,12 +402,6 @@ impl TextInput {
         if changed {
             cx.emit(InputEvent::Changed(self.buffer.text().to_owned()));
         }
-        // Keep the caret solid through a burst of typing/navigation, then
-        // resume blinking — matches native text-field behaviour.  Only
-        // when a blink loop is already live (i.e. the input is focused).
-        if self.blinking {
-            self.restart_blink(cx);
-        }
         cx.notify();
     }
 
@@ -457,50 +430,6 @@ impl TextInput {
         }
         self.burst_inserts_since_snapshot += 1;
     }
-
-    // ── Caret blink ────────────────────────────────────────────────
-    //
-    // A self-driven blink loop (no separate model): each tick toggles
-    // `caret_visible` and reschedules itself on the background timer.  An
-    // epoch counter invalidates stale ticks, so a focus change or a
-    // keystroke can reset the phase without leaving orphaned timers
-    // toggling the caret.  The loop costs one pending timer per focused
-    // input and self-terminates as soon as the epoch advances past it.
-
-    /// Show the caret now and (re)start the blink cycle from the on
-    /// phase.  Called when focus is gained and after every keystroke so
-    /// the caret is solid while typing, then resumes blinking.
-    fn restart_blink(&mut self, cx: &mut Context<Self>) {
-        self.caret_visible = true;
-        self.blink_epoch = self.blink_epoch.wrapping_add(1);
-        let epoch = self.blink_epoch;
-        self.schedule_blink(epoch, cx);
-    }
-
-    fn schedule_blink(&mut self, epoch: usize, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(CARET_BLINK_MS))
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                // A newer cycle (focus change / keystroke) superseded us.
-                if epoch != this.blink_epoch {
-                    return;
-                }
-                this.caret_visible = !this.caret_visible;
-                cx.notify();
-                this.schedule_blink(epoch, cx);
-            });
-        })
-        .detach();
-    }
-
-    /// Halt the blink loop and leave the caret solid.  Used when focus is
-    /// lost — bumping the epoch strands any in-flight tick.
-    fn stop_blink(&mut self) {
-        self.blink_epoch = self.blink_epoch.wrapping_add(1);
-        self.caret_visible = true;
-    }
 }
 
 impl Focusable for TextInput {
@@ -517,15 +446,6 @@ impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
 
-        // Start/stop the caret blink loop on focus transitions only.
-        if focused && !self.blinking {
-            self.blinking = true;
-            self.restart_blink(cx);
-        } else if !focused && self.blinking {
-            self.blinking = false;
-            self.stop_blink();
-        }
-
         // Focus ring.  Passed straight through (no `pack`) so the token's
         // alpha survives: a near-invisible hairline when unfocused, a
         // clear brand-hue outline when focused.  `pack` would drop the
@@ -537,8 +457,13 @@ impl Render for TextInput {
         };
         let bg = if self.disabled { SURFACE_700 } else { SURFACE_900 };
 
-        // Caret is drawn only while focused and in the blink "on" phase.
-        let show_caret = focused && self.caret_visible;
+        // Solid caret whenever the input holds focus — drawn at the cursor
+        // (column 0 in an empty input, via `empty_body`).  An earlier
+        // blink loop gated this on a `caret_visible` phase that could sit
+        // "off" on an idle empty input, so a freshly-clicked empty field
+        // showed no caret until the first keystroke reset the phase. A
+        // solid caret is the reliable always-there affordance.
+        let show_caret = focused;
 
         let body = if self.buffer.is_empty() {
             empty_body(&self.placeholder, show_caret)
@@ -607,14 +532,17 @@ fn empty_body(placeholder: &SharedString, show_caret: bool) -> gpui::Div {
         .w_full()
         .min_h(px(20.0));
     if show_caret {
-        row = row.child(caret_bar());
+        // `flex_none` so the 2px caret keeps its width — this row has no
+        // `flex_wrap`, so a shrinkable child could otherwise be squeezed
+        // toward zero next to the placeholder.
+        row = row.child(caret_bar().flex_none());
     }
     row.child(placeholder_node(placeholder))
 }
 
 /// Render the buffer's text broken into lines, with caret + selection
 /// highlight inserted at the relevant byte offsets.  `show_caret` gates
-/// the caret bar (focused *and* in the blink "on" phase).
+/// the caret bar (true whenever the input holds focus).
 fn content_node(buffer: &TextBuffer, show_caret: bool) -> gpui::Div {
     let text = buffer.text();
     let cursor = buffer.cursor();
