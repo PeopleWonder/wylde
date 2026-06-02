@@ -642,6 +642,46 @@ mod tests {
         assert_eq!(reply.data["error"]["code"], "not_found");
     }
 
+    // ── Tool-registry consolidation Slice 1 — verb-tool smoke tests ──
+    //
+    // The eight verb tools co-exist with the old named tools in the
+    // catalog this slice. These prove the full `tools.run` → runner →
+    // tier gate → consent gate → verb handler → ResourceRegistry path
+    // returns valid JSON against the (empty in Slice 1) registry.
+
+    #[tokio::test]
+    async fn tools_run_dispatches_wylde_describe_through_full_pipeline() {
+        let _g = crate::tooling::consent::serial_test_guard().await;
+        crate::tooling::consent::set_bypass_for_tests(true);
+        let api = DefaultHarnessApi;
+        let reply = api.tools_run(json!({"name": "wylde_describe"})).await;
+        assert!(reply.ok, "outer envelope is ok");
+        assert_eq!(reply.data["ok"], true);
+        assert_eq!(reply.data["canonical_id"], "wylde_describe");
+        // Empty registry in Slice 1 → valid JSON, success, zero rows.
+        assert_eq!(reply.data["data"]["status"], "success");
+        assert_eq!(reply.data["data"]["count"], 0);
+        assert!(reply.data["data"]["resources"].is_array());
+        crate::tooling::consent::set_bypass_for_tests(false);
+    }
+
+    #[tokio::test]
+    async fn tools_run_wylde_list_unknown_resource_is_clean_not_found() {
+        let _g = crate::tooling::consent::serial_test_guard().await;
+        crate::tooling::consent::set_bypass_for_tests(true);
+        let api = DefaultHarnessApi;
+        let reply = api
+            .tools_run(json!({"name": "wylde_list", "args": {"resource_type": "nope"}}))
+            .await;
+        assert!(reply.ok);
+        // Transport + dispatch succeed; the verb returns a structured
+        // not-found envelope (not a hard error) so the model can recover.
+        assert_eq!(reply.data["ok"], true);
+        assert_eq!(reply.data["data"]["status"], "not_found");
+        assert_eq!(reply.data["data"]["op"], "list");
+        crate::tooling::consent::set_bypass_for_tests(false);
+    }
+
     // ── memory.long_term.* unit tests (moved from pipe/memory_long_term.rs) ──
 
     #[tokio::test]

@@ -34,6 +34,7 @@ pub mod ollama;
 pub mod rag;
 pub mod search;
 pub mod time_tools;
+pub mod verbs;
 pub mod voice;
 
 use super::registry::Registry;
@@ -48,6 +49,7 @@ pub fn register_all(reg: &mut Registry) {
     rag::register(reg);
     search::register(reg);
     time_tools::register(reg);
+    verbs::register(reg);
     voice::register(reg);
     deferred::register(reg);
 }

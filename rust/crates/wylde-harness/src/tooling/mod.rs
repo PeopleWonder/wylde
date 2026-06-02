@@ -36,8 +36,10 @@
 
 pub mod consent;
 pub mod registry;
+pub mod resource;
 pub mod runner;
 pub mod tools;
 
 pub use registry::{Registry, ToolEntry};
+pub use resource::{resources, ResourceDefinition, ResourceRegistry, ResourceOp};
 pub use runner::{dispatch_tool, DispatchOutcome};
