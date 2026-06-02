@@ -40,8 +40,8 @@ pub mod registry;
 pub mod resources;
 
 pub use definition::{
-    op_handler, OpHandler, OpHandlerFn, ResourceDefinition, ResourceOp, ResourceRequest, Scope,
-    ToolContext,
+    describe_value, op_handler, DescribeFn, OpHandler, OpHandlerFn, ResourceDefinition, ResourceOp,
+    ResourceRequest, Scope, ToolContext,
 };
 pub use gate::{op_consent_gate, OpGate};
 pub use registry::{resources, ResourceRegistry, ToolsetFilter};

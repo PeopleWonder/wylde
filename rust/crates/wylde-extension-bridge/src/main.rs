@@ -38,6 +38,7 @@ async fn main() -> Result<()> {
                     "ext.disable",
                     "ext.tools.list",
                     "ext.tools.call",
+                    "ext.resources.list",
                     "ext.health",
                     "ext.restart",
                     "ext.events",

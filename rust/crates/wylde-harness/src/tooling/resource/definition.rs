@@ -71,6 +71,24 @@ impl ResourceOp {
             ResourceOp::Execute,
         ]
     }
+
+    /// Parse a lower-case verb string (`"list"`, `"execute"`, …) back to
+    /// a [`ResourceOp`]. The inverse of [`ResourceOp::as_str`]. Used by
+    /// the extension-resource overlay (Slice 5a) to map a manifest's
+    /// declared `operations` keys onto the verb set; an unknown key
+    /// yields `None` so the bridge / harness can reject it cleanly.
+    pub fn from_verb(s: &str) -> Option<ResourceOp> {
+        Some(match s {
+            "list" => ResourceOp::List,
+            "get" => ResourceOp::Get,
+            "create" => ResourceOp::Create,
+            "update" => ResourceOp::Update,
+            "delete" => ResourceOp::Delete,
+            "search" => ResourceOp::Search,
+            "execute" => ResourceOp::Execute,
+            _ => return None,
+        })
+    }
 }
 
 /// Where a resource lives. Used by the [`super::ToolsetFilter`] so a
@@ -147,6 +165,11 @@ pub struct ResourceRequest {
     pub body: Value,
     /// list / search / filter-delete predicate.
     pub filter: Value,
+    /// execute action parameters (the `params` arg of `wylde_execute`).
+    /// Distinct from `body` so an `execute` op handler gets exactly the
+    /// object the model passed under `params`, without the dispatcher
+    /// having to overload `body` for two different verbs.
+    pub params: Value,
     /// execute sub-op selector.
     pub action: Option<String>,
     /// search query string.
@@ -171,6 +194,7 @@ impl ResourceRequest {
             resource_id: get_str("resource_id"),
             body: args.get("body").cloned().unwrap_or(Value::Null),
             filter: args.get("filter").cloned().unwrap_or(Value::Null),
+            params: args.get("params").cloned().unwrap_or(Value::Null),
             action: get_str("action"),
             query: get_str("query"),
             limit: args.get("limit").and_then(Value::as_u64),
@@ -221,6 +245,25 @@ where
     Arc::new(OpHandlerFn(handler))
 }
 
+/// A boxed, cloneable self-description producer. Built-ins pass a plain
+/// `fn() -> Value`; the extension overlay (Slice 5a) passes a closure
+/// that *captures* the parsed manifest declaration so it can render the
+/// resource's per-op schema dynamically. A bare `fn` pointer can't
+/// capture, so the field is a boxed `Fn` — the smallest generalisation
+/// that lets dynamic extension resources `describe` themselves the same
+/// way `memory.rs` does.
+pub type DescribeFn = Arc<dyn Fn() -> Value + Send + Sync>;
+
+/// Wrap any `Fn() -> Value` (including a bare `fn` pointer) into a
+/// [`DescribeFn`]. Keeps built-in registration terse:
+/// `describe: describe_value(describe_memory)`.
+pub fn describe_value<F>(f: F) -> DescribeFn
+where
+    F: Fn() -> Value + Send + Sync + 'static,
+{
+    Arc::new(f)
+}
+
 /// One declarative resource — the verb-layer analogue of a
 /// [`crate::tooling::registry::ToolEntry`], but covering a *family* of
 /// operations on a single named resource type rather than one tool.
@@ -247,8 +290,10 @@ pub struct ResourceDefinition {
     /// `(resource, op)` from this set.
     pub destructive_ops: &'static [ResourceOp],
     /// Compact self-description. Returned verbatim by `wylde_describe`
-    /// when this resource is named.
-    pub describe: fn() -> Value,
+    /// when this resource is named. A boxed `Fn` (not a bare `fn`) so an
+    /// extension resource can capture its parsed declaration — see
+    /// [`DescribeFn`].
+    pub describe: DescribeFn,
 }
 
 impl ResourceDefinition {
@@ -256,6 +301,13 @@ impl ResourceDefinition {
     /// the per-op tier/consent classification (R7 in the plan).
     pub fn is_destructive(&self, op: ResourceOp) -> bool {
         self.destructive_ops.contains(&op)
+    }
+
+    /// Render this resource's full self-description (the payload
+    /// `wylde_describe(resource_type=…)` returns). Calls the boxed
+    /// [`DescribeFn`].
+    pub fn describe(&self) -> Value {
+        (self.describe.as_ref())()
     }
 
     /// True when this resource has a handler for `op`.
@@ -309,7 +361,7 @@ mod tests {
             filter_fields: &["kind"],
             operations: ops,
             destructive_ops: &[ResourceOp::Delete],
-            describe: || json!({"resource_type": "widget"}),
+            describe: describe_value(|| json!({"resource_type": "widget"})),
         }
     }
 

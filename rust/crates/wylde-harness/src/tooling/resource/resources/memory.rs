@@ -39,7 +39,8 @@ use wylde_shared::ipc::IpcError;
 
 use crate::memory::long_term;
 use crate::tooling::resource::definition::{
-    op_handler, OpHandler, ResourceDefinition, ResourceOp, ResourceRequest, Scope, ToolContext,
+    describe_value, op_handler, OpHandler, ResourceDefinition, ResourceOp, ResourceRequest, Scope,
+    ToolContext,
 };
 use crate::tooling::resource::ResourceRegistry;
 use crate::tooling::tools::memory as tools_memory;
@@ -65,7 +66,7 @@ pub fn register_memory_resource(reg: &mut ResourceRegistry) {
         operations,
         // get/search read only; create/update/delete mutate.
         destructive_ops: &[ResourceOp::Create, ResourceOp::Update, ResourceOp::Delete],
-        describe: describe_memory,
+        describe: describe_value(describe_memory),
     });
 }
 

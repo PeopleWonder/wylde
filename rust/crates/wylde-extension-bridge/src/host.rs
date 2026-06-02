@@ -21,6 +21,18 @@ use crate::mcp::{McpClient, McpError, SpawnSpec, ToolDescription};
 
 const EVENT_BUS_CAPACITY: usize = 256;
 
+/// The claimed-tool partition decision (plan §5): a named tool is hidden
+/// from the aggregate catalog **iff** verb mode is active and a resource
+/// op claims it. Pure + total so the partition rule is unit-testable
+/// without spawning a child MCP server.
+fn named_tool_hidden(
+    name: &str,
+    claimed: &std::collections::BTreeSet<String>,
+    verb_mode: bool,
+) -> bool {
+    verb_mode && claimed.contains(name)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LifecycleStatus {
@@ -353,24 +365,38 @@ impl Host {
     }
 
     /// Aggregate `tools/list` from every running extension.
+    ///
+    /// **Claimed-tool partition (Slice 5a, plan §5):** when verb mode is
+    /// active (`WYLDE_HARNESS_VERB_TOOLS`), any tool named by a resource
+    /// op in the extension's manifest is **excluded** here — it is
+    /// surfaced through the harness verb layer instead, so a claimed tool
+    /// never appears in both the named catalog and the resource surface.
+    /// With verb mode off (or no `resources[]`), every tool flows as
+    /// before.
     pub async fn aggregate_tools(&self) -> Vec<Value> {
         let names: Vec<String> = {
             let g = self.extensions.read().await;
             g.keys().cloned().collect()
         };
+        let verb_mode = crate::verb_mode_active();
         let timeout = Duration::from_secs(self.cfg.tool_call_timeout_s);
         let mut out: Vec<Value> = Vec::new();
         for name in names {
-            let client = {
+            let (client, claimed) = {
                 let g = self.extensions.read().await;
                 let Some(mu) = g.get(&name) else { continue };
                 let s = mu.lock().await;
-                s.client.clone()
+                (s.client.clone(), s.record.manifest.claimed_tools())
             };
             let Some(client) = client else { continue };
             match client.list_tools(timeout).await {
                 Ok(tools) => {
                     for t in tools {
+                        if named_tool_hidden(&t.name, &claimed, verb_mode) {
+                            // Claimed by a resource op — hidden from the
+                            // named catalog (it lives on the verb surface).
+                            continue;
+                        }
                         out.push(json!({
                             "extension": name,
                             "id": t.name,
@@ -465,6 +491,46 @@ impl Host {
         out
     }
 
+    /// Snapshot every (optionally one) extension's declared `resources[]`
+    /// for the harness verb-overlay sync (Slice 5a). Pure read; never
+    /// spawns a server, so it answers for disabled extensions too (same
+    /// property as `list_panels` / `ext.tools.list`'s static path).
+    ///
+    /// Each row carries the **namespaced** `resource_type`
+    /// (`ext:<extension>:<slug>`) the harness registers under, the bare
+    /// slug, and the `claimed_tools` set for that resource. The harness
+    /// turns each row into a `ResourceDefinition` whose op handlers do one
+    /// `ext.tools.call` hop.
+    pub async fn list_resource_declarations(&self, only: Option<&str>) -> Vec<Value> {
+        let g = self.extensions.read().await;
+        let mut out: Vec<Value> = Vec::new();
+        for (name, mu) in g.iter() {
+            if let Some(want) = only {
+                if name != want {
+                    continue;
+                }
+            }
+            let s = mu.lock().await;
+            for res in &s.record.manifest.resources {
+                let mut row = serde_json::to_value(res).unwrap_or_else(|_| json!({}));
+                if let Some(obj) = row.as_object_mut() {
+                    obj.insert("extension".into(), json!(name));
+                    obj.insert("bare_resource_type".into(), json!(res.resource_type));
+                    obj.insert(
+                        "resource_type".into(),
+                        json!(format!("ext:{name}:{}", res.resource_type)),
+                    );
+                    obj.insert(
+                        "claimed_tools".into(),
+                        json!(res.claimed_tools().into_iter().collect::<Vec<_>>()),
+                    );
+                }
+                out.push(row);
+            }
+        }
+        out
+    }
+
     /// Stop + start one extension.
     pub async fn restart(&self, extension: &str) -> Result<ExtensionStatus, McpError> {
         self.stop_one(extension).await?;
@@ -499,6 +565,7 @@ mod tests {
             capabilities: Vec::new(),
             tools: Vec::new(),
             ui_panels: panels.clone(),
+            resources: Vec::new(),
             health: Default::default(),
         };
         ExtensionRecord {
@@ -568,5 +635,91 @@ mod tests {
             .await;
         let panels = host.list_panels().await;
         assert!(panels.is_empty());
+    }
+
+    #[test]
+    fn partition_hides_only_claimed_tools_and_only_in_verb_mode() {
+        let mut claimed = std::collections::BTreeSet::new();
+        claimed.insert("fetch".to_string());
+        claimed.insert("scrape".to_string());
+
+        // Verb mode ON: claimed tools are hidden, unclaimed stay visible.
+        assert!(named_tool_hidden("fetch", &claimed, true));
+        assert!(named_tool_hidden("scrape", &claimed, true));
+        assert!(!named_tool_hidden("other", &claimed, true));
+
+        // Verb mode OFF: nothing is hidden — named-tool behaviour intact.
+        assert!(!named_tool_hidden("fetch", &claimed, false));
+        assert!(!named_tool_hidden("other", &claimed, false));
+    }
+
+    #[tokio::test]
+    async fn list_resource_declarations_namespaces_and_attaches_claimed() {
+        use crate::manifest::{
+            ActionDeclaration, McpServerManifest, OperationDeclaration, ResourceDeclaration,
+            Transport,
+        };
+        let mut ops = std::collections::BTreeMap::new();
+        ops.insert(
+            "execute".to_string(),
+            OperationDeclaration {
+                description: "web".into(),
+                mcp_tool: String::new(),
+                destructive: false,
+                tier: "read".into(),
+                actions: vec![
+                    ActionDeclaration { name: "fetch".into(), description: String::new(), mcp_tool: Some("fetch".into()), destructive: false },
+                    ActionDeclaration { name: "scrape".into(), description: String::new(), mcp_tool: Some("scrape".into()), destructive: false },
+                ],
+                args_schema: serde_json::Value::Null,
+                response_schema: serde_json::Value::Null,
+            },
+        );
+        let manifest = McpServerManifest {
+            name: "Webcrawler".into(),
+            description: String::new(),
+            version: "1.0".into(),
+            enabled: false,
+            transport: Transport::Stdio,
+            command: vec!["noop".into()],
+            cwd: None,
+            env: Default::default(),
+            url: None,
+            capabilities: Vec::new(),
+            tools: Vec::new(),
+            ui_panels: Vec::new(),
+            resources: vec![ResourceDeclaration {
+                resource_type: "url".into(),
+                display_name: "Web URL".into(),
+                description: "d".into(),
+                scope: "global".into(),
+                identifier_fields: Vec::new(),
+                filter_fields: Vec::new(),
+                schema_version: 1,
+                operations: ops,
+            }],
+            health: Default::default(),
+        };
+        let record = ExtensionRecord {
+            manifest_path: "/tmp/Webcrawler/mcp-server.json".into(),
+            root: "/tmp/Webcrawler".into(),
+            manifest,
+            browser_extension_path: None,
+            capabilities: Vec::new(),
+            ui_panels: Vec::new(),
+        };
+        let host = Host::new(Config::get());
+        host.seed_record_for_tests(record, LifecycleStatus::Disabled).await;
+
+        let rows = host.list_resource_declarations(None).await;
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row["extension"], "Webcrawler");
+        assert_eq!(row["resource_type"], "ext:Webcrawler:url");
+        assert_eq!(row["bare_resource_type"], "url");
+        let claimed: Vec<&str> = row["claimed_tools"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(claimed, vec!["fetch", "scrape"]);
+        // Per-extension filter excludes others.
+        assert!(host.list_resource_declarations(Some("Other")).await.is_empty());
     }
 }
