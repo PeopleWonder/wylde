@@ -107,6 +107,15 @@ mod tests {
             "memory.workspaces.get_persona",
             "memory.workspaces.set_persona",
             "memory.workspaces.delete",
+            // models.* — harness Slice 3a
+            "models.list",
+            "models.get_profile",
+            "models.show",
+            "models.delete",
+            "models.unload",
+            "models.set_active",
+            "models.set_default",
+            "models.get_default",
             // consent.* — Phase 12.2
             "consent.list",
             "consent.set",
