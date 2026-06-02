@@ -52,3 +52,17 @@ Core/Memgraph/vendor/
 
 # Local-only planning docs (kept on disk for reference, not published)
 docs/plans/
+
+# Private planning/design docs (kept locally, not published)
+docs/privacy-plan.md
+docs/wylde-rust-migration-master-plan.md
+docs/wylde-android-app-plan.md
+docs/wylde-gpui-rewrite-plan.md
+docs/wylde-gui-panel-architecture-plan.md
+docs/wylde-ollama-design.md
+docs/wylde-voice-npu-spike-findings.md
+docs/audit/lifecycle-slice-report.md
+docs/refactor-archive/PHASE6_TOOLING_PLAN.md
+docs/refactor-archive/BACKEND_MIGRATION_MAP.md
+docs/refactor-archive/MEMORY_MIGRATION_MAP.md
+Core/GUI/docs/inference-bar-migration-plan.md
