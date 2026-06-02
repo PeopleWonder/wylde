@@ -169,6 +169,7 @@ pub mod config;
 pub mod config_persist;
 pub mod lease;
 pub mod mic;
+pub mod model_download;
 pub mod model_registry_bridge;
 pub mod orchestrator;
 pub mod orchestrator_clients;

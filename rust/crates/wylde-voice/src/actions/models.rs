@@ -10,9 +10,11 @@
 
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use wylde_shared::ipc::Reply;
+use wylde_shared::ipc::{IpcError, Reply};
 
+use crate::actions::error::invalid_request;
 use crate::config::Config;
+use crate::model_download::{EnsureJobs, EnsureStatus, KOKORO_REPO};
 
 /// HuggingFace hub cache root. Honours `HUGGINGFACE_HUB_CACHE` /
 /// `HF_HOME` like Python's `huggingface_hub.constants` does, then
@@ -166,6 +168,53 @@ pub async fn handle_list_models(_payload: Value) -> Reply {
         },
         "hf_cache_root": hf_cache_root().display().to_string(),
     }))
+}
+
+/// `voice.download_models` — kick a Rust-native bootstrap of the Whisper
+/// STT + Kokoro TTS model files into the HF cache (Slice 4). Returns
+/// immediately with a `job_id`; poll `voice.download_status` for
+/// progress. Replaces `Voice/download_models.py` — no Python.
+pub async fn handle_download_models(_payload: Value) -> Reply {
+    let cfg = Config::get();
+    let job_id = crate::model_download::spawn_ensure_job();
+    Reply::ok(json!({
+        "job_id": job_id,
+        "stt_model": cfg.stt_model.clone(),
+        "kokoro_model": KOKORO_REPO,
+    }))
+}
+
+/// `voice.download_status` — poll the in-progress / done / failed status
+/// of a previously-issued `voice.download_models` job. Payload:
+/// `{job_id}`. Reply mirrors the wake-word pull-status shape.
+pub async fn handle_download_status(payload: Value) -> Reply {
+    let job_id = match payload.get("job_id").and_then(Value::as_str) {
+        Some(s) if !s.is_empty() => s.to_owned(),
+        _ => return Reply::err(invalid_request("job_id is required")),
+    };
+    match EnsureJobs::global().status(&job_id) {
+        Some(EnsureStatus::InProgress { done, total }) => Reply::ok(json!({
+            "job_id": job_id,
+            "state": "in_progress",
+            "done": done,
+            "total": total,
+        })),
+        Some(EnsureStatus::Done { whisper_dir, kokoro_dir }) => Reply::ok(json!({
+            "job_id": job_id,
+            "state": "done",
+            "whisper_dir": whisper_dir.display().to_string(),
+            "kokoro_dir": kokoro_dir.display().to_string(),
+        })),
+        Some(EnsureStatus::Failed { error }) => Reply::ok(json!({
+            "job_id": job_id,
+            "state": "failed",
+            "error": error,
+        })),
+        None => Reply::err(IpcError::new(
+            "unknown_job",
+            format!("no download job tracked for id {job_id}"),
+        )),
+    }
 }
 
 /// Inline Kokoro voice catalogue, copied from

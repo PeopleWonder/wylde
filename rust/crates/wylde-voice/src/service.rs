@@ -11,9 +11,11 @@ use wylde_shared::ipc::{
 
 use crate::actions::{health, mic, models, session, synthesize, transcribe, wakeword};
 
-const ALL_ACTIONS: [&str; 23] = [
+const ALL_ACTIONS: [&str; 25] = [
     "voice.health",
     "voice.list_models",
+    "voice.download_models",
+    "voice.download_status",
     "voice.transcribe",
     "voice.transcribe_stream",
     "voice.synthesize",
@@ -62,6 +64,26 @@ pub fn install() {
         |payload: Value| async move { models::handle_list_models(payload).await },
         "Enumerate Whisper / Kokoro snapshots present in the HF cache. \
          Reports OpenVINO IR sibling presence too. Cheap — does NOT load weights.",
+        "wylde_voice::actions::models",
+    );
+
+    register_action_with_meta(
+        "voice.download_models",
+        |payload: Value| async move { models::handle_download_models(payload).await },
+        "Rust-native model bootstrap (Slice 4): fetch Whisper STT + Kokoro \
+         TTS files into the HF cache, verifying git-LFS SHA-256s and \
+         assembling voices.npz. Replaces Voice/download_models.py. Returns \
+         immediately {job_id, stt_model, kokoro_model}; poll \
+         voice.download_status. Idempotent — present files are skipped.",
+        "wylde_voice::actions::models",
+    );
+
+    register_action_with_meta(
+        "voice.download_status",
+        |payload: Value| async move { models::handle_download_status(payload).await },
+        "Poll a voice.download_models job. Payload: {job_id}. Reply: \
+         {job_id, state: in_progress|done|failed, done?, total?, \
+         whisper_dir?, kokoro_dir?, error?}.",
         "wylde_voice::actions::models",
     );
 

@@ -477,7 +477,7 @@ async fn ensure_voices() -> Result<Arc<Voices>, wylde_shared::ipc::IpcError> {
     let cfg = Config::get();
     let voices_path = resolve_voices_path(cfg).ok_or_else(|| {
         model_not_loaded(
-            "voices.npz not found in Kokoro snapshot — run Voice/download_models.py first",
+            "voices.npz not found in Kokoro snapshot — run the voice.download_models action first",
         )
     })?;
     let loaded = Voices::load(&voices_path).map_err(|e| match e {
@@ -505,7 +505,7 @@ async fn ensure_kokoro() -> Result<Arc<KokoroSynth>, wylde_shared::ipc::IpcError
     let cfg = Config::get();
     let model_path = resolve_model_path(cfg).ok_or_else(|| {
         model_not_loaded(
-            "Kokoro model.onnx not found in HF cache — run Voice/download_models.py first",
+            "Kokoro model.onnx not found in HF cache — run the voice.download_models action first",
         )
     })?;
     let bytes_hint = std::fs::metadata(&model_path).map(|m| m.len()).ok(); // wylde-check: discard-result-ok

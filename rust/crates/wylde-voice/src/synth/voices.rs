@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use thiserror::Error;
 
@@ -386,6 +387,174 @@ fn extract_dict_value(header: &str, key: &str) -> Result<String, String> {
     Ok(after_colon[..value_end].trim().to_owned())
 }
 
+// --------------------------------------------------------------------- //
+// Writer — assemble a `voices.npz` from raw per-voice `.bin` buffers.    //
+// Counterpart to the reader above; used by the Rust model bootstrap      //
+// (`crate::model_download`) so a clean install can build the bundle      //
+// without `Voice/download_models.py`.                                    //
+// --------------------------------------------------------------------- //
+
+/// Assemble a `voices.npz` from raw per-voice `.bin` buffers, mirroring
+/// `np.savez(voices.npz, **{name: frombuffer(bin).reshape(-1, 1, 256)})`
+/// in `Voice/download_models.py::fetch_kokoro`.
+///
+/// Each input buffer must be exactly `VOICE_STYLE_TOTAL_F32 * 4` bytes of
+/// little-endian float32 (the layout Kokoro's `voices/<name>.bin` files
+/// ship in — and the layout x86 numpy produces). The output is an
+/// uncompressed ("stored") PKZIP with one `<name>.npy` member each, which
+/// is precisely what [`Voices::load`] reads back — and a valid `.npz`
+/// `numpy.load` can open too (CRC-32s are written, even though our reader
+/// doesn't check them).
+///
+/// Writes atomically via a `.tmp` sibling + rename so a half-written
+/// bundle never fools [`resolve_voices_path`](crate) into thinking the
+/// model is ready.
+pub fn write_voices_npz(voices: &[(String, Vec<u8>)], dest: &Path) -> Result<(), VoicesLoadError> {
+    const EXPECTED_BYTES: usize = VOICE_STYLE_TOTAL_F32 * 4;
+
+    let mut archive: Vec<u8> = Vec::new();
+    let mut central: Vec<u8> = Vec::new();
+    let mut count: u16 = 0;
+
+    for (name, raw) in voices {
+        if raw.len() != EXPECTED_BYTES {
+            return Err(VoicesLoadError::VoiceEntry {
+                voice: name.clone(),
+                detail: format!("expected {EXPECTED_BYTES} bytes, got {}", raw.len()),
+            });
+        }
+        let member = format!("{name}.npy");
+        let npy = build_npy_f32(raw);
+        let crc = crc32(&npy);
+        let size = npy.len() as u32;
+        let local_offset = archive.len() as u32;
+
+        // Local file header (30 bytes) + name + data.
+        archive.extend_from_slice(&LOCAL_SIGNATURE.to_le_bytes());
+        archive.extend_from_slice(&20_u16.to_le_bytes()); // version needed
+        archive.extend_from_slice(&0_u16.to_le_bytes()); // flags
+        archive.extend_from_slice(&0_u16.to_le_bytes()); // method = stored
+        archive.extend_from_slice(&0_u16.to_le_bytes()); // mod time
+        archive.extend_from_slice(&0_u16.to_le_bytes()); // mod date
+        archive.extend_from_slice(&crc.to_le_bytes());
+        archive.extend_from_slice(&size.to_le_bytes()); // compressed size
+        archive.extend_from_slice(&size.to_le_bytes()); // uncompressed size
+        archive.extend_from_slice(&(member.len() as u16).to_le_bytes());
+        archive.extend_from_slice(&0_u16.to_le_bytes()); // extra len
+        archive.extend_from_slice(member.as_bytes());
+        archive.extend_from_slice(&npy);
+
+        // Central-directory file header (46 bytes) + name.
+        central.extend_from_slice(&CD_SIGNATURE.to_le_bytes());
+        central.extend_from_slice(&20_u16.to_le_bytes()); // version made by
+        central.extend_from_slice(&20_u16.to_le_bytes()); // version needed
+        central.extend_from_slice(&0_u16.to_le_bytes()); // flags
+        central.extend_from_slice(&0_u16.to_le_bytes()); // method = stored
+        central.extend_from_slice(&0_u16.to_le_bytes()); // mod time
+        central.extend_from_slice(&0_u16.to_le_bytes()); // mod date
+        central.extend_from_slice(&crc.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&size.to_le_bytes());
+        central.extend_from_slice(&(member.len() as u16).to_le_bytes());
+        central.extend_from_slice(&0_u16.to_le_bytes()); // extra len
+        central.extend_from_slice(&0_u16.to_le_bytes()); // comment len
+        central.extend_from_slice(&0_u16.to_le_bytes()); // disk number start
+        central.extend_from_slice(&0_u16.to_le_bytes()); // internal attrs
+        central.extend_from_slice(&0_u32.to_le_bytes()); // external attrs
+        central.extend_from_slice(&local_offset.to_le_bytes());
+        central.extend_from_slice(member.as_bytes());
+
+        count = count.saturating_add(1);
+    }
+
+    if count == 0 {
+        return Err(VoicesLoadError::Format(
+            "write_voices_npz called with no voices".to_owned(),
+        ));
+    }
+
+    let cd_offset = archive.len() as u32;
+    let cd_size = central.len() as u32;
+    archive.extend_from_slice(&central);
+
+    // End-of-central-directory record (22 bytes, no comment).
+    archive.extend_from_slice(&EOCD_SIGNATURE.to_le_bytes());
+    archive.extend_from_slice(&0_u16.to_le_bytes()); // disk number
+    archive.extend_from_slice(&0_u16.to_le_bytes()); // cd start disk
+    archive.extend_from_slice(&count.to_le_bytes()); // entries this disk
+    archive.extend_from_slice(&count.to_le_bytes()); // total entries
+    archive.extend_from_slice(&cd_size.to_le_bytes());
+    archive.extend_from_slice(&cd_offset.to_le_bytes());
+    archive.extend_from_slice(&0_u16.to_le_bytes()); // comment len
+
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| VoicesLoadError::Io(format!("mkdir {}: {e}", parent.display())))?;
+    }
+    let tmp = dest.with_extension("npz.tmp");
+    std::fs::write(&tmp, &archive)
+        .map_err(|e| VoicesLoadError::Io(format!("write {}: {e}", tmp.display())))?;
+    std::fs::rename(&tmp, dest)
+        .map_err(|e| VoicesLoadError::Io(format!("rename {} → {}: {e}", tmp.display(), dest.display())))?;
+    Ok(())
+}
+
+/// Wrap a raw little-endian float32 buffer in a NumPy `.npy` v1.0 header
+/// of shape `[VOICE_STYLE_LENGTHS, 1, VOICE_STYLE_DIM]`. The 64-byte
+/// alignment padding matches numpy's own writer so the result is
+/// byte-identical to `np.save`'s output for the same array.
+fn build_npy_f32(body_le: &[u8]) -> Vec<u8> {
+    let header = format!(
+        "{{'descr': '<f4', 'fortran_order': False, 'shape': ({L}, {I}, {D}), }}",
+        L = VOICE_STYLE_LENGTHS,
+        I = VOICE_STYLE_INNER,
+        D = VOICE_STYLE_DIM,
+    );
+    // magic(6) + version(2) + header_len(2) + header + '\n' rounded to 64.
+    let prefix_len_unpadded = 10 + header.len() + 1;
+    let pad = (64 - prefix_len_unpadded % 64) % 64;
+    let mut padded_header = header.into_bytes();
+    padded_header.extend(std::iter::repeat_n(b' ', pad));
+    padded_header.push(b'\n');
+    let header_len = padded_header.len() as u16;
+
+    let mut out = Vec::with_capacity(10 + padded_header.len() + body_le.len());
+    out.extend_from_slice(b"\x93NUMPY");
+    out.push(1); // major
+    out.push(0); // minor
+    out.extend_from_slice(&header_len.to_le_bytes());
+    out.extend_from_slice(&padded_header);
+    out.extend_from_slice(body_le);
+    out
+}
+
+/// IEEE CRC-32 (the variant PKZIP uses), table-driven. Implemented in
+/// ~10 lines rather than pulling a `crc32fast` dep — keeps the crate
+/// pure-Rust + dependency-light, matching the in-house ZIP reader above.
+fn crc32(data: &[u8]) -> u32 {
+    static TABLE: OnceLock<[u32; 256]> = OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let mut t = [0_u32; 256];
+        let mut i = 0;
+        while i < 256 {
+            let mut c = i as u32;
+            let mut k = 0;
+            while k < 8 {
+                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                k += 1;
+            }
+            t[i] = c;
+            i += 1;
+        }
+        t
+    });
+    let mut crc = 0xFFFF_FFFF_u32;
+    for &b in data {
+        crc = table[((crc ^ b as u32) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
 fn extract_shape(header: &str) -> Result<[usize; 3], String> {
     let raw = extract_dict_value(header, "shape")?;
     let trimmed = raw
@@ -487,6 +656,48 @@ mod tests {
     fn voices_load_missing_file_returns_not_found() {
         let err = Voices::load(Path::new("/no/such/voices.npz")).unwrap_err();
         assert!(matches!(err, VoicesLoadError::NotFound(_)));
+    }
+
+    #[test]
+    fn write_voices_npz_round_trips_through_voices_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let npz_path = dir.path().join("sub").join("voices.npz");
+
+        // Two raw little-endian f32 buffers, the same shape Kokoro's
+        // per-voice `.bin` files ship in.
+        let buf = |v: f32| -> Vec<u8> {
+            let mut b = Vec::with_capacity(VOICE_STYLE_TOTAL_F32 * 4);
+            for _ in 0..VOICE_STYLE_TOTAL_F32 {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+            b
+        };
+        let voices = vec![
+            ("af_heart".to_owned(), buf(0.25)),
+            ("am_adam".to_owned(), buf(-0.5)),
+        ];
+
+        write_voices_npz(&voices, &npz_path).expect("assemble voices.npz");
+        assert!(npz_path.is_file(), "parent dir auto-created + file written");
+
+        let loaded = Voices::load(&npz_path).expect("assembled .npz loads");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded.names(), vec!["af_heart", "am_adam"]);
+        let row = loaded.get("af_heart").unwrap().style_for_token_len(3).unwrap();
+        assert_eq!(row.len(), VOICE_STYLE_DIM);
+        assert!((row[0] - 0.25).abs() < 1e-6);
+        let row2 = loaded.get("am_adam").unwrap().style_for_token_len(0).unwrap();
+        assert!((row2[VOICE_STYLE_DIM - 1] + 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn write_voices_npz_rejects_wrong_size_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let npz_path = dir.path().join("voices.npz");
+        let bad = vec![("x".to_owned(), vec![0_u8; 8])];
+        let err = write_voices_npz(&bad, &npz_path).unwrap_err();
+        assert!(matches!(err, VoicesLoadError::VoiceEntry { .. }));
+        assert!(!npz_path.exists(), "no file written on validation failure");
     }
 
     #[test]

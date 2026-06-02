@@ -81,6 +81,20 @@ async fn main() -> Result<()> {
     // `wylde_voice::service::ALL_ACTIONS` + this main's manifest
     // `contributes.wylde_voice.actions`.
 
+    // Slice 4 — opt-in first-run model bootstrap. When
+    // `WYLDE_VOICE_AUTO_DOWNLOAD=1`, kick the Rust-native fetch of the
+    // Whisper + Kokoro model files in the background so a clean install
+    // self-provisions without `Voice/download_models.py`. Off by default
+    // so boot stays fast + offline-friendly; the GUI / harness can also
+    // trigger it on demand via the `voice.download_models` action.
+    if env_flag("WYLDE_VOICE_AUTO_DOWNLOAD") {
+        let job = wylde_voice::model_download::spawn_ensure_job();
+        tracing::info!(
+            "wylde-voice: auto model download started (job {job}); \
+             poll voice.download_status for progress"
+        );
+    }
+
     tracing::info!(
         "wylde-voice: actions registered; opening pipe at \\\\.\\pipe\\wylde-voice"
     );
@@ -102,4 +116,11 @@ async fn main() -> Result<()> {
         tracing::warn!("wylde-voice: mark_stopped failed: {e}");
     }
     Ok(())
+}
+
+/// Truthy env-var check (`1` / `true`, case-insensitive).
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
