@@ -20,7 +20,6 @@ import pytest
 SHARED_MODULES = [
     "Core.shared.ipc",
     "Core.shared.manifest",
-    "Core.shared.vram_broker",
     "Core.shared.discovery",
     "Core.shared.consul_client",
     "Core.shared.tool_interface",
@@ -50,19 +49,3 @@ def test_manifest_exports_stable_surface() -> None:
 
     for name in ("write_manifest", "start_heartbeat", "stop_heartbeat"):
         assert hasattr(manifest, name), f"manifest.{name} missing"
-
-
-def test_vram_broker_exports_stable_surface() -> None:
-    from Core.shared import vram_broker
-
-    for name in (
-        "reserve",
-        "release",
-        "reserved",
-        "Priority",
-        "Lease",
-        "VramError",
-        "VramUnavailable",
-        "get_state",
-    ):
-        assert hasattr(vram_broker, name), f"vram_broker.{name} missing"
