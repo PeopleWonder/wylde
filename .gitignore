@@ -61,6 +61,7 @@ docs/wylde-gpui-rewrite-plan.md
 docs/wylde-gui-panel-architecture-plan.md
 docs/wylde-ollama-design.md
 docs/wylde-voice-npu-spike-findings.md
+docs/wylde-voice-cutover-state.md
 docs/audit/lifecycle-slice-report.md
 docs/refactor-archive/PHASE6_TOOLING_PLAN.md
 docs/refactor-archive/BACKEND_MIGRATION_MAP.md
