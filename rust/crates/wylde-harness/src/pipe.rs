@@ -46,6 +46,7 @@ use crate::api::HarnessApi;
 
 const HANDLER_MODULE_CHAT: &str = "wylde_harness::api::DefaultHarnessApi (chat.*)";
 const HANDLER_MODULE_TOOLS: &str = "wylde_harness::api::DefaultHarnessApi (tools.*)";
+const HANDLER_MODULE_RAG: &str = "wylde_harness::api::DefaultHarnessApi (rag.*)";
 const HANDLER_MODULE_LONG_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.long_term.*)";
 const HANDLER_MODULE_WORKSPACES: &str =
@@ -56,8 +57,9 @@ const HANDLER_MODULE_CONSENT: &str = "wylde_harness::api::DefaultHarnessApi (con
 /// `list_action_meta()` to catch a missing registration. Order mirrors
 /// the Phase 9 sectioning so the contract emitter produces stable output.
 pub const ALL_PIPE_ACTIONS: &[&str] = &[
-    // chat.* — turn driver (5 verbs)
+    // chat.* — turn driver (6 verbs)
     "chat.run_turn",
+    "chat.complete",
     "chat.start_turn",
     "chat.cancel",
     "chat.stream_turn",
@@ -65,6 +67,9 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     // tools.* — direct invocation + catalog (2 verbs)
     "tools.list",
     "tools.run",
+    // rag.* — episodic write + semantic search (2 verbs; Wylde_Study S2a)
+    "rag.add_episodic",
+    "rag.search",
     // memory.long_term.* — global memory tier (6 verbs)
     "memory.long_term.list",
     "memory.long_term.save",
@@ -117,6 +122,23 @@ where
          message. Slice 5.A: single-round, no tool decode, no memory \
          layer. Payload: {user_message, conversation_id, model?, \
          turn_id?, workspace_id?, modality?, device_tier?}.",
+        HANDLER_MODULE_CHAT,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "chat.complete",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.chat_complete(p).await }
+        },
+        "Single-shot LLM completion for extensions (Wylde_Study S2a). \
+         Routes through the same ollama.chat pipeline as chat.run_turn \
+         (broker lease, model resolution, priority all apply) but sends \
+         exactly one user message — no system prompt, no tools field, no \
+         tool decode, no conversation history. Payload: {prompt, model?, \
+         max_tokens?}. Returns {text, model_used, tokens_used, \
+         prompt_tokens, completion_tokens}.",
         HANDLER_MODULE_CHAT,
     );
 
@@ -209,6 +231,41 @@ where
          on failure. The tier gate runs against the supplied \
          device_tier (default `tool_use`).",
         HANDLER_MODULE_TOOLS,
+    );
+
+    // ── rag.* (Wylde_Study S2a) ──────────────────────────────────────
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "rag.add_episodic",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.rag_add_episodic(p).await }
+        },
+        "Add one raw-text episodic memory row (the Rust port of \
+         rag.add_episodic). Writes to the same tiered RAG store \
+         rag.search reads, so the row is immediately retrievable. \
+         Payload: {content|text, source_path?|url?, session_id?, \
+         score?, vector?}. Embeds `content` via wylde-ollama when no \
+         `vector` is supplied. Returns {status, memory_id, id, chars, \
+         memory_type}.",
+        HANDLER_MODULE_RAG,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "rag.search",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.rag_search(p).await }
+        },
+        "Semantic search over the tiered RAG store. Embeds the query \
+         text server-side via wylde-ollama (unlike the model-callable \
+         rag.ask tool, which requires a precomputed vector), then runs \
+         the same first-party vector search. Payload: {q, query_vector?, \
+         limit?, tier?, workspace?}. Returns {status, q, workspace_id, \
+         results, count}.",
+        HANDLER_MODULE_RAG,
     );
 
     // ── memory.long_term.* ───────────────────────────────────────────

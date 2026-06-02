@@ -48,6 +48,7 @@ use wylde_shared::ipc::{Reply, StreamSender};
 
 use crate::config::Config;
 use crate::memory::long_term::{self, LongTermMemory, SaveError};
+use crate::memory::rag::actions as rag_actions;
 use crate::memory::workspaces::actions as workspace_actions;
 use crate::tooling::consent::{self, Decision};
 use crate::tooling::registry::global;
@@ -63,8 +64,9 @@ use crate::turn::tool_round::TIER_TOOL_USE;
 /// no return; unary verbs return [`Reply`].
 #[async_trait]
 pub trait HarnessApi: Send + Sync {
-    // ── chat.* (5 verbs) ─────────────────────────────────────────────
+    // ── chat.* (6 verbs) ─────────────────────────────────────────────
     async fn chat_run_turn(&self, payload: Value) -> Reply;
+    async fn chat_complete(&self, payload: Value) -> Reply;
     async fn chat_start_turn(&self, payload: Value) -> Reply;
     async fn chat_cancel(&self, payload: Value) -> Reply;
     async fn chat_stream_turn(&self, payload: Value, sender: StreamSender);
@@ -73,6 +75,10 @@ pub trait HarnessApi: Send + Sync {
     // ── tools.* (2 verbs) ────────────────────────────────────────────
     async fn tools_list(&self, payload: Value) -> Reply;
     async fn tools_run(&self, payload: Value) -> Reply;
+
+    // ── rag.* (2 verbs; Wylde_Study S2a) ─────────────────────────────
+    async fn rag_add_episodic(&self, payload: Value) -> Reply;
+    async fn rag_search(&self, payload: Value) -> Reply;
 
     // ── memory.long_term.* (6 verbs) ─────────────────────────────────
     async fn memory_long_term_list(&self, payload: Value) -> Reply;
@@ -116,6 +122,10 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn chat_run_turn(&self, payload: Value) -> Reply {
         turn_actions::handle_run_turn(payload).await
+    }
+
+    async fn chat_complete(&self, payload: Value) -> Reply {
+        turn_actions::handle_complete(payload).await
     }
 
     async fn chat_start_turn(&self, payload: Value) -> Reply {
@@ -179,6 +189,28 @@ impl HarnessApi for DefaultHarnessApi {
                 "canonical_id": outcome.canonical_id,
                 "elapsed_ms": outcome.elapsed_ms,
             })),
+        }
+    }
+
+    // ── rag.* (Wylde_Study S2a) ──────────────────────────────────────
+    // Thin pass-throughs to the rag action handlers, which already
+    // return the `status`-envelope shape the `rag.*` family uses. These
+    // are plain pipe actions (not model-callable tools): like every
+    // other action here they delegate straight to the subsystem and do
+    // not run the per-tool consent / device-tier gate — that gate is
+    // applied by `tools.run`'s dispatcher, not by direct actions.
+
+    async fn rag_add_episodic(&self, payload: Value) -> Reply {
+        match rag_actions::run_rag_add_episodic(payload).await {
+            Ok(v) => Reply::ok(v),
+            Err(e) => Reply::err(e),
+        }
+    }
+
+    async fn rag_search(&self, payload: Value) -> Reply {
+        match rag_actions::run_rag_search(payload).await {
+            Ok(v) => Reply::ok(v),
+            Err(e) => Reply::err(e),
         }
     }
 
@@ -640,6 +672,68 @@ mod tests {
         assert!(reply.ok, "outer envelope is ok (transport-level)");
         assert_eq!(reply.data["ok"], false);
         assert_eq!(reply.data["error"]["code"], "not_found");
+    }
+
+    // ── rag.* trait-method tests (Wylde_Study S2a) ──────────────────
+    // Exercise the api-layer wrappers: validation surfaces as a
+    // `status`-envelope inside an ok Reply, and an add → search
+    // round-trip works through the trait with precomputed vectors (no
+    // live wylde-ollama needed).
+
+    fn set_embed_dim_4() {
+        std::env::set_var("WYLDE_EMBED_DIM", "4");
+    }
+
+    #[tokio::test]
+    async fn rag_add_episodic_rejects_missing_content() {
+        let _env = TestEnv::new();
+        set_embed_dim_4();
+        let api = DefaultHarnessApi;
+        let reply = api.rag_add_episodic(json!({"url": "http://x"})).await;
+        assert!(reply.ok, "transport-level ok");
+        assert_eq!(reply.data["status"], "error");
+    }
+
+    #[tokio::test]
+    async fn rag_search_rejects_missing_q() {
+        let _env = TestEnv::new();
+        set_embed_dim_4();
+        let api = DefaultHarnessApi;
+        let reply = api
+            .rag_search(json!({"query_vector": [1.0, 0.0, 0.0, 0.0]}))
+            .await;
+        assert!(reply.ok);
+        assert_eq!(reply.data["status"], "error");
+    }
+
+    #[tokio::test]
+    async fn rag_add_episodic_then_search_round_trips_via_trait() {
+        let _env = TestEnv::new();
+        set_embed_dim_4();
+        let api = DefaultHarnessApi;
+
+        let added = api
+            .rag_add_episodic(json!({
+                "content": "trait-path episodic body",
+                "url": "http://x/page",
+                "vector": [1.0, 0.0, 0.0, 0.0],
+            }))
+            .await;
+        assert!(added.ok);
+        assert_eq!(added.data["status"], "ok");
+        let id = added.data["memory_id"].as_str().unwrap().to_owned();
+
+        let found = api
+            .rag_search(json!({
+                "q": "trait body",
+                "query_vector": [1.0, 0.0, 0.0, 0.0],
+            }))
+            .await;
+        assert!(found.ok);
+        assert_eq!(found.data["status"], "ok");
+        let results = found.data["results"].as_array().unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0]["id"], id);
     }
 
     // ── Tool-registry consolidation Slice 1/2 — verb-tool smoke tests ──
