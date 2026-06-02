@@ -1,16 +1,19 @@
-"""chat.* action handlers + the long-poll ``_stream`` helper.
+"""chat.* action handlers backed by :mod:`Core.harness.turn`.
 
-Five chat.* actions backed by :mod:`Core.harness.turn`. Two of them
-(``chat.stream_turn`` / ``chat.stream_tools``) are long-poll cursor
-actions: callers send ``{turn_id, cursor, max_wait_ms?}``, the handler
-blocks until at least one event is available past ``cursor`` or the
-wait window expires, then returns ``{events, next_cursor, done}``.
+Three unary chat.* actions: ``chat.start_turn``, ``chat.run_turn``,
+``chat.cancel``.
 
-The two streams are wire-level disjoint: ``chat.stream_turn`` only ever
-returns events from ``state.turn_events`` (token / thinking /
-turn_complete / turn_aborted); ``chat.stream_tools`` only ever returns
-events from ``state.tool_events`` (tool_dispatched / tool_result /
-tool_error). Consumers never have to filter.
+The two streaming verbs (``chat.stream_turn`` / ``chat.stream_tools``)
+are **Rust-only** — they are served by the Rust ``wylde-harness``
+binary's true ``ChunkFrame`` streaming handlers (registered in
+``rust/crates/wylde-harness/src/pipe.rs``), which is how the gpui GUI
+already consumes them (``wylde_gui_pipe::stream_call``). The old Python
+long-poll cursor bridge (``{turn_id, cursor, max_wait_ms}`` →
+``{events, next_cursor, done}``) was dropped once the consumer audit
+confirmed the GUI is the sole streaming consumer and it streams via
+Rust — see ``docs/plans/harness-phase-5b-decision.md`` (Path A). The
+Python IPC server has no ``ChunkFrame`` path, so these verbs were never
+servable as true streams from here anyway.
 
 Phase 5 strangler-fig
 ---------------------
@@ -38,13 +41,11 @@ rollout can't mis-flip.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from .. import turn as _turn
 from ._common import (
     _ActionError,
-    _DEFAULT_POLL_WAIT_MS,
-    _MAX_POLL_WAIT_MS,
     _payload_dict,
 )
 
@@ -219,58 +220,3 @@ def _cancel_action(payload: Any) -> Dict[str, Any]:
         raise _ActionError("bad_request", "turn_id is required")
     cancelled = _turn.cancel_turn(turn_id)
     return {"ok": cancelled, "turn_id": turn_id}
-
-
-def _stream_turn_action(payload: Any) -> Dict[str, Any]:
-    """Long-poll the user-facing event stream for a turn."""
-    return _stream(payload, source="turn")
-
-
-def _stream_tools_action(payload: Any) -> Dict[str, Any]:
-    """Long-poll the tool-activity event stream for a turn."""
-    return _stream(payload, source="tool")
-
-
-def _stream(payload: Any, *, source: str) -> Dict[str, Any]:
-    p = _payload_dict(payload)
-    turn_id = p.get("turn_id")
-    if not isinstance(turn_id, str) or not turn_id:
-        raise _ActionError("bad_request", "turn_id is required")
-    cursor = int(p.get("cursor") or 0)
-    if cursor < 0:
-        cursor = 0
-    max_wait_ms = int(p.get("max_wait_ms") or _DEFAULT_POLL_WAIT_MS)
-    max_wait_ms = max(0, min(max_wait_ms, _MAX_POLL_WAIT_MS))
-
-    state = _turn.get_turn(turn_id)
-    if state is None:
-        raise _ActionError("not_found", f"turn {turn_id!r} not found")
-
-    events_attr = "turn_events" if source == "turn" else "tool_events"
-
-    import time as _time
-
-    deadline = _time.monotonic() + (max_wait_ms / 1000.0)
-    with state.cv:
-        while True:
-            buf: List[_turn.TurnEvent] = getattr(state, events_attr)
-            if cursor < len(buf) or state.done:
-                break
-            remaining = deadline - _time.monotonic()
-            if remaining <= 0:
-                break
-            state.cv.wait(timeout=remaining)
-        # Snapshot under the lock so we don't race with new appends mid-copy.
-        buf = list(getattr(state, events_attr))
-        done_flag = state.done
-
-    new_events = buf[cursor:]
-    return {
-        "events": [{"type": ev.type, **ev.data} for ev in new_events],
-        "next_cursor": len(buf),
-        # `done` means the driver has reached terminal state — no further
-        # events of either kind will ever appear. Stream consumers stop
-        # polling when they see done=True AND have drained all events
-        # (next_cursor == len(buf) at the time done became true).
-        "done": bool(done_flag),
-    }

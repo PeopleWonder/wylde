@@ -15,9 +15,6 @@ logger = logging.getLogger("wylde.harness.pipe")
 
 SERVICE_NAME = "wylde-harness"
 
-_DEFAULT_POLL_WAIT_MS = 5000
-_MAX_POLL_WAIT_MS = 25000
-
 
 class _ActionError(Exception):
     """Raised by handlers to surface a structured error through the pipe.
