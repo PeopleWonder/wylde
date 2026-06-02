@@ -92,10 +92,6 @@ _ACTIONS = {
     "chat.start_turn": _start_turn_action,
     "chat.run_turn": _run_turn_action,
     "chat.cancel": _cancel_action,
-    # chat.stream_turn / chat.stream_tools are Rust-only (true ChunkFrame
-    # streaming via the wylde-harness binary; the gpui GUI consumes them
-    # over the wire). The Python long-poll cursor bridge was dropped —
-    # see docs/plans/harness-phase-5b-decision.md (Path A).
     "tools.list": _tools_list_action,
     "tools.run": _tools_run_action,
     "models.list": _models_list_action,

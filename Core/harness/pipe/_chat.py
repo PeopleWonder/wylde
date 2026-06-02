@@ -1,19 +1,4 @@
-"""chat.* action handlers backed by :mod:`Core.harness.turn`.
-
-Three unary chat.* actions: ``chat.start_turn``, ``chat.run_turn``,
-``chat.cancel``.
-
-The two streaming verbs (``chat.stream_turn`` / ``chat.stream_tools``)
-are **Rust-only** — they are served by the Rust ``wylde-harness``
-binary's true ``ChunkFrame`` streaming handlers (registered in
-``rust/crates/wylde-harness/src/pipe.rs``), which is how the gpui GUI
-already consumes them (``wylde_gui_pipe::stream_call``). The old Python
-long-poll cursor bridge (``{turn_id, cursor, max_wait_ms}`` →
-``{events, next_cursor, done}``) was dropped once the consumer audit
-confirmed the GUI is the sole streaming consumer and it streams via
-Rust — see ``docs/plans/harness-phase-5b-decision.md`` (Path A). The
-Python IPC server has no ``ChunkFrame`` path, so these verbs were never
-servable as true streams from here anyway.
+"""chat.* action handlers.
 
 Phase 5 strangler-fig
 ---------------------
