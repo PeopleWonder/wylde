@@ -1,20 +1,24 @@
 //! Service entrypoint: register the `treesitter.*` action surface on the
 //! shared IPC registry. Same shape as `wylde-ollama::service`.
 //!
-//! Slice 1 registered `languages` + `parse`. Slice 2 adds `chunk`
+//! Slice 1 registered `languages` + `parse`. Slice 2 added `chunk`
 //! (AST-boundary-aware chunking) and the HTTP front door (`http.rs`) that
-//! shares these handlers. The extract_entities/outline/highlight verbs land
-//! in later slices.
+//! shares these handlers. Slice 3 adds `extract_entities` (structural entities
+//! for the Memgraph graph layer). The outline/highlight verbs land in Slice 4.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 use wylde_shared::ipc::{register_action_with_meta, unregister_action, IpcError, Reply};
 
-use crate::{chunk, parser};
+use crate::{chunk, entities, parser};
 
-const ALL_ACTIONS: [&str; 3] =
-    ["treesitter.languages", "treesitter.parse", "treesitter.chunk"];
+const ALL_ACTIONS: [&str; 4] = [
+    "treesitter.languages",
+    "treesitter.parse",
+    "treesitter.chunk",
+    "treesitter.extract_entities",
+];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
@@ -49,6 +53,16 @@ pub fn install() {
         "wylde_treesitter::chunk",
     );
 
+    register_action_with_meta(
+        "treesitter.extract_entities",
+        |payload: Value| async move { handle_extract_entities(payload) },
+        "{path, language?} — structural entities for the graph layer. Reply: \
+         {functions:[{name,line}], classes:[{name,line,methods,bases}], \
+         imports:[{module,line}], calls:[{caller,callee,line}], module, counts}. \
+         Feeds memgraph.upsert entities + relate CALLS/IMPORTS/INHERITS.",
+        "wylde_treesitter::entities",
+    );
+
     tracing::info!("wylde-treesitter: registered {} actions", ALL_ACTIONS.len());
 }
 
@@ -77,6 +91,30 @@ pub fn handle_chunk(payload: Value) -> Reply {
         .map(|n| n as usize);
 
     match chunk::chunk(path, language, max_chunk_bytes) {
+        Ok(v) => Reply::ok(v),
+        Err(e) => Reply::err(e),
+    }
+}
+
+/// `treesitter.extract_entities` handler — validate the payload then delegate
+/// to [`entities::extract_entities`]. Shared by the pipe action surface and the
+/// HTTP route (`http.rs`) so the two transports can never drift.
+pub fn handle_extract_entities(payload: Value) -> Reply {
+    let path = match payload.get("path").and_then(Value::as_str) {
+        Some(p) if !p.trim().is_empty() => p,
+        _ => {
+            return Reply::err(IpcError::new(
+                "invalid_request",
+                "payload.path is required (non-empty string)",
+            ))
+        }
+    };
+    let language = payload
+        .get("language")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty());
+
+    match entities::extract_entities(path, language) {
         Ok(v) => Reply::ok(v),
         Err(e) => Reply::err(e),
     }
@@ -204,6 +242,46 @@ mod tests {
         assert!(reply.ok, "chunk dispatch failed: {:?}", reply.error);
         assert_eq!(reply.data["ast_aware"], true);
         assert_eq!(reply.data["chunks"][0]["symbol_name"], "a");
+        reset_for_tests();
+    }
+
+    #[tokio::test]
+    async fn extract_entities_dispatch_returns_structure() {
+        use std::io::Write;
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+        let mut f = tempfile::Builder::new()
+            .suffix(".py")
+            .tempfile()
+            .unwrap();
+        f.write_all(b"import os\n\ndef a():\n    b()\n").unwrap();
+        f.flush().unwrap();
+        let reply = dispatch_action(serde_json::json!({
+            "action": "treesitter.extract_entities",
+            "payload": {"path": f.path().to_str().unwrap()},
+        }))
+        .await;
+        assert!(reply.ok, "extract_entities dispatch failed: {:?}", reply.error);
+        assert_eq!(reply.data["functions"][0]["name"], "a");
+        assert_eq!(reply.data["imports"][0]["module"], "os");
+        assert_eq!(reply.data["calls"][0]["callee"], "b");
+        assert_eq!(reply.data["calls"][0]["caller"], "a");
+        reset_for_tests();
+    }
+
+    #[tokio::test]
+    async fn extract_entities_missing_path_is_invalid_request() {
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+        let reply = dispatch_action(serde_json::json!({
+            "action": "treesitter.extract_entities",
+            "payload": {},
+        }))
+        .await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "invalid_request");
         reset_for_tests();
     }
 

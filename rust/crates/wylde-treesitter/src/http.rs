@@ -13,9 +13,11 @@
 //! the action verb can never drift. Mirrors `wylde-vpn/src/http.rs`.
 //!
 //! Routes:
-//!   * `GET  /health`    — liveness + linked-grammar count.
-//!   * `GET  /languages` — `{languages:[{name, grammar_sha, abi}]}`.
-//!   * `POST /chunk`     — `{path, language?, max_chunk_bytes?}` → chunk list.
+//!   * `GET  /health`            — liveness + linked-grammar count.
+//!   * `GET  /languages`         — `{languages:[{name, grammar_sha, abi}]}`.
+//!   * `POST /chunk`             — `{path, language?, max_chunk_bytes?}` → chunk list.
+//!   * `POST /extract_entities`  — `{path, language?}` → functions/classes/
+//!                                 imports/calls (the Memgraph graph feed).
 
 use std::net::SocketAddr;
 
@@ -35,6 +37,7 @@ pub fn router() -> Router {
         .route("/health", get(health))
         .route("/languages", get(languages_route))
         .route("/chunk", post(chunk_route))
+        .route("/extract_entities", post(extract_entities_route))
 }
 
 /// Bind `127.0.0.1:<port>` (loopback only — the chunk surface is never exposed
@@ -68,6 +71,11 @@ async fn chunk_route(body: Option<Json<Value>>) -> Response {
     reply_to_response(service::handle_chunk(payload))
 }
 
+async fn extract_entities_route(body: Option<Json<Value>>) -> Response {
+    let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
+    reply_to_response(service::handle_extract_entities(payload))
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
 /// Map an action [`Reply`] onto an axum response — the same envelope shape
@@ -82,7 +90,7 @@ fn reply_to_response(reply: Reply) -> Response {
         .unwrap_or_else(|| wylde_shared::ipc::IpcError::new("unknown", "unknown error"));
     let status = match err.code.as_str() {
         "invalid_request" | "bad_request" => StatusCode::BAD_REQUEST,
-        "unknown_language" => StatusCode::UNPROCESSABLE_ENTITY,
+        "unknown_language" | "unsupported_language" => StatusCode::UNPROCESSABLE_ENTITY,
         "not_found" => StatusCode::NOT_FOUND,
         "service_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -150,6 +158,36 @@ mod tests {
         let v = body_json(resp).await;
         assert_eq!(v["ast_aware"], true);
         assert_eq!(v["chunks"][0]["symbol_name"], "a");
+    }
+
+    #[tokio::test]
+    async fn extract_entities_route_returns_structure() {
+        let mut f = tempfile::Builder::new()
+            .suffix(".py")
+            .tempfile()
+            .unwrap();
+        f.write_all(b"import os\n\nclass C(Base):\n    def m(self):\n        helper()\n")
+            .unwrap();
+        f.flush().unwrap();
+        let payload = json!({ "path": f.path().to_str().unwrap() });
+        let resp = router()
+            .oneshot(
+                Request::post("/extract_entities")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["classes"][0]["name"], "C");
+        assert_eq!(v["classes"][0]["bases"][0], "Base");
+        assert_eq!(v["classes"][0]["methods"][0], "m");
+        assert_eq!(v["imports"][0]["module"], "os");
+        // The call inside the method is attributed to the method.
+        let calls = v["calls"].as_array().unwrap();
+        assert!(calls.iter().any(|c| c["callee"] == "helper" && c["caller"] == "m"));
     }
 
     #[tokio::test]

@@ -38,6 +38,14 @@ pub struct Grammar {
     /// by [`crate::chunk`]. `None` means the grammar has no chunk query yet, so
     /// chunking falls back to byte windows.
     pub chunk_query: Option<&'static str>,
+
+    /// Tree-sitter query (`.scm` source) that captures structural entities —
+    /// `@function`/`@class`/`@import`/`@call` candidate nodes that
+    /// [`crate::entities`] classifies. Used by `treesitter.extract_entities`.
+    /// `None` means the grammar has no entity query yet, so the verb rejects
+    /// with `unsupported_language` (unlike chunking, there's no useful
+    /// fallback without an AST).
+    pub entity_query: Option<&'static str>,
 }
 
 /// Every grammar this build links. Slice 1–2: Python only.
@@ -47,6 +55,7 @@ pub static REGISTRY: &[Grammar] = &[Grammar {
     language: || tree_sitter_python::LANGUAGE.into(),
     extensions: &["py", "pyi"],
     chunk_query: Some(include_str!("queries/python/chunks.scm")),
+    entity_query: Some(include_str!("queries/python/entities.scm")),
 }];
 
 /// Infer a grammar from a file path's extension (case-insensitive). `None`
@@ -202,6 +211,11 @@ mod tests {
     #[test]
     fn python_grammar_carries_a_chunk_query() {
         assert!(resolve("python").unwrap().chunk_query.is_some());
+    }
+
+    #[test]
+    fn python_grammar_carries_an_entity_query() {
+        assert!(resolve("python").unwrap().entity_query.is_some());
     }
 
     #[test]

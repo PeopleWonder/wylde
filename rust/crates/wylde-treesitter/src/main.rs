@@ -42,6 +42,7 @@ async fn main() -> Result<()> {
                     "treesitter.languages",
                     "treesitter.parse",
                     "treesitter.chunk",
+                    "treesitter.extract_entities",
                 ],
                 "grammars": grammars,
                 "http_port": cfg.http_port,

@@ -6,16 +6,19 @@
 //! RAG-ingest chunker (N8N) and the Memgraph entity extractor. See
 //! `docs/plans/treesitter-sidecar.md` for the full design and slice plan.
 //!
-//! **Slice 2 (this revision):** the chunk surface + its N8N front door.
-//! Live verbs:
-//!   * `treesitter.languages` — enumerate the statically-linked grammars.
-//!   * `treesitter.parse`      — parse inline `source` to a bounded AST sketch.
-//!   * `treesitter.chunk`      — AST-boundary-aware chunking of a file by path.
+//! **Slice 3 (this revision):** structural entity extraction for the graph
+//! layer. Live verbs:
+//!   * `treesitter.languages`        — enumerate the statically-linked grammars.
+//!   * `treesitter.parse`            — parse inline `source` to a bounded AST sketch.
+//!   * `treesitter.chunk`            — AST-boundary-aware chunking of a file by path.
+//!   * `treesitter.extract_entities` — functions/classes/imports/calls (+ bases)
+//!     for a file, shaped to feed `memgraph.upsert` entities +
+//!     `memgraph.relate` CALLS/IMPORTS/INHERITS edges (no new Memgraph routes).
 //!
 //! A loopback HTTP listener ([`http`]) serves the same handlers so N8N's HTTP
-//! Request node can call `/chunk` directly (it can't open a named pipe). Only
-//! the Python grammar is linked; the extract_entities/outline/highlight verbs
-//! and the remaining grammars land in Slices 3–5.
+//! Request node can call `/chunk` and `/extract_entities` directly (it can't
+//! open a named pipe). Only the Python grammar is linked; the outline/highlight
+//! verbs and the remaining grammars land in Slices 4–5.
 //!
 //! Public entry points:
 //!   * [`service::install`]        — register the action surface. Idempotent.
@@ -25,6 +28,7 @@
 
 pub mod chunk;
 pub mod config;
+pub mod entities;
 pub mod http;
 pub mod parser;
 pub mod service;
