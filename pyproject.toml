@@ -205,12 +205,9 @@ disallow_incomplete_defs = true
 warn_return_any = true
 strict_equality = true
 
-[[tool.mypy.overrides]]
-module = ["Core.resource_monitor.*"]
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-warn_return_any = true
-strict_equality = true
+# Core.resource_monitor strict override removed 2026-06-02 — the Python
+# VRAM broker (Core/resource_monitor/) was deleted after the Rust binary
+# (wylde-vram-broker) passed a live function test and became the sole impl.
 
 [[tool.mypy.overrides]]
 module = ["Extensions.extension_bridge.*"]

@@ -201,12 +201,10 @@ def _stop_device_gate() -> None:
 def _start_vram_broker_python() -> None:
     """Boot the Python VRAM broker (``python -m Core.resource_monitor.run``).
 
-    Hosts ``\\\\.\\pipe\\wylde-vram-broker`` — the fourth constituent of
-    Core (alongside lifecycle / harness / memgraph). The broker also
-    writes its own ``data/manifests/vram-broker.json``, which the
-    registry filters out of the dashboard's peer list because the pipe
-    is claimed by Core's ``constituent_pipes``. No daemon-side manifest
-    write here — the broker owns its own lifecycle file.
+    NOMINAL ROLLBACK ONLY: the ``Core/resource_monitor/`` package was
+    removed 2026-06-02 (rust binary is the sole impl), so this path comes
+    up dead if invoked — same state as ``_start_gateway_python``. Kept for
+    strangler-dispatch symmetry + parity tests.
     """
     cmd = [sys.executable, "-m", "Core.resource_monitor.run"]
     env = os.environ.copy()

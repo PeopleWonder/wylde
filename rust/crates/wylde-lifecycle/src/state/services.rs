@@ -375,15 +375,21 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
         // has the Phase-0.5 estimator (a `vram.reserve` with no `bytes` is
         // estimated, not rejected with "bytes must be positive") and DRAM
         // spillover (admits a quantised 27B-class model larger than VRAM on
-        // a 16 GB card). Python stays as the rollback path via
-        // `WYLDE_WYLDE_VRAM_BROKER_IMPL=python`.
+        // a 16 GB card). The in-tree Python broker `Core/resource_monitor/`
+        // was removed 2026-06-02 after the Rust binary passed a live
+        // function test (reserve/release accounting, `system.inventory`
+        // hardware snapshot, DRAM spillover). `python_module` is retained as
+        // a nominal rollback string via `WYLDE_WYLDE_VRAM_BROKER_IMPL=python`
+        // (same pattern as gateway below), but the module no longer exists on
+        // disk, so the only working impl is rust.
         name: service_name::VRAM_BROKER,
         python_module: "Core.resource_monitor.run",
         default_impl: ImplLang::Rust,
         missing_binary_warn:
             "vram_broker: default impl=rust but no binary found; falling back to \
-             python (rollback path) — build with `cargo build --release -p \
-             wylde-vram-broker` to engage rust",
+             python (rollback path, but the Core/resource_monitor package was \
+             removed) — build with `cargo build --release -p wylde-vram-broker` \
+             to engage rust",
     },
     StranglerService {
         name: service_name::EXTENSION_BRIDGE,
