@@ -5,8 +5,11 @@ Covers:
 * :func:`_impl_for` — env-var read, default, and unparseable fallback.
 * :func:`_rust_binary_path` — env override, dev-target resolution, and
   the no-match → ``None`` case.
-* The ``_start_<service>`` dispatch — Rust selected but binary missing
-  falls back to the Python implementation with a warning.
+* The ``_start_<service>`` dispatch. For the Rust-only cohort
+  (device_gate, vram_broker, gateway — collapsed 2026-06-02 when their
+  Python packages were deleted) a missing Rust binary leaves the service
+  down with NO Python fallback; for the two-impl services (voice) a
+  missing binary still falls back to ``python -m <module>``.
 
 The ``_impl_for`` / ``_rust_binary_path`` / ``_spawn_rust_service``
 helpers live in :mod:`daemon_state._strangler` (re-imported by
@@ -224,8 +227,13 @@ def isolated_handles(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, N
     daemon_state._spawn_records.clear()
 
 
-class TestStartDispatchFallback:
-    def test_device_gate_falls_back_when_rust_missing(
+class TestStartDispatchNoFallback:
+    """Rust-only cohort (device_gate, vram_broker, gateway): the Python
+    packages were deleted 2026-06-02, so a missing Rust binary leaves the
+    service DOWN — there is no Python fallback and ``subprocess.Popen`` is
+    never reached."""
+
+    def test_device_gate_no_spawn_when_rust_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
@@ -233,22 +241,24 @@ class TestStartDispatchFallback:
         isolated_handles: None,
     ) -> None:
         monkeypatch.setattr(_strangler, "WYLDE_ROOT", tmp_path)
-        monkeypatch.setenv("WYLDE_WYLDE_DEVICE_GATE_IMPL", "rust")
         monkeypatch.delenv("WYLDE_WYLDE_DEVICE_GATE_BIN", raising=False)
-        monkeypatch.setattr(_services.subprocess, "Popen", _FakePopen)
+
+        def _boom(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("rust-only device_gate must not spawn python")
+
+        monkeypatch.setattr(_services.subprocess, "Popen", _boom)
 
         with caplog.at_level("WARNING", logger="wylde.lifecycle"):
             _services._start_device_gate()
 
         assert any(
-            "no binary found" in r.message and "device_gate" in r.message
+            "no rust binary" in r.message and "device_gate" in r.message
             for r in caplog.records
         )
-        rec = daemon_state._spawn_records.get("wylde-device-gate")
-        assert rec is not None
-        assert rec.impl == "python"
+        assert daemon_state._device_gate_proc is None
+        assert daemon_state._spawn_records.get("wylde-device-gate") is None
 
-    def test_gateway_falls_back_when_rust_missing(
+    def test_gateway_no_spawn_when_rust_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
@@ -256,20 +266,47 @@ class TestStartDispatchFallback:
         isolated_handles: None,
     ) -> None:
         monkeypatch.setattr(_strangler, "WYLDE_ROOT", tmp_path)
-        monkeypatch.setenv("WYLDE_WYLDE_GATEWAY_IMPL", "rust")
         monkeypatch.delenv("WYLDE_WYLDE_GATEWAY_BIN", raising=False)
-        monkeypatch.setattr(_services.subprocess, "Popen", _FakePopen)
+
+        def _boom(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("rust-only gateway must not spawn python")
+
+        monkeypatch.setattr(_services.subprocess, "Popen", _boom)
 
         with caplog.at_level("WARNING", logger="wylde.lifecycle"):
             _services._start_gateway()
 
         assert any(
-            "no binary found" in r.message and "gateway" in r.message
+            "no rust binary" in r.message and "gateway" in r.message
             for r in caplog.records
         )
-        rec = daemon_state._spawn_records.get("wylde-gateway")
-        assert rec is not None
-        assert rec.impl == "python"
+        assert daemon_state._gateway_proc is None
+        assert daemon_state._spawn_records.get("wylde-gateway") is None
+
+    def test_vram_broker_no_spawn_when_rust_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        isolated_handles: None,
+    ) -> None:
+        monkeypatch.setattr(_strangler, "WYLDE_ROOT", tmp_path)
+        monkeypatch.delenv("WYLDE_WYLDE_VRAM_BROKER_BIN", raising=False)
+
+        def _boom(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("rust-only vram_broker must not spawn python")
+
+        monkeypatch.setattr(_services.subprocess, "Popen", _boom)
+
+        with caplog.at_level("WARNING", logger="wylde.lifecycle"):
+            _services._start_vram_broker()
+
+        assert any(
+            "no rust binary" in r.message and "vram_broker" in r.message
+            for r in caplog.records
+        )
+        assert daemon_state._vram_broker_proc is None
+        assert daemon_state._spawn_records.get("vram-broker") is None
 
     def test_rust_branch_records_impl_rust(
         self,
@@ -294,14 +331,15 @@ class TestStartDispatchFallback:
         assert rec.impl == "rust"
 
 
-# ── _start_gateway impl dispatch (Cleanup — Rust gateway cutover) ─────
+# ── _start_gateway impl dispatch (Rust-only since 2026-06-02) ─────────
 #
-# 2026-05-30: ``_start_gateway`` flipped its default from ``python`` to
-# ``rust``. The Rust ``wylde-gateway`` server is a superset of the
-# Python routes and is the canonical ingress/egress. These tests pin the
-# two-impl dispatch for BOTH selector values, mirroring the voice cutover
-# tests below: rust-default-spawns-binary / python-override /
-# rust-default-missing-binary-fallback.
+# The Rust ``wylde-gateway`` server is a superset of the Python routes
+# and is the canonical ingress/egress. The Python ``Gateway`` package was
+# deleted 2026-06-02, collapsing this to Rust-only — the python-override
+# and missing-binary-fallback cases no longer exist (the no-spawn-when-
+# binary-missing contract is pinned in ``TestStartDispatchNoFallback``).
+# What remains is the happy path: default ``rust`` spawns the binary and
+# never touches ``subprocess.Popen``.
 
 
 @pytest.fixture
@@ -358,82 +396,12 @@ class TestStartGatewayDispatch:
         assert rec is not None
         assert rec.impl == "rust"
 
-    def test_gateway_python_override_spawns_gateway_run_module(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        isolated_gateway_handle: None,
-    ) -> None:
-        """``WYLDE_WYLDE_GATEWAY_IMPL=python`` (rollback) → the python
-        branch runs ``[sys.executable, '-m', 'Gateway.run']`` via
-        ``subprocess.Popen`` and the rust helper is NEVER consulted."""
-        monkeypatch.setenv("WYLDE_WYLDE_GATEWAY_IMPL", "python")
-        # Even with a rust binary present, python override must win.
-        monkeypatch.setattr(_strangler, "WYLDE_ROOT", tmp_path)
-        suffix = ".exe" if sys.platform == "win32" else ""
-        debug = tmp_path / "rust" / "target" / "debug"
-        debug.mkdir(parents=True)
-        (debug / f"wylde-gateway{suffix}").write_text("fake", encoding="utf-8")
 
-        def _no_rust(*_a: Any, **_k: Any) -> Any:
-            raise AssertionError(
-                "python override must not call the rust spawn helper"
-            )
-
-        monkeypatch.setattr(_services, "_spawn_rust_service", _no_rust)
-
-        captured: dict[str, Any] = {}
-
-        def _capture_popen(cmd: Any, *args: Any, **kwargs: Any) -> _FakePopen:
-            captured["cmd"] = cmd
-            return _FakePopen()
-
-        monkeypatch.setattr(_services.subprocess, "Popen", _capture_popen)
-
-        _services._start_gateway()
-
-        assert captured["cmd"] == [sys.executable, "-m", "Gateway.run"]
-        rec = daemon_state._spawn_records.get("wylde-gateway")
-        assert rec is not None
-        assert rec.impl == "python"
-
-    def test_gateway_rust_default_missing_binary_falls_back_to_python(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        caplog: pytest.LogCaptureFixture,
-        isolated_gateway_handle: None,
-    ) -> None:
-        """Default ``rust`` but no binary on disk → warn + fall back to
-        ``python -m Gateway.run``."""
-        monkeypatch.delenv("WYLDE_WYLDE_GATEWAY_IMPL", raising=False)
-        monkeypatch.setattr(_strangler, "WYLDE_ROOT", tmp_path)
-        monkeypatch.delenv("WYLDE_WYLDE_GATEWAY_BIN", raising=False)
-
-        captured: dict[str, Any] = {}
-
-        def _capture_popen(cmd: Any, *args: Any, **kwargs: Any) -> _FakePopen:
-            captured["cmd"] = cmd
-            return _FakePopen()
-
-        monkeypatch.setattr(_services.subprocess, "Popen", _capture_popen)
-
-        with caplog.at_level("WARNING", logger="wylde.lifecycle"):
-            _services._start_gateway()
-
-        assert any(
-            "no binary found" in r.message and "gateway" in r.message
-            for r in caplog.records
-        ), f"expected fallback warning, got {[r.message for r in caplog.records]}"
-        assert captured["cmd"] == [sys.executable, "-m", "Gateway.run"]
-        rec = daemon_state._spawn_records.get("wylde-gateway")
-        assert rec is not None
-        assert rec.impl == "python"
-
-
-# ── _start_vram_broker impl dispatch (2026-05-31 — Rust broker cutover) ─
-# Default flipped python→rust (only Rust has the Phase-0.5 estimator + DRAM
-# spillover). 3 cases mirror TestStartVoiceDispatch. Python = rollback.
+# ── _start_vram_broker impl dispatch (Rust-only since 2026-06-02) ──────
+# Only the Rust broker has the Phase-0.5 estimator + DRAM spillover; the
+# Python ``Core/resource_monitor`` package was deleted 2026-06-02. What
+# remains is the happy path — default ``rust`` spawns the binary. The
+# no-spawn-when-binary-missing contract is in TestStartDispatchNoFallback.
 
 
 @pytest.fixture
@@ -488,77 +456,6 @@ class TestStartVramBrokerDispatch:
         rec = daemon_state._spawn_records.get("vram-broker")
         assert rec is not None
         assert rec.impl == "rust"
-
-    def test_vram_broker_python_override_spawns_resource_monitor_module(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        isolated_vram_broker_handle: None,
-    ) -> None:
-        """``WYLDE_WYLDE_VRAM_BROKER_IMPL=python`` (rollback) → python branch
-        runs ``-m Core.resource_monitor.run`` even with a rust binary present;
-        the rust helper is never consulted."""
-        monkeypatch.setenv("WYLDE_WYLDE_VRAM_BROKER_IMPL", "python")
-        monkeypatch.setattr(_strangler, "WYLDE_ROOT", tmp_path)
-        suffix = ".exe" if sys.platform == "win32" else ""
-        debug = tmp_path / "rust" / "target" / "debug"
-        debug.mkdir(parents=True)
-        (debug / f"wylde-vram-broker{suffix}").write_text("fake", encoding="utf-8")
-
-        def _no_rust(*_a: Any, **_k: Any) -> Any:
-            raise AssertionError(
-                "python override must not call the rust spawn helper"
-            )
-
-        monkeypatch.setattr(_services, "_spawn_rust_service", _no_rust)
-
-        captured: dict[str, Any] = {}
-
-        def _capture_popen(cmd: Any, *args: Any, **kwargs: Any) -> _FakePopen:
-            captured["cmd"] = cmd
-            return _FakePopen()
-
-        monkeypatch.setattr(_services.subprocess, "Popen", _capture_popen)
-
-        _services._start_vram_broker()
-
-        assert captured["cmd"] == [sys.executable, "-m", "Core.resource_monitor.run"]
-        rec = daemon_state._spawn_records.get("vram-broker")
-        assert rec is not None
-        assert rec.impl == "python"
-
-    def test_vram_broker_rust_default_missing_binary_falls_back_to_python(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        caplog: pytest.LogCaptureFixture,
-        isolated_vram_broker_handle: None,
-    ) -> None:
-        """Default ``rust`` but no binary on disk → warn + fall back to
-        ``python -m Core.resource_monitor.run``."""
-        monkeypatch.delenv("WYLDE_WYLDE_VRAM_BROKER_IMPL", raising=False)
-        monkeypatch.setattr(_strangler, "WYLDE_ROOT", tmp_path)
-        monkeypatch.delenv("WYLDE_WYLDE_VRAM_BROKER_BIN", raising=False)
-
-        captured: dict[str, Any] = {}
-
-        def _capture_popen(cmd: Any, *args: Any, **kwargs: Any) -> _FakePopen:
-            captured["cmd"] = cmd
-            return _FakePopen()
-
-        monkeypatch.setattr(_services.subprocess, "Popen", _capture_popen)
-
-        with caplog.at_level("WARNING", logger="wylde.lifecycle"):
-            _services._start_vram_broker()
-
-        assert any(
-            "no binary found" in r.message and "vram_broker" in r.message
-            for r in caplog.records
-        ), f"expected fallback warning, got {[r.message for r in caplog.records]}"
-        assert captured["cmd"] == [sys.executable, "-m", "Core.resource_monitor.run"]
-        rec = daemon_state._spawn_records.get("vram-broker")
-        assert rec is not None
-        assert rec.impl == "python"
 
 
 # ── _start_voice impl dispatch (Phase 11.E — Python daemon parity) ─────

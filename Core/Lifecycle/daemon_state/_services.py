@@ -26,7 +26,6 @@ below so the ``_start_*_rust`` branches here can call them.
 
 from __future__ import annotations
 
-import os
 import signal
 import subprocess
 import sys
@@ -75,43 +74,6 @@ from ._services_harness import (  # noqa: F401
 # ── device_gate ───────────────────────────────────────────────────────
 
 
-def _start_device_gate_python() -> None:
-    """Boot the Python device_gate (``python -m device_gate.run``)."""
-    cmd = [sys.executable, "-m", "device_gate.run"]
-    env = os.environ.copy()
-    env.setdefault("WYLDE_SERVICE_NAME", "wylde-device-gate")
-    namespace_root = str(WYLDE_ROOT.parent)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        namespace_root + os.pathsep + existing if existing else namespace_root
-    )
-
-    creation_flags = 0
-    if sys.platform == "win32":
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
-
-    try:
-        _ds._device_gate_proc = subprocess.Popen(
-            cmd,
-            cwd=str(WYLDE_ROOT),
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            creationflags=creation_flags,
-        )
-        # device_gate/run.py owns its manifest + heartbeat. Daemon only
-        # records the spawn intent for orphan-detection bookkeeping.
-        _ds._record_spawn("wylde-device-gate", _ds._device_gate_proc.pid, impl="python")
-        _lc_logger.info(
-            "daemon: spawned device_gate impl=python pid=%d",
-            _ds._device_gate_proc.pid,
-        )
-    except Exception:  # noqa: BLE001
-        _lc_logger.exception("daemon: device_gate spawn failed")
-        _ds._device_gate_proc = None
-
-
 def _start_device_gate_rust(rust_bin: Path) -> None:
     """Boot the Rust device_gate binary at ``rust_bin``."""
     proc = _spawn_rust_service(service="wylde-device-gate", rust_bin=rust_bin)
@@ -128,21 +90,20 @@ def _start_device_gate_rust(rust_bin: Path) -> None:
 def _start_device_gate() -> None:
     """Boot device_gate as a subprocess of the Lifecycle daemon.
 
-    Dispatches to either the Python module or a Rust binary depending
-    on ``WYLDE_WYLDE_DEVICE_GATE_IMPL`` (default ``rust`` since 2026-06-02 —
-    the Rust ``wylde-device-gate`` is the canonical verifier and has byte
-    parity with the Python ``device_gate/`` module). Falls back to Python
-    with a warning if the Rust binary is missing; set the env var to
-    ``python`` to force the (rollback-only) Python module.
+    Rust-only since 2026-06-02: the Python ``device_gate/`` module was
+    deleted once the Rust ``wylde-device-gate`` verifier reached parity
+    (it carries its own bcrypt / sha-crypt / inline-APR1 hash verification,
+    no interpreter deps). There is no Python fallback — a missing Rust
+    binary means device_gate simply doesn't start (the dashboard paints it
+    down). ``WYLDE_WYLDE_DEVICE_GATE_IMPL`` no longer has a ``python``
+    target.
 
     NO-SPAWN MODE (test/parity only — see the no-spawn warning in
     :mod:`Core.Lifecycle.daemon_state`): records a "would-have-spawned"
     handle and forks nothing.
     """
     if _ds.nospawn_enabled():
-        _ds._device_gate_proc = _ds._NoSpawnProc(
-            "wylde-device-gate", impl=_impl_for("wylde-device-gate", default="rust")
-        )
+        _ds._device_gate_proc = _ds._NoSpawnProc("wylde-device-gate", impl="rust")
         _lc_logger.info(
             "device_gate: NO-SPAWN — would-have-spawned recorded; no child forked"
         )
@@ -150,18 +111,16 @@ def _start_device_gate() -> None:
     if _ds._device_gate_proc is not None and _ds._device_gate_proc.poll() is None:
         return
 
-    if _impl_for("wylde-device-gate", default="rust") == "rust":
-        rust_bin = _rust_binary_path("wylde-device-gate")
-        if rust_bin is None:
-            _lc_logger.warning(
-                "device_gate: WYLDE_WYLDE_DEVICE_GATE_IMPL=rust but no binary "
-                "found; falling back to python"
-            )
-            _start_device_gate_python()
-            return
-        _start_device_gate_rust(rust_bin)
+    rust_bin = _rust_binary_path("wylde-device-gate")
+    if rust_bin is None:
+        _lc_logger.warning(
+            "device_gate: no rust binary found; device_gate will not start — the "
+            "Python device_gate module was removed, so build with "
+            "`cargo build --release -p wylde-device-gate`"
+        )
+        _ds._device_gate_proc = None
         return
-    _start_device_gate_python()
+    _start_device_gate_rust(rust_bin)
 
 
 def _stop_device_gate() -> None:
@@ -198,51 +157,6 @@ def _stop_device_gate() -> None:
 # ── VRAM broker ───────────────────────────────────────────────────────
 
 
-def _start_vram_broker_python() -> None:
-    """Boot the Python VRAM broker (``python -m Core.resource_monitor.run``).
-
-    NOMINAL ROLLBACK ONLY: the ``Core/resource_monitor/`` package was
-    removed 2026-06-02 (rust binary is the sole impl), so this path comes
-    up dead if invoked — same state as ``_start_gateway_python``. Kept for
-    strangler-dispatch symmetry + parity tests.
-    """
-    cmd = [sys.executable, "-m", "Core.resource_monitor.run"]
-    env = os.environ.copy()
-    env.setdefault("WYLDE_SERVICE_NAME", "wylde-vram-broker")
-    env.setdefault("WYLDE_ROOT", str(WYLDE_ROOT))
-    namespace_root = str(WYLDE_ROOT.parent)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        namespace_root + os.pathsep + existing if existing else namespace_root
-    )
-
-    creation_flags = 0
-    if sys.platform == "win32":
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
-
-    try:
-        _ds._vram_broker_proc = subprocess.Popen(
-            cmd,
-            cwd=str(WYLDE_ROOT),
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            creationflags=creation_flags,
-        )
-        # No daemon-side manifest write. resource_monitor/run.py writes
-        # its own data/manifests/vram-broker.json; registry filters it
-        # as a Core constituent so it doesn't surface as a peer service.
-        _ds._record_spawn("vram-broker", _ds._vram_broker_proc.pid, impl="python")
-        _lc_logger.info(
-            "daemon: spawned vram_broker impl=python pid=%d",
-            _ds._vram_broker_proc.pid,
-        )
-    except Exception:  # noqa: BLE001
-        _lc_logger.exception("daemon: vram_broker spawn failed")
-        _ds._vram_broker_proc = None
-
-
 def _start_vram_broker_rust(rust_bin: Path) -> None:
     """Boot the Rust VRAM broker binary at ``rust_bin``."""
     proc = _spawn_rust_service(service="wylde-vram-broker", rust_bin=rust_bin)
@@ -259,25 +173,21 @@ def _start_vram_broker_rust(rust_bin: Path) -> None:
 def _start_vram_broker() -> None:
     """Boot the VRAM broker as a subprocess of the Lifecycle daemon.
 
-    Dispatches to either the Python module or a Rust binary depending
-    on ``WYLDE_WYLDE_VRAM_BROKER_IMPL`` (default ``rust``). Falls back
-    to Python with a warning if the Rust binary is missing.
-
-    The default is ``rust`` because only the Rust broker implements the
-    Phase-0.5 estimator and DRAM spillover; the Python broker rejects a
-    reserve with no ``bytes`` ("bytes must be positive") and cannot admit
-    a model larger than VRAM (no spillover) — which is the common case for
-    a quantised 27B-class model on a 16 GB card. Python stays as a rollback
-    path via ``WYLDE_WYLDE_VRAM_BROKER_IMPL=python``.
+    Rust-only since 2026-06-02: the Python ``Core/resource_monitor/``
+    package was deleted once the Rust ``wylde-vram-broker`` passed a live
+    function test. Only the Rust broker implements the Phase-0.5 estimator
+    and DRAM spillover (the Python broker rejected a reserve with no
+    ``bytes`` and could not admit a model larger than VRAM), so the Rust
+    binary is the sole impl. There is no Python fallback — a missing Rust
+    binary means the broker simply doesn't start.
+    ``WYLDE_WYLDE_VRAM_BROKER_IMPL`` no longer has a ``python`` target.
 
     NO-SPAWN MODE (test/parity only — see the no-spawn warning in
     :mod:`Core.Lifecycle.daemon_state`): records a "would-have-spawned"
     handle and forks nothing.
     """
     if _ds.nospawn_enabled():
-        _ds._vram_broker_proc = _ds._NoSpawnProc(
-            "wylde-vram-broker", impl=_impl_for("wylde-vram-broker", default="rust")
-        )
+        _ds._vram_broker_proc = _ds._NoSpawnProc("wylde-vram-broker", impl="rust")
         _lc_logger.info(
             "vram_broker: NO-SPAWN — would-have-spawned recorded; no child forked"
         )
@@ -285,18 +195,16 @@ def _start_vram_broker() -> None:
     if _ds._vram_broker_proc is not None and _ds._vram_broker_proc.poll() is None:
         return  # already running
 
-    if _impl_for("wylde-vram-broker", default="rust") == "rust":
-        rust_bin = _rust_binary_path("wylde-vram-broker")
-        if rust_bin is None:
-            _lc_logger.warning(
-                "vram_broker: WYLDE_WYLDE_VRAM_BROKER_IMPL=rust but no binary "
-                "found; falling back to python"
-            )
-            _start_vram_broker_python()
-            return
-        _start_vram_broker_rust(rust_bin)
+    rust_bin = _rust_binary_path("wylde-vram-broker")
+    if rust_bin is None:
+        _lc_logger.warning(
+            "vram_broker: no rust binary found; vram_broker will not start — the "
+            "Python Core/resource_monitor package was removed, so build with "
+            "`cargo build --release -p wylde-vram-broker`"
+        )
+        _ds._vram_broker_proc = None
         return
-    _start_vram_broker_python()
+    _start_vram_broker_rust(rust_bin)
 
 
 def _stop_vram_broker() -> None:
@@ -331,49 +239,6 @@ def _stop_vram_broker() -> None:
 # ── Gateway ───────────────────────────────────────────────────────────
 
 
-def _start_gateway_python() -> None:
-    """Boot the Python Gateway (``python -m Gateway.run``).
-
-    Gateway is a peer service (top-level ``Wylde/Gateway/`` folder with
-    its own manifest, tier=core) — same pattern as Voice / device_gate.
-    It hosts the unified HTTP ingress/egress on 127.0.0.1:8005 (per
-    :class:`Gateway.settings.GatewaySettings`) and is where the browser-
-    extension routes (``/extensions/<name>/<endpoint>``) terminate.
-    """
-    cmd = [sys.executable, "-m", "Gateway.run"]
-    env = os.environ.copy()
-    env.setdefault("WYLDE_SERVICE_NAME", "wylde-gateway")
-    namespace_root = str(WYLDE_ROOT.parent)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        namespace_root + os.pathsep + existing if existing else namespace_root
-    )
-
-    creation_flags = 0
-    if sys.platform == "win32":
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
-
-    try:
-        _ds._gateway_proc = subprocess.Popen(
-            cmd,
-            cwd=str(WYLDE_ROOT),
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            creationflags=creation_flags,
-        )
-        # Gateway/run.py owns its manifest + heartbeat. Daemon only
-        # records the spawn intent for orphan-detection bookkeeping.
-        _ds._record_spawn("wylde-gateway", _ds._gateway_proc.pid, impl="python")
-        _lc_logger.info(
-            "daemon: spawned gateway impl=python pid=%d", _ds._gateway_proc.pid
-        )
-    except Exception:  # noqa: BLE001
-        _lc_logger.exception("daemon: gateway spawn failed")
-        _ds._gateway_proc = None
-
-
 def _start_gateway_rust(rust_bin: Path) -> None:
     """Boot the Rust Gateway binary at ``rust_bin``."""
     proc = _spawn_rust_service(service="wylde-gateway", rust_bin=rust_bin)
@@ -390,12 +255,12 @@ def _start_gateway_rust(rust_bin: Path) -> None:
 def _start_gateway() -> None:
     """Boot the Gateway as a subprocess of the Lifecycle daemon.
 
-    Dispatches to either the Python module or a Rust binary depending
-    on ``WYLDE_WYLDE_GATEWAY_IMPL`` (default ``rust`` since 2026-05-30 —
-    the Rust ``wylde-gateway`` is the canonical ingress/egress server and
-    is a superset of the Python routes). Falls back to Python with a
-    warning if the Rust binary is missing; set the env var to ``python``
-    to force the (rollback-only) Python ``Gateway/`` module.
+    Rust-only since 2026-06-02: the Python ``Gateway/`` package was
+    deleted once the Rust ``wylde-gateway`` (axum) — a superset of the
+    Python routes — became the canonical ingress/egress server. There is
+    no Python fallback — a missing Rust binary means the Gateway simply
+    doesn't start (the dashboard paints it down).
+    ``WYLDE_WYLDE_GATEWAY_IMPL`` no longer has a ``python`` target.
 
     Depends on the harness pipe and device_gate already being up — the
     daemon orders the spawns accordingly in
@@ -406,9 +271,7 @@ def _start_gateway() -> None:
     handle and forks nothing.
     """
     if _ds.nospawn_enabled():
-        _ds._gateway_proc = _ds._NoSpawnProc(
-            "wylde-gateway", impl=_impl_for("wylde-gateway", default="rust")
-        )
+        _ds._gateway_proc = _ds._NoSpawnProc("wylde-gateway", impl="rust")
         _lc_logger.info(
             "gateway: NO-SPAWN — would-have-spawned recorded; no child forked"
         )
@@ -416,18 +279,16 @@ def _start_gateway() -> None:
     if _ds._gateway_proc is not None and _ds._gateway_proc.poll() is None:
         return  # already running
 
-    if _impl_for("wylde-gateway", default="rust") == "rust":
-        rust_bin = _rust_binary_path("wylde-gateway")
-        if rust_bin is None:
-            _lc_logger.warning(
-                "gateway: WYLDE_WYLDE_GATEWAY_IMPL=rust but no binary found; "
-                "falling back to python"
-            )
-            _start_gateway_python()
-            return
-        _start_gateway_rust(rust_bin)
+    rust_bin = _rust_binary_path("wylde-gateway")
+    if rust_bin is None:
+        _lc_logger.warning(
+            "gateway: no rust binary found; gateway will not start — the Python "
+            "Gateway package was removed, so build with "
+            "`cargo build --release -p wylde-gateway`"
+        )
+        _ds._gateway_proc = None
         return
-    _start_gateway_python()
+    _start_gateway_rust(rust_bin)
 
 
 def _stop_gateway() -> None:

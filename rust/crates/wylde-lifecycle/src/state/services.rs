@@ -9,15 +9,16 @@
 //!
 //! ## Strangler-fig switch
 //!
-//! Services on the Rust port plan (vram_broker, device_gate, gateway)
-//! are dispatched through [`impl_for`]: `WYLDE_<SERVICE>_IMPL=rust`
-//! picks a sibling Rust binary resolved by [`rust_binary_path`],
-//! default `python` keeps the existing in-tree implementation.
-//! Missing or unparseable env vars fall back to Python with a
-//! warning, so a mis-set deployment can never silently lose the
-//! service. This is the SAME dispatch the Python daemon uses — we
-//! port it verbatim so behaviour stays consistent regardless of which
-//! daemon is running.
+//! Services with both impls (extension_bridge, voice) are dispatched
+//! through [`impl_for`]: `WYLDE_<SERVICE>_IMPL=rust` picks a sibling Rust
+//! binary resolved by [`rust_binary_path`], and a missing or unparseable
+//! env var (or a missing Rust binary) falls back to the Python module
+//! with a warning, so a mis-set deployment can never silently lose the
+//! service. vram_broker, device_gate, and gateway were collapsed to
+//! Rust-only on 2026-06-02 — their Python packages were deleted, so they
+//! have no fallback (a missing binary leaves them down). This is the SAME
+//! dispatch the Python daemon uses — we port it verbatim so behaviour
+//! stays consistent regardless of which daemon is running.
 //!
 //! Memory scheduler note: the Python daemon hosts the scheduler
 //! in-process (it's a Python thread; no separate binary). The Rust
@@ -329,24 +330,30 @@ async fn stop_service(name: &str, grace: Duration) -> Result<()> {
 
 // ── Strangler-fig start table ─────────────────────────────────────────
 //
-// Five services share a byte-identical two-impl start path: no-spawn
-// short-circuit → already-alive guard → dispatch (`impl_for*` picks the
-// Rust binary, falling back to `python -m <module>` when the binary is
-// missing or `python` is selected) → record + track. The only things
+// Five services share the same start scaffolding: no-spawn short-circuit
+// → already-alive guard → dispatch → record + track. The only things
 // that vary are the service name, the Python module, the per-service
-// default impl, and the "no binary found" warning text — so they live
-// in a table and share one generic [`start_strangler`]. The unique
-// services (memgraph, ollama, harness, trainer, trainer_worker, vpn)
-// stay hand-written below because their control flow genuinely diverges
-// (always-python, hard-fail, early-return-no-spawn, script-not-module,
-// conditional-on-sibling-impl).
+// default impl, and the "no binary found" warning text — so they live in
+// a table and share one generic [`start_strangler`]. Two of them
+// (extension_bridge, voice) keep a Python fallback (`python_module:
+// Some(..)`): a missing Rust binary falls back to `python -m <module>`.
+// The other three (device_gate, vram_broker, gateway) were collapsed to
+// Rust-only on 2026-06-02 (`python_module: None`) when their Python
+// packages were deleted — a missing binary leaves them down, with no
+// fallback. The unique services (memgraph, ollama, harness, trainer,
+// trainer_worker, vpn) stay hand-written below because their control
+// flow genuinely diverges (always-python, hard-fail,
+// early-return-no-spawn, script-not-module, conditional-on-sibling-impl).
 
 /// One row of the strangler-fig start table.
 struct StranglerService {
     /// Canonical service name (e.g. `service_name::VOICE`).
     name: &'static str,
-    /// Python fallback module, run as `python -m <python_module>`.
-    python_module: &'static str,
+    /// Python fallback module, run as `python -m <python_module>`, or
+    /// `None` for services collapsed to Rust-only. A `None` row has no
+    /// Python impl on disk, so a missing Rust binary means the service
+    /// simply does not start (no fallback) — the VPN pattern.
+    python_module: Option<&'static str>,
     /// Impl chosen when `WYLDE_<SERVICE>_IMPL` is unset/unrecognised.
     default_impl: ImplLang,
     /// Logged when the Rust impl is requested but no binary resolves.
@@ -355,69 +362,64 @@ struct StranglerService {
 
 const STRANGLER_SERVICES: &[StranglerService] = &[
     StranglerService {
-        // Default flipped python → rust (2026-06-01): the in-tree
-        // Python `device_gate` runs under the user's `py -3` (Python
-        // 3.14), which is missing `passlib`, so the Python impl can't
-        // verify htpasswd hashes and the service comes up dead. The Rust
-        // port carries its own hash verification (bcrypt / sha-crypt /
-        // inline APR1), no interpreter deps. Python stays as the rollback
-        // path via `WYLDE_WYLDE_DEVICE_GATE_IMPL=python`.
+        // Collapsed to Rust-only (2026-06-02): the in-tree Python
+        // `device_gate` package was DELETED once the Rust port reached
+        // parity. The Rust verifier carries its own hash verification
+        // (bcrypt / sha-crypt / inline APR1), no interpreter deps. There
+        // is no Python fallback — `python_module: None` means a missing
+        // binary leaves the service down rather than spawning a module
+        // that no longer exists. `WYLDE_WYLDE_DEVICE_GATE_IMPL` no longer
+        // has a `python` target.
         name: service_name::DEVICE_GATE,
-        python_module: "device_gate.run",
+        python_module: None,
         default_impl: ImplLang::Rust,
         missing_binary_warn:
-            "device_gate: default impl=rust but no binary found; falling back to \
-             python (rollback path) — build with `cargo build --release -p \
-             wylde-device-gate` to engage rust",
+            "device_gate: no rust binary found; device_gate will not start — the \
+             Python device_gate module was removed, so build with `cargo build \
+             --release -p wylde-device-gate`",
     },
     StranglerService {
-        // Default flipped python → rust (2026-05-31): only the Rust broker
-        // has the Phase-0.5 estimator (a `vram.reserve` with no `bytes` is
-        // estimated, not rejected with "bytes must be positive") and DRAM
-        // spillover (admits a quantised 27B-class model larger than VRAM on
-        // a 16 GB card). The in-tree Python broker `Core/resource_monitor/`
-        // was removed 2026-06-02 after the Rust binary passed a live
-        // function test (reserve/release accounting, `system.inventory`
-        // hardware snapshot, DRAM spillover). `python_module` is retained as
-        // a nominal rollback string via `WYLDE_WYLDE_VRAM_BROKER_IMPL=python`
-        // (same pattern as gateway below), but the module no longer exists on
-        // disk, so the only working impl is rust.
+        // Collapsed to Rust-only (2026-06-02): the in-tree Python broker
+        // `Core/resource_monitor/` was DELETED after the Rust binary
+        // passed a live function test. Only the Rust broker has the
+        // Phase-0.5 estimator (a `vram.reserve` with no `bytes` is
+        // estimated, not rejected) and DRAM spillover (admits a quantised
+        // 27B-class model larger than VRAM on a 16 GB card). There is no
+        // Python fallback (`python_module: None`).
         name: service_name::VRAM_BROKER,
-        python_module: "Core.resource_monitor.run",
+        python_module: None,
         default_impl: ImplLang::Rust,
         missing_binary_warn:
-            "vram_broker: default impl=rust but no binary found; falling back to \
-             python (rollback path, but the Core/resource_monitor package was \
-             removed) — build with `cargo build --release -p wylde-vram-broker` \
-             to engage rust",
+            "vram_broker: no rust binary found; vram_broker will not start — the \
+             Python Core/resource_monitor package was removed, so build with \
+             `cargo build --release -p wylde-vram-broker`",
     },
     StranglerService {
         name: service_name::EXTENSION_BRIDGE,
-        python_module: "Extensions.extension_bridge.run",
+        python_module: Some("Extensions.extension_bridge.run"),
         default_impl: ImplLang::Python,
         missing_binary_warn:
             "extension_bridge: WYLDE_WYLDE_EXTENSION_BRIDGE_IMPL=rust but no \
              binary found; falling back to python",
     },
     StranglerService {
-        // Default flipped python → rust (2026-06-01): the in-tree Python
-        // `Gateway` package was removed, so `python -m Gateway.run` has
-        // no module to import and the service comes up dead. The Rust
-        // `wylde-gateway` (axum) is now the only working impl; Python is
-        // retained as a nominal rollback string via
-        // `WYLDE_WYLDE_GATEWAY_IMPL=python` but the package no longer
-        // exists on disk.
+        // Collapsed to Rust-only (2026-06-02): the in-tree Python
+        // `Gateway` package was DELETED; the Rust `wylde-gateway` (axum)
+        // — a superset of the Python routes — is the canonical
+        // ingress/egress. There is no Python fallback (`python_module:
+        // None`); `WYLDE_WYLDE_GATEWAY_IMPL` no longer has a `python`
+        // target.
         name: service_name::GATEWAY,
-        python_module: "Gateway.run",
+        python_module: None,
         default_impl: ImplLang::Rust,
         missing_binary_warn:
-            "gateway: default impl=rust but no binary found; falling back to \
-             python (rollback path, but the Gateway package was removed) — build \
-             with `cargo build --release -p wylde-gateway` to engage rust",
+            "gateway: no rust binary found; gateway will not start — the Python \
+             Gateway package was removed, so build with `cargo build --release \
+             -p wylde-gateway`",
     },
     StranglerService {
         name: service_name::VOICE,
-        python_module: "Voice.run",
+        python_module: Some("Voice.run"),
         default_impl: ImplLang::Rust,
         missing_binary_warn:
             "voice: default impl=rust but no binary found; falling back to python \
@@ -445,31 +447,54 @@ async fn start_strangler(def: &StranglerService) -> Result<()> {
         return Ok(());
     }
     if nospawn_enabled() {
-        nospawn_record(
-            def.name,
-            impl_for_with_default(def.name, def.default_impl).as_str(),
-        );
+        // Rust-only rows (`python_module: None`) record `rust` regardless
+        // of any stale `=python` override — there is no Python impl to
+        // record. Two-impl rows record whichever impl would have spawned.
+        let recorded = match def.python_module {
+            None => ImplLang::Rust,
+            Some(_) => impl_for_with_default(def.name, def.default_impl),
+        };
+        nospawn_record(def.name, recorded.as_str());
         tracing::info!(
             "{}: NO-SPAWN — would-have-spawned recorded; no child forked",
             def.name
         );
         return Ok(());
     }
-    let (child, impl_lang) = match impl_for_with_default(def.name, def.default_impl) {
-        ImplLang::Rust => match rust_binary_path(def.name) {
-            Some(bin) => (spawn_rust_binary(def.name, &bin)?, ImplLang::Rust),
-            None => {
-                tracing::warn!("{}", def.missing_binary_warn);
-                (
-                    spawn_python_module(def.python_module, def.name)?,
-                    ImplLang::Python,
-                )
+    let want = impl_for_with_default(def.name, def.default_impl);
+    let (child, impl_lang) = match def.python_module {
+        // Rust-only: no Python fallback. A missing binary leaves the
+        // service down (VPN pattern); an explicit `=python` override is
+        // honoured only as a warning — the module was removed.
+        None => {
+            if want == ImplLang::Python {
+                tracing::warn!(
+                    "{}: WYLDE_{}_IMPL=python requested but the Python impl was \
+                     removed; this service is rust-only",
+                    def.name,
+                    def.name.to_uppercase().replace('-', "_"),
+                );
             }
+            match rust_binary_path(def.name) {
+                Some(bin) => (spawn_rust_binary(def.name, &bin)?, ImplLang::Rust),
+                None => {
+                    tracing::warn!("{}", def.missing_binary_warn);
+                    return Ok(());
+                }
+            }
+        }
+        // Two-impl: Rust binary if resolvable, else fall back to the
+        // Python module.
+        Some(module) => match want {
+            ImplLang::Rust => match rust_binary_path(def.name) {
+                Some(bin) => (spawn_rust_binary(def.name, &bin)?, ImplLang::Rust),
+                None => {
+                    tracing::warn!("{}", def.missing_binary_warn);
+                    (spawn_python_module(module, def.name)?, ImplLang::Python)
+                }
+            },
+            ImplLang::Python => (spawn_python_module(module, def.name)?, ImplLang::Python),
         },
-        ImplLang::Python => (
-            spawn_python_module(def.python_module, def.name)?,
-            ImplLang::Python,
-        ),
     };
     let pid = child.id().unwrap_or(0);
     tracing::info!(
@@ -1064,28 +1089,21 @@ mod tests {
 
     #[test]
     fn strangler_defs_carry_expected_module_and_default() {
-        // Module + default impl per row. Voice (Phase 11.E),
-        // vram_broker (2026-05-31), and device_gate + gateway
-        // (2026-06-01) have their default flipped to Rust; the rest
-        // default Python.
+        // Module + default impl per row. extension_bridge and voice keep
+        // a Python fallback (`Some(module)`); device_gate, vram_broker,
+        // and gateway were collapsed to Rust-only on 2026-06-02 when their
+        // Python packages were deleted (`None`). All five default to Rust
+        // except extension_bridge (still Python pending its dogfood week).
         let cases = [
-            (
-                service_name::DEVICE_GATE,
-                "device_gate.run",
-                ImplLang::Rust,
-            ),
-            (
-                service_name::VRAM_BROKER,
-                "Core.resource_monitor.run",
-                ImplLang::Rust,
-            ),
+            (service_name::DEVICE_GATE, None, ImplLang::Rust),
+            (service_name::VRAM_BROKER, None, ImplLang::Rust),
             (
                 service_name::EXTENSION_BRIDGE,
-                "Extensions.extension_bridge.run",
+                Some("Extensions.extension_bridge.run"),
                 ImplLang::Python,
             ),
-            (service_name::GATEWAY, "Gateway.run", ImplLang::Rust),
-            (service_name::VOICE, "Voice.run", ImplLang::Rust),
+            (service_name::GATEWAY, None, ImplLang::Rust),
+            (service_name::VOICE, Some("Voice.run"), ImplLang::Rust),
         ];
         for (name, module, default) in cases {
             let def = strangler_def(name);

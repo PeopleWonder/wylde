@@ -2,16 +2,15 @@
 
 Split out of ``test_strangler_fig.py`` (which sits just under the
 700-line file cap) when the 2026-06-02 device_gate cutover added a
-dispatch class: ``_start_device_gate`` flipped its default from
-``python`` to ``rust``. The Rust ``wylde-device-gate`` is byte-parity
-with the Python verifier and is now the canonical impl; Python stays as
-the rollback path via ``WYLDE_WYLDE_DEVICE_GATE_IMPL=python``.
+dispatch class. device_gate was collapsed to Rust-only later the same
+day: the Python ``device_gate`` package was deleted, so the Rust
+``wylde-device-gate`` (which carries its own hash verification, no
+interpreter deps) is now the sole impl — there is no Python fallback.
 
-The missing-binary fallback (``rust`` requested, no binary → warn + fall
-back to ``python``) is already pinned by
-``TestStartDispatchFallback.test_device_gate_falls_back_when_rust_missing``
-in ``test_strangler_fig.py``; the two cases here lock the new default +
-the explicit-python rollback, mirroring ``TestStartGatewayDispatch``.
+The no-spawn-when-binary-missing contract is pinned by
+``TestStartDispatchNoFallback.test_device_gate_no_spawn_when_rust_missing``
+in ``test_strangler_fig.py``; the case here locks the happy path —
+default ``rust`` resolves and spawns the binary.
 
 Real ``subprocess.Popen`` is patched out everywhere so no actual process
 ever spawns from this test module.
@@ -101,42 +100,3 @@ class TestStartDeviceGateDispatch:
         rec = daemon_state._spawn_records.get("wylde-device-gate")
         assert rec is not None
         assert rec.impl == "rust"
-
-    def test_device_gate_python_override_spawns_run_module(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        isolated_device_gate_handle: None,
-    ) -> None:
-        """``WYLDE_WYLDE_DEVICE_GATE_IMPL=python`` (rollback) → the python
-        branch runs ``[sys.executable, '-m', 'device_gate.run']`` via
-        ``subprocess.Popen`` and the rust helper is NEVER consulted."""
-        monkeypatch.setenv("WYLDE_WYLDE_DEVICE_GATE_IMPL", "python")
-        # Even with a rust binary present, python override must win.
-        monkeypatch.setattr(_strangler, "WYLDE_ROOT", tmp_path)
-        suffix = ".exe" if sys.platform == "win32" else ""
-        debug = tmp_path / "rust" / "target" / "debug"
-        debug.mkdir(parents=True)
-        (debug / f"wylde-device-gate{suffix}").write_text("fake", encoding="utf-8")
-
-        def _no_rust(*_a: Any, **_k: Any) -> Any:
-            raise AssertionError(
-                "python override must not call the rust spawn helper"
-            )
-
-        monkeypatch.setattr(_services, "_spawn_rust_service", _no_rust)
-
-        captured: dict[str, Any] = {}
-
-        def _capture_popen(cmd: Any, *args: Any, **kwargs: Any) -> _FakePopen:
-            captured["cmd"] = cmd
-            return _FakePopen()
-
-        monkeypatch.setattr(_services.subprocess, "Popen", _capture_popen)
-
-        _services._start_device_gate()
-
-        assert captured["cmd"] == [sys.executable, "-m", "device_gate.run"]
-        rec = daemon_state._spawn_records.get("wylde-device-gate")
-        assert rec is not None
-        assert rec.impl == "python"
