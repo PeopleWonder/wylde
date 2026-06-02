@@ -37,3 +37,19 @@ thiserror.workspace = true
 # runtime ABI.
 tree-sitter = "0.25"
 tree-sitter-python = "0.25"
+
+# tree-sitter's `QueryCursor::matches` returns a `StreamingIterator` (the
+# trait is NOT re-exported by `tree-sitter`); the chunk verb's query walk
+# needs the trait in scope. Pinned to the version `tree-sitter` 0.25 itself
+# depends on so there's a single copy in the tree.
+streaming-iterator = "0.1"
+
+# HTTP front door (`http.rs`) for N8N's HTTP Request node — it can't open a
+# Windows named pipe, so the sidecar also serves `/chunk` over a loopback TCP
+# port. Same axum/tower stack `wylde-vpn` uses for its control plane.
+axum = "0.7"
+tower = "0.5"
+
+[dev-dependencies]
+# chunk.rs tests write throwaway source files to chunk by path.
+tempfile = "3"

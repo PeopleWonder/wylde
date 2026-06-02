@@ -1,0 +1,143 @@
+{
+  "name": "RAG Ingest (AST-aware chunking)",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "wylde-ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node_webhook",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 400],
+      "notes": "POST {target_path, workspace_id?, paths?, options?} to /webhook/wylde-ingest.\nContract matches Core/harness/memory/ingest.py::trigger_ingest."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalise the ingest request. `target_path` is the root to index;\n// `paths` is an optional explicit subset (skip discovery); `options` carries\n// workflow knobs (e.g. {max_chunk_bytes: 24576, force_reindex: true}).\nconst body = $input.first().json.body || $input.first().json || {};\nconst target_path = (body.target_path || '').toString().trim();\nif (!target_path) {\n  throw new Error(\"'target_path' is required in the webhook body\");\n}\nreturn [{\n  json: {\n    target_path,\n    workspace_id: body.workspace_id || 'default',\n    paths: Array.isArray(body.paths) ? body.paths : [],\n    options: body.options || {}\n  }\n}];"
+      },
+      "id": "node_normalize",
+      "name": "Normalise Inputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [420, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// PRE-CHUNK: file discovery. Emit one item per source file to chunk. When\n// the caller passed an explicit `paths` subset, use it verbatim; otherwise a\n// real deployment walks `target_path` here (a Read/Move-Binary-Files or\n// Execute-Workflow discovery step). Each item carries the absolute path the\n// sidecar will read, plus the workspace + options pass-through.\nconst inp = $input.first().json;\nconst paths = (inp.paths && inp.paths.length) ? inp.paths : [inp.target_path];\nreturn paths.map(p => ({\n  json: {\n    path: p,\n    workspace_id: inp.workspace_id,\n    options: inp.options\n  }\n}));"
+      },
+      "id": "node_discover",
+      "name": "Discover Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [640, 400],
+      "notes": "Pre-chunk wiring. One item per file flows into the chunker below."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.WYLDE_TREESITTER_HTTP_URL || 'http://127.0.0.1:8030' }}/chunk",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ JSON.stringify({ path: $json.path, max_chunk_bytes: ($json.options && $json.options.max_chunk_bytes) || undefined }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node_chunk",
+      "name": "Chunk (Tree-sitter Sidecar)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [860, 400],
+      "notes": "AST-BOUNDARY CHUNKER — Slice 2.\nReplaces the old heuristic text splitter (recursive-character / fixed line\nwindows) with the Rust tree-sitter sidecar. Calls the sidecar's localhost\nHTTP front door directly (POST /chunk {path, language?, max_chunk_bytes?}).\nNO Python adapter, NO Execute-Command CLI shim — N8N's built-in HTTP Request\nnode straight to the Rust service.\nReply: {path, language, ast_aware, chunk_count, chunks:[{start_line,end_line,\nbyte_start,byte_end,kind,symbol_name?}]}. Chunks fall on function/class\nboundaries; unknown languages fall back to byte windows."
+    },
+    {
+      "parameters": {
+        "jsCode": "// POST-CHUNK: fan the sidecar's chunk list out to one item per chunk so the\n// downstream embed/index step processes them individually. Carry the file\n// path, language, and workspace through onto each chunk record. The sidecar\n// returns ranges (not bytes); the downstream step slices the file by\n// byte_start/byte_end when it needs the chunk text to embed.\nconst resp = $input.first().json;\nconst path = resp.path;\nconst language = resp.language || null;\nconst workspace_id = $('Discover Files').first().json.workspace_id;\nconst chunks = resp.chunks || [];\nif (!chunks.length) {\n  return [{ json: { path, language, workspace_id, chunk: null, skipped: true } }];\n}\nreturn chunks.map((c, i) => ({\n  json: {\n    id: `${workspace_id}:${path}:${c.byte_start}`,\n    workspace_id,\n    path,\n    language,\n    chunk_index: i,\n    start_line: c.start_line,\n    end_line: c.end_line,\n    byte_start: c.byte_start,\n    byte_end: c.byte_end,\n    kind: c.kind,\n    symbol_name: c.symbol_name || null\n  }\n}));"
+      },
+      "id": "node_expand",
+      "name": "Expand Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1080, 400],
+      "notes": "Post-chunk wiring. Flattens {chunks:[...]} into one item per chunk."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://wylde-rag:8008/api/memory_index",
+        "sendBody": true,
+        "contentType": "json",
+        "jsonBody": "={{ JSON.stringify({ params: { workspace_id: $json.workspace_id, chunk: $json } }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node_index",
+      "name": "Embed + Index",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1300, 400],
+      "notes": "Post-chunk wiring: embed the chunk text + write to LanceDB via wylde-rag.\nUnchanged by Slice 2 — only the chunk boundaries feeding it changed.\nGraph entity/edge upsert (memgraph) lands in Slice 3. continueOnFail so a\nsingle bad chunk doesn't abort the whole ingest.",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate the per-chunk index results into one ingest summary for the\n// webhook response.\nconst items = $input.all();\nconst chunks = items.filter(i => !i.json.skipped);\nconst paths = new Set(items.map(i => i.json.path).filter(Boolean));\nreturn [{\n  json: {\n    ok: true,\n    files_ingested: paths.size,\n    chunks_indexed: chunks.length,\n    ast_aware: true\n  }\n}];"
+      },
+      "id": "node_summary",
+      "name": "Summarise Ingest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1520, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {}
+      },
+      "id": "node_respond",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1740, 400]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{"node": "Normalise Inputs", "type": "main", "index": 0}]]
+    },
+    "Normalise Inputs": {
+      "main": [[{"node": "Discover Files", "type": "main", "index": 0}]]
+    },
+    "Discover Files": {
+      "main": [[{"node": "Chunk (Tree-sitter Sidecar)", "type": "main", "index": 0}]]
+    },
+    "Chunk (Tree-sitter Sidecar)": {
+      "main": [[{"node": "Expand Chunks", "type": "main", "index": 0}]]
+    },
+    "Expand Chunks": {
+      "main": [[{"node": "Embed + Index", "type": "main", "index": 0}]]
+    },
+    "Embed + Index": {
+      "main": [[{"node": "Summarise Ingest", "type": "main", "index": 0}]]
+    },
+    "Summarise Ingest": {
+      "main": [[{"node": "Respond to Webhook", "type": "main", "index": 0}]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true
+  },
+  "tags": [
+    {"name": "wylde"},
+    {"name": "rag"},
+    {"name": "ingest"}
+  ]
+}

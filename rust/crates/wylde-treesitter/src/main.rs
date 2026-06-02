@@ -41,8 +41,10 @@ async fn main() -> Result<()> {
                 "actions": [
                     "treesitter.languages",
                     "treesitter.parse",
+                    "treesitter.chunk",
                 ],
                 "grammars": grammars,
+                "http_port": cfg.http_port,
             },
         }),
         Some("rust:wylde-treesitter"),
@@ -64,14 +66,23 @@ async fn main() -> Result<()> {
     }
 
     tracing::info!(
-        "wylde-treesitter: actions registered; opening pipe at \\\\.\\pipe\\wylde-treesitter"
+        "wylde-treesitter: actions registered; opening pipe at \\\\.\\pipe\\wylde-treesitter and HTTP on 127.0.0.1:{}",
+        cfg.http_port,
     );
 
-    let serve_fut = ipc::serve(SERVICE_NAME, None);
+    // Pipe server (harness) + loopback HTTP front door (N8N) run in parallel.
+    // Either exiting — or ctrl-c — tears the process down.
+    let pipe_fut = ipc::serve(SERVICE_NAME, None);
+    let http_fut = wylde_treesitter::http::serve(cfg.http_port);
     tokio::select! {
-        result = serve_fut => {
+        result = pipe_fut => {
             if let Err(e) = result {
-                tracing::error!("wylde-treesitter: serve() exited with error: {e}");
+                tracing::error!("wylde-treesitter: pipe serve() exited with error: {e}");
+            }
+        }
+        result = http_fut => {
+            if let Err(e) = result {
+                tracing::error!("wylde-treesitter: HTTP serve() exited with error: {e}");
             }
         }
         _ = tokio::signal::ctrl_c() => {

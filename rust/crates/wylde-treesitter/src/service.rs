@@ -1,17 +1,20 @@
 //! Service entrypoint: register the `treesitter.*` action surface on the
 //! shared IPC registry. Same shape as `wylde-ollama::service`.
 //!
-//! Slice 1 registers exactly two verbs — `languages` and `parse`. The
-//! chunk/extract_entities/outline/highlight verbs land in later slices.
+//! Slice 1 registered `languages` + `parse`. Slice 2 adds `chunk`
+//! (AST-boundary-aware chunking) and the HTTP front door (`http.rs`) that
+//! shares these handlers. The extract_entities/outline/highlight verbs land
+//! in later slices.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 use wylde_shared::ipc::{register_action_with_meta, unregister_action, IpcError, Reply};
 
-use crate::parser;
+use crate::{chunk, parser};
 
-const ALL_ACTIONS: [&str; 2] = ["treesitter.languages", "treesitter.parse"];
+const ALL_ACTIONS: [&str; 3] =
+    ["treesitter.languages", "treesitter.parse", "treesitter.chunk"];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
@@ -37,7 +40,46 @@ pub fn install() {
         "wylde_treesitter::parser",
     );
 
+    register_action_with_meta(
+        "treesitter.chunk",
+        |payload: Value| async move { handle_chunk(payload) },
+        "{path, language?, max_chunk_bytes?} — AST-boundary-aware chunking. \
+         Reply: {chunks:[{start_line,end_line,byte_start,byte_end,kind,symbol_name?}]}. \
+         Splits on function/class boundaries; byte windows for unknown languages.",
+        "wylde_treesitter::chunk",
+    );
+
     tracing::info!("wylde-treesitter: registered {} actions", ALL_ACTIONS.len());
+}
+
+/// `treesitter.chunk` handler — validate the payload then delegate to
+/// [`chunk::chunk`]. Shared by the pipe action surface and the HTTP route
+/// (`http.rs`) so the two transports can never drift.
+pub fn handle_chunk(payload: Value) -> Reply {
+    let path = match payload.get("path").and_then(Value::as_str) {
+        Some(p) if !p.trim().is_empty() => p,
+        _ => {
+            return Reply::err(IpcError::new(
+                "invalid_request",
+                "payload.path is required (non-empty string)",
+            ))
+        }
+    };
+    // `language` is optional (inferred from the extension when omitted); an
+    // empty string is treated as "omitted".
+    let language = payload
+        .get("language")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty());
+    let max_chunk_bytes = payload
+        .get("max_chunk_bytes")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize);
+
+    match chunk::chunk(path, language, max_chunk_bytes) {
+        Ok(v) => Reply::ok(v),
+        Err(e) => Reply::err(e),
+    }
 }
 
 /// `treesitter.parse` handler — validate the payload then delegate to
@@ -92,7 +134,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_registers_both_actions() {
+    async fn install_registers_all_actions() {
         let _g = registry_guard().await;
         reset_for_tests();
         install();
@@ -139,6 +181,44 @@ mod tests {
         .await;
         assert!(reply.ok);
         assert_eq!(reply.data["root"]["kind"], "module");
+        reset_for_tests();
+    }
+
+    #[tokio::test]
+    async fn chunk_dispatch_returns_ast_chunks() {
+        use std::io::Write;
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+        let mut f = tempfile::Builder::new()
+            .suffix(".py")
+            .tempfile()
+            .unwrap();
+        f.write_all(b"def a():\n    return 1\n").unwrap();
+        f.flush().unwrap();
+        let reply = dispatch_action(serde_json::json!({
+            "action": "treesitter.chunk",
+            "payload": {"path": f.path().to_str().unwrap()},
+        }))
+        .await;
+        assert!(reply.ok, "chunk dispatch failed: {:?}", reply.error);
+        assert_eq!(reply.data["ast_aware"], true);
+        assert_eq!(reply.data["chunks"][0]["symbol_name"], "a");
+        reset_for_tests();
+    }
+
+    #[tokio::test]
+    async fn chunk_missing_path_is_invalid_request() {
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+        let reply = dispatch_action(serde_json::json!({
+            "action": "treesitter.chunk",
+            "payload": {},
+        }))
+        .await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "invalid_request");
         reset_for_tests();
     }
 

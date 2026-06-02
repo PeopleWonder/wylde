@@ -4494,10 +4494,14 @@ name = "wylde-treesitter"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "serde",
  "serde_json",
+ "streaming-iterator",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tower",
  "tracing",
  "tree-sitter",
  "tree-sitter-python",

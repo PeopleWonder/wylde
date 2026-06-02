@@ -57,3 +57,47 @@ curl -X POST http://localhost:5678/webhook/agent-orchestra \
 | `poll_every_s` | 5        | Seconds between status polls.                        |
 | `requested_by` | `'n8n'`  | Attribution tag; shows up in traces.                 |
 | `trace_hint`   | `''`     | Optional free-form tag for grouping runs.            |
+
+## `rag-ingest.json` — RAG Ingest (AST-aware chunking)
+
+The memory-layer indexing pipeline. Triggered by
+`Core/harness/memory/ingest.py::trigger_ingest` (webhook
+`/webhook/wylde-ingest`).
+
+### What changed (tree-sitter Slice 2)
+The **chunking node** is now an n8n **HTTP Request** node pointed at the
+`wylde-treesitter` sidecar's localhost HTTP front door:
+
+```
+POST {{ $env.WYLDE_TREESITTER_HTTP_URL || 'http://127.0.0.1:8030' }}/chunk
+{ "path": "<abs file path>", "max_chunk_bytes": <optional> }
+→ { path, language, ast_aware, chunk_count,
+    chunks: [ { start_line, end_line, byte_start, byte_end, kind, symbol_name? } ] }
+```
+
+This replaces the previous heuristic chunker (fixed line/character windows)
+so chunks fall on **function/class boundaries** instead of arbitrary cuts.
+Unknown languages fall back to byte windows. Per
+`docs/plans/treesitter-sidecar.md`: the workflow calls the Rust sidecar
+**directly via the HTTP Request node** — there is no Python adapter and no
+Execute-Command CLI shim. Only Python is parsed today (one statically-linked
+grammar); more languages land in Slice 5.
+
+The sidecar binds **loopback only** (`127.0.0.1`). Override the base URL with
+`WYLDE_TREESITTER_HTTP_URL` if n8n runs in a container that reaches the host
+by a different name (e.g. `http://host.docker.internal:8030`).
+
+### Node graph
+`Webhook → Normalise → Discover Files (pre-chunk) → **Chunk (Tree-sitter
+Sidecar)** → Expand Chunks → Embed + Index (post-chunk) → Summarise →
+Respond`. The pre-chunk discovery and post-chunk embed/index wiring are
+unchanged — only the chunk node was swapped. Graph entity/edge upsert
+(memgraph) lands in Slice 3.
+
+### Body fields
+| Field          | Default     | Meaning                                                  |
+| -------------- | ----------- | -------------------------------------------------------- |
+| `target_path`  | required    | Root path to index.                                      |
+| `workspace_id` | `'default'` | Logical workspace bucket (chunk + graph filters).        |
+| `paths`        | `[]`        | Explicit file subset; skips discovery when non-empty.    |
+| `options`      | `{}`        | Pass-through knobs, e.g. `{ "max_chunk_bytes": 24576 }`. |

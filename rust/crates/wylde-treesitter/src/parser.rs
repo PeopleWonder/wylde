@@ -28,14 +28,38 @@ pub struct Grammar {
     /// Builds the tree-sitter `Language`. A fn pointer (not a built
     /// `Language`) keeps [`REGISTRY`] a `const` and defers FFI to call time.
     pub language: fn() -> Language,
+
+    /// File extensions (no dot, lowercase) this grammar owns. Lets a verb
+    /// infer `language` from a `path` when the caller omits it.
+    pub extensions: &'static [&'static str],
+
+    /// Tree-sitter query (`.scm` source) that captures top-level chunk
+    /// boundaries — `@chunk` per boundary node, optional `@symbol_name`. Used
+    /// by [`crate::chunk`]. `None` means the grammar has no chunk query yet, so
+    /// chunking falls back to byte windows.
+    pub chunk_query: Option<&'static str>,
 }
 
-/// Every grammar this build links. Slice 1: Python only.
+/// Every grammar this build links. Slice 1–2: Python only.
 pub static REGISTRY: &[Grammar] = &[Grammar {
     name: "python",
     grammar_sha: "tree-sitter-python@0.25",
     language: || tree_sitter_python::LANGUAGE.into(),
+    extensions: &["py", "pyi"],
+    chunk_query: Some(include_str!("queries/python/chunks.scm")),
 }];
+
+/// Infer a grammar from a file path's extension (case-insensitive). `None`
+/// when no linked grammar claims the extension.
+pub fn resolve_by_path(path: &str) -> Option<&'static Grammar> {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())?;
+    REGISTRY
+        .iter()
+        .find(|g| g.extensions.iter().any(|x| *x == ext))
+}
 
 /// Resolve a language id (case-insensitive) to its grammar. `None` if the
 /// build doesn't link it.
@@ -164,6 +188,20 @@ mod tests {
         assert!(resolve("python").is_some());
         assert!(resolve("  PyThOn ").is_some());
         assert!(resolve("rust").is_none());
+    }
+
+    #[test]
+    fn resolve_by_path_maps_python_extensions() {
+        assert_eq!(resolve_by_path("a/b/c.py").unwrap().name, "python");
+        assert_eq!(resolve_by_path("MOD.PY").unwrap().name, "python");
+        assert_eq!(resolve_by_path("stub.pyi").unwrap().name, "python");
+        assert!(resolve_by_path("main.rs").is_none());
+        assert!(resolve_by_path("no_extension").is_none());
+    }
+
+    #[test]
+    fn python_grammar_carries_a_chunk_query() {
+        assert!(resolve("python").unwrap().chunk_query.is_some());
     }
 
     #[test]
