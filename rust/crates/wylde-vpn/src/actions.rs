@@ -1,4 +1,4 @@
-//! WyldeLink action surface — 16 actions on `\\.\pipe\wylde-vpn`.
+//! WyldeLink action surface — 17 actions on `\\.\pipe\wylde-vpn`.
 //!
 //! Action inventory per master plan §Phase 2 (Action contract table).
 //! Phase 2.C promoted `link.stun` out of `service_unavailable` and
@@ -21,6 +21,8 @@
 //! | `link.qr`            | impl           | Renders a pairing URI as SVG. Looks up by token or |
 //! |                      |                | accepts a raw URI.                                  |
 //! | `link.config.get`    | impl           | Returns the YAML view (`_link_view` in Python).    |
+//! | `link.services`      | impl           | Inventory of services reachable behind the tunnel  |
+//! |                      |                | (manifest registry; Python never shipped this).    |
 //! | `link.config.patch`  | impl (2.B)     | serde_yaml patch + atomic write + restart_required.|
 //! | `link.restart`       | impl           | Schedules `std::process::exit(0)` after 250ms.     |
 //! | `link.config_changed`| event-only     | Internal — not registered as a callable action.    |
@@ -67,6 +69,7 @@ pub fn contract_metadata() -> Vec<(&'static str, &'static str)> {
         ("link.connect", "POST /api/link/connect — bring up the wg1 tunnel to a paired peer."),
         ("link.qr", "GET /api/link/qr/<token> — render a pairing URI as SVG bytes."),
         ("link.config.get", "GET /api/link/config — current YAML view."),
+        ("link.services", "GET /api/link/services — inventory of Wylde services reachable behind the WyldeLink tunnel ({name, description, port}), sourced from the runtime manifest registry."),
         ("link.config.patch", "PATCH /api/link/config — mutate link + relay keys + atomically rewrite VPN/config.yaml."),
         ("link.restart", "POST /api/restart — schedule a graceful self-exit so the launcher respawns with fresh config."),
     ]
@@ -245,6 +248,72 @@ pub async fn handle_link_qr(payload: Value) -> Reply {
 
 pub async fn handle_link_config_get(_payload: Value) -> Reply {
     Reply::ok(link_config_view(Config::get()))
+}
+
+/// `GET /api/link/services` / `link.services` — the inventory of Wylde
+/// services reachable remotely through the WyldeLink tunnel.
+///
+/// The Python VPN never shipped this route (the RemoteAccess panel's
+/// Services tab 404'd against Flask), so there is no byte-for-byte
+/// parity to match — this is the canonical implementation. The source
+/// of truth is the live runtime manifest registry under
+/// `WYLDE_ROOT/data/manifests/*.json`: every service that publishes an
+/// HTTP `port` is, by definition, reachable behind the tunnel (principle
+/// #16 — the WyldeLink VPN is the single auth boundary, so every local
+/// HTTP service sits behind it). Each manifest projects to the
+/// `{name, description, port}` shape the panel's `ServiceRow` parses.
+///
+/// Services without a `port` (pure pipe-only actors) are omitted — the
+/// panel surfaces "services available remotely", and a portless service
+/// has no remotely-addressable HTTP surface.
+pub async fn handle_link_services(_payload: Value) -> Reply {
+    let dir = Config::get().wylde_root.join("data").join("manifests");
+    let mut services: Vec<Value> = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut paths: Vec<_> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+            .collect();
+        paths.sort();
+        for path in paths {
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(doc) = serde_json::from_slice::<Value>(&bytes) else {
+                continue;
+            };
+            // Only HTTP-reachable services belong on the "available
+            // remotely" list — skip manifests with no/null port AND
+            // pipe-only services that publish `port: 0` (they have no
+            // remotely-addressable HTTP surface behind the tunnel).
+            let Some(port) = doc.get("port").and_then(Value::as_u64).filter(|p| *p > 0) else {
+                continue;
+            };
+            let name = doc
+                .get("service")
+                .and_then(Value::as_str)
+                .or_else(|| doc.get("name").and_then(Value::as_str))
+                .unwrap_or("")
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let description = doc
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            services.push(json!({
+                "name": name,
+                "description": description,
+                "port": port,
+            }));
+        }
+    }
+
+    Reply::ok(json!({ "services": services }))
 }
 
 pub async fn handle_link_restart(_payload: Value) -> Reply {
@@ -947,7 +1016,7 @@ mod tests {
     #[test]
     fn all_actions_listed_and_sorted() {
         let names = all_action_names();
-        assert_eq!(names.len(), 15); // 16 spec'd, minus link.config_changed (event-only)
+        assert_eq!(names.len(), 16); // 15 prior + link.services; link.config_changed stays event-only
         let mut sorted = names.clone();
         sorted.sort();
         assert_eq!(names, sorted);
@@ -956,7 +1025,7 @@ mod tests {
     #[test]
     fn contract_metadata_is_consistent_with_names() {
         let meta = contract_metadata();
-        assert_eq!(meta.len(), 15);
+        assert_eq!(meta.len(), 16);
         for (name, doc) in &meta {
             assert!(!name.is_empty());
             assert!(!doc.is_empty());

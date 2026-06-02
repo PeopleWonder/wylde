@@ -14,6 +14,7 @@ use serde_json::json;
 use tokio::task::JoinHandle;
 use tracing::Level;
 use wylde_shared::ipc;
+use wylde_shared::ipc::http_routes::{HttpResponse, HttpRouteTable};
 use wylde_shared::logging::configure_logging;
 use wylde_shared::manifest::ManifestWriter;
 
@@ -129,9 +130,31 @@ async fn main() -> Result<()> {
     let ddns_handle = start_ddns_scheduler(cfg);
     let health_handle = start_health_monitor(cfg);
 
+    // HTTP-shaped routes over the pipe. The GUI RemoteAccess panel
+    // addresses wylde-vpn with `GET /api/link/{status,peers,config,services}`
+    // (HTTP-verb + path envelope) rather than the `/__action__` surface —
+    // the same shape the Python "Flask-over-pipe" server answered before
+    // the cutover. Each handler is a thin envelope over the shared action
+    // business-logic fn (`handle_link_*`), so the action verb and the HTTP
+    // route can never drift. `serve_with_http_routes` keeps the
+    // action/health/handshake paths intact and matches these last.
+    let routes = HttpRouteTable::new()
+        .route("GET", "/api/link/status", |req| async move {
+            HttpResponse::from(wylde_vpn::actions::handle_link_status(req.body).await)
+        })
+        .route("GET", "/api/link/peers", |req| async move {
+            HttpResponse::from(wylde_vpn::actions::handle_link_peers(req.body).await)
+        })
+        .route("GET", "/api/link/config", |req| async move {
+            HttpResponse::from(wylde_vpn::actions::handle_link_config_get(req.body).await)
+        })
+        .route("GET", "/api/link/services", |req| async move {
+            HttpResponse::from(wylde_vpn::actions::handle_link_services(req.body).await)
+        });
+
     // Pipe server + HTTP server run in parallel. Either exiting (or
     // ctrl-c) tears the process down.
-    let pipe_fut = ipc::serve(SERVICE_NAME, None);
+    let pipe_fut = ipc::serve_with_http_routes(SERVICE_NAME, None, routes);
     let http_fut = wylde_vpn::http::serve(cfg.port);
 
     tokio::select! {

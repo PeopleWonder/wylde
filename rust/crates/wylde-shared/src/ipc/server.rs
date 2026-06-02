@@ -3,8 +3,11 @@
 //! Rust port of `Core/shared/ipc/_server.py`. Accepts named-pipe
 //! connections on `\\.\pipe\wylde-<service>`, performs the v1 handshake,
 //! then dispatches each request frame to either the action registry (for
-//! `method == "/__action__"`) or a route table (future work; for now,
-//! non-action methods return `no_handler`).
+//! `method == "/__action__"`), the built-in control methods
+//! (`/__ping__`, `/__handshake__`, `/health`), or — when the service
+//! supplies one via [`serve_with_http_routes`] — an
+//! [`HttpRouteTable`] keyed on `(http_verb, method)`. Anything that
+//! matches none of those returns a structured `no_handler` reply.
 //!
 //! Threading model matches the Python side: one accept loop spawns one
 //! tokio task per accepted client. Tasks own their pipe instance for its
@@ -21,6 +24,7 @@ use tokio::task::JoinHandle;
 use crate::ipc::actions::{
     dispatch_action, is_streaming_action, take_streaming_action, ACTION_DISPATCH_PATH,
 };
+use crate::ipc::http_routes::{HttpRequest, HttpRouteTable};
 use crate::ipc::wire::{
     pipe_name, ChunkFrame, EnvConfig, IpcError, IPC_VERSION, STREAM_HEARTBEAT_SECS,
 };
@@ -80,7 +84,27 @@ pub fn supports_ipc() -> bool {
 /// currently ignored — this Rust impl is pipe-only. Returns when the
 /// accept loop terminates (typically only on irrecoverable error or
 /// process shutdown).
-pub async fn serve(service: &str, _port: Option<u16>) -> anyhow::Result<()> {
+pub async fn serve(service: &str, port: Option<u16>) -> anyhow::Result<()> {
+    serve_with_http_routes(service, port, HttpRouteTable::new()).await
+}
+
+/// Like [`serve`], but with an [`HttpRouteTable`] of `(http_verb, method)`
+/// → handler routes layered on top of the action surface.
+///
+/// Dispatch precedence per request frame:
+///   1. built-in control methods (`/__ping__`, `/__handshake__`, `/health`)
+///   2. action dispatch (`method == "/__action__"`)
+///   3. the supplied HTTP route table (matched on `http_verb` + `method`)
+///   4. structured `no_handler` reply
+///
+/// The built-ins win over the table, so a service cannot accidentally
+/// shadow `/health` with its own route — that path stays uniform across
+/// every Rust service for the lifecycle health-probe.
+pub async fn serve_with_http_routes(
+    service: &str,
+    _port: Option<u16>,
+    routes: HttpRouteTable,
+) -> anyhow::Result<()> {
     let cfg = EnvConfig::load();
     let wylde_root = std::env::var("WYLDE_ROOT")
         .map(PathBuf::from)
@@ -107,7 +131,16 @@ pub async fn serve(service: &str, _port: Option<u16>) -> anyhow::Result<()> {
     // startup sequence in the manifest without AST-walking source.
     crate::manifest::mark_serve_loop_entered(service);
 
-    let server = PipeServer::new(service);
+    if !routes.is_empty() {
+        tracing::info!(
+            "ipc: {} HTTP route(s) registered for {}: {:?}",
+            routes.len(),
+            service,
+            routes.registered(),
+        );
+    }
+
+    let server = PipeServer::new(service).with_http_routes(routes);
     server.accept_loop().await
 }
 
@@ -127,17 +160,28 @@ pub struct PipeServer {
     service: String,
     pipe_name: String,
     stop: Arc<Notify>,
+    routes: Arc<HttpRouteTable>,
 }
 
 impl PipeServer {
     /// Build a new server for `service`. Does not bind until
-    /// [`Self::accept_loop`] is awaited.
+    /// [`Self::accept_loop`] is awaited. Starts with no HTTP routes —
+    /// chain [`Self::with_http_routes`] to add them.
     pub fn new(service: &str) -> Self {
         Self {
             service: service.to_string(),
             pipe_name: pipe_name(service),
             stop: Arc::new(Notify::new()),
+            routes: Arc::new(HttpRouteTable::new()),
         }
+    }
+
+    /// Attach an [`HttpRouteTable`] so non-action requests can match
+    /// `(http_verb, method)` routes before falling through to
+    /// `no_handler`. Builder-style; returns `self`.
+    pub fn with_http_routes(mut self, routes: HttpRouteTable) -> Self {
+        self.routes = Arc::new(routes);
+        self
     }
 
     /// The pipe path this server will bind to.
@@ -187,8 +231,9 @@ impl PipeServer {
                     match conn {
                         Ok(()) => {
                             let service = self.service.clone();
+                            let routes = Arc::clone(&self.routes);
                             tokio::spawn(async move {
-                                if let Err(e) = handle_client(server, service).await {
+                                if let Err(e) = handle_client(server, service, routes).await {
                                     tracing::debug!("ipc: connection ended: {e}");
                                 }
                             });
@@ -217,6 +262,7 @@ impl PipeServer {
 async fn handle_client(
     mut peer: tokio::net::windows::named_pipe::NamedPipeServer,
     service: String,
+    routes: Arc<HttpRouteTable>,
 ) -> anyhow::Result<()> {
     use tokio::time::timeout as tk_timeout;
 
@@ -444,17 +490,41 @@ async fn handle_client(
             continue;
         }
 
-        // Non-action methods: the Rust impl does not yet ship a route table.
-        // Surface a clean error so callers get a structured reply (matches the
-        // Python `no_handler`/`http_404` shape closely enough for diagnosis).
-        let _verb = req.http_verb.unwrap_or_else(|| "POST".to_string());
+        // Non-action methods: try the HTTP route table. The GUI panels and
+        // the Python "Flask-over-pipe" servers address services with an
+        // HTTP-shaped envelope (`http_verb` + path-style `method`); a
+        // service that registered routes via `serve_with_http_routes`
+        // answers them here.
+        let verb = req.http_verb.unwrap_or_else(|| "POST".to_string());
+        if let Some(handler) = routes.lookup(&verb, &method) {
+            let resp = handler(HttpRequest {
+                method: verb.to_ascii_uppercase(),
+                path: method.clone(),
+                body: req.data,
+            })
+            .await;
+            let frame = rmp_serde::to_vec_named(&ReplyFrame {
+                id: &req_id,
+                ok: resp.ok,
+                data: if resp.ok { Some(resp.data) } else { None },
+                error: resp.error,
+            })?;
+            if write_frame(&mut peer, &frame).await.is_err() {
+                return Ok(());
+            }
+            continue;
+        }
+
+        // Nothing matched. Surface a clean error so callers get a
+        // structured reply (matches the Python `no_handler`/`http_404`
+        // shape closely enough for diagnosis).
         let frame = rmp_serde::to_vec_named(&ReplyFrame {
             id: &req_id,
             ok: false,
             data: None,
             error: Some(IpcError::new(
                 "no_handler",
-                format!("method {method:?} not registered on rust ipc server"),
+                format!("{verb} {method:?} not registered on rust ipc server"),
             )),
         })?;
         if write_frame(&mut peer, &frame).await.is_err() {

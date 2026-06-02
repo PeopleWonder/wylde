@@ -39,8 +39,8 @@ use wylde_shared::ipc::Reply;
 use crate::actions::{
     handle_link_config_get, handle_link_config_patch, handle_link_connect, handle_link_pair,
     handle_link_peers, handle_link_peers_remove, handle_link_qr, handle_link_register,
-    handle_link_restart, handle_link_status, handle_link_stun, handle_vpn_disable,
-    handle_vpn_enable, handle_vpn_keygen, handle_vpn_status,
+    handle_link_restart, handle_link_services, handle_link_status, handle_link_stun,
+    handle_vpn_disable, handle_vpn_enable, handle_vpn_keygen, handle_vpn_status,
 };
 
 /// Build the axum router. Pulled out from `serve` so unit tests can
@@ -62,6 +62,7 @@ pub fn router() -> Router {
         .route("/api/link/qr/:token", get(link_qr_route))
         .route("/api/link/config", get(link_config_get_route))
         .route("/api/link/config", patch(link_config_patch_route))
+        .route("/api/link/services", get(link_services_route))
         .route("/api/restart", post(restart_route))
         .with_state(Arc::new(()))
 }
@@ -195,6 +196,10 @@ async fn link_qr_route(_state: State<Arc<()>>, Path(token): Path<String>) -> Res
 
 async fn link_config_get_route(_state: State<Arc<()>>) -> Response {
     reply_to_response(handle_link_config_get(Value::Null).await)
+}
+
+async fn link_services_route(_state: State<Arc<()>>) -> Response {
+    reply_to_response(handle_link_services(Value::Null).await)
 }
 
 async fn link_config_patch_route(

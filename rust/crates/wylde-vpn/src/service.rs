@@ -12,9 +12,9 @@ use wylde_shared::ipc::{register_action_with_meta, unregister_action};
 use crate::actions::{
     all_action_names, contract_metadata, handle_link_config_get, handle_link_config_patch,
     handle_link_connect, handle_link_pair, handle_link_peers, handle_link_peers_remove,
-    handle_link_qr, handle_link_register, handle_link_restart, handle_link_status,
-    handle_link_stun, handle_vpn_disable, handle_vpn_enable, handle_vpn_keygen, handle_vpn_status,
-    handler_module,
+    handle_link_qr, handle_link_register, handle_link_restart, handle_link_services,
+    handle_link_status, handle_link_stun, handle_vpn_disable, handle_vpn_enable,
+    handle_vpn_keygen, handle_vpn_status, handler_module,
 };
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -106,6 +106,12 @@ pub fn install() {
         "link.config.get",
         |p: Value| async move { handle_link_config_get(p).await },
         doc("link.config.get"),
+        module,
+    );
+    register_action_with_meta(
+        "link.services",
+        |p: Value| async move { handle_link_services(p).await },
+        doc("link.services"),
         module,
     );
     register_action_with_meta(

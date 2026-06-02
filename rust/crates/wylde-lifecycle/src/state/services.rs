@@ -671,8 +671,7 @@ pub async fn stop_ollama() -> Result<()> {
 // cases, all green). Set `WYLDE_WYLDE_HARNESS_IMPL=python` to
 // revert to the in-process Python driver during the rollback window.
 //
-// Unlike `wylde-vpn` (which has a Python subprocess to fall back
-// to), the Python harness "impl" is the in-process driver inside
+// The Python harness "impl" is the in-process driver inside
 // the existing Python harness service; when no Rust binary is
 // present we simply don't spawn — the Python harness pipe handles
 // `chat.*` calls as it always has. The strangler-fig switch happens
@@ -743,8 +742,11 @@ pub async fn stop_harness() -> Result<()> {
 // Phase 2 of the Rust migration. Phase 2.E (2026-05-24) flipped the
 // strangler-fig default from Python to Rust after Gateway's link
 // routes were cut over to the action-style pipe surface. The Python
-// `VPN/run.py` Flask service stays on disk for one release cycle as
-// the rollback path; set `WYLDE_WYLDE_VPN_IMPL=python` to revert.
+// `VPN/run.py` Flask service was DELETED 2026-06-02 once the shared
+// pipe server gained an HTTP route-table adapter and `wylde-vpn` wired
+// its `GET /api/link/*` routes onto it (route-table parity) — so this
+// is now rust-only with no Python fallback. The `WYLDE_WYLDE_VPN_IMPL`
+// selector no longer has a `python` target.
 
 pub async fn start_vpn() -> Result<()> {
     if is_service_alive(service_name::VPN) {
@@ -759,37 +761,26 @@ pub async fn start_vpn() -> Result<()> {
         return Ok(());
     }
     if nospawn_enabled() {
-        nospawn_record(
-            service_name::VPN,
-            impl_for_with_default(service_name::VPN, ImplLang::Rust).as_str(),
-        );
+        nospawn_record(service_name::VPN, ImplLang::Rust.as_str());
         tracing::info!("wylde-vpn: NO-SPAWN — would-have-spawned recorded; no child forked");
         return Ok(());
     }
-    let (child, impl_lang) = match impl_for_with_default(service_name::VPN, ImplLang::Rust) {
-        ImplLang::Rust => match rust_binary_path(service_name::VPN) {
-            Some(bin) => (spawn_rust_binary(service_name::VPN, &bin)?, ImplLang::Rust),
-            None => {
-                tracing::warn!(
-                    "wylde-vpn: rust impl requested (default after Phase 2.E) but no \
-                     binary found; falling back to python — build with \
-                     `cargo build --release -p wylde-vpn` to engage rust"
-                );
-                (spawn_python_script("VPN/run.py", service_name::VPN)?, ImplLang::Python)
-            }
-        },
-        ImplLang::Python => (
-            spawn_python_script("VPN/run.py", service_name::VPN)?,
-            ImplLang::Python,
-        ),
+    // Rust-only: the Python VPN tree was deleted, so there is no
+    // fallback impl. A missing binary means VPN simply doesn't start
+    // (dashboard paints it down) — warn loudly with the build command
+    // rather than spawning a Python service that no longer exists.
+    let Some(bin) = rust_binary_path(service_name::VPN) else {
+        tracing::warn!(
+            "wylde-vpn: no rust binary found (checked WYLDE_WYLDE_VPN_BIN, rust/bin/, \
+             rust/target/release/, rust/target/debug/); VPN will not start — the Python \
+             VPN service was removed, so build with `cargo build --release -p wylde-vpn`"
+        );
+        return Ok(());
     };
+    let child = spawn_rust_binary(service_name::VPN, &bin)?;
     let pid = child.id().unwrap_or(0);
-    tracing::info!(
-        "daemon: spawned wylde-vpn impl={} pid={}",
-        impl_lang.as_str(),
-        pid
-    );
-    record_spawn(service_name::VPN, pid, impl_lang.as_str());
+    tracing::info!("daemon: spawned wylde-vpn impl=rust pid={}", pid);
+    record_spawn(service_name::VPN, pid, ImplLang::Rust.as_str());
     set_service_proc(service_name::VPN, child);
     Ok(())
 }
@@ -927,10 +918,11 @@ pub async fn stop_trainer() -> Result<()> {
     stop_service(service_name::TRAINER, Duration::from_secs(10)).await
 }
 
-/// Spawn helper for `python <script-relative-to-WYLDE_ROOT>`. Mirrors the
-/// Python branch in `_start_wylde_vpn_python` — VPN's existing entry
-/// point is `VPN/run.py` (not a `-m module` invocation) so we need a
-/// script-path variant of `spawn_python_module`.
+/// Spawn helper for `python <script-relative-to-WYLDE_ROOT>` — the
+/// script-path variant of `spawn_python_module`, for Python entry points
+/// that are a path rather than a `-m module` (e.g. the trainer worker's
+/// `Trainer/Caption/rust_worker.py`). VPN used to use this for
+/// `VPN/run.py`, but that tree was deleted (rust-only now).
 fn spawn_python_script(script_rel: &str, service_name: &str) -> Result<Child> {
     let py = python_executable();
     let script = wylde_root().join(script_rel);

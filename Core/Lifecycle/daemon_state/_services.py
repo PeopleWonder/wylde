@@ -541,45 +541,6 @@ def _stop_wylde_ollama() -> None:
             pass
 
 
-def _start_wylde_vpn_python() -> None:
-    """Boot the Python WyldeLink VPN service (``python VPN/run.py``).
-
-    The Python service ships the Flask control plane on 127.0.0.1:8020
-    plus the existing tunnel/NAT/discovery side-cars.
-    """
-    cmd = [sys.executable, str(WYLDE_ROOT / "VPN" / "run.py")]
-    env = os.environ.copy()
-    env.setdefault("WYLDE_SERVICE_NAME", "wylde-vpn")
-    env.setdefault("WYLDE_ROOT", str(WYLDE_ROOT))
-    namespace_root = str(WYLDE_ROOT.parent)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        namespace_root + os.pathsep + existing if existing else namespace_root
-    )
-
-    creation_flags = 0
-    if sys.platform == "win32":
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
-
-    try:
-        _ds._vpn_proc = subprocess.Popen(
-            cmd,
-            cwd=str(WYLDE_ROOT),
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            creationflags=creation_flags,
-        )
-        _ds._record_spawn("wylde-vpn", _ds._vpn_proc.pid, impl="python")
-        _lc_logger.info(
-            "daemon: spawned wylde-vpn impl=python pid=%d", _ds._vpn_proc.pid
-        )
-    except Exception:  # noqa: BLE001
-        _lc_logger.exception("daemon: wylde-vpn spawn failed")
-        _ds._vpn_proc = None
-
-
 def _start_wylde_vpn_rust(rust_bin: Path) -> None:
     """Boot the Rust wylde-vpn binary at ``rust_bin``."""
     proc = _spawn_rust_service(service="wylde-vpn", rust_bin=rust_bin)
@@ -596,23 +557,19 @@ def _start_wylde_vpn_rust(rust_bin: Path) -> None:
 def _start_wylde_vpn() -> None:
     """Boot wylde-vpn as a subprocess of the Lifecycle daemon.
 
-    Dispatches to either the Python module or a Rust binary depending
-    on ``WYLDE_WYLDE_VPN_IMPL``. Phase 2.E (2026-05-24) flipped the
-    default from ``python`` to ``rust`` after Gateway's link routes
-    were cut over to the action-style pipe surface; the Python
-    ``VPN/run.py`` Flask service stays on disk for one release cycle
-    as the rollback path. Set ``WYLDE_WYLDE_VPN_IMPL=python`` to
-    revert. Falls back to Python with a warning if the Rust binary is
-    missing.
+    Rust-only since 2026-06-02: the Python ``VPN/run.py`` Flask service
+    was deleted once the shared pipe server gained an HTTP route-table
+    adapter and ``wylde-vpn`` wired its ``GET /api/link/*`` routes onto
+    it (route-table parity). There is no Python fallback — a missing
+    Rust binary means VPN simply doesn't start (the dashboard paints it
+    down). ``WYLDE_WYLDE_VPN_IMPL`` no longer has a ``python`` target.
 
     NO-SPAWN MODE (test/parity only — see the no-spawn warning in
     :mod:`Core.Lifecycle.daemon_state`): records a "would-have-spawned"
     handle and forks nothing.
     """
     if _ds.nospawn_enabled():
-        _ds._vpn_proc = _ds._NoSpawnProc(
-            "wylde-vpn", impl=_impl_for("wylde-vpn", default="rust")
-        )
+        _ds._vpn_proc = _ds._NoSpawnProc("wylde-vpn", impl="rust")
         _lc_logger.info(
             "wylde-vpn: NO-SPAWN — would-have-spawned recorded; no child forked"
         )
@@ -620,19 +577,16 @@ def _start_wylde_vpn() -> None:
     if _ds._vpn_proc is not None and _ds._vpn_proc.poll() is None:
         return  # already running
 
-    if _impl_for("wylde-vpn", default="rust") == "rust":
-        rust_bin = _rust_binary_path("wylde-vpn")
-        if rust_bin is None:
-            _lc_logger.warning(
-                "wylde-vpn: rust impl requested (default after Phase 2.E) but no "
-                "binary found; falling back to python — build with "
-                "`cargo build --release -p wylde-vpn` to engage rust"
-            )
-            _start_wylde_vpn_python()
-            return
-        _start_wylde_vpn_rust(rust_bin)
+    rust_bin = _rust_binary_path("wylde-vpn")
+    if rust_bin is None:
+        _lc_logger.warning(
+            "wylde-vpn: no rust binary found; VPN will not start — the Python "
+            "VPN service was removed, so build with "
+            "`cargo build --release -p wylde-vpn`"
+        )
+        _ds._vpn_proc = None
         return
-    _start_wylde_vpn_python()
+    _start_wylde_vpn_rust(rust_bin)
 
 
 def _stop_wylde_vpn() -> None:

@@ -186,10 +186,11 @@ _vram_broker_proc: Optional[_ProcHandle] = None
 _extension_bridge_proc: Optional[_ProcHandle] = None
 _gateway_proc: Optional[_ProcHandle] = None
 _ollama_proc: Optional[_ProcHandle] = None
-# Phase 2 — wylde-vpn. Phase 2.E (2026-05-24) flipped the strangler-fig
-# default to ``rust`` after Gateway's link routes were cut over to the
-# action-style pipe surface. Set ``WYLDE_WYLDE_VPN_IMPL=python`` to roll
-# back to ``VPN/run.py`` (still on disk for one release cycle).
+# Phase 2 — wylde-vpn. Rust-only since 2026-06-02: the Python
+# ``VPN/run.py`` Flask service was deleted once the shared pipe server
+# gained an HTTP route-table adapter and wylde-vpn wired its
+# ``GET /api/link/*`` routes onto it (route-table parity). No Python
+# fallback remains.
 _vpn_proc: Optional[_ProcHandle] = None
 # Phase 3 — wylde-trainer (Caption sub-service). Default
 # ``WYLDE_WYLDE_TRAINER_IMPL=python`` means in-process (no daemon-managed

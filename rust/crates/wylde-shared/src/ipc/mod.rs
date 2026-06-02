@@ -62,6 +62,7 @@
 
 pub mod actions;
 pub mod client;
+pub mod http_routes;
 pub mod observability;
 pub mod server;
 pub mod wire;
@@ -74,8 +75,11 @@ pub use self::actions::{
 pub use self::client::{
     call, call_action, register_handler, send, send_action, send_action_stream, send_with_verb,
 };
+pub use self::http_routes::{HttpHandler, HttpRequest, HttpResponse, HttpRouteTable};
 pub use self::observability::{log_call, payload_size};
-pub use self::server::{serve, serve_forever_background, supports_ipc, PipeServer};
+pub use self::server::{
+    serve, serve_forever_background, serve_with_http_routes, supports_ipc, PipeServer,
+};
 pub use self::wire::{
     decode_frame, decode_frame_async, encode_frame, pipe_name, write_frame, write_frame_async,
     ChunkFrame, EnvConfig, IpcError, Reply, IPC_VERSION, STREAM_HEARTBEAT_SECS,
