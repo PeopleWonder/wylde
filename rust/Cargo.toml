@@ -13,6 +13,7 @@ members = [
     "crates/wylde-harness",
     "crates/wylde-voice",
     "crates/wylde-treesitter",
+    "crates/wylde-ext-webcrawler",
     # `crates/wylde-memgraph` removed 2026-05-25 — the memgraph client is
     # an in-process submodule of `wylde-harness/src/memory/memgraph/` per
     # the one-crate harness convention; the bundled Neo4j JVM stays

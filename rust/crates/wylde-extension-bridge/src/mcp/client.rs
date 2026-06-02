@@ -206,7 +206,8 @@ impl McpClient {
     }
 }
 
-/// Substitute `${WYLDE_PYTHON}` / `${WYLDE_ROOT}` in a single argv slot.
+/// Substitute `${WYLDE_PYTHON}` / `${WYLDE_ROOT}` / `${WYLDE_BIN}` in a single
+/// argv slot.
 ///
 /// the Wylde user's memory `wylde_py3_resolves_to_python_314` reminds us never
 /// to assume `python` on PATH is the .venv interpreter. mcp-server.json
@@ -214,11 +215,24 @@ impl McpClient {
 /// host can rewrite it to the actual .venv interpreter at spawn time.
 /// If the env var is unset, falls back to `<WYLDE_ROOT>/.venv/Scripts/python.exe`
 /// on Windows, otherwise to the literal `python3`.
+///
+/// `${WYLDE_BIN}` resolves to the directory holding the built Rust service
+/// binaries so a manifest can point its `command` at a native sidecar — e.g.
+/// `["${WYLDE_BIN}/wylde-ext-webcrawler.exe"]` — exactly as the Python
+/// extensions point at `${WYLDE_PYTHON}` today. This is the host-side
+/// prerequisite for the legacy-extensions Rust rewrite (Slice 3 flips the
+/// Webcrawler manifest to use it); see
+/// `docs/plans/legacy-extensions-rust-rewrite.md`. If `WYLDE_BIN` is unset it
+/// falls back to `<WYLDE_ROOT>/rust/target/release`.
 fn resolve_placeholders(s: &str) -> String {
     let mut out = s.to_owned();
     if out.contains("${WYLDE_PYTHON}") {
         let py = std::env::var("WYLDE_PYTHON").unwrap_or_else(|_| default_python());
         out = out.replace("${WYLDE_PYTHON}", &py);
+    }
+    if out.contains("${WYLDE_BIN}") {
+        let bin = std::env::var("WYLDE_BIN").unwrap_or_else(|_| default_bin_dir());
+        out = out.replace("${WYLDE_BIN}", &bin);
     }
     if out.contains("${WYLDE_ROOT}") {
         let root = std::env::var("WYLDE_ROOT").unwrap_or_else(|_| ".".to_string());
@@ -233,5 +247,49 @@ fn default_python() -> String {
         format!("{root}\\.venv\\Scripts\\python.exe")
     } else {
         format!("{root}/.venv/bin/python3")
+    }
+}
+
+/// Default directory for built Rust service binaries when `WYLDE_BIN` is unset:
+/// `<WYLDE_ROOT>/rust/target/release` (the cargo release output dir).
+fn default_bin_dir() -> String {
+    let root = std::env::var("WYLDE_ROOT").unwrap_or_else(|_| ".".to_string());
+    if cfg!(windows) {
+        format!("{root}\\rust\\target\\release")
+    } else {
+        format!("{root}/rust/target/release")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_placeholders;
+
+    #[test]
+    fn wylde_bin_token_resolves_to_env_when_set() {
+        // SAFETY: single-threaded test; restore after.
+        std::env::set_var("WYLDE_BIN", "/opt/wylde/bin");
+        let out = resolve_placeholders("${WYLDE_BIN}/wylde-ext-webcrawler");
+        assert_eq!(out, "/opt/wylde/bin/wylde-ext-webcrawler");
+        std::env::remove_var("WYLDE_BIN");
+    }
+
+    #[test]
+    fn wylde_bin_token_falls_back_to_release_dir() {
+        std::env::remove_var("WYLDE_BIN");
+        std::env::set_var("WYLDE_ROOT", "/repo");
+        let out = resolve_placeholders("${WYLDE_BIN}/x");
+        let want = if cfg!(windows) {
+            "/repo\\rust\\target\\release/x"
+        } else {
+            "/repo/rust/target/release/x"
+        };
+        assert_eq!(out, want);
+        std::env::remove_var("WYLDE_ROOT");
+    }
+
+    #[test]
+    fn argv_without_tokens_is_unchanged() {
+        assert_eq!(resolve_placeholders("plain/arg --flag"), "plain/arg --flag");
     }
 }

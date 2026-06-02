@@ -1,0 +1,48 @@
+[package]
+name = "wylde-ext-webcrawler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wylde-ext-webcrawler"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# Pre-build guard — fails the build loud if `wylde-ext-webcrawler.exe` is
+# still alive in the process table. Windows holds an exclusive sharing lock
+# on a running binary; without the guard the linker fails opaquely with
+# `os error 32` deep into a build. Same shape as every other service crate.
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+# HTTP egress (direct-reqwest dev fallback only — the canonical path routes
+# through the Rust Gateway over its pipe via `wylde_shared::ipc`). Mirror the
+# feature set `wylde-gateway` uses so there's a single reqwest build in the
+# tree: rustls (no system OpenSSL), JSON helpers.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# HTML parse + CSS selection — the `scraper` crate (html5ever + selectors),
+# the pure-Rust replacement for the Python `beautifulsoup4` (`soup.select`).
+# New workspace dep (plan risk #7); well-trodden, no C deps.
+scraper = "0.20"
+
+# URL parsing for the SSRF guard — re-exported by reqwest but pinned
+# explicitly so the host-extraction logic doesn't depend on a transitive.
+url = "2"
+
+[dev-dependencies]
+tempfile = "3"
