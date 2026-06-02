@@ -1,21 +1,27 @@
-//! `voice.synthesize` — phoneme string → WAV bytes (Kokoro TTS).
+//! `voice.synthesize` — text *or* phoneme string → WAV bytes (Kokoro TTS).
 //!
-//! ## Slice 11.B scope
+//! ## Scope
 //!
-//! End-to-end on the *phoneme* side: tokenise the input phoneme string,
-//! slice the per-length style row out of `voices.npz`, run one Kokoro
-//! ONNX inference pass, peak-normalise, pack into a 16-bit PCM WAV.
-//! Reply mirrors [`crate::actions::transcribe`]: latency + device +
-//! audio metadata fields.
+//! End-to-end TTS: accept either plain English `text` (phonemised in
+//! pure Rust via [`crate::synth::g2p`], Slice 2) or an explicit
+//! `phonemes` string, tokenise it, slice the per-length style row out of
+//! `voices.npz`, run one Kokoro ONNX inference pass, peak-normalise,
+//! pack into a 16-bit PCM WAV. Reply mirrors [`crate::actions::transcribe`]:
+//! latency + device + audio metadata fields.
 //!
-//! ## What this slice does NOT do
+//! ## Slice 2 — text path (G2P) landed
 //!
-//! * Accept raw English text. Reproducing the Python `phonemize` step
-//!   in Rust needs an espeak-ng dep (FFI or subprocess) — deliberately
-//!   deferred so the Slice 11.B landing stays focused. While the
-//!   strangler-fig has `WYLDE_WYLDE_VOICE_IMPL=python` as the default
-//!   the Python orchestrator owns the text-side phonemisation; this
-//!   action only handles the deterministic ONNX half.
+//! Slice 11.B shipped the deterministic *phoneme* half only; the
+//! `text → phonemes` step ran Python-side (`models.synthesize` →
+//! `Voice/synthesize.py` → `kokoro_onnx` → espeak-ng). Slice 2 ports
+//! that step to Rust ([`crate::synth::g2p`], built on `misaki-rs` — the
+//! Rust port of Kokoro's own *misaki* phonemiser), so this action now
+//! speaks arbitrary assistant text without any Python dependency. A
+//! `phonemes` field is still honoured (and takes precedence) for direct
+//! callers and parity tests.
+//!
+//! ## What this action still does NOT do
+//!
 //! * Auto-load voices that aren't in the snapshot's `voices.npz`.
 //!   `Voice/download_models.py` builds the bundle; that has to have
 //!   run before first-call.
@@ -40,7 +46,10 @@ use crate::lease;
 use crate::state;
 use crate::synth::kokoro::{KokoroInferError, KokoroLoadError, KokoroSynth};
 use crate::synth::voices::{VoiceStyle, Voices, VoicesLoadError};
-use crate::synth::{encode_base64, encode_wav_kokoro, pad_with_zero, split_phonemes, tokenize};
+use crate::synth::{
+    british_for_voice, encode_base64, encode_wav_kokoro, pad_with_zero, split_phonemes,
+    text_to_phonemes, tokenize,
+};
 use crate::synth::vocab::{KOKORO_SAMPLE_RATE, MAX_PHONEME_LENGTH};
 
 /// Default voice when the payload doesn't specify one. Matches the
@@ -52,36 +61,10 @@ const DEFAULT_VOICE: &str = "af_heart";
 /// `kokoro_onnx.Kokoro.create`'s default of 1.0.
 const DEFAULT_SPEED: f32 = 1.0;
 
-/// `voice.synthesize` payload schema:
-/// ```jsonc
-/// {
-///   "phonemes":  "həlˈoʊ",     // required for Slice 11.B (text path defers)
-///   "voice":     "af_heart",    // optional, defaults to WYLDE_VOICE_TTS_VOICE
-///   "speed":     1.0            // optional, defaults to 1.0 (clamped [0.5, 2.0])
-/// }
-/// ```
-pub async fn handle_synthesize(payload: Value) -> Reply {
-    // Phase 11.B: phonemes-only. A `text` field here will be rejected
-    // with a pointed error so callers don't silently lose the
-    // text→phonemes step — Phase 11.B+ wires that.
-    if payload.get("text").is_some() && payload.get("phonemes").is_none() {
-        return Reply::err(invalid_request(
-            "voice.synthesize requires `phonemes` (Slice 11.B is phoneme-only — text path \
-             defers to 11.B+ pending espeak-ng wiring). Phonemise upstream and resend.",
-        ));
-    }
-
-    let phonemes = match payload.get("phonemes").and_then(Value::as_str) {
-        Some(s) if !s.trim().is_empty() => s.to_owned(),
-        _ => {
-            return Reply::err(invalid_request(
-                "payload.phonemes is required (non-empty string)",
-            ));
-        }
-    };
-
-    let cfg = Config::get();
-    let voice_name = payload
+/// Resolve the voice name from the payload, falling back to the
+/// configured `WYLDE_VOICE_TTS_VOICE` and then [`DEFAULT_VOICE`].
+fn resolve_voice_name(payload: &Value, cfg: &Config) -> String {
+    payload
         .get("voice")
         .and_then(Value::as_str)
         .map(str::trim)
@@ -93,13 +76,78 @@ pub async fn handle_synthesize(payload: Value) -> Reply {
             } else {
                 cfg.tts_voice.clone()
             }
-        });
-    let speed_raw = payload
+        })
+}
+
+/// Resolve the (clamped) speed multiplier from the payload.
+fn resolve_speed(payload: &Value) -> f32 {
+    payload
         .get("speed")
         .and_then(Value::as_f64)
         .map(|s| s as f32)
-        .unwrap_or(DEFAULT_SPEED);
-    let speed = speed_raw.clamp(0.5, 2.0);
+        .unwrap_or(DEFAULT_SPEED)
+        .clamp(0.5, 2.0)
+}
+
+/// Resolve the phoneme string a synth call should render.
+///
+/// Accepts either:
+/// * an explicit `phonemes` string — used verbatim (the path direct
+///   callers and parity tests rely on); takes precedence when present, or
+/// * plain `text` — phonemised in-process via [`crate::synth::g2p`]
+///   (Slice 2). `voice` selects the G2P dialect (British `b…` voices →
+///   en-GB).
+///
+/// Returns `invalid_request` when neither is supplied (or the supplied
+/// one is blank / phonemises to nothing).
+fn resolve_phonemes(payload: &Value, voice: &str) -> Result<String, IpcError> {
+    if let Some(raw) = payload.get("phonemes").and_then(Value::as_str) {
+        if raw.trim().is_empty() {
+            return Err(invalid_request(
+                "payload.phonemes is required (non-empty string)",
+            ));
+        }
+        return Ok(raw.to_owned());
+    }
+    if let Some(text) = payload.get("text").and_then(Value::as_str) {
+        if text.trim().is_empty() {
+            return Err(invalid_request(
+                "payload.text is required (non-empty string)",
+            ));
+        }
+        let phonemes = text_to_phonemes(text, british_for_voice(voice));
+        if phonemes.trim().is_empty() {
+            return Err(invalid_request(
+                "text produced no phonemes (G2P) — nothing to synthesize",
+            ));
+        }
+        return Ok(phonemes);
+    }
+    Err(invalid_request(
+        "payload requires `text` or `phonemes` (non-empty string)",
+    ))
+}
+
+/// `voice.synthesize` payload schema (supply `text` *or* `phonemes`):
+/// ```jsonc
+/// {
+///   "text":      "Hello there",  // English text — phonemised via G2P (Slice 2)
+///   "phonemes":  "həlˈoʊ",       // OR explicit IPA; takes precedence if both given
+///   "voice":     "af_heart",     // optional, defaults to WYLDE_VOICE_TTS_VOICE
+///   "speed":     1.0             // optional, defaults to 1.0 (clamped [0.5, 2.0])
+/// }
+/// ```
+pub async fn handle_synthesize(payload: Value) -> Reply {
+    let cfg = Config::get();
+    let voice_name = resolve_voice_name(&payload, cfg);
+    let speed = resolve_speed(&payload);
+
+    // Slice 2: accept plain `text` (phonemised in Rust via misaki-rs) as
+    // well as an explicit `phonemes` string. Dialect follows the voice.
+    let phonemes = match resolve_phonemes(&payload, &voice_name) {
+        Ok(p) => p,
+        Err(e) => return Reply::err(e),
+    };
 
     let token_result = tokenize(&phonemes);
     if token_result.tokens.is_empty() {
@@ -211,49 +259,18 @@ pub async fn handle_synthesize(payload: Value) -> Reply {
 /// header), so the consumer can concatenate them by skipping every
 /// non-first WAV header, or just decode + queue them as separate clips.
 pub async fn handle_synthesize_stream(payload: Value, sender: StreamSender) {
-    if payload.get("text").is_some() && payload.get("phonemes").is_none() {
-        let _ = sender // wylde-check: discard-result-ok
-            .send(Err(invalid_request(
-                "voice.synthesize_stream requires `phonemes` (Slice 11.B is phoneme-only — \
-                 text path defers to 11.B+ pending espeak-ng wiring). Phonemise upstream \
-                 and resend.",
-            )))
-            .await;
-        return;
-    }
+    let cfg = Config::get();
+    let voice_name = resolve_voice_name(&payload, cfg);
+    let speed = resolve_speed(&payload);
 
-    let phonemes = match payload.get("phonemes").and_then(Value::as_str) {
-        Some(s) if !s.trim().is_empty() => s.to_owned(),
-        _ => {
-            let _ = sender // wylde-check: discard-result-ok
-                .send(Err(invalid_request(
-                    "payload.phonemes is required (non-empty string)",
-                )))
-                .await;
+    // Slice 2: accept plain `text` (G2P) as well as explicit `phonemes`.
+    let phonemes = match resolve_phonemes(&payload, &voice_name) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = sender.send(Err(e)).await; // wylde-check: discard-result-ok
             return;
         }
     };
-
-    let cfg = Config::get();
-    let voice_name = payload
-        .get("voice")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_owned())
-        .unwrap_or_else(|| {
-            if cfg.tts_voice.is_empty() {
-                DEFAULT_VOICE.to_owned()
-            } else {
-                cfg.tts_voice.clone()
-            }
-        });
-    let speed_raw = payload
-        .get("speed")
-        .and_then(Value::as_f64)
-        .map(|s| s as f32)
-        .unwrap_or(DEFAULT_SPEED);
-    let speed = speed_raw.clamp(0.5, 2.0);
 
     let chunks = split_phonemes(&phonemes);
     if chunks.is_empty() {
@@ -569,15 +586,34 @@ mod tests {
         assert_eq!(r.error.unwrap().code, "invalid_request");
     }
 
-    #[tokio::test]
-    async fn synthesize_rejects_text_with_pointer_to_phonemes() {
-        // Until 11.B+ wires phonemisation, text-only input must fail
-        // with the clear pointer.
-        let r = handle_synthesize(json!({"text": "Hello world"})).await;
-        assert!(!r.ok);
-        let err = r.error.unwrap();
+    #[test]
+    fn resolve_phonemes_accepts_text_via_g2p() {
+        // Slice 2: plain text is now phonemised in-process rather than
+        // rejected. The resolver returns a non-empty IPA string that
+        // tokenises to real Kokoro tokens.
+        let ph = resolve_phonemes(&json!({"text": "Hello world"}), "af_heart")
+            .expect("text should phonemise");
+        assert!(!ph.trim().is_empty(), "G2P produced nothing: {ph:?}");
+        assert!(!tokenize(&ph).tokens.is_empty(), "no tokens from {ph:?}");
+    }
+
+    #[test]
+    fn resolve_phonemes_prefers_explicit_phonemes() {
+        // When both are supplied, the explicit phoneme string wins (the
+        // parity-test / direct-caller path) — text is not re-phonemised.
+        let ph = resolve_phonemes(
+            &json!({"text": "ignored", "phonemes": "həlˈoʊ"}),
+            "af_heart",
+        )
+        .expect("explicit phonemes accepted");
+        assert_eq!(ph, "həlˈoʊ");
+    }
+
+    #[test]
+    fn resolve_phonemes_errors_when_neither_field_present() {
+        let err = resolve_phonemes(&json!({"voice": "af_heart"}), "af_heart")
+            .expect_err("no text/phonemes → error");
         assert_eq!(err.code, "invalid_request");
-        assert!(err.message.contains("phonemes"), "{}", err.message);
     }
 
     #[tokio::test]
@@ -608,14 +644,14 @@ mod tests {
         assert!(rx.recv().await.is_none());
     }
 
-    #[tokio::test]
-    async fn synthesize_stream_rejects_text_with_pointer_to_phonemes() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        handle_synthesize_stream(json!({"text": "Hello world"}), tx).await;
-        let chunk = rx.recv().await.expect("at least one chunk");
-        let err = chunk.expect_err("text-only payload should be rejected");
-        assert_eq!(err.code, "invalid_request");
-        assert!(err.message.contains("phonemes"), "{}", err.message);
+    #[test]
+    fn resolve_phonemes_british_voice_uses_gb_dialect() {
+        // A `b…` voice routes through the en-GB lexicon. We don't assert
+        // exact phonemes (dialect tables differ) — just that both dialects
+        // produce in-vocab tokens, exercising the GB engine init path.
+        let gb = resolve_phonemes(&json!({"text": "schedule"}), "bf_emma")
+            .expect("GB text phonemises");
+        assert!(!tokenize(&gb).tokens.is_empty(), "no GB tokens: {gb:?}");
     }
 
     #[tokio::test]

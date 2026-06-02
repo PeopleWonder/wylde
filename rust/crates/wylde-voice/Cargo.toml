@@ -96,6 +96,16 @@ async-trait = "0.1"
 # / wylde-vpn use, so there's no extra build cost).
 base64 = "0.22"
 
+# Grapheme-to-phoneme (G2P) for the TTS text path (Slice 2 —
+# `docs/plans/voice-rust-port.md`). `misaki-rs` is the Rust port of
+# *misaki*, Kokoro's own reference G2P engine, so its IPA output lands
+# squarely in our Kokoro phoneme vocab (`synth::vocab`). `default-features
+# = false` drops the optional `espeak-rs` (C FFI) fallback — keeping the
+# build pure-Rust per the everything-Rust rule; OOV words spell out
+# letter-by-letter instead. Lexicons + POS tagger are embedded at compile
+# time, so there's no runtime resource dependency (and no Python).
+misaki-rs = { version = "0.3.0", default-features = false }
+
 # Wake-word bundle downloader (Slice 11.E+ — `wakeword::download`).
 # Shells-out-to-curl was rejected by `wylde_check` rule 31
 # (no_external_process_spawn_rust). A native HTTP client keeps the

@@ -56,10 +56,12 @@ pub fn register(reg: &mut Registry) {
         "voice_synthesize",
         "voice.synthesize",
         "voice",
-        "Text-to-speech via Kokoro. Phonemes → 16-bit PCM WAV (base64). \
-         Slice 11.B+ is phoneme-only; text path defers pending espeak-ng.",
+        "Text-to-speech via Kokoro → 16-bit PCM WAV (base64). Pass `text` \
+         (phonemised in Rust via misaki-rs G2P) or an explicit `phonemes` \
+         IPA string (takes precedence).",
         vec![
-            param("phonemes", "string", true, "IPA phoneme string (espeak-ng en-us)."),
+            param("text", "string", false, "English text to speak (G2P'd to phonemes)."),
+            param("phonemes", "string", false, "Explicit IPA phoneme string (overrides text)."),
             param_default("voice", "string", "Kokoro voice name", json!("af_heart")),
             param_default("speed", "number", "Playback rate multiplier [0.5, 2.0]", json!(1.0)),
         ],
@@ -87,11 +89,12 @@ pub fn register(reg: &mut Registry) {
         "voice_synthesize_stream",
         "voice.synthesize_stream",
         "voice",
-        "Streaming Kokoro TTS. Same payload as voice.synthesize. \
-         Aggregator bridge — collects synthesize_start + audio_chunks + \
-         synthesize_complete into one reply.",
+        "Streaming Kokoro TTS. Same payload as voice.synthesize (`text` or \
+         `phonemes`). Aggregator bridge — collects synthesize_start + \
+         audio_chunks + synthesize_complete into one reply.",
         vec![
-            param("phonemes", "string", true, "IPA phoneme string (espeak-ng en-us)."),
+            param("text", "string", false, "English text to speak (G2P'd to phonemes)."),
+            param("phonemes", "string", false, "Explicit IPA phoneme string (overrides text)."),
             param_default("voice", "string", "Kokoro voice name", json!("af_heart")),
             param_default("speed", "number", "Playback rate multiplier [0.5, 2.0]", json!(1.0)),
         ],

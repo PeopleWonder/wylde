@@ -13,8 +13,11 @@
 //!   to the broadcast for the call, collects into a Vec<i16>, returns.
 //!   A process-wide cancel signal lets `voice.end_session` early-terminate.
 //! * [`CpalPlayback`] — Thin wrapper over [`crate::playback::play_blocking`].
-//! * [`HarnessIpcClient`] — Routes the three harness calls (`models.transcribe`,
-//!   `chat.run_turn`, `models.synthesize`) over the shared IPC primitive.
+//! * [`HarnessIpcClient`] — Routes STT (`models.transcribe`) and the chat
+//!   turn (`chat.run_turn`) over the shared IPC primitive. TTS is handled
+//!   in-process (Slice 2): `synthesize` calls this crate's own
+//!   `voice.synthesize` handler — Rust G2P (`synth::g2p`) + local Kokoro —
+//!   instead of round-tripping to the Python harness `models.synthesize`.
 //!   Conversation resolution falls back to `conversations.list` and picks
 //!   the most recent entry — mirrors `Voice/orchestrator.py::_resolve_conversation`.
 
@@ -223,18 +226,20 @@ impl HarnessChat for HarnessIpcClient {
     }
 
     async fn synthesize(&self, text: &str) -> Result<SynthResult, HarnessCallError> {
-        let reply = send_action(
-            &self.service,
-            "models.synthesize",
-            json!({"text": text}),
-        )
-        .await;
+        // Slice 2: TTS is now Rust-native. The text→phoneme step (G2P)
+        // lives in `crate::synth::g2p` (misaki-rs) and Kokoro inference is
+        // owned by this crate, so the orchestrator no longer round-trips
+        // to the Python harness `models.synthesize` (which phonemised via
+        // espeak-ng). We call the in-process `voice.synthesize` handler
+        // directly — it returns a base64 WAV in `audio`, which the
+        // orchestrator's `decode_wav_to_i16` consumes.
+        let reply = crate::actions::synthesize::handle_synthesize(json!({"text": text})).await;
         if !reply.ok {
-            return Err(HarnessCallError(format_reply_error(&reply, "models.synthesize")));
+            return Err(HarnessCallError(format_reply_error(&reply, "voice.synthesize")));
         }
         let audio_b64 = reply
             .data
-            .get("audio_b64")
+            .get("audio")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
@@ -242,7 +247,7 @@ impl HarnessChat for HarnessIpcClient {
             .data
             .get("sample_rate")
             .and_then(Value::as_u64)
-            .unwrap_or(24_000) as u32;
+            .unwrap_or(u64::from(crate::synth::vocab::KOKORO_SAMPLE_RATE)) as u32;
         Ok(SynthResult {
             audio_b64,
             sample_rate,
