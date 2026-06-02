@@ -301,6 +301,24 @@ pub async fn list_models() -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// `ollama.eject` — release a model from VRAM immediately (empty-prompt
+/// `/api/generate` with `keep_alive=0` on the harness side).  Used by the
+/// InferenceBar's eject button.  Requires a concrete model name; the
+/// "(auto)" selection has none, so the button is disabled in that state.
+pub async fn eject_model(model: &str) -> Result<(), String> {
+    wylde_gui_pipe::call(
+        "wylde-ollama",
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "ollama.eject",
+            "payload": { "model": model },
+        })),
+    )
+    .await
+    .map(|_| ())
+}
+
 /// `memory.workspaces.recent` — MRU-clipped workspace list for the
 /// InferenceBar dropdown.
 pub async fn recent_workspaces(limit: u32) -> Result<Vec<WorkspaceSummary>, String> {
@@ -575,6 +593,7 @@ mod tests {
     #[test]
     fn each_pipe_call_compiles() {
         let _ = start_turn;
+        let _ = eject_model;
         let _ = recent_workspaces;
         let _ = activate_workspace;
         let _ = respond_consent;

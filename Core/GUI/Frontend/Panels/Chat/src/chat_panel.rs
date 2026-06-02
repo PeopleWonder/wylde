@@ -43,7 +43,7 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::ipc::{
-    activate_workspace, cancel_turn, list_models, recent_workspaces, respond_consent,
+    activate_workspace, cancel_turn, eject_model, list_models, recent_workspaces, respond_consent,
     start_turn_with_model, stream_consent_pending, stream_tools, stream_turn, ConsentEvent,
     PendingConsent, ToolChunk, TurnChunk, WorkspaceSummary,
 };
@@ -145,6 +145,9 @@ pub struct ChatPanel {
     pub models: Vec<String>,
     pub active_model: Option<String>,
     pub show_model_dropdown: bool,
+    /// In-flight latch for the eject button — set while an `ollama.eject`
+    /// round-trip is pending so the button dims and ignores re-clicks.
+    pub ejecting: bool,
     pub pending_consents: BTreeMap<String, PendingConsent>,
     pub error: Option<String>,
     /// Synchronous in-flight latch covering the window between a submit
@@ -193,6 +196,7 @@ impl ChatPanel {
             models: Vec::new(),
             active_model: None,
             show_model_dropdown: false,
+            ejecting: false,
             pending_consents: BTreeMap::new(),
             error: None,
             starting: false,
@@ -723,6 +727,33 @@ impl ChatPanel {
         cx.notify();
     }
 
+    /// Eject the active model from VRAM via `ollama.eject`.  No-op when
+    /// no concrete model is selected ("(auto)") or an eject is already in
+    /// flight — the button is dimmed in both states, this guards the
+    /// programmatic path.  Frontend-only: reuses the existing harness verb.
+    pub fn eject_active_model(&mut self, cx: &mut Context<Self>) {
+        let Some(model) = self.active_model.clone() else {
+            return;
+        };
+        if self.ejecting {
+            return;
+        }
+        self.ejecting = true;
+        self.error = None;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = eject_model(&model).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.ejecting = false;
+                if let Err(e) = outcome {
+                    panel.error = Some(format!("eject {model}: {e}"));
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Move keyboard focus to the prompt input.  Used after a dropdown
     /// picker closes so typing resumes immediately — without it the
     /// focus stayed on the (now-hidden) dropdown row and the next
@@ -1181,6 +1212,43 @@ fn pill_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
                 this.toggle_model_dropdown(cx);
             }),
         ))
+        .child(eject_button(panel, cx))
+}
+
+/// Eject button — releases the active model from VRAM via `ollama.eject`.
+/// Enabled only when a concrete model is selected (not "(auto)") and no
+/// eject is in flight; dimmed + click-inert otherwise.  Sits to the right
+/// of the model pill in the InferenceBar row.
+fn eject_button(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
+    // Enabled iff we have a concrete model name to send and aren't already
+    // mid-eject.  "(auto)" has no name → nothing to release → disabled.
+    let enabled = panel.active_model.is_some() && !panel.ejecting;
+    let (text_color, border_color) = if enabled {
+        (rgb(pack(TEXT_SECONDARY)), rgb(pack(BORDER_SUBTLE)))
+    } else {
+        (rgb(pack(TEXT_MUTED)), rgb(pack(BORDER_SUBTLE)))
+    };
+    let mut btn = div()
+        .id(ElementId::Name("chat-model-eject".into()))
+        .px_3()
+        .py_1()
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(border_color)
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(text_color)
+        // ⏏ eject glyph; trailing "…" while the round-trip is in flight.
+        .child(SharedString::from(if panel.ejecting { "⏏ …" } else { "⏏" }));
+    if enabled {
+        btn = btn.cursor_pointer().on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+                this.eject_active_model(cx);
+            }),
+        );
+    }
+    btn
 }
 
 fn pill_button<F>(id: ElementId, label: SharedString, listener: F) -> Stateful<gpui::Div>
