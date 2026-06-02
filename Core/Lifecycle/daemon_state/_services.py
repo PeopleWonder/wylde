@@ -129,8 +129,11 @@ def _start_device_gate() -> None:
     """Boot device_gate as a subprocess of the Lifecycle daemon.
 
     Dispatches to either the Python module or a Rust binary depending
-    on ``WYLDE_WYLDE_DEVICE_GATE_IMPL`` (default ``python``). Falls back
-    to Python with a warning if the Rust binary is missing.
+    on ``WYLDE_WYLDE_DEVICE_GATE_IMPL`` (default ``rust`` since 2026-06-02 —
+    the Rust ``wylde-device-gate`` is the canonical verifier and has byte
+    parity with the Python ``device_gate/`` module). Falls back to Python
+    with a warning if the Rust binary is missing; set the env var to
+    ``python`` to force the (rollback-only) Python module.
 
     NO-SPAWN MODE (test/parity only — see the no-spawn warning in
     :mod:`Core.Lifecycle.daemon_state`): records a "would-have-spawned"
@@ -138,7 +141,7 @@ def _start_device_gate() -> None:
     """
     if _ds.nospawn_enabled():
         _ds._device_gate_proc = _ds._NoSpawnProc(
-            "wylde-device-gate", impl=_impl_for("wylde-device-gate")
+            "wylde-device-gate", impl=_impl_for("wylde-device-gate", default="rust")
         )
         _lc_logger.info(
             "device_gate: NO-SPAWN — would-have-spawned recorded; no child forked"
@@ -147,7 +150,7 @@ def _start_device_gate() -> None:
     if _ds._device_gate_proc is not None and _ds._device_gate_proc.poll() is None:
         return
 
-    if _impl_for("wylde-device-gate") == "rust":
+    if _impl_for("wylde-device-gate", default="rust") == "rust":
         rust_bin = _rust_binary_path("wylde-device-gate")
         if rust_bin is None:
             _lc_logger.warning(
