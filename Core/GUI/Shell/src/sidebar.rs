@@ -24,6 +24,7 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::nav::{NavOrigin, NavRow};
 use crate::pack::pack;
+use crate::resource_meter::{render_resource_meter, ResourceSnapshot};
 use crate::shell_root::Shell;
 
 /// Width of the expanded sidebar.  Matches the Svelte `w-52`
@@ -36,12 +37,17 @@ pub const SIDEBAR_WIDTH: f32 = 208.0;
 pub fn render_sidebar(
     rows: &[NavRow],
     selected_key: Option<&str>,
+    resources: Option<&ResourceSnapshot>,
     _window: &mut Window,
     cx: &mut Context<Shell>,
 ) -> Stateful<gpui::Div> {
     let header = brand_header();
+    // `flex_1` lets the nav column eat the slack so the resource meter
+    // below pins to the bottom of the sidebar rather than floating up
+    // under the last nav row.
     let mut nav = div()
         .id("wylde-sidebar-nav")
+        .flex_1()
         .flex()
         .flex_col()
         .gap_1()
@@ -66,6 +72,7 @@ pub fn render_sidebar(
         .border_color(rgb(pack(BORDER_SUBTLE)))
         .child(header)
         .child(nav)
+        .child(render_resource_meter(resources))
 }
 
 /// Brand header — the "Wylde" wordmark sits at the top of the sidebar,

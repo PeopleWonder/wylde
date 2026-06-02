@@ -9,6 +9,7 @@
 pub mod assets;
 pub mod nav;
 pub mod pack;
+pub mod resource_meter;
 pub mod shell_root;
 pub mod shutdown;
 pub mod sidebar;

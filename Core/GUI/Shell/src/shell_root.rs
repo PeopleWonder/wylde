@@ -25,6 +25,7 @@ use wylde_panel_registry::{PanelEntry, PanelOrigin, PanelRegistry, PanelSource};
 use wylde_webview::IframeHost;
 
 use crate::nav::{NavModel, NavOrigin, NavRow, SlotState};
+use crate::resource_meter::{ResourceSnapshot, SVC_BROKER};
 use crate::sidebar::render_sidebar;
 use crate::slot::{render_slot, start_service_action, IframeFrame};
 
@@ -35,6 +36,12 @@ use crate::slot::{render_slot, start_service_action, IframeFrame};
 /// 5 s refresh order-of-magnitude; 3 s here keeps the cold-start
 /// "unavailable" flash short.
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+/// How often [`Shell::spawn_resource_meter`] re-reads the VRAM broker's
+/// `system.inventory` to refresh the sidebar's VRAM/RAM footer.  Matches
+/// the Dashboard hardware card's 5 s cadence so the two surfaces tick in
+/// lock-step and never disagree by more than one interval.
+const RESOURCE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Where the iframe's URL-reachability probe lives in its lifecycle.
 ///
@@ -87,6 +94,10 @@ pub struct Shell {
     /// iframe panel; kept across selections so a flip back to a
     /// previously-mounted iframe is instant.
     pub iframes: BTreeMap<String, IframeState>,
+    /// Last hardware snapshot from the VRAM broker, rendered in the
+    /// sidebar footer.  `None` until the first `system.inventory` reply
+    /// lands (cold start) — the footer shows em-dashes meanwhile.
+    pub resources: Option<ResourceSnapshot>,
 }
 
 impl Shell {
@@ -105,6 +116,7 @@ impl Shell {
             nav: NavModel::new(rows, None),
             mounted: BTreeMap::new(),
             iframes: BTreeMap::new(),
+            resources: None,
         }
     }
 
@@ -169,6 +181,57 @@ impl Shell {
             })
             .detach();
         }
+    }
+
+    /// Spawn the long-lived poll that feeds the sidebar's VRAM/RAM
+    /// footer.  Reuses the existing `system.inventory` verb the Dashboard
+    /// already calls on `wylde-vram-broker` — no new IPC surface — and
+    /// re-reads every [`RESOURCE_POLL_INTERVAL`] for the Shell's lifetime.
+    ///
+    /// Soft-fails: a probe that can't reach the broker (cold start, the
+    /// broker bounced) leaves the previous snapshot in place rather than
+    /// blanking the meter, so a momentary outage doesn't flicker the
+    /// footer to em-dashes.  Until the *first* successful read the field
+    /// is `None`, which the footer renders as "—".
+    ///
+    /// Same gpui-executor discipline as [`Self::spawn_health_probes`]:
+    /// the wire IO hops to the pipe's tokio bridge and the inter-poll
+    /// wait uses gpui's native timer (the executor has no tokio reactor).
+    pub fn spawn_resource_meter(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| loop {
+            let snapshot = match wylde_gui_pipe::call(
+                SVC_BROKER,
+                "POST",
+                "/__action__",
+                Some(serde_json::json!({ "action": "system.inventory", "payload": {} })),
+            )
+            .await
+            {
+                Ok(v) => Some(ResourceSnapshot::from_inventory_value(&v)),
+                Err(_) => None,
+            };
+            let alive = this
+                .update(app_cx, |this, cx| {
+                    // Keep the last good snapshot on a failed probe.
+                    if let Some(s) = snapshot {
+                        this.resources = Some(s);
+                    }
+                    cx.notify();
+                })
+                .is_ok();
+            // Entity torn down (Shell dropped) → stop the loop.
+            if !alive {
+                return;
+            }
+            app_cx
+                .background_executor()
+                .timer(RESOURCE_POLL_INTERVAL)
+                .await;
+            if this.update(app_cx, |_, _| {}).is_err() {
+                return;
+            }
+        })
+        .detach();
     }
 
     /// Mount the selected panel's View if it isn't cached yet.  Called
@@ -325,6 +388,9 @@ impl Render for Shell {
         let slot_state = self.nav.slot_state();
         let rows = self.nav.rows.clone();
         let selected_key = self.nav.selected_key.clone();
+        // Snapshot the meter so the sidebar render borrows a clone, not
+        // `self` (which `cx` already borrows mutably this frame).
+        let resources = self.resources.clone();
         let mounted_view = match &slot_state {
             SlotState::Mount { key } => self.mounted.get(key).cloned(),
             _ => None,
@@ -356,6 +422,7 @@ impl Render for Shell {
             .child(render_sidebar(
                 &rows,
                 selected_key.as_deref(),
+                resources.as_ref(),
                 window,
                 cx,
             ))

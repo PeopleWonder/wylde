@@ -185,6 +185,10 @@ pub fn open_main_window(cx: &mut App) -> Option<WindowHandle<Shell>> {
             // asynchronously and call `apply_service_health` back
             // through the entity handle.
             shell.spawn_health_probes(cx);
+            // Feed the sidebar's VRAM/RAM footer from the same broker
+            // verb the Dashboard reads — one extra long-lived poll, no
+            // new IPC surface.
+            shell.spawn_resource_meter(cx);
             // Drain the cross-panel nav bus inside the Shell entity.
             // The forever-task lives as long as the entity does;
             // dropping the Shell drops the WeakEntity which short-
