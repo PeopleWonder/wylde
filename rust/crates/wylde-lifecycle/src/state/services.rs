@@ -681,6 +681,58 @@ pub async fn stop_ollama() -> Result<()> {
     stop_service(service_name::OLLAMA, Duration::from_secs(10)).await
 }
 
+// ── Tree-sitter sidecar ─────────────────────────────────────────────────
+//
+// Greenfield Rust — there is no Python predecessor for `wylde-treesitter`.
+// Default impl is rust; the strangler-fig env var is accepted for shape
+// consistency but the python branch only warns (no module to spawn). Same
+// shape as `start_ollama`. See `docs/plans/treesitter-sidecar.md`.
+pub async fn start_treesitter() -> Result<()> {
+    if is_service_alive(service_name::TREESITTER) {
+        let pid = manifest_pid(service_name::TREESITTER)
+            .or_else(|| service_pid(service_name::TREESITTER))
+            .unwrap_or(0);
+        tracing::info!(
+            "{}: already alive (manifest pid={}); skipping spawn",
+            service_name::TREESITTER,
+            pid
+        );
+        return Ok(());
+    }
+    if nospawn_enabled() {
+        nospawn_record(service_name::TREESITTER, ImplLang::Rust.as_str());
+        tracing::info!("treesitter: NO-SPAWN — would-have-spawned recorded; no child forked");
+        return Ok(());
+    }
+    // wylde-treesitter is greenfield Rust. The strangler-fig env var is
+    // accepted for shape consistency but Python isn't a valid impl.
+    let lang = impl_for(service_name::TREESITTER);
+    if lang == ImplLang::Python {
+        tracing::warn!(
+            "treesitter: WYLDE_WYLDE_TREESITTER_IMPL=python but wylde-treesitter is \
+             greenfield Rust (no Python predecessor); proceeding with rust binary"
+        );
+    }
+    let Some(bin) = rust_binary_path(service_name::TREESITTER) else {
+        anyhow::bail!(
+            "treesitter: rust binary not found (checked WYLDE_WYLDE_TREESITTER_BIN, \
+             rust/bin/wylde-treesitter.exe, rust/target/release/wylde-treesitter.exe, \
+             rust/target/debug/wylde-treesitter.exe) — build with `cargo build \
+             --release -p wylde-treesitter` first"
+        );
+    };
+    let child = spawn_rust_binary(service_name::TREESITTER, &bin)?;
+    let pid = child.id().unwrap_or(0);
+    tracing::info!("daemon: spawned treesitter impl=rust pid={}", pid);
+    record_spawn(service_name::TREESITTER, pid, ImplLang::Rust.as_str());
+    set_service_proc(service_name::TREESITTER, child);
+    Ok(())
+}
+
+pub async fn stop_treesitter() -> Result<()> {
+    stop_service(service_name::TREESITTER, Duration::from_secs(10)).await
+}
+
 // ── wylde-harness ─────────────────────────────────────────────────────
 //
 // Phase 5 of the Rust migration — the consolidated harness crate.

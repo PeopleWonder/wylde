@@ -222,6 +222,12 @@ pub async fn serve_forever() -> Result<i32> {
     if let Err(e) = services::start_harness().await {
         tracing::error!("daemon: start_harness raised: {:#}", e);
     }
+    // wylde-treesitter — greenfield structural-parsing sidecar. A leaf
+    // service (no dependency on broker/gateway), so ordering is free;
+    // spawned last in the core tier. Default impl is rust.
+    if let Err(e) = services::start_treesitter().await {
+        tracing::error!("daemon: start_treesitter raised: {:#}", e);
+    }
 
     if nospawn {
         tracing::info!(

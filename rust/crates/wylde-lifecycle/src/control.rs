@@ -63,9 +63,9 @@ use wylde_shared::ipc::{register_action, send_with_verb, IpcError, Reply};
 use crate::registry::{self, ServiceInfo};
 use crate::state::services::{
     impl_for, start_device_gate, start_extension_bridge, start_gateway, start_harness,
-    start_memgraph, start_ollama, start_vpn, start_vram_broker, start_voice, stop_device_gate,
-    stop_extension_bridge, stop_gateway, stop_harness, stop_memgraph, stop_ollama, stop_voice,
-    stop_vpn, stop_vram_broker,
+    start_memgraph, start_ollama, start_treesitter, start_vpn, start_vram_broker, start_voice,
+    stop_device_gate, stop_extension_bridge, stop_gateway, stop_harness, stop_memgraph,
+    stop_ollama, stop_treesitter, stop_voice, stop_vpn, stop_vram_broker,
 };
 use crate::state::{
     is_service_alive, nospawn_enabled, nospawn_record, nospawn_snapshot, request_daemon_exit,
@@ -78,7 +78,7 @@ use crate::state::{
 /// subprocess, on either daemon. `wylde-vpn` (Phase 2) is included even
 /// though it's an `optional` tier service — daemon-managed lifecycle is
 /// still authoritative for spawn/stop.
-const DAEMON_MANAGED_SERVICES: [&str; 9] = [
+const DAEMON_MANAGED_SERVICES: [&str; 10] = [
     service_name::MEMGRAPH,
     service_name::VOICE,
     service_name::DEVICE_GATE,
@@ -88,6 +88,7 @@ const DAEMON_MANAGED_SERVICES: [&str; 9] = [
     service_name::OLLAMA,
     service_name::VPN,
     service_name::HARNESS,
+    service_name::TREESITTER,
 ];
 
 /// Heartbeat-age thresholds for the `service.list` status bucket.
@@ -360,6 +361,7 @@ async fn dispatch_start(name: &str) -> anyhow::Result<()> {
         service_name::OLLAMA => start_ollama().await,
         service_name::VPN => start_vpn().await,
         service_name::HARNESS => start_harness().await,
+        service_name::TREESITTER => start_treesitter().await,
         _ => anyhow::bail!("not a daemon-managed service: {name}"),
     }
 }
@@ -376,6 +378,7 @@ async fn dispatch_stop(name: &str) -> anyhow::Result<()> {
         service_name::OLLAMA => stop_ollama().await,
         service_name::VPN => stop_vpn().await,
         service_name::HARNESS => stop_harness().await,
+        service_name::TREESITTER => stop_treesitter().await,
         _ => anyhow::bail!("not a daemon-managed service: {name}"),
     }
 }

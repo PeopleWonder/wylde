@@ -1,0 +1,39 @@
+[package]
+name = "wylde-treesitter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wylde-treesitter"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# Pre-build guard — fails the build loud if `wylde-treesitter.exe` is still
+# alive in the process table. Windows holds an exclusive sharing lock on a
+# running binary; without the guard the linker fails opaquely with
+# `os error 32` deep into a build. Same shape as every other service crate.
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Tree-sitter runtime + the Python grammar (statically linked — one
+# self-contained binary, no `.dll`/`.so` to ship). Slice 1 ships Python
+# ONLY; the remaining grammars land in later slices (see
+# docs/plans/treesitter-sidecar.md §"Slice breakdown"). Pin exact versions
+# so a grammar/runtime ABI drift is a deliberate bump, not a silent one
+# (plan risk #2). `tree-sitter-python` 0.25 requires the `tree-sitter` 0.25+
+# runtime ABI.
+tree-sitter = "0.25"
+tree-sitter-python = "0.25"

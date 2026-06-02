@@ -80,6 +80,11 @@ pub mod service_name {
     /// `WYLDE_WYLDE_HARNESS_IMPL=python` to revert to the in-tree
     /// `Core/harness/turn/` driver during the rollback window.
     pub const HARNESS: &str = "wylde-harness";
+    /// Tree-sitter sidecar — greenfield Rust structural-parsing service
+    /// (NOT a Python port). Default Rust, no Python fallback: a missing
+    /// binary leaves it down with a loud build hint (the `wylde-ollama`
+    /// precedent). See `docs/plans/treesitter-sidecar.md`.
+    pub const TREESITTER: &str = "wylde-treesitter";
 }
 
 /// Window after spawn within which the service is expected to publish
@@ -469,11 +474,18 @@ pub async fn stop_all_daemon_managed() -> ShutdownSummary {
     // keeps the broker the last "infrastructure" service torn down
     // before Memgraph. Memgraph last so anything still holding a Bolt
     // driver releases first.
-    let steps: [(&str, bool, anyhow::Result<()>); 11] = [
+    let steps: [(&str, bool, anyhow::Result<()>); 12] = [
         (
             service_name::GATEWAY,
             is_service_alive(service_name::GATEWAY),
             services::stop_gateway().await,
+        ),
+        // Tree-sitter is a leaf sidecar (nothing depends on it) — drain it
+        // early alongside the other front-tier services.
+        (
+            service_name::TREESITTER,
+            is_service_alive(service_name::TREESITTER),
+            services::stop_treesitter().await,
         ),
         (
             service_name::EXTENSION_BRIDGE,
