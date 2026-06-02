@@ -5,8 +5,9 @@
 //! (AST-boundary-aware chunking) and the HTTP front door (`http.rs`) that
 //! shares these handlers. Slice 3 added `extract_entities` (structural entities
 //! for the Memgraph graph layer). Slice 4 widened the grammar set to Python,
-//! Rust, TypeScript, JavaScript, and Markdown (no new verbs — every verb above
-//! now answers for all five). The outline/highlight verbs remain future work.
+//! Rust, TypeScript, TSX, JavaScript, and Markdown (no new verbs — every verb
+//! above now answers for all six; TSX adds JSX-aware parsing + JSX component
+//! CALLS edges). The outline/highlight verbs remain future work.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

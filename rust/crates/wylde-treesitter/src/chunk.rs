@@ -600,6 +600,29 @@ mod tests {
     }
 
     #[test]
+    fn chunks_tsx_on_component_boundaries_with_jsx_inside() {
+        // A `.tsx` file with a function component (whose body holds JSX) and a
+        // class component. JSX must stay *inside* its component chunk, not split
+        // it — the whole point of the dedicated TSX grammar.
+        let src = "import { Child } from './child';\n\
+                   \nexport function App(): JSX.Element {\n\
+                   \n  return <div><Child /></div>;\n}\n\
+                   \nclass Panel extends Component {\n  render() {\n    return <Child />;\n  }\n}\n";
+        let f = temp_source(src, "tsx");
+        let out = chunk(f.path().to_str().unwrap(), None, None).unwrap();
+        assert_eq!(out["language"], "tsx");
+        assert_eq!(out["ast_aware"], true);
+        let cs = chunks_of(&out);
+        // `export function App` (wrapped in export_statement) and `class Panel`
+        // are each their own named chunk.
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("App")));
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("Panel")));
+        // The method `render` stays inside the Panel chunk, not a top-level one.
+        assert!(cs.iter().all(|c| c["symbol_name"] != json!("render")));
+        assert_contiguous(&out, src);
+    }
+
+    #[test]
     fn chunks_markdown_on_sections_with_heading_names() {
         let src = "# Intro\n\nFirst paragraph.\n\n# Usage\n\nSecond paragraph.\n\n## Detail\n\nNested.\n";
         let f = temp_source(src, "md");

@@ -126,14 +126,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn languages_route_lists_python() {
+    async fn languages_route_lists_all_six_grammars() {
         let resp = router()
             .oneshot(Request::get("/languages").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let v = body_json(resp).await;
-        assert_eq!(v["languages"][0]["name"], "python");
+        let langs = v["languages"].as_array().unwrap();
+        assert_eq!(langs.len(), 6);
+        assert_eq!(langs[0]["name"], "python");
+        let names: Vec<&str> = langs.iter().map(|l| l["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"tsx"), "tsx grammar missing: {names:?}");
     }
 
     #[tokio::test]

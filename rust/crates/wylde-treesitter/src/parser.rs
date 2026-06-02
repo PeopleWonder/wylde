@@ -58,14 +58,16 @@ pub struct Grammar {
     pub entity_spec: Option<&'static crate::entities::EntitySpec>,
 }
 
-/// Every grammar this build links. Slice 4: Python, Rust, TypeScript,
+/// Every grammar this build links. Slice 4: Python, Rust, TypeScript, TSX,
 /// JavaScript, Markdown. Markdown is chunk-only (no code entities to extract —
 /// `entity_query`/`entity_spec` `None`); the rest carry both.
 ///
-/// TypeScript is linked via `LANGUAGE_TYPESCRIPT` (the `.ts` grammar). The
-/// `.tsx` variant (`LANGUAGE_TSX`, which also parses JSX) is a deliberate
-/// follow-up — adding it is one more row, but it's a *separate* grammar, and
-/// claiming `.tsx` here would silently misparse JSX under the non-TSX parser.
+/// TypeScript and TSX are two grammars from the SAME `tree-sitter-typescript`
+/// crate: `LANGUAGE_TYPESCRIPT` (the `.ts` grammar) and `LANGUAGE_TSX` (which
+/// also parses JSX). They're separate rows because `.tsx`/JSX silently
+/// misparses under the non-TSX parser. `.jsx` rides the JavaScript grammar,
+/// which parses JSX natively — only `.tsx` (TypeScript + JSX) needs the
+/// dedicated TSX grammar.
 pub static REGISTRY: &[Grammar] = &[
     Grammar {
         name: "python",
@@ -92,6 +94,19 @@ pub static REGISTRY: &[Grammar] = &[
         extensions: &["ts", "mts", "cts"],
         chunk_query: Some(include_str!("queries/typescript/chunks.scm")),
         entity_query: Some(include_str!("queries/typescript/entities.scm")),
+        entity_spec: Some(&crate::entities::TS_SPEC),
+    },
+    Grammar {
+        name: "tsx",
+        // Same crate/pin as TypeScript — a second exported grammar, not a new
+        // dependency. The grammar_sha matches `typescript` deliberately.
+        grammar_sha: "tree-sitter-typescript@0.23",
+        language: || tree_sitter_typescript::LANGUAGE_TSX.into(),
+        extensions: &["tsx"],
+        chunk_query: Some(include_str!("queries/tsx/chunks.scm")),
+        entity_query: Some(include_str!("queries/tsx/entities.scm")),
+        // TSX node kinds/fields are identical to TS (it's TS + JSX), so the TS
+        // spec reads its entities verbatim; the TSX `.scm` adds the JSX captures.
         entity_spec: Some(&crate::entities::TS_SPEC),
     },
     Grammar {
@@ -249,7 +264,10 @@ mod tests {
     #[test]
     fn registry_lists_the_slice4_grammars() {
         let names: Vec<&str> = REGISTRY.iter().map(|g| g.name).collect();
-        assert_eq!(names, vec!["python", "rust", "typescript", "javascript", "markdown"]);
+        assert_eq!(
+            names,
+            vec!["python", "rust", "typescript", "tsx", "javascript", "markdown"]
+        );
     }
 
     #[test]
@@ -258,6 +276,7 @@ mod tests {
         assert!(resolve("  PyThOn ").is_some());
         assert!(resolve("rust").is_some());
         assert!(resolve("TypeScript").is_some());
+        assert!(resolve("TSX").is_some());
         assert!(resolve("haskell").is_none());
     }
 
@@ -270,10 +289,12 @@ mod tests {
         assert_eq!(resolve_by_path("app.ts").unwrap().name, "typescript");
         assert_eq!(resolve_by_path("util.mts").unwrap().name, "typescript");
         assert_eq!(resolve_by_path("index.js").unwrap().name, "javascript");
+        // `.jsx` rides the JS grammar (it parses JSX natively).
         assert_eq!(resolve_by_path("View.jsx").unwrap().name, "javascript");
         assert_eq!(resolve_by_path("README.md").unwrap().name, "markdown");
-        // `.tsx` is intentionally not claimed (needs the separate TSX grammar).
-        assert!(resolve_by_path("Component.tsx").is_none());
+        // `.tsx` resolves to the dedicated TSX grammar (TypeScript + JSX).
+        assert_eq!(resolve_by_path("Component.tsx").unwrap().name, "tsx");
+        assert_eq!(resolve_by_path("App.TSX").unwrap().name, "tsx");
         assert!(resolve_by_path("no_extension").is_none());
     }
 
@@ -299,7 +320,7 @@ mod tests {
     fn languages_reports_every_grammar_with_abi() {
         let v = languages();
         let arr = v["languages"].as_array().unwrap();
-        assert_eq!(arr.len(), 5);
+        assert_eq!(arr.len(), 6);
         assert_eq!(arr[0]["name"], "python");
         assert_eq!(arr[0]["grammar_sha"], "tree-sitter-python@0.25");
         // Every grammar reports a positive ABI the runtime accepted.
@@ -331,6 +352,20 @@ mod tests {
         assert_eq!(out["language"], "rust");
         assert_eq!(out["has_error"], false);
         assert_eq!(out["root"]["kind"], "source_file");
+    }
+
+    #[test]
+    fn parse_links_tsx_with_jsx() {
+        // JSX inside a TS function — this is exactly what `LANGUAGE_TYPESCRIPT`
+        // would misparse and the dedicated TSX grammar parses cleanly.
+        let out = parse(
+            "function App(): JSX.Element {\n  return <div className=\"x\"><Child /></div>;\n}\n",
+            "tsx",
+        )
+        .unwrap();
+        assert_eq!(out["language"], "tsx");
+        assert_eq!(out["has_error"], false);
+        assert_eq!(out["root"]["kind"], "program");
     }
 
     #[test]

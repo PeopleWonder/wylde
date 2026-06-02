@@ -421,6 +421,9 @@ fn walk(
     let class_idx = query.capture_index_for_name("class");
     let import_idx = query.capture_index_for_name("import");
     let call_idx = query.capture_index_for_name("call");
+    // TSX-only: present when the grammar's `.scm` captures JSX tag names. `None`
+    // for every other grammar, so the JSX branch below never fires for them.
+    let jsx_call_idx = query.capture_index_for_name("jsx_call");
 
     let src = source.as_bytes();
     let mut out = Entities::default();
@@ -447,6 +450,15 @@ fn walk(
                 collect_imports(node, src, spec, &mut out.imports);
             } else if idx == call_idx {
                 if let Some(callee) = callee_name(node, src) {
+                    let caller = enclosing_function_name(node, src, spec)
+                        .unwrap_or_else(|| module.to_string());
+                    out.calls.push(Call { caller, callee, line: line_of(node) });
+                }
+            } else if idx == jsx_call_idx {
+                // A JSX tag name node (`<Foo/>` / `<Foo>…`). React convention:
+                // a Capitalized tag is a component reference (→ a CALLS edge);
+                // a lowercase tag is a host element (`<div>`), not a call.
+                if let Some(callee) = jsx_component_name(node, src) {
                     let caller = enclosing_function_name(node, src, spec)
                         .unwrap_or_else(|| module.to_string());
                     out.calls.push(Call { caller, callee, line: line_of(node) });
@@ -749,6 +761,18 @@ fn callee_name(call: Node, src: &[u8]) -> Option<String> {
     }
 }
 
+/// A JSX tag name (`<Foo/>` → `Foo`) if it names a *component* — i.e. its first
+/// character is uppercase (the React convention that distinguishes a component
+/// from a host element like `<div>`). Lowercase host tags return `None` so they
+/// don't pollute the call graph. The captured node is the tag's `identifier`.
+fn jsx_component_name(name: Node, src: &[u8]) -> Option<String> {
+    let text = name.utf8_text(src).ok()?;
+    match text.chars().next() {
+        Some(c) if c.is_uppercase() => Some(text.to_string()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1008,6 +1032,43 @@ mod tests {
         let calls = v["calls"].as_array().unwrap();
         assert_eq!(calls.iter().find(|c| c["callee"] == "build").unwrap()["caller"], "make");
         assert_eq!(calls.iter().find(|c| c["callee"] == "compute").unwrap()["caller"], "area");
+    }
+
+    // ── TSX (TypeScript + JSX) ────────────────────────────────────────────────
+
+    #[test]
+    fn tsx_extracts_component_function_class_imports_and_jsx_calls() {
+        let src = "import { Child } from './child';\n\
+                   \nexport function App(): JSX.Element {\n\
+                   \n  return (\n    <div className=\"root\">\n      <Child />\n      <span>hi</span>\n    </div>\n  );\n}\n\
+                   \nclass Panel extends Component {\n  render() {\n    return <Child />;\n  }\n}\n";
+        let v = extract_ext(src, "tsx");
+        assert_eq!(v["language"], "tsx");
+
+        // The React component is a top-level function.
+        assert!(names_of(&v, "functions", "name").contains(&"App"));
+
+        // The class component carries its method + `extends` base.
+        let classes = v["classes"].as_array().unwrap();
+        let panel = classes.iter().find(|c| c["name"] == "Panel").expect("class Panel");
+        let bases: Vec<&str> = panel["bases"].as_array().unwrap().iter().map(|b| b.as_str().unwrap()).collect();
+        assert_eq!(bases, vec!["Component"]);
+        assert_eq!(panel["methods"].as_array().unwrap()[0], "render");
+
+        // ES import source string, quotes stripped.
+        assert_eq!(names_of(&v, "imports", "module"), vec!["./child"]);
+
+        // JSX usage → CALLS edges. `<Child/>` in App is attributed to App; the
+        // one in Panel.render to render. Host tags (`div`, `span`) are filtered.
+        let calls = v["calls"].as_array().unwrap();
+        let child_in_app = calls
+            .iter()
+            .find(|c| c["callee"] == "Child" && c["caller"] == "App")
+            .expect("Child rendered by App");
+        assert!(child_in_app["line"].as_u64().unwrap() >= 1);
+        assert!(calls.iter().any(|c| c["callee"] == "Child" && c["caller"] == "render"));
+        // No host element leaked in as a call.
+        assert!(calls.iter().all(|c| c["callee"] != "div" && c["callee"] != "span"));
     }
 
     #[test]
