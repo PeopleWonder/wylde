@@ -49,3 +49,6 @@ secrets.json
 *.secret.*
 
 Core/Memgraph/vendor/
+
+# Local-only planning docs (kept on disk for reference, not published)
+docs/plans/
