@@ -125,6 +125,29 @@ pub struct Config {
     /// drops `<model_name>/{melspectrogram,embedding_model,<model_name>}.onnx`
     /// here. `WYLDE_VOICE_WAKEWORD_MODELS_DIR`.
     pub wakeword_models_dir: PathBuf,
+
+    // ── VAD (Slice 3 — silence-triggered capture) ───────────────────────
+    /// Speech-probability threshold for the energy+ZCR VAD. Mirrors
+    /// Python's `vad.threshold` (`Voice/config.yaml`); the YAML layer is
+    /// dropped in the Rust port, so it's read from
+    /// `WYLDE_VOICE_VAD_THRESHOLD`. Default 0.65.
+    pub vad_threshold: f32,
+
+    /// Trailing silence (ms) after speech starts that ends an utterance.
+    /// Mirrors Python's `vad.silence_timeout_ms`. Read from
+    /// `WYLDE_VOICE_VAD_SILENCE_TIMEOUT_MS`. Default 1800.
+    pub vad_silence_timeout_ms: u32,
+}
+
+impl Config {
+    /// Project the env-driven VAD knobs onto the detector's own config
+    /// struct, used by the capture adapter's silence-triggered loop.
+    pub fn vad_config(&self) -> crate::vad::VadConfig {
+        crate::vad::VadConfig {
+            threshold: self.vad_threshold,
+            silence_timeout_ms: self.vad_silence_timeout_ms,
+        }
+    }
 }
 
 impl Config {
@@ -180,6 +203,14 @@ impl Config {
             wakeword_model: std::env::var("WYLDE_VOICE_WAKEWORD_MODEL")
                 .unwrap_or_else(|_| "openWakeWord/hey-jarvis".to_owned()),
             wakeword_models_dir,
+            vad_threshold: env_f32(
+                "WYLDE_VOICE_VAD_THRESHOLD",
+                crate::vad::DEFAULT_THRESHOLD,
+            ),
+            vad_silence_timeout_ms: env_u32(
+                "WYLDE_VOICE_VAD_SILENCE_TIMEOUT_MS",
+                crate::vad::DEFAULT_SILENCE_TIMEOUT_MS,
+            ),
         }
     }
 
@@ -228,6 +259,20 @@ fn env_f64(name: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+fn env_f32(name: &str, default: f32) -> f32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,6 +293,10 @@ mod tests {
         // Slice 11.D — wake-word default model + models dir.
         assert!(!cfg.wakeword_model.is_empty());
         assert!(cfg.wakeword_models_dir.components().count() > 0);
+        // Slice 3 — VAD defaults mirror Python's VadConfig.
+        assert_eq!(cfg.vad_threshold, 0.65);
+        assert_eq!(cfg.vad_silence_timeout_ms, 1_800);
+        assert_eq!(cfg.vad_config().threshold, cfg.vad_threshold);
     }
 
     #[test]

@@ -178,6 +178,7 @@ pub mod service_state;
 pub mod state;
 pub mod synth;
 pub mod transcribe;
+pub mod vad;
 pub mod wakeword;
 
 pub use service::{install, reset_for_tests, stop};

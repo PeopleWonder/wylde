@@ -9,9 +9,13 @@
 //! ## How the pieces fit
 //!
 //! * [`MicSessionCapture`] — Adapts the singleton [`crate::mic::MicCapture`]
-//!   into a "record for N seconds, return the buffer" shape. Subscribes
+//!   into a "record one utterance, return the buffer" shape. Subscribes
 //!   to the broadcast for the call, collects into a Vec<i16>, returns.
 //!   A process-wide cancel signal lets `voice.end_session` early-terminate.
+//!   Slice 3: in always-on mode it runs the energy+ZCR [`crate::vad`] gate
+//!   so capture stops on silence (parity with Python's
+//!   `record_until_silence`); push-to-talk keeps the hold-until-cancel /
+//!   fixed-cap shape. `max_seconds` is the hard cap for both.
 //! * [`CpalPlayback`] — Thin wrapper over [`crate::playback::play_blocking`].
 //! * [`HarnessIpcClient`] — Routes STT (`models.transcribe`) and the chat
 //!   turn (`chat.run_turn`) over the shared IPC primitive. TTS is handled
@@ -31,13 +35,17 @@ use base64::Engine;
 use serde_json::{json, Value};
 use wylde_shared::ipc::send_action;
 
+use crate::config::Config;
+use crate::config_persist::MODE_ALWAYS_ON;
 use crate::mic::{MicCapture, DEFAULT_MIC_CHUNK_SAMPLES, TARGET_SAMPLE_RATE};
 use crate::orchestrator::{
     AudioCapture, AudioPlayback, AudioUnavailable, ChatTurnResult, HarnessCallError, HarnessChat,
     SynthResult,
 };
 use crate::playback::{play_blocking, PlaybackError};
+use crate::service_state::ServiceState;
 use crate::state;
+use crate::vad::{GateDecision, VadGate};
 
 /// Service-name target for the harness calls. Matches the existing
 /// `\\.\pipe\wylde-harness` pipe.
@@ -93,10 +101,50 @@ impl AudioCapture for MicSessionCapture {
         };
 
         let mut rx = capture.subscribe();
-        let mut buffer: Vec<i16> = Vec::new();
-        let target_samples = (max_seconds.max(0.0) * TARGET_SAMPLE_RATE as f32) as usize;
         let deadline = Instant::now() + Duration::from_secs_f32(max_seconds.max(0.0));
 
+        // Slice 3: in always-on mode the capture ends on silence (VAD-
+        // gated, matching Python's `record_until_silence`); in push-to-talk
+        // mode the user holds the button, so capture runs until the cancel
+        // flag fires (button release / `voice.end_session`). `max_seconds`
+        // is the hard cap / fallback for both — a VAD that never sees the
+        // user stop, or a wedged button, still terminates at the deadline.
+        let vad_gated = ServiceState::global().get_mode().await == MODE_ALWAYS_ON;
+
+        if vad_gated {
+            let mut gate = VadGate::new(&Config::get().vad_config(), TARGET_SAMPLE_RATE);
+            loop {
+                if self.cancel.load(Ordering::SeqCst) {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                match tokio::time::timeout(remaining, rx.recv()).await {
+                    Ok(Ok(chunk)) => {
+                        if gate.observe(&chunk) == GateDecision::SpeechEnded {
+                            break;
+                        }
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+                    Err(_) => break, // deadline elapsed inside recv
+                }
+            }
+            if let Some((start_ms, end_ms)) = gate.speech_span_ms() {
+                tracing::debug!(
+                    "wylde-voice: VAD captured speech span {start_ms}..{end_ms} ms \
+                     ({} samples)",
+                    gate.speech_len(),
+                );
+            }
+            return Ok(gate.into_speech());
+        }
+
+        // Push-to-talk: fixed-duration / hold capture (unchanged shape).
+        let mut buffer: Vec<i16> = Vec::new();
+        let target_samples = (max_seconds.max(0.0) * TARGET_SAMPLE_RATE as f32) as usize;
         loop {
             if self.cancel.load(Ordering::SeqCst) {
                 break;

@@ -733,6 +733,8 @@ mod tests {
             transcribe_timeout_s: 30,
             wakeword_model: "openWakeWord/hey-jarvis".to_owned(),
             wakeword_models_dir: PathBuf::from("./wakeword"),
+            vad_threshold: crate::vad::DEFAULT_THRESHOLD,
+            vad_silence_timeout_ms: crate::vad::DEFAULT_SILENCE_TIMEOUT_MS,
         }
     }
 
