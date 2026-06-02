@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
 use crate::auth::verify_credentials;
-use crate::store::{is_valid_tier, Device, DeviceStore, StoreError};
+use crate::store::{is_valid_tier, ActionLog, Device, DeviceStore, StoreError};
 
 // Re-export tier constants so callers can do `device_gate::core::TIER_READ_ONLY`
 // without reaching into `store`. Crate root re-exports these in turn.
@@ -65,6 +65,10 @@ fn htpasswd_path() -> PathBuf {
     std::env::var_os(HTPASSWD_PATH_ENV)
         .map(PathBuf::from)
         .unwrap_or_else(|| data_dir().join("htpasswd"))
+}
+
+fn action_log_path() -> PathBuf {
+    data_dir().join("action_log.json")
 }
 
 // ── Errors ────────────────────────────────────────────────────────────
@@ -140,6 +144,10 @@ pub type Clock = Box<dyn Fn() -> f64 + Send + Sync>;
 pub struct DeviceGateService {
     store: DeviceStore,
     htpasswd_path: PathBuf,
+    // Rolling per-device audit trail for the GUI's "recent activity" strip.
+    // Lives in device_gate's own data dir alongside devices.json; tests get a
+    // tmp-co-located file derived from the injected store path.
+    action_log: ActionLog,
     pairing: Mutex<PairingState>,
     pending_events: Mutex<HashMap<String, Vec<Value>>>,
     clock: Clock,
@@ -255,6 +263,7 @@ impl DeviceGateService {
         };
         self.store.add(device.clone())?;
         p.reset();
+        self.action_log.record(&device_id, "paired", "ok");
         tracing::info!(
             "device_gate: paired {} ({}) tier={}",
             device_id,
@@ -308,6 +317,8 @@ impl DeviceGateService {
         }
         tracing::info!("device_gate: {} tier → {}", device_id, tier);
         self.enqueue_event(device_id, "tier_changed", json!({ "tier": tier }));
+        self.action_log
+            .record(device_id, &format!("tier → {tier}"), "ok");
         Ok(json!({
             "device_id": device_id,
             "tier": tier,
@@ -340,6 +351,7 @@ impl DeviceGateService {
             "token_rotated",
             json!({ "new_token": new_token }),
         );
+        self.action_log.record(device_id, "token rotated", "ok");
         Ok(json!({
             "device_id": device_id,
             "new_token": new_token,
@@ -364,6 +376,10 @@ impl DeviceGateService {
         // Queue revoked event AFTER the remove — keyed by device_id, the
         // Gateway can still pick it up on the next consume call.
         self.enqueue_event(device_id, "revoked", json!({}));
+        // Audit trail survives revocation — the ActionLog is keyed by
+        // device_id in its own file, so the device row is gone but the
+        // history of "this device existed and was revoked at T" is preserved.
+        self.action_log.record(device_id, "revoked", "ok");
         tracing::info!("device_gate: revoked {}", device_id);
         Ok(json!({ "device_id": device_id }))
     }
@@ -416,6 +432,26 @@ impl DeviceGateService {
             })
             .collect()
     }
+
+    // ── Action log ────────────────────────────────────────────────────
+
+    /// Return the most-recent GUI-driven actions for `device_id`,
+    /// newest-first, each `{action, timestamp, status}`. Unknown device →
+    /// empty list. Backs the Devices panel's per-row "recent activity" strip.
+    /// Mirrors Python's `core.recent_actions`.
+    pub fn recent_actions(&self, device_id: &str, limit: usize) -> Vec<Value> {
+        self.action_log
+            .recent(device_id, limit)
+            .iter()
+            .map(|e| {
+                json!({
+                    "action": e.action,
+                    "timestamp": e.timestamp,
+                    "status": e.status,
+                })
+            })
+            .collect()
+    }
 }
 
 // ── Builder ──────────────────────────────────────────────────────────
@@ -426,6 +462,7 @@ impl DeviceGateService {
 pub struct ServiceBuilder {
     store: Option<DeviceStore>,
     htpasswd_path: Option<PathBuf>,
+    action_log: Option<ActionLog>,
     clock: Option<Clock>,
 }
 
@@ -440,17 +477,36 @@ impl ServiceBuilder {
         self
     }
 
+    pub fn action_log(mut self, action_log: ActionLog) -> Self {
+        self.action_log = Some(action_log);
+        self
+    }
+
     pub fn clock(mut self, clock: Clock) -> Self {
         self.clock = Some(clock);
         self
     }
 
     pub fn build(self) -> DeviceGateService {
+        let store = self
+            .store
+            .unwrap_or_else(|| DeviceStore::new(devices_path()));
+        // Default the action log alongside the store's devices.json (same
+        // data dir), mirroring Python where both live in `_data_dir()`. This
+        // keeps tests that inject a tmpdir-backed store isolated for free —
+        // the audit file lands in the same tmpdir, no extra wiring needed.
+        let action_log = self.action_log.unwrap_or_else(|| {
+            let path = store
+                .path()
+                .parent()
+                .map(|p| p.join("action_log.json"))
+                .unwrap_or_else(action_log_path);
+            ActionLog::new(path)
+        });
         DeviceGateService {
-            store: self
-                .store
-                .unwrap_or_else(|| DeviceStore::new(devices_path())),
+            store,
             htpasswd_path: self.htpasswd_path.unwrap_or_else(htpasswd_path),
+            action_log,
             pairing: Mutex::new(PairingState::default()),
             pending_events: Mutex::new(HashMap::new()),
             clock: self.clock.unwrap_or_else(|| Box::new(now_secs)),
@@ -830,6 +886,54 @@ mod tests {
         clock.advance(120.0);
         let devices = svc.list_devices(60.0);
         assert_eq!(devices[0]["is_active"], false);
+    }
+
+    #[test]
+    fn recent_actions_records_pair_tier_rotate_revoke_newest_first() {
+        let (_tmp, _h, svc, _c) = fresh_service();
+        let started = svc.start_pairing();
+        let code = started["code"].as_str().unwrap().to_string();
+        let paired = svc
+            .complete_pairing(&code, "wylde", "letmein", None)
+            .unwrap();
+        let did = paired["device_id"].as_str().unwrap().to_string();
+
+        // No actions for an unknown device.
+        assert!(svc.recent_actions("dev_nope", 20).is_empty());
+
+        svc.set_tier(&did, TIER_TOOL_USE).unwrap();
+        svc.rotate_token(&did).unwrap();
+        svc.revoke(&did).unwrap();
+
+        let actions = svc.recent_actions(&did, 20);
+        assert_eq!(actions.len(), 4);
+        // Newest-first: revoke, rotate, tier, paired.
+        assert_eq!(actions[0]["action"], "revoked");
+        assert_eq!(actions[1]["action"], "token rotated");
+        assert_eq!(actions[2]["action"], "tier → tool_use");
+        assert_eq!(actions[3]["action"], "paired");
+        assert_eq!(actions[0]["status"], "ok");
+        // Audit trail survives revocation even though the device row is gone.
+        assert!(svc.list_devices(60.0).is_empty());
+        // Timestamp is ISO-8601 UTC with trailing Z.
+        let ts = actions[0]["timestamp"].as_str().unwrap();
+        assert!(ts.ends_with('Z'), "timestamp {ts} not ISO-8601 Z");
+        assert_eq!(ts.len(), 20, "timestamp {ts} not second-resolution");
+    }
+
+    #[test]
+    fn recent_actions_respects_limit() {
+        let (_tmp, _h, svc, _c) = fresh_service();
+        let started = svc.start_pairing();
+        let code = started["code"].as_str().unwrap().to_string();
+        let paired = svc
+            .complete_pairing(&code, "wylde", "letmein", None)
+            .unwrap();
+        let did = paired["device_id"].as_str().unwrap().to_string();
+        svc.set_tier(&did, TIER_TOOL_USE).unwrap();
+        svc.set_tier(&did, TIER_DESTRUCTIVE).unwrap();
+        // paired + 2 tier changes = 3 entries; limit to 1.
+        assert_eq!(svc.recent_actions(&did, 1).len(), 1);
     }
 
     #[test]

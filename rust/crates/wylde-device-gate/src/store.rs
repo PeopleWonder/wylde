@@ -237,6 +237,138 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
 }
 
+// ── Action log (per-device rolling history) ────────────────────────────
+
+/// How many action entries we retain per device. Matches Python's
+/// `store.ACTION_LOG_CAP`. The GUI only renders the most-recent handful;
+/// the cap keeps the JSON file bounded even for a device that's been
+/// rotated / re-tiered many times.
+pub const ACTION_LOG_CAP: usize = 50;
+
+/// One audit entry. Wire shape matches Python's `ActionLog` entry —
+/// `{action, timestamp, status}` where `timestamp` is ISO-8601 UTC,
+/// second resolution (e.g. `2026-05-30T12:34:56Z`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionEntry {
+    pub action: String,
+    pub timestamp: String,
+    #[serde(default = "default_status")]
+    pub status: String,
+}
+
+fn default_status() -> String {
+    "ok".to_string()
+}
+
+/// JSON-backed rolling log of GUI-driven mutations, keyed by device.
+///
+/// Rust port of `device_gate/store.py::ActionLog`. Separate file from
+/// `devices.json` so the audit trail survives a device being revoked (the
+/// device row is gone, but the operator may still want to see "this device
+/// was revoked at T"). Same atomic temp+rename write discipline as
+/// [`DeviceStore`]; the entries carry no secrets, so no `harden_perms` here.
+///
+/// Stored oldest-first on disk (the JSON map is `{device_id: [entry, ...]}`);
+/// [`ActionLog::recent`] returns newest-first to match the GUI's display
+/// order.
+pub struct ActionLog {
+    path: PathBuf,
+    lock: Mutex<()>,
+}
+
+impl ActionLog {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            lock: Mutex::new(()),
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn load(&self) -> HashMap<String, Vec<ActionEntry>> {
+        if !self.path.exists() {
+            return HashMap::new();
+        }
+        let raw = match std::fs::read_to_string(&self.path) {
+            Ok(s) => s,
+            Err(_) => return HashMap::new(),
+        };
+        // Mirror Python's lenient loader: any parse error → empty map rather
+        // than a crash, so a corrupt file degrades to "no history" instead of
+        // taking the service down.
+        serde_json::from_str::<HashMap<String, Vec<ActionEntry>>>(&raw).unwrap_or_default()
+    }
+
+    fn save(&self, data: &HashMap<String, Vec<ActionEntry>>) -> std::io::Result<()> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let body = serde_json::to_string_pretty(data).map_err(std::io::Error::other)?;
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, body.as_bytes())?;
+        std::fs::rename(&tmp, &self.path)?;
+        Ok(())
+    }
+
+    /// Append one `{action, timestamp, status}` entry for a device.
+    /// `timestamp` is `now()` in ISO-8601 UTC; oldest entries are dropped
+    /// once the per-device list exceeds [`ACTION_LOG_CAP`]. Returns the entry
+    /// written so callers can assert on it in tests. Matches Python's
+    /// `ActionLog.record`.
+    pub fn record(&self, device_id: &str, action: &str, status: &str) -> ActionEntry {
+        self.record_at(device_id, action, status, &utc_now_iso())
+    }
+
+    /// `record` with an explicit timestamp — the test seam Python exposes via
+    /// its `timestamp=` kwarg.
+    pub fn record_at(
+        &self,
+        device_id: &str,
+        action: &str,
+        status: &str,
+        timestamp: &str,
+    ) -> ActionEntry {
+        let entry = ActionEntry {
+            action: action.to_string(),
+            timestamp: timestamp.to_string(),
+            status: status.to_string(),
+        };
+        let _g = self.lock.lock().expect("action log poisoned");
+        let mut data = self.load();
+        let entries = data.entry(device_id.to_string()).or_default();
+        entries.push(entry.clone());
+        // Trim from the front — oldest-first on disk.
+        if entries.len() > ACTION_LOG_CAP {
+            let overflow = entries.len() - ACTION_LOG_CAP;
+            entries.drain(0..overflow);
+        }
+        let _ = self.save(&data);
+        entry
+    }
+
+    /// Return up to `limit` entries for `device_id`, newest-first. Unknown
+    /// device → empty list. Matches Python's `ActionLog.recent`.
+    pub fn recent(&self, device_id: &str, limit: usize) -> Vec<ActionEntry> {
+        let _g = self.lock.lock().expect("action log poisoned");
+        let data = self.load();
+        let Some(entries) = data.get(device_id) else {
+            return Vec::new();
+        };
+        // Disk is oldest-first; reverse for newest-first, then cap.
+        entries.iter().rev().take(limit).cloned().collect()
+    }
+}
+
+/// Current UTC time as a second-resolution ISO-8601 string with a trailing
+/// `Z` (e.g. `2026-05-30T12:34:56Z`) — matches Python's `_utc_now_iso` and
+/// the format the GUI's relative-time parser expects.
+fn utc_now_iso() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +462,67 @@ mod tests {
         let list = store.list();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].tier, "tool_use");
+    }
+
+    fn fresh_action_log() -> (TempDir, ActionLog) {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("action_log.json");
+        (tmp, ActionLog::new(path))
+    }
+
+    #[test]
+    fn action_log_records_and_returns_newest_first() {
+        let (_tmp, log) = fresh_action_log();
+        log.record_at("d1", "paired", "ok", "2026-05-30T12:00:00Z");
+        log.record_at("d1", "tier → tool_use", "ok", "2026-05-30T12:01:00Z");
+        log.record_at("d1", "revoked", "ok", "2026-05-30T12:02:00Z");
+        let recent = log.recent("d1", 20);
+        assert_eq!(recent.len(), 3);
+        // Newest-first.
+        assert_eq!(recent[0].action, "revoked");
+        assert_eq!(recent[1].action, "tier → tool_use");
+        assert_eq!(recent[2].action, "paired");
+        assert_eq!(recent[0].status, "ok");
+    }
+
+    #[test]
+    fn action_log_unknown_device_is_empty() {
+        let (_tmp, log) = fresh_action_log();
+        log.record("d1", "paired", "ok");
+        assert!(log.recent("nope", 20).is_empty());
+    }
+
+    #[test]
+    fn action_log_respects_limit() {
+        let (_tmp, log) = fresh_action_log();
+        for i in 0..10 {
+            log.record_at("d1", &format!("a{i}"), "ok", "2026-05-30T12:00:00Z");
+        }
+        assert_eq!(log.recent("d1", 3).len(), 3);
+    }
+
+    #[test]
+    fn action_log_caps_at_fifty_oldest_dropped() {
+        let (_tmp, log) = fresh_action_log();
+        for i in 0..(ACTION_LOG_CAP + 5) {
+            log.record_at("d1", &format!("a{i}"), "ok", "2026-05-30T12:00:00Z");
+        }
+        let recent = log.recent("d1", 100);
+        assert_eq!(recent.len(), ACTION_LOG_CAP);
+        // Newest entry retained; the five oldest dropped from the front.
+        assert_eq!(recent[0].action, format!("a{}", ACTION_LOG_CAP + 4));
+        assert_eq!(recent[ACTION_LOG_CAP - 1].action, "a5");
+    }
+
+    #[test]
+    fn action_log_survives_reload() {
+        let tmp = TempDir::new().expect("tempdir");
+        let path = tmp.path().join("action_log.json");
+        ActionLog::new(&path).record_at("d1", "paired", "ok", "2026-05-30T12:00:00Z");
+        // Fresh instance over the same file — persistence across restart.
+        let recent = ActionLog::new(&path).recent("d1", 20);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].action, "paired");
     }
 
     #[test]

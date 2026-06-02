@@ -405,6 +405,87 @@ async fn parity_list_devices_returns_count_and_array() {
     reset_service();
 }
 
+// ── recent_actions (per-device audit strip) ───────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn parity_recent_actions_orders_pair_tier_rotate_newest_first() {
+    let _g = test_guard().await;
+    let _h = fresh();
+    let (device_id, _token) = pair_one().await;
+
+    let st = call(
+        "device_gate.set_tier",
+        json!({"device_id": device_id, "tier": "tool_use"}),
+    )
+    .await;
+    assert!(st.ok, "set_tier failed: {st:?}");
+    let rot = call(
+        "device_gate.rotate_token",
+        json!({"device_id": device_id}),
+    )
+    .await;
+    assert!(rot.ok, "rotate failed: {rot:?}");
+
+    let r = call(
+        "device_gate.recent_actions",
+        json!({"device_id": device_id, "limit": 20}),
+    )
+    .await;
+    assert!(r.ok);
+    assert_eq!(r.data["device_id"], device_id);
+    assert_eq!(r.data["count"], 3);
+    let actions = r.data["actions"].as_array().unwrap();
+    // Newest-first: rotate, tier, paired — matches Python's ActionLog.recent.
+    assert_eq!(actions[0]["action"], "token rotated");
+    assert_eq!(actions[1]["action"], "tier → tool_use");
+    assert_eq!(actions[2]["action"], "paired");
+    assert_eq!(actions[0]["status"], "ok");
+    // ISO-8601 UTC second-resolution timestamp.
+    let ts = actions[0]["timestamp"].as_str().unwrap();
+    assert!(ts.ends_with('Z') && ts.len() == 20, "bad timestamp {ts}");
+    reset_service();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parity_recent_actions_survives_revoke() {
+    let _g = test_guard().await;
+    let _h = fresh();
+    let (device_id, _token) = pair_one().await;
+    let rev = call("device_gate.revoke", json!({"device_id": device_id})).await;
+    assert!(rev.ok, "revoke failed: {rev:?}");
+    // Device row is gone …
+    assert_eq!(
+        call("device_gate.list_devices", json!({})).await.data["count"],
+        0
+    );
+    // … but the audit trail (paired + revoked) is preserved.
+    let r = call(
+        "device_gate.recent_actions",
+        json!({"device_id": device_id}),
+    )
+    .await;
+    assert!(r.ok);
+    assert_eq!(r.data["count"], 2);
+    assert_eq!(r.data["actions"][0]["action"], "revoked");
+    assert_eq!(r.data["actions"][1]["action"], "paired");
+    reset_service();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parity_recent_actions_unknown_device_empty() {
+    let _g = test_guard().await;
+    let _h = fresh();
+    let r = call(
+        "device_gate.recent_actions",
+        json!({"device_id": "dev_unknown"}),
+    )
+    .await;
+    assert!(r.ok);
+    assert_eq!(r.data["count"], 0);
+    assert!(r.data["actions"].as_array().unwrap().is_empty());
+    reset_service();
+}
+
 // ── Surface enumeration — guards against accidental rename / drop ─────
 
 #[tokio::test(flavor = "current_thread")]
@@ -426,6 +507,7 @@ async fn parity_action_surface_is_complete() {
         "device_gate.set_tier",
         "device_gate.rotate_token",
         "device_gate.revoke",
+        "device_gate.recent_actions",
         "device_gate.consume_pending_events",
     ] {
         assert!(
@@ -448,6 +530,7 @@ async fn parity_bad_request_for_missing_required_fields() {
         ("device_gate.set_tier", json!({"device_id": "x"})),
         ("device_gate.rotate_token", json!({})),
         ("device_gate.revoke", json!({})),
+        ("device_gate.recent_actions", json!({})),
         ("device_gate.consume_pending_events", json!({})),
     ] {
         let r = call(action, payload).await;

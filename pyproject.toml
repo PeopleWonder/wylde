@@ -194,16 +194,10 @@ disallow_incomplete_defs = true
 warn_return_any = true
 strict_equality = true
 
-# M3 second wave — strict for the three services that were mypy-clean
-# under permissive after the M2 unused-ignore sweep. The space-named-dir
-# rename landed before this; the modules below are now addressable from
-# the repo root and can be targeted by [[overrides]] directly.
-[[tool.mypy.overrides]]
-module = ["device_gate.*"]
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-warn_return_any = true
-strict_equality = true
+# device_gate strict override removed 2026-06-02 — the Python device_gate/
+# package was deleted after the Rust binary (wylde-device-gate) reached full
+# parity (incl. the recent_actions audit log) and passed a live function test,
+# becoming the sole impl.
 
 # Core.resource_monitor strict override removed 2026-06-02 — the Python
 # VRAM broker (Core/resource_monitor/) was deleted after the Rust binary

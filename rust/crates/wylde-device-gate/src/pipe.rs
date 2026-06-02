@@ -1,9 +1,10 @@
 //! device_gate pipe — `\\.\pipe\wylde-device-gate`.
 //!
-//! Rust port of `device_gate/pipe.py`. Ten `device_gate.*` actions backed by
-//! [`crate::core`]. The GUI drives pairing / tier / rotate / revoke; the
-//! Gateway calls `device_gate.verify` and `device_gate.consume_pending_events`
-//! on every authenticated request.
+//! Rust port of `device_gate/pipe.py`. Eleven `device_gate.*` actions backed
+//! by [`crate::core`]. The GUI drives pairing / tier / rotate / revoke and
+//! reads the per-device `recent_actions` audit strip; the Gateway calls
+//! `device_gate.verify` and `device_gate.consume_pending_events` on every
+//! authenticated request.
 //!
 //! Same envelope contract every Wylde service uses: handlers take the JSON
 //! payload and return a [`Reply`]. Errors land as
@@ -23,7 +24,7 @@ pub const SERVICE_NAME: &str = "wylde-device-gate";
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// Action surface. Matches `device_gate/pipe.py::_ACTIONS` one-to-one.
-const ACTION_NAMES: [&str; 10] = [
+const ACTION_NAMES: [&str; 11] = [
     "device_gate.list_devices",
     "device_gate.start_pairing",
     "device_gate.cancel_pairing",
@@ -33,6 +34,7 @@ const ACTION_NAMES: [&str; 10] = [
     "device_gate.set_tier",
     "device_gate.rotate_token",
     "device_gate.revoke",
+    "device_gate.recent_actions",
     "device_gate.consume_pending_events",
 ];
 
@@ -94,6 +96,12 @@ pub fn install() {
         "device_gate.revoke",
         |p: Value| async move { handle_revoke(p).await },
         "Remove a device; its token is invalidated.",
+        "wylde_device_gate::pipe",
+    );
+    register_action_with_meta(
+        "device_gate.recent_actions",
+        |p: Value| async move { handle_recent_actions(p).await },
+        "Per-device action log, newest-first; returns {device_id, actions, count}.",
         "wylde_device_gate::pipe",
     );
     register_action_with_meta(
@@ -257,6 +265,37 @@ async fn handle_revoke(payload: Value) -> Reply {
     }
 }
 
+async fn handle_recent_actions(payload: Value) -> Reply {
+    let map = match payload_dict(payload) {
+        Ok(m) => m,
+        Err(e) => return Reply::err(e),
+    };
+    let device_id = match require_str(&map, "device_id") {
+        Ok(v) => v,
+        Err(e) => return Reply::err(e),
+    };
+    // `limit` defaults to 20; must be a non-negative integer (reject floats,
+    // booleans, negatives) — matches Python's `_recent_actions_action`.
+    let limit: usize = match map.get("limit") {
+        None | Some(Value::Null) => 20,
+        Some(v) => match v.as_u64() {
+            Some(n) => n as usize,
+            None => {
+                return Reply::err(IpcError::new(
+                    "bad_request",
+                    "limit must be a non-negative integer",
+                ))
+            }
+        },
+    };
+    let actions = with_service(|svc| svc.recent_actions(&device_id, limit));
+    Reply::ok(json!({
+        "device_id": device_id,
+        "actions": actions,
+        "count": actions.len(),
+    }))
+}
+
 async fn handle_consume_pending_events(payload: Value) -> Reply {
     let map = match payload_dict(payload) {
         Ok(m) => m,
@@ -350,6 +389,62 @@ mod tests {
             assert!(!r.ok, "missing {missing} should fail");
             assert_eq!(r.error.unwrap().code, "bad_request");
         }
+        reset_service();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recent_actions_requires_device_id() {
+        let _g = guard().await;
+        let (_t, _h) = install_fresh();
+        let r = handle_recent_actions(json!({})).await;
+        assert!(!r.ok);
+        assert_eq!(r.error.unwrap().code, "bad_request");
+        reset_service();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recent_actions_rejects_bad_limit() {
+        let _g = guard().await;
+        let (_t, _h) = install_fresh();
+        let r = handle_recent_actions(json!({"device_id": "d", "limit": -1})).await;
+        assert!(!r.ok);
+        assert_eq!(r.error.unwrap().code, "bad_request");
+        reset_service();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recent_actions_unknown_device_is_empty_ok() {
+        let _g = guard().await;
+        let (_t, _h) = install_fresh();
+        let r = handle_recent_actions(json!({"device_id": "dev_nope"})).await;
+        assert!(r.ok);
+        assert_eq!(r.data["count"], 0);
+        assert_eq!(r.data["device_id"], "dev_nope");
+        assert!(r.data["actions"].as_array().unwrap().is_empty());
+        reset_service();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recent_actions_returns_pair_entry_after_pairing() {
+        let _g = guard().await;
+        let (_t, _h) = install_fresh();
+        handle_start_pairing(Value::Null).await;
+        // Pull the active code straight from the service to complete pairing.
+        let status = handle_get_pairing_status(Value::Null).await;
+        let code = status.data["code"].as_str().unwrap().to_string();
+        let paired = handle_complete_pairing(json!({
+            "code": code,
+            "username": "wylde",
+            "password": "letmein",
+        }))
+        .await;
+        assert!(paired.ok, "pairing failed: {paired:?}");
+        let did = paired.data["device_id"].as_str().unwrap().to_string();
+        let r = handle_recent_actions(json!({"device_id": did, "limit": 20})).await;
+        assert!(r.ok);
+        assert_eq!(r.data["count"], 1);
+        assert_eq!(r.data["actions"][0]["action"], "paired");
+        assert_eq!(r.data["actions"][0]["status"], "ok");
         reset_service();
     }
 
