@@ -9,6 +9,15 @@ license.workspace = true
 name = "wylde-voice"
 path = "src/main.rs"
 
+# Slice 5 — operator-run encoder benchmark (`docs/plans/voice-rust-port.md`,
+# "NPU default + DLL bundling decision"). Times the Whisper encoder on CPU
+# vs NPU and prints the recommended shipped default. Not a service: it
+# registers no pipe action. Compiles into the default build; the NPU leg
+# only runs under `--features openvino` with the DLL bundle present.
+[[bin]]
+name = "wylde-voice-bench"
+path = "src/bin/bench.rs"
+
 [lib]
 path = "src/lib.rs"
 

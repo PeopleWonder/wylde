@@ -25,6 +25,31 @@ async fn main() -> Result<()> {
     tracing::info!("wylde-voice: starting (rust impl, slice 11.D)");
 
     let cfg = wylde_voice::config::Config::get();
+
+    // Slice 5 — DLL bundle discovery + shipped-default decision.
+    //
+    // `ort` is load-dynamic, so point `ORT_DYLIB_PATH` at a co-located
+    // `onnxruntime.dll` before any session is built. Done in-binary
+    // (not the Python lifecycle launcher) to keep packaging in the Rust
+    // ring. Non-fatal: a missing bundle leaves the pipe service up and
+    // surfaces a clean model-load error only when transcribe is called.
+    match wylde_voice::dll_bundle::ensure_ort_dylib_path() {
+        Ok(Some(p)) => tracing::info!("wylde-voice: ORT_DYLIB_PATH -> {}", p.display()),
+        Ok(None) => tracing::info!(
+            "wylde-voice: no bundled onnxruntime.dll found near exe; \
+             relying on ort default resolution"
+        ),
+        Err(e) => tracing::warn!("wylde-voice: DLL bundle discovery failed: {e}"),
+    }
+
+    // **log() the choice** (Slice 5 deliverable). The shipped default is
+    // CPU per the NPU spike (whisper-tiny CPU 80 ms < NPU 143 ms; the
+    // whisper-small crossover is unverified — run `wylde-voice-bench` on
+    // real hardware to measure and flip). NPU stays an opt-in feature build.
+    tracing::info!(
+        "wylde-voice: {}",
+        wylde_voice::bench::describe_default(cfg, wylde_voice::bench::openvino_compiled())
+    );
     let manifest = ManifestWriter::write(
         SERVICE_NAME,
         None,
