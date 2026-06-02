@@ -109,8 +109,15 @@ pub fn register(reg: &mut Registry) {
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────
+//
+// These are `pub(crate)` so the verb layer's memory `OpHandler`s
+// (`tooling/resource/resources/memory.rs`, consolidation Slice 2) can
+// delegate into them rather than duplicate the logic — the verb tools
+// adapt their `ResourceRequest` into the `args` shape these expect and
+// call straight through. The named-tool registrations above are
+// unchanged; both surfaces share one implementation.
 
-async fn run_save(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_save(args: Value) -> Result<Value, IpcError> {
     let Some(body) = args.get("body").and_then(Value::as_str) else {
         return Ok(json!({"status": "error", "error": "'body' is required"}));
     };
@@ -133,7 +140,7 @@ async fn run_save(args: Value) -> Result<Value, IpcError> {
     }
 }
 
-async fn run_update(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_update(args: Value) -> Result<Value, IpcError> {
     let Some(memory_id) = args.get("memory_id").and_then(Value::as_str) else {
         return Ok(json!({"status": "error", "error": "'memory_id' is required"}));
     };
@@ -157,7 +164,7 @@ async fn run_update(args: Value) -> Result<Value, IpcError> {
     }
 }
 
-async fn run_delete(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_delete(args: Value) -> Result<Value, IpcError> {
     let Some(memory_id) = args.get("memory_id").and_then(Value::as_str) else {
         return Ok(json!({"status": "error", "error": "'memory_id' is required"}));
     };
@@ -173,7 +180,7 @@ async fn run_delete(args: Value) -> Result<Value, IpcError> {
     }
 }
 
-async fn run_search(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_search(args: Value) -> Result<Value, IpcError> {
     let limit = args
         .get("limit")
         .and_then(Value::as_u64)

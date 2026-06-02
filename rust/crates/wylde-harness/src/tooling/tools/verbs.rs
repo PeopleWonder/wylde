@@ -382,12 +382,28 @@ mod tests {
     }
 
     #[test]
-    fn describe_empty_registry_lists_nothing() {
-        // The global resource registry is empty in Slice 1.
+    fn describe_lists_registered_resources() {
+        // Slice 2 lights up the `memory` resource in the global registry,
+        // so the no-arg describe now lists it (was empty in Slice 1).
         let out = run_describe(json!({})).unwrap();
         assert_eq!(out["status"], "success");
-        assert_eq!(out["count"], 0);
-        assert_eq!(out["resources"], json!([]));
+        let types: Vec<&str> = out["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["resource_type"].as_str().unwrap())
+            .collect();
+        assert!(types.contains(&"memory"), "describe should list memory; got {types:?}");
+        assert_eq!(out["count"].as_u64().unwrap(), types.len() as u64);
+    }
+
+    #[test]
+    fn describe_memory_returns_full_definition() {
+        let out = run_describe(json!({"resource_type": "memory"})).unwrap();
+        assert_eq!(out["status"], "success");
+        assert_eq!(out["resource_type"], "memory");
+        assert_eq!(out["definition"]["resource_type"], "memory");
+        assert!(out["definition"]["operations"]["search"].is_object());
     }
 
     #[test]
@@ -434,12 +450,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_star_on_empty_registry_searches_nothing() {
-        let out = run_search(json!({"resource_type": "*", "query": "x"}), cfg())
-            .await
-            .unwrap();
+    async fn search_star_fans_out_across_searchable_resources() {
+        // Slice 2: `memory` is the only searchable resource so far, so the
+        // `"*"` fan-out targets it. Drive the precomputed-vector path
+        // (query_vector in filter) so no embedder/network is needed.
+        let _env = crate::memory::long_term::test_support::TestEnv::new();
+        std::env::set_var("WYLDE_EMBED_DIM", "3");
+        let out = run_search(
+            json!({"resource_type": "*", "filter": {"query_vector": [1.0, 0.0, 0.0]}}),
+            cfg(),
+        )
+        .await
+        .unwrap();
         assert_eq!(out["status"], "success");
         assert_eq!(out["fanout"], true);
-        assert_eq!(out["searched"], json!([]));
+        let searched: Vec<&str> = out["searched"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap())
+            .collect();
+        assert!(searched.contains(&"memory"), "fan-out should include memory; got {searched:?}");
     }
 }
