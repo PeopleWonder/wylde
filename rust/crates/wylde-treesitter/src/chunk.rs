@@ -513,8 +513,10 @@ mod tests {
 
     #[test]
     fn explicit_unknown_language_is_rejected() {
-        let f = temp_source("fn main() {}\n", "rs");
-        let err = chunk(f.path().to_str().unwrap(), Some("rust"), None).unwrap_err();
+        // An explicit-but-unlinked language is a caller error (vs. an
+        // unknown *extension*, which falls back to byte windows).
+        let f = temp_source("main = putStrLn \"hi\"\n", "hs");
+        let err = chunk(f.path().to_str().unwrap(), Some("haskell"), None).unwrap_err();
         assert_eq!(err.code, "unknown_language");
     }
 
@@ -529,5 +531,89 @@ mod tests {
         let f = temp_source("", "py");
         let out = chunk(f.path().to_str().unwrap(), None, None).unwrap();
         assert_eq!(chunks_of(&out).len(), 0);
+    }
+
+    /// Every chunk's byte range must tile the file contiguously (shared
+    /// invariant across all AST grammars — no source byte dropped from the index).
+    fn assert_contiguous(out: &Value, src: &str) {
+        let cs = chunks_of(out);
+        assert!(!cs.is_empty());
+        let mut cursor = 0usize;
+        for c in cs {
+            assert_eq!(c["byte_start"].as_u64().unwrap() as usize, cursor);
+            cursor = c["byte_end"].as_u64().unwrap() as usize;
+        }
+        assert_eq!(cursor, src.len());
+    }
+
+    #[test]
+    fn chunks_rust_on_item_boundaries() {
+        let src = "use std::fmt;\n\
+                   \nfn main() {\n    run();\n}\n\
+                   \nstruct Cfg {\n    n: u32,\n}\n\
+                   \nimpl Cfg {\n    fn run(&self) {}\n}\n";
+        let f = temp_source(src, "rs");
+        let out = chunk(f.path().to_str().unwrap(), None, None).unwrap();
+        assert_eq!(out["language"], "rust");
+        assert_eq!(out["ast_aware"], true);
+        let cs = chunks_of(&out);
+        let kinds: Vec<&str> = cs.iter().map(|c| c["kind"].as_str().unwrap()).collect();
+        assert!(kinds.contains(&"function_item"));
+        assert!(kinds.contains(&"struct_item"));
+        assert!(kinds.contains(&"impl_item"));
+        // The `fn main` chunk is named; its method `run` stays inside the impl.
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("main")));
+        assert!(cs.iter().all(|c| c["symbol_name"] != json!("run")));
+        assert_contiguous(&out, src);
+    }
+
+    #[test]
+    fn chunks_typescript_on_class_and_interface() {
+        let src = "import { x } from './x';\n\
+                   \nexport function go(): void {}\n\
+                   \ninterface Opts {\n  n: number;\n}\n\
+                   \nclass Widget {\n  render() {}\n}\n";
+        let f = temp_source(src, "ts");
+        let out = chunk(f.path().to_str().unwrap(), None, None).unwrap();
+        assert_eq!(out["language"], "typescript");
+        assert_eq!(out["ast_aware"], true);
+        let cs = chunks_of(&out);
+        // `export function go` is wrapped in an export_statement boundary.
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("go")));
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("Opts")));
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("Widget")));
+        assert_contiguous(&out, src);
+    }
+
+    #[test]
+    fn chunks_javascript_on_function_and_class() {
+        let src = "const a = 1;\n\
+                   \nfunction boot() {\n  start();\n}\n\
+                   \nclass View {\n  render() {}\n}\n";
+        let f = temp_source(src, "js");
+        let out = chunk(f.path().to_str().unwrap(), None, None).unwrap();
+        assert_eq!(out["language"], "javascript");
+        let cs = chunks_of(&out);
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("boot")));
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("View")));
+        assert_contiguous(&out, src);
+    }
+
+    #[test]
+    fn chunks_markdown_on_sections_with_heading_names() {
+        let src = "# Intro\n\nFirst paragraph.\n\n# Usage\n\nSecond paragraph.\n\n## Detail\n\nNested.\n";
+        let f = temp_source(src, "md");
+        let out = chunk(f.path().to_str().unwrap(), None, None).unwrap();
+        assert_eq!(out["language"], "markdown");
+        assert_eq!(out["ast_aware"], true);
+        let cs = chunks_of(&out);
+        // Two top-level (H1) sections; the H2 rides inside its parent section.
+        let names: Vec<String> = cs
+            .iter()
+            .filter_map(|c| c["symbol_name"].as_str().map(|s| s.trim().to_string()))
+            .collect();
+        assert!(names.iter().any(|n| n == "Intro"), "names: {names:?}");
+        assert!(names.iter().any(|n| n == "Usage"), "names: {names:?}");
+        assert_contiguous(&out, src);
     }
 }

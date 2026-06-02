@@ -46,6 +46,148 @@ use wylde_shared::ipc::IpcError;
 use crate::config::Config;
 use crate::parser::{self, Grammar};
 
+// ── per-language extraction spec ─────────────────────────────────────────────
+//
+// The `.scm` entity query is language-*agnostic* in its capture names
+// (`@function`/`@class`/`@import`/`@call`) — it says *what* to capture. This
+// spec says *how to read* each capture for one language: which field names a
+// definition, which node kinds open a scope, where a class body / its methods /
+// its bases live, and how that language spells imports and inheritance. One
+// spec per grammar keeps every node-kind string in a single table instead of
+// scattered through the walk, so adding a grammar is "write a `.scm` + a spec".
+
+/// How a `@class` capture's base/parent types are read — the source of
+/// `INHERITS` edges. Dispatched on the class node's *kind* where a language has
+/// more than one class-like shape (Rust `impl` vs `trait`).
+#[derive(Clone, Copy)]
+pub enum BasesStrategy {
+    /// No inheritance concept (e.g. a Rust `struct`/`enum`).
+    None,
+    /// Python: identifiers/attributes in the `superclasses` argument list.
+    PythonSuperclasses,
+    /// JS/TS: type names inside a `class_heritage` / `extends*` / `implements`
+    /// clause.
+    JsHeritage,
+    /// Rust: `impl Trait for Type` → `Trait`; `trait T: Super` → `Super`.
+    Rust,
+}
+
+/// How an `@import` capture's module name(s) are read — the source of `IMPORTS`
+/// edges.
+#[derive(Clone, Copy)]
+pub enum ImportStrategy {
+    /// Python `import a, b.c` / `from x.y import z`.
+    Python,
+    /// Rust `use a::b::c;` / `use a::b::{c, d};` → the module path `a::b`.
+    RustUse,
+    /// ES `import … from "mod"` / `import "mod"` → the `source` string.
+    EsModule,
+}
+
+/// Per-language node-kind/field metadata for [`walk`]. See the module-level
+/// note above for the division of labour with the `.scm` query.
+pub struct EntitySpec {
+    /// Field that holds a definition's identifier (`name` everywhere we link).
+    pub name_field: &'static str,
+    /// Definition node kinds that establish an *enclosing scope* — a
+    /// `@function`/`@class` whose ancestor chain hits one of these is nested
+    /// (a method / inner def), not top-level.
+    pub scope_kinds: &'static [&'static str],
+    /// Function node kinds whose name is the *caller* for a call nested inside
+    /// them (methods included, so a call in a method is attributed to it).
+    pub function_kinds: &'static [&'static str],
+    /// Field holding a class/impl/trait/interface body.
+    pub body_field: &'static str,
+    /// Fields tried in order to name a `@class` node — Rust `impl` has no
+    /// `name`, so it falls through to `type`.
+    pub class_name_fields: &'static [&'static str],
+    /// Node kinds counted as methods inside a class body.
+    pub method_kinds: &'static [&'static str],
+    /// Body-child wrapper kinds to unwrap (via a `definition` field) to reach a
+    /// method — Python's `decorated_definition`. Empty for languages without
+    /// such a wrapper.
+    pub method_wrapper_kinds: &'static [&'static str],
+    pub bases: BasesStrategy,
+    pub imports: ImportStrategy,
+}
+
+pub static PYTHON_SPEC: EntitySpec = EntitySpec {
+    name_field: "name",
+    scope_kinds: &["function_definition", "class_definition"],
+    function_kinds: &["function_definition"],
+    body_field: "body",
+    class_name_fields: &["name"],
+    method_kinds: &["function_definition"],
+    method_wrapper_kinds: &["decorated_definition"],
+    bases: BasesStrategy::PythonSuperclasses,
+    imports: ImportStrategy::Python,
+};
+
+pub static RUST_SPEC: EntitySpec = EntitySpec {
+    name_field: "name",
+    // `impl`/`trait` hold methods; a `fn` nests inner fns. struct/enum carry no
+    // fns so they needn't gate scope.
+    scope_kinds: &["function_item", "impl_item", "trait_item"],
+    function_kinds: &["function_item"],
+    body_field: "body",
+    // struct/enum/trait name via `name`; `impl` has only `type`.
+    class_name_fields: &["name", "type"],
+    method_kinds: &["function_item", "function_signature_item"],
+    method_wrapper_kinds: &[],
+    bases: BasesStrategy::Rust,
+    imports: ImportStrategy::RustUse,
+};
+
+pub static JS_SPEC: EntitySpec = EntitySpec {
+    name_field: "name",
+    scope_kinds: &[
+        "function_declaration",
+        "generator_function_declaration",
+        "method_definition",
+        "class_declaration",
+        "arrow_function",
+        "function_expression",
+    ],
+    function_kinds: &[
+        "function_declaration",
+        "generator_function_declaration",
+        "method_definition",
+    ],
+    body_field: "body",
+    class_name_fields: &["name"],
+    method_kinds: &["method_definition"],
+    method_wrapper_kinds: &[],
+    bases: BasesStrategy::JsHeritage,
+    imports: ImportStrategy::EsModule,
+};
+
+pub static TS_SPEC: EntitySpec = EntitySpec {
+    name_field: "name",
+    scope_kinds: &[
+        "function_declaration",
+        "generator_function_declaration",
+        "method_definition",
+        "method_signature",
+        "abstract_method_signature",
+        "class_declaration",
+        "abstract_class_declaration",
+        "interface_declaration",
+        "arrow_function",
+        "function_expression",
+    ],
+    function_kinds: &[
+        "function_declaration",
+        "generator_function_declaration",
+        "method_definition",
+    ],
+    body_field: "body",
+    class_name_fields: &["name"],
+    method_kinds: &["method_definition", "method_signature", "abstract_method_signature"],
+    method_wrapper_kinds: &[],
+    bases: BasesStrategy::JsHeritage,
+    imports: ImportStrategy::EsModule,
+};
+
 /// `treesitter.extract_entities` core. See the module docs for the
 /// request/response shape.
 pub fn extract_entities(path: &str, language: Option<&str>) -> Result<Value, IpcError> {
@@ -87,9 +229,17 @@ pub fn extract_entities(path: &str, language: Option<&str>) -> Result<Value, Ipc
             format!("{} has no entity query in this build", grammar.name),
         )
     })?;
+    // `entity_query` and `entity_spec` are wired in lockstep in the registry, so
+    // a query without a spec is a build bug, not a caller error.
+    let spec = grammar.entity_spec.ok_or_else(|| {
+        IpcError::new(
+            "unsupported_language",
+            format!("{} has an entity query but no spec", grammar.name),
+        )
+    })?;
 
     let module = module_name(path);
-    let entities = walk(&source, grammar, query_src, &module)?;
+    let entities = walk(&source, grammar, query_src, spec, &module)?;
 
     Ok(json!({
         "path": path,
@@ -236,13 +386,16 @@ fn module_name(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
-/// Run the entity query, then classify each captured node. Functions/classes
-/// are classified by their enclosing definition; calls get their caller from
-/// the nearest enclosing function (else the module).
+/// Run the entity query, then classify each captured node per the language
+/// [`EntitySpec`]. Functions/classes are classified by their enclosing
+/// definition; calls get their caller from the nearest enclosing function
+/// (else the module). The `@`-capture *meaning* is uniform across languages;
+/// the spec supplies the node kinds/fields used to read each one.
 fn walk(
     source: &str,
     grammar: &Grammar,
     query_src: &str,
+    spec: &EntitySpec,
     module: &str,
 ) -> Result<Entities, IpcError> {
     let lang = (grammar.language)();
@@ -281,20 +434,20 @@ fn walk(
                 // Only *top-level* functions go in `functions`; methods are
                 // carried by their class, nested closures are skipped (their
                 // calls are still attributed to them as a caller).
-                if enclosing_def(node).is_none() {
-                    if let Some(name) = field_text(node, "name", src) {
+                if enclosing_def(node, spec).is_none() {
+                    if let Some(name) = field_text(node, spec.name_field, src) {
                         out.functions.push(NamedLine { name, line: line_of(node) });
                     }
                 }
             } else if idx == class_idx {
-                if enclosing_def(node).is_none() {
-                    out.classes.push(class_info(node, src));
+                if enclosing_def(node, spec).is_none() {
+                    out.classes.push(class_info(node, src, spec));
                 }
             } else if idx == import_idx {
-                collect_imports(node, src, &mut out.imports);
+                collect_imports(node, src, spec, &mut out.imports);
             } else if idx == call_idx {
                 if let Some(callee) = callee_name(node, src) {
-                    let caller = enclosing_function_name(node, src)
+                    let caller = enclosing_function_name(node, src, spec)
                         .unwrap_or_else(|| module.to_string());
                     out.calls.push(Call { caller, callee, line: line_of(node) });
                 }
@@ -316,70 +469,97 @@ fn field_text(node: Node, field: &str, src: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Nearest ancestor that is a `function_definition` or `class_definition`
-/// (skips the node itself and any `decorated_definition` wrapper). `None` means
-/// the node is at module top level. Drives top-level-vs-method classification.
-fn enclosing_def(node: Node) -> Option<Node> {
+/// Nearest ancestor whose kind is one of `spec.scope_kinds` (a function/class/
+/// method/impl). `None` means the node is at module top level. Drives
+/// top-level-vs-nested classification.
+fn enclosing_def<'a>(node: Node<'a>, spec: &EntitySpec) -> Option<Node<'a>> {
     let mut cur = node.parent();
     while let Some(n) = cur {
-        match n.kind() {
-            "function_definition" | "class_definition" => return Some(n),
-            _ => cur = n.parent(),
-        }
-    }
-    None
-}
-
-/// Name of the nearest enclosing `function_definition` — the caller for a call
-/// expression. `None` at module level (the caller falls back to the module).
-fn enclosing_function_name(node: Node, src: &[u8]) -> Option<String> {
-    let mut cur = node.parent();
-    while let Some(n) = cur {
-        if n.kind() == "function_definition" {
-            return field_text(n, "name", src);
+        if spec.scope_kinds.contains(&n.kind()) {
+            return Some(n);
         }
         cur = n.parent();
     }
     None
 }
 
-/// Build a [`ClassInfo`] from a `class_definition`: its name, line, the bases
-/// in `superclasses`, and the names of the `def`s directly in its body.
-fn class_info(node: Node, src: &[u8]) -> ClassInfo {
-    let name = field_text(node, "name", src).unwrap_or_default();
-    let line = line_of(node);
+/// Name of the nearest enclosing function (kind in `spec.function_kinds`) — the
+/// caller for a call expression. `None` at module level (the caller falls back
+/// to the module identity).
+fn enclosing_function_name(node: Node, src: &[u8], spec: &EntitySpec) -> Option<String> {
+    let mut cur = node.parent();
+    while let Some(n) = cur {
+        if spec.function_kinds.contains(&n.kind()) {
+            return field_text(n, spec.name_field, src);
+        }
+        cur = n.parent();
+    }
+    None
+}
 
-    // Bases: identifiers/attributes in the `superclasses` argument list. Skip
-    // keyword arguments (`metaclass=…`), which aren't inheritance.
-    let mut bases = Vec::new();
-    if let Some(args) = node.child_by_field_name("superclasses") {
-        let mut c = args.walk();
-        for arg in args.named_children(&mut c) {
-            match arg.kind() {
-                "identifier" | "attribute" => {
-                    if let Ok(t) = arg.utf8_text(src) {
-                        bases.push(t.to_string());
-                    }
-                }
-                _ => {}
-            }
+/// The leading identifier of a (possibly generic / qualified) *type* reference:
+/// `Foo` → `Foo`, `Foo<T>` → `Foo`, `a.B`/`a::B` → the first identifier. The
+/// base/parent type for an `INHERITS` edge. Pre-order, first identifier wins.
+fn head_type_name(node: Node, src: &[u8]) -> Option<String> {
+    if matches!(
+        node.kind(),
+        "identifier" | "type_identifier" | "field_identifier" | "property_identifier"
+    ) {
+        return node.utf8_text(src).ok().map(str::to_string);
+    }
+    let mut c = node.walk();
+    for child in node.named_children(&mut c) {
+        if let Some(n) = head_type_name(child, src) {
+            return Some(n);
         }
     }
+    None
+}
 
-    // Methods: `def`s directly in the class body (a `decorated_definition`
-    // wraps the real def). Nested classes / nested defs are NOT methods.
+/// The *trailing* identifier of a (possibly qualified / member) reference:
+/// `foo` → `foo`, `obj.method`/`a::b::read` → `method`/`read`. The useful
+/// name-level edge target for a callee. Pre-order, last identifier wins.
+fn final_identifier(node: Node, src: &[u8]) -> Option<String> {
+    if matches!(
+        node.kind(),
+        "identifier"
+            | "type_identifier"
+            | "field_identifier"
+            | "property_identifier"
+            | "shorthand_property_identifier"
+    ) {
+        return node.utf8_text(src).ok().map(str::to_string);
+    }
+    // Recurse into the last named child so a qualified path yields its tail.
+    let mut last = None;
+    let mut c = node.walk();
+    for child in node.named_children(&mut c) {
+        last = Some(child);
+    }
+    last.and_then(|n| final_identifier(n, src))
+}
+
+/// Build a [`ClassInfo`] from a `@class` node: its name (first present of
+/// `spec.class_name_fields`), line, bases (per `spec.bases`), and the methods
+/// directly in its body (`spec.method_kinds`, unwrapping `method_wrapper_kinds`).
+fn class_info(node: Node, src: &[u8], spec: &EntitySpec) -> ClassInfo {
+    let name = class_name(node, src, spec);
+    let line = line_of(node);
+    let bases = extract_bases(node, src, spec);
+
     let mut methods = Vec::new();
-    if let Some(body) = node.child_by_field_name("body") {
+    if let Some(body) = node.child_by_field_name(spec.body_field) {
         let mut c = body.walk();
         for stmt in body.named_children(&mut c) {
-            let def = if stmt.kind() == "decorated_definition" {
+            // Unwrap a wrapper (Python `decorated_definition`) to its real def.
+            let def = if spec.method_wrapper_kinds.contains(&stmt.kind()) {
                 stmt.child_by_field_name("definition")
             } else {
                 Some(stmt)
             };
             if let Some(d) = def {
-                if d.kind() == "function_definition" {
-                    if let Some(n) = field_text(d, "name", src) {
+                if spec.method_kinds.contains(&d.kind()) {
+                    if let Some(n) = field_text(d, spec.name_field, src) {
                         methods.push(n);
                     }
                 }
@@ -390,47 +570,182 @@ fn class_info(node: Node, src: &[u8]) -> ClassInfo {
     ClassInfo { name, line, methods, bases }
 }
 
-/// Pull module name(s) from an `import_statement` / `import_from_statement`.
-/// `import a, b.c` → two imports; `from x.y import z` → one import of `x.y`.
-fn collect_imports(node: Node, src: &[u8], out: &mut Vec<NamedLine>) {
-    let line = line_of(node);
-    match node.kind() {
-        "import_statement" => {
+/// Name a `@class` node: try each of `spec.class_name_fields` in order (Rust
+/// `impl` has no `name`, only `type`), reading the field's head type name.
+fn class_name(node: Node, src: &[u8], spec: &EntitySpec) -> String {
+    for field in spec.class_name_fields {
+        if let Some(fc) = node.child_by_field_name(field) {
+            if let Some(n) = head_type_name(fc, src) {
+                return n;
+            }
+            if let Ok(t) = fc.utf8_text(src) {
+                return t.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// Extract a `@class` node's base/parent types per the language strategy.
+fn extract_bases(node: Node, src: &[u8], spec: &EntitySpec) -> Vec<String> {
+    match spec.bases {
+        BasesStrategy::None => Vec::new(),
+        BasesStrategy::PythonSuperclasses => {
+            // identifiers/attributes in `superclasses`; skip kwargs (`metaclass=`).
+            let mut bases = Vec::new();
+            if let Some(args) = node.child_by_field_name("superclasses") {
+                let mut c = args.walk();
+                for arg in args.named_children(&mut c) {
+                    if matches!(arg.kind(), "identifier" | "attribute") {
+                        if let Ok(t) = arg.utf8_text(src) {
+                            bases.push(t.to_string());
+                        }
+                    }
+                }
+            }
+            bases
+        }
+        BasesStrategy::JsHeritage => {
+            // `extends`/`implements` types live in a `class_heritage` (classes)
+            // or a direct `extends_type_clause` (interfaces).
+            let mut bases = Vec::new();
             let mut c = node.walk();
             for child in node.named_children(&mut c) {
-                let module = match child.kind() {
-                    // `import os` / `import os.path`
-                    "dotted_name" => child.utf8_text(src).ok().map(str::to_string),
-                    // `import os as o` — the real module is the `name` field.
-                    "aliased_import" => field_text(child, "name", src),
-                    _ => None,
-                };
+                match child.kind() {
+                    "class_heritage" => {
+                        let mut h = child.walk();
+                        for gc in child.named_children(&mut h) {
+                            collect_heritage_types(gc, src, &mut bases);
+                        }
+                    }
+                    "extends_clause" | "implements_clause" | "extends_type_clause" => {
+                        collect_heritage_types(child, src, &mut bases);
+                    }
+                    _ => {}
+                }
+            }
+            bases
+        }
+        BasesStrategy::Rust => {
+            let mut bases = Vec::new();
+            match node.kind() {
+                // `impl Trait for Type` → the implemented trait is the base.
+                "impl_item" => {
+                    if let Some(t) = node.child_by_field_name("trait") {
+                        if let Some(n) = head_type_name(t, src) {
+                            bases.push(n);
+                        }
+                    }
+                }
+                // `trait T: Super + Other` → supertrait bounds.
+                "trait_item" => {
+                    if let Some(b) = node.child_by_field_name("bounds") {
+                        let mut c = b.walk();
+                        for tb in b.named_children(&mut c) {
+                            if let Some(n) = head_type_name(tb, src) {
+                                bases.push(n);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            bases
+        }
+    }
+}
+
+/// Collect the leading type name of each clause entry into `out`. A heritage
+/// clause (`extends A, B`) holds one entry per parent; an entry may itself be a
+/// clause node (JS `class_heritage` wraps `extends_clause`) — recurse one level.
+fn collect_heritage_types(node: Node, src: &[u8], out: &mut Vec<String>) {
+    match node.kind() {
+        "extends_clause" | "implements_clause" | "extends_type_clause" => {
+            let mut c = node.walk();
+            for entry in node.named_children(&mut c) {
+                if let Some(n) = head_type_name(entry, src) {
+                    out.push(n);
+                }
+            }
+        }
+        _ => {
+            if let Some(n) = head_type_name(node, src) {
+                out.push(n);
+            }
+        }
+    }
+}
+
+/// Pull module name(s) from an `@import` node per the language strategy.
+fn collect_imports(node: Node, src: &[u8], spec: &EntitySpec, out: &mut Vec<NamedLine>) {
+    let line = line_of(node);
+    match spec.imports {
+        ImportStrategy::Python => match node.kind() {
+            "import_statement" => {
+                let mut c = node.walk();
+                for child in node.named_children(&mut c) {
+                    let module = match child.kind() {
+                        // `import os` / `import os.path`
+                        "dotted_name" => child.utf8_text(src).ok().map(str::to_string),
+                        // `import os as o` — the real module is the `name` field.
+                        "aliased_import" => field_text(child, "name", src),
+                        _ => None,
+                    };
+                    if let Some(m) = module {
+                        out.push(NamedLine { name: m, line });
+                    }
+                }
+            }
+            "import_from_statement" => {
+                // `from <module_name> import …` — a relative import
+                // (`from . import x`) carries its dots in the text.
+                if let Some(m) = field_text(node, "module_name", src) {
+                    out.push(NamedLine { name: m, line });
+                }
+            }
+            _ => {}
+        },
+        ImportStrategy::RustUse => {
+            // `use a::b::c;` / `use a::b::{c, d};` → the module path `a::b`. A
+            // scoped path's `path` field is the prefix; a bare `use serde;`
+            // argument has no `path`, so use its whole text.
+            if let Some(arg) = node.child_by_field_name("argument") {
+                let module = arg
+                    .child_by_field_name("path")
+                    .or(Some(arg))
+                    .and_then(|n| n.utf8_text(src).ok())
+                    .map(str::to_string);
                 if let Some(m) = module {
                     out.push(NamedLine { name: m, line });
                 }
             }
         }
-        "import_from_statement" => {
-            // `from <module_name> import …` — record the source module. A
-            // relative import (`from . import x`) has its dots in the text.
-            if let Some(m) = field_text(node, "module_name", src) {
-                out.push(NamedLine { name: m, line });
+        ImportStrategy::EsModule => {
+            // `import … from "mod"` / `import "mod"` → the `source` string
+            // literal, stripped of its surrounding quotes.
+            if let Some(s) = field_text(node, "source", src) {
+                let m = s.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+                if !m.is_empty() {
+                    out.push(NamedLine { name: m.to_string(), line });
+                }
             }
         }
-        _ => {}
     }
 }
 
-/// Resolve a `call` node's callee name. `foo()` → `"foo"`; `obj.method()` →
-/// `"method"` (the attribute's final identifier, the useful edge target).
-/// Returns `None` for calls whose target isn't a plain name (e.g. `f()()`,
-/// `arr[0]()`) — those don't yield a meaningful name-level edge.
+/// Resolve a call node's callee name. `foo()` → `"foo"`; `obj.method()` /
+/// `a::b::read()` → `"method"` / `"read"` (the trailing identifier, the useful
+/// edge target). Returns `None` for calls whose target isn't a name
+/// (`f()()`, `arr[0]()`) — those yield no meaningful name-level edge. The
+/// `function` field is shared across Python `call` and JS/TS/Rust
+/// `call_expression`, so this is language-agnostic.
 fn callee_name(call: Node, src: &[u8]) -> Option<String> {
     let f = call.child_by_field_name("function")?;
     match f.kind() {
-        "identifier" => f.utf8_text(src).ok().map(str::to_string),
-        "attribute" => field_text(f, "attribute", src),
-        _ => None,
+        // A bare literal/index/paren callee has no name-level target.
+        "subscript_expression" | "index_expression" | "parenthesized_expression"
+        | "call_expression" | "call" => None,
+        _ => final_identifier(f, src),
     }
 }
 
@@ -452,6 +767,21 @@ mod tests {
     fn extract(src: &str) -> Value {
         let f = temp_source(src, "py");
         extract_entities(f.path().to_str().unwrap(), None).unwrap()
+    }
+
+    /// Extract entities for an arbitrary language, inferring it from `ext`.
+    fn extract_ext(src: &str, ext: &str) -> Value {
+        let f = temp_source(src, ext);
+        extract_entities(f.path().to_str().unwrap(), None).unwrap()
+    }
+
+    fn names_of<'a>(v: &'a Value, key: &str, field: &str) -> Vec<&'a str> {
+        v[key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e[field].as_str().unwrap())
+            .collect()
     }
 
     #[test]
@@ -553,7 +883,8 @@ mod tests {
 
     #[test]
     fn unknown_language_is_rejected() {
-        let f = temp_source("fn main() {}\n", "rs");
+        // `.hs` (Haskell) isn't linked → no grammar to infer.
+        let f = temp_source("main = putStrLn \"hi\"\n", "hs");
         let err = extract_entities(f.path().to_str().unwrap(), None).unwrap_err();
         assert_eq!(err.code, "unknown_language");
     }
@@ -561,7 +892,7 @@ mod tests {
     #[test]
     fn explicit_unknown_language_is_rejected() {
         let f = temp_source("x = 1\n", "py");
-        let err = extract_entities(f.path().to_str().unwrap(), Some("rust")).unwrap_err();
+        let err = extract_entities(f.path().to_str().unwrap(), Some("haskell")).unwrap_err();
         assert_eq!(err.code, "unknown_language");
     }
 
@@ -577,5 +908,113 @@ mod tests {
         assert_eq!(v["functions"].as_array().unwrap().len(), 0);
         assert_eq!(v["classes"].as_array().unwrap().len(), 0);
         assert_eq!(v["calls"].as_array().unwrap().len(), 0);
+    }
+
+    // ── Rust ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rust_extracts_functions_struct_methods_and_impl_trait_base() {
+        let src = "use std::collections::HashMap;\n\
+                   \nfn free() {\n    helper();\n}\n\
+                   \nstruct Widget {\n    x: u32,\n}\n\
+                   \ntrait Render {\n    fn render(&self);\n}\n\
+                   \nimpl Render for Widget {\n    fn render(&self) {\n        self.draw();\n    }\n}\n";
+        let v = extract_ext(src, "rs");
+        assert_eq!(v["language"], "rust");
+
+        // Free fn is top-level; the impl method is NOT.
+        let fns = names_of(&v, "functions", "name");
+        assert!(fns.contains(&"free"), "free fn missing: {fns:?}");
+        assert!(!fns.contains(&"render"), "method leaked into functions");
+
+        // `impl Render for Widget` → a Widget class carrying `render`, with
+        // `Render` as an INHERITS base.
+        let classes = v["classes"].as_array().unwrap();
+        let widget_impl = classes
+            .iter()
+            .find(|c| c["name"] == "Widget" && !c["methods"].as_array().unwrap().is_empty())
+            .expect("impl Widget with methods");
+        let methods: Vec<&str> = widget_impl["methods"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
+        assert_eq!(methods, vec!["render"]);
+        let bases: Vec<&str> = widget_impl["bases"].as_array().unwrap().iter().map(|b| b.as_str().unwrap()).collect();
+        assert_eq!(bases, vec!["Render"]);
+
+        // `use std::collections::HashMap;` → module path `std::collections`.
+        assert_eq!(names_of(&v, "imports", "module"), vec!["std::collections"]);
+
+        // free() → helper(); render() → self.draw() attributed to render.
+        let calls = v["calls"].as_array().unwrap();
+        let helper = calls.iter().find(|c| c["callee"] == "helper").unwrap();
+        assert_eq!(helper["caller"], "free");
+        let draw = calls.iter().find(|c| c["callee"] == "draw").unwrap();
+        assert_eq!(draw["caller"], "render");
+    }
+
+    // ── JavaScript ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn javascript_extracts_functions_class_and_es_imports() {
+        let src = "import { mount } from './dom.js';\n\
+                   \nexport function boot() {\n    mount();\n}\n\
+                   \nclass View extends Base {\n  render() {\n    draw();\n  }\n}\n";
+        let v = extract_ext(src, "js");
+        assert_eq!(v["language"], "javascript");
+
+        // `export function boot` is still a top-level function.
+        assert!(names_of(&v, "functions", "name").contains(&"boot"));
+
+        let classes = v["classes"].as_array().unwrap();
+        assert_eq!(classes[0]["name"], "View");
+        assert_eq!(names_of(&v, "classes", "name"), vec!["View"]);
+        let methods: Vec<&str> = classes[0]["methods"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
+        assert_eq!(methods, vec!["render"]);
+        let bases: Vec<&str> = classes[0]["bases"].as_array().unwrap().iter().map(|b| b.as_str().unwrap()).collect();
+        assert_eq!(bases, vec!["Base"]);
+
+        // ES import source string, quotes stripped.
+        assert_eq!(names_of(&v, "imports", "module"), vec!["./dom.js"]);
+
+        let calls = v["calls"].as_array().unwrap();
+        assert_eq!(calls.iter().find(|c| c["callee"] == "mount").unwrap()["caller"], "boot");
+        assert_eq!(calls.iter().find(|c| c["callee"] == "draw").unwrap()["caller"], "render");
+    }
+
+    // ── TypeScript ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn typescript_extracts_class_interface_and_implements_base() {
+        let src = "import type { Opts } from './opts';\n\
+                   \ninterface Shape {\n  area(): number;\n}\n\
+                   \nexport function make(): void {\n  build();\n}\n\
+                   \nclass Circle extends Base implements Shape {\n  area(): number {\n    return compute();\n  }\n}\n";
+        let v = extract_ext(src, "ts");
+        assert_eq!(v["language"], "typescript");
+
+        assert!(names_of(&v, "functions", "name").contains(&"make"));
+
+        let classes = v["classes"].as_array().unwrap();
+        // Interface Shape carries its method signature.
+        let shape = classes.iter().find(|c| c["name"] == "Shape").expect("interface Shape");
+        assert_eq!(shape["methods"].as_array().unwrap()[0], "area");
+        // Circle extends Base + implements Shape → both are bases.
+        let circle = classes.iter().find(|c| c["name"] == "Circle").expect("class Circle");
+        let bases: Vec<&str> = circle["bases"].as_array().unwrap().iter().map(|b| b.as_str().unwrap()).collect();
+        assert!(bases.contains(&"Base"), "extends base missing: {bases:?}");
+        assert!(bases.contains(&"Shape"), "implements base missing: {bases:?}");
+        assert_eq!(circle["methods"].as_array().unwrap()[0], "area");
+
+        assert_eq!(names_of(&v, "imports", "module"), vec!["./opts"]);
+
+        let calls = v["calls"].as_array().unwrap();
+        assert_eq!(calls.iter().find(|c| c["callee"] == "build").unwrap()["caller"], "make");
+        assert_eq!(calls.iter().find(|c| c["callee"] == "compute").unwrap()["caller"], "area");
+    }
+
+    #[test]
+    fn markdown_has_no_entity_extraction() {
+        // Markdown is chunk-only — extract_entities rejects it.
+        let f = temp_source("# Title\n\nbody\n", "md");
+        let err = extract_entities(f.path().to_str().unwrap(), None).unwrap_err();
+        assert_eq!(err.code, "unsupported_language");
     }
 }

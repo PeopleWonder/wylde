@@ -1,10 +1,12 @@
 //! Language registry + the file→tree primitive.
 //!
-//! Slice 1 links exactly ONE grammar (Python). The registry is a static
-//! table so adding a grammar later is one row plus a `Cargo.toml` dep —
-//! that expansion is Slice 5 (see the plan). Every verb that takes a
-//! `language` resolves it through [`resolve`]; `treesitter.languages`
-//! enumerates [`REGISTRY`].
+//! Slice 1 linked exactly ONE grammar (Python). Slice 4 expands the registry
+//! to the plan's recommended v1 set — Python, Rust, TypeScript, JavaScript,
+//! Markdown (`docs/plans/treesitter-sidecar.md` §"Dependencies & grammar
+//! strategy"). The registry is a static table so adding a grammar is one row
+//! plus a `Cargo.toml` dep. Every verb that takes a `language` resolves it
+//! through [`resolve`] (or [`resolve_by_path`] from a file extension);
+//! `treesitter.languages` enumerates [`REGISTRY`].
 
 use serde_json::{json, Value};
 use tree_sitter::{Language, Node, Parser};
@@ -46,17 +48,75 @@ pub struct Grammar {
     /// with `unsupported_language` (unlike chunking, there's no useful
     /// fallback without an AST).
     pub entity_query: Option<&'static str>,
+
+    /// The per-language node-kind/field metadata [`crate::entities`] consults
+    /// to classify the [`Self::entity_query`] captures (a `@function` is named
+    /// via this language's name field; a `@class`'s methods/bases are read from
+    /// these node kinds, etc.). `Some` exactly when [`Self::entity_query`] is —
+    /// the query says *what* to capture, the spec says *how* to read it. A
+    /// chunk-only grammar (Markdown) leaves both `None`.
+    pub entity_spec: Option<&'static crate::entities::EntitySpec>,
 }
 
-/// Every grammar this build links. Slice 1–2: Python only.
-pub static REGISTRY: &[Grammar] = &[Grammar {
-    name: "python",
-    grammar_sha: "tree-sitter-python@0.25",
-    language: || tree_sitter_python::LANGUAGE.into(),
-    extensions: &["py", "pyi"],
-    chunk_query: Some(include_str!("queries/python/chunks.scm")),
-    entity_query: Some(include_str!("queries/python/entities.scm")),
-}];
+/// Every grammar this build links. Slice 4: Python, Rust, TypeScript,
+/// JavaScript, Markdown. Markdown is chunk-only (no code entities to extract —
+/// `entity_query`/`entity_spec` `None`); the rest carry both.
+///
+/// TypeScript is linked via `LANGUAGE_TYPESCRIPT` (the `.ts` grammar). The
+/// `.tsx` variant (`LANGUAGE_TSX`, which also parses JSX) is a deliberate
+/// follow-up — adding it is one more row, but it's a *separate* grammar, and
+/// claiming `.tsx` here would silently misparse JSX under the non-TSX parser.
+pub static REGISTRY: &[Grammar] = &[
+    Grammar {
+        name: "python",
+        grammar_sha: "tree-sitter-python@0.25",
+        language: || tree_sitter_python::LANGUAGE.into(),
+        extensions: &["py", "pyi"],
+        chunk_query: Some(include_str!("queries/python/chunks.scm")),
+        entity_query: Some(include_str!("queries/python/entities.scm")),
+        entity_spec: Some(&crate::entities::PYTHON_SPEC),
+    },
+    Grammar {
+        name: "rust",
+        grammar_sha: "tree-sitter-rust@0.24",
+        language: || tree_sitter_rust::LANGUAGE.into(),
+        extensions: &["rs"],
+        chunk_query: Some(include_str!("queries/rust/chunks.scm")),
+        entity_query: Some(include_str!("queries/rust/entities.scm")),
+        entity_spec: Some(&crate::entities::RUST_SPEC),
+    },
+    Grammar {
+        name: "typescript",
+        grammar_sha: "tree-sitter-typescript@0.23",
+        language: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        extensions: &["ts", "mts", "cts"],
+        chunk_query: Some(include_str!("queries/typescript/chunks.scm")),
+        entity_query: Some(include_str!("queries/typescript/entities.scm")),
+        entity_spec: Some(&crate::entities::TS_SPEC),
+    },
+    Grammar {
+        name: "javascript",
+        grammar_sha: "tree-sitter-javascript@0.23",
+        language: || tree_sitter_javascript::LANGUAGE.into(),
+        // The JS grammar parses JSX too, so `.jsx` rides here.
+        extensions: &["js", "jsx", "mjs", "cjs"],
+        chunk_query: Some(include_str!("queries/javascript/chunks.scm")),
+        entity_query: Some(include_str!("queries/javascript/entities.scm")),
+        entity_spec: Some(&crate::entities::JS_SPEC),
+    },
+    Grammar {
+        name: "markdown",
+        grammar_sha: "tree-sitter-md@0.3",
+        // The block grammar (`LANGUAGE`); the inline grammar is unused —
+        // section/heading structure is all the chunker needs.
+        language: || tree_sitter_md::LANGUAGE.into(),
+        extensions: &["md", "markdown"],
+        chunk_query: Some(include_str!("queries/markdown/chunks.scm")),
+        // Markdown has no functions/classes/imports/calls — chunk-only.
+        entity_query: None,
+        entity_spec: None,
+    },
+];
 
 /// Infer a grammar from a file path's extension (case-insensitive). `None`
 /// when no linked grammar claims the extension.
@@ -187,46 +247,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_lists_python_only() {
-        assert_eq!(REGISTRY.len(), 1);
-        assert_eq!(REGISTRY[0].name, "python");
+    fn registry_lists_the_slice4_grammars() {
+        let names: Vec<&str> = REGISTRY.iter().map(|g| g.name).collect();
+        assert_eq!(names, vec!["python", "rust", "typescript", "javascript", "markdown"]);
     }
 
     #[test]
     fn resolve_is_case_insensitive_and_trims() {
         assert!(resolve("python").is_some());
         assert!(resolve("  PyThOn ").is_some());
-        assert!(resolve("rust").is_none());
+        assert!(resolve("rust").is_some());
+        assert!(resolve("TypeScript").is_some());
+        assert!(resolve("haskell").is_none());
     }
 
     #[test]
-    fn resolve_by_path_maps_python_extensions() {
+    fn resolve_by_path_maps_extensions_to_grammars() {
         assert_eq!(resolve_by_path("a/b/c.py").unwrap().name, "python");
         assert_eq!(resolve_by_path("MOD.PY").unwrap().name, "python");
         assert_eq!(resolve_by_path("stub.pyi").unwrap().name, "python");
-        assert!(resolve_by_path("main.rs").is_none());
+        assert_eq!(resolve_by_path("src/main.rs").unwrap().name, "rust");
+        assert_eq!(resolve_by_path("app.ts").unwrap().name, "typescript");
+        assert_eq!(resolve_by_path("util.mts").unwrap().name, "typescript");
+        assert_eq!(resolve_by_path("index.js").unwrap().name, "javascript");
+        assert_eq!(resolve_by_path("View.jsx").unwrap().name, "javascript");
+        assert_eq!(resolve_by_path("README.md").unwrap().name, "markdown");
+        // `.tsx` is intentionally not claimed (needs the separate TSX grammar).
+        assert!(resolve_by_path("Component.tsx").is_none());
         assert!(resolve_by_path("no_extension").is_none());
     }
 
     #[test]
-    fn python_grammar_carries_a_chunk_query() {
-        assert!(resolve("python").unwrap().chunk_query.is_some());
+    fn code_grammars_carry_chunk_and_entity_queries_in_lockstep_with_specs() {
+        for g in REGISTRY {
+            // Every linked grammar chunks.
+            assert!(g.chunk_query.is_some(), "{} has no chunk query", g.name);
+            // entity_query and entity_spec are present together or not at all.
+            assert_eq!(
+                g.entity_query.is_some(),
+                g.entity_spec.is_some(),
+                "{} query/spec mismatch",
+                g.name
+            );
+        }
+        // Markdown is the chunk-only grammar.
+        assert!(resolve("markdown").unwrap().entity_query.is_none());
+        assert!(resolve("rust").unwrap().entity_query.is_some());
     }
 
     #[test]
-    fn python_grammar_carries_an_entity_query() {
-        assert!(resolve("python").unwrap().entity_query.is_some());
-    }
-
-    #[test]
-    fn languages_reports_python_with_abi() {
+    fn languages_reports_every_grammar_with_abi() {
         let v = languages();
         let arr = v["languages"].as_array().unwrap();
-        assert_eq!(arr.len(), 1);
+        assert_eq!(arr.len(), 5);
         assert_eq!(arr[0]["name"], "python");
         assert_eq!(arr[0]["grammar_sha"], "tree-sitter-python@0.25");
-        // ABI must be a positive integer the runtime accepted.
-        assert!(arr[0]["abi"].as_u64().unwrap() > 0);
+        // Every grammar reports a positive ABI the runtime accepted.
+        for g in arr {
+            assert!(g["abi"].as_u64().unwrap() > 0, "{} has no abi", g["name"]);
+        }
     }
 
     #[test]
@@ -247,8 +326,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_links_rust_now() {
+        let out = parse("fn main() { let x = 1; }\n", "rust").unwrap();
+        assert_eq!(out["language"], "rust");
+        assert_eq!(out["has_error"], false);
+        assert_eq!(out["root"]["kind"], "source_file");
+    }
+
+    #[test]
     fn parse_unknown_language_errors() {
-        let err = parse("fn main(){}", "rust").unwrap_err();
+        let err = parse("module Main where", "haskell").unwrap_err();
         assert_eq!(err.code, "unknown_language");
     }
 

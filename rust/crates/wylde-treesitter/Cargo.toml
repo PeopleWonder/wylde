@@ -28,15 +28,25 @@ tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 
-# Tree-sitter runtime + the Python grammar (statically linked — one
-# self-contained binary, no `.dll`/`.so` to ship). Slice 1 ships Python
-# ONLY; the remaining grammars land in later slices (see
-# docs/plans/treesitter-sidecar.md §"Slice breakdown"). Pin exact versions
-# so a grammar/runtime ABI drift is a deliberate bump, not a silent one
-# (plan risk #2). `tree-sitter-python` 0.25 requires the `tree-sitter` 0.25+
-# runtime ABI.
+# Tree-sitter runtime + statically-linked grammars (one self-contained
+# binary, no `.dll`/`.so` to ship). Slice 1 shipped Python only; Slice 4
+# expands to the plan's recommended v1 set — Rust, TypeScript, JavaScript,
+# Markdown (docs/plans/treesitter-sidecar.md §"Dependencies & grammar
+# strategy"). Pin majors so a grammar/runtime ABI drift is a deliberate bump,
+# not a silent one (plan risk #2). All grammar crates expose a `LANGUAGE`
+# `LanguageFn` and ride the same `tree-sitter-language` shim the `tree-sitter`
+# 0.25 runtime accepts via `.into()`. Each crate ships its grammar's C source
+# that build.rs compiles inline (the standard pure-Rust tree-sitter pattern —
+# no system grammar libraries, no Python).
 tree-sitter = "0.25"
 tree-sitter-python = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-javascript = "0.23"
+tree-sitter-typescript = "0.23"
+# Markdown's block grammar (MDeiml/tree-sitter-markdown, published as
+# `tree-sitter-md`). The companion inline grammar is unused — chunking/outline
+# work off the block tree's `section`/heading structure.
+tree-sitter-md = "0.3"
 
 # tree-sitter's `QueryCursor::matches` returns a `StreamingIterator` (the
 # trait is NOT re-exported by `tree-sitter`); the chunk verb's query walk
