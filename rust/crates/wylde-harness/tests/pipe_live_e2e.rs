@@ -119,7 +119,11 @@ async fn unregistered_verb_returns_no_action_for_strangler_fallback() {
         "conversations.new",
         "prompts.list",
         "rag.workspaces.list",
-        "models.list",
+        // models.* registry/Ollama verbs are registered as of Slice 3a;
+        // the Voice-coupled transcribe/synthesize stay forward-only and
+        // must still surface as no_action for the strangler fallback.
+        "models.transcribe",
+        "models.synthesize",
     ] {
         let reply = ipc::send_action(&service, verb, json!({})).await;
         assert!(
@@ -174,5 +178,99 @@ async fn memory_long_term_save_then_list_round_trips_over_live_pipe() {
     match prior {
         Some(v) => std::env::set_var("WYLDE_DATA_DIR", v),
         None => std::env::remove_var("WYLDE_DATA_DIR"),
+    }
+}
+
+#[tokio::test]
+async fn models_default_round_trips_over_live_pipe_when_flag_on() {
+    // Slice 3a: the model_state-backed verbs (set_default → get_default)
+    // round-trip end-to-end over the wire when the Rust impl flag is on.
+    // Persistence is disk-only (no Ollama needed), so this stays
+    // self-contained.
+    let _g = registry_guard().await;
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let prior_impl = std::env::var_os("WYLDE_HARNESS_MODELS_IMPL");
+    let prior_active = std::env::var_os("ACTIVE_MODEL_PATH");
+    let prior_default = std::env::var_os("DEFAULT_MODEL_PATH");
+    let prior_env_default = std::env::var_os("WYLDE_DEFAULT_MODEL");
+    std::env::set_var("WYLDE_HARNESS_MODELS_IMPL", "rust");
+    std::env::set_var("ACTIVE_MODEL_PATH", td.path().join("active_model.json"));
+    std::env::set_var("DEFAULT_MODEL_PATH", td.path().join("default_model.json"));
+    std::env::remove_var("WYLDE_DEFAULT_MODEL");
+    wylde_harness::model_registry::model_state::reset_for_tests();
+
+    let (service, server, task) = spin_up_pipe().await;
+
+    // Nothing starred yet → null.
+    let got = ipc::send_action(&service, "models.get_default", json!({})).await;
+    assert!(got.ok, "get_default reply: {got:?}");
+    assert_eq!(got.data["model"], serde_json::Value::Null);
+
+    // Star one.
+    let set = ipc::send_action(
+        &service,
+        "models.set_default",
+        json!({"model": "qwen3:0.6b"}),
+    )
+    .await;
+    assert!(set.ok, "set_default reply: {set:?}");
+    assert_eq!(set.data["ok"], true);
+    assert_eq!(set.data["model"], "qwen3:0.6b");
+
+    // Read it back over a fresh request.
+    let got = ipc::send_action(&service, "models.get_default", json!({})).await;
+    assert!(got.ok);
+    assert_eq!(got.data["model"], "qwen3:0.6b");
+
+    // get_profile for an unknown model is an empty profile, not an error.
+    let prof = ipc::send_action(
+        &service,
+        "models.get_profile",
+        json!({"name": "qwen3:0.6b"}),
+    )
+    .await;
+    assert!(prof.ok, "get_profile reply: {prof:?}");
+    assert_eq!(prof.data["name"], "qwen3:0.6b");
+
+    server.stop();
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+
+    // Restore env + caches so sibling tests see a clean slate.
+    wylde_harness::model_registry::model_state::reset_for_tests();
+    restore("WYLDE_HARNESS_MODELS_IMPL", prior_impl);
+    restore("ACTIVE_MODEL_PATH", prior_active);
+    restore("DEFAULT_MODEL_PATH", prior_default);
+    restore("WYLDE_DEFAULT_MODEL", prior_env_default);
+}
+
+#[tokio::test]
+async fn models_verbs_gated_off_return_not_implemented() {
+    // With the flag off (the default), the registered models.* handlers
+    // must report `not_implemented` — a transport-class code the Python
+    // forward path (Slice 3b) treats as "fall back to Python". This is
+    // the explicit-disabled marker that replaces the silent fallback the
+    // Slice 3 stop-finding warned about.
+    let _g = registry_guard().await;
+    let prior_impl = std::env::var_os("WYLDE_HARNESS_MODELS_IMPL");
+    std::env::remove_var("WYLDE_HARNESS_MODELS_IMPL");
+
+    let (service, server, task) = spin_up_pipe().await;
+
+    let got = ipc::send_action(&service, "models.get_default", json!({})).await;
+    assert!(!got.ok, "gated-off verb unexpectedly ok: {got:?}");
+    assert_eq!(got.error.as_ref().unwrap().code, "not_implemented");
+
+    server.stop();
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+
+    restore("WYLDE_HARNESS_MODELS_IMPL", prior_impl);
+}
+
+/// Restore (or clear) an env var to a previously-captured value.
+fn restore(key: &str, prior: Option<std::ffi::OsString>) {
+    match prior {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
     }
 }

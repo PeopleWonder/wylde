@@ -35,9 +35,11 @@
 //! `_routing/ollama_watcher.py` are NOT ported here — those merged into
 //! `wylde-ollama` during Phase 1 per the master plan.
 
+pub mod actions;
 pub mod api;
 pub mod heuristics;
 pub mod hf_scanner;
+pub mod model_state;
 pub mod routing;
 pub mod service_manifests;
 pub mod types;

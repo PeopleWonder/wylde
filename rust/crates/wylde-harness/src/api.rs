@@ -49,6 +49,7 @@ use wylde_shared::ipc::{Reply, StreamSender};
 use crate::config::Config;
 use crate::memory::long_term::{self, LongTermMemory, SaveError};
 use crate::memory::workspaces::actions as workspace_actions;
+use crate::model_registry::actions as model_actions;
 use crate::tooling::consent::{self, Decision};
 use crate::tooling::registry::global;
 use crate::tooling::runner::{catalog_payload, dispatch_tool};
@@ -73,6 +74,19 @@ pub trait HarnessApi: Send + Sync {
     // ── tools.* (2 verbs) ────────────────────────────────────────────
     async fn tools_list(&self, payload: Value) -> Reply;
     async fn tools_run(&self, payload: Value) -> Reply;
+
+    // ── models.* (8 verbs; harness Slice 3a) ─────────────────────────
+    // The two Voice-coupled verbs (`models.transcribe` /
+    // `models.synthesize`) are forward-only and intentionally absent —
+    // see `crate::model_registry::actions` for the rationale.
+    async fn models_list(&self, payload: Value) -> Reply;
+    async fn models_get_profile(&self, payload: Value) -> Reply;
+    async fn models_show(&self, payload: Value) -> Reply;
+    async fn models_delete(&self, payload: Value) -> Reply;
+    async fn models_unload(&self, payload: Value) -> Reply;
+    async fn models_set_active(&self, payload: Value) -> Reply;
+    async fn models_set_default(&self, payload: Value) -> Reply;
+    async fn models_get_default(&self, payload: Value) -> Reply;
 
     // ── memory.long_term.* (6 verbs) ─────────────────────────────────
     async fn memory_long_term_list(&self, payload: Value) -> Reply;
@@ -180,6 +194,54 @@ impl HarnessApi for DefaultHarnessApi {
                 "elapsed_ms": outcome.elapsed_ms,
             })),
         }
+    }
+
+    // ── models.* (harness Slice 3a) ──────────────────────────────────
+    // Pass-throughs to model_registry::actions, which own the JSON
+    // shaping + the WYLDE_HARNESS_MODELS_IMPL flag gate. The three
+    // Ollama-side verbs inject a LiveOllama bound to the configured
+    // wylde-ollama service so the handlers stay unit-testable with a
+    // fake.
+
+    async fn models_list(&self, payload: Value) -> Reply {
+        model_actions::handle_list(payload).await
+    }
+
+    async fn models_get_profile(&self, payload: Value) -> Reply {
+        model_actions::handle_get_profile(payload).await
+    }
+
+    async fn models_show(&self, payload: Value) -> Reply {
+        let ollama = model_actions::LiveOllama {
+            service: Config::get().ollama_service.clone(),
+        };
+        model_actions::handle_show(payload, &ollama).await
+    }
+
+    async fn models_delete(&self, payload: Value) -> Reply {
+        let ollama = model_actions::LiveOllama {
+            service: Config::get().ollama_service.clone(),
+        };
+        model_actions::handle_delete(payload, &ollama).await
+    }
+
+    async fn models_unload(&self, payload: Value) -> Reply {
+        let ollama = model_actions::LiveOllama {
+            service: Config::get().ollama_service.clone(),
+        };
+        model_actions::handle_unload(payload, &ollama).await
+    }
+
+    async fn models_set_active(&self, payload: Value) -> Reply {
+        model_actions::handle_set_active(payload).await
+    }
+
+    async fn models_set_default(&self, payload: Value) -> Reply {
+        model_actions::handle_set_default(payload).await
+    }
+
+    async fn models_get_default(&self, payload: Value) -> Reply {
+        model_actions::handle_get_default(payload).await
     }
 
     // ── memory.long_term.* ───────────────────────────────────────────
