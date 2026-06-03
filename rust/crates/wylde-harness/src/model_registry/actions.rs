@@ -29,13 +29,15 @@
 //!
 //! ## Flag gate — `WYLDE_HARNESS_MODELS_IMPL`
 //!
-//! Slice 3a builds the handlers but does NOT make Python forward through
-//! them (that's 3b). Until the flag is `rust`, every handler returns
-//! `not_implemented` — a transport-class code the Python forward path (in
-//! 3b) treats as "fall back to the in-process Python driver." This keeps
-//! Python authoritative by default and, crucially, makes a premature
-//! forward fail *loudly* (an explicit disabled marker) rather than
-//! silently — the failure mode the Slice 3 stop-finding flagged.
+//! **Slice 3b (2026-06-03) flipped the default to `rust`.** The handlers
+//! are live unless the flag is an explicit `python` (the rollback path),
+//! in which case every handler returns `not_implemented` — a
+//! transport-class code the Python forwarder treats as "fall back to the
+//! in-process Python driver." During Slice 3a the polarity was inverted
+//! (default off) so a premature forward failed *loudly* rather than
+//! silently — the failure mode the Slice 3 stop-finding flagged. Now that
+//! the Python forwarder is wired and parity-tested (Slice 3b), Rust is
+//! authoritative by default.
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -47,28 +49,31 @@ use crate::model_registry::model_state;
 use crate::model_registry::routing::profiles::get_profile;
 use crate::model_registry::types::{Kind, ModelEntry};
 
-/// Read `WYLDE_HARNESS_MODELS_IMPL`. Default (and any non-`rust` value)
-/// → `false`, so the Python path stays authoritative. Mirrors the
-/// clamp-to-safe shape of [`crate::model_registry::impl_for`].
+/// Read `WYLDE_HARNESS_MODELS_IMPL`. **Slice 3b (2026-06-03) flipped the
+/// default to `rust`**: the handlers are live unless the flag is an
+/// explicit `python` (the rollback path); unset / any other value enables
+/// them. Mirrors the Python `_models._models_impl()` forwarder's
+/// clamp-to-default shape so the two halves of the strangler agree.
 pub fn rust_enabled() -> bool {
-    matches!(
+    !matches!(
         std::env::var("WYLDE_HARNESS_MODELS_IMPL")
             .unwrap_or_default()
             .trim()
             .to_ascii_lowercase()
             .as_str(),
-        "rust"
+        "python"
     )
 }
 
-/// The reply returned by every handler while the flag is off. `not_implemented`
-/// is in the Python forward path's transport-fallback set, so a 3b forward
-/// reverts to Python instead of erroring the caller.
+/// The reply returned by every handler when the flag is an explicit
+/// `python` (the rollback path). `not_implemented` is in the Python
+/// forwarder's transport-fallback set, so the forward reverts to the
+/// in-process Python body instead of erroring the caller.
 fn disabled() -> Reply {
     Reply::err_msg(
         "not_implemented",
-        "models.* Rust handlers are gated behind WYLDE_HARNESS_MODELS_IMPL=rust \
-         (harness Slice 3a — the Python implementation is authoritative by default)",
+        "models.* Rust handlers are disabled by WYLDE_HARNESS_MODELS_IMPL=python \
+         (rollback path — the in-process Python implementation handles the verb)",
     )
 }
 
@@ -344,17 +349,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gated_off_returns_not_implemented() {
+    async fn python_flag_disables_returns_not_implemented() {
         let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        std::env::remove_var("WYLDE_HARNESS_MODELS_IMPL");
+        // Slice 3b flipped the default to rust. Only an explicit `python`
+        // disables the handlers (the rollback path) → not_implemented, which
+        // the Python forwarder treats as "run the in-process body".
+        std::env::set_var("WYLDE_HARNESS_MODELS_IMPL", "python");
         let r = handle_get_default(Value::Null).await;
         assert!(!r.ok);
         assert_eq!(r.error.unwrap().code, "not_implemented");
+        std::env::remove_var("WYLDE_HARNESS_MODELS_IMPL");
+    }
 
-        // Any value other than `rust` stays disabled.
-        std::env::set_var("WYLDE_HARNESS_MODELS_IMPL", "python");
+    #[tokio::test]
+    async fn default_unset_is_enabled() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _td = enabled_isolated();
+        // Default rust (Slice 3b): with the flag removed entirely the
+        // handler still runs rather than returning not_implemented.
+        std::env::remove_var("WYLDE_HARNESS_MODELS_IMPL");
         let r = handle_get_default(Value::Null).await;
-        assert_eq!(r.error.unwrap().code, "not_implemented");
+        assert!(r.ok);
+        assert_eq!(r.data["model"], Value::Null);
         std::env::remove_var("WYLDE_HARNESS_MODELS_IMPL");
     }
 
