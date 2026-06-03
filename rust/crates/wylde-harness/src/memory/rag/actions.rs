@@ -41,7 +41,8 @@ use super::store::{TierRecord, TieredStore};
 use super::tiers::{is_known_tier, TIER_EPISODIC};
 use crate::memory::common::{data_dir, embed_dim};
 use crate::memory::embeddings::{embed_one, EmbedError};
-use crate::memory::memgraph::Client;
+use crate::memory::memgraph::current_traversal_impl;
+use crate::memory::memgraph::transport::MemgraphTraversal;
 
 /// Default episodic score when the caller doesn't supply one. Episodic
 /// rows are mid-tier importance — below `core` (1.0), above a cold
@@ -571,13 +572,20 @@ pub async fn run_rag_chunk_usage(args: Value) -> Result<Value, IpcError> {
 // ─── rag.graph_stats ──────────────────────────────────────────────────
 
 pub async fn run_rag_graph_stats(_args: Value) -> Result<Value, IpcError> {
-    run_rag_graph_stats_with_client(&Client::new()).await
+    // Honor the strangler selection (Bolt by default) like the rest of
+    // the graph path — the previous hardcoded pipe `Client` reached the
+    // `\\.\pipe\wylde-memgraph` surface retired in the 2026-05-26
+    // cutover, so this tool always reported `reachable: false`.
+    run_rag_graph_stats_with_client(&current_traversal_impl()).await
 }
 
-/// Test seam — same handler but takes an explicit `Client`. The async
-/// surface is identical so the tool registry calls `run_rag_graph_stats`
-/// directly while unit tests inject a mock transport.
-pub async fn run_rag_graph_stats_with_client(client: &Client) -> Result<Value, IpcError> {
+/// Test seam — same handler but takes an explicit traversal client. The
+/// async surface is identical so the tool registry calls
+/// `run_rag_graph_stats` directly while unit tests inject a mock
+/// transport.
+pub async fn run_rag_graph_stats_with_client(
+    client: &impl MemgraphTraversal,
+) -> Result<Value, IpcError> {
     let reply = client.stats().await;
     if !reply.ok {
         return Ok(json!({
@@ -604,7 +612,7 @@ pub async fn run_rag_graph_stats_with_client(client: &Client) -> Result<Value, I
 /// `meta.graph_query` path (and future RAG pipeline) can fold graph
 /// feedback in one call. Returns the trace envelope; never errors.
 pub async fn record_terminal_outcome(
-    client: &Client,
+    client: &impl MemgraphTraversal,
     query: &str,
     status: &str,
     query_entities: &[String],

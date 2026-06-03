@@ -312,14 +312,16 @@ def serve_forever() -> int:
     #
     # Memgraph doesn't fit the in-process pattern: Core/Memgraph/run.py
     # spawns a Neo4j JVM child via subprocess, calls sys.path.insert at
-    # import time (line 32 / line 214), installs its own SIGINT handler,
-    # and ends in a blocking graph_service.main() loop. Pulling that
-    # into the daemon's process would mix signal handlers, pollute
-    # sys.path, and tie the JVM's lifecycle to the daemon.
+    # import time, installs its own SIGINT handler, and ends in a
+    # blocking JVM-supervisor loop. Pulling that into the daemon's
+    # process would mix signal handlers, pollute sys.path, and tie the
+    # JVM's lifecycle to the daemon.
     #
     # Subprocess instead. `py -3 -m Core.Memgraph.run` boots Neo4j and
-    # serves \\.\pipe\wylde-memgraph; we track the Popen so the daemon
-    # can take it down with the rest of the stack at shutdown.
+    # supervises the JVM; the harness reads/writes the graph over Bolt
+    # directly (the named-pipe surface was retired in the 2026-05-26
+    # direct-Bolt cutover). We track the Popen so the daemon can take
+    # the JVM down with the rest of the stack at shutdown.
     _start_memgraph()
 
     # Phase 2d — start the memory scheduler. Reflection + curation

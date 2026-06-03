@@ -2,16 +2,19 @@
 //!
 //! Phase 7 of the Wylde Rust migration. Rust port of
 //! `Core/harness/memory/memgraph.py` + `graph_retrieval.py`. The
-//! companion `wylde-memgraph` Lifecycle service stays in Python — it
-//! owns the bundled Neo4j JVM and serves a named-pipe wire surface
-//! (`\\.\pipe\wylde-memgraph`); this module is the **client** half that
-//! the harness uses to talk to it.
+//! companion `wylde-memgraph` Lifecycle service stays in Python, but
+//! since the 2026-05-26 direct-Bolt cutover it owns *only* the bundled
+//! Neo4j JVM lifecycle — its former named-pipe wire surface
+//! (`\\.\pipe\wylde-memgraph`) is retired. The harness now reaches the
+//! graph over Bolt directly (see [`bolt`]); the legacy pipe [`client`]
+//! is kept as the dormant strangler escape-hatch + test seam only.
 //!
 //! ## Submodules
 //!
-//! * [`client`] — typed wrappers over the IPC routes
-//!   (`health`, `traverse`, `multihop`, `relate`, …). Transport is
-//!   swappable for offline testing.
+//! * [`client`] — typed wrappers over the retired IPC routes
+//!   (`health`, `traverse`, `multihop`, `relate`, …). Dormant in
+//!   production (the pipe surface is gone); still used as the
+//!   transport test seam. Transport is swappable for offline testing.
 //! * [`schema`] — node label + relation-type constants the service
 //!   accepts on its `/traverse` and `/relate` routes.
 //! * [`graph_retrieval`] — Stage-2 graph-distance expansion for the
@@ -35,27 +38,38 @@
 //!
 //! ## Strangler-fig
 //!
-//! Like every memory submodule, this one is gated by
+//! Like every memory submodule, this one reads
 //! `WYLDE_HARNESS_MEMORY_IMPL`. Default flipped from `python` →
 //! `rust` on 2026-05-26 (parity gate: 8/11 verbs match exactly;
 //! `relate` / `unrelate` / `upsert_edge` diverge because the Python
 //! Flask routes were always broken — wrong field name on relate /
 //! unrelate, missing route on upsert_edge — so Bolt is the canonical
-//! shape). Two transports live side-by-side:
+//! shape). The same 2026-05-26 cutover **retired the named-pipe
+//! surface**: `Core/Memgraph/run.py` deleted the `graph_service` Flask
+//! app and now only supervises the Neo4j JVM, so nothing binds
+//! `\\.\pipe\wylde-memgraph` anymore.
 //!
-//! * [`client::Client`] — msgpack-over-named-pipe to the Python
-//!   `wylde-memgraph` service. Selected when
-//!   `WYLDE_HARNESS_MEMORY_IMPL=python` (rollback escape hatch). Same
-//!   Cypher eventually, but with a Flask round-trip.
-//! * [`bolt::BoltClient`] — direct Bolt to Neo4j via `neo4rs`. Selected
-//!   when `WYLDE_HARNESS_MEMORY_IMPL=rust` (default). Skips the pipe +
-//!   Flask hop entirely; the [`cypher`] module is the Cypher source of
-//!   truth on this path, ported from `_driver.py` / `_routes_*.py`.
+//! That leaves the two transports asymmetric:
 //!
-//! The Python service stays alive for the 2–4-week soak window — the
-//! JVM-lifecycle ownership (it spawns + supervises `vendor/neo4j`)
-//! needs the cleanup slice to migrate before `Core/Memgraph/` can go
-//! away entirely.
+//! * [`bolt::BoltClient`] — direct Bolt to Neo4j via `neo4rs`. The
+//!   live path (`WYLDE_HARNESS_MEMORY_IMPL=rust`, the default). The
+//!   [`cypher`] module is the Cypher source of truth here, ported from
+//!   the old `_driver.py` / `_routes_*.py`.
+//! * [`client::Client`] — msgpack-over-named-pipe to the (now retired)
+//!   pipe surface. The `WYLDE_HARNESS_MEMORY_IMPL=python` branch still
+//!   selects it, but its server is gone, so that rollback target no
+//!   longer answers. It survives only as (a) the strangler
+//!   escape-hatch *shape* and (b) the [`transport::MemgraphTraversal`]
+//!   test seam. The post-soak cleanup slice deletes it once the Bolt
+//!   path's soak completes; doing so now would also force relocating
+//!   the shared [`client::TraverseRequest`] / [`client::EntityPair`]
+//!   request types and rewriting the transport mocks, so it is held
+//!   back deliberately rather than rushed mid-soak.
+//!
+//! The Python `Core/Memgraph/` process stays alive regardless — it owns
+//! the bundled Neo4j JVM lifecycle (spawns + supervises
+//! `vendor/neo4j`), which must migrate to Rust before `Core/Memgraph/`
+//! can be deleted entirely.
 
 pub mod actions;
 pub mod bolt;
@@ -93,10 +107,16 @@ pub fn current_traversal_impl() -> TraversalImpl {
 /// Strangler-fig dispatch envelope. Constructed by
 /// [`current_traversal_impl`].
 pub enum TraversalImpl {
-    /// `WYLDE_HARNESS_MEMORY_IMPL=python` (default) — pipe to the
-    /// Python `wylde-memgraph` service.
+    /// `WYLDE_HARNESS_MEMORY_IMPL=python` — pipe to the Python
+    /// `wylde-memgraph` service. NOTE: the pipe surface was retired in
+    /// the 2026-05-26 direct-Bolt cutover (`Core/Memgraph/run.py` now
+    /// only supervises the Neo4j JVM; nothing binds
+    /// `\\.\pipe\wylde-memgraph`), so this branch reaches a dead pipe —
+    /// the `python` rollback target no longer exists. Retained only as
+    /// the strangler escape-hatch *shape* + the transport test seam
+    /// until the post-soak cleanup deletes it. See module docs.
     Pipe(Client),
-    /// `WYLDE_HARNESS_MEMORY_IMPL=rust` — direct Bolt to Neo4j.
+    /// `WYLDE_HARNESS_MEMORY_IMPL=rust` (default) — direct Bolt to Neo4j.
     Bolt(BoltClient),
 }
 
@@ -127,6 +147,26 @@ impl MemgraphTraversal for TraversalImpl {
         match self {
             TraversalImpl::Pipe(c) => c.multihop(entities, expand_hops, limit).await,
             TraversalImpl::Bolt(b) => b.multihop(entities, expand_hops, limit).await,
+        }
+    }
+
+    async fn stats(&self) -> wylde_shared::ipc::Reply {
+        match self {
+            TraversalImpl::Pipe(c) => c.stats().await,
+            TraversalImpl::Bolt(b) => b.stats().await,
+        }
+    }
+
+    async fn upsert_edge(
+        &self,
+        source: &str,
+        label: &str,
+        target: &str,
+        weight_delta: f64,
+    ) -> wylde_shared::ipc::Reply {
+        match self {
+            TraversalImpl::Pipe(c) => c.upsert_edge(source, label, target, weight_delta).await,
+            TraversalImpl::Bolt(b) => b.upsert_edge(source, label, target, weight_delta).await,
         }
     }
 }
