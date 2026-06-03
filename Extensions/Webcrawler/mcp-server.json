@@ -16,6 +16,27 @@
     "PYTHONPATH": "${WYLDE_ROOT}"
   },
   "capabilities": ["egress.web"],
+  "resources": [
+    {
+      "resource_type": "url",
+      "display_name": "Web URL",
+      "description": "Fetch raw URL contents, scrape HTML with CSS selectors, or extract structured data via rule sets. Read-only; egress is gated by the Gateway allowlist (orthogonal to consent).",
+      "scope": "global",
+      "schema_version": 1,
+      "operations": {
+        "execute": {
+          "description": "Run a web action against a URL. The 'action' selects fetch | scrape | extract.",
+          "destructive": false,
+          "tier": "read",
+          "actions": [
+            { "name": "fetch", "mcp_tool": "fetch", "description": "Fetch raw URL contents (text or JSON)." },
+            { "name": "scrape", "mcp_tool": "scrape", "description": "Scrape HTML with optional CSS selectors." },
+            { "name": "extract", "mcp_tool": "extract", "description": "Extract structured data from HTML via a rule set." }
+          ]
+        }
+      }
+    }
+  ],
   "health": {
     "method": "ping",
     "interval_s": 30,

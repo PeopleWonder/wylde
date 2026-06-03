@@ -159,6 +159,20 @@ pub async fn handle_list_panels(host: Arc<Host>, _payload: Value) -> Reply {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// 10. ext.resources.list — declared resources for the harness verb overlay
+// ────────────────────────────────────────────────────────────────────
+
+/// Read-only: return every extension's parsed `resources[]` declarations
+/// (Slice 5a). Optional `{extension}` filter. Works for disabled
+/// extensions (static parse, no spawn). The harness calls this on
+/// extension lifecycle events to (un)register verb-layer resources.
+pub async fn handle_resources_list(host: Arc<Host>, payload: Value) -> Reply {
+    let only = payload.get("extension").and_then(Value::as_str);
+    let resources = host.list_resource_declarations(only).await;
+    Reply::ok(json!({ "resources": resources }))
+}
+
+// ────────────────────────────────────────────────────────────────────
 // 10. ext.events — streaming
 // ────────────────────────────────────────────────────────────────────
 

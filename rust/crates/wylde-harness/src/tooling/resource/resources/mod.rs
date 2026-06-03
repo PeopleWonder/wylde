@@ -21,10 +21,17 @@
 
 use super::ResourceRegistry;
 
+pub mod extensions;
 pub mod memory;
 
 /// Register every built-in resource cluster. Called by
 /// [`super::register_resources`].
+///
+/// Note: [`extensions`] is **not** registered here — extension resources
+/// are sourced from `wylde-extension-bridge` at runtime and inserted into
+/// the registry's `RwLock` overlay by the sync task
+/// ([`extensions::spawn_sync_task`]), not sealed in at init like the
+/// built-in clusters.
 pub fn register_all(reg: &mut ResourceRegistry) {
     memory::register_memory_resource(reg);
 }

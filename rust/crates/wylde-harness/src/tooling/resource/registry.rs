@@ -269,7 +269,7 @@ mod tests {
             filter_fields: &[],
             operations: ops,
             destructive_ops: &[],
-            describe: || json!({"d": true}),
+            describe: super::super::definition::describe_value(|| json!({"d": true})),
         }
     }
 

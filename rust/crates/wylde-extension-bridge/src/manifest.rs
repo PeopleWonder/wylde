@@ -84,6 +84,111 @@ pub struct DeclaredTool {
     pub version: Option<String>,
 }
 
+/// The seven generic resource verbs an extension may declare an
+/// `operations` entry for. Mirrors `wylde-harness`'s
+/// `tooling::resource::ResourceOp` — kept as a bare const set here so the
+/// bridge can validate `operations` keys without depending on the harness
+/// crate (the two communicate over the JSON wire, not by type sharing).
+pub const RESOURCE_VERBS: [&str; 7] =
+    ["list", "get", "create", "update", "delete", "search", "execute"];
+
+/// One declared resource (tool-registry consolidation Slice 5a,
+/// `docs/plans/extension-resource-declaration.md` §2.2). `resource_type`
+/// is the bare slug; the harness namespaces it to
+/// `ext:<extension>:<resource_type>` at registration so collisions across
+/// extensions are structurally impossible (R-COLLIDE).
+///
+/// Backwards-compatible by construction: an extension with no `resources`
+/// field deserialises to an empty vec and keeps today's named-tool
+/// behaviour unchanged.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ResourceDeclaration {
+    pub resource_type: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_scope")]
+    pub scope: String,
+    #[serde(default)]
+    pub identifier_fields: Vec<String>,
+    #[serde(default)]
+    pub filter_fields: Vec<String>,
+    #[serde(default = "default_schema_version")]
+    pub schema_version: u32,
+    /// Keyed by verb (`list`/`get`/…/`execute`). A `BTreeMap` so the
+    /// wire order is deterministic.
+    pub operations: BTreeMap<String, OperationDeclaration>,
+}
+
+impl ResourceDeclaration {
+    /// MCP tool names this single resource claims (op `mcp_tool`s + any
+    /// per-action overrides).
+    pub fn claimed_tools(&self) -> std::collections::BTreeSet<String> {
+        let mut claimed = std::collections::BTreeSet::new();
+        for op in self.operations.values() {
+            if !op.mcp_tool.is_empty() {
+                claimed.insert(op.mcp_tool.clone());
+            }
+            for act in &op.actions {
+                if let Some(t) = &act.mcp_tool {
+                    if !t.is_empty() {
+                        claimed.insert(t.clone());
+                    }
+                }
+            }
+        }
+        claimed
+    }
+}
+
+/// One verb's binding to a concrete MCP tool. `args_schema` /
+/// `response_schema` are opaque JSON Schema passed through verbatim to
+/// the harness `wylde_describe`; the bridge does **not** validate model
+/// arguments against them (the extension owns that, exactly as today).
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct OperationDeclaration {
+    #[serde(default)]
+    pub description: String,
+    /// The MCP tool (from this extension's `tools/list`) that fulfils
+    /// this verb. May be empty for an `execute` op whose every action
+    /// supplies its own `mcp_tool` override.
+    #[serde(default)]
+    pub mcp_tool: String,
+    #[serde(default)]
+    pub destructive: bool,
+    /// Advisory tier label. Only `destructive` is enforced today
+    /// (`destructive: true` → `destructive_tool_access` + consent);
+    /// the string is reserved for a richer tier model (plan §6).
+    #[serde(default = "default_tier")]
+    pub tier: String,
+    /// For `execute` ops: the legal `action` values, each backed by the
+    /// op's `mcp_tool` or a per-action `mcp_tool` override.
+    #[serde(default)]
+    pub actions: Vec<ActionDeclaration>,
+    #[serde(default)]
+    pub args_schema: serde_json::Value,
+    #[serde(default)]
+    pub response_schema: serde_json::Value,
+}
+
+/// One legal `action` value of an `execute` op.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct ActionDeclaration {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Per-action tool override; falls back to the op's `mcp_tool`.
+    #[serde(default)]
+    pub mcp_tool: Option<String>,
+    #[serde(default)]
+    pub destructive: bool,
+}
+
+fn default_scope() -> String { "global".to_string() }
+fn default_schema_version() -> u32 { 1 }
+fn default_tier() -> String { "read".to_string() }
+
 /// How a UI panel is rendered inside the Wylde Tauri shell.
 ///
 /// Only `iframe` is shipped today; the tagged-enum shape leaves room
@@ -151,8 +256,29 @@ pub struct McpServerManifest {
     /// Each panel's source URL is loopback-only (enforced at load).
     #[serde(default)]
     pub ui_panels: Vec<UiPanel>,
+    /// Optional resource declarations (tool-registry consolidation
+    /// Slice 5a). Absent ⇒ empty vec ⇒ today's named-tool behaviour.
+    /// When present and verb mode is active, the listed `mcp_tool`s are
+    /// *claimed* — hidden from the flat named-tool catalog and surfaced
+    /// instead through the harness verb layer.
+    #[serde(default)]
+    pub resources: Vec<ResourceDeclaration>,
     #[serde(default)]
     pub health: HealthConfig,
+}
+
+impl McpServerManifest {
+    /// Every MCP tool name claimed by a resource op (or per-action
+    /// override). When verb mode is active these are subtracted from the
+    /// aggregate named-tool catalog so a tool never appears in both the
+    /// named surface and the resource surface (plan §5 partition rule).
+    pub fn claimed_tools(&self) -> std::collections::BTreeSet<String> {
+        let mut claimed = std::collections::BTreeSet::new();
+        for res in &self.resources {
+            claimed.extend(res.claimed_tools());
+        }
+        claimed
+    }
 }
 
 fn default_version() -> String { "1.0".to_string() }
@@ -273,6 +399,121 @@ fn validate(path: &Path, m: &McpServerManifest) -> Result<(), ManifestError> {
         }
     }
     validate_ui_panels(path, &m.ui_panels)?;
+    validate_resources(path, m)?;
+    Ok(())
+}
+
+/// Validate the `resources[]` block (plan §3.1). Hand-rolled, consistent
+/// with how the rest of this module validates — no `jsonschema` crate.
+/// The opaque `args_schema` / `response_schema` are intentionally **not**
+/// validated; they are documentation for the LLM (R-VALID).
+fn validate_resources(path: &Path, m: &McpServerManifest) -> Result<(), ManifestError> {
+    let bail = |message: String| ManifestError::Validation {
+        path: path.to_path_buf(),
+        message,
+    };
+    // Static tool mirror for the load-time `mcp_tool` cross-check. Only
+    // checked when non-empty; Rust extensions often omit it, deferring to
+    // a runtime warn-once on first dispatch (R-RENAME).
+    let tool_ids: std::collections::HashSet<&str> =
+        m.tools.iter().map(|t| t.tool_id.as_str()).collect();
+    let cross_check = !tool_ids.is_empty();
+
+    let mut seen_types = std::collections::HashSet::new();
+    for res in &m.resources {
+        if res.resource_type.trim().is_empty() {
+            return Err(bail("resource entry missing `resource_type`".into()));
+        }
+        if !seen_types.insert(res.resource_type.clone()) {
+            return Err(bail(format!(
+                "duplicate resource_type `{}` within extension",
+                res.resource_type
+            )));
+        }
+        if !matches!(res.scope.as_str(), "global" | "workspace" | "conversation") {
+            return Err(bail(format!(
+                "resource `{}` has invalid scope `{}` (expected global|workspace|conversation)",
+                res.resource_type, res.scope
+            )));
+        }
+        if res.schema_version != 1 {
+            return Err(bail(format!(
+                "resource `{}` declares schema_version {} — this bridge only \
+                 understands version 1 (upgrade wylde-extension-bridge)",
+                res.resource_type, res.schema_version
+            )));
+        }
+        if res.operations.is_empty() {
+            return Err(bail(format!(
+                "resource `{}` declares no operations",
+                res.resource_type
+            )));
+        }
+        for (verb, op) in &res.operations {
+            if !RESOURCE_VERBS.contains(&verb.as_str()) {
+                return Err(bail(format!(
+                    "resource `{}` has unknown operation verb `{}` (expected one of {:?})",
+                    res.resource_type, verb, RESOURCE_VERBS
+                )));
+            }
+            let is_execute = verb == "execute";
+            // Every op needs *some* tool binding. Non-execute ops bind via
+            // the op's own `mcp_tool`; an execute op may instead bind each
+            // action through a per-action `mcp_tool` override.
+            if op.mcp_tool.trim().is_empty() {
+                let actions_cover = is_execute
+                    && !op.actions.is_empty()
+                    && op
+                        .actions
+                        .iter()
+                        .all(|a| a.mcp_tool.as_deref().is_some_and(|t| !t.trim().is_empty()));
+                if !actions_cover {
+                    return Err(bail(format!(
+                        "resource `{}` op `{}` has no `mcp_tool` (and no per-action \
+                         override covering every action)",
+                        res.resource_type, verb
+                    )));
+                }
+            }
+            // Action names: non-empty + unique within the op.
+            let mut seen_actions = std::collections::HashSet::new();
+            for act in &op.actions {
+                if act.name.trim().is_empty() {
+                    return Err(bail(format!(
+                        "resource `{}` op `{}` has an action with an empty `name`",
+                        res.resource_type, verb
+                    )));
+                }
+                if !seen_actions.insert(act.name.clone()) {
+                    return Err(bail(format!(
+                        "resource `{}` op `{}` has duplicate action `{}`",
+                        res.resource_type, verb, act.name
+                    )));
+                }
+            }
+            // Load-time cross-check against the static tools[] mirror.
+            if cross_check {
+                if !op.mcp_tool.is_empty() && !tool_ids.contains(op.mcp_tool.as_str()) {
+                    return Err(bail(format!(
+                        "resource `{}` op `{}` references mcp_tool `{}` not present in \
+                         this extension's tools[] mirror",
+                        res.resource_type, verb, op.mcp_tool
+                    )));
+                }
+                for act in &op.actions {
+                    if let Some(t) = act.mcp_tool.as_deref() {
+                        if !t.is_empty() && !tool_ids.contains(t) {
+                            return Err(bail(format!(
+                                "resource `{}` op `{}` action `{}` references mcp_tool `{}` \
+                                 not present in this extension's tools[] mirror",
+                                res.resource_type, verb, act.name, t
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -690,6 +931,153 @@ mod tests {
         ] {
             assert!(!is_loopback_url(url), "expected NOT loopback for {url}");
         }
+    }
+
+    // ── resources[] (Slice 5a) ───────────────────────────────────────
+
+    const WEBCRAWLER_RESOURCES: &str = r#"{
+        "name":"Webcrawler","transport":"stdio","command":["x"],
+        "resources":[{
+            "resource_type":"url",
+            "display_name":"Web URL",
+            "scope":"global",
+            "schema_version":1,
+            "operations":{
+                "execute":{
+                    "description":"web",
+                    "destructive":false,
+                    "tier":"read",
+                    "actions":[
+                        {"name":"fetch","mcp_tool":"fetch"},
+                        {"name":"scrape","mcp_tool":"scrape"},
+                        {"name":"extract","mcp_tool":"extract"}
+                    ]
+                }
+            }
+        }]
+    }"#;
+
+    #[test]
+    fn parses_resources_block_and_computes_claimed_tools() {
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(td.path(), "wc", WEBCRAWLER_RESOURCES);
+        let rec = load_extension(&root).expect("parses");
+        assert_eq!(rec.manifest.resources.len(), 1);
+        let res = &rec.manifest.resources[0];
+        assert_eq!(res.resource_type, "url");
+        assert_eq!(res.scope, "global");
+        assert!(res.operations.contains_key("execute"));
+        let claimed: Vec<String> = rec.manifest.claimed_tools().into_iter().collect();
+        assert_eq!(claimed, vec!["extract", "fetch", "scrape"]); // BTreeSet → sorted
+    }
+
+    #[test]
+    fn manifest_without_resources_has_empty_claimed_set() {
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(
+            td.path(),
+            "plain",
+            r#"{"name":"plain","transport":"stdio","command":["x"]}"#,
+        );
+        let rec = load_extension(&root).unwrap();
+        assert!(rec.manifest.resources.is_empty());
+        assert!(rec.manifest.claimed_tools().is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_resource_scope() {
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(
+            td.path(),
+            "badscope",
+            r#"{"name":"badscope","transport":"stdio","command":["x"],
+                "resources":[{"resource_type":"u","scope":"galaxy",
+                    "operations":{"get":{"mcp_tool":"g"}}}]}"#,
+        );
+        let err = load_extension(&root).unwrap_err();
+        assert!(err.to_string().contains("scope"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_unknown_operation_verb() {
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(
+            td.path(),
+            "badverb",
+            r#"{"name":"badverb","transport":"stdio","command":["x"],
+                "resources":[{"resource_type":"u",
+                    "operations":{"frobnicate":{"mcp_tool":"g"}}}]}"#,
+        );
+        assert!(matches!(load_extension(&root), Err(ManifestError::Validation { .. })));
+    }
+
+    #[test]
+    fn rejects_future_schema_version() {
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(
+            td.path(),
+            "newver",
+            r#"{"name":"newver","transport":"stdio","command":["x"],
+                "resources":[{"resource_type":"u","schema_version":2,
+                    "operations":{"get":{"mcp_tool":"g"}}}]}"#,
+        );
+        let err = load_extension(&root).unwrap_err();
+        assert!(err.to_string().contains("schema_version"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_op_with_no_tool_binding() {
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(
+            td.path(),
+            "notool",
+            r#"{"name":"notool","transport":"stdio","command":["x"],
+                "resources":[{"resource_type":"u",
+                    "operations":{"get":{}}}]}"#,
+        );
+        let err = load_extension(&root).unwrap_err();
+        assert!(err.to_string().contains("mcp_tool"), "got: {err}");
+    }
+
+    #[test]
+    fn execute_with_per_action_overrides_needs_no_op_tool() {
+        // The Webcrawler shape: execute op has no `mcp_tool`, but every
+        // action supplies its own override — that's legal.
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(td.path(), "exover", WEBCRAWLER_RESOURCES);
+        assert!(load_extension(&root).is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_resource_type() {
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(
+            td.path(),
+            "duptype",
+            r#"{"name":"duptype","transport":"stdio","command":["x"],
+                "resources":[
+                    {"resource_type":"u","operations":{"get":{"mcp_tool":"g"}}},
+                    {"resource_type":"u","operations":{"get":{"mcp_tool":"h"}}}
+                ]}"#,
+        );
+        assert!(matches!(load_extension(&root), Err(ManifestError::Validation { .. })));
+    }
+
+    #[test]
+    fn cross_checks_mcp_tool_against_static_tools_mirror() {
+        // When tools[] is present, a resource referencing a tool not in
+        // the mirror is rejected at load.
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(
+            td.path(),
+            "xcheck",
+            r#"{"name":"xcheck","transport":"stdio","command":["x"],
+                "tools":[{"tool_id":"real"}],
+                "resources":[{"resource_type":"u",
+                    "operations":{"get":{"mcp_tool":"ghost"}}}]}"#,
+        );
+        let err = load_extension(&root).unwrap_err();
+        assert!(err.to_string().contains("ghost"), "got: {err}");
     }
 
     #[test]

@@ -22,3 +22,17 @@ pub mod version;
 pub mod actions;
 
 pub use service::{install, reset_for_tests, stop};
+
+/// True when the verb-tool cutover flag (`WYLDE_HARNESS_VERB_TOOLS`) is
+/// active. Gates the Slice-5a claimed-tool partition: when off, the new
+/// `resources[]` field is still parsed and exposed via `ext.resources.list`
+/// (harmless), but `aggregate_tools` does **not** subtract claimed tools,
+/// so named-tool behaviour is unchanged. The harness reads the same flag
+/// to decide whether to populate its verb overlay — one variable flips
+/// both sides together. Accepts `1`/`true`/`yes`/`on` (case-insensitive).
+pub fn verb_mode_active() -> bool {
+    std::env::var("WYLDE_HARNESS_VERB_TOOLS")
+        .ok()
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}

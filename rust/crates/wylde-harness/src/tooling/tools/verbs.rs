@@ -181,7 +181,7 @@ fn run_describe(args: Value) -> Result<Value, IpcError> {
             Some(def) => Ok(json!({
                 "status": "success",
                 "resource_type": rt,
-                "definition": (def.describe)(),
+                "definition": def.describe(),
             })),
             None => Ok(json!({
                 "status": "not_found",

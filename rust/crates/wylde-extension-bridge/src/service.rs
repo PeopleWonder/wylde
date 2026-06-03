@@ -13,13 +13,14 @@ use crate::actions;
 use crate::config::Config;
 use crate::host::Host;
 
-pub const ALL_ACTIONS: [&str; 11] = [
+pub const ALL_ACTIONS: [&str; 12] = [
     "ext.list",
     "ext.get",
     "ext.enable",
     "ext.disable",
     "ext.tools.list",
     "ext.tools.call",
+    "ext.resources.list",
     "ext.health",
     "ext.restart",
     "extensions.list_panels",
@@ -113,6 +114,17 @@ pub fn install() {
     );
     let hc = h.clone();
     register_action_with_meta(
+        "ext.resources.list",
+        move |payload: Value| {
+            let hc = hc.clone();
+            async move { actions::handle_resources_list(hc, payload).await }
+        },
+        "[{extension?}] — declared resource[] blocks for the harness verb \
+         overlay. Pure read; answers for disabled extensions. Slice 5a.",
+        "wylde_extension_bridge::actions::surface",
+    );
+    let hc = h.clone();
+    register_action_with_meta(
         "ext.health",
         move |payload: Value| {
             let hc = hc.clone();
@@ -169,7 +181,7 @@ pub fn install() {
     );
 
     tracing::info!(
-        "wylde-extension-bridge: registered 11 actions (9 native unary + extensions.list_panels + ext.events streaming + extensions.dispatch alias)"
+        "wylde-extension-bridge: registered 12 actions (10 native unary incl. ext.resources.list + extensions.list_panels + ext.events streaming + extensions.dispatch alias)"
     );
 }
 
@@ -227,6 +239,7 @@ mod tests {
             "ext.disable",
             "ext.tools.list",
             "ext.tools.call",
+            "ext.resources.list",
             "ext.health",
             "ext.restart",
             "extensions.list_panels",

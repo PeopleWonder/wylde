@@ -71,6 +71,11 @@ async fn main() -> Result<()> {
 
     wylde_harness::service::install();
 
+    // Slice 5a: populate the extension verb-resource overlay from
+    // `wylde-extension-bridge` and follow its lifecycle bus. No-op unless
+    // `WYLDE_HARNESS_VERB_TOOLS` is set — dark until the Slice-6 cutover.
+    wylde_harness::tooling::resource::resources::extensions::spawn_sync_task(cfg);
+
     if let Err(e) = ipc::write_action_contract(SERVICE_NAME, &cfg.wylde_root) {
         tracing::warn!("wylde-harness: action contract write failed: {e}");
     }
