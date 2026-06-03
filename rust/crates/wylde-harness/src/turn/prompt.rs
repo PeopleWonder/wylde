@@ -41,6 +41,80 @@ use serde_json::{json, Value};
 /// Python's `tools_catalog[:60]` — bounded to keep the prompt small.
 const MAX_CATALOG_TOOLS: usize = 60;
 
+/// Canonical ids of the named tools that remain advertised after the
+/// Slice-6 verb cutover, *alongside* the eight `wylde_*` verb tools.
+/// Everything else with a resource equivalent (memory, rag, graph, fs,
+/// code search) is retired from the model-facing catalog — its handler
+/// stays registered and dispatchable, just no longer advertised, and is
+/// reached through the verbs (`docs/wylde-phase5-cutover.md`).
+///
+/// Two principled categories survive (R6 in the consolidation plan):
+///
+/// 1. **Imperative — permanent.** Stateful device-lifecycle triggers with
+///    no resource identity (open/close an OS audio device, start/stop a
+///    listener thread). These are named *by design* and never collapse
+///    into a verb.
+/// 2. **Awaiting resource migration — temporary.** Execute/CRUD-shaped
+///    tools whose resource cluster (`model`, `time`, `diff`, a voice
+///    `execute` resource) was **not** registered in Slices 1–5a. Retiring
+///    them now would orphan the operation (the verb path has nowhere to
+///    dispatch), so they stay named until a follow-up slice registers
+///    their `ResourceDefinition`. Tracked as the cutover's known gap.
+const SURVIVING_NAMED_TOOLS: &[&str] = &[
+    // ── 1. imperative (permanent) — voice device lifecycle ──
+    "voice_mic_start",
+    "voice_mic_stop",
+    "voice_wakeword_start",
+    "voice_wakeword_stop",
+    // ── 2. awaiting resource migration (temporary) ──
+    // ollama → future `model` resource
+    "list_loaded_models",
+    "preload_model",
+    "evict_model",
+    "auto_evict_lru",
+    // time → future `time` resource
+    "time_now",
+    "time_format",
+    // diff → future `diff` resource
+    "show_diff",
+    // voice transcribe/synthesize → future voice `execute` resource
+    "voice_transcribe",
+    "voice_synthesize",
+    "voice_transcribe_stream",
+    "voice_synthesize_stream",
+];
+
+/// Whether a catalog row should be advertised to the model.
+///
+/// Legacy mode (`verb_mode == false`) advertises every *active* tool, as
+/// before the cutover. Verb mode advertises only the verb tools (group
+/// `"verbs"`) plus the [`SURVIVING_NAMED_TOOLS`] tail. The caller has
+/// already filtered to `status == "active"`.
+fn advertise(tool: &Value, verb_mode: bool) -> bool {
+    if !verb_mode {
+        return true;
+    }
+    if tool.get("group").and_then(Value::as_str) == Some("verbs") {
+        return true;
+    }
+    let id = tool.get("id").and_then(Value::as_str).unwrap_or("");
+    SURVIVING_NAMED_TOOLS.contains(&id)
+}
+
+/// The verb-mode guidance block prepended to the tool catalog: how to
+/// discover resource types, and the one-sentence rule that separates the
+/// resource verbs from the surviving named tools (plan R6).
+const VERB_MODE_GUIDANCE: &str = "\
+Tool model: operate on resources with eight generic verbs — \
+wylde_describe, wylde_list, wylde_get, wylde_create, wylde_update, \
+wylde_delete, wylde_search, wylde_execute — each taking a `resource_type`. \
+The legal `resource_type` values are NOT in this prompt: call \
+wylde_describe first (no argument) to list them, then wylde_describe with \
+one `resource_type` for its fields and per-verb notes. The handful of \
+named tools below are the exceptions to the verb model — they either \
+start/stop a live device or run an action with no resource identity. \
+Everything else is a resource verb.";
+
 /// Build the chat-turn system prompt from a `tools.list` catalog
 /// payload (the output of [`crate::tooling::runner::catalog_payload`]).
 ///
@@ -49,13 +123,24 @@ const MAX_CATALOG_TOOLS: usize = 60;
 /// schema and the tool description. Deferred tools are skipped: they
 /// return a `phase_<n>_deferred` error on dispatch, so advertising
 /// them would only invite calls that can't succeed.
-pub fn build_system_prompt(catalog: &[Value]) -> String {
+///
+/// `verb_mode` is the Slice-6 cutover gate
+/// ([`crate::tooling::resource::verb_mode_active`]). When on, only the
+/// verb tools and the [`SURVIVING_NAMED_TOOLS`] tail are advertised
+/// (resource-backed named tools are retired) and the verb-discovery
+/// guidance is prepended; when off, every active tool is listed (legacy).
+pub fn build_system_prompt(catalog: &[Value], verb_mode: bool) -> String {
     let mut tool_lines: Vec<String> = Vec::new();
 
-    for tool in catalog.iter().take(MAX_CATALOG_TOOLS) {
-        if tool.get("status").and_then(Value::as_str) != Some("active") {
-            continue;
-        }
+    // Filter first, cap second: the `MAX_CATALOG_TOOLS` bound applies to the
+    // *advertised* set, not the raw (alphabetically-sorted) catalog — the
+    // `wylde_*` verbs sort last, so a pre-filter cap would chop them off.
+    for tool in catalog
+        .iter()
+        .filter(|t| t.get("status").and_then(Value::as_str) == Some("active"))
+        .filter(|t| advertise(t, verb_mode))
+        .take(MAX_CATALOG_TOOLS)
+    {
         let name = tool
             .get("name")
             .and_then(Value::as_str)
@@ -82,6 +167,36 @@ pub fn build_system_prompt(catalog: &[Value]) -> String {
         tool_lines.join("\n")
     };
 
+    // The verb-cutover prompt swaps the named-tool guidance block and the
+    // memory rule for their verb-shaped equivalents; legacy mode keeps the
+    // original wording so a model primed on the old prompt is unaffected.
+    let guidance_block = if verb_mode {
+        format!("{VERB_MODE_GUIDANCE}\n\n")
+    } else {
+        String::new()
+    };
+    let memory_rule = if verb_mode {
+        "Memory rule: the system automatically tracks important context \
+         from your conversation through a post-turn extraction pass — you \
+         do not need to record things you judge interesting yourself. Use \
+         wylde_create(\"memory\", …) / wylde_update(\"memory\", …) / \
+         wylde_delete(\"memory\", …) ONLY when the user has explicitly \
+         asked you to modify memory (e.g., \"save this to memory\", \
+         \"remember that...\", \"forget X\", \"update what you remember \
+         about Y\"). wylde_search(\"memory\", …) is fine to call any time \
+         you need to look something up."
+    } else {
+        "Memory rule: the system automatically tracks important context \
+         from your conversation through a post-turn extraction pass — you \
+         do not need to call memory.* tools to record things you judge \
+         interesting. Use memory.long_term.save / memory.workspace.save / \
+         memory.update / memory.delete ONLY when the user has explicitly \
+         asked you to modify memory (e.g., \"save this to memory\", \
+         \"remember that...\", \"forget X\", \"update what you remember \
+         about Y\"). memory.search is fine to call any time you need to \
+         look something up."
+    };
+
     format!(
         "You are Wylde, a locally-hosted assistant. You can call tools \
          to take actions or retrieve information. When you need a tool, \
@@ -89,15 +204,7 @@ pub fn build_system_prompt(catalog: &[Value]) -> String {
          form {{\"name\": \"<tool_name>\", \"arguments\": {{ ... }}}} — \
          use the exact tool name from the list below. Otherwise produce \
          a direct answer in plain text.\n\n\
-         Memory rule: the system automatically tracks important context \
-         from your conversation through a post-turn extraction pass — \
-         you do not need to call memory.* tools to record things you \
-         judge interesting. Use memory.long_term.save / \
-         memory.workspace.save / memory.update / memory.delete ONLY \
-         when the user has explicitly asked you to modify memory (e.g., \
-         \"save this to memory\", \"remember that...\", \"forget X\", \
-         \"update what you remember about Y\"). memory.search is fine \
-         to call any time you need to look something up.\n\n\
+         {guidance_block}{memory_rule}\n\n\
          Available tools:\n{tool_block}"
     )
 }
@@ -145,13 +252,18 @@ fn render_arg_schema(parameters: Option<&Value>) -> String {
 /// the call as content instead. Deferred tools are skipped (same filter
 /// as [`build_system_prompt`]) and the same `MAX_CATALOG_TOOLS` cap
 /// applies, so the two advertised tool sets stay in lockstep.
-pub fn build_tools_field(catalog: &[Value]) -> Vec<Value> {
+pub fn build_tools_field(catalog: &[Value], verb_mode: bool) -> Vec<Value> {
     let mut tools: Vec<Value> = Vec::new();
 
-    for tool in catalog.iter().take(MAX_CATALOG_TOOLS) {
-        if tool.get("status").and_then(Value::as_str) != Some("active") {
-            continue;
-        }
+    // Filter first, cap second — see [`build_system_prompt`]: the cap must
+    // bound the advertised set so the `wylde_*` verbs (last alphabetically)
+    // are never chopped off by it.
+    for tool in catalog
+        .iter()
+        .filter(|t| t.get("status").and_then(Value::as_str) == Some("active"))
+        .filter(|t| advertise(t, verb_mode))
+        .take(MAX_CATALOG_TOOLS)
+    {
         let name = tool
             .get("name")
             .and_then(Value::as_str)
@@ -266,7 +378,7 @@ mod tests {
 
     #[test]
     fn prompt_lists_active_tool_by_dotted_name() {
-        let prompt = build_system_prompt(&sample_catalog());
+        let prompt = build_system_prompt(&sample_catalog(), false);
         assert!(prompt.contains("Available tools:"));
         assert!(prompt.contains("fs.read_file"));
         assert!(prompt.contains("path: string"));
@@ -274,7 +386,7 @@ mod tests {
 
     #[test]
     fn prompt_skips_deferred_tools() {
-        let prompt = build_system_prompt(&sample_catalog());
+        let prompt = build_system_prompt(&sample_catalog(), false);
         // `visual.caption` is deferred and appears nowhere in the base
         // instruction text, so its total absence proves the catalog
         // block excluded it.
@@ -286,7 +398,7 @@ mod tests {
 
     #[test]
     fn prompt_advertises_salvage_json_shape() {
-        let prompt = build_system_prompt(&sample_catalog());
+        let prompt = build_system_prompt(&sample_catalog(), false);
         // The shape must match what salvage::parse_one_call recovers.
         assert!(prompt.contains("\"name\""));
         assert!(prompt.contains("\"arguments\""));
@@ -294,7 +406,7 @@ mod tests {
 
     #[test]
     fn prompt_handles_empty_catalog() {
-        let prompt = build_system_prompt(&[]);
+        let prompt = build_system_prompt(&[], false);
         assert!(prompt.contains("(no tools available)"));
     }
 
@@ -318,7 +430,7 @@ mod tests {
 
     #[test]
     fn tools_field_emits_openai_function_shape() {
-        let tools = build_tools_field(&sample_catalog());
+        let tools = build_tools_field(&sample_catalog(), false);
         // Only the active tool surfaces; the deferred one is filtered.
         assert_eq!(tools.len(), 1, "expected one active tool: {tools:?}");
         let t = &tools[0];
@@ -329,7 +441,7 @@ mod tests {
 
     #[test]
     fn tools_field_translates_params_to_json_schema() {
-        let tools = build_tools_field(&sample_catalog());
+        let tools = build_tools_field(&sample_catalog(), false);
         let params = &tools[0]["function"]["parameters"];
         assert_eq!(params["type"], "object");
         // `path` is a required string parameter.
@@ -340,7 +452,7 @@ mod tests {
 
     #[test]
     fn tools_field_skips_deferred_tools() {
-        let tools = build_tools_field(&sample_catalog());
+        let tools = build_tools_field(&sample_catalog(), false);
         let names: Vec<&str> = tools
             .iter()
             .filter_map(|t| t["function"]["name"].as_str())
@@ -358,7 +470,7 @@ mod tests {
             "description": "Current time.", "parameters": [],
             "destructive": false, "status": "active", "deferred_phase": null,
         })];
-        let tools = build_tools_field(&catalog);
+        let tools = build_tools_field(&catalog, false);
         let params = &tools[0]["function"]["parameters"];
         assert_eq!(params["type"], "object");
         assert_eq!(params["properties"], json!({}));
@@ -373,5 +485,81 @@ mod tests {
         assert_eq!(json_schema_type("number"), "number");
         // Unknown → safe string default.
         assert_eq!(json_schema_type("widget"), "string");
+    }
+
+    // ── Slice 6: verb-cutover advertising filter ─────────────────────────
+
+    fn row(id: &str, name: &str, group: &str) -> Value {
+        json!({
+            "id": id, "name": name, "group": group,
+            "description": format!("{name} description"),
+            "parameters": [], "destructive": false,
+            "status": "active", "deferred_phase": null,
+        })
+    }
+
+    /// A mixed catalog: one verb, one surviving named tool (imperative),
+    /// one surviving named tool (awaiting-migration), one retired
+    /// resource-backed tool, and a deferred tool.
+    fn mixed_catalog() -> Vec<Value> {
+        vec![
+            row("wylde_search", "wylde_search", "verbs"),
+            row("voice_mic_start", "voice.mic.start", "voice"),
+            row("time_now", "time.now", "time"),
+            row("memory_search", "memory.search", "memory"),
+            json!({
+                "id": "screenshot", "name": "visual.screenshot", "group": "visual",
+                "description": "shot", "parameters": [], "destructive": true,
+                "status": "deferred", "deferred_phase": "11",
+            }),
+        ]
+    }
+
+    #[test]
+    fn verb_mode_advertises_verbs_and_survivors_only() {
+        let prompt = build_system_prompt(&mixed_catalog(), true);
+        // verb tool + both survivor kinds are advertised
+        assert!(prompt.contains("wylde_search"), "verb missing: {prompt}");
+        assert!(prompt.contains("voice.mic.start"), "imperative survivor missing");
+        assert!(prompt.contains("time.now"), "awaiting-migration survivor missing");
+        // resource-backed named tool is retired from advertising
+        assert!(
+            !prompt.contains("memory.search"),
+            "resource-backed tool must be retired in verb mode: {prompt}"
+        );
+        // deferred stays excluded as always
+        assert!(!prompt.contains("visual.screenshot"));
+        // verb-mode guidance is present
+        assert!(prompt.contains("wylde_describe first"), "describe hint missing");
+    }
+
+    #[test]
+    fn legacy_mode_still_advertises_resource_backed_tools() {
+        let prompt = build_system_prompt(&mixed_catalog(), false);
+        assert!(prompt.contains("memory.search"), "legacy mode must keep named tools");
+        assert!(prompt.contains("wylde_search"));
+        // No verb-mode guidance in legacy mode.
+        assert!(!prompt.contains("wylde_describe first"));
+    }
+
+    #[test]
+    fn verb_mode_memory_rule_references_verbs_not_named_tools() {
+        let prompt = build_system_prompt(&mixed_catalog(), true);
+        assert!(prompt.contains("wylde_create(\"memory\""));
+        assert!(!prompt.contains("memory.long_term.save"));
+    }
+
+    #[test]
+    fn tools_field_verb_mode_filters_to_verbs_and_survivors() {
+        let tools = build_tools_field(&mixed_catalog(), true);
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str())
+            .collect();
+        assert!(names.contains(&"wylde_search"));
+        assert!(names.contains(&"voice.mic.start"));
+        assert!(names.contains(&"time.now"));
+        assert!(!names.contains(&"memory.search"), "retired tool leaked: {names:?}");
+        assert_eq!(names.len(), 3, "exactly verb + 2 survivors: {names:?}");
     }
 }

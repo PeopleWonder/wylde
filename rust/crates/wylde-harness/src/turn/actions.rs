@@ -695,7 +695,8 @@ fn build_alias_map() -> HashMap<String, String> {
 /// set.
 fn initial_messages(user_message: &str) -> Vec<Value> {
     let catalog = crate::tooling::runner::catalog_payload(crate::tooling::registry::global());
-    let system_prompt = prompt::build_system_prompt(&catalog);
+    let verb_mode = crate::tooling::resource::verb_mode_active();
+    let system_prompt = prompt::build_system_prompt(&catalog, verb_mode);
     vec![
         json!({"role": "system", "content": system_prompt}),
         json!({"role": "user", "content": user_message}),
@@ -708,7 +709,7 @@ fn initial_messages(user_message: &str) -> Vec<Value> {
 /// catalog the system prompt uses so both advertised tool sets match.
 fn tools_payload() -> Vec<Value> {
     let catalog = crate::tooling::runner::catalog_payload(crate::tooling::registry::global());
-    prompt::build_tools_field(&catalog)
+    prompt::build_tools_field(&catalog, crate::tooling::resource::verb_mode_active())
 }
 
 /// Parse a native Ollama `message.tool_calls` array into dispatchable
@@ -1156,11 +1157,16 @@ mod tests {
             system.contains("Available tools:"),
             "system prompt must list tools: {system}"
         );
-        // `fs.read_file` is an active tool registered in the global
-        // registry — it must surface in the catalog block.
+        // Post-Slice-6 cutover (verb mode default on): the verb tools are
+        // the always-on surface, and resource-backed named tools like
+        // `fs.read_file` are retired from advertising.
         assert!(
-            system.contains("fs.read_file"),
-            "system prompt must mention a known tool name: {system}"
+            system.contains("wylde_search"),
+            "system prompt must advertise the verb tools: {system}"
+        );
+        assert!(
+            !system.contains("fs.read_file"),
+            "resource-backed named tools must be retired in verb mode: {system}"
         );
     }
 
@@ -1178,10 +1184,12 @@ mod tests {
         let msgs = body["messages"].as_array().expect("messages array");
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs[1]["role"], "user");
+        // Verb-mode cutover: the verb tools are advertised, not the
+        // retired resource-backed named tools.
         assert!(msgs[0]["content"]
             .as_str()
             .unwrap()
-            .contains("fs.read_file"));
+            .contains("wylde_search"));
     }
 
     // ── Fix B: native Ollama `tools:` field + tool_calls parsing ─────────
@@ -1208,18 +1216,19 @@ mod tests {
             assert_eq!(t["function"]["parameters"]["type"], "object");
         }
 
-        // fs.read_file is a known active tool — find it and check its
-        // `path` arg surfaces as a JSON-schema string property.
-        let read_file = arr
+        // Verb-mode cutover: `fs.read_file` is retired; the verb tool
+        // `wylde_get` is the always-on equivalent. Check its required
+        // `resource_type` arg surfaces as a JSON-schema string property.
+        let wylde_get = arr
             .iter()
-            .find(|t| t["function"]["name"] == "fs.read_file")
-            .expect("fs.read_file advertised in tools field");
-        let params = &read_file["function"]["parameters"];
-        assert_eq!(params["properties"]["path"]["type"], "string");
+            .find(|t| t["function"]["name"] == "wylde_get")
+            .expect("wylde_get advertised in tools field");
+        let params = &wylde_get["function"]["parameters"];
+        assert_eq!(params["properties"]["resource_type"]["type"], "string");
         assert!(params["required"]
             .as_array()
             .unwrap()
-            .contains(&json!("path")));
+            .contains(&json!("resource_type")));
     }
 
     #[test]

@@ -42,14 +42,13 @@ use crate::tooling::resource::definition::{
 use crate::tooling::resource::ResourceRegistry;
 
 /// True when the verb-tool cutover flag (`WYLDE_HARNESS_VERB_TOOLS`) is
-/// active — the harness twin of `wylde-extension-bridge::verb_mode_active`.
-/// Gates whether the extension verb overlay is populated at all.
-pub fn verb_mode_active() -> bool {
-    std::env::var("WYLDE_HARNESS_VERB_TOOLS")
-        .ok()
-        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
-        .unwrap_or(false)
-}
+/// active — gates whether the extension verb overlay is populated at all.
+///
+/// Slice 6 collapsed the three former copies of this predicate into one
+/// canonical [`crate::tooling::resource::verb_mode_active`] (default now
+/// **on**, with a deprecation warning on the opt-out path); this re-export
+/// keeps the long-standing call sites in this module readable.
+pub use crate::tooling::resource::verb_mode_active;
 
 // ── Wire shape decoded from `ext.resources.list` ─────────────────────
 //

@@ -46,6 +46,56 @@ pub use definition::{
 pub use gate::{op_consent_gate, OpGate};
 pub use registry::{resources, ResourceRegistry, ToolsetFilter};
 
+/// True when the verb-tool cutover is active (`WYLDE_HARNESS_VERB_TOOLS`).
+///
+/// **Slice 6 cutover (2026-06-03):** the default flipped from **off** to
+/// **on**. With the variable unset, the model-facing catalog advertises
+/// the eight verb tools plus the small imperative/not-yet-migrated tail
+/// only (`crate::turn::prompt`), and the extension verb-resource overlay
+/// is populated ([`resources::extensions::spawn_sync_task`]).
+///
+/// The variable still *exists* as an opt-out escape hatch for debugging:
+/// set it to a falsey value (`0`/`false`/`no`/`off`, or anything not in
+/// the truthy set) to fall back to the legacy named-tool catalog. Taking
+/// that off-path now emits a one-shot **deprecation warning** — the
+/// named-tool advertising surface is slated for removal once the
+/// remaining clusters (ollama/time/diff/voice `execute` resources) land.
+///
+/// This is the single source of truth for the harness side; the
+/// extension-bridge crate carries an independent twin
+/// (`wylde-extension-bridge::verb_mode_active`) flipped in lockstep.
+pub fn verb_mode_active() -> bool {
+    match std::env::var("WYLDE_HARNESS_VERB_TOOLS") {
+        Ok(v) => {
+            let on = matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            );
+            if !on {
+                warn_named_tools_deprecated(&v);
+            }
+            on
+        }
+        // Slice 6: default on. Named-tool catalog is no longer the default.
+        Err(_) => true,
+    }
+}
+
+/// Emit the legacy-mode deprecation warning at most once per process.
+fn warn_named_tools_deprecated(value: &str) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            value = %value,
+            "WYLDE_HARNESS_VERB_TOOLS is set to a non-truthy value: the legacy \
+             named-tool catalog is DEPRECATED. The verb tools (wylde_describe / \
+             list / get / create / update / delete / search / execute) are the \
+             supported model-facing surface; this opt-out will be removed in a \
+             future slice."
+        );
+    });
+}
+
 /// Register every built-in resource into the registry. The verb-layer
 /// twin of [`crate::tooling::tools::register_all`] — explicit
 /// registration, called once by [`ResourceRegistry::default`].

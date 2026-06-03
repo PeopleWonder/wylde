@@ -434,17 +434,96 @@ mod tests {
     #[test]
     fn verbs_are_advertised_in_catalog_injection() {
         // Requirement #4: the verb tools must be visible in the catalog
-        // injection that turn/prompt.rs does, co-existing with old tools.
+        // injection that turn/prompt.rs does. Post-Slice-6 the verbs are
+        // the always-on surface — advertised in both modes.
         let mut reg = Registry::empty();
         register(&mut reg);
         let catalog = crate::tooling::runner::catalog_payload(&reg);
-        let prompt = crate::turn::prompt::build_system_prompt(&catalog);
-        let tools = crate::turn::prompt::build_tools_field(&catalog);
-        for id in ["wylde_describe", "wylde_list", "wylde_search", "wylde_delete"] {
-            assert!(prompt.contains(id), "system prompt should advertise {id}");
+        for verb_mode in [false, true] {
+            let prompt = crate::turn::prompt::build_system_prompt(&catalog, verb_mode);
+            let tools = crate::turn::prompt::build_tools_field(&catalog, verb_mode);
+            for id in ["wylde_describe", "wylde_list", "wylde_search", "wylde_delete"] {
+                assert!(prompt.contains(id), "system prompt should advertise {id} (verb_mode={verb_mode})");
+                assert!(
+                    tools.iter().any(|t| t["function"]["name"] == id),
+                    "native tools field should advertise {id} (verb_mode={verb_mode})"
+                );
+            }
+        }
+    }
+
+    /// Slice 6 cutover — the model-facing catalog built from the **full**
+    /// default registry must contain exactly the eight verb tools plus the
+    /// surviving named-tool tail when verb mode is on, and strictly more
+    /// when off. The exact number is asserted so a future tool addition
+    /// that forgets to classify itself (retire vs survive) trips this test.
+    #[test]
+    fn cutover_catalog_is_exactly_verbs_plus_survivors() {
+        use crate::tooling::registry::Registry;
+        let reg = Registry::default(); // the full catalog the harness ships
+        let catalog = crate::tooling::runner::catalog_payload(&reg);
+
+        let before = crate::turn::prompt::build_tools_field(&catalog, false);
+        let after = crate::turn::prompt::build_tools_field(&catalog, true);
+
+        // 8 verbs + 15 surviving named tools (4 imperative voice device
+        // triggers + 11 awaiting-migration: ollama×4, time×2, diff×1,
+        // voice transcribe/synthesize×4). See docs/wylde-phase5-cutover.md.
+        assert_eq!(after.len(), 23, "verb-mode catalog size changed: {:?}",
+            after.iter().filter_map(|t| t["function"]["name"].as_str()).collect::<Vec<_>>());
+        assert!(before.len() > after.len(), "cutover must shrink the catalog: before={} after={}",
+            before.len(), after.len());
+
+        // Every advertised tool is either a verb or a known survivor —
+        // no resource-backed named tool leaked through.
+        let names: Vec<String> = after
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str().map(str::to_owned))
+            .collect();
+        for retired in ["memory.search", "rag.ask", "meta.graph_query", "fs.read_file",
+                        "search.code_search", "meta.tool_search"] {
+            assert!(!names.contains(&retired.to_owned()), "{retired} should be retired: {names:?}");
+        }
+        for survivor in ["wylde_search", "voice.mic.start", "ollama.list_loaded_models",
+                         "time.now", "diff.show_diff", "voice.transcribe"] {
+            assert!(names.contains(&survivor.to_owned()), "{survivor} should survive: {names:?}");
+        }
+    }
+
+    /// Regression: retiring a named tool from the *catalog* must not break
+    /// its handler — every retired cluster's operation is still reachable
+    /// through its verb resource. This proves the underlying Rust handlers
+    /// didn't go anywhere (the cutover is advertising-only).
+    #[test]
+    fn retired_named_tool_ops_still_reachable_via_verb_resources() {
+        let reg = resources();
+        let filter = ToolsetFilter::all();
+        // (resource_type, op that the retired named tool maps to)
+        let pairs = [
+            ("memory", ResourceOp::Search),     // memory.search
+            ("memory", ResourceOp::Create),     // memory.long_term.save
+            ("memory", ResourceOp::Update),     // memory.update
+            ("memory", ResourceOp::Delete),     // memory.delete
+            ("fs_file", ResourceOp::Get),       // fs.read_file
+            ("fs_file", ResourceOp::Update),    // fs.edit_file / fs.write_file
+            ("fs_file", ResourceOp::Search),    // search.code_search
+            ("fs_dir", ResourceOp::Search),     // search.code_search_files
+            ("rag_chunk", ResourceOp::Search),  // rag.ask
+            ("rag_chunk", ResourceOp::Delete),  // rag.prune
+            ("rag", ResourceOp::Execute),       // rag.index / rag.reindex
+            ("rag_feedback", ResourceOp::Create), // rag.feedback
+            ("rag_miss", ResourceOp::List),     // rag.misses
+            ("rag_chunk_usage", ResourceOp::List), // rag.chunk_usage
+            ("rag_graph_stats", ResourceOp::Get), // rag.graph_stats
+            ("graph", ResourceOp::Search),      // meta.graph_query
+        ];
+        for (rt, op) in pairs {
+            let def = reg
+                .lookup_visible(rt, &filter)
+                .unwrap_or_else(|| panic!("resource {rt} must be registered after cutover"));
             assert!(
-                tools.iter().any(|t| t["function"]["name"] == id),
-                "native tools field should advertise {id}"
+                def.operations.contains_key(&op),
+                "resource {rt} must still support {op:?} (handler retired by mistake?)"
             );
         }
     }
