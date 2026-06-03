@@ -1,20 +1,13 @@
 {
   "name": "Webcrawler",
-  "description": "Fetch raw URL contents, scrape HTML with CSS selectors, extract structured data via rule sets. Migrated to MCP via wylde_mcp_py_shim — the legacy handler.py is untouched.",
+  "description": "Fetch raw URL contents, scrape HTML with CSS selectors, extract structured data via rule sets. Served by the native Rust binary wylde-ext-webcrawler (greenfield rewrite, 4564aa8); the Python shim/handler.py is retired.",
   "version": "1.0",
   "enabled": false,
   "transport": "stdio",
   "command": [
-    "${WYLDE_PYTHON}",
-    "-m",
-    "Extensions._shim.server",
-    "--extension",
-    "Webcrawler"
+    "${WYLDE_BIN}/wylde-ext-webcrawler"
   ],
   "cwd": "${WYLDE_ROOT}",
-  "env": {
-    "PYTHONPATH": "${WYLDE_ROOT}"
-  },
   "capabilities": ["egress.web"],
   "resources": [
     {
