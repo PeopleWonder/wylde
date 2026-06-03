@@ -80,7 +80,7 @@ pub fn register(reg: &mut Registry) {
     ));
 }
 
-async fn run_read_file(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_read_file(args: Value) -> Result<Value, IpcError> {
     let path_str = match str_field(&args, "path") {
         Some(s) => s,
         None => {
@@ -125,7 +125,7 @@ async fn run_read_file(args: Value) -> Result<Value, IpcError> {
     }))
 }
 
-async fn run_list_files(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_list_files(args: Value) -> Result<Value, IpcError> {
     let path_str = str_field(&args, "path").unwrap_or_else(|| ".".to_string());
     let path = PathBuf::from(&path_str);
     if !tokio_fs::try_exists(&path).await.unwrap_or(false) {
@@ -196,7 +196,7 @@ async fn run_list_files(args: Value) -> Result<Value, IpcError> {
     }))
 }
 
-async fn run_write_file(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_write_file(args: Value) -> Result<Value, IpcError> {
     let Some(path_str) = str_field(&args, "path") else {
         return Ok(json!({
             "status": "error",
@@ -232,7 +232,7 @@ async fn run_write_file(args: Value) -> Result<Value, IpcError> {
     }))
 }
 
-async fn run_edit_file(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_edit_file(args: Value) -> Result<Value, IpcError> {
     let Some(path_str) = str_field(&args, "path") else {
         return Ok(json!({
             "status": "error",
@@ -286,6 +286,159 @@ async fn run_edit_file(args: Value) -> Result<Value, IpcError> {
         "status": "success",
         "path": path.display().to_string(),
         "replacements": count,
+    }))
+}
+
+// ── verb-layer primitives ───────────────────────────────────────────
+//
+// The four handlers above are the named `fs.*` tools. The four below
+// back the `fs_file` / `fs_dir` verb resources (consolidation Slice 4,
+// `docs/plans/tool-registry-consolidation.md`). They have no named-tool
+// twin — `create` (write-new, refuse-overwrite), file `delete`, dir
+// `create` (mkdir -p), dir `delete` (rmdir) are operations the resource
+// surface introduces. They live here so every fs primitive — and so any
+// future path-confinement guard — has a single home, and the resource
+// OpHandlers stay pure request-reshaping adapters (the memory.rs pattern).
+//
+// Path handling matches the named tools exactly: no allow-list, no
+// workspace confinement (neither the Python originals nor the Rust port
+// imposed one — the harness is a coding agent whose workspace may live
+// anywhere). The verb surface is therefore never *wider* than the named
+// tools; it opens no new hole.
+
+/// `fs_file` create — write a new file, refusing to clobber an existing
+/// one. This is the write-new half of the CRUD split (`update` overwrites;
+/// `create` does not). Creates missing parent directories like
+/// [`run_write_file`].
+pub(crate) async fn run_create_file(args: Value) -> Result<Value, IpcError> {
+    let Some(path_str) = str_field(&args, "path") else {
+        return Ok(json!({
+            "status": "error",
+            "error": "'path' is required",
+        }));
+    };
+    let path = PathBuf::from(&path_str);
+    if tokio_fs::try_exists(&path).await.unwrap_or(false) {
+        return Ok(json!({
+            "status": "error",
+            "error": format!("file already exists: {path_str} (use update to overwrite)"),
+            "code": "already_exists",
+        }));
+    }
+    run_write_file(args).await
+}
+
+/// `fs_file` delete — remove a single file. Errors if the path is missing
+/// or is a directory (use `fs_dir` delete for directories).
+pub(crate) async fn run_delete_file(args: Value) -> Result<Value, IpcError> {
+    let Some(path_str) = str_field(&args, "path") else {
+        return Ok(json!({
+            "status": "error",
+            "error": "'path' is required",
+        }));
+    };
+    let path = PathBuf::from(&path_str);
+    let meta = match tokio_fs::metadata(&path).await {
+        Ok(m) => m,
+        Err(_) => {
+            return Ok(json!({
+                "status": "error",
+                "error": format!("file not found: {path_str}"),
+                "code": "not_found",
+            }));
+        }
+    };
+    if meta.is_dir() {
+        return Ok(json!({
+            "status": "error",
+            "error": format!("path is a directory: {path_str} (use fs_dir delete)"),
+        }));
+    }
+    if let Err(e) = tokio_fs::remove_file(&path).await {
+        return Ok(json!({
+            "status": "error",
+            "error": format!("{e}"),
+        }));
+    }
+    Ok(json!({
+        "status": "success",
+        "path": path.display().to_string(),
+        "deleted": true,
+    }))
+}
+
+/// `fs_dir` create — `mkdir -p`. Idempotent: succeeds if the directory
+/// already exists (matches `create_dir_all` semantics).
+pub(crate) async fn run_make_dir(args: Value) -> Result<Value, IpcError> {
+    let Some(path_str) = str_field(&args, "path") else {
+        return Ok(json!({
+            "status": "error",
+            "error": "'path' is required",
+        }));
+    };
+    let path = PathBuf::from(&path_str);
+    if let Err(e) = tokio_fs::create_dir_all(&path).await {
+        return Ok(json!({
+            "status": "error",
+            "error": format!("{e}"),
+        }));
+    }
+    Ok(json!({
+        "status": "success",
+        "path": path.display().to_string(),
+        "created": true,
+    }))
+}
+
+/// `fs_dir` delete — `rmdir`. Removes an empty directory by default;
+/// pass `recursive: true` to remove a directory and its contents.
+pub(crate) async fn run_remove_dir(args: Value) -> Result<Value, IpcError> {
+    let Some(path_str) = str_field(&args, "path") else {
+        return Ok(json!({
+            "status": "error",
+            "error": "'path' is required",
+        }));
+    };
+    let recursive = args
+        .get("recursive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let path = PathBuf::from(&path_str);
+    let meta = match tokio_fs::metadata(&path).await {
+        Ok(m) => m,
+        Err(_) => {
+            return Ok(json!({
+                "status": "error",
+                "error": format!("directory not found: {path_str}"),
+                "code": "not_found",
+            }));
+        }
+    };
+    if !meta.is_dir() {
+        return Ok(json!({
+            "status": "error",
+            "error": format!("not a directory: {path_str}"),
+        }));
+    }
+    let result = if recursive {
+        tokio_fs::remove_dir_all(&path).await
+    } else {
+        tokio_fs::remove_dir(&path).await
+    };
+    if let Err(e) = result {
+        // remove_dir on a non-empty dir surfaces an OS error — pass it
+        // through with a hint to use recursive.
+        return Ok(json!({
+            "status": "error",
+            "error": format!("{e}"),
+            "hint": if recursive { Value::Null } else { json!("pass recursive=true to remove a non-empty directory") },
+        }));
+    }
+    Ok(json!({
+        "status": "success",
+        "path": path.display().to_string(),
+        "deleted": true,
+        "recursive": recursive,
     }))
 }
 
@@ -460,4 +613,137 @@ mod tests {
         assert!(reg.lookup("edit_file").unwrap().destructive);
     }
 
+    // ── verb-layer primitives ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_file_writes_when_absent_and_creates_parents() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("a/b/c.txt");
+        let v = run_create_file(json!({
+            "path": nested.display().to_string(),
+            "content": "fresh",
+        }))
+        .await
+        .unwrap();
+        assert_eq!(v["status"], "success");
+        assert_eq!(v["bytes_written"], 5);
+        assert_eq!(tokio_fs::read_to_string(&nested).await.unwrap(), "fresh");
+    }
+
+    #[tokio::test]
+    async fn create_file_refuses_to_clobber_existing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        tokio_fs::write(&path, "original").await.unwrap();
+        let v = run_create_file(json!({
+            "path": path.display().to_string(),
+            "content": "new",
+        }))
+        .await
+        .unwrap();
+        assert_eq!(v["status"], "error");
+        assert_eq!(v["code"], "already_exists");
+        // Original content untouched.
+        assert_eq!(tokio_fs::read_to_string(&path).await.unwrap(), "original");
+    }
+
+    #[tokio::test]
+    async fn delete_file_removes_and_reports_not_found() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        tokio_fs::write(&path, "x").await.unwrap();
+        let v = run_delete_file(json!({"path": path.display().to_string()}))
+            .await
+            .unwrap();
+        assert_eq!(v["status"], "success");
+        assert!(!tokio_fs::try_exists(&path).await.unwrap());
+        // Second delete → not_found.
+        let again = run_delete_file(json!({"path": path.display().to_string()}))
+            .await
+            .unwrap();
+        assert_eq!(again["status"], "error");
+        assert_eq!(again["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn delete_file_refuses_directory() {
+        let dir = tempdir().unwrap();
+        let sub = dir.path().join("sub");
+        tokio_fs::create_dir(&sub).await.unwrap();
+        let v = run_delete_file(json!({"path": sub.display().to_string()}))
+            .await
+            .unwrap();
+        assert_eq!(v["status"], "error");
+        assert!(v["error"].as_str().unwrap().contains("directory"));
+    }
+
+    #[tokio::test]
+    async fn make_dir_creates_nested_and_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("x/y/z");
+        let v = run_make_dir(json!({"path": nested.display().to_string()}))
+            .await
+            .unwrap();
+        assert_eq!(v["status"], "success");
+        assert!(tokio_fs::metadata(&nested).await.unwrap().is_dir());
+        // Idempotent — second call still succeeds.
+        let again = run_make_dir(json!({"path": nested.display().to_string()}))
+            .await
+            .unwrap();
+        assert_eq!(again["status"], "success");
+    }
+
+    #[tokio::test]
+    async fn remove_dir_removes_empty_but_refuses_nonempty_without_recursive() {
+        let dir = tempdir().unwrap();
+        let empty = dir.path().join("empty");
+        tokio_fs::create_dir(&empty).await.unwrap();
+        let v = run_remove_dir(json!({"path": empty.display().to_string()}))
+            .await
+            .unwrap();
+        assert_eq!(v["status"], "success");
+        assert!(!tokio_fs::try_exists(&empty).await.unwrap());
+
+        let full = dir.path().join("full");
+        tokio_fs::create_dir(&full).await.unwrap();
+        tokio_fs::write(full.join("f.txt"), "x").await.unwrap();
+        let blocked = run_remove_dir(json!({"path": full.display().to_string()}))
+            .await
+            .unwrap();
+        assert_eq!(blocked["status"], "error");
+        assert!(tokio_fs::try_exists(&full).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn remove_dir_recursive_removes_nonempty() {
+        let dir = tempdir().unwrap();
+        let full = dir.path().join("full");
+        tokio_fs::create_dir(&full).await.unwrap();
+        tokio_fs::write(full.join("f.txt"), "x").await.unwrap();
+        let v = run_remove_dir(json!({
+            "path": full.display().to_string(),
+            "recursive": true,
+        }))
+        .await
+        .unwrap();
+        assert_eq!(v["status"], "success");
+        assert_eq!(v["recursive"], true);
+        assert!(!tokio_fs::try_exists(&full).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn remove_dir_not_found_and_not_a_dir() {
+        let dir = tempdir().unwrap();
+        let missing = run_remove_dir(json!({"path": dir.path().join("ghost").display().to_string()}))
+            .await
+            .unwrap();
+        assert_eq!(missing["code"], "not_found");
+        let file = dir.path().join("a.txt");
+        tokio_fs::write(&file, "x").await.unwrap();
+        let notdir = run_remove_dir(json!({"path": file.display().to_string()}))
+            .await
+            .unwrap();
+        assert_eq!(notdir["status"], "error");
+        assert!(notdir["error"].as_str().unwrap().contains("not a directory"));
+    }
 }

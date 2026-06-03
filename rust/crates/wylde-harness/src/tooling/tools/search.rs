@@ -62,7 +62,7 @@ pub fn register(reg: &mut Registry) {
     ));
 }
 
-async fn run_code_search(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_code_search(args: Value) -> Result<Value, IpcError> {
     let Some(pattern) = args.get("pattern").and_then(Value::as_str) else {
         return Ok(json!({"status": "error", "error": "'pattern' is required"}));
     };
@@ -130,7 +130,7 @@ async fn run_code_search(args: Value) -> Result<Value, IpcError> {
     }))
 }
 
-async fn run_code_search_files(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_code_search_files(args: Value) -> Result<Value, IpcError> {
     let Some(glob) = args.get("glob").and_then(Value::as_str) else {
         return Ok(json!({"status": "error", "error": "'glob' is required"}));
     };
