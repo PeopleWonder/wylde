@@ -13,7 +13,7 @@ def run_memory_delete(params: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(rid, str) or not rid:
         return {"status": "error", "error": "id is required"}
 
-    from Core.harness.turn import current_tool_context
+    from Core.harness._tool_context import current_tool_context
 
     if scope == "long_term":
         from Core.harness.memory import long_term

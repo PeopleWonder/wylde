@@ -358,11 +358,11 @@ def default_chat_fn() -> Optional[Callable[..., Any]]:
     """
     try:
         from ..backend.backend_routing import default_router
-        from ..turn import ChatStep
+        from .._tool_context import ChatStep
     except ImportError:
         try:
             from Core.harness.backend.backend_routing import default_router
-            from Core.harness.turn import ChatStep
+            from Core.harness._tool_context import ChatStep
         except ImportError:
             return None
 

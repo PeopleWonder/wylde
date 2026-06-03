@@ -40,7 +40,7 @@ def _resolve_workspace_id(params: Dict[str, Any]) -> str:
     if explicit:
         return explicit
     try:
-        from .....turn import current_tool_context
+        from ....._tool_context import current_tool_context
 
         ctx = current_tool_context()
         if ctx is not None and ctx.workspace_id:
