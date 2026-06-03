@@ -9,17 +9,25 @@
 //! * [`super::bolt::BoltClient`] — direct Bolt to Neo4j via `neo4rs`
 //!   (the `rust` branch).
 //!
-//! Keeping the trait minimal (just `traverse` + `multihop`) keeps the
-//! abstraction cost negligible while letting [`super::dispatch`]
-//! flip the implementation behind one env var.
+//! Keeping the trait tight lets [`super::current_traversal_impl`]
+//! flip the implementation behind one env var while the abstraction
+//! cost stays negligible.
 //!
-//! ## Why not a full verb surface?
+//! ## Verb surface
 //!
-//! The full verb set (`health`, `ensure_schema`, `upsert`, `relate`,
-//! ...) doesn't need a runtime switch in this slice — those callers
-//! pick a concrete transport directly. Only the two retrieval verbs
-//! the tool catalog dispatches through are shared, so the trait stays
-//! tight.
+//! The trait carries the verbs the *tool catalog* dispatches through —
+//! the two retrieval verbs (`traverse` / `multihop`) plus `stats` and
+//! `upsert_edge`. The latter two were added when `rag.graph_stats` and
+//! the RAG feedback writer were found hardcoding a concrete pipe
+//! [`Client`] — which, after the 2026-05-26 direct-Bolt cutover retired
+//! the `\\.\pipe\wylde-memgraph` surface, meant they were talking to a
+//! pipe nothing serves. Routing them through this trait makes them honor
+//! the same strangler selection the retrieval path already does (Bolt by
+//! default), so the whole tool-facing graph surface picks one transport.
+//!
+//! The remaining write/admin verbs (`ensure_schema`, `upsert`,
+//! `relate`, `delete_path`, ...) still pick a concrete transport at
+//! their call sites and stay off the trait.
 //!
 //! ## Native async fns in traits
 //!
@@ -56,6 +64,20 @@ pub trait MemgraphTraversal: Send + Sync {
         expand_hops: u32,
         limit: u32,
     ) -> impl Future<Output = Reply> + Send;
+
+    /// `GET /stats` — graph-wide node/edge counts. Backs the
+    /// `rag.graph_stats` tool.
+    fn stats(&self) -> impl Future<Output = Reply> + Send;
+
+    /// `POST /upsert_edge` — MERGE-style weighted edge upsert. Backs the
+    /// RAG reader→writer feedback loop.
+    fn upsert_edge(
+        &self,
+        source: &str,
+        label: &str,
+        target: &str,
+        weight_delta: f64,
+    ) -> impl Future<Output = Reply> + Send;
 }
 
 impl MemgraphTraversal for Client {
@@ -66,6 +88,14 @@ impl MemgraphTraversal for Client {
     async fn multihop(&self, entities: Vec<String>, expand_hops: u32, limit: u32) -> Reply {
         Client::multihop(self, entities, expand_hops, limit).await
     }
+
+    async fn stats(&self) -> Reply {
+        Client::stats(self).await
+    }
+
+    async fn upsert_edge(&self, source: &str, label: &str, target: &str, weight_delta: f64) -> Reply {
+        Client::upsert_edge(self, source, label, target, weight_delta).await
+    }
 }
 
 impl MemgraphTraversal for BoltClient {
@@ -75,6 +105,14 @@ impl MemgraphTraversal for BoltClient {
 
     async fn multihop(&self, entities: Vec<String>, expand_hops: u32, limit: u32) -> Reply {
         BoltClient::multihop(self, entities, expand_hops, limit).await
+    }
+
+    async fn stats(&self) -> Reply {
+        BoltClient::stats(self).await
+    }
+
+    async fn upsert_edge(&self, source: &str, label: &str, target: &str, weight_delta: f64) -> Reply {
+        BoltClient::upsert_edge(self, source, label, target, weight_delta).await
     }
 }
 

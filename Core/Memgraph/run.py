@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Memgraph service entry point — hosts ``\\\\.\\pipe\\wylde-memgraph``.
+"""Memgraph service entry point — supervises the bundled Neo4j JVM.
 
 Memgraph is Wylde's relational-data layer, backed by a bundled Neo4j
 JVM child.  This module is the process wrapper the Lifecycle daemon
@@ -292,8 +292,9 @@ def main() -> None:
             logger.info("Neo4j ready")
         else:
             logger.warning(
-                "Neo4j did not come up within %ds — pipe service will start "
-                "and retry the driver connection lazily on first request",
+                "Neo4j did not come up within %ds — supervisor will stay up "
+                "and the harness retries its Bolt connection lazily on first "
+                "request",
                 _READY_WAIT_S,
             )
 

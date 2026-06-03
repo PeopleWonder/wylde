@@ -18,7 +18,7 @@
 
 use serde_json::{json, Value};
 
-use crate::memory::memgraph::Client;
+use crate::memory::memgraph::transport::MemgraphTraversal;
 use crate::memory::rag::miss_log;
 
 /// Sentinel node every retrieval miss points at. Matches Python's
@@ -61,7 +61,7 @@ impl OutcomeTrace {
 /// `status` is the pipeline's terminal label. Anything other than `"ok"`
 /// is treated as a retrieval miss.
 pub async fn record_outcome(
-    client: &Client,
+    client: &impl MemgraphTraversal,
     query: &str,
     status: &str,
     query_entities: &[String],
