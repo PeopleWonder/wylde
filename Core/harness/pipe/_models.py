@@ -91,8 +91,10 @@ def _models_impl() -> str:
 
     Default ``rust`` since Slice 3b (2026-06-03). Anything other than
     ``python`` / ``rust`` is clamped to the default — same fail-safe shape
-    as ``_chat._harness_turn_impl`` and the Rust-side ``rust_enabled()``,
-    so a typo can't silently strand the surface on a half-state.
+    as the Rust-side ``rust_enabled()`` gate, so a typo can't silently
+    strand the surface on a half-state. (The analogous chat-turn knob
+    ``_chat._harness_turn_impl`` was retired in Phase 5.D when the Python
+    chat driver was deleted — chat.* now forwards to Rust unconditionally.)
     """
     raw = os.environ.get("WYLDE_HARNESS_MODELS_IMPL")
     if raw is None:
