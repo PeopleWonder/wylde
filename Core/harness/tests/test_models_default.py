@@ -25,6 +25,14 @@ from Core.harness.pipe._models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _pin_python_impl(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the impl flag to ``python`` so these tests exercise the retained
+    in-process Python bodies (the persisted-default storage layer). The
+    forward/gate path is covered by ``test_models_strangler.py``."""
+    monkeypatch.setenv("WYLDE_HARNESS_MODELS_IMPL", "python")
+
+
 @pytest.fixture
 def isolated_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """Repoint the default-model store at a tmp file and clear the cache.

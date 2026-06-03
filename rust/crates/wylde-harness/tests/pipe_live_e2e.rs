@@ -245,21 +245,68 @@ async fn models_default_round_trips_over_live_pipe_when_flag_on() {
 }
 
 #[tokio::test]
-async fn models_verbs_gated_off_return_not_implemented() {
-    // With the flag off (the default), the registered models.* handlers
-    // must report `not_implemented` — a transport-class code the Python
-    // forward path (Slice 3b) treats as "fall back to Python". This is
-    // the explicit-disabled marker that replaces the silent fallback the
-    // Slice 3 stop-finding warned about.
+async fn models_verbs_rollback_to_python_return_not_implemented() {
+    // Slice 3b flipped the default to `rust`. The rollback path —
+    // WYLDE_HARNESS_MODELS_IMPL=python — disables the Rust handlers, which
+    // report `not_implemented`, a transport-class code the Python forwarder
+    // treats as "fall back to the in-process Python body". This is the
+    // explicit-disabled marker that replaces the silent fallback the Slice 3
+    // stop-finding warned about.
     let _g = registry_guard().await;
     let prior_impl = std::env::var_os("WYLDE_HARNESS_MODELS_IMPL");
-    std::env::remove_var("WYLDE_HARNESS_MODELS_IMPL");
+    std::env::set_var("WYLDE_HARNESS_MODELS_IMPL", "python");
 
     let (service, server, task) = spin_up_pipe().await;
 
     let got = ipc::send_action(&service, "models.get_default", json!({})).await;
-    assert!(!got.ok, "gated-off verb unexpectedly ok: {got:?}");
+    assert!(!got.ok, "rollback verb unexpectedly ok: {got:?}");
     assert_eq!(got.error.as_ref().unwrap().code, "not_implemented");
+
+    server.stop();
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+
+    restore("WYLDE_HARNESS_MODELS_IMPL", prior_impl);
+}
+
+#[tokio::test]
+async fn models_list_and_show_run_on_rust_handler_over_live_pipe() {
+    // Slice 3b live verification: with the default (flag unset → rust) the
+    // registry/Ollama verbs dispatch to the Rust handler over the actual
+    // named pipe. `models.list` returns the `{models, count, kind}`
+    // envelope; `models.show` reaches the Ollama-side path (no Ollama in
+    // the test env, so it surfaces an honest transport/not-found error).
+    // The point of the test is the *routing*: neither verb may come back as
+    // `not_implemented` (gated off) or `no_action` (unregistered) — both
+    // would mean the request never hit the live Rust handler.
+    let _g = registry_guard().await;
+    let prior_impl = std::env::var_os("WYLDE_HARNESS_MODELS_IMPL");
+    std::env::remove_var("WYLDE_HARNESS_MODELS_IMPL"); // default = rust (Slice 3b)
+
+    let (service, server, task) = spin_up_pipe().await;
+
+    // models.list — registry view, deterministic shape, no Ollama needed.
+    let listed = ipc::send_action(&service, "models.list", json!({})).await;
+    assert!(listed.ok, "models.list reply not ok: {listed:?}");
+    assert!(listed.data["models"].is_array(), "models.list missing models[]");
+    assert!(listed.data["count"].is_u64(), "models.list missing count");
+    assert_eq!(listed.data["kind"], "all");
+
+    // models.show — proves the Rust handler ran (reached the Ollama call),
+    // rather than the disabled stub or an unregistered verb.
+    let shown = ipc::send_action(&service, "models.show", json!({"name": "qwen3:0.6b"})).await;
+    let code = shown
+        .error
+        .as_ref()
+        .map(|e| e.code.as_str())
+        .unwrap_or("");
+    assert_ne!(
+        code, "not_implemented",
+        "models.show returned the gated-off stub — the gate didn't route to Rust: {shown:?}"
+    );
+    assert_ne!(
+        code, "no_action",
+        "models.show is not registered on the Rust pipe: {shown:?}"
+    );
 
     server.stop();
     let _ = tokio::time::timeout(Duration::from_secs(2), task).await;

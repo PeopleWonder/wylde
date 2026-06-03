@@ -23,6 +23,15 @@ if str(_VAULT_ROOT) not in sys.path:
     sys.path.insert(0, str(_VAULT_ROOT))
 
 
+@pytest.fixture(autouse=True)
+def _pin_python_impl(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests exercise the retained in-process Python bodies (they
+    monkey-patch the backend helpers), so pin the impl flag to ``python``.
+    The default is ``rust`` (Slice 3b); the forward/gate behaviour itself
+    is covered by ``test_models_strangler.py``."""
+    monkeypatch.setenv("WYLDE_HARNESS_MODELS_IMPL", "python")
+
+
 @pytest.fixture
 def harness_pipe() -> Any:
     try:

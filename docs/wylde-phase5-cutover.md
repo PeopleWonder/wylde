@@ -12,6 +12,23 @@ default to `rust`:
 |-----------------------------------|----------------------------------|-------------|-------------|
 | `WYLDE_WYLDE_HARNESS_IMPL`        | Lifecycle daemon spawn decision  | `python`    | `rust`      |
 | `WYLDE_HARNESS_IMPL`              | Python `_chat.py` forwarder      | `python`    | `rust`      |
+| `WYLDE_HARNESS_MODELS_IMPL`       | Python `_models.py` forwarder **and** Rust `models.*` handler gate (`actions.rs::rust_enabled`) | `python` | `rust` |
+
+> **Slice 3b addendum (2026-06-03).** `WYLDE_HARNESS_MODELS_IMPL` now
+> defaults to `rust`. It governs **both** halves of the `models.*`
+> strangler: the Python `_models.py` entry points forward eight verbs
+> (`list`, `get_profile`, `show`, `delete`, `unload`, `set_active`,
+> `set_default`, `get_default`) over the harness pipe, and the Rust
+> handlers run live unless the flag is an explicit `python` (the rollback
+> path, where they return `not_implemented` and the Python body takes
+> over). `models.transcribe` / `models.synthesize` stay Python-only — they
+> drive the Voice STT/TTS engines, which aren't hosted in the harness
+> crate, so there's no Rust handler to forward to. A self-loop guard in
+> `_models.py` suppresses the forward when the Python harness is itself the
+> live pipe server (the env var is decoupled from the daemon's
+> service-selection flag, so the `python`-server + `rust`-models
+> misconfiguration is reachable). Set `WYLDE_HARNESS_MODELS_IMPL=python`
+> to revert.
 
 Effect at boot:
 
