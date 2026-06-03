@@ -23,21 +23,22 @@ def _record_for_end_of_turn(path_str: str) -> None:
     """Best-effort: tell the active turn this path was written so the
     end-of-turn architectural sweep covers it.
 
-    Production uses the canonical ``Core.harness.turn`` import.  In
-    test environments where ``sys.path`` contains both Wylde's parent
-    and Wylde itself, the same module file can also be loaded under a
-    second name with its own ``threading.local`` tool context — we
-    walk ``sys.modules`` and invoke ``record_file_written`` on every
-    loaded copy.  Non-active modules see ``current_tool_context() is
-    None`` and silently no-op, so calling all of them is safe and the
-    right one always wins.
+    Production uses the canonical ``Core.harness._tool_context`` import
+    (rehomed there in Phase 5.D from ``Core.harness.turn``).  In test
+    environments where ``sys.path`` contains both Wylde's parent and
+    Wylde itself, the same module file can also be loaded under a second
+    name with its own ``threading.local`` tool context — we walk
+    ``sys.modules`` and invoke ``record_file_written`` on every loaded
+    copy.  Non-active modules see ``current_tool_context() is None`` and
+    silently no-op, so calling all of them is safe and the right one
+    always wins.
     """
     import sys as _sys
 
     seen: set = set()
     _rec: Any = None
     try:
-        from Core.harness.turn import record_file_written as _rec_fn
+        from Core.harness._tool_context import record_file_written as _rec_fn
 
         _rec = _rec_fn
     except ImportError:
@@ -52,7 +53,10 @@ def _record_for_end_of_turn(path_str: str) -> None:
     for mod_name, mod in list(_sys.modules.items()):
         if mod is None:
             continue
-        if not (mod_name == "turn" or mod_name.endswith(".harness.turn")):
+        if not (
+            mod_name == "_tool_context"
+            or mod_name.endswith(".harness._tool_context")
+        ):
             continue
         helper = getattr(mod, "record_file_written", None)
         if helper is None or id(helper) in seen:

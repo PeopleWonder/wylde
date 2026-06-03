@@ -25,7 +25,7 @@ def run_memory_search(params: Dict[str, Any]) -> Dict[str, Any]:
 
     from Core.harness.memory import workspace_memory
     from Core.harness.memory import conversation as _conv
-    from Core.harness.turn import current_tool_context
+    from Core.harness._tool_context import current_tool_context
 
     ctx = current_tool_context()
     workspace_id = ""

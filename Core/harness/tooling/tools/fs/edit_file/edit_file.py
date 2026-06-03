@@ -19,13 +19,14 @@ def _record_for_end_of_turn(path_str: str) -> None:
     end-of-turn architectural sweep covers it.  See the matching helper
     in :mod:`...write_file.write_file` for the sys.modules walk
     rationale (same module file can load under two names in test
-    environments, each with its own thread-local context)."""
+    environments, each with its own thread-local context).  The helper
+    was rehomed to ``Core.harness._tool_context`` in Phase 5.D."""
     import sys as _sys
 
     seen: set = set()
     _rec: Any = None
     try:
-        from Core.harness.turn import record_file_written as _rec_fn
+        from Core.harness._tool_context import record_file_written as _rec_fn
 
         _rec = _rec_fn
     except ImportError:
@@ -40,7 +41,10 @@ def _record_for_end_of_turn(path_str: str) -> None:
     for mod_name, mod in list(_sys.modules.items()):
         if mod is None:
             continue
-        if not (mod_name == "turn" or mod_name.endswith(".harness.turn")):
+        if not (
+            mod_name == "_tool_context"
+            or mod_name.endswith(".harness._tool_context")
+        ):
             continue
         helper = getattr(mod, "record_file_written", None)
         if helper is None or id(helper) in seen:

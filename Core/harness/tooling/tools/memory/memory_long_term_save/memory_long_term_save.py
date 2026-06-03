@@ -17,7 +17,7 @@ def run_memory_long_term_save(params: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "error", "error": "body is required"}
 
     from Core.harness.memory import long_term
-    from Core.harness.turn import current_tool_context
+    from Core.harness._tool_context import current_tool_context
 
     ctx = current_tool_context()
     source = (
