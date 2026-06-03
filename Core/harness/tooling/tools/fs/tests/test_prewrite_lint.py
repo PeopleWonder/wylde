@@ -3,17 +3,24 @@ the lint_hook entry point.
 
 Architectural-check semantics changed in 2026-05: the per-write lint
 that used to live inside the tools was removed.  Each tool now just
-writes and records the path on the active turn; the
-``wylde_check`` sweep fires once at end-of-turn from
-:mod:`Core.harness.turn`.  Coverage here:
+writes and records the path on the active turn (via
+:func:`Core.harness._tool_context.record_file_written`); the
+``wylde_check`` sweep fires once at end-of-turn.  Coverage here:
 
 * ``write_file`` / ``edit_file`` write cleanly and never block on
   content (including content that would have tripped the old lint).
 * The ``force`` param was removed (writes are unconditional).
-* Each tool calls :func:`Core.harness.turn.record_file_written` so
-  the end-of-turn sweep covers the touched file.
 * The ``lint_hook.py`` entry point (used by Claude Code's Stop hook
   and the manual per-file form) still works.
+
+The turn-registry recording path itself (``record_file_written``
+appending to ``TurnState.files_written``) is no longer exercised here:
+Phase 5.D retired the Python chat-turn driver, so the Python
+``record_file_written`` is a no-op and the registry it fed lives in the
+Rust ``wylde-harness`` crate (covered by its own tests). The tools'
+contract — call the helper, never raise even with no active turn — is
+all that remains to pin on the Python side, and the success-path tests
+below cover it implicitly.
 """
 
 from __future__ import annotations
@@ -51,17 +58,6 @@ def _import_edit() -> Any:
         from Core.harness.tooling.tools.fs.edit_file import run_edit_file
 
         return run_edit_file
-
-
-def _import_turn() -> Any:
-    try:
-        from Wylde.Core.harness import turn
-
-        return turn
-    except ImportError:
-        from Core.harness import turn
-
-        return turn
 
 
 # ── write_file ────────────────────────────────────────────────────────
@@ -197,81 +193,18 @@ def test_edit_file_missing_file_errors(tmp_path: Path) -> None:
 # ── files_written tracker (record_file_written) ──────────────────────
 
 
-def test_write_file_records_path_on_active_turn(tmp_path: Path) -> None:
-    """Inside an active turn context, ``write_file`` appends the path
-    to ``state.files_written`` so the end-of-turn architectural check
-    sees it."""
-    turn = _import_turn()
-    state = turn.TurnState(turn_id="t_write", conversation_id="c_write")
-    turn.register_turn(state)
-    try:
-        turn._set_tool_context(
-            turn.ToolContext(conversation_id="c_write", turn_id="t_write")
-        )
-        try:
-            run = _import_write()
-            target = tmp_path / "Core" / "harness" / "tracked.py"
-            run({"path": str(target), "content": "x = 1\n"})
-        finally:
-            turn._set_tool_context(None)
-        assert state.files_written == [str(target)]
-    finally:
-        turn.reap_turn("t_write")
-
-
-def test_edit_file_records_path_on_active_turn(tmp_path: Path) -> None:
-    turn = _import_turn()
-    state = turn.TurnState(turn_id="t_edit", conversation_id="c_edit")
-    turn.register_turn(state)
-    try:
-        target = tmp_path / "Core" / "harness" / "tracked.py"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("x = 1\n", encoding="utf-8")
-        turn._set_tool_context(
-            turn.ToolContext(conversation_id="c_edit", turn_id="t_edit")
-        )
-        try:
-            run = _import_edit()
-            run({"path": str(target), "old_text": "1", "new_text": "2"})
-        finally:
-            turn._set_tool_context(None)
-        assert state.files_written == [str(target)]
-    finally:
-        turn.reap_turn("t_edit")
-
-
-def test_record_file_written_dedupes_multiple_edits_to_same_file(
-    tmp_path: Path,
-) -> None:
-    """A turn that hits the same file three times only records it once
-    so the end-of-turn check doesn't lint the same content thrice."""
-    turn = _import_turn()
-    state = turn.TurnState(turn_id="t_dedupe", conversation_id="c_dedupe")
-    turn.register_turn(state)
-    try:
-        turn._set_tool_context(
-            turn.ToolContext(conversation_id="c_dedupe", turn_id="t_dedupe")
-        )
-        try:
-            turn.record_file_written("foo.py")
-            turn.record_file_written("foo.py")
-            turn.record_file_written("bar.py")
-            turn.record_file_written("foo.py")
-        finally:
-            turn._set_tool_context(None)
-        assert state.files_written == ["foo.py", "bar.py"]
-    finally:
-        turn.reap_turn("t_dedupe")
-
-
 def test_record_file_written_outside_turn_is_silent_noop() -> None:
     """No active turn context → the helper returns cleanly without
-    raising.  Tests calling the fs tools directly rely on this."""
-    turn = _import_turn()
-    # Confirm no context is active.
-    assert turn.current_tool_context() is None
+    raising.  Tests calling the fs tools directly rely on this.  Since
+    Phase 5.D retired the Python chat-turn driver, the helper is now a
+    permanent no-op on the Python side regardless of context — but it
+    must still never raise."""
+    from Core.harness._tool_context import current_tool_context, record_file_written
+
+    # No driver registry → no active context.
+    assert current_tool_context() is None
     # Must not raise.
-    turn.record_file_written("anything.py")
+    record_file_written("anything.py")
 
 
 # ── lint_hook entry point (unchanged by this refactor) ───────────────
