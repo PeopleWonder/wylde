@@ -15,12 +15,12 @@ parity = []
 
 [dependencies]
 wylde-shared = { path = "../../crates/wylde-shared" }
-# Phase 5.D harness/turn parity test calls the Rust salvage parser /
-# call_hash / find_balanced_braces in-process and diffs against Python.
-# The dependency does fire wylde-harness's build.rs prebuild guard at
-# first build, so make sure `wylde-harness.exe` is not running when
-# you `cargo test --features parity`.
-wylde-harness = { path = "../../crates/wylde-harness" }
+# Note: the Phase 5.D harness/turn parity test (which diffed the Rust
+# salvage parser / call_hash / find_balanced_braces against Python's
+# `Core.harness.turn._streaming`) was retired when the Python chat-turn
+# driver was deleted — there is no Python half left to diff against. The
+# Rust salvage parser keeps its own coverage in `wylde-harness`'s lib
+# tests, so this crate no longer depends on `wylde-harness`.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

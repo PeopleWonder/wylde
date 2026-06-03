@@ -49,6 +49,15 @@ fallback (the 2026-05-24 consolidation rename).
 
 ## Parity gate
 
+> **RETIRED 2026-06-03 (deletion slice).** `harness_turn.rs` diffed the
+> Rust salvage parser against Python's `Core.harness.turn._streaming` via
+> a `.venv` subprocess probe. When the Python driver package was deleted
+> (below) there was no Python half left to diff against, so the test and
+> the parity crate's `wylde-harness` dependency were removed. The Rust
+> salvage parser keeps its own coverage in `wylde-harness`'s lib tests.
+> The description below is retained as the historical record of what the
+> gate covered at cutover.
+
 `rust/tests/parity/tests/harness_turn.rs` (new in 5.D). Three test
 functions covering the pure-function port surface byte-for-byte
 against Python's `Core.harness.turn._streaming`:
@@ -86,6 +95,20 @@ load-bearing prerequisite for the dispatch loop to produce the same
 The Python driver at `Core/harness/turn/` stays on disk for one
 release cycle as the rollback path. **Earliest deletion: 2026-06-08**
 (14-day soak from cutover).
+
+> **EXECUTED 2026-06-03** (ahead of the 2026-06-08 soak date, once the
+> prereqs in PR #6 closed the last two couplings — all unary `chat.*`
+> verbs forwarding to Rust, and the non-driver helpers rehomed to
+> `Core/harness/_tool_context.py`). `Core/harness/turn/` (7 files,
+> 2,369 LOC) and the driver-only `test_turn/` suite (7 files, 1,500 LOC)
+> were deleted; `_chat.py` lost its strangler scaffolding and the three
+> unary handlers became thin Rust forwarders that raise
+> `harness_unavailable` rather than fall back (no Python loop remains);
+> `test_strangler_fig.py` moved to `tests/test_chat_forwarder.py` as a
+> Rust-forwarder-only suite; the `harness_turn.rs` parity gate was
+> retired (see above). Rust serves all five `chat.*` verbs, verified live
+> over the real pipe. The `WYLDE_HARNESS_IMPL` / `WYLDE_HARNESS_TURN_IMPL`
+> rollback knob is gone with the driver it gated.
 
 ### Paths to delete
 
