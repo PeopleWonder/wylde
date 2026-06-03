@@ -1,9 +1,18 @@
-# Tool-Registry Verb Cutover (consolidation Slice 6)
+# Tool-Registry Verb Cutover (consolidation Slice 6 + 4b)
 
-**Status:** landed 2026-06-03.
+**Status:** Slice 6 landed 2026-06-03; **Slice 4b** (resource migration of
+the last 11 named tools) landed 2026-06-03.
 **Flag:** `WYLDE_HARNESS_VERB_TOOLS` — **default flipped from off to on.**
-**Plan:** `docs/plans/tool-registry-consolidation.md` §6 (Slice 6),
-gitignored.
+**Plan:** `docs/plans/tool-registry-consolidation.md` §6 (Slice 6) + §6
+follow-up (Slice 4b), gitignored.
+
+> **Slice 4b update (2026-06-03).** The "known gap" Slice 6 documented is
+> now closed. The 11 "awaiting migration" tools (ollama×4, time×2, diff×1,
+> voice transcribe/synthesize×4) are registered as the `model` / `time` /
+> `diff` / `voice` resources and retired from advertising. The model-facing
+> catalog dropped from **23 → 12** (8 verbs + 4 permanent imperative voice
+> device tools). The four voice mic/wake-word tools are the only survivors.
+> Details inline below.
 
 > Filename note: the Slice-6 brief asked for this to live at
 > `docs/wylde-phase5-cutover.md`, but that path already documents the
@@ -59,19 +68,55 @@ Slice 6 is the **cutover**:
 Built from the full default registry (`Registry::default()`), counting the
 native `tools:` field:
 
-| Mode | Advertised tools |
-|---|---|
-| Legacy (`verb_mode = false`) | **43** |
-| Cutover (`verb_mode = true`)  | **23** |
+| Mode | Advertised tools (Slice 6) | After Slice 4b |
+|---|---|---|
+| Legacy (`verb_mode = false`) | **43** | 43 |
+| Cutover (`verb_mode = true`)  | **23** | **12** |
 
-23 = 8 verbs + 15 surviving named tools. Asserted exactly by
+Post-4b: 12 = 8 verbs + 4 surviving named tools (the imperative voice
+device triggers only). Asserted exactly by
 `tools::verbs::tests::cutover_catalog_is_exactly_verbs_plus_survivors`.
 
 ---
 
-## Retired from advertising (20 named tools — resource-backed)
+## Retired from advertising (31 named tools — resource-backed)
 
-All still registered + dispatchable; reachable through the verbs.
+20 retired in Slice 6 + 11 more in Slice 4b. All still registered +
+dispatchable; reachable through the verbs.
+
+### Slice 4b additions (11)
+
+| Retired named tool | Reached via |
+|---|---|
+| `ollama.list_loaded_models` | `wylde_list("model")` |
+| `ollama.preload_model` | `wylde_create("model", {body:{model, keep_alive}})` |
+| `ollama.evict_model` | `wylde_delete("model", <tag>)` |
+| `ollama.auto_evict_lru` | `wylde_execute("model", "auto_evict_lru", …)` |
+| `time.now` | `wylde_get("time")` |
+| `time.format` | `wylde_execute("time", "format", {params:{epoch_ms, tz}})` |
+| `diff.show_diff` | `wylde_execute("diff", "diff", {params:{a, b}\|{a_path, b_path}})` |
+| `voice.transcribe` | `wylde_execute("voice", "transcribe", …)` |
+| `voice.transcribe_stream` | `wylde_execute("voice", "transcribe", {params:{stream:true}})` |
+| `voice.synthesize` | `wylde_execute("voice", "synthesize", …)` |
+| `voice.synthesize_stream` | `wylde_execute("voice", "synthesize", {params:{stream:true}})` |
+
+**Resource shapes adopted (4b):**
+- **`model`** — CRUD + one execute. A *loaded model* has identity (the
+  Ollama tag): preload→`create`, evict→`delete`, list_loaded→`list`. The
+  `auto_evict_lru` sweep has no single-tag identity, so it stays an
+  `execute` action. **Not** the Slice-3a `models.*` model-registry cluster
+  — that surface (`crate::model_registry`) is routing/profile metadata and
+  was never a verb resource. No duplicate registration.
+- **`time`** — singleton `get` (current time) + `execute(action="format")`
+  for arbitrary-epoch formatting. Both read-only.
+- **`diff`** — single `execute(action="diff")`. Pure compute; read-only.
+  The mutating `apply_patch` counterpart stays a deferred named tool.
+- **`voice`** — `execute(action="transcribe"|"synthesize")` with a
+  `params.stream` flag collapsing the 4 named tools into 2 actions. Pure
+  inference; read-only. The mic/wake-word **device** tools are NOT part of
+  this resource (permanent imperatives, below).
+
+### Slice 6 originals (20)
 
 | Retired named tool | Reached via |
 |---|---|
@@ -98,7 +143,7 @@ All still registered + dispatchable; reachable through the verbs.
 
 ---
 
-## Surviving named tools (15)
+## Surviving named tools (4 — post-4b)
 
 ### Imperative — permanent (4)
 
@@ -108,35 +153,25 @@ Named by design; never collapse into a verb.
 - `voice.mic.start`, `voice.mic.stop`
 - `voice.wakeword.start`, `voice.wakeword.stop`
 
-### Awaiting resource migration — temporary (11)
+### Awaiting resource migration — temporary (0)
 
-Execute/CRUD-shaped tools whose **resource cluster was never registered**
-in Slices 1–5a. Retiring them now would orphan the operation (the verb
-path has nowhere to dispatch), so they stay named until a follow-up slice
-registers their `ResourceDefinition`.
-
-- `ollama.list_loaded_models`, `ollama.preload_model`,
-  `ollama.evict_model`, `ollama.auto_evict_lru` → future `model` resource
-- `time.now`, `time.format` → future `time` resource
-- `diff.show_diff` → future `diff` resource
-- `voice.transcribe`, `voice.synthesize`, `voice.transcribe_stream`,
-  `voice.synthesize_stream` → future voice `execute` resource
+**Empty after Slice 4b.** The 11 tools that used to sit here (ollama×4,
+time×2, diff×1, voice transcribe/synthesize×4) are now resource-backed and
+retired — see "Slice 4b additions" above. No named tool is left waiting on
+a resource.
 
 ---
 
-## Known gap / follow-up (the cutover's honest tail)
+## Known gap / follow-up — CLOSED by Slice 4b
+
+> **Resolved 2026-06-03.** The gap below was the Slice-6 honest tail; Slice
+> 4b registered the four missing resources (`model`, `time`, `diff`,
+> `voice`) and retired all 11 tools. Kept here for the record.
 
 The consolidation plan's Slice 4 scoped `fs/search/ollama/time/diff` but
-**only `fs` + `search` shipped** (`fs_file`/`fs_dir`); the `ollama`/`time`/
-`diff` portion was deferred to a follow-up, and a voice `execute` resource
-was never sliced. As a result, the 11 "awaiting migration" tools above
-**cannot** be retired yet without orphaning them — per the cutover's hard
-rule, a tool with no resource equivalent stays advertised, not silently
-dropped.
-
-**Follow-up slice (Slice 4b / voice-execute):** register `model`, `time`,
-`diff`, and a voice `execute` resource, then move those 11 tools into the
-retired set. That shrinks the model-facing catalog from 23 to ~12.
+~~**only `fs` + `search` shipped**~~ — Slice 4b shipped the rest. The 11
+"awaiting migration" tools that ~~**cannot** be retired yet~~ are now
+retired through their resources.
 
 `execute_bash` / `execute_python` are not in either list: they remain
 **deferred** (no Rust sandbox decision yet), so they are not advertised in

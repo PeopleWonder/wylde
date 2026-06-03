@@ -40,7 +40,7 @@ pub fn register(reg: &mut Registry) {
     ));
 }
 
-async fn run_time_now() -> Result<Value, IpcError> {
+pub(crate) async fn run_time_now() -> Result<Value, IpcError> {
     let utc_now = Utc::now();
     let local_now: DateTime<Local> = Local::now();
     Ok(json!({
@@ -51,7 +51,7 @@ async fn run_time_now() -> Result<Value, IpcError> {
     }))
 }
 
-async fn run_time_format(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_time_format(args: Value) -> Result<Value, IpcError> {
     let Some(ms) = args.get("epoch_ms").and_then(Value::as_i64) else {
         return Ok(json!({
             "status": "error",

@@ -219,19 +219,19 @@ async fn run_aggregated_stream(
     }))
 }
 
-async fn run_transcribe(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_transcribe(args: Value) -> Result<Value, IpcError> {
     forward_unary("voice.transcribe", args, "transcribe").await
 }
 
-async fn run_synthesize(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_synthesize(args: Value) -> Result<Value, IpcError> {
     forward_unary("voice.synthesize", args, "synthesize").await
 }
 
-async fn run_transcribe_stream(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_transcribe_stream(args: Value) -> Result<Value, IpcError> {
     run_aggregated_stream("voice.transcribe_stream", args, "transcribe_stream").await
 }
 
-async fn run_synthesize_stream(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_synthesize_stream(args: Value) -> Result<Value, IpcError> {
     run_aggregated_stream("voice.synthesize_stream", args, "synthesize_stream").await
 }
 
