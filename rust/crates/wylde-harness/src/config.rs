@@ -41,6 +41,14 @@ pub struct Config {
     /// stable name on this box; slice 5.C will read it.
     pub extension_bridge_service: String,
 
+    /// Service name for the tree-sitter sidecar (`wylde-treesitter`,
+    /// pipe at `\\.\pipe\wylde-treesitter`). The verb-layer `code_chunk`
+    /// / `code_entity` resources dispatch `treesitter.chunk` /
+    /// `treesitter.extract_entities` against this over IPC — the same
+    /// `call_action` hop the ollama / extension-bridge surfaces use.
+    /// Lets tests retarget to a fake sidecar pipe.
+    pub treesitter_service: String,
+
     /// Known MCP extension namespaces — the routing heuristic in
     /// [`crate::dispatch::route`] checks the dotted prefix of every
     /// tool name against this set. A real registry handshake against
@@ -86,6 +94,11 @@ impl Config {
                 "WYLDE_HARNESS_TURN_EXTENSION_BRIDGE_SERVICE",
                 "wylde-extension-bridge",
             ),
+            treesitter_service: env_string_with_alias(
+                "WYLDE_HARNESS_TREESITTER_SERVICE",
+                "WYLDE_HARNESS_TURN_TREESITTER_SERVICE",
+                "wylde-treesitter",
+            ),
             mcp_namespaces: env_csv(
                 "WYLDE_HARNESS_MCP_NAMESPACES",
                 &["webcrawler", "wylde_study"],
@@ -117,6 +130,7 @@ impl Config {
             max_tool_loops: 8,
             ollama_service: "wylde-ollama".to_owned(),
             extension_bridge_service: "wylde-extension-bridge".to_owned(),
+            treesitter_service: "wylde-treesitter".to_owned(),
             mcp_namespaces: vec!["webcrawler".to_owned(), "wylde_study".to_owned()],
             default_chat_priority: 60,
             wylde_root: PathBuf::from("."),
@@ -195,6 +209,7 @@ mod tests {
         assert!(cfg.max_tool_loops > 0);
         assert_eq!(cfg.ollama_service, "wylde-ollama");
         assert_eq!(cfg.extension_bridge_service, "wylde-extension-bridge");
+        assert_eq!(cfg.treesitter_service, "wylde-treesitter");
     }
 
     #[test]
