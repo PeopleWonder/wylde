@@ -267,6 +267,70 @@ async fn models_verbs_gated_off_return_not_implemented() {
     restore("WYLDE_HARNESS_MODELS_IMPL", prior_impl);
 }
 
+#[tokio::test]
+async fn rag_add_episodic_then_search_round_trips_over_live_pipe() {
+    // Wylde_Study S2a: the headline contract — an episodic row written
+    // via `rag.add_episodic` is retrievable through a follow-up
+    // `rag.search`, end-to-end over the wire. Precomputed vectors keep
+    // the test self-contained (no live wylde-ollama embedder needed);
+    // the embed path itself is unit-tested in `memory::embeddings`.
+    let _g = registry_guard().await;
+
+    let td = tempfile::tempdir().expect("tempdir");
+    let prior = std::env::var_os("WYLDE_DATA_DIR");
+    std::env::set_var("WYLDE_DATA_DIR", td.path());
+    let prior_dim = std::env::var_os("WYLDE_EMBED_DIM");
+    std::env::set_var("WYLDE_EMBED_DIM", "4");
+
+    let (service, server, task) = spin_up_pipe().await;
+
+    let added = ipc::send_action(
+        &service,
+        "rag.add_episodic",
+        json!({
+            "content": "the optic nerve carries signals from the retina",
+            "url": "http://anat.example/eye",
+            "vector": [1.0, 0.0, 0.0, 0.0],
+        }),
+    )
+    .await;
+    assert!(added.ok, "add_episodic reply: {added:?}");
+    assert_eq!(added.data["status"], "ok");
+    let id = added.data["memory_id"]
+        .as_str()
+        .expect("memory_id is string")
+        .to_owned();
+
+    let found = ipc::send_action(
+        &service,
+        "rag.search",
+        json!({
+            "q": "what carries signals from the retina",
+            "query_vector": [1.0, 0.0, 0.0, 0.0],
+            "limit": 5,
+        }),
+    )
+    .await;
+    assert!(found.ok, "search reply: {found:?}");
+    assert_eq!(found.data["status"], "ok");
+    let results = found.data["results"].as_array().expect("results array");
+    assert!(!results.is_empty(), "added row must surface in search");
+    assert_eq!(results[0]["id"], id);
+    assert_eq!(results[0]["memory_type"], "episodic");
+
+    server.stop();
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+
+    match prior {
+        Some(v) => std::env::set_var("WYLDE_DATA_DIR", v),
+        None => std::env::remove_var("WYLDE_DATA_DIR"),
+    }
+    match prior_dim {
+        Some(v) => std::env::set_var("WYLDE_EMBED_DIM", v),
+        None => std::env::remove_var("WYLDE_EMBED_DIM"),
+    }
+}
+
 /// Restore (or clear) an env var to a previously-captured value.
 fn restore(key: &str, prior: Option<std::ffi::OsString>) {
     match prior {

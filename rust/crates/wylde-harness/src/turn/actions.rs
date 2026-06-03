@@ -192,6 +192,90 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     }))
 }
 
+/// `chat.complete` — single-shot, narrow completion endpoint for
+/// extensions (Wylde_Study S2a).
+///
+/// Deliberately *not* the agent loop. Where [`handle_run_turn`] injects
+/// the full agent persona + tool catalog via [`initial_messages`] and
+/// drives a salvage/dispatch loop, `chat.complete` sends exactly one
+/// `{role: "user"}` message — no system prompt, no `tools` field, no
+/// tool decode, no conversation history. It routes through the *same*
+/// underlying pipeline as `chat.run_turn` (the `ollama.chat` IPC action
+/// on `cfg.ollama_service`), so the wylde-ollama VRAM broker lease,
+/// model resolution, and priority all apply identically — only the
+/// message construction is stripped down.
+///
+/// Accepted args:
+/// * `prompt` (required) — the user message.
+/// * `model` (optional) — defaults to `WYLDE_DEFAULT_MODEL`.
+/// * `max_tokens` (optional) — forwarded as Ollama `options.num_predict`.
+///
+/// Returns `{text, model_used, tokens_used, prompt_tokens,
+/// completion_tokens}`. `tokens_used` is the sum of prompt + completion
+/// counts the backend reports; the breakdown is included for callers
+/// that want it (the Python Study handler tracks them separately).
+pub async fn handle_complete(payload: Value) -> Reply {
+    let cfg = Config::get();
+
+    let prompt = match string_field(&payload, "prompt") {
+        Ok(s) => s,
+        Err(e) => return Reply::err(e),
+    };
+    let model = resolve_model(&payload, cfg);
+    if model.is_empty() {
+        return Reply::err(IpcError::new(
+            "bad_request",
+            "model is required (none provided and WYLDE_DEFAULT_MODEL is unset)",
+        ));
+    }
+
+    let mut body = json!({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "priority": cfg.default_chat_priority,
+        "stream": false,
+        "keep_alive": "24h",
+    });
+    // Map the narrow `max_tokens` knob onto Ollama's generation option.
+    // A non-positive value is ignored (let the backend pick its default).
+    if let Some(max) = payload.get("max_tokens").and_then(Value::as_i64) {
+        if max > 0 {
+            body["options"] = json!({ "num_predict": max });
+        }
+    }
+
+    match ipc::call_action(&cfg.ollama_service, "ollama.chat", body).await {
+        Ok(upstream) => {
+            let text = extract_assistant_content(&upstream);
+            let model_used = upstream
+                .get("model")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&model)
+                .to_owned();
+            let prompt_tokens = upstream
+                .get("prompt_eval_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let completion_tokens = upstream
+                .get("eval_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            Reply::ok(json!({
+                "text": text,
+                "model_used": model_used,
+                "tokens_used": prompt_tokens + completion_tokens,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            }))
+        }
+        Err(e) => Reply::err(IpcError::new(
+            "chat_failed",
+            format!("{}: {}", e.code, e.message),
+        )),
+    }
+}
+
 /// `chat.start_turn` — non-blocking kick-off (5.B). Validates inputs,
 /// registers a turn handle, spawns the driving task, and returns the
 /// turn id immediately.
@@ -806,6 +890,27 @@ mod tests {
         assert_eq!(extract_chunk_content(&v), Some("Hel".to_owned()));
         let v = json!({"done": true});
         assert_eq!(extract_chunk_content(&v), None);
+    }
+
+    // ── chat.complete validation (Wylde_Study S2a) ─────────────────────
+    // The happy path (real ollama.chat round-trip) is covered by the
+    // mock-pipe integration test in tests/chat_complete_e2e.rs; here we
+    // pin the cheap arg-validation that needs no backend.
+
+    #[tokio::test]
+    async fn complete_rejects_missing_prompt() {
+        let reply = handle_complete(json!({})).await;
+        assert!(!reply.ok);
+        let err = reply.error.unwrap();
+        assert_eq!(err.code, "bad_request");
+        assert!(err.message.contains("prompt"));
+    }
+
+    #[tokio::test]
+    async fn complete_rejects_empty_prompt() {
+        let reply = handle_complete(json!({"prompt": ""})).await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "bad_request");
     }
 
     #[tokio::test]

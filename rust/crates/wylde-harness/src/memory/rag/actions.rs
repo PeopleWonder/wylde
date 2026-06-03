@@ -37,10 +37,17 @@ use super::ingest::{trigger_ingest, IngestRequest};
 use super::miss_log;
 use super::prune::{prune_rows, PruneError, PruneFilters};
 use super::search::{search_logged, SearchError};
-use super::store::TieredStore;
-use super::tiers::is_known_tier;
-use crate::memory::common::embed_dim;
+use super::store::{TierRecord, TieredStore};
+use super::tiers::{is_known_tier, TIER_EPISODIC};
+use crate::memory::common::{data_dir, embed_dim};
+use crate::memory::embeddings::{embed_one, EmbedError};
 use crate::memory::memgraph::Client;
+
+/// Default episodic score when the caller doesn't supply one. Episodic
+/// rows are mid-tier importance — below `core` (1.0), above a cold
+/// `semantic` chunk. Matches the seed convention used across the
+/// `rag` test fixtures.
+const DEFAULT_EPISODIC_SCORE: f32 = 0.5;
 
 // ─── rag.ask ──────────────────────────────────────────────────────────
 
@@ -104,6 +111,208 @@ pub async fn run_rag_ask(args: Value) -> Result<Value, IpcError> {
     }
 
     let store = TieredStore::open_at(&crate::memory::common::data_dir(), embed_dim());
+    match search_logged(
+        &store,
+        &query,
+        query_vector,
+        tier.as_deref(),
+        &workspace_id,
+        limit,
+    ) {
+        Ok(hits) => {
+            let results: Vec<Value> = hits.iter().map(|h| h.to_value()).collect();
+            let count = results.len();
+            for h in &hits {
+                miss_log::record_chunk_use(&h.id);
+            }
+            let status = if count == 0 {
+                "insufficient_context"
+            } else {
+                "ok"
+            };
+            Ok(json!({
+                "status": status,
+                "q": query,
+                "workspace_id": workspace_id,
+                "results": results,
+                "count": count,
+            }))
+        }
+        Err(SearchError::UnknownTier(t)) => Ok(json!({
+            "status": "error",
+            "error": format!("unknown tier '{t}'"),
+        })),
+        Err(SearchError::Vector(msg)) => Ok(json!({
+            "status": "error",
+            "error": format!("vector store: {msg}"),
+        })),
+    }
+}
+
+// ─── rag.add_episodic (Wylde_Study S2a) ───────────────────────────────
+
+/// Handler for the `rag.add_episodic` pipe action.
+///
+/// Raw-text episodic write — the Rust port of Python
+/// `Core/harness/memory/rag.add_episodic(body, source_path, session_id)`,
+/// which is in turn a thin wrapper over `vector_store.add_row(memory_type
+/// = EPISODIC, …)`. Lands one `episodic`-tier row in the same
+/// [`TieredStore`] that [`run_rag_search`] / [`run_rag_ask`] read, so an
+/// added page is immediately retrievable.
+///
+/// Accepted args:
+/// * `content` / `text` (required) — the episodic body (the caller
+///   composes any title prefix itself, exactly as the Python handler does).
+/// * `source_path` / `url` (optional) — origin trace stored on the row so
+///   a later hit links back to its page.
+/// * `session_id` (optional) — grouping tag.
+/// * `score` (optional) — episodic importance; defaults to
+///   [`DEFAULT_EPISODIC_SCORE`].
+/// * `vector` (optional, array of numbers) — precomputed embedding. When
+///   absent the body is embedded server-side via [`embed_one`] (same
+///   embedder the rest of the memory layer uses). Mirrors the
+///   precomputed-vector escape hatch the `memory` resource and `rag.ask`
+///   already expose, so tests and pre-embedding callers don't need a live
+///   wylde-ollama.
+///
+/// Returns `{status: "ok", memory_id, id, chars, memory_type}` on
+/// success — `memory_id` matches the Python handler's field name, `id`
+/// the `rag.*` family convention; both carry the same value.
+pub async fn run_rag_add_episodic(args: Value) -> Result<Value, IpcError> {
+    let content = args
+        .get("content")
+        .or_else(|| args.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    if content.is_empty() {
+        return Ok(json!({
+            "status": "error",
+            "error": "'content' (or 'text') is required and must be non-empty",
+        }));
+    }
+    let source_path = args
+        .get("source_path")
+        .or_else(|| args.get("url"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let session_id = args
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let score = args
+        .get("score")
+        .and_then(Value::as_f64)
+        .map(|s| s as f32)
+        .unwrap_or(DEFAULT_EPISODIC_SCORE);
+
+    let provided = parse_float_array(args.get("vector"));
+    let vector = match resolve_vector(provided, &content).await {
+        Ok(v) => v,
+        Err(e) => return Ok(embed_error_envelope(e)),
+    };
+
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    let record = TierRecord::new(
+        id.clone(),
+        content.clone(),
+        TIER_EPISODIC,
+        score,
+        session_id,
+        source_path,
+    );
+
+    let mut store = TieredStore::open_at(&data_dir(), embed_dim());
+    if let Err(e) = store.insert(record, Some(vector)) {
+        return Ok(json!({
+            "status": "error",
+            "error": format!("vector store: {e}"),
+        }));
+    }
+    if let Err(e) = store.save() {
+        return Ok(json!({
+            "status": "error",
+            "error": format!("persist failed: {e}"),
+        }));
+    }
+
+    Ok(json!({
+        "status": "ok",
+        "memory_id": id,
+        "id": id,
+        "chars": content.chars().count(),
+        "memory_type": TIER_EPISODIC,
+    }))
+}
+
+// ─── rag.search (Wylde_Study S2a) ─────────────────────────────────────
+
+/// Handler for the `rag.search` pipe action.
+///
+/// The embed-wired sibling of [`run_rag_ask`]: where `rag.ask` deliberately
+/// refuses to embed (it's the model-callable tool and returns
+/// `embed_not_wired` without a precomputed vector), `rag.search` is the
+/// extension-facing action that *does* embed the query server-side via
+/// [`embed_one`], then runs the exact same first-party search
+/// ([`search_logged`] over [`TieredStore`]). No parallel retrieval path —
+/// only the query-embedding step differs.
+///
+/// Accepted args:
+/// * `q` (required) — natural-language query.
+/// * `query_vector` (optional, array of numbers) — precomputed embedding;
+///   skips the embed round-trip when supplied (test / pre-embed seam).
+/// * `limit` (optional, default 8) — clamped to 1..=50.
+/// * `tier` (optional) — restrict to one tier (`core` / `episodic` / …).
+/// * `workspace` / `workspace_id` (optional) — advisory, for miss-log
+///   attribution.
+///
+/// Returns the same envelope shape as `rag.ask`
+/// (`{status, q, workspace_id, results, count}`) so the two verbs are
+/// interchangeable on the read side.
+pub async fn run_rag_search(args: Value) -> Result<Value, IpcError> {
+    let query = args
+        .get("q")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    if query.is_empty() {
+        return Ok(json!({
+            "status": "error",
+            "error": "'q' parameter required and must be non-empty",
+        }));
+    }
+    let limit = clamp_usize(args.get("limit"), 8, 1, 50);
+    let workspace_id = args
+        .get("workspace")
+        .or_else(|| args.get("workspace_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("default")
+        .to_owned();
+    let tier = args
+        .get("tier")
+        .or_else(|| args.get("memory_type"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    if let Some(t) = &tier {
+        if !is_known_tier(t) {
+            return Ok(json!({
+                "status": "error",
+                "error": format!("unknown tier '{t}'"),
+            }));
+        }
+    }
+
+    let provided = parse_float_array(args.get("query_vector"));
+    let query_vector = match resolve_vector(provided, &query).await {
+        Ok(v) => v,
+        Err(e) => return Ok(embed_error_envelope(e)),
+    };
+
+    let store = TieredStore::open_at(&data_dir(), embed_dim());
     match search_logged(
         &store,
         &query,
@@ -409,6 +618,28 @@ pub async fn record_terminal_outcome(
 
 // ─── helpers ──────────────────────────────────────────────────────────
 
+/// Use the caller's precomputed vector if present, otherwise embed
+/// `text` via [`embed_one`] — the single embedder the whole memory
+/// layer shares. Keeps `rag.add_episodic` / `rag.search` from growing a
+/// second embedding codepath.
+async fn resolve_vector(provided: Option<Vec<f32>>, text: &str) -> Result<Vec<f32>, EmbedError> {
+    match provided {
+        Some(v) => Ok(v),
+        None => embed_one(text.to_owned()).await,
+    }
+}
+
+/// Shape an [`EmbedError`] into the `status: error` envelope the
+/// `rag.*` family uses. Distinct `code` so a caller can tell an embed
+/// failure (transient backend / model missing) from a bad-args error.
+fn embed_error_envelope(e: EmbedError) -> Value {
+    json!({
+        "status": "error",
+        "code": "embed_failed",
+        "error": e.to_string(),
+    })
+}
+
 fn clamp_usize(v: Option<&Value>, fallback: usize, lo: usize, hi: usize) -> usize {
     let raw = v.and_then(Value::as_i64).unwrap_or(fallback as i64);
     raw.max(lo as i64).min(hi as i64) as usize
@@ -541,6 +772,139 @@ mod tests {
         .unwrap();
         assert_eq!(v["status"], "insufficient_context");
         assert_eq!(v["count"], 0);
+    }
+
+    // ── rag_add_episodic (Wylde_Study S2a) ─────────────────────────────
+
+    #[tokio::test]
+    async fn add_episodic_requires_content() {
+        let _env = TestEnv::new();
+        force_embed_dim_4();
+        let v = run_rag_add_episodic(json!({"url": "http://x"})).await.unwrap();
+        assert_eq!(v["status"], "error");
+    }
+
+    #[tokio::test]
+    async fn add_episodic_rejects_blank_content() {
+        let _env = TestEnv::new();
+        force_embed_dim_4();
+        let v = run_rag_add_episodic(json!({"content": "   "})).await.unwrap();
+        assert_eq!(v["status"], "error");
+    }
+
+    #[tokio::test]
+    async fn add_episodic_with_precomputed_vector_persists_episodic_row() {
+        let _env = TestEnv::new();
+        force_embed_dim_4();
+        let v = run_rag_add_episodic(json!({
+            "content": "mitochondria are the powerhouse of the cell",
+            "url": "http://bio.example/cell",
+            "session_id": "s-1",
+            "vector": [1.0, 0.0, 0.0, 0.0],
+        }))
+        .await
+        .unwrap();
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["memory_type"], "episodic");
+        assert_eq!(v["chars"], 43);
+        let id = v["memory_id"].as_str().expect("memory_id present");
+        assert_eq!(v["id"], id, "id and memory_id carry the same value");
+
+        // Reload from disk → the row is an episodic tier record with the
+        // url stored in source_path.
+        let store = TieredStore::open_at(&data_dir_for_test(), 4);
+        assert_eq!(store.count_rows(), 1);
+        let row = store.iter().next().unwrap();
+        assert_eq!(row.memory_type, "episodic");
+        assert_eq!(row.source_path, "http://bio.example/cell");
+        assert_eq!(row.session_id, "s-1");
+    }
+
+    #[tokio::test]
+    async fn add_episodic_accepts_text_alias_for_content() {
+        let _env = TestEnv::new();
+        force_embed_dim_4();
+        let v = run_rag_add_episodic(json!({
+            "text": "alias body",
+            "vector": [0.0, 1.0, 0.0, 0.0],
+        }))
+        .await
+        .unwrap();
+        assert_eq!(v["status"], "ok");
+    }
+
+    // ── rag_search (Wylde_Study S2a) ────────────────────────────────────
+
+    #[tokio::test]
+    async fn search_requires_q() {
+        let _env = TestEnv::new();
+        force_embed_dim_4();
+        let v = run_rag_search(json!({"query_vector": [1.0, 0.0, 0.0, 0.0]}))
+            .await
+            .unwrap();
+        assert_eq!(v["status"], "error");
+    }
+
+    #[tokio::test]
+    async fn search_unknown_tier_returns_error() {
+        let _env = TestEnv::new();
+        force_embed_dim_4();
+        let v = run_rag_search(json!({
+            "q": "x",
+            "query_vector": [1.0, 0.0, 0.0, 0.0],
+            "tier": "junk",
+        }))
+        .await
+        .unwrap();
+        assert_eq!(v["status"], "error");
+    }
+
+    #[tokio::test]
+    async fn search_empty_store_returns_insufficient_context() {
+        let _env = TestEnv::new();
+        force_embed_dim_4();
+        let v = run_rag_search(json!({
+            "q": "anything",
+            "query_vector": [1.0, 0.0, 0.0, 0.0],
+        }))
+        .await
+        .unwrap();
+        assert_eq!(v["status"], "insufficient_context");
+        assert_eq!(v["count"], 0);
+    }
+
+    #[tokio::test]
+    async fn add_episodic_then_search_round_trips() {
+        // The core integration contract: an episodic row added via
+        // run_rag_add_episodic surfaces in a follow-up run_rag_search.
+        let _env = TestEnv::new();
+        force_embed_dim_4();
+        let added = run_rag_add_episodic(json!({
+            "content": "the Krebs cycle runs in the mitochondrial matrix",
+            "url": "http://bio.example/krebs",
+            "vector": [1.0, 0.0, 0.0, 0.0],
+        }))
+        .await
+        .unwrap();
+        assert_eq!(added["status"], "ok");
+        let id = added["memory_id"].as_str().unwrap().to_owned();
+
+        let found = run_rag_search(json!({
+            "q": "what runs in the mitochondria",
+            "query_vector": [1.0, 0.0, 0.0, 0.0],
+            "limit": 5,
+        }))
+        .await
+        .unwrap();
+        assert_eq!(found["status"], "ok");
+        let results = found["results"].as_array().unwrap();
+        assert!(!results.is_empty(), "added row must surface in search");
+        assert_eq!(results[0]["id"], id);
+        assert_eq!(results[0]["memory_type"], "episodic");
+        assert_eq!(
+            results[0]["content"],
+            "the Krebs cycle runs in the mitochondrial matrix"
+        );
     }
 
     // ── rag_index / rag_reindex ────────────────────────────────────────
