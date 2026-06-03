@@ -48,40 +48,26 @@ const MAX_CATALOG_TOOLS: usize = 60;
 /// stays registered and dispatchable, just no longer advertised, and is
 /// reached through the verbs (`docs/wylde-phase5-cutover.md`).
 ///
-/// Two principled categories survive (R6 in the consolidation plan):
+/// After Slice 4b only **one** principled category survives (R6 in the
+/// consolidation plan):
 ///
 /// 1. **Imperative — permanent.** Stateful device-lifecycle triggers with
 ///    no resource identity (open/close an OS audio device, start/stop a
 ///    listener thread). These are named *by design* and never collapse
 ///    into a verb.
-/// 2. **Awaiting resource migration — temporary.** Execute/CRUD-shaped
-///    tools whose resource cluster (`model`, `time`, `diff`, a voice
-///    `execute` resource) was **not** registered in Slices 1–5a. Retiring
-///    them now would orphan the operation (the verb path has nowhere to
-///    dispatch), so they stay named until a follow-up slice registers
-///    their `ResourceDefinition`. Tracked as the cutover's known gap.
+///
+/// The former "awaiting resource migration — temporary" category is now
+/// **empty**: Slice 4b registered the `model` / `time` / `diff` / `voice`
+/// resources, so the 11 ollama/time/diff/voice-inference tools that used
+/// to sit here are retired from advertising and reached through the verbs
+/// (`docs/wylde-phase6-cutover.md`). Their handlers stay registered and
+/// dispatchable — the retirement is advertising-only.
 const SURVIVING_NAMED_TOOLS: &[&str] = &[
-    // ── 1. imperative (permanent) — voice device lifecycle ──
+    // ── imperative (permanent) — voice device lifecycle ──
     "voice_mic_start",
     "voice_mic_stop",
     "voice_wakeword_start",
     "voice_wakeword_stop",
-    // ── 2. awaiting resource migration (temporary) ──
-    // ollama → future `model` resource
-    "list_loaded_models",
-    "preload_model",
-    "evict_model",
-    "auto_evict_lru",
-    // time → future `time` resource
-    "time_now",
-    "time_format",
-    // diff → future `diff` resource
-    "show_diff",
-    // voice transcribe/synthesize → future voice `execute` resource
-    "voice_transcribe",
-    "voice_synthesize",
-    "voice_transcribe_stream",
-    "voice_synthesize_stream",
 ];
 
 /// Whether a catalog row should be advertised to the model.
@@ -498,9 +484,11 @@ mod tests {
         })
     }
 
-    /// A mixed catalog: one verb, one surviving named tool (imperative),
-    /// one surviving named tool (awaiting-migration), one retired
-    /// resource-backed tool, and a deferred tool.
+    /// A mixed catalog: one verb, one surviving named tool (imperative
+    /// voice device trigger — the only survivor category after Slice 4b),
+    /// two retired resource-backed tools (`memory.search` and `time.now`,
+    /// the latter retired when the `time` resource landed in 4b), and a
+    /// deferred tool.
     fn mixed_catalog() -> Vec<Value> {
         vec![
             row("wylde_search", "wylde_search", "verbs"),
@@ -518,14 +506,18 @@ mod tests {
     #[test]
     fn verb_mode_advertises_verbs_and_survivors_only() {
         let prompt = build_system_prompt(&mixed_catalog(), true);
-        // verb tool + both survivor kinds are advertised
+        // verb tool + the imperative survivor are advertised
         assert!(prompt.contains("wylde_search"), "verb missing: {prompt}");
         assert!(prompt.contains("voice.mic.start"), "imperative survivor missing");
-        assert!(prompt.contains("time.now"), "awaiting-migration survivor missing");
-        // resource-backed named tool is retired from advertising
+        // resource-backed named tools are retired from advertising —
+        // including time.now, now backed by the `time` resource (4b).
         assert!(
             !prompt.contains("memory.search"),
             "resource-backed tool must be retired in verb mode: {prompt}"
+        );
+        assert!(
+            !prompt.contains("time.now"),
+            "time.now must be retired after the 4b `time` resource: {prompt}"
         );
         // deferred stays excluded as always
         assert!(!prompt.contains("visual.screenshot"));
@@ -558,8 +550,8 @@ mod tests {
             .collect();
         assert!(names.contains(&"wylde_search"));
         assert!(names.contains(&"voice.mic.start"));
-        assert!(names.contains(&"time.now"));
         assert!(!names.contains(&"memory.search"), "retired tool leaked: {names:?}");
-        assert_eq!(names.len(), 3, "exactly verb + 2 survivors: {names:?}");
+        assert!(!names.contains(&"time.now"), "time.now retired in 4b: {names:?}");
+        assert_eq!(names.len(), 2, "exactly verb + 1 imperative survivor: {names:?}");
     }
 }

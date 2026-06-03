@@ -92,7 +92,7 @@ pub fn register(reg: &mut Registry) {
 
 // ── Handlers ─────────────────────────────────────────────────────────
 
-async fn run_list_loaded(_args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_list_loaded(_args: Value) -> Result<Value, IpcError> {
     let reply = wylde_shared::ipc::send_action(
         "wylde-ollama",
         "ollama.list_loaded",
@@ -127,7 +127,7 @@ async fn run_list_loaded(_args: Value) -> Result<Value, IpcError> {
     }))
 }
 
-async fn run_preload(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_preload(args: Value) -> Result<Value, IpcError> {
     let Some(model) = require_model(&args) else {
         return Ok(json!({"status": "error", "error": "'model' is required"}));
     };
@@ -152,7 +152,7 @@ async fn run_preload(args: Value) -> Result<Value, IpcError> {
     }))
 }
 
-async fn run_evict(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_evict(args: Value) -> Result<Value, IpcError> {
     let Some(model) = require_model(&args) else {
         return Ok(json!({"status": "error", "error": "'model' is required"}));
     };
@@ -172,7 +172,7 @@ async fn run_evict(args: Value) -> Result<Value, IpcError> {
     }))
 }
 
-async fn run_auto_evict_lru(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_auto_evict_lru(args: Value) -> Result<Value, IpcError> {
     let threshold_mb = args
         .get("threshold_mb")
         .and_then(Value::as_u64)

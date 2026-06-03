@@ -45,7 +45,7 @@ pub fn register(reg: &mut Registry) {
     ));
 }
 
-async fn run_show_diff(args: Value) -> Result<Value, IpcError> {
+pub(crate) async fn run_show_diff(args: Value) -> Result<Value, IpcError> {
     let a_path = args.get("a_path").and_then(Value::as_str).map(str::to_owned);
     let b_path = args.get("b_path").and_then(Value::as_str).map(str::to_owned);
     let a = args.get("a").and_then(Value::as_str).map(str::to_owned);

@@ -466,10 +466,11 @@ mod tests {
         let before = crate::turn::prompt::build_tools_field(&catalog, false);
         let after = crate::turn::prompt::build_tools_field(&catalog, true);
 
-        // 8 verbs + 15 surviving named tools (4 imperative voice device
-        // triggers + 11 awaiting-migration: ollama×4, time×2, diff×1,
-        // voice transcribe/synthesize×4). See docs/wylde-phase5-cutover.md.
-        assert_eq!(after.len(), 23, "verb-mode catalog size changed: {:?}",
+        // Post-Slice-4b: 8 verbs + 4 surviving named tools (the imperative
+        // voice device triggers only). The former 11 "awaiting-migration"
+        // tools (ollama×4, time×2, diff×1, voice transcribe/synthesize×4)
+        // are now resource-backed and retired. See docs/wylde-phase6-cutover.md.
+        assert_eq!(after.len(), 12, "verb-mode catalog size changed: {:?}",
             after.iter().filter_map(|t| t["function"]["name"].as_str()).collect::<Vec<_>>());
         assert!(before.len() > after.len(), "cutover must shrink the catalog: before={} after={}",
             before.len(), after.len());
@@ -481,11 +482,16 @@ mod tests {
             .filter_map(|t| t["function"]["name"].as_str().map(str::to_owned))
             .collect();
         for retired in ["memory.search", "rag.ask", "meta.graph_query", "fs.read_file",
-                        "search.code_search", "meta.tool_search"] {
+                        "search.code_search", "meta.tool_search",
+                        // newly retired in 4b:
+                        "ollama.list_loaded_models", "ollama.evict_model",
+                        "time.now", "time.format", "diff.show_diff",
+                        "voice.transcribe", "voice.synthesize_stream"] {
             assert!(!names.contains(&retired.to_owned()), "{retired} should be retired: {names:?}");
         }
-        for survivor in ["wylde_search", "voice.mic.start", "ollama.list_loaded_models",
-                         "time.now", "diff.show_diff", "voice.transcribe"] {
+        // Only the verbs and the 4 imperative voice device tools survive.
+        for survivor in ["wylde_search", "wylde_execute", "voice.mic.start",
+                         "voice.mic.stop", "voice.wakeword.start", "voice.wakeword.stop"] {
             assert!(names.contains(&survivor.to_owned()), "{survivor} should survive: {names:?}");
         }
     }
@@ -516,6 +522,15 @@ mod tests {
             ("rag_chunk_usage", ResourceOp::List), // rag.chunk_usage
             ("rag_graph_stats", ResourceOp::Get), // rag.graph_stats
             ("graph", ResourceOp::Search),      // meta.graph_query
+            // ── Slice 4b clusters ──
+            ("model", ResourceOp::List),        // ollama.list_loaded_models
+            ("model", ResourceOp::Create),      // ollama.preload_model
+            ("model", ResourceOp::Delete),      // ollama.evict_model
+            ("model", ResourceOp::Execute),     // ollama.auto_evict_lru
+            ("time", ResourceOp::Get),          // time.now
+            ("time", ResourceOp::Execute),      // time.format
+            ("diff", ResourceOp::Execute),      // diff.show_diff
+            ("voice", ResourceOp::Execute),     // voice.transcribe / synthesize (+stream)
         ];
         for (rt, op) in pairs {
             let def = reg

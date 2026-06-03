@@ -16,8 +16,15 @@
 //!   `rag_chunk_usage`, `rag_graph_stats`, `graph`) plus the tree-sitter
 //!   sidecar surface (`code_chunk`, `code_entity`).
 //! * **Slice 4 — [`fs`]**: `fs_file` + `fs_dir`, delegating to the
-//!   existing `fs.*` + `search.*` named-tool handlers. (The ollama / time
-//!   / diff portion of the plan's Slice 4 is a follow-up.)
+//!   existing `fs.*` + `search.*` named-tool handlers.
+//! * **Slice 4b — [`model`] + [`time`] + [`diff`] + [`voice`]**: the four
+//!   clusters Slice 4 deferred. `model` (Ollama VRAM residency: list/
+//!   create/delete + `auto_evict_lru` execute), `time` (get + format
+//!   execute), `diff` (single diff execute), and `voice` (transcribe /
+//!   synthesize execute with a `stream` flag). This closes the gap Slice
+//!   6 surfaced — the 11 "awaiting migration" named tools are now
+//!   resource-backed and retired from advertising. The four voice
+//!   mic/wake-word device tools stay named (permanent imperatives).
 //!
 //! Every handler is a thin adapter that reshapes a [`super::ResourceRequest`]
 //! into the `args` the existing tool handler expects and calls straight
@@ -38,11 +45,15 @@
 
 use super::ResourceRegistry;
 
+pub mod diff;
 pub mod extensions;
 pub mod fs;
 pub mod memory;
+pub mod model;
 pub mod rag;
+pub mod time;
 pub mod treesitter;
+pub mod voice;
 
 /// Register every built-in resource cluster. Called by
 /// [`super::register_resources`].
@@ -57,4 +68,8 @@ pub fn register_all(reg: &mut ResourceRegistry) {
     rag::register_rag_resources(reg);
     treesitter::register_treesitter_resources(reg);
     fs::register_fs_resources(reg);
+    model::register_model_resource(reg);
+    time::register_time_resource(reg);
+    diff::register_diff_resource(reg);
+    voice::register_voice_resource(reg);
 }
