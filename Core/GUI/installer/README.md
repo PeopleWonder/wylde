@@ -52,8 +52,17 @@ known Windows quirk; see the launcher notes).
 
 ## Picking a bundler (TODO)
 
-The gpui binary has **no bundler chosen yet** — this is the main open
-item. Candidates, in rough order of preference:
+> **Resolved — the bundler is NSIS.** Implemented at
+> `tools/installer/wylde-installer.nsi` + `tools/installer/build-installer.ps1`;
+> the operational runbook is **[docs/installer.md](../../../docs/installer.md)**.
+> The per-user location, daemon-first shortcut, `version.txt`, and updater
+> interaction documented here all carried into that implementation. NSIS was
+> picked over `cargo-packager` for direct control of the mesh resource layout
+> (the staging step overlays built binaries onto a `git archive` of the tree).
+> The notes below are kept for the alternatives considered and the still-open
+> signing / endpoint work.
+
+The candidates considered, in rough order of preference at the time:
 
 * **[`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager)**
   — successor-in-spirit to the Tauri bundler; emits NSIS + MSI from a
@@ -178,7 +187,9 @@ verify it lands where the supervisor and harness expect it.
 
 ## Punch-list before "build and ship" works end-to-end
 
-* [ ] **Choose + wire a bundler** (`cargo-packager` recommended).
+* [x] **Choose + wire a bundler** — done: NSIS at `tools/installer/`
+      (`build-installer.ps1` + `wylde-installer.nsi`); runbook in
+      `docs/installer.md`.
 * [ ] **Buy + install an Authenticode cert**; add the `signCommand`.
 * [ ] **Add `LICENSE`** at the repo root (Cargo manifests already declare
       `GPL-3.0-or-later`; the file itself is the missing piece) and
