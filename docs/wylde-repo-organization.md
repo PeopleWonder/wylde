@@ -92,7 +92,7 @@ build-support/wylde-prebuild-guard — opt-in build-script helper, see §15
 
 **`wylde-memgraph` was removed from the workspace on 2026-05-25.** The memgraph client is now an in-process submodule of the harness (`wylde-harness/src/memory/memgraph/`), so the standalone service crate is no longer needed. The bundled Neo4j JVM stays supervised by Python (`Core/Memgraph/`) until a follow-up slice migrates that lifecycle ownership. A directory at `rust/crates/wylde-memgraph/` may still exist on disk as leftover scaffolding but it is no longer compiled.
 
-**`tests/parity/`** is an excluded workspace sibling, not a member — `cargo test` does not run it. The `wylde-parity` package gates cross-language byte-shape parity tests behind a `parity` cargo feature, pulls in heavier deps (reqwest, pretty_assertions), and depends on the *built* service binaries. Run with `cargo test --features parity` after building both sides. The Phase 5.D salvage-parser parity gate is here.
+**`tests/parity/`** is an excluded workspace sibling, not a member — `cargo test` does not run it. The `wylde-parity` package gates cross-language byte-shape parity tests behind a `parity` cargo feature, pulls in `pretty_assertions`, and depends on the *built* service binaries. Run with `cargo test --features parity` after building both sides. The live suites are `lifecycle` (Python ↔ Rust no-spawn surface) and `wylde-ollama` (live-Ollama smoke); the gateway/broker/device-gate/vpn and Phase 5.D salvage-parser suites were retired as each Python half was deleted (see the crate README's "Retired suites").
 
 ### Per-crate quick reference
 
@@ -254,7 +254,7 @@ Every Wylde service has the same shape; deviations are bugs the `wylde_check` ru
 4. `wylde_check` clean for the slice's files.
 5. The Rust handlers are registered (reachable through the tool catalog) but the env-var default is `python`.
 
-**Parity gate before flip.** A separate slice writes byte-shape parity tests under `rust/tests/parity/tests/<area>.rs`. The Phase 5.D pure-function parity test (`harness_turn.rs`) covers 25 cases across the salvage parser, `call_hash`, and `find_balanced_braces`. Only after the parity gate is green does the env-var default flip to `rust`.
+**Parity gate before flip.** A separate slice writes byte-shape parity tests under `rust/tests/parity/tests/<area>.rs`. The live example is `tests/lifecycle.rs` — the Python lifecycle daemon's no-spawn control surface diffed against the Rust port. Only after the parity gate is green does the env-var default flip to `rust`. When a service's Python half is later deleted its parity suite is retired with it (no second implementation left to diff) — see the crate README's "Retired suites".
 
 **14-day soak before Python deletion.** Once the default flips, the Python implementation stays on disk as the rollback path. the Wylde user and the daemon logs are checked for "python-fallback" path firing during the soak. Phase 5.D flipped 2026-05-25 → Python `Core/harness/turn/` scheduled deletion 2026-06-08 earliest. The pre-deletion verification recipe lives in `docs/wylde-phase5-cutover.md`.
 
@@ -394,7 +394,7 @@ The 11 first-party panel crates: `Settings` (`wylde-panel-settings`), `Workspace
 
 **Rust integration tests** — `tests/` under each crate. The harness has `run_turn_loop_e2e.rs`, `tool_dispatch_e2e.rs`, `memgraph_integration.rs`. Tests that need a live service pipe are gated `#[ignore]` so plain `cargo test` doesn't hit them. Voice's `jfk_end_to_end.rs` needs `ORT_DYLIB_PATH`, `WYLDE_IPC_DISABLE=1`, and `WYLDE_VOICE_STT_ENCODER_PATH` (the env-var block is in the test itself; copy it for new live-model tests in that crate).
 
-**Cross-language parity tests** — `rust/tests/parity/` is excluded from the default workspace, gated on `--features parity`, and depends on built service binaries plus a working `.venv`. The Phase 5.D harness/turn parity gate (25 cases) is here.
+**Cross-language parity tests** — `rust/tests/parity/` is excluded from the default workspace, gated on `--features parity`, and depends on built service binaries plus a working `.venv`. The live suites are `lifecycle` and `wylde-ollama`; the gateway/broker/device-gate/vpn and Phase 5.D harness/turn suites were retired with their deleted Python halves (see the crate README).
 
 **Python pytest** — under `Core/Lifecycle/tests/`, `Core/harness/tests/`, `Core/shared/tests/`, per-service `<Service>/tests/`. Run with `uv run pytest Core Gateway "device_gate" Voice VPN Trainer N8N`.
 
