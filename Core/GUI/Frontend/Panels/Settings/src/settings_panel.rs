@@ -25,13 +25,28 @@ use wylde_theme::typography::{size, FAMILY_INTER};
 
 use crate::ipc::{
     check_for_update, clear_tool_decision, download_and_install, get_autostart_enabled,
-    list_consent, read_ollama_settings, read_update_prefs, reset_consent, set_autostart_enabled,
-    set_no_auth, set_tool_decision, write_update_prefs, ConsentSnapshot, OllamaSettings,
-    UpdateCheck, UpdatePrefs,
+    list_consent, list_input_devices, read_ollama_settings, read_update_prefs, read_voice_settings,
+    reset_consent, set_autostart_enabled, set_no_auth, set_tool_decision, test_mic,
+    write_update_prefs, write_voice_settings, ConsentSnapshot, OllamaSettings, UpdateCheck,
+    UpdatePrefs, VoiceDevices, VoiceSettings, VoiceTest,
 };
 use crate::sections::{
     consent_section, error_banner, ollama_section, pack, startup_section, updates_section,
+    voice_section,
 };
+
+/// Cycle the next value in a preset list, wrapping around. An off-list
+/// current value advances to the first entry. Pure helper so the voice
+/// pill rotations are unit-testable without a live click.
+fn next_in_cycle(list: &[&str], current: &str) -> String {
+    if list.is_empty() {
+        return current.to_owned();
+    }
+    match list.iter().position(|&x| x == current) {
+        Some(i) => list[(i + 1) % list.len()].to_owned(),
+        None => list[0].to_owned(),
+    }
+}
 
 /// Root Settings panel.  Owns the view-side state that the section
 /// helpers consume.  Public so the Shell + tests can construct one
@@ -44,6 +59,16 @@ pub struct SettingsPanel {
     pub autostart_error: Option<String>,
     pub ollama: OllamaSettings,
     pub consent: ConsentSnapshot,
+    /// Persisted voice config (Slice 6). Starts at defaults; reconciled
+    /// by `voice.get_config` in `spawn_refresh`.
+    pub voice: VoiceSettings,
+    /// Enumerated input devices for the mic picker.
+    pub voice_devices: VoiceDevices,
+    /// True when `voice.get_config` failed (voice service down). The
+    /// section still renders on defaults with an "offline" note.
+    pub voice_offline: bool,
+    /// State of the "Test mic" button.
+    pub voice_test: VoiceTest,
     pub app_version: String,
     /// Last write-side failure (pipe error from a toggle).  Surfaced as
     /// a banner; cleared on the next successful write.
@@ -59,6 +84,10 @@ impl SettingsPanel {
             autostart_error: None,
             ollama: OllamaSettings::default(),
             consent: ConsentSnapshot::default(),
+            voice: VoiceSettings::default(),
+            voice_devices: VoiceDevices::default(),
+            voice_offline: false,
+            voice_test: VoiceTest::Idle,
             app_version: "0.1.0".into(),
             error: None,
         }
@@ -146,6 +175,36 @@ impl SettingsPanel {
                 panel.autostart_error = err;
                 cx.notify();
             });
+        })
+        .detach();
+
+        // Voice config (Slice 6) — `voice.get_config`. A failed read marks
+        // the section offline (renders defaults + a note) rather than
+        // surfacing a banner, since the voice service is optional.
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = read_voice_settings().await;
+            let _ = this.update(app_cx, |panel, cx| {
+                match outcome {
+                    Ok(voice) => {
+                        panel.voice = voice;
+                        panel.voice_offline = false;
+                    }
+                    Err(_) => panel.voice_offline = true,
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+
+        // Input device list — best-effort. A failure leaves the picker on
+        // "System default" only (the cycle still works, just one entry).
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            if let Ok(devices) = list_input_devices().await {
+                let _ = this.update(app_cx, |panel, cx| {
+                    panel.voice_devices = devices;
+                    cx.notify();
+                });
+            }
         })
         .detach();
     }
@@ -381,6 +440,128 @@ impl SettingsPanel {
         })
         .detach();
     }
+
+    // ── Voice write handlers (Slice 6) ───────────────────────────────
+
+    /// Flip the capture mode push-to-talk ⇄ always-on and persist.
+    pub fn cycle_voice_mode(&mut self, cx: &mut Context<Self>) {
+        let next = next_in_cycle(&["push_to_talk", "always_on"], &self.voice.mode);
+        self.voice.mode = next.clone();
+        self.error = None;
+        cx.notify();
+        self.persist_voice(json!({ "mode": next }), cx);
+    }
+
+    /// Cycle the push-to-talk hotkey through the preset chords and persist.
+    pub fn cycle_ptt_hotkey(&mut self, cx: &mut Context<Self>) {
+        let next = next_in_cycle(crate::ipc::PTT_HOTKEY_PRESETS, &self.voice.push_to_talk_hotkey);
+        self.voice.push_to_talk_hotkey = next.clone();
+        self.error = None;
+        cx.notify();
+        self.persist_voice(json!({ "push_to_talk_hotkey": next }), cx);
+    }
+
+    /// Cycle the STT backend preference Auto → CPU → NPU and persist.
+    pub fn cycle_voice_backend(&mut self, cx: &mut Context<Self>) {
+        let next = next_in_cycle(crate::ipc::BACKEND_PRESETS, &self.voice.stt_backend_pref);
+        self.voice.stt_backend_pref = next.clone();
+        self.error = None;
+        cx.notify();
+        self.persist_voice(json!({ "stt_backend_pref": next }), cx);
+    }
+
+    /// Cycle the mic sensitivity Low → Medium → High and persist.
+    pub fn cycle_voice_vad(&mut self, cx: &mut Context<Self>) {
+        let next = next_in_cycle(crate::ipc::VAD_PRESETS, &self.voice.vad_sensitivity);
+        self.voice.vad_sensitivity = next.clone();
+        self.error = None;
+        cx.notify();
+        self.persist_voice(json!({ "vad_sensitivity": next }), cx);
+    }
+
+    /// Toggle the wake-word listener on/off and persist.
+    pub fn toggle_wake_word(&mut self, cx: &mut Context<Self>) {
+        let target = !self.voice.wake_word_enabled;
+        self.voice.wake_word_enabled = target;
+        self.error = None;
+        cx.notify();
+        self.persist_voice(json!({ "wake_word_enabled": target }), cx);
+    }
+
+    /// Cycle the wake-word phrase through the known models and persist.
+    pub fn cycle_wake_word_model(&mut self, cx: &mut Context<Self>) {
+        let next = next_in_cycle(crate::ipc::WAKE_WORD_PRESETS, &self.voice.wake_word_model);
+        self.voice.wake_word_model = next.clone();
+        self.error = None;
+        cx.notify();
+        self.persist_voice(json!({ "wake_word_model": next }), cx);
+    }
+
+    /// Cycle the input device: system default → each enumerated device →
+    /// back. Persists `null` for the system-default slot.
+    pub fn cycle_input_device(&mut self, cx: &mut Context<Self>) {
+        // Cycle order mirrors the picker label: system default first,
+        // then each enumerated device.
+        let mut order: Vec<Option<String>> = vec![None];
+        for d in &self.voice_devices.devices {
+            order.push(Some(d.clone()));
+        }
+        let cur = order
+            .iter()
+            .position(|x| x.as_deref() == self.voice.input_device.as_deref())
+            .unwrap_or(0);
+        let next = order[(cur + 1) % order.len()].clone();
+        self.voice.input_device = next.clone();
+        self.error = None;
+        cx.notify();
+        let patch = match next {
+            Some(name) => json!({ "input_device": name }),
+            None => json!({ "input_device": null }),
+        };
+        self.persist_voice(patch, cx);
+    }
+
+    /// Run a one-shot mic test (`voice.test_mic`) and surface the result.
+    pub fn run_test_mic(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.voice_test, VoiceTest::Running) {
+            return;
+        }
+        self.voice_test = VoiceTest::Running;
+        self.error = None;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = test_mic().await;
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.voice_test = match outcome {
+                    Ok(result) => VoiceTest::Done(result),
+                    Err(e) => VoiceTest::Failed(e),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Shared tail for the voice pill/toggle rows: write the patch, then
+    /// reconcile the section from the merged config the daemon returns. A
+    /// failure surfaces in the page banner (the optimistic flip stays;
+    /// the next refresh reconciles), matching `persist_update_prefs`.
+    fn persist_voice(&self, patch: serde_json::Value, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = write_voice_settings(patch).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                match outcome {
+                    Ok(voice) => {
+                        panel.voice = voice;
+                        panel.voice_offline = false;
+                    }
+                    Err(e) => panel.error = Some(format!("voice: {e}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 }
 
 impl Default for SettingsPanel {
@@ -420,6 +601,12 @@ impl Render for SettingsPanel {
                         cx,
                     ))
                     .child(ollama_section(&self.ollama))
+                    .child(voice_section(
+                        &self.voice,
+                        &self.voice_test,
+                        self.voice_offline,
+                        cx,
+                    ))
                     .child(consent_section(&self.consent, cx)),
             )
     }
@@ -465,6 +652,30 @@ mod tests {
         assert!(p.ollama.num_ctx.is_none());
         assert!(p.consent.tools.is_empty());
         assert!(p.error.is_none());
+        // Slice 6 — voice section starts on defaults, online, idle test.
+        assert_eq!(p.voice.mode, "push_to_talk");
+        assert_eq!(p.voice.stt_backend_pref, "auto");
+        assert!(!p.voice_offline);
+        assert!(matches!(p.voice_test, VoiceTest::Idle));
+        assert!(p.voice_devices.devices.is_empty());
+    }
+
+    #[test]
+    fn next_in_cycle_wraps_and_handles_off_list() {
+        assert_eq!(next_in_cycle(&["a", "b", "c"], "a"), "b");
+        assert_eq!(next_in_cycle(&["a", "b", "c"], "c"), "a");
+        // Off-list current value jumps to the first entry.
+        assert_eq!(next_in_cycle(&["a", "b", "c"], "z"), "a");
+        // Empty list is a no-op.
+        assert_eq!(next_in_cycle(&[], "x"), "x");
+        // Single entry stays put.
+        assert_eq!(next_in_cycle(&["only"], "only"), "only");
+    }
+
+    #[test]
+    fn voice_mode_cycle_is_binary() {
+        assert_eq!(next_in_cycle(&["push_to_talk", "always_on"], "push_to_talk"), "always_on");
+        assert_eq!(next_in_cycle(&["push_to_talk", "always_on"], "always_on"), "push_to_talk");
     }
 
     /// The View must hold a settable consent snapshot — the Shell
@@ -509,6 +720,11 @@ mod tests {
         let _ = crate::ipc::set_autostart_enabled;
         // Ollama defaults read off the Gateway (`GET /api/settings/ollama`).
         let _ = crate::ipc::read_ollama_settings;
+        // Voice config (Slice 6): read/write + device list + test.
+        let _ = crate::ipc::read_voice_settings;
+        let _ = crate::ipc::write_voice_settings;
+        let _ = crate::ipc::list_input_devices;
+        let _ = crate::ipc::test_mic;
     }
 
     /// The frequency cycle is a pure rotation — assert it round-trips

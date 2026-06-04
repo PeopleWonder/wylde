@@ -338,6 +338,211 @@ pub async fn read_ollama_settings() -> Result<OllamaSettings, String> {
     Ok(OllamaSettings::from_value(&v))
 }
 
+// ── Voice settings (Slice 6) ──────────────────────────────────────────
+//
+// The Settings → Voice section reaches the voice service directly over
+// `\\.\pipe\wylde-voice` (the `voice.*` action envelope), the same shape
+// the consent rows use against `wylde-harness`. The voice service is
+// optional: a failed read leaves the section on its defaults plus an
+// "offline" note rather than blocking the rest of the panel.
+
+/// Push-to-talk chord presets the picker cycles through. Mirrors
+/// `wylde_voice::config_persist::PTT_HOTKEY_PRESETS`.
+pub const PTT_HOTKEY_PRESETS: &[&str] =
+    &["Ctrl+Space", "Alt+Space", "Right Ctrl", "F8", "CapsLock"];
+
+/// STT backend preference cycle order. Mirrors
+/// `wylde_voice::config_persist::ALL_BACKENDS`.
+pub const BACKEND_PRESETS: &[&str] = &["auto", "cpu", "npu"];
+
+/// VAD sensitivity cycle order. Mirrors
+/// `wylde_voice::config_persist::ALL_VAD_SENSITIVITIES`.
+pub const VAD_PRESETS: &[&str] = &["low", "medium", "high"];
+
+/// Wake-word model cycle order. Mirrors
+/// `wylde_voice::config_persist::KNOWN_WAKE_WORD_MODELS`.
+pub const WAKE_WORD_PRESETS: &[&str] = &[
+    "openWakeWord/hey-jarvis",
+    "openWakeWord/alexa",
+    "openWakeWord/hey-mycroft",
+];
+
+/// Sentinel shown in the mic-device picker for "follow the system
+/// default input device" (the `input_device == None` state).
+pub const DEVICE_SYSTEM_DEFAULT: &str = "System default";
+
+/// The persisted voice config, mirrored from `voice.get_config`. Field
+/// set matches `wylde_voice::config_persist::VoiceConfig`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoiceSettings {
+    pub mode: String,
+    pub push_to_talk_hotkey: String,
+    pub stt_backend_pref: String,
+    pub vad_sensitivity: String,
+    pub wake_word_enabled: bool,
+    pub wake_word_model: String,
+    /// `None` = follow the system default input device.
+    pub input_device: Option<String>,
+}
+
+impl Default for VoiceSettings {
+    /// Mirrors `VoiceConfig::default()` so the section renders sensibly
+    /// before `voice.get_config` returns (or when the voice service is
+    /// offline).
+    fn default() -> Self {
+        Self {
+            mode: "push_to_talk".into(),
+            push_to_talk_hotkey: "Ctrl+Space".into(),
+            stt_backend_pref: "auto".into(),
+            vad_sensitivity: "medium".into(),
+            wake_word_enabled: false,
+            wake_word_model: "openWakeWord/hey-jarvis".into(),
+            input_device: None,
+        }
+    }
+}
+
+impl VoiceSettings {
+    pub fn from_value(v: &Value) -> Self {
+        let d = Self::default();
+        Self {
+            mode: v
+                .get("mode")
+                .and_then(Value::as_str)
+                .unwrap_or(&d.mode)
+                .to_owned(),
+            push_to_talk_hotkey: v
+                .get("push_to_talk_hotkey")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&d.push_to_talk_hotkey)
+                .to_owned(),
+            stt_backend_pref: v
+                .get("stt_backend_pref")
+                .and_then(Value::as_str)
+                .unwrap_or(&d.stt_backend_pref)
+                .to_owned(),
+            vad_sensitivity: v
+                .get("vad_sensitivity")
+                .and_then(Value::as_str)
+                .unwrap_or(&d.vad_sensitivity)
+                .to_owned(),
+            wake_word_enabled: v
+                .get("wake_word_enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(d.wake_word_enabled),
+            wake_word_model: v
+                .get("wake_word_model")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&d.wake_word_model)
+                .to_owned(),
+            input_device: v
+                .get("input_device")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
+        }
+    }
+}
+
+/// Read the persisted voice config (`voice.get_config`).
+pub async fn read_voice_settings() -> Result<VoiceSettings, String> {
+    let v = voice_action("voice.get_config", json!({})).await?;
+    Ok(VoiceSettings::from_value(&v))
+}
+
+/// Persist a partial voice-config patch (`voice.set_config`). The daemon
+/// merges + validates and returns the full merged config.
+pub async fn write_voice_settings(patch: Value) -> Result<VoiceSettings, String> {
+    let v = voice_action("voice.set_config", patch).await?;
+    Ok(VoiceSettings::from_value(&v))
+}
+
+/// Enumerated input devices for the mic picker (`voice.list_input_devices`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VoiceDevices {
+    /// The host's default input device name, if any.
+    pub default: Option<String>,
+    /// All input device names, sorted + de-duplicated by the service.
+    pub devices: Vec<String>,
+}
+
+/// List input devices for the mic picker.
+pub async fn list_input_devices() -> Result<VoiceDevices, String> {
+    let v = voice_action("voice.list_input_devices", json!({})).await?;
+    let default = v
+        .get("default")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let devices = v
+        .get("devices")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(VoiceDevices { default, devices })
+}
+
+/// Result of a `voice.test_mic` capture.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VoiceTestResult {
+    /// RMS level over the capture window, `[0.0, 1.0]` full scale.
+    pub rms: f32,
+    /// Peak level over the capture window, `[0.0, 1.0]` full scale.
+    pub peak: f32,
+    /// Best-effort transcript (empty when no STT model is installed).
+    pub transcript: String,
+    /// A note explaining an empty transcript (no model / no audio).
+    pub note: Option<String>,
+}
+
+/// View-side state of the "Test mic" button, mirroring [`UpdateCheck`]'s
+/// shape. The panel holds one; the section renderer turns it into a
+/// status line.
+#[derive(Debug, Clone, Default)]
+pub enum VoiceTest {
+    /// No test run yet this session.
+    #[default]
+    Idle,
+    /// A capture is in flight.
+    Running,
+    /// Capture finished — carries the level + transcript.
+    Done(VoiceTestResult),
+    /// The test errored (no device, pipe down); carries the message.
+    Failed(String),
+}
+
+/// Run a one-off mic test (`voice.test_mic`).
+pub async fn test_mic() -> Result<VoiceTestResult, String> {
+    let v = voice_action("voice.test_mic", json!({})).await?;
+    Ok(VoiceTestResult {
+        rms: v.get("rms").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+        peak: v.get("peak").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+        transcript: v
+            .get("transcript")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+        note: v.get("note").and_then(Value::as_str).map(str::to_owned),
+    })
+}
+
+/// Shared envelope helper for the `voice.*` action verbs over
+/// `\\.\pipe\wylde-voice`.
+async fn voice_action(action: &str, payload: Value) -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        "wylde-voice",
+        "POST",
+        "/__action__",
+        Some(json!({ "action": action, "payload": payload })),
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,6 +648,60 @@ mod tests {
         // bare number of seconds / -1 sentinel.
         let o = OllamaSettings::from_value(&json!({ "keep_alive": -1 }));
         assert_eq!(o.keep_alive.as_deref(), Some("-1"));
+    }
+
+    #[test]
+    fn voice_settings_parse_full_config_block() {
+        let v = json!({
+            "mode": "always_on",
+            "wake_word_model": "openWakeWord/alexa",
+            "wake_word_enabled": true,
+            "push_to_talk_hotkey": "F8",
+            "stt_backend_pref": "npu",
+            "vad_sensitivity": "high",
+            "input_device": "USB Mic"
+        });
+        let s = VoiceSettings::from_value(&v);
+        assert_eq!(s.mode, "always_on");
+        assert_eq!(s.wake_word_model, "openWakeWord/alexa");
+        assert!(s.wake_word_enabled);
+        assert_eq!(s.push_to_talk_hotkey, "F8");
+        assert_eq!(s.stt_backend_pref, "npu");
+        assert_eq!(s.vad_sensitivity, "high");
+        assert_eq!(s.input_device.as_deref(), Some("USB Mic"));
+    }
+
+    #[test]
+    fn voice_settings_missing_keys_fall_back_to_defaults() {
+        // A reply missing the Slice-6 keys (e.g. an older service) still
+        // yields a fully-populated, sensible struct.
+        let s = VoiceSettings::from_value(&json!({ "mode": "push_to_talk" }));
+        let d = VoiceSettings::default();
+        assert_eq!(s.stt_backend_pref, d.stt_backend_pref);
+        assert_eq!(s.vad_sensitivity, d.vad_sensitivity);
+        assert_eq!(s.push_to_talk_hotkey, d.push_to_talk_hotkey);
+        assert_eq!(s.wake_word_model, d.wake_word_model);
+        assert!(!s.wake_word_enabled);
+        assert!(s.input_device.is_none());
+    }
+
+    #[test]
+    fn voice_settings_null_or_empty_device_is_none() {
+        let s = VoiceSettings::from_value(&json!({ "input_device": null }));
+        assert!(s.input_device.is_none());
+        let s = VoiceSettings::from_value(&json!({ "input_device": "" }));
+        assert!(s.input_device.is_none());
+    }
+
+    #[test]
+    fn voice_presets_are_consistent() {
+        // Defaults must be members of the cycle lists so the first click
+        // advances rather than jumping from an off-list value.
+        let d = VoiceSettings::default();
+        assert!(BACKEND_PRESETS.contains(&d.stt_backend_pref.as_str()));
+        assert!(VAD_PRESETS.contains(&d.vad_sensitivity.as_str()));
+        assert!(PTT_HOTKEY_PRESETS.contains(&d.push_to_talk_hotkey.as_str()));
+        assert!(WAKE_WORD_PRESETS.contains(&d.wake_word_model.as_str()));
     }
 
     #[test]

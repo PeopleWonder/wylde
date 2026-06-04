@@ -21,7 +21,9 @@ use wylde_theme::colors::{
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
-use crate::ipc::{ConsentSnapshot, OllamaSettings, UpdateCheck, UpdatePrefs};
+use crate::ipc::{
+    ConsentSnapshot, OllamaSettings, UpdateCheck, UpdatePrefs, VoiceSettings, VoiceTest,
+};
 use crate::SettingsPanel;
 
 /// Shorthand for the panel render context the section builders thread
@@ -449,6 +451,204 @@ pub fn ollama_section(o: &OllamaSettings) -> gpui::Div {
     c
 }
 
+/// Voice section (Slice 6) — capture mode, push-to-talk hotkey, STT
+/// backend preference, mic device, mic sensitivity, wake word, and a
+/// one-shot "Test mic" affordance. Each editable row is a pill the user
+/// cycles (the panel owns the cycle order + the write); the wake-word
+/// enable is a toggle. Reads/writes go to `\\.\pipe\wylde-voice` via the
+/// `voice.get_config` / `voice.set_config` verbs.
+///
+/// The whole section degrades gracefully: when the voice service is
+/// offline (`offline = true`) it renders on its defaults plus a note,
+/// and writes simply surface the pipe error in the page banner.
+pub fn voice_section(
+    voice: &VoiceSettings,
+    test: &VoiceTest,
+    offline: bool,
+    cx: &mut Cx,
+) -> gpui::Div {
+    let mut c = card().child(section_title(
+        "Voice",
+        "Speech-to-text, push-to-talk, and wake word.",
+    ));
+
+    if offline {
+        c = c.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(
+                    "Voice service offline — showing defaults; changes won't \
+                     save until it's running.",
+                )),
+        );
+    }
+
+    // Capture mode — push-to-talk ⇄ always-on.
+    c = c.child(labeled_pill_row(
+        "settings-voice-mode",
+        "Mode",
+        voice_mode_label(&voice.mode),
+        cx.listener(|this, _ev, _window, cx| this.cycle_voice_mode(cx)),
+    ));
+
+    // Push-to-talk hotkey — cycles the preset chords. Only meaningful in
+    // push-to-talk mode, but shown always so the choice is discoverable.
+    c = c.child(labeled_pill_row(
+        "settings-voice-hotkey",
+        "Push-to-talk hotkey",
+        &voice.push_to_talk_hotkey,
+        cx.listener(|this, _ev, _window, cx| this.cycle_ptt_hotkey(cx)),
+    ));
+
+    // STT backend preference — Auto / CPU / NPU.
+    c = c.child(labeled_pill_row(
+        "settings-voice-backend",
+        "Speech recognition",
+        backend_label(&voice.stt_backend_pref),
+        cx.listener(|this, _ev, _window, cx| this.cycle_voice_backend(cx)),
+    ));
+
+    // Input device — system default + each enumerated device.
+    c = c.child(labeled_pill_row(
+        "settings-voice-device",
+        "Input device",
+        &device_label(voice.input_device.as_deref()),
+        cx.listener(|this, _ev, _window, cx| this.cycle_input_device(cx)),
+    ));
+
+    // Mic sensitivity (VAD) — Low / Medium / High.
+    c = c.child(labeled_pill_row(
+        "settings-voice-vad",
+        "Mic sensitivity",
+        vad_label(&voice.vad_sensitivity),
+        cx.listener(|this, _ev, _window, cx| this.cycle_voice_vad(cx)),
+    ));
+
+    // Wake word — enable toggle + phrase picker (shown when enabled).
+    c = c.child(
+        toggle_row(
+            "settings-voice-wakeword",
+            "Wake word",
+            "Listen for a spoken phrase to start a session in always-on mode.",
+            voice.wake_word_enabled,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _ev, _window, cx| this.toggle_wake_word(cx)),
+        ),
+    );
+    if voice.wake_word_enabled {
+        c = c.child(labeled_pill_row(
+            "settings-voice-wakeword-phrase",
+            "Wake phrase",
+            &wake_word_label(&voice.wake_word_model),
+            cx.listener(|this, _ev, _window, cx| this.cycle_wake_word_model(cx)),
+        ));
+    }
+
+    // Test mic — one-shot capture + level/transcript readout.
+    let running = matches!(test, VoiceTest::Running);
+    c = c.child(
+        div()
+            .border_t_1()
+            .border_color(rgb(pack(BORDER_SUBTLE)))
+            .pt_2()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                action_button("settings-voice-test", test_mic_button_label(test), running)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _ev, _window, cx| this.run_test_mic(cx)),
+                    ),
+            )
+            .children(test_mic_line(test)),
+    );
+
+    c
+}
+
+/// Friendly label for the persisted capture mode.
+fn voice_mode_label(mode: &str) -> &'static str {
+    match mode {
+        "always_on" => "Always-on",
+        _ => "Push-to-talk",
+    }
+}
+
+/// Friendly label for the STT backend preference.
+fn backend_label(backend: &str) -> &'static str {
+    match backend {
+        "cpu" => "CPU",
+        "npu" => "NPU",
+        _ => "Auto",
+    }
+}
+
+/// Friendly label for the VAD sensitivity bucket.
+fn vad_label(sensitivity: &str) -> &'static str {
+    match sensitivity {
+        "low" => "Low",
+        "high" => "High",
+        _ => "Medium",
+    }
+}
+
+/// Display string for the selected input device (`None` = system default).
+fn device_label(device: Option<&str>) -> String {
+    match device {
+        Some(name) if !name.is_empty() => name.to_owned(),
+        _ => crate::ipc::DEVICE_SYSTEM_DEFAULT.to_owned(),
+    }
+}
+
+/// Display the wake-word model's phrase suffix (`openWakeWord/hey-jarvis`
+/// → `hey-jarvis`), falling back to the full id if it has no vendor
+/// prefix.
+fn wake_word_label(model: &str) -> String {
+    model.rsplit('/').next().unwrap_or(model).to_owned()
+}
+
+/// Label for the test button, reflecting in-flight state.
+fn test_mic_button_label(test: &VoiceTest) -> &'static str {
+    match test {
+        VoiceTest::Running => "Listening…",
+        _ => "Test mic",
+    }
+}
+
+/// One-line status under the test button. `Idle` shows nothing.
+fn test_mic_line(test: &VoiceTest) -> Option<gpui::Div> {
+    match test {
+        VoiceTest::Idle => None,
+        VoiceTest::Running => Some(status_text("Listening — speak now…")),
+        VoiceTest::Failed(msg) => Some(error_strip(&format!("Test failed: {msg}"))),
+        VoiceTest::Done(result) => {
+            let level = (result.peak.clamp(0.0, 1.0) * 100.0).round() as u32;
+            let line = if !result.transcript.is_empty() {
+                format!("Level {level}% — heard: \u{201c}{}\u{201d}", result.transcript)
+            } else if let Some(note) = &result.note {
+                format!("Level {level}% — {note}")
+            } else {
+                format!("Level {level}% — mic is working.")
+            };
+            Some(status_text(&line))
+        }
+    }
+}
+
+/// A muted one-line status string (shared by the test-mic readout).
+fn status_text(text: &str) -> gpui::Div {
+    div()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(TEXT_SECONDARY)))
+        .child(SharedString::from(text.to_owned()))
+}
+
 /// Consent section — global no-auth toggle, a per-tool list (each row
 /// flips approved ⇄ denied), and a reset-all affordance.
 pub fn consent_section(snap: &ConsentSnapshot, cx: &mut Cx) -> gpui::Div {
@@ -656,6 +856,57 @@ mod tests {
     #[test]
     fn error_banner_renders() {
         let _ = error_banner("consent: pipe down");
+    }
+
+    #[test]
+    fn voice_labels_map_known_and_fallback() {
+        assert_eq!(voice_mode_label("always_on"), "Always-on");
+        assert_eq!(voice_mode_label("push_to_talk"), "Push-to-talk");
+        assert_eq!(voice_mode_label("garbage"), "Push-to-talk");
+        assert_eq!(backend_label("cpu"), "CPU");
+        assert_eq!(backend_label("npu"), "NPU");
+        assert_eq!(backend_label("auto"), "Auto");
+        assert_eq!(backend_label("???"), "Auto");
+        assert_eq!(vad_label("low"), "Low");
+        assert_eq!(vad_label("high"), "High");
+        assert_eq!(vad_label("medium"), "Medium");
+        assert_eq!(vad_label("???"), "Medium");
+    }
+
+    #[test]
+    fn device_label_falls_back_to_system_default() {
+        assert_eq!(device_label(Some("USB Mic")), "USB Mic");
+        assert_eq!(device_label(None), crate::ipc::DEVICE_SYSTEM_DEFAULT);
+        assert_eq!(device_label(Some("")), crate::ipc::DEVICE_SYSTEM_DEFAULT);
+    }
+
+    #[test]
+    fn wake_word_label_strips_vendor_prefix() {
+        assert_eq!(wake_word_label("openWakeWord/hey-jarvis"), "hey-jarvis");
+        assert_eq!(wake_word_label("alexa"), "alexa");
+    }
+
+    #[test]
+    fn test_mic_line_renders_each_state() {
+        use crate::ipc::VoiceTestResult;
+        assert!(test_mic_line(&VoiceTest::Idle).is_none());
+        assert!(test_mic_line(&VoiceTest::Running).is_some());
+        assert!(test_mic_line(&VoiceTest::Failed("no device".into())).is_some());
+        assert!(test_mic_line(&VoiceTest::Done(VoiceTestResult {
+            rms: 0.1,
+            peak: 0.5,
+            transcript: "hello there".into(),
+            note: None,
+        }))
+        .is_some());
+        // Empty transcript with a note still renders.
+        assert!(test_mic_line(&VoiceTest::Done(VoiceTestResult {
+            rms: 0.0,
+            peak: 0.0,
+            transcript: String::new(),
+            note: Some("no model".into()),
+        }))
+        .is_some());
     }
 
     #[test]

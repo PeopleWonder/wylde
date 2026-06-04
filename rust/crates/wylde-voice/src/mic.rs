@@ -185,6 +185,34 @@ impl Drop for MicCapture {
     }
 }
 
+/// Enumerate the host's input device names plus the system default's
+/// name (Slice 6 — the Settings → Voice mic-device picker).
+///
+/// Read-only host query: it does **not** open a stream, build a capture,
+/// or touch the [`MicCapture`] singleton, so it's safe to call while a
+/// capture is live. Names are de-duplicated and sorted for a stable
+/// picker order. The default may be `None` when the host reports no
+/// default input device (a headless box); the list may legitimately be
+/// empty in that case too.
+pub fn list_input_device_names() -> Result<(Option<String>, Vec<String>), MicError> {
+    let host = cpal::default_host();
+    let default_name = host
+        .default_input_device()
+        .and_then(|d| d.name().ok());
+    let mut names = Vec::new();
+    let devices = host
+        .input_devices()
+        .map_err(|e| MicError::NoSupportedConfig(e.to_string()))?;
+    for device in devices {
+        if let Ok(name) = device.name() {
+            names.push(name);
+        }
+    }
+    names.sort();
+    names.dedup();
+    Ok((default_name, names))
+}
+
 fn run_capture_thread(
     device: cpal::Device,
     sample_format: SampleFormat,
@@ -377,6 +405,21 @@ fn float_to_i16(s: f32) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_input_device_names_is_well_formed() {
+        // Doesn't open a stream — safe in CI. On a box with no audio
+        // host it may Err or return an empty list; either is acceptable.
+        // The contract under test is "no panic, sorted+deduped names".
+        if let Ok((_default, names)) = list_input_device_names() {
+            let mut sorted = names.clone();
+            sorted.sort();
+            assert_eq!(names, sorted, "names must be sorted");
+            let mut deduped = names.clone();
+            deduped.dedup();
+            assert_eq!(names.len(), deduped.len(), "names must be de-duplicated");
+        }
+    }
 
     #[test]
     fn downmix_mono_passthrough() {

@@ -190,6 +190,41 @@ impl ServiceState {
         Ok(mode.to_owned())
     }
 
+    /// Full persisted config as a JSON object — the `voice.get_config`
+    /// reply the Settings → Voice panel reads on load (Slice 6).
+    pub async fn get_config_value(&self) -> Value {
+        let g = self.inner.lock().await;
+        serde_json::to_value(&g.config).unwrap_or(Value::Null)
+    }
+
+    /// Merge a partial config patch, persist atomically, emit a `config`
+    /// event so subscribers reconcile, and return the merged config as
+    /// JSON. The single write path behind `voice.set_config` (Slice 6).
+    ///
+    /// Validation lives in [`VoiceConfig::with_patch`] →
+    /// [`VoiceConfig::normalised`]: an out-of-range value in the patch is
+    /// snapped to its safe default rather than rejected, so a malformed
+    /// patch can never wedge the on-disk config. Callers that want a
+    /// hard "bad value" error (e.g. to surface it in the GUI) pre-check
+    /// the enum at the action layer.
+    pub async fn apply_config_patch(&self, patch: &Value) -> Value {
+        let merged;
+        {
+            let mut g = self.inner.lock().await;
+            let updated = g.config.clone().with_patch(patch);
+            g.config = updated.clone();
+            // Persist inside the lock so a concurrent patch can't
+            // interleave a stale write (mirrors set_mode).
+            if let Err(e) = save_config(&g.config) {
+                tracing::warn!("wylde-voice: save_config failed: {e}");
+            }
+            merged = updated;
+        }
+        let value = serde_json::to_value(&merged).unwrap_or(Value::Null);
+        self.emit("config", value.clone()).await;
+        value
+    }
+
     /// Mirror the GUI's active-conversation id.
     pub async fn set_active_conversation(&self, conversation_id: String) -> String {
         let mut g = self.inner.lock().await;
@@ -434,6 +469,54 @@ mod tests {
         assert_eq!(s.active_conversation_id().await, "conv-42");
         let v = s.snapshot().await;
         assert_eq!(v["active_conversation_id"], "conv-42");
+    }
+
+    #[tokio::test]
+    async fn get_config_value_reports_full_block() {
+        let s = fresh_state();
+        let v = s.get_config_value().await;
+        assert_eq!(v["mode"], "push_to_talk");
+        assert_eq!(v["stt_backend_pref"], "auto");
+        assert_eq!(v["vad_sensitivity"], "medium");
+        assert_eq!(v["wake_word_enabled"], false);
+        assert!(v["input_device"].is_null());
+        assert_eq!(v["push_to_talk_hotkey"], "Ctrl+Space");
+    }
+
+    #[tokio::test]
+    async fn apply_config_patch_merges_and_emits() {
+        let s = fresh_state();
+        let merged = s
+            .apply_config_patch(&json!({
+                "stt_backend_pref": "npu",
+                "vad_sensitivity": "high",
+                "input_device": "USB Mic",
+            }))
+            .await;
+        assert_eq!(merged["stt_backend_pref"], "npu");
+        assert_eq!(merged["vad_sensitivity"], "high");
+        assert_eq!(merged["input_device"], "USB Mic");
+        // Untouched key keeps its default.
+        assert_eq!(merged["mode"], "push_to_talk");
+        // In-memory config reflects the merge.
+        let after = s.get_config_value().await;
+        assert_eq!(after["stt_backend_pref"], "npu");
+        // A `config` event was emitted for subscribers.
+        let evs = s.poll_events(0, 0).await;
+        assert!(evs["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["type"] == "config" && e["stt_backend_pref"] == "npu"));
+    }
+
+    #[tokio::test]
+    async fn apply_config_patch_snaps_bad_enum_to_default() {
+        let s = fresh_state();
+        let merged = s
+            .apply_config_patch(&json!({ "stt_backend_pref": "tpu" }))
+            .await;
+        assert_eq!(merged["stt_backend_pref"], "auto");
     }
 
     #[tokio::test]
