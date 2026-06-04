@@ -47,6 +47,7 @@ use serde_json::{json, Value};
 use wylde_shared::ipc::{Reply, StreamSender};
 
 use crate::config::Config;
+use crate::memory::conversations::actions as conversations_actions;
 use crate::memory::long_term::{self, LongTermMemory, SaveError};
 use crate::memory::rag::actions as rag_actions;
 use crate::memory::short_term::actions as short_term_actions;
@@ -117,6 +118,14 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_short_term_get(&self, payload: Value) -> Reply;
     async fn memory_short_term_append(&self, payload: Value) -> Reply;
     async fn memory_short_term_clear(&self, payload: Value) -> Reply;
+
+    // ── conversations.* (6 verbs; conversation lifecycle + active sel) ─
+    async fn conversations_new(&self, payload: Value) -> Reply;
+    async fn conversations_list(&self, payload: Value) -> Reply;
+    async fn conversations_get(&self, payload: Value) -> Reply;
+    async fn conversations_delete(&self, payload: Value) -> Reply;
+    async fn conversations_get_active(&self, payload: Value) -> Reply;
+    async fn conversations_set_active(&self, payload: Value) -> Reply;
 
     // ── consent.* (6 verbs + 1 streaming; Phase 12.2 + 12.6) ─────────
     async fn consent_list(&self, payload: Value) -> Reply;
@@ -424,6 +433,33 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn memory_short_term_clear(&self, payload: Value) -> Reply {
         short_term_actions::handle_clear(payload).await
+    }
+
+    // ── conversations.* ──────────────────────────────────────────────
+    // Pass-throughs — JSON shaping lives in conversations::actions.
+
+    async fn conversations_new(&self, payload: Value) -> Reply {
+        conversations_actions::handle_new(payload).await
+    }
+
+    async fn conversations_list(&self, payload: Value) -> Reply {
+        conversations_actions::handle_list(payload).await
+    }
+
+    async fn conversations_get(&self, payload: Value) -> Reply {
+        conversations_actions::handle_get(payload).await
+    }
+
+    async fn conversations_delete(&self, payload: Value) -> Reply {
+        conversations_actions::handle_delete(payload).await
+    }
+
+    async fn conversations_get_active(&self, payload: Value) -> Reply {
+        conversations_actions::handle_get_active(payload).await
+    }
+
+    async fn conversations_set_active(&self, payload: Value) -> Reply {
+        conversations_actions::handle_set_active(payload).await
     }
 
     // ── consent.* (Phase 12.2) ───────────────────────────────────────

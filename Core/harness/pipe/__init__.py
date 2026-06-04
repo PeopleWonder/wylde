@@ -30,8 +30,10 @@ from ._chat import (
 from ._conversations import (
     _conversations_delete_action,
     _conversations_get_action,
+    _conversations_get_active_action,
     _conversations_list_action,
     _conversations_new_action,
+    _conversations_set_active_action,
 )
 from ._memory import (
     _memory_long_term_delete_action,
@@ -140,6 +142,8 @@ _ACTIONS = {
     "conversations.list": _conversations_list_action,
     "conversations.get": _conversations_get_action,
     "conversations.delete": _conversations_delete_action,
+    "conversations.get_active": _conversations_get_active_action,
+    "conversations.set_active": _conversations_set_active_action,
     # System prompts
     "prompts.list": _prompts_list_action,
     "prompts.save": _prompts_save_action,

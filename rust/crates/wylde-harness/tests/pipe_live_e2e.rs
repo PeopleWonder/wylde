@@ -115,7 +115,8 @@ async fn unregistered_verb_returns_no_action_for_strangler_fallback() {
     for verb in [
         "memory.workspace.list",
         "memory.reflect",
-        "conversations.new",
+        // conversations.* are registered as of Memory Slice B — they no
+        // longer fall through to the strangler, so they're not listed here.
         "prompts.list",
         "rag.workspaces.list",
         // models.* registry/Ollama verbs are registered as of Slice 3a;
