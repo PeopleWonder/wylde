@@ -36,7 +36,8 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::ipc::{
-    list_long_term, recent_workspaces, search_long_term, LongTermRecord, WorkspaceSummary,
+    fetch_short_term, list_long_term, recent_workspaces, search_long_term, LongTermRecord,
+    ShortTermEntry, WorkspaceSummary,
 };
 
 /// MRU cap used for the workspace section.
@@ -63,6 +64,18 @@ pub struct MemoryPanel {
     pub error: Option<String>,
     pub loading_long_term: bool,
     pub loading_workspaces: bool,
+    /// The conversation the Chat panel last announced on the cross-panel
+    /// bus, or `None` until one is announced.  When `Some`, the Short-term
+    /// section mirrors that conversation's working-memory buffer instead
+    /// of the static pointer card.
+    pub active_conversation: Option<String>,
+    /// Short-term ("working memory") buffer for [`Self::active_conversation`],
+    /// refreshed whenever the bus reports the active conversation changed.
+    pub short_term: Vec<ShortTermEntry>,
+    /// `true` while the first short-term fetch for the current conversation
+    /// is in flight — drives the "Loading…" row instead of a flash of
+    /// "empty buffer".
+    pub loading_short_term: bool,
     _search_sub: Subscription,
 }
 
@@ -93,6 +106,9 @@ impl MemoryPanel {
             error: None,
             loading_long_term: true,
             loading_workspaces: true,
+            active_conversation: None,
+            short_term: Vec::new(),
+            loading_short_term: false,
             _search_sub: sub,
         }
     }
@@ -103,9 +119,92 @@ impl MemoryPanel {
         cx.new(|cx| {
             let panel = Self::new(cx);
             Self::spawn_refresh(cx);
+            // Follow the active conversation on the cross-panel bus so the
+            // Short-term section mirrors whatever chat is live.
+            Self::spawn_conversation_bus_drain(cx);
             panel
         })
         .into()
+    }
+
+    /// Long-lived task that follows the cross-panel conversation bus.
+    /// Seeds from the last-announced active conversation (the Chat panel
+    /// may have published before this panel mounted), then re-fetches the
+    /// short-term buffer every time the active conversation changes.  Runs
+    /// for the lifetime of the panel entity; a torn-down panel short-
+    /// circuits the next `update` and the task exits.
+    pub fn spawn_conversation_bus_drain(cx: &mut Context<Self>) {
+        use tokio::sync::broadcast::error::RecvError;
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            // Subscribe *before* reading the latch so a publish racing our
+            // mount lands in the receiver rather than being missed.
+            let mut rx = wylde_gui_pipe::subscribe_conversation_bus();
+            if let Some(cid) = wylde_gui_pipe::current_active_conversation() {
+                if !Self::adopt_conversation(&this, app_cx, cid).await {
+                    return;
+                }
+            }
+            loop {
+                match rx.recv().await {
+                    Ok(wylde_gui_pipe::ConversationEvent::ActiveConversationChanged {
+                        conversation_id,
+                    }) => {
+                        if !Self::adopt_conversation(&this, app_cx, conversation_id).await {
+                            return;
+                        }
+                    }
+                    // List changes don't affect the short-term mirror.
+                    Ok(_) => {}
+                    // Fell behind (rare — events are infrequent): re-seed
+                    // from the latch so we don't strand on a stale id.
+                    Err(RecvError::Lagged(_)) => {
+                        if let Some(cid) = wylde_gui_pipe::current_active_conversation() {
+                            if !Self::adopt_conversation(&this, app_cx, cid).await {
+                                return;
+                            }
+                        }
+                    }
+                    // Sender gone (never happens for the static bus, but
+                    // bail rather than spin if it ever does).
+                    Err(RecvError::Closed) => return,
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Set the active conversation, mark the short-term section loading,
+    /// then fetch + apply its buffer.  Returns `false` when the panel
+    /// entity has been torn down (the caller should stop draining).
+    async fn adopt_conversation(
+        this: &gpui::WeakEntity<Self>,
+        app_cx: &mut AsyncApp,
+        conversation_id: String,
+    ) -> bool {
+        let alive = this
+            .update(app_cx, |panel, cx| {
+                panel.active_conversation = Some(conversation_id.clone());
+                panel.loading_short_term = true;
+                cx.notify();
+            })
+            .is_ok();
+        if !alive {
+            return false;
+        }
+        // Soft-fail: a transport error (harness cold-starting, conversation
+        // not persisted yet) leaves the buffer empty rather than surfacing
+        // a loud error in the global browser.
+        let entries = fetch_short_term(&conversation_id).await.unwrap_or_default();
+        this.update(app_cx, |panel, cx| {
+            // Only apply if this is still the conversation we're tracking —
+            // a newer change may have superseded us mid-fetch.
+            if panel.active_conversation.as_deref() == Some(conversation_id.as_str()) {
+                panel.short_term = entries;
+                panel.loading_short_term = false;
+                cx.notify();
+            }
+        })
+        .is_ok()
     }
 
     /// Refresh every section.  Each layer fires on its own task so a
@@ -261,7 +360,15 @@ impl Render for MemoryPanel {
         }
 
         column = column.child(section_title("Short-term"));
-        column = column.child(short_term_placeholder());
+        if let Some(cid) = &self.active_conversation {
+            column = column.child(short_term_live(
+                cid,
+                &self.short_term,
+                self.loading_short_term,
+            ));
+        } else {
+            column = column.child(short_term_placeholder());
+        }
 
         div()
             .size_full()
@@ -551,6 +658,106 @@ fn short_term_placeholder() -> gpui::Div {
                      for that conversation. This global browser intentionally stays \
                      focused on the long-term and workspace layers.",
                 )),
+        )
+}
+
+/// Live Short-term view for the active conversation.  Mirrors the Chat
+/// panel's working-memory strip (per-entry `kind` tag + one-line summary)
+/// but read-only — clearing the buffer stays on the Chat surface that
+/// owns the conversation.  Shown once the nav bus reports an active
+/// conversation; until then [`short_term_placeholder`] explains where the
+/// buffer lives.
+fn short_term_live(conversation_id: &str, entries: &[ShortTermEntry], loading: bool) -> gpui::Div {
+    let header_label = SharedString::from(format!("Active conversation · {conversation_id}"));
+    let count_label = SharedString::from(format!(
+        "{} {}",
+        entries.len(),
+        if entries.len() == 1 { "entry" } else { "entries" },
+    ));
+
+    let mut card = div()
+        .bg(rgb(pack(SURFACE_800)))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .rounded(px(6.0))
+        .p_4()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::SM))
+                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                        .child(header_label),
+                )
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::MICRO))
+                        .text_color(rgb(pack(TEXT_MUTED)))
+                        .child(count_label),
+                ),
+        );
+
+    if loading {
+        return card.child(loading_row());
+    }
+
+    if entries.is_empty() {
+        return card.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(
+                    "No working memory yet — entries accrue as Wylde works this conversation. \
+                     Clear the buffer from the chat bar's \"memory\" pill.",
+                )),
+        );
+    }
+
+    for entry in entries {
+        card = card.child(short_term_row(entry));
+    }
+    card
+}
+
+/// One short-term row: a `kind` tag + the entry's summary line.  Twin of
+/// the Chat panel's `working_memory_row`.
+fn short_term_row(entry: &ShortTermEntry) -> gpui::Div {
+    let summary = if entry.summary.is_empty() {
+        SharedString::from("(no detail)")
+    } else {
+        SharedString::from(entry.summary.clone())
+    };
+    div()
+        .flex()
+        .flex_row()
+        .gap_2()
+        .items_start()
+        .py_1()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(BRAND)))
+                .child(SharedString::from(entry.kind.clone())),
+        )
+        .child(
+            div()
+                .flex_1()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(summary),
         )
 }
 

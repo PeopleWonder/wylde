@@ -154,6 +154,78 @@ pub async fn recent_workspaces(limit: u32) -> Result<Vec<WorkspaceSummary>, Stri
     Ok(parse_workspace_array(&v))
 }
 
+/// One short-term ("working memory") entry, mirrored from the active
+/// conversation's rolling buffer.  Same projection the Chat panel's
+/// working-memory strip uses (`kind` tag + one-line `summary`); inlined
+/// here rather than shared so the Memory panel stays free of a
+/// dependency on the Chat crate.  The raw `data` payload is collapsed to
+/// a single line so the browser can't surface a tool's full input/output.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShortTermEntry {
+    pub kind: String,
+    pub summary: String,
+}
+
+impl ShortTermEntry {
+    pub fn from_value(v: &Value) -> Self {
+        let kind = v
+            .get("kind")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("entry")
+            .to_owned();
+        Self {
+            kind,
+            summary: summarize_short_term_data(v.get("data")),
+        }
+    }
+}
+
+/// Collapse a freeform working-memory `data` value into one short line.
+/// Strings pass through; objects prefer a known descriptive field and
+/// fall back to a comma-joined key list.  (Twin of the Chat panel's
+/// `summarize_working_data`.)
+fn summarize_short_term_data(data: Option<&Value>) -> String {
+    match data {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Object(map)) => {
+            for key in ["summary", "text", "title", "path", "name"] {
+                if let Some(s) = map.get(key).and_then(|x| x.as_str()) {
+                    if !s.is_empty() {
+                        return s.to_owned();
+                    }
+                }
+            }
+            map.keys().cloned().collect::<Vec<_>>().join(", ")
+        }
+        Some(other) => other.to_string(),
+    }
+}
+
+/// `memory.short_term.get` — the rolling working-memory buffer for the
+/// active conversation.  The Memory panel reads this when the nav bus
+/// tells it which conversation is active, so its Short-term section
+/// mirrors the Chat panel's working-memory pill.  Reply shape is
+/// `{ working_memory: [...], conversation_id }`; a missing array reads as
+/// an empty buffer.
+pub async fn fetch_short_term(conversation_id: &str) -> Result<Vec<ShortTermEntry>, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "memory.short_term.get",
+            "payload": { "conversation_id": conversation_id },
+        })),
+    )
+    .await?;
+    let Some(arr) = v.get("working_memory").and_then(|x| x.as_array()) else {
+        return Ok(Vec::new());
+    };
+    Ok(arr.iter().map(ShortTermEntry::from_value).collect())
+}
+
 fn parse_record_array(v: &Value) -> Vec<LongTermRecord> {
     let Some(arr) = v.get("memories").and_then(|x| x.as_array()) else {
         return Vec::new();
@@ -246,5 +318,40 @@ mod tests {
         let _ = list_long_term;
         let _ = search_long_term;
         let _ = recent_workspaces;
+        let _ = fetch_short_term;
+    }
+
+    #[test]
+    fn short_term_entry_prefers_summary_field() {
+        let e = ShortTermEntry::from_value(&json!({
+            "kind": "tool",
+            "data": { "summary": "searched memory for 'rust'", "name": "memory.long_term.search" },
+        }));
+        assert_eq!(e.kind, "tool");
+        assert_eq!(e.summary, "searched memory for 'rust'");
+    }
+
+    #[test]
+    fn short_term_entry_falls_back_through_known_keys() {
+        let e = ShortTermEntry::from_value(&json!({
+            "kind": "file",
+            "data": { "path": "src/lib.rs", "bytes": 42 },
+        }));
+        assert_eq!(e.summary, "src/lib.rs");
+    }
+
+    #[test]
+    fn short_term_entry_string_data_passes_through() {
+        let e = ShortTermEntry::from_value(&json!({
+            "kind": "decision",
+            "data": "use the strangler fallback",
+        }));
+        assert_eq!(e.summary, "use the strangler fallback");
+    }
+
+    #[test]
+    fn short_term_entry_defaults_kind_when_absent() {
+        let e = ShortTermEntry::from_value(&json!({ "data": "x" }));
+        assert_eq!(e.kind, "entry");
     }
 }
