@@ -4887,7 +4887,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "wylde-device-gate"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "bcrypt",
@@ -4910,7 +4910,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-ext-study"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -4925,7 +4925,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-ext-webcrawler"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -4944,7 +4944,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-extension-bridge"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4961,7 +4961,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-gateway"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4991,7 +4991,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-harness"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5019,7 +5019,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-lifecycle"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5037,7 +5037,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-ollama"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5057,7 +5057,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-prebuild-guard"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "tempfile",
@@ -5066,7 +5066,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-shared"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5087,7 +5087,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-treesitter"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -5111,7 +5111,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-updater"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "minisign",
  "minisign-verify",
@@ -5127,7 +5127,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-voice"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5156,7 +5156,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-vpn"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5191,7 +5191,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-vram-broker"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "chrono",

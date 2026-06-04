@@ -32,8 +32,11 @@
     then re-run this script with -SkipBuild.
 
 .PARAMETER Version
-    Version string baked into the installer + version.txt. Default 0.1.0
-    (matches the workspace version).
+    Version string baked into the installer + version.txt. Default
+    0.1.0-alpha.1 (matches the workspace version). May be a SemVer
+    pre-release (e.g. 0.1.0-alpha.1); the numeric core before any "-suffix"
+    is passed to makensis as VI_VERSION for the numeric-only VIProductVersion
+    field, while the full string is used everywhere a display version is shown.
 
 .PARAMETER SkipBuild
     Skip the cargo build phase; stage whatever binaries already exist.
@@ -59,7 +62,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $Version = "0.1.0",
+    [string] $Version = "0.1.0-alpha.1",
     [switch] $SkipBuild,
     [switch] $StageOnly,
     [string] $MakeNsis
@@ -74,6 +77,10 @@ $NsiScript = Join-Path $ScriptDir 'wylde-installer.nsi'
 $ArtifactsDir = Join-Path $RepoRoot 'release-artifacts'
 $StageDir     = Join-Path $ArtifactsDir 'stage'
 $OutExe       = Join-Path $ArtifactsDir "WyldeSetup-$Version.exe"
+
+# Numeric-only core (everything before the first "-") for the NSIS
+# VIProductVersion field, which rejects SemVer pre-release suffixes.
+$ViVersion    = ($Version -split '-', 2)[0]
 
 # Backend binaries we never ship: the trainer was cut from the alpha
 # (retired scope), and the voice bench is a dev micro-benchmark, not a service.
@@ -216,6 +223,7 @@ Write-Info "makensis: $MakeNsis"
 
 & $MakeNsis `
     "/DVERSION=$Version" `
+    "/DVI_VERSION=$ViVersion" `
     "/DSTAGE_DIR=$StageDir" `
     "/DOUT_FILE=$OutExe" `
     $NsiScript

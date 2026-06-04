@@ -27,7 +27,14 @@
 ; Build-time defines (overridable from build-installer.ps1 via /D...)
 ;--------------------------------------------------------------------
 !ifndef VERSION
-  !define VERSION "0.1.0"
+  !define VERSION "0.1.0-alpha.1"
+!endif
+; VIProductVersion (below) demands a strictly numeric X.X.X.X string, so a
+; SemVer pre-release tag like "0.1.0-alpha.1" can't be fed to it directly.
+; build-installer.ps1 passes the numeric core via /DVI_VERSION (the part
+; before any "-suffix"); this default keeps a hand `makensis` run working.
+!ifndef VI_VERSION
+  !define VI_VERSION "0.1.0"
 !endif
 !ifndef STAGE_DIR
   ; Default matches build-installer.ps1's staging location.
@@ -107,7 +114,9 @@ SetCompressor /SOLID lzma
 ;--------------------------------------------------------------------
 ; Version info on the produced setup .exe
 ;--------------------------------------------------------------------
-VIProductVersion "${VERSION}.0"
+; VIProductVersion must be numeric X.X.X.X — use the numeric-only VI_VERSION,
+; never the (possibly pre-release-suffixed) display VERSION.
+VIProductVersion "${VI_VERSION}.0"
 VIAddVersionKey "ProductName"     "${PRODUCT_NAME}"
 VIAddVersionKey "ProductVersion"  "${VERSION}"
 VIAddVersionKey "CompanyName"     "${PRODUCT_PUBLISHER}"
