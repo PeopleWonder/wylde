@@ -44,6 +44,17 @@ dependencies = [
     # for every Wylde deployment and silently rejecting all but $apr1$ hashes
     # under 3.13 would be a quiet capability regression.
     "passlib>=1.7.4",
+
+    # Process liveness + graceful terminate for the Lifecycle daemon
+    # (Core/Lifecycle/daemon_state/__init__.py:401 _pid_alive,
+    # _orphan_sweep.py:180 _kill_with_grace). Both imports are guarded with
+    # an os.kill / taskkill fallback, but the daemon boots for every Wylde
+    # deployment and the psutil path is strongly preferred (clean zombie /
+    # access-denied handling), so it is declared as a hard core dep rather
+    # than left to chance. Previously reached the lock only transitively via
+    # the now-removed `trainer` extra (accelerate → psutil); declaring it
+    # here keeps it pinned after that extra's removal.
+    "psutil>=7.0",
 ]
 
 [project.optional-dependencies]
@@ -80,32 +91,13 @@ voice = [
     "kokoro-onnx>=0.3.0",
 ]
 
-# Trainer — captioning stack. Heavy GPU/ML deps; install only when working
-# on Caption fine-tuning or inference.
-#
-# Transitive ML packages (safetensors, torchvision, einops, timm) are
-# pulled in by transformers when the model that needs them is loaded —
-# not declared here. Two transitive deps DO need explicit declaration:
-#
-#   * accelerate — required by transformers when `device_map="auto"`
-#     is set (Trainer/Caption/captioner.py:283).
-#   * bitsandbytes — required by transformers when `load_in_4bit=True`
-#     (Trainer/Caption/captioner.py:277 via BitsAndBytesConfig); the
-#     JoyCaption backend uses this by default.
-#
-# torch is pinned >=2.5 but Blackwell (RTX 50-series, sm_120) may need
-# the CUDA 12.6/12.8 nightly wheel installed out-of-band.
-trainer = [
-    "torch>=2.5.0",
-    "transformers>=4.49.0,<5.0.0",
-    "accelerate>=0.33.0",
-    "bitsandbytes>=0.43.0",
-    "qwen-vl-utils>=0.0.8",
-    "pillow>=10.0.0",
-    "opencv-python>=4.9.0",
-    "numpy>=1.24.0",
-    "tqdm>=4.66.0",
-]
+# Trainer extra removed 2026-06-04 — the captioning stack (Trainer/Caption/)
+# was extracted from the alpha (see docs/retired-trainer-scope.md). Its sole
+# live consumer outside the deleted tree was psutil, reached transitively via
+# accelerate; psutil is now declared directly in the core `dependencies` above
+# so removing this extra (and its heavy GPU/ML deps: torch, transformers,
+# accelerate, bitsandbytes, qwen-vl-utils, opencv-python, tqdm) drops nothing
+# the live tree still imports.
 
 # Webcrawler extension — HTML scraping / extraction.
 # beautifulsoup4 is the only external dep; extractor.py imports it directly.
