@@ -34,6 +34,7 @@ pub mod memory_long_term;
 pub mod memory_workspaces;
 pub mod nav_bus;
 pub mod tools;
+pub mod updater_state;
 
 pub use nav_bus::{install_nav_sender, is_nav_installed, request_nav};
 

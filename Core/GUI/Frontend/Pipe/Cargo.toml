@@ -13,9 +13,18 @@ path = "src/lib.rs"
 [dependencies]
 wylde-harness.workspace = true
 wylde-shared.workspace = true
+# Self-updater driver (Phase 12.5, slice 3d). The `updater_state` module
+# orchestrates the one fire-and-forget startup check on this crate's tokio
+# bridge and caches the resolved `UpdateStatus` for the Shell + Settings.
+# Already a transitive dep via the Settings panel — declaring it here adds
+# no new crate to the lock graph.
+wylde-updater.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rmp-serde.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
+# Diagnostics for the startup update check (already resolved transitively
+# via wylde-updater / wylde-harness; this just makes it a direct dep).
+tracing = "0.1"

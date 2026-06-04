@@ -98,6 +98,12 @@ pub struct Shell {
     /// sidebar footer.  `None` until the first `system.inventory` reply
     /// lands (cold start) — the footer shows em-dashes meanwhile.
     pub resources: Option<ResourceSnapshot>,
+    /// Whether the one fire-and-forget startup update check (Phase 12.5,
+    /// slice 3d) found a newer release.  Drives the hint dot on the
+    /// Settings sidebar row.  Starts `false`; flips when
+    /// [`Self::spawn_startup_update_check`]'s task completes.  Stays
+    /// `false` when updates are off (the check makes no network call).
+    pub update_available: bool,
 }
 
 impl Shell {
@@ -117,6 +123,7 @@ impl Shell {
             mounted: BTreeMap::new(),
             iframes: BTreeMap::new(),
             resources: None,
+            update_available: false,
         }
     }
 
@@ -229,6 +236,35 @@ impl Shell {
                 .await;
             if this.update(app_cx, |_, _| {}).is_err() {
                 return;
+            }
+        })
+        .detach();
+    }
+
+    /// Fire the one background update check at startup (Phase 12.5,
+    /// slice 3d).  Fire-and-forget: the wire IO + blocking updater run on
+    /// the pipe's tokio bridge, the UI never blocks, and the result is
+    /// cached in `wylde_gui_pipe::updater_state` for the Settings panel to
+    /// read.  When it resolves an available update we flip
+    /// `update_available` and `cx.notify()` so the sidebar paints the hint
+    /// dot on the Settings row.
+    ///
+    /// Privacy: the check itself is gated inside `run_startup_check` —
+    /// it makes no network call unless the user enabled updates *and*
+    /// opted into automatic checks (and the cadence window has elapsed).
+    /// On an opted-out install this task completes instantly, leaving
+    /// `update_available` false and making zero outbound requests.
+    pub fn spawn_startup_update_check(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let available =
+                wylde_gui_pipe::updater_state::run_startup_check(env!("CARGO_PKG_VERSION")).await;
+            // Only disturb a frame when there's something to show — a
+            // "no update" result leaves the sidebar untouched.
+            if available {
+                let _ = this.update(app_cx, |this, cx| {
+                    this.update_available = true;
+                    cx.notify();
+                });
             }
         })
         .detach();
@@ -391,6 +427,7 @@ impl Render for Shell {
         // Snapshot the meter so the sidebar render borrows a clone, not
         // `self` (which `cx` already borrows mutably this frame).
         let resources = self.resources.clone();
+        let update_available = self.update_available;
         let mounted_view = match &slot_state {
             SlotState::Mount { key } => self.mounted.get(key).cloned(),
             _ => None,
@@ -423,6 +460,7 @@ impl Render for Shell {
                 &rows,
                 selected_key.as_deref(),
                 resources.as_ref(),
+                update_available,
                 window,
                 cx,
             ))

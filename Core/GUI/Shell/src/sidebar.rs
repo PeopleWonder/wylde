@@ -38,6 +38,7 @@ pub fn render_sidebar(
     rows: &[NavRow],
     selected_key: Option<&str>,
     resources: Option<&ResourceSnapshot>,
+    update_available: bool,
     _window: &mut Window,
     cx: &mut Context<Shell>,
 ) -> Stateful<gpui::Div> {
@@ -58,7 +59,10 @@ pub fn render_sidebar(
 
     for row in rows {
         let is_active = selected_key == Some(row.key.as_str());
-        nav = nav.child(row_button(row, is_active, cx));
+        // The startup update check (slice 3d) surfaces as a small hint dot
+        // on the Settings row — the panel that owns the Updates section.
+        let show_update_dot = update_available && is_settings_row(row);
+        nav = nav.child(row_button(row, is_active, show_update_dot, cx));
     }
 
     div()
@@ -125,8 +129,23 @@ fn brand_header() -> gpui::Div {
         )
 }
 
+/// True for the first-party Settings row (`core/settings`) — the panel
+/// that owns the Updates section, where an "update available" hint
+/// belongs.  Matches on the id segment so a registry-key prefix change
+/// (e.g. a future service rename) still resolves.
+pub fn is_settings_row(row: &NavRow) -> bool {
+    matches!(row.origin, NavOrigin::FirstParty)
+        && row.key.rsplit('/').next() == Some("settings")
+}
+
 /// Single nav row.  Mouse-down forwards to `Shell::on_nav_click`.
-fn row_button(row: &NavRow, is_active: bool, cx: &mut Context<Shell>) -> Stateful<gpui::Div> {
+/// `show_update_dot` paints the slice-3d "update available" hint.
+fn row_button(
+    row: &NavRow,
+    is_active: bool,
+    show_update_dot: bool,
+    cx: &mut Context<Shell>,
+) -> Stateful<gpui::Div> {
     let key_owned = row.key.clone();
     let label = SharedString::from(row.title.clone());
     let icon_letter = SharedString::from(icon_letter_for(row));
@@ -177,7 +196,21 @@ fn row_button(row: &NavRow, is_active: bool, cx: &mut Context<Shell>) -> Statefu
     if matches!(row.origin, NavOrigin::Extension) {
         button = button.child(extension_badge());
     }
+    if show_update_dot {
+        button = button.child(update_dot());
+    }
     button
+}
+
+/// Small brand-tinted dot flagging "an update is available" on the
+/// Settings row.  The label div eats the slack (`flex_1`) so the dot pins
+/// to the row's right edge.
+fn update_dot() -> gpui::Div {
+    div()
+        .w(px(8.0))
+        .h(px(8.0))
+        .rounded(px(4.0))
+        .bg(rgb(pack(BRAND)))
 }
 
 fn icon_chip(letter: &SharedString, is_active: bool) -> gpui::Div {
@@ -262,6 +295,27 @@ mod tests {
             required_services: vec![],
         };
         assert_eq!(icon_letter_for(&r), "·");
+    }
+
+    #[test]
+    fn is_settings_row_matches_only_first_party_settings() {
+        // The canonical first-party Settings key.
+        assert!(is_settings_row(&row("core/settings", "Settings", Some("settings"))));
+        // A prefix change still resolves (we match the id segment).
+        assert!(is_settings_row(&row("app/settings", "Settings", None)));
+        // Other panels don't get the update dot.
+        assert!(!is_settings_row(&row("core/chat", "Chat", None)));
+        // An extension panel that happens to id "settings" is excluded —
+        // the dot belongs to the first-party Updates section.
+        let ext = NavRow {
+            key: "ext:n8n/settings".into(),
+            origin: NavOrigin::Extension,
+            title: "Settings".into(),
+            icon: None,
+            order: 0,
+            required_services: vec![],
+        };
+        assert!(!is_settings_row(&ext));
     }
 
     /// Width is exposed so the slot can lay itself out next to the

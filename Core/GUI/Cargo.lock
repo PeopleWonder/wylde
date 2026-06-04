@@ -8665,9 +8665,11 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
  "uuid",
  "wylde-harness",
  "wylde-shared",
+ "wylde-updater",
 ]
 
 [[package]]
