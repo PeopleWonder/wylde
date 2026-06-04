@@ -9,16 +9,17 @@
 //!
 //! ## Strangler-fig switch
 //!
-//! Services with both impls (extension_bridge, voice) are dispatched
-//! through [`impl_for`]: `WYLDE_<SERVICE>_IMPL=rust` picks a sibling Rust
-//! binary resolved by [`rust_binary_path`], and a missing or unparseable
-//! env var (or a missing Rust binary) falls back to the Python module
-//! with a warning, so a mis-set deployment can never silently lose the
-//! service. vram_broker, device_gate, and gateway were collapsed to
-//! Rust-only on 2026-06-02 — their Python packages were deleted, so they
-//! have no fallback (a missing binary leaves them down). This is the SAME
-//! dispatch the Python daemon uses — we port it verbatim so behaviour
-//! stays consistent regardless of which daemon is running.
+//! Services with both impls (extension_bridge) are dispatched through
+//! [`impl_for`]: `WYLDE_<SERVICE>_IMPL=rust` picks a sibling Rust binary
+//! resolved by [`rust_binary_path`], and a missing or unparseable env var
+//! (or a missing Rust binary) falls back to the Python module with a
+//! warning, so a mis-set deployment can never silently lose the service.
+//! vram_broker, device_gate, and gateway were collapsed to Rust-only on
+//! 2026-06-02, and voice in the Phase 11.E cutover — their Python packages
+//! were deleted, so they have no fallback (a missing binary leaves them
+//! down). This is the SAME dispatch the Python daemon uses — we port it
+//! verbatim so behaviour stays consistent regardless of which daemon is
+//! running.
 //!
 //! Memory scheduler note: the Python daemon hosts the scheduler
 //! in-process (it's a Python thread; no separate binary). The Rust
@@ -334,14 +335,15 @@ async fn stop_service(name: &str, grace: Duration) -> Result<()> {
 // → already-alive guard → dispatch → record + track. The only things
 // that vary are the service name, the Python module, the per-service
 // default impl, and the "no binary found" warning text — so they live in
-// a table and share one generic [`start_strangler`]. Two of them
-// (extension_bridge, voice) keep a Python fallback (`python_module:
+// a table and share one generic [`start_strangler`]. One of them
+// (extension_bridge) keeps a Python fallback (`python_module:
 // Some(..)`): a missing Rust binary falls back to `python -m <module>`.
-// The other three (device_gate, vram_broker, gateway) were collapsed to
-// Rust-only on 2026-06-02 (`python_module: None`) when their Python
-// packages were deleted — a missing binary leaves them down, with no
-// fallback. The unique services (memgraph, ollama, harness, vpn) stay
-// hand-written below because their control flow genuinely diverges
+// The other four (device_gate, vram_broker, gateway, voice) were
+// collapsed to Rust-only (`python_module: None`) when their Python
+// packages were deleted — device_gate/vram_broker/gateway on 2026-06-02,
+// voice in the Phase 11.E cutover — so a missing binary leaves them down,
+// with no fallback. The unique services (memgraph, ollama, harness, vpn)
+// stay hand-written below because their control flow genuinely diverges
 // (always-python, hard-fail, early-return-no-spawn).
 
 /// One row of the strangler-fig start table.
@@ -417,13 +419,20 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
              -p wylde-gateway`",
     },
     StranglerService {
+        // Collapsed to Rust-only (Phase 11.E cutover): the Python `Voice/`
+        // tree was DELETED once `wylde-voice` (cpal + ort Whisper/Kokoro +
+        // openWakeWord) reached parity and the live session STT/TTS paths
+        // moved in-process (orchestrator calls `voice.transcribe` /
+        // `voice.synthesize` directly). There is no Python fallback
+        // (`python_module: None`); `WYLDE_WYLDE_VOICE_IMPL` no longer has a
+        // `python` target.
         name: service_name::VOICE,
-        python_module: Some("Voice.run"),
+        python_module: None,
         default_impl: ImplLang::Rust,
         missing_binary_warn:
-            "voice: default impl=rust but no binary found; falling back to python \
-             (rollback path) — build with `cargo build --release -p wylde-voice` \
-             to engage rust",
+            "voice: no rust binary found; voice will not start — the Python \
+             Voice package was removed, so build with `cargo build --release \
+             -p wylde-voice`",
     },
 ];
 
@@ -559,13 +568,12 @@ pub async fn stop_memgraph() -> Result<()> {
 // ── Voice ─────────────────────────────────────────────────────────────
 //
 // Phase 11a (Slice 11.A — 2026-05-24): strangler-fig dispatch added.
-// Slice 11.E+ (2026-05-27): default flipped python → rust now that the
-// GUI-facing surface (`voice.toggle` / `voice.set_mode` / friends) is
-// ported. `WYLDE_WYLDE_VOICE_IMPL=python` is still honoured as the
-// rollback path during the 2-4 week strangler-fig soak; the Python
-// `Voice/` tree stays on disk for that window and is then removed in
-// the cleanup slice. The `default = Rust` carry mirrors `WYLDE_VPN_IMPL`
-// after Phase 2.E.
+// Slice 11.E+ (2026-05-27): default flipped python → rust once the
+// GUI-facing surface (`voice.toggle` / `voice.set_mode` / friends) was
+// ported. Phase 11.E cutover: the Python `Voice/` tree was deleted and
+// `WYLDE_WYLDE_VOICE_IMPL=python` retired, so voice is now Rust-only
+// (`python_module: None` in the table above) — same shape as
+// device_gate/vram_broker/gateway/vpn.
 
 pub async fn start_voice() -> Result<()> {
     start_strangler(strangler_def(service_name::VOICE)).await
@@ -975,11 +983,12 @@ mod tests {
 
     #[test]
     fn strangler_defs_carry_expected_module_and_default() {
-        // Module + default impl per row. extension_bridge and voice keep
-        // a Python fallback (`Some(module)`); device_gate, vram_broker,
-        // and gateway were collapsed to Rust-only on 2026-06-02 when their
-        // Python packages were deleted (`None`). All five default to Rust
-        // except extension_bridge (still Python pending its dogfood week).
+        // Module + default impl per row. Only extension_bridge keeps a
+        // Python fallback (`Some(module)`); device_gate, vram_broker,
+        // gateway, and voice were collapsed to Rust-only when their Python
+        // packages were deleted (`None`) — the first three on 2026-06-02,
+        // voice in the Phase 11.E cutover. All five default to Rust except
+        // extension_bridge (still Python pending its dogfood week).
         let cases = [
             (service_name::DEVICE_GATE, None, ImplLang::Rust),
             (service_name::VRAM_BROKER, None, ImplLang::Rust),
@@ -989,7 +998,7 @@ mod tests {
                 ImplLang::Python,
             ),
             (service_name::GATEWAY, None, ImplLang::Rust),
-            (service_name::VOICE, Some("Voice.run"), ImplLang::Rust),
+            (service_name::VOICE, None, ImplLang::Rust),
         ];
         for (name, module, default) in cases {
             let def = strangler_def(name);
