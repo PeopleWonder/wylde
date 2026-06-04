@@ -1,6 +1,12 @@
 //! VRAM broker pipe parity: Python `Core.resource_monitor.run` vs
 //! `wylde-vram-broker.exe`.
 //!
+//! RETIRED: the Python broker (`Core.resource_monitor.run`) was deleted in
+//! 7072947 — the vram-broker is rust-only now, so there is no Python half
+//! left to diff against. The test below is `#[ignore]`d rather than removed
+//! to keep the capture/diff scaffold should a future second implementation
+//! ever need parity again.
+//!
 //! Both implementations bind the same canonical pipe with no name override,
 //! so the harness captures sequentially: a fixed action script is replayed
 //! against a fresh Python broker, then against a fresh Rust broker, and the
@@ -140,6 +146,8 @@ async fn capture(label: &str, cmd: Command) -> Vec<(&'static str, Value)> {
 }
 
 #[tokio::test]
+#[ignore = "Python target Core.resource_monitor.run deleted in 7072947; \
+            vram-broker is rust-only now — no Python half to diff against"]
 async fn vram_broker_envelope_parity() {
     paths::require_artifact(
         &paths::venv_python(),
