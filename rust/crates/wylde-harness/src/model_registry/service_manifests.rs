@@ -29,7 +29,6 @@ use crate::model_registry::types::Kind;
 const SERVICE_ROOTS: &[&str] = &[
     "Voice",
     "VoiceAssistant", // wylde-check: dead-ref-ok
-    "Trainer",
     "Extensions",
     "Gateway",
     "device_gate",

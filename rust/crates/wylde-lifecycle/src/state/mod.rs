@@ -59,17 +59,6 @@ pub mod service_name {
     /// defaults to `python`; the Rust impl is a foundation slice (control
     /// plane + 16 actions, with tunnel/NAT/discovery stubbed).
     pub const VPN: &str = "wylde-vpn";
-    /// Trainer — Caption sub-service. Phase 3 of the Rust migration —
-    /// `WYLDE_WYLDE_TRAINER_IMPL` defaults to `python` (in-process
-    /// captioner, no daemon-managed subprocess); set to `rust` to spawn
-    /// the Rust binary fronting Florence-2 over `\\.\pipe\wylde-trainer`.
-    pub const TRAINER: &str = "wylde-trainer";
-    /// Trainer worker — Python inference engine the Rust `wylde-trainer`
-    /// talks to over `\\.\pipe\wylde-trainer-worker`. Lifecycle-managed
-    /// (the spawn rule `no_external_process_spawn_rust` pins
-    /// `Command::new` to this crate), spawned only when
-    /// `WYLDE_WYLDE_TRAINER_IMPL=rust`.
-    pub const TRAINER_WORKER: &str = "wylde-trainer-worker";
     pub const MEMORY_SCHEDULER: &str = "wylde-memory-scheduler";
     /// Wylde harness — chat-turn driver. Phase 5 of the Rust
     /// migration. Slice 5.D (2026-05-25) flipped
@@ -457,24 +446,21 @@ pub async fn stop_all_daemon_managed() -> ShutdownSummary {
     // adjacent `stop_<service>` future is awaited. This mirrors the Python
     // `stop_all_daemon_managed`'s `_try(name, alive, fn)` ordering.
     // Shutdown order (per master plan Phase 1 §6a, extended for VPN +
-    // Trainer + TrainerWorker + Harness):
+    // Harness):
     //   Gateway → ExtensionBridge → Harness → Voice → DeviceGate →
-    //   Ollama → Trainer → TrainerWorker → VPN → VramBroker → Memgraph
+    //   Ollama → VPN → VramBroker → Memgraph
     //
     // Harness stops AFTER Gateway/ExtensionBridge (its callers are
     // gone) but BEFORE Ollama (its primary downstream — Ollama drains
     // any final lease cleanly after the turn driver releases its
     // last in-flight call). Voice/DeviceGate are unrelated and stop
-    // independently. Ollama + Trainer go BEFORE the broker so in-flight
-    // VRAM leases and Florence-2 weights are released cleanly; the
-    // broker then has nothing to reap. TrainerWorker stops AFTER
-    // Trainer so trainer's last in-flight inference call drains
-    // cleanly. VPN sits between TrainerWorker and the broker —
-    // independent of either, but ordering it after the VRAM consumers
-    // keeps the broker the last "infrastructure" service torn down
-    // before Memgraph. Memgraph last so anything still holding a Bolt
-    // driver releases first.
-    let steps: [(&str, bool, anyhow::Result<()>); 12] = [
+    // independently. Ollama goes BEFORE the broker so in-flight VRAM
+    // leases are released cleanly; the broker then has nothing to reap.
+    // VPN sits between Ollama and the broker — independent of either,
+    // but ordering it after the VRAM consumers keeps the broker the
+    // last "infrastructure" service torn down before Memgraph. Memgraph
+    // last so anything still holding a Bolt driver releases first.
+    let steps: [(&str, bool, anyhow::Result<()>); 10] = [
         (
             service_name::GATEWAY,
             is_service_alive(service_name::GATEWAY),
@@ -511,16 +497,6 @@ pub async fn stop_all_daemon_managed() -> ShutdownSummary {
             service_name::OLLAMA,
             is_service_alive(service_name::OLLAMA),
             services::stop_ollama().await,
-        ),
-        (
-            service_name::TRAINER,
-            is_service_alive(service_name::TRAINER),
-            services::stop_trainer().await,
-        ),
-        (
-            service_name::TRAINER_WORKER,
-            is_service_alive(service_name::TRAINER_WORKER),
-            services::stop_trainer_worker().await,
         ),
         (
             service_name::VPN,

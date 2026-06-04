@@ -13,7 +13,6 @@
 //!   - Core/GUI/Frontend/Panels/RemoteAccess/manifest.json
 //!   - Core/GUI/Frontend/Panels/Settings/manifest.json
 //!   - Core/GUI/Frontend/Panels/Tools/manifest.json
-//!   - Core/GUI/Frontend/Panels/Training/manifest.json
 //!   - Core/GUI/Frontend/Panels/Workspaces/manifest.json
 //!
 //! Build-time aggregator design lives in the
@@ -50,7 +49,7 @@ pub fn register_all(
                 icon: Some("chat".into()),
                 order: 5,
                 version: "0.1.0".into(),
-                required_services: vec!["wylde-harness".into()],
+                required_services: vec!["wylde-harness".into(), "wylde-ollama".into()],
                 source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
@@ -92,7 +91,7 @@ pub fn register_all(
                 icon: Some("smartphone".into()),
                 order: 60,
                 version: "0.1.0".into(),
-                required_services: vec!["wylde-harness".into(), "wylde-gateway".into(), "wylde-device-gate".into()],
+                required_services: vec!["wylde-device-gate".into()],
                 source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
@@ -113,7 +112,7 @@ pub fn register_all(
                 icon: Some("image".into()),
                 order: 80,
                 version: "0.1.0".into(),
-                required_services: vec!["wylde-harness".into(), "wylde-gateway".into()],
+                required_services: vec!["wylde-gateway".into()],
                 source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
@@ -155,7 +154,7 @@ pub fn register_all(
                 icon: Some("cpu".into()),
                 order: 40,
                 version: "0.1.0".into(),
-                required_services: vec!["wylde-harness".into(), "wylde-ollama".into()],
+                required_services: vec!["wylde-ollama".into(), "wylde-vram-broker".into(), "wylde-harness".into()],
                 source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
@@ -176,7 +175,7 @@ pub fn register_all(
                 icon: Some("globe".into()),
                 order: 65,
                 version: "0.1.0".into(),
-                required_services: vec!["wylde-harness".into(), "wylde-gateway".into()],
+                required_services: vec!["wylde-vpn".into()],
                 source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
@@ -218,28 +217,7 @@ pub fn register_all(
                 icon: Some("wrench".into()),
                 order: 50,
                 version: "0.1.0".into(),
-                required_services: vec!["wylde-harness".into(), "wylde-extension-bridge".into()],
-                source: PanelSource::GpuiView { factory: factory_key.into() },
-            },
-            factory: Some(factory),
-        })?;
-    }
-
-    // ── core / training  (from Core/GUI/Frontend/Panels/Training/manifest.json) ──
-    {
-        let factory_key = "wylde_panel_training::TrainingPanel::view";
-        let factory = factories
-            .take(factory_key)
-            .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
-        registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty { service: "core".into() },
-            entry: PanelEntry {
-                id: "training".into(),
-                title: "Training".into(),
-                icon: Some("graduation-cap".into()),
-                order: 85,
-                version: "0.1.0".into(),
-                required_services: vec!["wylde-harness".into()],
+                required_services: vec!["wylde-extension-bridge".into()],
                 source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),

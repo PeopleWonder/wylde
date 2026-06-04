@@ -226,8 +226,8 @@ def _service_name_for_folder(rel_folder: str) -> Optional[str]:
 
     Used by the manifest-first path in :func:`check_run_py_entry_point`
     to look up ``data/manifests/<service>.json``. Returns ``None`` for
-    folders that don't host a top-level service (Trainer/Caption is a
-    sub-module, Extensions/* are library-style).
+    folders that don't host a top-level service (Extensions/* are
+    library-style).
     """
     mapping = {
         "Core/resource_monitor": "vram-broker",

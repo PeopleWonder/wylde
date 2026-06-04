@@ -89,7 +89,7 @@ starts them, supervises them, and reaps them on shutdown.
 
 Existing services: `wylde-vram-broker`, `wylde-gateway`, `wylde-device-gate`,
 `wylde-lifecycle`, `wylde-ollama`, `wylde-voice`, `wylde-vpn`,
-`wylde-extension-bridge`, `wylde-trainer`, `wylde-harness`. Memgraph, once a
+`wylde-extension-bridge`, `wylde-harness`. Memgraph, once a
 standalone service, was folded into the harness as a submodule on 2026-05-25;
 this is the pattern when a service's only consumer is one other service.
 

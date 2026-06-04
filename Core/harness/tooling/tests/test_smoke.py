@@ -118,12 +118,6 @@ EXPECTED_TOOLS = {
     "n8n_create_workflow",
     "n8n_edit_workflow",
     "n8n_delete_workflow",
-    # caption (3 — Phase 8.7 service-of-services merge; Florence-2-backed
-    # captioner under Wylde/Trainer/Caption/tools/, picked up by the
-    # nested service walker. caption_batch is gated.)
-    "caption_image",
-    "caption_video",
-    "caption_batch",
 }
 
 # Tools whose manifests declare requires_confirmation: true. The runner
@@ -133,7 +127,6 @@ GATED_TOOLS = {
     "n8n_create_workflow",
     "n8n_edit_workflow",
     "n8n_delete_workflow",
-    "caption_batch",
 }
 
 
