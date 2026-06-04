@@ -16,8 +16,8 @@
 //! This matches the Models panel's `set_default` precedent.
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, IntoElement, Render,
-    Window,
+    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, FocusHandle, IntoElement,
+    KeyDownEvent, Render, Window,
 };
 use serde_json::json;
 use wylde_theme::colors::{SURFACE_900, TEXT_PRIMARY, TEXT_SECONDARY};
@@ -30,6 +30,7 @@ use crate::ipc::{
     write_update_prefs, write_voice_settings, ConsentSnapshot, OllamaSettings, UpdateCheck,
     UpdatePrefs, VoiceDevices, VoiceSettings, VoiceTest,
 };
+use crate::hotkey::{resolve_capture, CaptureOutcome};
 use crate::sections::{
     consent_section, error_banner, ollama_section, pack, startup_section, updates_section,
     voice_section,
@@ -69,6 +70,15 @@ pub struct SettingsPanel {
     pub voice_offline: bool,
     /// State of the "Test mic" button.
     pub voice_test: VoiceTest,
+    /// Focus handle for the push-to-talk hotkey capture pill. Lazily
+    /// minted on first render (the panel's `new()` has no `cx`); `Some`
+    /// once the widget has been laid out at least once.
+    pub hotkey_focus: Option<FocusHandle>,
+    /// True while the hotkey pill is armed and waiting for the next chord.
+    pub capturing_hotkey: bool,
+    /// Transient note shown under the pill while capturing — e.g. a
+    /// reserved-key rejection. Cleared when capture (re)starts or commits.
+    pub hotkey_note: Option<String>,
     pub app_version: String,
     /// Last write-side failure (pipe error from a toggle).  Surfaced as
     /// a banner; cleared on the next successful write.
@@ -88,6 +98,9 @@ impl SettingsPanel {
             voice_devices: VoiceDevices::default(),
             voice_offline: false,
             voice_test: VoiceTest::Idle,
+            hotkey_focus: None,
+            capturing_hotkey: false,
+            hotkey_note: None,
             app_version: "0.1.0".into(),
             error: None,
         }
@@ -452,13 +465,89 @@ impl SettingsPanel {
         self.persist_voice(json!({ "mode": next }), cx);
     }
 
-    /// Cycle the push-to-talk hotkey through the preset chords and persist.
-    pub fn cycle_ptt_hotkey(&mut self, cx: &mut Context<Self>) {
-        let next = next_in_cycle(crate::ipc::PTT_HOTKEY_PRESETS, &self.voice.push_to_talk_hotkey);
-        self.voice.push_to_talk_hotkey = next.clone();
+    /// Arm push-to-talk hotkey capture: the pill takes keyboard focus and
+    /// the next real chord (via [`Self::on_hotkey_key`]) becomes the
+    /// binding. Clicking again while armed cancels (toggle), so a stray
+    /// click is recoverable without committing a value.
+    pub fn toggle_hotkey_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.capturing_hotkey {
+            self.capturing_hotkey = false;
+            self.hotkey_note = None;
+            cx.notify();
+            return;
+        }
+        self.capturing_hotkey = true;
+        self.hotkey_note = None;
         self.error = None;
+        // Focus the pill so its `on_key_down` receives the chord. The
+        // handle is minted lazily in render; if we haven't rendered yet
+        // it'll focus on the next frame once present.
+        if let Some(handle) = &self.hotkey_focus {
+            handle.focus(window, cx);
+        }
         cx.notify();
-        self.persist_voice(json!({ "push_to_talk_hotkey": next }), cx);
+    }
+
+    /// Handle a key-down while the hotkey pill is armed. Routes the chord
+    /// through the pure [`resolve_capture`] state machine and applies the
+    /// outcome: commit (validate + persist), cancel, reserved (reject with
+    /// a note), or pending (a lone modifier — keep waiting).
+    pub fn on_hotkey_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.capturing_hotkey {
+            return;
+        }
+        // Auto-repeat from a held key must not double-fire a commit.
+        if ev.is_held {
+            return;
+        }
+        // Don't let the captured chord also trigger app shortcuts / focus
+        // traversal (Tab) or scrolling (Space) underneath us.
+        cx.stop_propagation();
+
+        match resolve_capture(&ev.keystroke) {
+            CaptureOutcome::Pending => {
+                // Lone modifier — stay armed for the terminal key.
+            }
+            CaptureOutcome::Cancelled => {
+                self.capturing_hotkey = false;
+                self.hotkey_note = None;
+                self.blur_hotkey(window, cx);
+                cx.notify();
+            }
+            CaptureOutcome::Reserved(note) => {
+                // Reject but stay armed so the user can pick another key.
+                self.hotkey_note = Some(note.to_owned());
+                cx.notify();
+            }
+            CaptureOutcome::Committed(chord) => {
+                self.capturing_hotkey = false;
+                self.hotkey_note = None;
+                self.blur_hotkey(window, cx);
+                // No-op if unchanged — don't round-trip the pipe for a
+                // re-press of the current binding.
+                if chord != self.voice.push_to_talk_hotkey {
+                    self.voice.push_to_talk_hotkey = chord.clone();
+                    self.error = None;
+                    self.persist_voice(json!({ "push_to_talk_hotkey": chord }), cx);
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// Drop keyboard focus from the hotkey pill after capture ends so a
+    /// stray later keypress doesn't re-enter the (now disarmed) handler.
+    fn blur_hotkey(&self, window: &mut Window, _cx: &mut Context<Self>) {
+        if let Some(handle) = &self.hotkey_focus {
+            if handle.is_focused(window) {
+                window.blur();
+            }
+        }
     }
 
     /// Cycle the STT backend preference Auto → CPU → NPU and persist.
@@ -572,6 +661,14 @@ impl Default for SettingsPanel {
 
 impl Render for SettingsPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Mint the hotkey-capture focus handle on first render (the
+        // panel's `new()` has no `cx`).  Cloned out so the borrow on
+        // `self` is released before the section reads `&self.voice`.
+        let hotkey_focus = self
+            .hotkey_focus
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
+
         // Top-level layout: a single-column flex with vertical gap and
         // page padding.  Matches the Svelte container
         // `space-y-6 max-w-3xl` shape — left-justified, breathing room.
@@ -605,6 +702,9 @@ impl Render for SettingsPanel {
                         &self.voice,
                         &self.voice_test,
                         self.voice_offline,
+                        &hotkey_focus,
+                        self.capturing_hotkey,
+                        self.hotkey_note.as_deref(),
                         cx,
                     ))
                     .child(consent_section(&self.consent, cx)),
