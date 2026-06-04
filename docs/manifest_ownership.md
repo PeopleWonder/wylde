@@ -175,9 +175,10 @@ extension's manifest gets flipped to `dead-orphan` automatically.
   `update_contributes`).
 * `Core/Lifecycle/daemon_state.py` — spawn records, orphan-detection
   sweep, daemon-managed `_start_*` / `_stop_*` functions.
-* `Voice/run.py`, `device_gate/run.py`, `Gateway/run.py`,
-  `VPN/run.py`, `Core/Memgraph/run.py`, `Core/resource_monitor/run.py`
-  — concrete examples of the canonical pattern.
+* `Voice/run.py`, `Core/Memgraph/run.py` — concrete examples of the
+  canonical pattern. (The former `device_gate/`, `Gateway/`, `VPN/`, and
+  `Core/resource_monitor/` `run.py` examples were deleted once their Rust
+  ports became canonical.)
 * `Core/harness/dev/wylde_check.py` rules 18 (`run_py_startup_sequence`)
   and 19 (`shutdown_handler_marks_stopped`) — the lint that enforces
   this contract.
