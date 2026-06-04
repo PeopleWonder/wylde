@@ -79,6 +79,11 @@ WebView child window.
 
 ### Quick install (Windows)
 
+> **Latest release: [`v0.1.0-alpha.1`](https://github.com/PeopleWonder/wylde/releases/tag/v0.1.0-alpha.1)** (beta / pre-release) —
+> grab [`WyldeSetup-0.1.0-alpha.1.exe`](https://github.com/PeopleWonder/wylde/releases/download/v0.1.0-alpha.1/WyldeSetup-0.1.0-alpha.1.exe).
+> The bare signed `wylde-gui-x86_64-pc-windows-msvc.exe` on that page is what
+> the in-app self-updater consumes — you don't need it for a first install.
+
 Grab the latest **`WyldeSetup-<version>.exe`** from the
 [GitHub Releases](https://github.com/PeopleWonder/wylde/releases) page and run
 it. The installer is **per-user — no admin / UAC prompt** — and lands in
