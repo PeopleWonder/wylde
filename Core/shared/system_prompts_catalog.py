@@ -343,8 +343,7 @@ Available intents:
     set_timer, set_reminder, toggle_mute
   Files: find_file, open_file, read_file_aloud
   Wylde platform: start_wylde, stop_wylde, wylde_query, trigger_workflow,
-    list_workflows, caption_images
-  Training: start_training, training_status, stop_training
+    list_workflows
   Models: load_model, unload_model, list_models, model_status
   Voice: set_voice
   Knowledge: query_knowledge (look up a topic), recall_memory (retrieve stored notes)

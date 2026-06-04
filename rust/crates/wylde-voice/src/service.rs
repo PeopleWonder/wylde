@@ -1,6 +1,5 @@
 //! Service entrypoint: register the `voice.*` actions on the shared
-//! IPC registry. Same shape as `wylde-trainer::service` and
-//! `wylde-ollama::service`.
+//! IPC registry. Same shape as `wylde-ollama::service`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

@@ -11,7 +11,7 @@ snags.
 - **Rust toolchain** (stable) — https://rustup.rs
 - **Ollama** (local LLM runtime, listens on `127.0.0.1:11434`) — https://ollama.com/download
 - **Python via [uv](https://docs.astral.sh/uv/)** — for the Python-supervised
-  pieces (bundled Neo4j supervision, trainer). Install once:
+  pieces (bundled Neo4j supervision). Install once:
   ```powershell
   powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
   ```
