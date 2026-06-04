@@ -82,7 +82,7 @@ WebView child window.
 - **Rust** (stable toolchain) for the services and the GUI.
 - **[Ollama](https://ollama.com)** running locally for chat (`127.0.0.1:11434`).
 - **Python via [uv](https://docs.astral.sh/uv/)** for the Python-supervised
-  pieces (bundled Neo4j supervision, trainer) and for running the Python test
+  pieces (bundled Neo4j supervision) and for running the Python test
   suites / rollback impls.
 - **Neo4j + JDK runtime.** Not shipped in the repo (~280 MB, above GitHub's
   file-size limit). Run `tools\install-neo4j.ps1` once to download pinned,

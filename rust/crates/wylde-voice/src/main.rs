@@ -2,8 +2,8 @@
 //!
 //! Boots the manifest, registers the action surface (Slice 11.A: three
 //! actions), opens the pipe at `\\.\pipe\wylde-voice`, and serves until
-//! Ctrl-C. Same shape as `wylde-trainer/main.rs` and
-//! `wylde-ollama/main.rs` — the Wylde user's standing pattern.
+//! Ctrl-C. Same shape as `wylde-ollama/main.rs` — the Wylde user's
+//! standing pattern.
 //!
 //! Phase 11a foundation slice — see `crate` docstring for the
 //! full slice plan.

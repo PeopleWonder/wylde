@@ -25,7 +25,7 @@ a warning is logged.
 
 3. **Services** -- ``Wylde/<Service>/tools/<tool>/manifest.json`` (and
    one level deeper, ``Wylde/<Service>/<SubService>/tools/<tool>/manifest.json``,
-   for service-of-services layouts like ``Trainer/Caption/``). For each
+   for service-of-services layouts). For each
    surviving top-level Wylde subdirectory, the walker globs both its
    own ``tools/**/manifest.json`` AND any one-level-nested
    ``<sub>/tools/**/manifest.json``. Service-rooted tools have their
@@ -154,7 +154,7 @@ def _service_tool_dirs() -> list[Path]:
     """Top-level ``Wylde/<Service>/tools/`` folders that may host
     service-owned tools, plus one-level-nested
     ``Wylde/<Service>/<SubService>/tools/`` for service-of-services
-    layouts (e.g. ``Wylde/Trainer/Caption/tools/``).
+    layouts.
 
     A "service" here is any first-party top-level folder under ``Wylde/``
     that ships its own LLM-callable tools (e.g. ``Wylde/N8N/``). The
@@ -165,9 +165,8 @@ def _service_tool_dirs() -> list[Path]:
     captures both ``<Service>/tools`` AND any
     ``<Service>/<SubService>/tools`` (one level deep), mirroring the
     convention model_registry uses for service manifests so a
-    "service-of-services" like ``Trainer/`` (which holds Caption,
-    future training-side services, etc.) can host its sub-services'
-    tool catalogs from their own folders.
+    "service-of-services" can host its sub-services' tool catalogs from
+    their own folders.
 
     Returns the list of ``tools`` directories that actually exist on
     disk. Missing ``tools/`` subdir -> that level contributes nothing.

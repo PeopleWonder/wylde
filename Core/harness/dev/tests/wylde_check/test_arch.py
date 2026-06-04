@@ -29,16 +29,22 @@ def test_no_internal_http_flags_python_call(isolated_tree: Any) -> None:
     assert "127.0.0.1" in f.context
 
 
-def test_no_internal_http_exempts_gateway(isolated_tree: Any) -> None:
+def test_no_internal_http_no_longer_exempts_gateway(isolated_tree: Any) -> None:
+    # The Gateway exemption was pruned once the strangler deleted the
+    # Gateway Python source (rust-only collapse); no .py remains under the
+    # prefix, so the exemption matched nothing and was removed. A synthetic
+    # Gateway Python file must now be flagged like any other internal HTTP.
     wc, root = isolated_tree
     _write(
         root / "Gateway" / "routes" / "egress.py",
         "import requests\nrequests.post('http://127.0.0.1:8005/api/foo', json={})\n",
     )
     findings = wc.check_no_internal_http()
-    assert findings == [], (
-        "Gateway is the trust-boundary HTTP service; internal HTTP must be allowed"
+    assert len(findings) == 1, (
+        "Gateway is no longer exempt; internal HTTP in Gateway Python must flag"
     )
+    assert findings[0].rule == "no_internal_http"
+    assert findings[0].file == "Gateway/routes/egress.py"
 
 
 def test_no_internal_http_exempts_ollama_client(isolated_tree: Any) -> None:

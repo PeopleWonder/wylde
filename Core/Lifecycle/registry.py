@@ -7,7 +7,7 @@ Two manifest sources are walked at each call:
    service folder.
 
    * Top-level service folders (``Voice/``, ``device_gate/``, ``Gateway/``,
-     ``VPN/``, ``N8N/``, ``Trainer/``, ``Extensions/``) come from
+     ``VPN/``, ``N8N/``, ``Extensions/``) come from
      :func:`_common.list_service_folders`.
    * ``Wylde/Core/`` is added explicitly as a single logical service (its
      internal pipes — lifecycle, harness, memgraph, memory-scheduler —
