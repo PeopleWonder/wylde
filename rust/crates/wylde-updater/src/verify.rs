@@ -100,15 +100,25 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_key_fails_closed() {
-        // The shipped placeholder build must refuse to verify anything.
-        let data = b"x";
-        let (_pk, sig) = sign(data);
+    fn embedded_key_is_a_real_production_key() {
+        // The dev placeholder was replaced with Aaron's real signing key
+        // (baked 2026-06-04), so the fail-closed guard no longer trips and
+        // the convenience flag agrees a usable key is embedded.
+        assert_ne!(PUBLIC_KEY, pubkey::PLACEHOLDER);
+        assert!(has_signing_key());
+    }
+
+    #[test]
+    fn rejects_a_binary_not_signed_by_the_embedded_key() {
+        // A payload signed by some *other* (ephemeral) key must never verify
+        // against the embedded production key — it fails closed with
+        // `Verify`, so it is never installed. (No NoSigningKey here: a real
+        // key is present; the signature simply doesn't match it.)
+        let data = b"a binary signed by the wrong key";
+        let (_ephemeral_pk, sig) = sign(data);
         assert!(matches!(
             verify_signature(data, &sig),
-            Err(UpdateError::NoSigningKey)
+            Err(UpdateError::Verify(_))
         ));
-        // ...and the convenience flag agrees there's no key yet.
-        assert!(!has_signing_key());
     }
 }

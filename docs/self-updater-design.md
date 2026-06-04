@@ -231,27 +231,52 @@ blocking pool — the same bridge the named-pipe IO already uses.
 
 ## Key management — release runbook
 
-The signing key does **not** exist yet. Aaron generates it once, on his dev
-machine, and it never enters the repo. We standardise on `rsign2`, the pure-Rust
-minisign CLI (honours the everything-Rust rule).
+> **Status: the production key has been generated and baked in (2026-06-04).**
+> Key ID `DA7E13F4E9F2ACB6`, base64
+> `RWS2rPLp9BN+2obJk6h80IJAlurEyac8bz7REt0ea7v6uLG2AoppP0kb`. The private key
+> lives **only** on Aaron's dev host at
+> `rust/crates/wylde-updater/keys/wylde-signing.key` (gitignored, never
+> committed). The one-time procedure below is retained for **key rotation**;
+> for a normal cut skip to [per release](#per-release-build--sign--publish).
 
-### One-time: generate the signing key
+Aaron generated the key once, on his dev machine, and it never enters the repo.
+We standardise on `rsign2`, the pure-Rust minisign CLI (honours the
+everything-Rust rule).
+
+### One-time: generate (or rotate) the signing key
 
 ```powershell
 cargo install rsign2
-# Generate a keypair. -W = no password (or omit -W to encrypt the secret key).
-rsign generate -p wylde-signing.pub -s wylde-signing.key
+# -W = passwordless secret key (what we used: avoids the interactive prompt and
+#       keeps unattended release builds simple). Drop -W to encrypt the secret
+#       key with a passphrase instead — rsign then prompts on every
+#       generate/sign.
+rsign generate -W `
+  -p rust/crates/wylde-updater/keys/wylde-signing.pub `
+  -s rust/crates/wylde-updater/keys/wylde-signing.key
 ```
 
-`rsign generate` prints the public key and writes two files:
+`rsign generate` prints the public key and writes two files into
+`rust/crates/wylde-updater/keys/` (gitignored except for `pubkey.pub.example`):
 
-- `wylde-signing.key` — **PRIVATE. Never commit. Back up offline.**
-- `wylde-signing.pub` — public; its second line is the base64 key.
+- `wylde-signing.key` — **PRIVATE. Never commit. Back up offline.** Matched by
+  the `*.key` rule in `keys/.gitignore`.
+- `wylde-signing.pub` — public; its second line is the base64 key. Also
+  gitignored: the base64 is already baked into `pubkey.rs`, so the loose file
+  is redundant in the repo.
 
-Swap the placeholder: copy the base64 line from `wylde-signing.pub` into
-`PUBLIC_KEY` in `rust/crates/wylde-updater/src/pubkey.rs`, commit that one line,
-cut a release built from it. From then on the shipped binary trusts only
-binaries signed by `wylde-signing.key`.
+The key we generated is **passwordless** (`-W`); there is no signing passphrase.
+To add one later, regenerate without `-W` (interactive prompt) and re-bake the
+new public key. Local-only notes about the key — including any future
+passphrase — live in `keys/KEY_NOTES.md` (gitignored), never in the repo.
+
+Swap/rotate the embedded key: copy the base64 line from `wylde-signing.pub`
+into `PUBLIC_KEY` in `rust/crates/wylde-updater/src/pubkey.rs`, commit that one
+line, cut a release built from it. From then on the shipped binary trusts only
+binaries signed by `wylde-signing.key`. The `tests/embedded_key_roundtrip.rs`
+integration test guards a botched swap: it verifies a committed fixture
+signature against the embedded key, so a typo'd base64 or a key/private-key
+mismatch fails the test suite before it can ship.
 
 ### Per release: build → sign → publish
 
@@ -262,8 +287,9 @@ $bin = "Core/GUI/target/release/wylde-gui.exe"
 $named = "wylde-gui-x86_64-pc-windows-msvc.exe"
 Copy-Item $bin $named
 
-# 2. Sign it (produces <name>.minisig)
-rsign sign -s wylde-signing.key $named
+# 2. Sign it (produces <name>.minisig). -W because the key is passwordless;
+#    drop -W and supply the passphrase if the key was ever rotated to one.
+rsign sign -W -s rust/crates/wylde-updater/keys/wylde-signing.key $named
 
 # 3. Publish to GitHub Releases (gh CLI).
 #    --prerelease => Beta channel; omit it for Stable.

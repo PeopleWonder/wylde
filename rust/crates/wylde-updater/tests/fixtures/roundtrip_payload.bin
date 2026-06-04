@@ -1,0 +1,4 @@
+wylde-updater embedded-key round-trip fixture v1
+This exact byte sequence was signed by the production private key
+(rust/crates/wylde-updater/keys/wylde-signing.key, key ID DA7E13F4E9F2ACB6)
+on 2026-06-04 and must verify against the embedded PUBLIC_KEY.
