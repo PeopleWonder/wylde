@@ -21,7 +21,7 @@ use wylde_theme::colors::{
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
-use crate::ipc::{ConsentSnapshot, OllamaSettings, UpdatePrefs};
+use crate::ipc::{ConsentSnapshot, OllamaSettings, UpdateCheck, UpdatePrefs};
 use crate::SettingsPanel;
 
 /// Shorthand for the panel render context the section builders thread
@@ -137,9 +137,15 @@ pub fn state_badge(on: bool) -> gpui::Div {
         .child(SharedString::from(label))
 }
 
-/// Updates section — master toggle, sub-controls when enabled, status
-/// footer with current-version + last-checked.
-pub fn updates_section(prefs: &UpdatePrefs, current_version: &str, cx: &mut Cx) -> gpui::Div {
+/// Updates section — master toggle, sub-controls when enabled, the
+/// channel picker + manual "Check now" / "Install" flow (Phase 12.5), and
+/// a status footer with current-version + last-checked.
+pub fn updates_section(
+    prefs: &UpdatePrefs,
+    check: &UpdateCheck,
+    current_version: &str,
+    cx: &mut Cx,
+) -> gpui::Div {
     let mut c = card().child(section_title(
         "Updates",
         "Privacy-first. Wylde never checks for updates unless you turn it on.",
@@ -148,7 +154,7 @@ pub fn updates_section(prefs: &UpdatePrefs, current_version: &str, cx: &mut Cx) 
         toggle_row(
             "settings-updates-enabled",
             "Check for updates",
-            "When off, no network calls. You can still check manually.",
+            "When off, no automatic network calls. You can still check manually below.",
             prefs.enabled,
         )
         .on_mouse_down(
@@ -170,29 +176,44 @@ pub fn updates_section(prefs: &UpdatePrefs, current_version: &str, cx: &mut Cx) 
                     cx.listener(|this, _ev, _window, cx| this.toggle_auto_check(cx)),
                 ),
             )
+            .child(labeled_pill_row(
+                "settings-updates-frequency",
+                "Frequency",
+                &prefs.frequency,
+                cx.listener(|this, _ev, _window, cx| this.cycle_frequency(cx)),
+            ));
+    }
+
+    // Channel picker — shown regardless of the master toggle, since the
+    // manual check below uses it. Pill cycles stable ⇄ beta.
+    c = c.child(labeled_pill_row(
+        "settings-updates-channel",
+        "Channel",
+        channel_label(&prefs.channel),
+        cx.listener(|this, _ev, _window, cx| this.cycle_channel(cx)),
+    ));
+
+    // Manual check + result.
+    let checking = matches!(check, UpdateCheck::Checking | UpdateCheck::Installing);
+    c = c.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
             .child(
-                div()
-                    .id("settings-updates-frequency")
-                    .cursor_pointer()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap_4()
+                action_button("settings-updates-check", check_button_label(check), checking)
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _ev, _window, cx| this.cycle_frequency(cx)),
-                    )
-                    .child(
-                        div()
-                            .font_family(FAMILY_INTER)
-                            .text_size(px(size::SM))
-                            .text_color(rgb(pack(TEXT_PRIMARY)))
-                            .child("Frequency"),
-                    )
-                    .child(state_pill(&prefs.frequency)),
-            );
+                        cx.listener(|this, _ev, _window, cx| this.check_now(cx)),
+                    ),
+            )
+            .children(install_button(check, cx)),
+    );
+    if let Some(line) = update_status_line(check) {
+        c = c.child(line);
     }
+
     c.child(
         div()
             .border_t_1()
@@ -209,6 +230,114 @@ pub fn updates_section(prefs: &UpdatePrefs, current_version: &str, cx: &mut Cx) 
                     .map(humanize_last_checked)
                     .unwrap_or_else(|| "never".into()),
             )),
+    )
+}
+
+/// Title-case the persisted channel string for display ("stable" → "Stable").
+fn channel_label(channel: &str) -> &'static str {
+    match channel {
+        "beta" => "Beta",
+        _ => "Stable",
+    }
+}
+
+/// Label for the check button, reflecting in-flight state.
+fn check_button_label(check: &UpdateCheck) -> &'static str {
+    match check {
+        UpdateCheck::Checking => "Checking…",
+        _ => "Check now",
+    }
+}
+
+/// A `(label, pill)` row that cycles a value on click. Shared by the
+/// Frequency and Channel pickers.
+fn labeled_pill_row(
+    id: impl Into<ElementId>,
+    label: &str,
+    value: &str,
+    on_click: impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> Stateful<gpui::Div> {
+    div()
+        .id(id.into())
+        .cursor_pointer()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .on_mouse_down(MouseButton::Left, on_click)
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::SM))
+                .text_color(rgb(pack(TEXT_PRIMARY)))
+                .child(SharedString::from(label.to_owned())),
+        )
+        .child(state_pill(value))
+}
+
+/// A small clickable button. `dim` greys it out while an action is in
+/// flight (the click handler also no-ops re-entrant clicks).
+fn action_button(id: impl Into<ElementId>, label: &str, dim: bool) -> Stateful<gpui::Div> {
+    let fg = if dim { TEXT_MUTED } else { TEXT_PRIMARY };
+    div()
+        .id(id.into())
+        .cursor_pointer()
+        .self_start()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_EMPHASIS)))
+        .bg(rgb(pack(SURFACE_900)))
+        .px_3()
+        .py(px(4.0))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+        .text_color(rgb(pack(fg)))
+        .child(SharedString::from(label.to_owned()))
+}
+
+/// The "Install update" button — only present when a check resolved an
+/// available update. Returned as an `Option` so the caller can splice it
+/// in with `.children(...)`.
+fn install_button(check: &UpdateCheck, cx: &mut Cx) -> Option<Stateful<gpui::Div>> {
+    let installing = matches!(check, UpdateCheck::Installing);
+    match check {
+        UpdateCheck::Available(_) | UpdateCheck::Installing => Some(
+            action_button("settings-updates-install", "Install update", installing).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _window, cx| this.install_update(cx)),
+            ),
+        ),
+        _ => None,
+    }
+}
+
+/// Render the one-line status under the buttons for the current check
+/// state. `Idle` shows nothing.
+fn update_status_line(check: &UpdateCheck) -> Option<gpui::Div> {
+    let (text, is_error): (String, bool) = match check {
+        UpdateCheck::Idle => return None,
+        UpdateCheck::Checking => ("Checking for updates…".into(), false),
+        UpdateCheck::UpToDate => ("You're on the latest version.".into(), false),
+        UpdateCheck::Available(info) => {
+            (format!("Update available: v{} — review and install.", info.version), false)
+        }
+        UpdateCheck::Installing => ("Downloading and verifying update…".into(), false),
+        UpdateCheck::Installed => {
+            ("Update installed — restart Wylde to apply.".into(), false)
+        }
+        UpdateCheck::Failed(msg) => (format!("Update failed: {msg}"), true),
+    };
+    if is_error {
+        return Some(error_strip(&text));
+    }
+    Some(
+        div()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::XS))
+            .text_color(rgb(pack(TEXT_SECONDARY)))
+            .child(SharedString::from(text)),
     )
 }
 

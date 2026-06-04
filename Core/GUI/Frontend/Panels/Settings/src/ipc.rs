@@ -118,18 +118,23 @@ pub struct UpdatePrefs {
     pub enabled: bool,
     pub auto_check: bool,
     pub frequency: String,
+    /// Release channel — `"stable"` or `"beta"` (Phase 12.5). Mirrors the
+    /// daemon's validated `channel` key; resolved to
+    /// [`wylde_updater::Channel`] at the check call site.
+    pub channel: String,
     pub last_checked: Option<u64>,
 }
 
 impl Default for UpdatePrefs {
     /// Default mirrors what `from_value(&{})` produces — `weekly`
-    /// frequency, everything else off.  Same baseline the Svelte side
-    /// assumes when prefs.json is missing.
+    /// frequency, `stable` channel, everything else off.  Same baseline
+    /// the daemon assumes when prefs.json is missing.
     fn default() -> Self {
         Self {
             enabled: false,
             auto_check: false,
             frequency: "weekly".into(),
+            channel: "stable".into(),
             last_checked: None,
         }
     }
@@ -148,9 +153,70 @@ impl UpdatePrefs {
                 .and_then(|x| x.as_str())
                 .unwrap_or("weekly")
                 .to_owned(),
+            channel: v
+                .get("channel")
+                .and_then(|x| x.as_str())
+                .unwrap_or("stable")
+                .to_owned(),
             last_checked: v.get("last_checked").and_then(|x| x.as_u64()),
         }
     }
+
+    /// Resolve the persisted channel string to the updater's enum.
+    /// Unknown/legacy values fall back to `Stable` (never silently opt a
+    /// user into pre-releases).
+    pub fn channel(&self) -> wylde_updater::Channel {
+        wylde_updater::Channel::from_str_lossy(&self.channel)
+    }
+}
+
+/// View-side state of the manual update flow (the "Check now" / "Install"
+/// buttons). The panel holds one of these; the section renderer turns it
+/// into a status line + the right buttons.
+#[derive(Debug, Clone, Default)]
+pub enum UpdateCheck {
+    /// No check run yet this session.
+    #[default]
+    Idle,
+    /// A check is in flight.
+    Checking,
+    /// Checked: the running build is current.
+    UpToDate,
+    /// Checked: a newer release is available and resolved.
+    Available(wylde_updater::UpdateInfo),
+    /// Download + verify + install in flight.
+    Installing,
+    /// Installed successfully — the new binary applies on next launch.
+    Installed,
+    /// The last check or install failed; carries the message to surface.
+    Failed(String),
+}
+
+/// Query GitHub Releases for an update on `channel`, off the gpui executor.
+///
+/// The updater is a blocking crate; we hop it onto the shared tokio
+/// runtime's blocking pool via the Pipe crate's bridge so a `cx.spawn`
+/// task (which has no tokio reactor) can await it without panicking.
+pub async fn check_for_update(
+    channel: wylde_updater::Channel,
+    current_version: String,
+) -> Result<wylde_updater::UpdateStatus, String> {
+    wylde_gui_pipe::bridged_spawn_blocking(move || {
+        wylde_updater::check_for_update(channel, &current_version).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Download, verify, and install a resolved update, off the gpui executor.
+/// `install_update` re-verifies the signature before touching the running
+/// binary, so this is fail-closed even though the check already resolved
+/// the assets.
+pub async fn download_and_install(info: wylde_updater::UpdateInfo) -> Result<(), String> {
+    wylde_gui_pipe::bridged_spawn_blocking(move || {
+        let dl = wylde_updater::download_release(&info).map_err(|e| e.to_string())?;
+        wylde_updater::install_update(&dl.bytes, &dl.minisig).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 /// Read the persisted update prefs via the lifecycle pipe.
@@ -306,6 +372,19 @@ mod tests {
         assert!(!p.enabled);
         assert!(!p.auto_check);
         assert_eq!(p.last_checked, None);
+        // Privacy-conservative default channel.
+        assert_eq!(p.channel, "stable");
+        assert_eq!(p.channel(), wylde_updater::Channel::Stable);
+    }
+
+    #[test]
+    fn update_prefs_parses_beta_channel() {
+        let p = UpdatePrefs::from_value(&json!({ "channel": "beta" }));
+        assert_eq!(p.channel, "beta");
+        assert_eq!(p.channel(), wylde_updater::Channel::Beta);
+        // An unknown channel resolves to Stable, never silently to beta.
+        let q = UpdatePrefs::from_value(&json!({ "channel": "nightly" }));
+        assert_eq!(q.channel(), wylde_updater::Channel::Stable);
     }
 
     #[test]

@@ -30,6 +30,12 @@ gpui.workspace = true
 # the same `auto-launch` crate slice 1 declared.
 auto-launch.workspace = true
 
+# Self-updater driver (Phase 12.5). The Updates section's "Check now" /
+# "Install" buttons call its blocking API via `wylde_gui_pipe`'s tokio
+# bridge. Declared at the workspace level so the backend-crate path lives
+# in one place (alongside wylde-harness/wylde-shared).
+wylde-updater.workspace = true
+
 serde.workspace      = true
 serde_json.workspace = true
 anyhow.workspace     = true

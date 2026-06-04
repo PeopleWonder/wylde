@@ -56,6 +56,13 @@ license = "GPL-3.0-or-later"
 wylde-harness = { path = "../../rust/crates/wylde-harness" }
 wylde-shared  = { path = "../../rust/crates/wylde-shared" }
 
+# Self-updater driver (Phase 12.5). Lives in the backend workspace; the
+# Settings panel calls its blocking API through the Pipe crate's tokio
+# bridge (`bridged_spawn_blocking`). This is the real check/verify/install
+# logic behind the `self_update`/`self-replace` placeholders noted below —
+# wylde-updater owns the self-replace dep internally.
+wylde-updater = { path = "../../rust/crates/wylde-updater" }
+
 # Async runtime + IPC primitives.  Feature set matches src-tauri so a
 # verb that worked there works here.
 tokio       = { version = "1", features = ["io-util", "net", "time", "sync", "macros", "rt-multi-thread"] }

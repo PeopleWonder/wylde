@@ -122,8 +122,9 @@ pub fn install_update(bytes: &[u8], minisig: &str) -> Result<(), UpdateError> {
     let result = self_replace::self_replace(&staged)
         .map_err(|e| UpdateError::Io(format!("self-replace failed: {e}")));
     // The staged temp file has served its purpose either way; best-effort
-    // cleanup so we don't leave a stray binary beside the exe.
-    let _ = std::fs::remove_file(&staged);
+    // cleanup so we don't leave a stray binary beside the exe. A failure
+    // here is harmless (a leftover .update file is inert).
+    let _ = std::fs::remove_file(&staged); // wylde-check: discard-result-ok
     result?;
     tracing::info!("update installed; will apply on next launch");
     Ok(())
