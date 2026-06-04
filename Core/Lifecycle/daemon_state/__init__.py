@@ -192,16 +192,6 @@ _ollama_proc: Optional[_ProcHandle] = None
 # ``GET /api/link/*`` routes onto it (route-table parity). No Python
 # fallback remains.
 _vpn_proc: Optional[_ProcHandle] = None
-# Phase 3 — wylde-trainer (Caption sub-service). Default
-# ``WYLDE_WYLDE_TRAINER_IMPL=python`` means in-process (no daemon-managed
-# subprocess); set to ``rust`` to spawn the Rust binary fronting the
-# captioner over ``\\.\pipe\wylde-trainer``.
-_trainer_proc: Optional[_ProcHandle] = None
-# Phase 3 — wylde-trainer-worker (Python inference engine). Only spawned
-# when WYLDE_WYLDE_TRAINER_IMPL=rust; hosts \\.\pipe\wylde-trainer-worker
-# and is where Florence-2 weights actually load. The Rust wylde-trainer
-# forwards inference requests to this pipe.
-_trainer_worker_proc: Optional[_ProcHandle] = None
 # Phase 5 — wylde-harness (consolidated chat-turn / tooling / memory
 # driver). Slice 5.D (2026-05-25) flipped the strangler-fig default
 # from ``python`` to ``rust``: the lifecycle daemon now spawns
@@ -447,8 +437,6 @@ from ._services import (  # noqa: E402
     _start_voice,
     _start_wylde_harness,
     _start_wylde_ollama,
-    _start_wylde_trainer,
-    _start_wylde_trainer_worker,
     _start_wylde_vpn,
     _stop_device_gate,
     _stop_extension_bridge,
@@ -459,8 +447,6 @@ from ._services import (  # noqa: E402
     _stop_voice,
     _stop_wylde_harness,
     _stop_wylde_ollama,
-    _stop_wylde_trainer,
-    _stop_wylde_trainer_worker,
     _stop_wylde_vpn,
 )
 
@@ -490,8 +476,6 @@ def nospawn_snapshot() -> list[str]:
         _gateway_proc,
         _ollama_proc,
         _vpn_proc,
-        _trainer_proc,
-        _trainer_worker_proc,
         _harness_proc,
     ):
         if isinstance(proc, _NoSpawnProc):
@@ -521,8 +505,6 @@ def nospawn_start(name: str) -> bool:
         "wylde-gateway": _start_gateway,
         "wylde-ollama": _start_wylde_ollama,
         "wylde-vpn": _start_wylde_vpn,
-        "wylde-trainer": _start_wylde_trainer,
-        "wylde-trainer-worker": _start_wylde_trainer_worker,
         "wylde-harness": _start_wylde_harness,
     }
     starter = starters.get(name)
@@ -597,16 +579,6 @@ def stop_all_daemon_managed() -> Dict[str, Any]:
     # wylde-ollama BEFORE the broker so any in-flight VRAM leases get
     # released cleanly; broker shutdown then has nothing to reap.
     _try("wylde-ollama", _is_proc_running(_ollama_proc), _stop_wylde_ollama)
-    # wylde-trainer alongside ollama — also a VRAM consumer (Florence-2
-    # loads ~1.5 GB) so it should release before the broker. In python
-    # (in-process) mode this is a no-op stop. Trainer stops BEFORE its
-    # worker so trainer's last in-flight inference can complete cleanly.
-    _try("wylde-trainer", _is_proc_running(_trainer_proc), _stop_wylde_trainer)
-    _try(
-        "wylde-trainer-worker",
-        _is_proc_running(_trainer_worker_proc),
-        _stop_wylde_trainer_worker,
-    )
     # wylde-vpn — independent service tier (optional). Stopped alongside
     # the others so a daemon-driven shutdown_all drains it too.
     _try("wylde-vpn", _is_proc_running(_vpn_proc), _stop_wylde_vpn)
@@ -680,10 +652,6 @@ __all__ = [
     "_stop_wylde_vpn",
     "_start_wylde_harness",
     "_stop_wylde_harness",
-    "_start_wylde_trainer",
-    "_stop_wylde_trainer",
-    "_start_wylde_trainer_worker",
-    "_stop_wylde_trainer_worker",
     "_start_memory_scheduler",
     "_stop_memory_scheduler",
     "stop_all_daemon_managed",

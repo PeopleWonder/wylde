@@ -312,8 +312,8 @@ fn send_ctrl_break(pid: u32) -> Result<()> {
 /// window, so they collapse to thin wrappers around this: forget the
 /// spawn record, clear any no-spawn handle, take the tracked child, and
 /// hand it to [`graceful_stop`] with the service's grace. Most services
-/// use 10s; Memgraph and the trainer-worker use 15s (Neo4j / CUDA
-/// teardown). Keeping the wrappers (rather than calling this directly
+/// use 10s; Memgraph uses 15s (Neo4j teardown). Keeping the wrappers
+/// (rather than calling this directly
 /// from `control.rs`) preserves the `pub async fn stop_<service>()`
 /// public API the daemon dispatches by name.
 async fn stop_service(name: &str, grace: Duration) -> Result<()> {
@@ -340,10 +340,9 @@ async fn stop_service(name: &str, grace: Duration) -> Result<()> {
 // The other three (device_gate, vram_broker, gateway) were collapsed to
 // Rust-only on 2026-06-02 (`python_module: None`) when their Python
 // packages were deleted — a missing binary leaves them down, with no
-// fallback. The unique services (memgraph, ollama, harness, trainer,
-// trainer_worker, vpn) stay hand-written below because their control
-// flow genuinely diverges (always-python, hard-fail,
-// early-return-no-spawn, script-not-module, conditional-on-sibling-impl).
+// fallback. The unique services (memgraph, ollama, harness, vpn) stay
+// hand-written below because their control flow genuinely diverges
+// (always-python, hard-fail, early-return-no-spawn).
 
 /// One row of the strangler-fig start table.
 struct StranglerService {
@@ -866,169 +865,6 @@ pub async fn stop_vpn() -> Result<()> {
     stop_service(service_name::VPN, Duration::from_secs(10)).await
 }
 
-// ── wylde-trainer-worker ──────────────────────────────────────────────
-//
-// Python inference engine for the Rust `wylde-trainer`. Spawned only
-// when `WYLDE_WYLDE_TRAINER_IMPL=rust` — in python (in-process) mode
-// Caption stays where it is and the worker is not needed. Lives in the
-// lifecycle crate because the `no_external_process_spawn_rust` lint
-// pins `Command::new` here.
-
-pub async fn start_trainer_worker() -> Result<()> {
-    if is_service_alive(service_name::TRAINER_WORKER) {
-        let pid = manifest_pid(service_name::TRAINER_WORKER)
-            .or_else(|| service_pid(service_name::TRAINER_WORKER))
-            .unwrap_or(0);
-        tracing::info!(
-            "{}: already alive (manifest pid={}); skipping spawn",
-            service_name::TRAINER_WORKER,
-            pid
-        );
-        return Ok(());
-    }
-    if nospawn_enabled() {
-        nospawn_record(service_name::TRAINER_WORKER, ImplLang::Python.as_str());
-        tracing::info!(
-            "wylde-trainer-worker: NO-SPAWN — would-have-spawned recorded; no child forked"
-        );
-        return Ok(());
-    }
-    if impl_for(service_name::TRAINER) != ImplLang::Rust {
-        tracing::info!(
-            "wylde-trainer-worker: skipped (WYLDE_WYLDE_TRAINER_IMPL=python); \
-             Caption stays in-process"
-        );
-        return Ok(());
-    }
-    let child = spawn_python_script(
-        "Trainer/Caption/rust_worker.py",
-        service_name::TRAINER_WORKER,
-    )?;
-    let pid = child.id().unwrap_or(0);
-    tracing::info!(
-        "daemon: spawned wylde-trainer-worker impl=python pid={}",
-        pid
-    );
-    record_spawn(
-        service_name::TRAINER_WORKER,
-        pid,
-        ImplLang::Python.as_str(),
-    );
-    set_service_proc(service_name::TRAINER_WORKER, child);
-    Ok(())
-}
-
-pub async fn stop_trainer_worker() -> Result<()> {
-    // Allow up to 15s — releasing Florence-2 weights and CUDA caches
-    // can take a few seconds on a hot run; same window the Python
-    // teardown uses.
-    stop_service(service_name::TRAINER_WORKER, Duration::from_secs(15)).await
-}
-
-// ── wylde-trainer ─────────────────────────────────────────────────────
-//
-// Phase 3 of the Rust migration. Default Python = in-process (the
-// daemon does not spawn a Caption subprocess; existing in-process
-// callers in `Trainer/Caption/` keep working). Flipping
-// `WYLDE_WYLDE_TRAINER_IMPL=rust` spawns the Rust `wylde-trainer`
-// binary fronting Florence-2 over `\\.\pipe\wylde-trainer`. The
-// inference itself runs in the sibling `wylde-trainer-worker` Python
-// service — see `start_trainer_worker` above.
-
-pub async fn start_trainer() -> Result<()> {
-    if is_service_alive(service_name::TRAINER) {
-        let pid = manifest_pid(service_name::TRAINER)
-            .or_else(|| service_pid(service_name::TRAINER))
-            .unwrap_or(0);
-        tracing::info!(
-            "{}: already alive (manifest pid={}); skipping spawn",
-            service_name::TRAINER,
-            pid
-        );
-        return Ok(());
-    }
-    if nospawn_enabled() {
-        nospawn_record(
-            service_name::TRAINER,
-            impl_for(service_name::TRAINER).as_str(),
-        );
-        tracing::info!(
-            "wylde-trainer: NO-SPAWN — would-have-spawned recorded; no child forked"
-        );
-        return Ok(());
-    }
-    match impl_for(service_name::TRAINER) {
-        ImplLang::Rust => {
-            let Some(bin) = rust_binary_path(service_name::TRAINER) else {
-                tracing::warn!(
-                    "wylde-trainer: WYLDE_WYLDE_TRAINER_IMPL=rust but no binary found; \
-                     falling back to in-process python (Caption stays in-process)"
-                );
-                return Ok(());
-            };
-            let child = spawn_rust_binary(service_name::TRAINER, &bin)?;
-            let pid = child.id().unwrap_or(0);
-            tracing::info!(
-                "daemon: spawned wylde-trainer impl=rust pid={} binary={}",
-                pid,
-                bin.display()
-            );
-            record_spawn(service_name::TRAINER, pid, ImplLang::Rust.as_str());
-            set_service_proc(service_name::TRAINER, child);
-            Ok(())
-        }
-        ImplLang::Python => {
-            // In-process mode — daemon does not manage Caption. Log
-            // the state so an operator running `service.list` doesn't
-            // wonder why the slot is empty.
-            tracing::info!(
-                "wylde-trainer: in-process mode (WYLDE_WYLDE_TRAINER_IMPL=python); \
-                 daemon does not spawn a Caption subprocess. Existing in-process \
-                 callers continue to work."
-            );
-            Ok(())
-        }
-    }
-}
-
-pub async fn stop_trainer() -> Result<()> {
-    stop_service(service_name::TRAINER, Duration::from_secs(10)).await
-}
-
-/// Spawn helper for `python <script-relative-to-WYLDE_ROOT>` — the
-/// script-path variant of `spawn_python_module`, for Python entry points
-/// that are a path rather than a `-m module` (e.g. the trainer worker's
-/// `Trainer/Caption/rust_worker.py`). VPN used to use this for
-/// `VPN/run.py`, but that tree was deleted (rust-only now).
-fn spawn_python_script(script_rel: &str, service_name: &str) -> Result<Child> {
-    let py = python_executable();
-    let script = wylde_root().join(script_rel);
-    tracing::info!(
-        "daemon: spawning {} via {} {} (interpreter={})",
-        service_name,
-        py.display(),
-        script.display(),
-        py.display(),
-    );
-
-    let mut cmd = Command::new(&py);
-    cmd.arg(&script)
-        .current_dir(wylde_root())
-        .env("WYLDE_SERVICE_NAME", service_name)
-        .env("WYLDE_ROOT", wylde_root())
-        .env("PYTHONPATH", namespace_pythonpath())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
-    apply_kill_on_drop(&mut cmd);
-
-    cmd.spawn()
-        .with_context(|| format!("spawn {} {} for {}", py.display(), script.display(), service_name))
-}
-
 // ── Memory scheduler ──────────────────────────────────────────────────
 
 /// The memory scheduler is an in-process Python thread spawned via
@@ -1107,8 +943,8 @@ mod tests {
     #[test]
     fn strangler_table_covers_the_five_dispatched_services() {
         // The table holds exactly the five near-identical two-impl
-        // services. The six unique services (memgraph, ollama, harness,
-        // trainer, trainer_worker, vpn) are deliberately NOT here.
+        // services. The four unique services (memgraph, ollama, harness,
+        // vpn) are deliberately NOT here.
         let names: Vec<&str> = STRANGLER_SERVICES.iter().map(|d| d.name).collect();
         assert_eq!(names.len(), 5);
         for expected in [
@@ -1128,8 +964,6 @@ mod tests {
             service_name::MEMGRAPH,
             service_name::OLLAMA,
             service_name::HARNESS,
-            service_name::TRAINER,
-            service_name::TRAINER_WORKER,
             service_name::VPN,
         ] {
             assert!(

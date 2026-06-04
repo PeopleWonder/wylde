@@ -39,14 +39,6 @@ PROMPT_GROUPS: List[PromptGroup] = [
         ),
     ),
     PromptGroup(
-        id="training",
-        label="Training pipeline",
-        blurb=(
-            "LLM-assisted fine-tuning workflow — dataset planning, "
-            "config review, eval analysis, completion summary."
-        ),
-    ),
-    PromptGroup(
         id="optimizer",
         label="Workflow optimizer",
         blurb=(
@@ -236,59 +228,6 @@ Output strict JSON:
   "security_status": "clean | findings present",
   "next_steps":      ["what to do after merge"],
   "rounds_used":     {"debug": <int>, "critic_verdict": "..."}
-}
-"""
-
-TRAINING_DATASET_PLANNER = """\
-You are a training data specialist. Given a training topic and goal,
-plan the dataset: what kinds of instruction/response pairs to generate,
-how many, what RAG queries to use to find source material.
-Output JSON:
-{
-  "dataset_name": "<slug>",
-  "format": "instruction",
-  "rag_queries": ["query1", "query2"],
-  "pair_batches": [{"topic": "...", "count": 20, "rag_query": "..."}],
-  "total_pairs": <int>,
-  "rationale": "<one sentence>"
-}
-"""
-
-TRAINING_CONFIG_REVIEWER = """\
-You are a machine learning engineer reviewing a training configuration.
-Analyze the suggested hyperparameters against the hardware and dataset.
-Output JSON:
-{
-  "assessment": "looks_good | needs_adjustment",
-  "concerns": ["concern1", ...],
-  "adjusted_config": {<full config dict with any changes>},
-  "vram_ok": true/false,
-  "rationale": "<one sentence>"
-}
-"""
-
-TRAINING_EVAL_ANALYST = """\
-You are a model evaluation expert. Analyze the eval results comparing the
-base model to the fine-tuned model. Look for improvement, regressions, and
-quality issues.
-Output JSON:
-{
-  "verdict": "approve | retrain | reject",
-  "improvement_score": 1-10,
-  "strengths": ["..."],
-  "weaknesses": ["..."],
-  "recommendation": "<one paragraph>",
-  "retrain_adjustments": {<config overrides if verdict=retrain>}
-}
-"""
-
-TRAINING_PIPELINE_SUMMARY = """\
-You are a project manager. Write a concise pipeline completion summary.
-Output JSON:
-{
-  "summary": "<3-5 sentences>",
-  "model_name": "<registry name>",
-  "next_steps": ["..."]
 }
 """
 
@@ -501,35 +440,6 @@ PROMPT_CATALOG: List[PromptEntry] = [
         "Summariser",
         "Stage 15 — writes the PR-ready completion summary.",
         ORCHESTRA_SUMMARISER,
-    ),
-    # ── Training pipeline ──────────────────────────────────────────────
-    PromptEntry(
-        "training_pipeline.dataset_planner",
-        "training",
-        "Dataset Planner",
-        "Plans the dataset collection strategy from a training topic + goal.",
-        TRAINING_DATASET_PLANNER,
-    ),
-    PromptEntry(
-        "training_pipeline.config_reviewer",
-        "training",
-        "Config Reviewer",
-        "Reviews proposed training hyperparameters against hardware and dataset.",
-        TRAINING_CONFIG_REVIEWER,
-    ),
-    PromptEntry(
-        "training_pipeline.eval_analyst",
-        "training",
-        "Eval Analyst",
-        "Compares base vs fine-tuned model results, recommends approve/retrain/reject.",
-        TRAINING_EVAL_ANALYST,
-    ),
-    PromptEntry(
-        "training_pipeline.pipeline_summary",
-        "training",
-        "Pipeline Summary",
-        "Closing summary written when a training run finishes.",
-        TRAINING_PIPELINE_SUMMARY,
     ),
     # ── Workflow optimizer ─────────────────────────────────────────────
     PromptEntry(

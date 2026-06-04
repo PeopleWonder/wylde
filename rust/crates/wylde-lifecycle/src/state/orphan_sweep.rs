@@ -63,7 +63,7 @@ pub struct BootSweepReport {
 /// recurring [`sweep_orphans`] only fires on the 60s tick, which lands
 /// *after* the boot spawns — so without this pass a stale manifest
 /// survives a lifecycle restart and the affected service stays dark (the
-/// harness / extension_bridge / ollama / trainer_worker / trainer outage
+/// harness / extension_bridge / ollama outage
 /// the Wylde user hit on 2026-05-31, recovered only by hand-wiping the manifest
 /// dir). Running it here means every lifecycle restart self-heals.
 ///

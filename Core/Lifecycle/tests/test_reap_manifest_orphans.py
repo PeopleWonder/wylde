@@ -304,8 +304,6 @@ def test_stop_all_daemon_managed_invokes_reaper(
         "_gateway_proc",
         "_ollama_proc",
         "_vpn_proc",
-        "_trainer_proc",
-        "_trainer_worker_proc",
         "_harness_proc",
         "_memory_scheduler",
     ):

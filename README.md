@@ -48,13 +48,12 @@ speak those pipes directly; the Gateway is the only HTTP trust boundary.
 | **device-gate**      | `\\.\pipe\wylde-device-gate`| Per-device bearer tokens + permission tiers (`read_only` / `tool_use` / `destructive_tool_access`) for paired mobile devices. Rust (`wylde-device-gate`). |
 | **extension-bridge** | `\\.\pipe\wylde-extension-bridge` | Hosts browser extensions and the MCP tool surface; routes per-extension manifests. Rust (`wylde-extension-bridge`). |
 | **vpn**              | `\\.\pipe\wylde-vpn`        | WyldeLink mesh: WireGuard wrapper + mDNS discovery + phone pairing. Opt-in (default-off). |
-| **trainer**          | `\\.\pipe\wylde-trainer`    | LLaMA-Factory + caption worker client. Python-bound (torch/transformers). |
 
 The desktop GUI (`wylde-gui`) is its own Cargo workspace under `Core/GUI/`,
 deliberately separate from the backend `rust/` workspace so gpui's graphics
-dependencies don't ripple the backend lockfile. It renders eleven first-party
+dependencies don't ripple the backend lockfile. It renders ten first-party
 panels (Chat, Workspaces, Tools, Memory, Models, Dashboard, Devices,
-RemoteAccess, Images, Training, Settings), each a gpui `View` crate, plus
+RemoteAccess, Images, Settings), each a gpui `View` crate, plus
 extension-contributed iframe panels (e.g. the n8n editor) hosted in a `wry`
 WebView child window.
 
@@ -65,7 +64,7 @@ WebView child window.
 
 | Path | Contents |
 | ---- | -------- |
-| `rust/`        | The backend Cargo workspace — every Rust service crate (`wylde-harness`, `wylde-gateway`, `wylde-lifecycle`, `wylde-voice`, `wylde-vram-broker`, `wylde-ollama`, `wylde-device-gate`, `wylde-extension-bridge`, `wylde-vpn`, `wylde-trainer`) plus `wylde-shared`. |
+| `rust/`        | The backend Cargo workspace — every Rust service crate (`wylde-harness`, `wylde-gateway`, `wylde-lifecycle`, `wylde-voice`, `wylde-vram-broker`, `wylde-ollama`, `wylde-device-gate`, `wylde-extension-bridge`, `wylde-vpn`) plus `wylde-shared`. |
 | `Core/GUI/`    | The native gpui desktop app (separate workspace). Ships `wylde-gui`. |
 | `Core/`        | Python services kept for supervision/rollback (`Lifecycle/`, `Memgraph/`, `harness/`, …) and shared Python helpers. |
 | `Gateway/` *(removed)* | The legacy Python Gateway — deleted; the active Gateway is `wylde-gateway`. |

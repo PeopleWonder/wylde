@@ -187,8 +187,8 @@ The rules:
                             service arg resolves to a Rust crate with
                             a discoverable action registry
                             (``wylde-harness``, ``wylde-extension-bridge``,
-                            ``wylde-ollama``, ``wylde-trainer``,
-                            ``wylde-voice``) must name a verb actually
+                            ``wylde-ollama``, ``wylde-voice``) must name
+                            a verb actually
                             declared in that service's registry.
                             Catches typo'd or as-yet-unimplemented
                             verbs at edit time instead of as a runtime

@@ -15,7 +15,7 @@ for the unrelated nav-bus machinery.
   "X", ...}))`` and every ``wylde_gui_pipe::stream_call(SVC, "X", ...)``
   whose resolved service has a discoverable action registry
   (``wylde-harness`` ∪ ``wylde-extension-bridge`` ∪ ``wylde-ollama`` ∪
-  ``wylde-trainer`` ∪ ``wylde-voice``) must name a verb that appears
+  ``wylde-voice``) must name a verb that appears
   in that service's ``ALL_PIPE_ACTIONS`` / ``ALL_ACTIONS`` array (and,
   for the harness, the Python ``_ACTIONS`` dict).  Services without a
   discoverable registry are intentionally skipped.
@@ -67,7 +67,6 @@ RUST_SERVICE_REGISTRIES: Dict[str, str] = {
     "wylde-harness": "rust/crates/wylde-harness/src",
     "wylde-extension-bridge": "rust/crates/wylde-extension-bridge/src",
     "wylde-ollama": "rust/crates/wylde-ollama/src",
-    "wylde-trainer": "rust/crates/wylde-trainer/src",
     "wylde-voice": "rust/crates/wylde-voice/src",
 }
 
@@ -459,7 +458,7 @@ def check_panel_verbs_exist_in_harness_registry() -> List[Finding]:
       * ``wylde-harness`` — union of Rust ``ALL_PIPE_ACTIONS`` and
         Python ``_ACTIONS``.
       * ``wylde-extension-bridge`` / ``wylde-ollama`` /
-        ``wylde-trainer`` / ``wylde-voice`` — each service's
+        ``wylde-voice`` — each service's
         ``ALL_ACTIONS: [&str; N] = [...]`` array.
 
     Services without a discoverable registry (``wylde-vpn``,

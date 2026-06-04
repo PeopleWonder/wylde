@@ -49,8 +49,6 @@ from .daemon_state import (
     _start_vram_broker,
     _start_wylde_harness,
     _start_wylde_ollama,
-    _start_wylde_trainer,
-    _start_wylde_trainer_worker,
     _start_memory_scheduler,
     register_core_manifest,
     start_orphan_sweep,
@@ -360,21 +358,6 @@ def serve_forever() -> int:
     # Spawns after the broker (depends on it for VRAM leases) and before
     # Gateway / harness (which call into it for chat/embed).
     _start_wylde_ollama()
-
-    # Phase 2f.7 — start the trainer worker BEFORE the trainer binary so
-    # its pipe is bound before the first inference call lands. In python
-    # (in-process) mode the worker is skipped; in rust mode the daemon
-    # spawns `python Trainer/Caption/rust_worker.py` which exposes
-    # \\.\pipe\wylde-trainer-worker — the inference engine that hosts
-    # the lazy Florence-2 captioner.
-    _start_wylde_trainer_worker()
-    # Phase 2f.8 — start wylde-trainer (Caption sub-service pipe surface).
-    # Default WYLDE_WYLDE_TRAINER_IMPL=python keeps Caption in-process
-    # (no subprocess spawned). Set to `rust` to launch the Rust binary at
-    # `rust/target/release/wylde-trainer.exe` fronting Florence-2 over
-    # \\.\pipe\wylde-trainer — it forwards inference to
-    # \\.\pipe\wylde-trainer-worker.
-    _start_wylde_trainer()
 
     # Phase 2g — start the Gateway as a subprocess. Gateway is the
     # outward-facing FastAPI ingress on 127.0.0.1:8005 — every external

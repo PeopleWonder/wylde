@@ -15,8 +15,8 @@
 //!
 //! * Discovery + launcher are Python-only — services.yaml is read by
 //!   Python tools and rewritten by `Core/Lifecycle/discovery.py`.
-//!   Non-core services launched from services.yaml (Trainer, N8N)
-//!   will not boot when the Rust daemon runs. The extension bridge is
+//!   Non-core services launched from services.yaml (N8N) will not boot
+//!   when the Rust daemon runs. The extension bridge is
 //!   a daemon-managed tier=core service (spawned directly below), so
 //!   it boots under either daemon.
 //! * The harness pipe (`\\.\pipe\wylde-harness`) is hosted by Python's
@@ -151,7 +151,7 @@ pub async fn serve_forever() -> Result<i32> {
     // recurring 60s sweep (Phase 2d) only fires AFTER the boot spawns, so
     // without this one-shot a stale manifest survives a lifecycle restart
     // and the affected service stays dark (the harness / extension_bridge /
-    // ollama / trainer_worker / trainer outage on 2026-05-31). Running it
+    // ollama outage on 2026-05-31). Running it
     // here self-heals on every boot. Under no-spawn it inspects + logs but
     // deletes nothing — core.json was just (re)written above with this
     // daemon's live pid, so the sweep skips it.
@@ -196,18 +196,6 @@ pub async fn serve_forever() -> Result<i32> {
     // but BEFORE the gateway/harness (which call into it).
     if let Err(e) = services::start_ollama().await {
         tracing::error!("daemon: start_ollama raised: {:#}", e);
-    }
-    // wylde-trainer-worker BEFORE wylde-trainer in rust mode so its
-    // pipe is bound when the trainer's first inference action lands.
-    // No-op in python mode.
-    if let Err(e) = services::start_trainer_worker().await {
-        tracing::error!("daemon: start_trainer_worker raised: {:#}", e);
-    }
-    // wylde-trainer — Caption sub-service pipe surface. Default impl
-    // is `python` (in-process; no subprocess spawned). Flip with
-    // `WYLDE_WYLDE_TRAINER_IMPL=rust` to get the pipe.
-    if let Err(e) = services::start_trainer().await {
-        tracing::error!("daemon: start_trainer raised: {:#}", e);
     }
     if let Err(e) = services::start_gateway().await {
         tracing::error!("daemon: start_gateway raised: {:#}", e);
