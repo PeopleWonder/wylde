@@ -61,6 +61,7 @@
 //! site.
 
 pub mod common;
+pub mod conversations;
 pub mod embeddings;
 pub mod long_term;
 pub mod memgraph;

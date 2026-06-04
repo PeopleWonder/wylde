@@ -28,7 +28,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, Entity,
@@ -43,10 +43,11 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::ipc::{
-    activate_workspace, cancel_turn, clear_working_memory, eject_model, fetch_working_memory,
-    list_models, recent_workspaces, respond_consent, start_turn_with_model, stream_consent_pending,
-    stream_tools, stream_turn, ConsentEvent, PendingConsent, ToolChunk, TurnChunk,
-    WorkingMemoryEntry, WorkspaceSummary,
+    activate_workspace, cancel_turn, clear_working_memory, delete_conversation, eject_model,
+    fetch_conversation_messages, fetch_working_memory, get_active_conversation, list_conversations,
+    list_models, new_conversation, recent_workspaces, respond_consent, set_active_conversation,
+    start_turn_with_model, stream_consent_pending, stream_tools, stream_turn, ConsentEvent,
+    ConversationMeta, PendingConsent, ToolChunk, TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
 };
 use crate::markdown;
 
@@ -118,6 +119,25 @@ impl ChatMessage {
             streaming: true,
         }
     }
+
+    /// Rehydrate a persisted message when switching to a conversation.
+    /// `role` is the wire role string from the stored document; only
+    /// `user`/`assistant` survive a save (system messages are stripped),
+    /// so anything that isn't `user` renders as the assistant.
+    fn loaded(role: &str, content: String) -> Self {
+        let role = if role == "user" {
+            MessageRole::User
+        } else {
+            MessageRole::Assistant
+        };
+        Self {
+            id: new_message_id(),
+            role,
+            content,
+            thinking: None,
+            streaming: false,
+        }
+    }
 }
 
 fn new_message_id() -> String {
@@ -140,6 +160,12 @@ pub struct ChatPanel {
     pub messages: Vec<ChatMessage>,
     pub active_turn_id: Option<String>,
     pub conversation_id: String,
+    /// Conversation switcher (Memory Slice B): the saved-chat list for the
+    /// rail, whether the rail is open, and — when the user clicks a row's
+    /// delete affordance — the id awaiting an inline delete confirmation.
+    pub conversations: Vec<ConversationMeta>,
+    pub show_conversations: bool,
+    pub confirm_delete: Option<String>,
     /// Short-term ("working memory") buffer for the active conversation.
     /// Loaded on mount and refreshed after each turn — the chat-turn
     /// driver appends entries server-side as it works.  Rendered in the
@@ -198,6 +224,9 @@ impl ChatPanel {
             messages: Vec::new(),
             active_turn_id: None,
             conversation_id: "default".to_owned(),
+            conversations: Vec::new(),
+            show_conversations: false,
+            confirm_delete: None,
             working_memory: Vec::new(),
             show_working_memory: false,
             workspaces: Vec::new(),
@@ -230,7 +259,10 @@ impl ChatPanel {
             wylde_gui_pipe::publish_active_conversation(&panel.conversation_id);
             Self::spawn_load_workspaces(cx);
             Self::spawn_load_models(cx);
-            Self::spawn_load_working_memory(cx);
+            // Restore the persisted active conversation (Slice B), then load
+            // its working-memory buffer + the switcher list — sequenced in
+            // one task so the WM load reads the *restored* id, not "default".
+            Self::spawn_restore_session(cx);
             Self::spawn_consent_subscription(cx);
             panel
         })
@@ -300,7 +332,205 @@ impl ChatPanel {
         self.show_working_memory = !self.show_working_memory;
         self.show_ws_dropdown = false;
         self.show_model_dropdown = false;
+        self.show_conversations = false;
         cx.notify();
+    }
+
+    // ── Conversation switcher (Memory Slice B) ───────────────────────
+
+    /// Restore the persisted active conversation on mount, then load its
+    /// message history + working-memory buffer + the switcher list — all
+    /// in one task so each step reads the *restored* id, not "default".
+    pub fn spawn_restore_session(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            if let Ok(Some(active)) = get_active_conversation().await {
+                let changed = this
+                    .update(app_cx, |panel, cx| {
+                        if panel.conversation_id != active {
+                            panel.conversation_id = active.clone();
+                            wylde_gui_pipe::publish_active_conversation(&panel.conversation_id);
+                            cx.notify();
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if changed {
+                    Self::reload_conversation_messages(&this, app_cx).await;
+                }
+            }
+            Self::reload_working_memory(&this, app_cx).await;
+            Self::reload_conversations(&this, app_cx).await;
+        })
+        .detach();
+    }
+
+    /// Re-fetch the saved-chat list and replace the rail's copy. Soft-fail
+    /// (a transport error leaves the existing list untouched).
+    async fn reload_conversations(this: &gpui::WeakEntity<Self>, app_cx: &mut AsyncApp) {
+        if let Ok(rows) = list_conversations().await {
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.conversations = rows;
+                cx.notify();
+            });
+        }
+    }
+
+    /// Rehydrate the bubble log from the active conversation's persisted
+    /// `messages`. Soft-fail: a transport error leaves the current log
+    /// alone; a not-yet-persisted conversation yields an empty log.
+    async fn reload_conversation_messages(this: &gpui::WeakEntity<Self>, app_cx: &mut AsyncApp) {
+        let Ok(cid) = this.update(app_cx, |panel, _| panel.conversation_id.clone()) else {
+            return;
+        };
+        if let Ok(loaded) = fetch_conversation_messages(&cid).await {
+            let _ = this.update(app_cx, |panel, cx| {
+                // Don't clobber an in-flight turn's live bubbles.
+                if panel.active_turn_id.is_some() || panel.starting {
+                    return;
+                }
+                panel.messages = loaded
+                    .into_iter()
+                    .map(|m| ChatMessage::loaded(&m.role, m.content))
+                    .collect();
+                cx.notify();
+            });
+        }
+    }
+
+    /// Toggle the conversation rail. Mutually exclusive with the other
+    /// InferenceBar overlays, and closing it dismisses any pending delete
+    /// confirmation so a stale prompt doesn't survive a reopen.
+    pub fn toggle_conversations(&mut self, cx: &mut Context<Self>) {
+        self.show_conversations = !self.show_conversations;
+        if !self.show_conversations {
+            self.confirm_delete = None;
+        }
+        self.show_ws_dropdown = false;
+        self.show_model_dropdown = false;
+        self.show_working_memory = false;
+        cx.notify();
+    }
+
+    /// Switch the active conversation: adopt its id, announce it on the
+    /// cross-panel bus (the Memory panel follows), persist the selection,
+    /// and rehydrate the bubble log + working-memory buffer. No-op when
+    /// it's already active (beyond closing the rail).
+    pub fn select_conversation(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let switched = self.conversation_id != id;
+        if switched {
+            self.conversation_id = id.to_owned();
+            wylde_gui_pipe::publish_active_conversation(&self.conversation_id);
+            // Optimistically clear the old conversation's view; the reloads
+            // below reconcile against the harness.
+            self.messages.clear();
+            self.working_memory.clear();
+        }
+        self.show_conversations = false;
+        self.confirm_delete = None;
+        self.focus_prompt(window, cx);
+        cx.notify();
+        if !switched {
+            return;
+        }
+        let cid = self.conversation_id.clone();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let _ = set_active_conversation(&cid).await;
+            Self::reload_conversation_messages(&this, app_cx).await;
+            Self::reload_working_memory(&this, app_cx).await;
+        })
+        .detach();
+    }
+
+    /// "+ New": mint a fresh conversation id, switch to it (blank log),
+    /// persist it as active, and refresh the rail + cross-panel bus.
+    pub fn spawn_new_conversation(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let Ok(id) = new_conversation().await else {
+                let _ = this.update(app_cx, |panel, cx| {
+                    panel.error = Some("Couldn't start a new conversation".to_owned());
+                    cx.notify();
+                });
+                return;
+            };
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.conversation_id = id.clone();
+                panel.messages.clear();
+                panel.working_memory.clear();
+                panel.show_conversations = false;
+                panel.confirm_delete = None;
+                wylde_gui_pipe::publish_active_conversation(&panel.conversation_id);
+                cx.notify();
+            });
+            let _ = set_active_conversation(&id).await;
+            // A brand-new conversation has no file until its first turn, so
+            // it won't appear in the list yet — but announce the list change
+            // for forward-compat and refresh our own copy.
+            wylde_gui_pipe::publish_conversation_list_changed();
+            Self::reload_conversations(&this, app_cx).await;
+        })
+        .detach();
+    }
+
+    /// Arm the inline delete confirmation for `id` (the row swaps to a
+    /// "Delete? / Cancel" prompt). A second different id replaces the
+    /// first, so only one confirmation is ever live.
+    pub fn request_delete_conversation(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.confirm_delete = Some(id.to_owned());
+        cx.notify();
+    }
+
+    /// Dismiss the inline delete confirmation without deleting.
+    pub fn cancel_delete_conversation(&mut self, cx: &mut Context<Self>) {
+        self.confirm_delete = None;
+        cx.notify();
+    }
+
+    /// Confirm the delete: remove the file, drop it from the rail, and —
+    /// if it was the active conversation — fall back to the next one
+    /// (newest remaining), persisting + announcing the new selection.
+    pub fn confirm_delete_conversation(&mut self, id: &str, cx: &mut Context<Self>) {
+        let id = id.to_owned();
+        self.confirm_delete = None;
+        // Optimistically drop it from the rail; the reload reconciles.
+        self.conversations.retain(|c| c.id != id);
+        let was_active = self.conversation_id == id;
+        let fallback = if was_active {
+            pick_next_active(&self.conversations, &id)
+        } else {
+            None
+        };
+        if was_active {
+            match &fallback {
+                Some(next) => {
+                    self.conversation_id = next.clone();
+                    self.messages.clear();
+                    self.working_memory.clear();
+                    wylde_gui_pipe::publish_active_conversation(&self.conversation_id);
+                }
+                None => {
+                    // Nothing left to fall back to — start a clean default.
+                    self.conversation_id = "default".to_owned();
+                    self.messages.clear();
+                    self.working_memory.clear();
+                    wylde_gui_pipe::publish_active_conversation(&self.conversation_id);
+                }
+            }
+        }
+        cx.notify();
+        let active_after = self.conversation_id.clone();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let _ = delete_conversation(&id).await;
+            if was_active {
+                let _ = set_active_conversation(&active_after).await;
+                Self::reload_conversation_messages(&this, app_cx).await;
+                Self::reload_working_memory(&this, app_cx).await;
+            }
+            wylde_gui_pipe::publish_conversation_list_changed();
+            Self::reload_conversations(&this, app_cx).await;
+        })
+        .detach();
     }
 
     /// "Clear working memory" — fire `memory.short_term.clear` for the
@@ -655,6 +885,9 @@ impl ChatPanel {
             // calls, decisions, summaries) server-side; refresh the strip
             // so it reflects the conversation's post-turn buffer.
             Self::reload_working_memory(&this, app_cx).await;
+            // The first turn of a fresh conversation persists its file (and
+            // derives a title); refresh the rail so it appears / re-sorts.
+            Self::reload_conversations(&this, app_cx).await;
         })
         .detach();
     }
@@ -783,6 +1016,7 @@ impl ChatPanel {
     pub fn toggle_ws_dropdown(&mut self, cx: &mut Context<Self>) {
         self.show_ws_dropdown = !self.show_ws_dropdown;
         self.show_model_dropdown = false;
+        self.show_conversations = false;
         cx.notify();
     }
 
@@ -798,6 +1032,7 @@ impl ChatPanel {
     pub fn toggle_model_dropdown(&mut self, cx: &mut Context<Self>) {
         self.show_model_dropdown = !self.show_model_dropdown;
         self.show_ws_dropdown = false;
+        self.show_conversations = false;
         cx.notify();
     }
 
@@ -960,6 +1195,15 @@ fn apply_turn_chunk(
         }
         TurnChunk::Unknown => { /* future variant — noop */ }
     }
+}
+
+/// Choose the conversation to make active after deleting the current one.
+/// `remaining` is the post-delete list (newest-first, with the deleted
+/// entry already removed); returns the newest remaining id — the closest
+/// thing to "the previous chat" — or `None` when nothing is left. Pure so
+/// the fallback rule is unit-testable without driving the gpui executor.
+fn pick_next_active(remaining: &[ConversationMeta], _deleted_id: &str) -> Option<String> {
+    remaining.first().map(|c| c.id.clone())
 }
 
 impl Render for ChatPanel {
@@ -1250,8 +1494,11 @@ fn inference_bar(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
         .border_t_1()
         .border_color(rgb(pack(BORDER_DEFAULT)));
 
-    // First row: pills (workspace + model).
+    // First row: pills (conversations + workspace + model).
     bar = bar.child(pill_row(panel, cx));
+    if panel.show_conversations {
+        bar = bar.child(conversations_panel(panel, cx));
+    }
     if panel.show_ws_dropdown {
         bar = bar.child(workspace_dropdown(panel, cx));
     }
@@ -1281,6 +1528,7 @@ fn pill_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
         .flex_row()
         .gap_2()
         .items_center()
+        .child(conversations_pill(panel, cx))
         .child(pill_button(
             ElementId::Name("chat-ws-toggle".into()),
             workspace_label,
@@ -1406,6 +1654,254 @@ fn working_memory_row(entry: &WorkingMemoryEntry) -> gpui::Div {
                 .text_color(rgb(pack(TEXT_SECONDARY)))
                 .child(summary),
         )
+}
+
+/// Conversation switcher toggle pill — shows the saved-chat count and
+/// opens the rail. Mirrors the workspace / model / memory pills so the
+/// InferenceBar row stays visually uniform.
+fn conversations_pill(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
+    let label = SharedString::from(format!("chats · {}", panel.conversations.len()));
+    pill_button(
+        ElementId::Name("chat-conversations-toggle".into()),
+        label,
+        cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+            this.toggle_conversations(cx);
+        }),
+    )
+}
+
+/// The conversation rail: a header ("Conversations" + "+ New") over one
+/// row per saved chat, newest-first. The active conversation is
+/// highlighted; each row carries a delete affordance that swaps to an
+/// inline confirm. Empty list → a muted hint (the current chat may be a
+/// fresh, not-yet-persisted conversation).
+fn conversations_panel(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
+    let mut col = dropdown_shell();
+
+    let header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .pb_1()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                .child(SharedString::from("Conversations")),
+        )
+        .child(
+            div()
+                .id(ElementId::Name("chat-conversation-new".into()))
+                .px_2()
+                .py_1()
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(rgb(pack(BORDER_SUBTLE)))
+                .cursor_pointer()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(BRAND)))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|_this: &mut ChatPanel, _ev, _window, cx| {
+                        ChatPanel::spawn_new_conversation(cx);
+                    }),
+                )
+                .child(SharedString::from("+ New")),
+        );
+    col = col.child(header);
+
+    if panel.conversations.is_empty() {
+        return col.child(empty_dropdown_row(
+            "No saved conversations yet — send a message to start one.",
+        ));
+    }
+
+    for meta in &panel.conversations {
+        let is_active = meta.id == panel.conversation_id;
+        let confirming = panel.confirm_delete.as_deref() == Some(meta.id.as_str());
+        col = col.child(conversation_row(meta, is_active, confirming, cx));
+    }
+    col
+}
+
+/// One conversation row: a clickable title + meta block (select target) on
+/// the left, and a delete affordance on the right that swaps to an inline
+/// "Delete? / Cancel" confirm. Active rows get a brand-tinted border.
+fn conversation_row(
+    meta: &ConversationMeta,
+    is_active: bool,
+    confirming: bool,
+    cx: &mut Context<ChatPanel>,
+) -> gpui::Div {
+    let id_for_select = meta.id.clone();
+    let meta_line = SharedString::from(format!(
+        "{}  ·  {} msg  ·  mem {}",
+        relative_time(meta.updated_at),
+        meta.message_count,
+        meta.working_memory_count,
+    ));
+    let title = SharedString::from(meta.title.clone());
+
+    // Left: the select target. A nested clickable block (not the whole
+    // row) so the delete control on the right doesn't double-fire select.
+    let select_block = div()
+        .id(ElementId::Name(format!("chat-conversation-pick::{}", meta.id).into()))
+        .flex_1()
+        .flex()
+        .flex_col()
+        .gap(px(1.0))
+        .cursor_pointer()
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut ChatPanel, _ev, window, cx| {
+                this.select_conversation(&id_for_select, window, cx);
+            }),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(if is_active {
+                    TEXT_PRIMARY
+                } else {
+                    TEXT_SECONDARY
+                })))
+                .child(title),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(meta_line),
+        );
+
+    let mut row = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px_2()
+        .py_1()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(rgb(pack(if is_active {
+            BORDER_EMPHASIS
+        } else {
+            SURFACE_900
+        })));
+    if is_active {
+        row = row.bg(rgb(pack(SURFACE_800)));
+    }
+    row = row.child(select_block);
+
+    if confirming {
+        row = row.child(delete_confirm_controls(&meta.id, cx));
+    } else {
+        row = row.child(delete_request_button(&meta.id, cx));
+    }
+    row
+}
+
+/// The "×" affordance that arms the inline delete confirm for `id`.
+fn delete_request_button(id: &str, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
+    let id_for_click = id.to_owned();
+    div()
+        .id(ElementId::Name(format!("chat-conversation-del::{id}").into()))
+        .px_2()
+        .py_1()
+        .rounded(px(4.0))
+        .cursor_pointer()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut ChatPanel, _ev, _window, cx| {
+                this.request_delete_conversation(&id_for_click, cx);
+            }),
+        )
+        .child(SharedString::from("×"))
+}
+
+/// Inline delete confirmation: a "Delete" (destructive) + "Cancel" pair
+/// that replaces the "×" affordance while `confirm_delete` points at this
+/// row. Standing in for a modal — same row idiom, no new gpui primitive.
+fn delete_confirm_controls(id: &str, cx: &mut Context<ChatPanel>) -> gpui::Div {
+    let id_confirm = id.to_owned();
+    div()
+        .flex()
+        .flex_row()
+        .gap_1()
+        .items_center()
+        .child(
+            div()
+                .id(ElementId::Name(format!("chat-conversation-del-yes::{id}").into()))
+                .px_2()
+                .py_1()
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(rgb(pack(BORDER_EMPHASIS)))
+                .cursor_pointer()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_PRIMARY)))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this: &mut ChatPanel, _ev, _window, cx| {
+                        this.confirm_delete_conversation(&id_confirm, cx);
+                    }),
+                )
+                .child(SharedString::from("Delete")),
+        )
+        .child(
+            div()
+                .id(ElementId::Name(format!("chat-conversation-del-no::{id}").into()))
+                .px_2()
+                .py_1()
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+                        this.cancel_delete_conversation(cx);
+                    }),
+                )
+                .child(SharedString::from("Cancel")),
+        )
+}
+
+/// Render an epoch-seconds `updated_at` as a compact relative age
+/// ("just now", "5m", "3h", "2d"). Falls back to "—" for an unset (0)
+/// timestamp or a clock that's behind the stored value.
+fn relative_time(updated_at: i64) -> String {
+    if updated_at <= 0 {
+        return "—".to_owned();
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let delta = now - updated_at;
+    if delta < 0 {
+        return "just now".to_owned();
+    }
+    if delta < 60 {
+        "just now".to_owned()
+    } else if delta < 3600 {
+        format!("{}m", delta / 60)
+    } else if delta < 86_400 {
+        format!("{}h", delta / 3600)
+    } else {
+        format!("{}d", delta / 86_400)
+    }
 }
 
 /// Eject button — releases the active model from VRAM via `ollama.eject`.
@@ -1945,5 +2441,68 @@ mod tests {
     fn tool_chunk_unknown_type_does_not_panic() {
         let v = json!({"type": "future_event"});
         assert!(matches!(ToolChunk::from_value(&v), ToolChunk::Unknown));
+    }
+
+    // ── Conversation switcher (Memory Slice B) ───────────────────────
+
+    fn meta(id: &str, updated_at: i64) -> ConversationMeta {
+        ConversationMeta {
+            id: id.to_owned(),
+            title: format!("Chat {id}"),
+            created_at: updated_at,
+            updated_at,
+            message_count: 1,
+            working_memory_count: 0,
+            model: String::new(),
+        }
+    }
+
+    #[test]
+    fn pick_next_active_takes_newest_remaining() {
+        // List is newest-first (the harness sorts by updated_at desc), and
+        // the deleted entry has already been removed, so the head is the
+        // closest survivor to fall back to.
+        let remaining = vec![meta("b", 300), meta("c", 100)];
+        assert_eq!(
+            pick_next_active(&remaining, "a").as_deref(),
+            Some("b"),
+            "newest remaining wins",
+        );
+    }
+
+    #[test]
+    fn pick_next_active_none_when_empty() {
+        assert_eq!(pick_next_active(&[], "only"), None);
+    }
+
+    #[test]
+    fn loaded_message_maps_role_and_clears_streaming() {
+        let u = ChatMessage::loaded("user", "hello".into());
+        assert_eq!(u.role, MessageRole::User);
+        assert!(!u.streaming);
+        assert_eq!(u.content, "hello");
+
+        // Anything that isn't `user` renders as the assistant (system
+        // messages never survive a save).
+        let a = ChatMessage::loaded("assistant", "hi".into());
+        assert_eq!(a.role, MessageRole::Assistant);
+        let other = ChatMessage::loaded("tool", "x".into());
+        assert_eq!(other.role, MessageRole::Assistant);
+    }
+
+    #[test]
+    fn relative_time_buckets() {
+        assert_eq!(relative_time(0), "—", "unset stamp");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(relative_time(now - 5), "just now");
+        assert_eq!(relative_time(now - 120), "2m");
+        assert_eq!(relative_time(now - 7200), "2h");
+        assert_eq!(relative_time(now - 172_800), "2d");
+        // A stamp slightly in the future (clock skew) is "just now", not a
+        // negative age.
+        assert_eq!(relative_time(now + 100), "just now");
     }
 }

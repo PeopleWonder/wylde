@@ -570,6 +570,174 @@ pub async fn clear_working_memory(conversation_id: &str) -> Result<bool, String>
     Ok(v.get("cleared").and_then(|x| x.as_bool()).unwrap_or(false))
 }
 
+// ── Conversations (Memory Slice B) ───────────────────────────────────
+
+/// One conversation's lightweight metadata for the switcher rail.
+/// Mirrors a `conversations.list` entry; `working_memory_count` is the
+/// additive field the Rust port surfaces for the WM badge.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ConversationMeta {
+    pub id: String,
+    pub title: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub message_count: u64,
+    pub working_memory_count: u64,
+    pub model: String,
+}
+
+impl ConversationMeta {
+    pub fn from_value(v: &Value) -> Self {
+        Self {
+            id: v.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            title: v
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Untitled")
+                .to_owned(),
+            created_at: v.get("created_at").and_then(Value::as_i64).unwrap_or(0),
+            updated_at: v.get("updated_at").and_then(Value::as_i64).unwrap_or(0),
+            message_count: v.get("message_count").and_then(Value::as_u64).unwrap_or(0),
+            working_memory_count: v
+                .get("working_memory_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            model: v.get("model").and_then(Value::as_str).unwrap_or_default().to_owned(),
+        }
+    }
+}
+
+/// `conversations.list` — every saved chat's metadata, newest-first.
+pub async fn list_conversations() -> Result<Vec<ConversationMeta>, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "conversations.list", "payload": {} })),
+    )
+    .await?;
+    let Some(arr) = v.get("conversations").and_then(|x| x.as_array()) else {
+        return Ok(Vec::new());
+    };
+    Ok(arr.iter().map(ConversationMeta::from_value).collect())
+}
+
+/// One persisted chat message projected from a `conversations.get`
+/// document's `messages` array — just the `role` + `content` the bubble
+/// log needs to rehydrate a conversation when the user switches to it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LoadedMessage {
+    pub role: String,
+    pub content: String,
+}
+
+/// `conversations.get` → the conversation's stored `messages`, projected
+/// to `(role, content)`. System messages are already stripped server-side
+/// (they're regenerated each turn); we additionally drop any empty-content
+/// rows so the rehydrated log matches what the user actually sees. A
+/// `not_found` (e.g. a brand-new conversation with no turns yet) yields an
+/// empty list rather than an error — switching to it just shows a blank log.
+pub async fn fetch_conversation_messages(id: &str) -> Result<Vec<LoadedMessage>, String> {
+    let v = match wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "conversations.get",
+            "payload": { "id": id },
+        })),
+    )
+    .await
+    {
+        Ok(v) => v,
+        // A not-yet-persisted conversation reads as an empty log, not an
+        // error — the harness returns not_found before the first turn.
+        Err(e) if e.contains("not_found") => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+    };
+    let Some(arr) = v.get("messages").and_then(|x| x.as_array()) else {
+        return Ok(Vec::new());
+    };
+    Ok(arr
+        .iter()
+        .filter_map(|m| {
+            let role = m.get("role").and_then(|x| x.as_str()).unwrap_or_default();
+            let content = m.get("content").and_then(|x| x.as_str()).unwrap_or_default();
+            if content.is_empty() {
+                return None;
+            }
+            Some(LoadedMessage {
+                role: role.to_owned(),
+                content: content.to_owned(),
+            })
+        })
+        .collect())
+}
+
+/// `conversations.new` — mint a fresh conversation id. Returns the id.
+pub async fn new_conversation() -> Result<String, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "conversations.new", "payload": {} })),
+    )
+    .await?;
+    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+    if id.is_empty() {
+        return Err("conversations.new returned no id".to_owned());
+    }
+    Ok(id.to_owned())
+}
+
+/// `conversations.delete` — remove a conversation. Returns whether a file
+/// was actually deleted (`false` when it was already gone).
+pub async fn delete_conversation(id: &str) -> Result<bool, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "conversations.delete",
+            "payload": { "id": id },
+        })),
+    )
+    .await?;
+    Ok(v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false))
+}
+
+/// `conversations.get_active` — the persisted active-conversation
+/// selection. `Ok(None)` when none has been chosen yet (the reply's `id`
+/// is `""`).
+pub async fn get_active_conversation() -> Result<Option<String>, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "conversations.get_active", "payload": {} })),
+    )
+    .await?;
+    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+    Ok(if id.is_empty() { None } else { Some(id.to_owned()) })
+}
+
+/// `conversations.set_active` — persist the active-conversation selection
+/// so it survives an app restart. An empty id clears it.
+pub async fn set_active_conversation(id: &str) -> Result<(), String> {
+    wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "conversations.set_active",
+            "payload": { "id": id },
+        })),
+    )
+    .await
+    .map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,6 +863,39 @@ mod tests {
         let _ = stream_consent_pending;
         let _ = fetch_working_memory;
         let _ = clear_working_memory;
+        let _ = list_conversations;
+        let _ = new_conversation;
+        let _ = delete_conversation;
+        let _ = get_active_conversation;
+        let _ = set_active_conversation;
+        let _ = fetch_conversation_messages;
+    }
+
+    #[test]
+    fn conversation_meta_parses_full_entry() {
+        let m = ConversationMeta::from_value(&json!({
+            "id": "c1",
+            "title": "Plan the trip",
+            "created_at": 100,
+            "updated_at": 200,
+            "message_count": 4,
+            "working_memory_count": 2,
+            "model": "qwen2.5",
+        }));
+        assert_eq!(m.id, "c1");
+        assert_eq!(m.title, "Plan the trip");
+        assert_eq!(m.updated_at, 200);
+        assert_eq!(m.message_count, 4);
+        assert_eq!(m.working_memory_count, 2);
+        assert_eq!(m.model, "qwen2.5");
+    }
+
+    #[test]
+    fn conversation_meta_defaults_blank_title_to_untitled() {
+        let m = ConversationMeta::from_value(&json!({ "id": "c2", "title": "" }));
+        assert_eq!(m.title, "Untitled");
+        assert_eq!(m.message_count, 0);
+        assert_eq!(m.working_memory_count, 0);
     }
 
     #[test]

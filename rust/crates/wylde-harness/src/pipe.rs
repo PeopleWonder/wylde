@@ -27,7 +27,6 @@
 //!
 //! * `memory.workspace.*` (6 verbs) — `workspace_memory` not in Rust.
 //! * `memory.reflect` — `reflection` not in Rust.
-//! * `conversations.*` (4 verbs) — `conversation` not in Rust.
 //! * `prompts.*` (5 verbs) — `system_prompts` not in Rust.
 //! * `rag.workspaces.*` (10 verbs) — overlaps `memory.workspaces.*`;
 //!   namespace reconciliation + indexer port pending.
@@ -45,9 +44,16 @@
 //! are now registered (Rust port of the working-memory half of
 //! `Core/harness/memory/conversation.py`); the Python `_memory.py`
 //! handlers became thin forwarders to this pipe, mirroring the chat.*
-//! Phase 5.D cutover. The broader conversation surface (`conversations.*`,
-//! `memory.reflect`) still lives on Python and shares the same JSON
-//! files, so the Rust merge-save preserves every sibling field.
+//! Phase 5.D cutover.
+//!
+//! Memory Slice B then ported the conversation-lifecycle half of the same
+//! file: the six `conversations.*` verbs (`new` / `list` / `get` /
+//! `delete` + the net-new `get_active` / `set_active` selection-persistence
+//! pair) are registered here, and the Python `_conversations.py` handlers
+//! became thin forwarders too. The remaining Python conversation surface
+//! (`memory.reflect`, plus `save_conversation` itself) still shares the
+//! same JSON files, so both the short-term merge-save and the Slice B
+//! read/list/delete path preserve every sibling field.
 
 use std::sync::Arc;
 
@@ -68,6 +74,8 @@ const HANDLER_MODULE_WORKSPACES: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.workspaces.*)";
 const HANDLER_MODULE_SHORT_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.short_term.*)";
+const HANDLER_MODULE_CONVERSATIONS: &str =
+    "wylde_harness::api::DefaultHarnessApi (conversations.*)";
 const HANDLER_MODULE_CONSENT: &str = "wylde_harness::api::DefaultHarnessApi (consent.*)";
 
 /// Every action the harness pipe registers. Tests compare this against
@@ -117,6 +125,13 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.short_term.get",
     "memory.short_term.append",
     "memory.short_term.clear",
+    // conversations.* — conversation lifecycle + active selection (6 verbs)
+    "conversations.new",
+    "conversations.list",
+    "conversations.get",
+    "conversations.delete",
+    "conversations.get_active",
+    "conversations.set_active",
     // consent.* — per-tool consent gate (Phase 12.2; 6 unary + 1 streaming = 7 verbs)
     "consent.list",
     "consent.set",
@@ -627,6 +642,87 @@ where
          Payload {conversation_id}. Returns {cleared, conversation_id} — \
          cleared is false when there was nothing to drop.",
         HANDLER_MODULE_SHORT_TERM,
+    );
+
+    // ── conversations.* (conversation lifecycle + active selection) ──
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "conversations.new",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.conversations_new(p).await }
+        },
+        "Mint a fresh, sortable, filename-safe conversation id \
+         (timestamp + random suffix). No payload. Returns {id}.",
+        HANDLER_MODULE_CONVERSATIONS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "conversations.list",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.conversations_list(p).await }
+        },
+        "Lightweight metadata for every saved chat, newest-first by \
+         updated_at. No payload. Returns {conversations, count} where \
+         each entry is {id, title, created_at, updated_at, \
+         message_count, working_memory_count, model}.",
+        HANDLER_MODULE_CONVERSATIONS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "conversations.get",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.conversations_get(p).await }
+        },
+        "Full conversation document by id. Payload {id}. Returns the \
+         stored document (id, title, messages, working_memory, …); \
+         bad_request for a missing/invalid id, not_found when absent.",
+        HANDLER_MODULE_CONVERSATIONS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "conversations.delete",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.conversations_delete(p).await }
+        },
+        "Remove a conversation file. Payload {id}. Returns {ok, id} — \
+         ok is false when the file was already absent; bad_request for \
+         an invalid id.",
+        HANDLER_MODULE_CONVERSATIONS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "conversations.get_active",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.conversations_get_active(p).await }
+        },
+        "Read the persisted active-conversation selection (the chat the \
+         user was last looking at), stored in \
+         <data_dir>/active_conversation.json. No payload. Returns {id} — \
+         \"\" when none chosen yet.",
+        HANDLER_MODULE_CONVERSATIONS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "conversations.set_active",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.conversations_set_active(p).await }
+        },
+        "Persist the active-conversation selection so it survives an app \
+         restart. Payload {id}; an empty/absent id clears the selection. \
+         Returns {id} (the persisted value, \"\" when cleared).",
+        HANDLER_MODULE_CONVERSATIONS,
     );
 
     // ── consent.* (Phase 12.2) ───────────────────────────────────────
