@@ -58,6 +58,7 @@ fn default_ollama() -> Map<String, Value> {
     m.insert("keep_alive".to_owned(), json!("5m"));
     m.insert("repeat_penalty".to_owned(), json!(1.1));
     m.insert("num_predict".to_owned(), json!(-1));
+    m.insert("min_p".to_owned(), json!(0.0));
     m.insert("seed".to_owned(), json!(0));
     m
 }
@@ -131,7 +132,12 @@ mod tests {
     use axum::extract::ConnectInfo;
     use axum::http::{Request, StatusCode};
     use std::net::SocketAddr;
+    use std::sync::Mutex;
     use tower::ServiceExt;
+
+    /// Serializes tests that mutate the process-global `WYLDE_ROOT`
+    /// env var, since cargo runs tests in parallel by default.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[tokio::test]
     async fn get_rejects_non_local_caller() {
@@ -172,6 +178,7 @@ mod tests {
             "keep_alive",
             "repeat_penalty",
             "num_predict",
+            "min_p",
             "seed",
         ] {
             assert!(d.contains_key(key), "missing default key: {key}");
@@ -179,12 +186,36 @@ mod tests {
     }
 
     #[test]
+    fn put_get_preserves_min_p() {
+        // Regression: the schema previously whitelisted 8 keys and
+        // dropped `min_p` server-side, so the gpui Settings "Min-p" row
+        // rendered "—" and a PUT silently lost the value. Confirm a
+        // round-trip now persists it.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: ENV_LOCK serializes WYLDE_ROOT mutation across tests.
+        std::env::set_var("WYLDE_ROOT", tmp.path());
+
+        let mut input = Map::new();
+        input.insert("min_p".to_owned(), json!(0.05));
+        let merged = write_ollama(input);
+        assert_eq!(merged["min_p"], json!(0.05));
+
+        // Confirm it survives a fresh read from disk.
+        let read_back = read_ollama();
+        assert_eq!(read_back["min_p"], json!(0.05));
+
+        std::env::remove_var("WYLDE_ROOT");
+    }
+
+    #[test]
     fn write_drops_unknown_keys() {
         // Use a temp WYLDE_ROOT so the test doesn't touch the real
         // user data dir. Lock through the actual write_ollama call to
         // verify the whitelist filter.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
-        // SAFETY: tests run in a single-threaded scope.
+        // SAFETY: ENV_LOCK serializes WYLDE_ROOT mutation across tests.
         std::env::set_var("WYLDE_ROOT", tmp.path());
 
         let mut input = Map::new();

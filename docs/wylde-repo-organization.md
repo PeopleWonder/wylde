@@ -163,7 +163,7 @@ Top-level `tests/` files under the crate:
 | `Core/harness/` | **strangler-fig** | Python harness. `turn/` (driver — replaced by `wylde-harness/src/turn/`), `tooling/` (registry + tools — replaced by `wylde-harness/src/tooling/`), `memory/` (workspaces, long_term, memgraph, RAG, embeddings, reflection — being replaced module-by-module under `wylde-harness/src/memory/`), `pipe/` (action handlers — fewer of these as Rust takes over), `backend/` (Ollama client + request building + streaming + response normalization), `model_registry/`, `prompts/`, `server.py`, `dev/wylde_check/`. Phase 5.D scheduled deletion is 2026-06-08 (14-day soak from cutover). |
 | `Core/Config/` | **canonical** | YAML config: `auto_mode.yaml`, `embeddings.yaml`. |
 | `Core/Network/` | **canonical** | `services.yaml` — service identity registry. |
-| `Core/resource_monitor/` | **partially deprecated** | Python wrapper for `vram_broker_service.py` + Flask probe (`run.py`). The Rust `wylde-vram-broker` is now the canonical broker; the Python wrapper survives for the Flask UI probe. |
+| `Core/resource_monitor/` | **deleted (Rust-only)** | The Python broker + Flask probe (`run.py`, `broker/`, `vram_broker_service.py`) were deleted in `7072947` once the Rust `wylde-vram-broker` passed a live function test; it is now the sole broker with no Python fallback. The directory holds only untracked `__pycache__/` cruft + `data/hardware.json` locally (nothing git-tracked). |
 
 The big rule for Core/: **anything still serving live pipe traffic is canonical, anything strangler-figged is on a soak clock.** Check the manifest for `entry_point` — `python:Core.X.run` means Python is still canonical; `rust:wylde-X` means the Rust binary is canonical and Python is the rollback path.
 
