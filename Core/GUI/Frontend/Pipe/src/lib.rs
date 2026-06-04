@@ -30,11 +30,16 @@
 //!     it lands.
 
 pub mod chat;
+pub mod conversation_bus;
 pub mod memory_long_term;
 pub mod memory_workspaces;
 pub mod nav_bus;
 pub mod tools;
 
+pub use conversation_bus::{
+    current_active_conversation, publish_active_conversation, publish_conversation_list_changed,
+    subscribe as subscribe_conversation_bus, ConversationEvent,
+};
 pub use nav_bus::{install_nav_sender, is_nav_installed, request_nav};
 
 use serde_json::{Map, Value};

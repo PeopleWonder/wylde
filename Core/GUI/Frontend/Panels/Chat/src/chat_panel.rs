@@ -222,6 +222,12 @@ impl ChatPanel {
     pub fn view(_window: &mut Window, cx: &mut App) -> AnyView {
         cx.new(|cx| {
             let panel = Self::new(cx);
+            // Announce the conversation this panel owns on the cross-panel
+            // bus so a sibling that's already mounted (e.g. the Memory
+            // panel's short-term view) reflects it immediately.  Until a
+            // turn adopts a harness-minted id this is the "default"
+            // conversation the working-memory pill already queries.
+            wylde_gui_pipe::publish_active_conversation(&panel.conversation_id);
             Self::spawn_load_workspaces(cx);
             Self::spawn_load_models(cx);
             Self::spawn_load_working_memory(cx);
@@ -514,9 +520,15 @@ impl ChatPanel {
                     // Adopt the harness-minted conversation id so the
                     // working-memory strip queries the right buffer (and
                     // future turns thread the same conversation).  Empty
-                    // reply → keep the existing id.
-                    if !reply_conversation_id.is_empty() {
+                    // reply → keep the existing id.  On an actual change,
+                    // re-announce on the cross-panel bus so the Memory
+                    // panel's short-term view follows us onto the new
+                    // conversation.
+                    if !reply_conversation_id.is_empty()
+                        && panel.conversation_id != reply_conversation_id
+                    {
                         panel.conversation_id = reply_conversation_id.clone();
+                        wylde_gui_pipe::publish_active_conversation(&panel.conversation_id);
                     }
                     panel.active_turn_id = Some(turn_id.clone());
                     panel.starting = false;
