@@ -52,8 +52,7 @@ async fn health_and_list_models_via_pipe() {
         return;
     }
 
-    let bin = paths::rust_release_bin("wylde-ollama")
-        .expect("rust release binary for wylde-ollama must exist; cargo build --release first");
+    let bin = paths::rust_release_bin("wylde-ollama");
     let cmd = Command::new(bin);
     let mut svc = proc::Service::spawn("wylde-ollama", cmd).expect("spawn wylde-ollama");
 
@@ -86,9 +85,8 @@ async fn health_and_list_models_via_pipe() {
         "list_models body missing 'models' array: {list:#}"
     );
 
-    // Don't drop without a clean stop — graceful_stop avoids a manifest
-    // entry in the dead-orphan state on teardown.
-    let _ = svc.stop(Duration::from_secs(10)).await;
+    // `Service`'s Drop kills the child process on teardown.
+    drop(svc);
 }
 
 // TODO(follow-up): expand to a record/replay corpus once a live Ollama
