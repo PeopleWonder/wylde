@@ -6,10 +6,11 @@ Covers:
 * :func:`_rust_binary_path` — env override, dev-target resolution, and
   the no-match → ``None`` case.
 * The ``_start_<service>`` dispatch. For the Rust-only cohort
-  (device_gate, vram_broker, gateway — collapsed 2026-06-02 when their
-  Python packages were deleted) a missing Rust binary leaves the service
-  down with NO Python fallback; for the two-impl services (voice) a
-  missing binary still falls back to ``python -m <module>``.
+  (device_gate, vram_broker, gateway — collapsed 2026-06-02 — plus voice,
+  collapsed in the Phase 11.E cutover when the Python ``Voice/`` tree was
+  deleted) a missing Rust binary leaves the service down with NO Python
+  fallback. extension_bridge is the last two-impl service: a missing
+  binary there still falls back to ``python -m <module>``.
 
 The ``_impl_for`` / ``_rust_binary_path`` / ``_spawn_rust_service``
 helpers live in :mod:`daemon_state._strangler` (re-imported by
@@ -222,16 +223,43 @@ def isolated_handles(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, N
     monkeypatch.setattr(daemon_state, "_vram_broker_proc", None)
     monkeypatch.setattr(daemon_state, "_device_gate_proc", None)
     monkeypatch.setattr(daemon_state, "_gateway_proc", None)
+    monkeypatch.setattr(daemon_state, "_voice_proc", None)
+    monkeypatch.setattr(daemon_state, "_nospawn", False)
     daemon_state._spawn_records.clear()
     yield
     daemon_state._spawn_records.clear()
 
 
 class TestStartDispatchNoFallback:
-    """Rust-only cohort (device_gate, vram_broker, gateway): the Python
-    packages were deleted 2026-06-02, so a missing Rust binary leaves the
-    service DOWN — there is no Python fallback and ``subprocess.Popen`` is
-    never reached."""
+    """Rust-only cohort (device_gate, vram_broker, gateway — deleted
+    2026-06-02 — plus voice, deleted in the Phase 11.E cutover): a missing
+    Rust binary leaves the service DOWN — there is no Python fallback and
+    ``subprocess.Popen`` is never reached."""
+
+    def test_voice_no_spawn_when_rust_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        isolated_handles: None,
+    ) -> None:
+        monkeypatch.setattr(_strangler, "WYLDE_ROOT", tmp_path)
+        monkeypatch.delenv("WYLDE_WYLDE_VOICE_BIN", raising=False)
+
+        def _boom(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("rust-only voice must not spawn python")
+
+        monkeypatch.setattr(_services_basic.subprocess, "Popen", _boom)
+
+        with caplog.at_level("WARNING", logger="wylde.lifecycle"):
+            _services._start_voice()
+
+        assert any(
+            "no rust binary" in r.message and "voice" in r.message
+            for r in caplog.records
+        )
+        assert daemon_state._voice_proc is None
+        assert daemon_state._spawn_records.get("wylde-voice") is None
 
     def test_device_gate_no_spawn_when_rust_missing(
         self,
@@ -458,13 +486,13 @@ class TestStartVramBrokerDispatch:
         assert rec.impl == "rust"
 
 
-# ── _start_voice impl dispatch (Phase 11.E — Python daemon parity) ─────
+# ── _start_voice dispatch (Rust-only since the Phase 11.E cutover) ─────
 #
-# The live lifecycle daemon is the PYTHON one; until 2026-05-30 its
-# ``_start_voice`` hard-coded ``python -m Voice.run`` and never honoured
-# the Phase-11.E ``WYLDE_WYLDE_VOICE_IMPL`` flip, so the rust voice
-# binary was never launched despite the default being ``rust``. These
-# tests pin the two-impl dispatch for BOTH selector values.
+# The Python ``Voice/`` tree was deleted in the Phase 11.E cutover, so
+# ``_start_voice`` is now Rust-only (no ``python -m Voice.run`` fallback).
+# The no-spawn-when-binary-missing contract is pinned in
+# ``TestStartDispatchNoFallback``; what remains here is the happy path:
+# the rust binary is spawned and ``subprocess.Popen`` is never touched.
 
 
 @pytest.fixture
@@ -522,75 +550,3 @@ class TestStartVoiceDispatch:
         rec = daemon_state._spawn_records.get("wylde-voice")
         assert rec is not None
         assert rec.impl == "rust"
-
-    def test_voice_python_override_spawns_voice_run_module(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        isolated_voice_handle: None,
-    ) -> None:
-        """``WYLDE_WYLDE_VOICE_IMPL=python`` (rollback) → the python
-        branch runs ``[sys.executable, '-m', 'Voice.run']`` via
-        ``subprocess.Popen`` and the rust helper is NEVER consulted."""
-        monkeypatch.setenv("WYLDE_WYLDE_VOICE_IMPL", "python")
-        # Even with a rust binary present, python override must win.
-        monkeypatch.setattr(_strangler, "WYLDE_ROOT", tmp_path)
-        suffix = ".exe" if sys.platform == "win32" else ""
-        debug = tmp_path / "rust" / "target" / "debug"
-        debug.mkdir(parents=True)
-        (debug / f"wylde-voice{suffix}").write_text("fake", encoding="utf-8")
-
-        def _no_rust(*_a: Any, **_k: Any) -> Any:
-            raise AssertionError(
-                "python override must not call the rust spawn helper"
-            )
-
-        monkeypatch.setattr(_services_basic, "_spawn_rust_service", _no_rust)
-
-        captured: dict[str, Any] = {}
-
-        def _capture_popen(cmd: Any, *args: Any, **kwargs: Any) -> _FakePopen:
-            captured["cmd"] = cmd
-            return _FakePopen()
-
-        monkeypatch.setattr(_services_basic.subprocess, "Popen", _capture_popen)
-
-        _services._start_voice()
-
-        assert captured["cmd"] == [sys.executable, "-m", "Voice.run"]
-        rec = daemon_state._spawn_records.get("wylde-voice")
-        assert rec is not None
-        assert rec.impl == "python"
-
-    def test_voice_rust_default_missing_binary_falls_back_to_python(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        caplog: pytest.LogCaptureFixture,
-        isolated_voice_handle: None,
-    ) -> None:
-        """Default ``rust`` but no binary on disk → warn + fall back to
-        ``python -m Voice.run``."""
-        monkeypatch.delenv("WYLDE_WYLDE_VOICE_IMPL", raising=False)
-        monkeypatch.setattr(_strangler, "WYLDE_ROOT", tmp_path)
-        monkeypatch.delenv("WYLDE_WYLDE_VOICE_BIN", raising=False)
-
-        captured: dict[str, Any] = {}
-
-        def _capture_popen(cmd: Any, *args: Any, **kwargs: Any) -> _FakePopen:
-            captured["cmd"] = cmd
-            return _FakePopen()
-
-        monkeypatch.setattr(_services_basic.subprocess, "Popen", _capture_popen)
-
-        with caplog.at_level("WARNING", logger="wylde.lifecycle"):
-            _services._start_voice()
-
-        assert any(
-            "no binary found" in r.message and "voice" in r.message
-            for r in caplog.records
-        ), f"expected fallback warning, got {[r.message for r in caplog.records]}"
-        assert captured["cmd"] == [sys.executable, "-m", "Voice.run"]
-        rec = daemon_state._spawn_records.get("wylde-voice")
-        assert rec is not None
-        assert rec.impl == "python"

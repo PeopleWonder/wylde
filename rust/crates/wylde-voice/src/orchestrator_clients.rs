@@ -17,13 +17,17 @@
 //!   `record_until_silence`); push-to-talk keeps the hold-until-cancel /
 //!   fixed-cap shape. `max_seconds` is the hard cap for both.
 //! * [`CpalPlayback`] — Thin wrapper over [`crate::playback::play_blocking`].
-//! * [`HarnessIpcClient`] — Routes STT (`models.transcribe`) and the chat
-//!   turn (`chat.run_turn`) over the shared IPC primitive. TTS is handled
-//!   in-process (Slice 2): `synthesize` calls this crate's own
-//!   `voice.synthesize` handler — Rust G2P (`synth::g2p`) + local Kokoro —
-//!   instead of round-tripping to the Python harness `models.synthesize`.
+//! * [`HarnessIpcClient`] — Routes the chat turn (`chat.run_turn`) over the
+//!   shared IPC primitive. STT and TTS are both handled in-process: TTS
+//!   since Slice 2 (`synthesize` calls this crate's own `voice.synthesize`
+//!   handler — Rust G2P (`synth::g2p`) + local Kokoro), and STT since the
+//!   Slice 11.E cutover (`transcribe` calls this crate's own
+//!   `voice.transcribe` handler — ONNX Whisper owned by
+//!   `crate::actions::transcribe`). Neither round-trips to the retired
+//!   Python harness `models.transcribe` / `models.synthesize` verbs.
 //!   Conversation resolution falls back to `conversations.list` and picks
-//!   the most recent entry — mirrors `Voice/orchestrator.py::_resolve_conversation`.
+//!   the most recent entry — mirrors the prior `Voice/orchestrator.py`
+//!   `_resolve_conversation`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -211,20 +215,32 @@ impl HarnessChat for HarnessIpcClient {
         audio: &[i16],
         sample_rate: u32,
     ) -> Result<String, HarnessCallError> {
-        let bytes = pcm_i16_to_le_bytes(audio);
-        let b64 = BASE64.encode(&bytes);
-        let reply = send_action(
-            &self.service,
-            "models.transcribe",
-            json!({
-                "audio_b64": b64,
-                "sample_rate": sample_rate,
-                "sample_dtype": "int16",
-            }),
-        )
-        .await;
+        // Slice 11.E cutover: STT is now Rust-native and in-process. The
+        // orchestrator used to round-trip raw PCM to the Python harness
+        // `models.transcribe` (faster-whisper inside `Voice/`); that
+        // engine was retired with the Python `Voice/` tree. We now call
+        // this crate's own `voice.transcribe` handler (ONNX Whisper —
+        // `crate::actions::transcribe`), mirroring how Slice 2 moved TTS
+        // in-process.
+        //
+        // Empty capture (e.g. a VAD-gated window that saw no speech) →
+        // empty transcript, so the orchestrator's `empty_transcript`
+        // short-circuit fires instead of an audio-decode error. This
+        // preserves the behaviour of the old Python path, which decoded
+        // an empty buffer to "".
+        if audio.is_empty() {
+            return Ok(String::new());
+        }
+        // `handle_transcribe` consumes a self-describing WAV (it resamples
+        // and peak-normalises internally), so wrap the captured PCM into a
+        // 16-bit mono WAV first.
+        let wav = pcm_i16_to_wav(audio, sample_rate)
+            .map_err(|e| HarnessCallError(format!("voice.transcribe: WAV encode: {e}")))?;
+        let b64 = BASE64.encode(&wav);
+        let reply =
+            crate::actions::transcribe::handle_transcribe(json!({ "audio_b64": b64 })).await;
         if !reply.ok {
-            return Err(HarnessCallError(format_reply_error(&reply, "models.transcribe")));
+            return Err(HarnessCallError(format_reply_error(&reply, "voice.transcribe")));
         }
         Ok(reply
             .data
@@ -327,12 +343,30 @@ impl HarnessChat for HarnessIpcClient {
     }
 }
 
-fn pcm_i16_to_le_bytes(samples: &[i16]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(samples.len() * 2);
-    for &s in samples {
-        out.extend_from_slice(&s.to_le_bytes());
+/// Wrap mono 16-bit PCM samples into an in-memory WAV byte buffer so the
+/// in-process `voice.transcribe` handler can decode them (it reads a
+/// self-describing WAV container, not raw PCM).
+fn pcm_i16_to_wav(samples: &[i16], sample_rate: u32) -> Result<Vec<u8>, String> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
+    {
+        let mut writer = hound::WavWriter::new(&mut cursor, spec)
+            .map_err(|e| format!("WAV writer init: {e}"))?;
+        for &s in samples {
+            writer
+                .write_sample(s)
+                .map_err(|e| format!("WAV write sample: {e}"))?;
+        }
+        writer
+            .finalize()
+            .map_err(|e| format!("WAV finalize: {e}"))?;
     }
-    out
+    Ok(cursor.into_inner())
 }
 
 fn format_reply_error(reply: &wylde_shared::ipc::Reply, action: &str) -> String {
@@ -353,15 +387,16 @@ mod tests {
     }
 
     #[test]
-    fn pcm_i16_to_le_bytes_round_trips() {
-        let samples = vec![0_i16, 1, -1, i16::MAX, i16::MIN];
-        let bytes = pcm_i16_to_le_bytes(&samples);
-        assert_eq!(bytes.len(), samples.len() * 2);
-        for (i, &s) in samples.iter().enumerate() {
-            let lo = bytes[i * 2];
-            let hi = bytes[i * 2 + 1];
-            assert_eq!(s, i16::from_le_bytes([lo, hi]));
-        }
+    fn pcm_i16_to_wav_round_trips_via_decoder() {
+        // The WAV we hand to `voice.transcribe` must decode cleanly back
+        // to the same number of samples (the engine's `decode_wav` is the
+        // real consumer).
+        let samples = vec![0_i16, 1, -1, i16::MAX / 2, -(i16::MAX / 2)];
+        let wav = pcm_i16_to_wav(&samples, TARGET_SAMPLE_RATE).unwrap();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        let pcm = crate::transcribe::audio::decode_wav(&wav).unwrap();
+        assert_eq!(pcm.len(), samples.len());
     }
 
     #[test]
@@ -371,8 +406,8 @@ mod tests {
             "bar",
         ));
         assert_eq!(
-            format_reply_error(&reply, "models.transcribe"),
-            "models.transcribe [foo] bar"
+            format_reply_error(&reply, "voice.transcribe"),
+            "voice.transcribe [foo] bar"
         );
     }
 }
