@@ -1,6 +1,6 @@
 [package]
 name = "wylde-panel-settings"
-description = "Wylde Settings panel — gpui-era port of Core/GUI/src/pages/Settings.svelte.  Updates, Startup (autostart), Ollama inference defaults, and the per-tool Consent surface (Phase 12.2 + 12.6)."
+description = "Wylde Settings panel — gpui-era port of Core/GUI/src/pages/Settings.svelte.  Updates, Startup (autostart), Ollama inference defaults, the Voice surface (mode / push-to-talk hotkey / STT backend / mic device / sensitivity / wake word / test mic — Voice Slice 6), and the per-tool Consent surface (Phase 12.2 + 12.6)."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

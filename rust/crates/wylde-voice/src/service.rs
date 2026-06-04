@@ -10,7 +10,7 @@ use wylde_shared::ipc::{
 
 use crate::actions::{health, mic, models, session, synthesize, transcribe, wakeword};
 
-const ALL_ACTIONS: [&str; 25] = [
+const ALL_ACTIONS: [&str; 29] = [
     "voice.health",
     "voice.list_models",
     "voice.download_models",
@@ -37,6 +37,11 @@ const ALL_ACTIONS: [&str; 25] = [
     "voice.pull_wake_word_model",
     "voice.wake_word_pull_status",
     "voice.subscribe_status",
+    // Slice 6 — Settings → Voice surface.
+    "voice.get_config",
+    "voice.set_config",
+    "voice.list_input_devices",
+    "voice.test_mic",
 ];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -320,6 +325,51 @@ pub fn install() {
          Reply: {events: [...], next_cursor}. Feed next_cursor back \
          to chain polls.",
         "wylde_voice::actions::session",
+    );
+
+    // ── Slice 6 — Settings → Voice surface ───────────────────────────
+
+    register_action_with_meta(
+        "voice.get_config",
+        |payload: Value| async move { session::handle_voice_get_config(payload).await },
+        "Read the persisted voice config for the Settings → Voice panel. \
+         No payload. Reply: {mode, wake_word_model, wake_word_enabled, \
+         push_to_talk_hotkey, stt_backend_pref, vad_sensitivity, \
+         input_device}. Backed by voice_config.json.",
+        "wylde_voice::actions::session",
+    );
+
+    register_action_with_meta(
+        "voice.set_config",
+        |payload: Value| async move { session::handle_voice_set_config(payload).await },
+        "Merge a partial voice-config patch (any subset of the \
+         voice.get_config keys) and persist it. Enum keys (mode, \
+         stt_backend_pref, vad_sensitivity) are validated → invalid_request \
+         on a bad value; input_device accepts null to reset to the system \
+         default. Reply: the merged config (same shape as voice.get_config). \
+         Backend/device/VAD changes apply on the next service start.",
+        "wylde_voice::actions::session",
+    );
+
+    register_action_with_meta(
+        "voice.list_input_devices",
+        |payload: Value| async move { mic::handle_list_input_devices(payload).await },
+        "Enumerate host input devices for the mic-device picker. No \
+         payload. Reply: {default: <name|null>, devices: [<name>, ...]}. \
+         Read-only — does not open a stream or disturb an active capture.",
+        "wylde_voice::actions::mic",
+    );
+
+    register_action_with_meta(
+        "voice.test_mic",
+        |payload: Value| async move { mic::handle_test_mic(payload).await },
+        "Capture a short window on a one-off (non-singleton) device and \
+         report its level + a best-effort transcript. Payload: \
+         {capture_ms?} (default 1500, clamped 300..=5000). Reply: \
+         {captured_ms, sample_rate, frames, rms, peak, transcript, note?}. \
+         Degrades gracefully (empty transcript + note) when no STT model \
+         is installed.",
+        "wylde_voice::actions::mic",
     );
 
     tracing::info!("wylde-voice: registered {} actions", ALL_ACTIONS.len());

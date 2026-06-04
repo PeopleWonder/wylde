@@ -26,7 +26,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use wylde_shared::ipc::{IpcError, Reply};
 
 use crate::actions::error::invalid_request;
-use crate::config_persist::ALL_MODES;
+use crate::config_persist::{ALL_BACKENDS, ALL_MODES, ALL_VAD_SENSITIVITIES};
 use crate::orchestrator::{run_session, SessionInputs};
 use crate::orchestrator_clients::{CpalPlayback, HarnessIpcClient, MicSessionCapture};
 use crate::service_state::ServiceState;
@@ -206,6 +206,47 @@ pub async fn handle_voice_get_mode(_payload: Value) -> Reply {
     Reply::ok(json!({"mode": state.get_mode().await}))
 }
 
+// ── voice.get_config / voice.set_config (Slice 6) ───────────────────────
+
+/// Return the full persisted voice config (mode, push-to-talk hotkey,
+/// STT backend preference, mic device, VAD sensitivity, wake-word
+/// model + enabled). Backs the Settings → Voice panel's load.
+pub async fn handle_voice_get_config(_payload: Value) -> Reply {
+    let state = ServiceState::global();
+    Reply::ok(state.get_config_value().await)
+}
+
+/// Merge a partial config patch into the persisted voice config. The
+/// payload IS the patch — any subset of the config keys. Enum-shaped
+/// keys are validated up front so a typo surfaces as a clear
+/// `invalid_request` (rather than being silently snapped to a default
+/// inside [`crate::config_persist::VoiceConfig::normalised`], which the
+/// GUI couldn't distinguish from a successful write). Reply: the merged
+/// config, same shape as `voice.get_config`.
+pub async fn handle_voice_set_config(payload: Value) -> Reply {
+    if let Some(m) = payload.get("mode").and_then(Value::as_str) {
+        if !ALL_MODES.contains(&m) {
+            return Reply::err(invalid_request(format!("mode must be one of {ALL_MODES:?}")));
+        }
+    }
+    if let Some(b) = payload.get("stt_backend_pref").and_then(Value::as_str) {
+        if !ALL_BACKENDS.contains(&b) {
+            return Reply::err(invalid_request(format!(
+                "stt_backend_pref must be one of {ALL_BACKENDS:?}"
+            )));
+        }
+    }
+    if let Some(s) = payload.get("vad_sensitivity").and_then(Value::as_str) {
+        if !ALL_VAD_SENSITIVITIES.contains(&s) {
+            return Reply::err(invalid_request(format!(
+                "vad_sensitivity must be one of {ALL_VAD_SENSITIVITIES:?}"
+            )));
+        }
+    }
+    let state = ServiceState::global();
+    Reply::ok(state.apply_config_patch(&payload).await)
+}
+
 // ── voice.set_active_conversation ─────────────────────────────────────
 
 pub async fn handle_voice_set_active_conversation(payload: Value) -> Reply {
@@ -338,6 +379,51 @@ mod tests {
         let r = handle_voice_set_mode(json!({"mode": "supersonic"})).await;
         assert!(!r.ok);
         assert_eq!(r.error.unwrap().code, "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn get_config_returns_full_block() {
+        let r = handle_voice_get_config(Value::Null).await;
+        assert!(r.ok);
+        // Every Slice-6 key is present (values depend on the on-disk
+        // config but the keys must exist for the panel to bind to them).
+        for key in [
+            "mode",
+            "wake_word_model",
+            "wake_word_enabled",
+            "push_to_talk_hotkey",
+            "stt_backend_pref",
+            "vad_sensitivity",
+        ] {
+            assert!(r.data.get(key).is_some(), "missing key {key}");
+        }
+        assert!(r.data.as_object().unwrap().contains_key("input_device"));
+    }
+
+    #[tokio::test]
+    async fn set_config_rejects_bad_backend() {
+        let r = handle_voice_set_config(json!({ "stt_backend_pref": "quantum" })).await;
+        assert!(!r.ok);
+        assert_eq!(r.error.unwrap().code, "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn set_config_rejects_bad_vad_sensitivity() {
+        let r = handle_voice_set_config(json!({ "vad_sensitivity": "ludicrous" })).await;
+        assert!(!r.ok);
+        assert_eq!(r.error.unwrap().code, "invalid_request");
+    }
+
+    #[tokio::test]
+    async fn set_config_accepts_valid_patch() {
+        let r = handle_voice_set_config(json!({
+            "stt_backend_pref": "cpu",
+            "vad_sensitivity": "low",
+        }))
+        .await;
+        assert!(r.ok);
+        assert_eq!(r.data["stt_backend_pref"], "cpu");
+        assert_eq!(r.data["vad_sensitivity"], "low");
     }
 
     #[tokio::test]

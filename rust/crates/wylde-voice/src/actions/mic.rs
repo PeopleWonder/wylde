@@ -25,9 +25,11 @@ use serde_json::{json, Value};
 use wylde_shared::ipc::{IpcError, Reply, StreamSender};
 
 use crate::actions::error::invalid_request;
-use crate::mic::{DEFAULT_MIC_CHUNK_SAMPLES, MicCapture, MicError, TARGET_SAMPLE_RATE};
+use crate::mic::{
+    list_input_device_names, DEFAULT_MIC_CHUNK_SAMPLES, MicCapture, MicError, TARGET_SAMPLE_RATE,
+};
 use crate::state;
-use crate::synth::wav::encode_base64;
+use crate::synth::wav::{encode_base64, encode_wav};
 
 /// `voice.mic.start` — open the default input device and start the
 /// chunk broadcast. Idempotent: a second call while a capture is
@@ -139,6 +141,134 @@ pub async fn handle_mic_chunks(_payload: Value, sender: StreamSender) {
         .await;
 }
 
+/// `voice.list_input_devices` — enumerate the host's input devices for
+/// the Settings → Voice mic-device picker (Slice 6). Reply:
+/// `{default: <name|null>, devices: [<name>, ...]}`. Read-only — does
+/// not open a stream or disturb an active capture.
+pub async fn handle_list_input_devices(_payload: Value) -> Reply {
+    match list_input_device_names() {
+        Ok((default, devices)) => Reply::ok(json!({
+            "default": default,
+            "devices": devices,
+        })),
+        Err(e) => Reply::err(mic_error_to_ipc(e)),
+    }
+}
+
+/// `voice.test_mic` — open a one-off capture (NOT the singleton),
+/// collect a short window of audio, report its level, and attempt a
+/// best-effort transcription (Slice 6's "Test mic" button).
+///
+/// Payload: `{capture_ms?}` (default 1500, clamped 300..=5000). Reply:
+/// `{captured_ms, sample_rate, frames, rms, peak, transcript, note?}`.
+///
+/// Design notes:
+/// * Uses a fresh [`MicCapture`] rather than the global singleton so it
+///   never fights an in-flight `voice.mic.chunks` subscriber or wake-word
+///   listener; the capture is dropped (stopping its worker) before reply.
+/// * Transcription is best-effort: it reuses
+///   [`crate::actions::transcribe::handle_transcribe`] but a missing
+///   Whisper model (or any STT error) degrades to an empty `transcript`
+///   plus a `note`, so the button still confirms the mic is live via the
+///   level meter even when no model is installed.
+pub async fn handle_test_mic(payload: Value) -> Reply {
+    let capture_ms = payload
+        .get("capture_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(1500)
+        .clamp(300, 5000);
+
+    let capture = match MicCapture::start(DEFAULT_MIC_CHUNK_SAMPLES) {
+        Ok(c) => c,
+        Err(e) => return Reply::err(mic_error_to_ipc(e)),
+    };
+    let mut rx = capture.subscribe();
+    let mut collected: Vec<i16> = Vec::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(capture_ms);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, rx.recv()).await {
+            Ok(Ok(chunk)) => collected.extend(chunk.iter().copied()),
+            // Fell behind the broadcast — keep draining.
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+            // Capture closed underneath us, or the window elapsed.
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => break,
+        }
+    }
+    // Drop stops the worker thread + releases the OS device handle.
+    drop(capture);
+
+    let frames = collected.len();
+    let (rms, peak) = level_stats(&collected);
+
+    let mut transcript = String::new();
+    let mut note: Option<String> = None;
+    if frames == 0 {
+        note = Some("no audio captured — check that your microphone is connected".to_owned());
+    } else {
+        let floats: Vec<f32> = collected
+            .iter()
+            .map(|&s| s as f32 / i16::MAX as f32)
+            .collect();
+        match encode_wav(&floats, TARGET_SAMPLE_RATE) {
+            Ok(wav) => {
+                let reply = crate::actions::transcribe::handle_transcribe(json!({
+                    "audio_b64": encode_base64(&wav),
+                }))
+                .await;
+                if reply.ok {
+                    transcript = reply
+                        .data
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim()
+                        .to_owned();
+                } else {
+                    note = Some(
+                        reply
+                            .error
+                            .map(|e| format!("{}: {}", e.code, e.message))
+                            .unwrap_or_else(|| "transcription unavailable".to_owned()),
+                    );
+                }
+            }
+            Err(e) => note = Some(format!("wav encode failed: {e}")),
+        }
+    }
+
+    Reply::ok(json!({
+        "captured_ms": capture_ms,
+        "sample_rate": TARGET_SAMPLE_RATE,
+        "frames": frames,
+        "rms": rms,
+        "peak": peak,
+        "transcript": transcript,
+        "note": note,
+    }))
+}
+
+/// RMS + peak of a 16-bit PCM buffer, normalised to the `[0.0, 1.0]`
+/// full-scale range. Pure helper so the level math is unit-testable
+/// without a live device.
+fn level_stats(samples: &[i16]) -> (f32, f32) {
+    if samples.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mut sum_sq = 0.0_f64;
+    let mut peak = 0.0_f32;
+    for &s in samples {
+        let f = s as f32 / i16::MAX as f32;
+        sum_sq += (f as f64) * (f as f64);
+        peak = peak.max(f.abs());
+    }
+    let rms = (sum_sq / samples.len() as f64).sqrt() as f32;
+    (rms, peak)
+}
+
 fn read_chunk_samples(payload: &Value) -> Result<usize, IpcError> {
     match payload.get("chunk_samples") {
         None | Some(Value::Null) => Ok(DEFAULT_MIC_CHUNK_SAMPLES),
@@ -233,6 +363,40 @@ mod tests {
         assert_eq!(e.code, "mic_unavailable");
         let e = mic_error_to_ipc(MicError::Build("x".into()));
         assert_eq!(e.code, "mic_unavailable");
+    }
+
+    #[test]
+    fn level_stats_zero_for_silence() {
+        let (rms, peak) = level_stats(&[0; 256]);
+        assert_eq!(rms, 0.0);
+        assert_eq!(peak, 0.0);
+        // Empty buffer is also (0, 0), not a divide-by-zero.
+        assert_eq!(level_stats(&[]), (0.0, 0.0));
+    }
+
+    #[test]
+    fn level_stats_full_scale_tone() {
+        // Alternating +/- full scale: peak = 1.0, rms = 1.0.
+        let buf: Vec<i16> = (0..256)
+            .map(|i| if i % 2 == 0 { i16::MAX } else { -i16::MAX })
+            .collect();
+        let (rms, peak) = level_stats(&buf);
+        assert!((peak - 1.0).abs() < 1e-6, "peak {peak}");
+        assert!((rms - 1.0).abs() < 1e-3, "rms {rms}");
+    }
+
+    #[tokio::test]
+    async fn list_input_devices_dispatches_cleanly() {
+        // Either a device list (Ok) or a mic_unavailable error on a
+        // headless host — both are well-formed replies, never a panic.
+        let r = handle_list_input_devices(json!({})).await;
+        if r.ok {
+            assert!(r.data["devices"].is_array());
+            // `default` is a string or null.
+            assert!(r.data.get("default").is_some());
+        } else {
+            assert_eq!(r.error.unwrap().code, "mic_unavailable");
+        }
     }
 
     #[test]
