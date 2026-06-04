@@ -1,0 +1,6 @@
+# These are signature-verification fixtures: roundtrip_payload.bin was signed
+# byte-for-byte by the production key, and roundtrip_payload.bin.minisig is its
+# detached signature. Git EOL normalization must NEVER touch them — a single
+# CRLF rewrite of the payload would no longer match the signature and break the
+# embedded-key round-trip test on checkout. Treat both as binary.
+* -text

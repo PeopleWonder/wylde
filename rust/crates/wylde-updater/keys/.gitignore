@@ -6,5 +6,10 @@
 *.pem
 secret*
 signing-key*
+# The real generated public key file (its base64 is already baked into
+# src/pubkey.rs — no need to also commit the loose file) and the local-only
+# key notes (which may name the passphrase) stay out of the repo too.
+wylde-signing.pub
+KEY_NOTES.md
 # but keep the format example
 !pubkey.pub.example
