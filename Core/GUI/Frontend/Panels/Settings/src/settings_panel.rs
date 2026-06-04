@@ -24,9 +24,9 @@ use wylde_theme::colors::{SURFACE_900, TEXT_PRIMARY, TEXT_SECONDARY};
 use wylde_theme::typography::{size, FAMILY_INTER};
 
 use crate::ipc::{
-    clear_tool_decision, get_autostart_enabled, list_consent, read_update_prefs, reset_consent,
-    set_autostart_enabled, set_no_auth, set_tool_decision, write_update_prefs, ConsentSnapshot,
-    OllamaSettings, UpdatePrefs,
+    clear_tool_decision, get_autostart_enabled, list_consent, read_ollama_settings,
+    read_update_prefs, reset_consent, set_autostart_enabled, set_no_auth, set_tool_decision,
+    write_update_prefs, ConsentSnapshot, OllamaSettings, UpdatePrefs,
 };
 use crate::sections::{
     consent_section, error_banner, ollama_section, pack, startup_section, updates_section,
@@ -98,6 +98,20 @@ impl SettingsPanel {
             if let Ok(prefs) = read_update_prefs().await {
                 let _ = this.update(app_cx, |panel, cx| {
                     panel.update_prefs = prefs;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+
+        // Ollama inference defaults — read-only block off the Gateway's
+        // file-backed settings store.  A failed read leaves the loading
+        // defaults in place (every row "—") rather than surfacing an
+        // error banner, since the block is informational.
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            if let Ok(ollama) = read_ollama_settings().await {
+                let _ = this.update(app_cx, |panel, cx| {
+                    panel.ollama = ollama;
                     cx.notify();
                 });
             }
@@ -400,6 +414,8 @@ mod tests {
         let _ = crate::ipc::write_update_prefs;
         let _ = crate::ipc::get_autostart_enabled;
         let _ = crate::ipc::set_autostart_enabled;
+        // Ollama defaults read off the Gateway (`GET /api/settings/ollama`).
+        let _ = crate::ipc::read_ollama_settings;
     }
 
     /// The frequency cycle is a pure rotation — assert it round-trips
