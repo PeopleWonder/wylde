@@ -522,6 +522,14 @@ pub fn spawn_ensure_job_with<H: ModelHttp + 'static>(
 
 #[cfg(test)]
 mod tests {
+    // The async tests below hold `env_lock()` (a process-wide std Mutex) for
+    // their whole body — deliberately across `.await` — to serialise tests
+    // that mutate global env vars (`WYLDE_VOICE_*`) so concurrent test threads
+    // can't race each other's `set_var`/`remove_var`. That is the intended
+    // lifetime of the guard, so clippy's await-holding-lock warning is a false
+    // positive here; allow it for the test module only (prod code is unaffected).
+    #![allow(clippy::await_holding_lock)]
+
     use super::*;
     use std::sync::Mutex as StdMutex;
     use tempfile::TempDir;

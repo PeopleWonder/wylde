@@ -16,8 +16,7 @@
 //!   * `GET  /health`            — liveness + linked-grammar count.
 //!   * `GET  /languages`         — `{languages:[{name, grammar_sha, abi}]}`.
 //!   * `POST /chunk`             — `{path, language?, max_chunk_bytes?}` → chunk list.
-//!   * `POST /extract_entities`  — `{path, language?}` → functions/classes/
-//!                                 imports/calls (the Memgraph graph feed).
+//!   * `POST /extract_entities`  — `{path, language?}` → functions/classes/imports/calls (the Memgraph graph feed).
 
 use std::net::SocketAddr;
 
