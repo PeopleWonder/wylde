@@ -1,0 +1,36 @@
+[package]
+name = "wylde-updater"
+description = "Wylde in-app self-updater (Phase 12.5) — queries GitHub Releases, verifies minisign/Ed25519 signatures against one embedded public key, and swaps the running binary on Windows. Blocking API; the GUI drives it via the Pipe crate's tokio bridge."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Pure-blocking HTTP client. Picked over reqwest::blocking so the updater
+# carries no async runtime of its own — the GUI hops it onto the shared
+# tokio blocking pool via `bridged_spawn_blocking`, and unit tests need no
+# reactor. Default features carry rustls TLS (no OpenSSL/system dep).
+ureq = "2"
+# Semver comparison for "is the latest tag newer than what we run".
+semver = "1"
+# Zero-dependency minisign signature verifier — the entire trusted
+# verification surface we ship to end users.
+minisign-verify = "0.2"
+# In-place running-binary swap (Windows rename-aside trick / POSIX replace).
+self-replace = "1"
+
+[dev-dependencies]
+# Signing half of minisign — used only by tests to mint an ephemeral
+# keypair + signature so the verify path is exercised end-to-end without a
+# committed key. Never pulled into the shipped binary.
+minisign = "0.9"
+tempfile = "3"
