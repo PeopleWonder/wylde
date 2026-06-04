@@ -34,7 +34,7 @@ members = [
 exclude = ["tests/parity"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Wylde User"]

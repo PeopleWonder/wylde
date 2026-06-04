@@ -92,10 +92,19 @@ enum Cmd {
         /// Release channel. `beta` ⇒ GitHub pre-release.
         #[arg(long, value_enum)]
         channel: Channel,
-        /// The binary asset to upload. Its `.minisig` sibling is uploaded
-        /// alongside (created via `sign` first if missing).
+        /// The primary binary asset to upload (the bare signed
+        /// `wylde-gui-<target>.exe` the self-updater consumes). Its
+        /// `.minisig` sibling is uploaded alongside (created via `sign`
+        /// first if missing).
         #[arg(long)]
         binary: PathBuf,
+        /// Additional asset(s) to attach to the same release, e.g. the NSIS
+        /// installer (`WyldeSetup-<version>.exe`). Repeatable. Each one's
+        /// `.minisig` sibling is uploaded alongside it too (signed first if
+        /// missing), so a single `publish` can carry both the updater binary
+        /// and the human-install installer.
+        #[arg(long = "extra-asset")]
+        extra_asset: Vec<PathBuf>,
         /// Private key path for the sign-if-missing step. Falls back to
         /// `$RSIGN_KEY_PATH`, then the default in-repo `keys/` path.
         #[arg(long)]
@@ -104,8 +113,14 @@ enum Cmd {
         #[arg(long, default_value = DEFAULT_REPO)]
         repo: String,
         /// Release notes body. Defaults to a one-line auto message.
+        /// Ignored when `--notes-file` is given.
         #[arg(long)]
         notes: Option<String>,
+        /// Read the release notes body from a markdown file (wins over
+        /// `--notes`). Lets a multi-section changelog be published without
+        /// cramming it onto the command line.
+        #[arg(long = "notes-file")]
+        notes_file: Option<PathBuf>,
         /// Print the `rsign`/`gh` commands that would run, without
         /// executing them. Use this to rehearse a release safely.
         #[arg(long)]
@@ -153,11 +168,23 @@ fn main() -> Result<()> {
             version,
             channel,
             binary,
+            extra_asset,
             key,
             repo,
             notes,
+            notes_file,
             dry_run,
-        } => publish(&version, channel, &binary, key, &repo, notes.as_deref(), dry_run),
+        } => publish(
+            &version,
+            channel,
+            &binary,
+            &extra_asset,
+            key,
+            &repo,
+            notes.as_deref(),
+            notes_file.as_deref(),
+            dry_run,
+        ),
         Cmd::VerifyPublicKey { pubkey } => verify_public_key(&pubkey),
     }
 }
@@ -301,55 +328,65 @@ fn sign(binary: &Path, key: &Path) -> Result<PathBuf> {
     Ok(sig)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish(
     version: &str,
     channel: Channel,
     binary: &Path,
+    extra_assets: &[PathBuf],
     key: Option<PathBuf>,
     repo: &str,
     notes: Option<&str>,
+    notes_file: Option<&Path>,
     dry_run: bool,
 ) -> Result<()> {
     if !binary.exists() {
         bail!("binary to publish does not exist: {}", binary.display());
     }
     let key = resolve_key_path(key);
-    let sig = sig_path_for(binary);
 
-    // Sign-if-missing. In a dry run we only describe the signing step.
-    if !sig.exists() {
-        if dry_run {
-            println!(
-                "[dry-run] would sign: rsign sign -s {} -x {} {}",
-                key.display(),
-                sig.display(),
-                binary.display()
-            );
-        } else {
-            println!("No signature at {} — signing first…", sig.display());
-            sign(binary, &key)?;
+    // Every uploadable asset is the file itself plus its `.minisig`. The
+    // primary binary leads; any `--extra-asset` (e.g. the installer) follows.
+    // Each gets signed-if-missing so a release never ships an unsigned asset.
+    let mut asset_paths: Vec<PathBuf> = Vec::new();
+    for asset in std::iter::once(binary).chain(extra_assets.iter().map(PathBuf::as_path)) {
+        if !asset.exists() {
+            bail!("asset to publish does not exist: {}", asset.display());
         }
+        let sig = sig_path_for(asset);
+        // Sign-if-missing. In a dry run we only describe the signing step.
+        if !sig.exists() {
+            if dry_run {
+                println!(
+                    "[dry-run] would sign: rsign sign -s {} -x {} {}",
+                    key.display(),
+                    sig.display(),
+                    asset.display()
+                );
+            } else {
+                println!("No signature at {} — signing first…", sig.display());
+                sign(asset, &key)?;
+            }
+        }
+        asset_paths.push(asset.to_path_buf());
+        asset_paths.push(sig);
     }
 
-    let notes = notes
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("Automated release {version} ({} channel).", channel_name(channel)));
+    let notes = resolve_notes(notes, notes_file, version, channel)?;
 
-    // gh release create <tag> <binary> <sig> --repo … --title … --notes …
-    // [--prerelease]
-    let mut args: Vec<String> = vec![
-        "release".into(),
-        "create".into(),
-        version.into(),
-        binary.to_string_lossy().into_owned(),
-        sig.to_string_lossy().into_owned(),
+    // gh release create <tag> <asset>… --repo … --title … --notes … [--prerelease]
+    let mut args: Vec<String> = vec!["release".into(), "create".into(), version.into()];
+    for asset in &asset_paths {
+        args.push(asset.to_string_lossy().into_owned());
+    }
+    args.extend([
         "--repo".into(),
         repo.into(),
         "--title".into(),
         version.into(),
         "--notes".into(),
         notes,
-    ];
+    ]);
     if channel.is_prerelease() {
         args.push("--prerelease".into());
     }
@@ -360,8 +397,28 @@ fn publish(
     }
     run(Command::new("gh").args(&args))
         .context("gh release create failed (is `gh` installed, authed, and the tag free?)")?;
-    println!("published {version} to {repo}");
+    println!(
+        "published {version} to {repo} ({} asset file(s))",
+        asset_paths.len()
+    );
     Ok(())
+}
+
+/// Resolve the release-notes body: `--notes-file` wins (read from disk),
+/// then `--notes`, then a one-line auto message.
+fn resolve_notes(
+    notes: Option<&str>,
+    notes_file: Option<&Path>,
+    version: &str,
+    channel: Channel,
+) -> Result<String> {
+    if let Some(path) = notes_file {
+        return std::fs::read_to_string(path)
+            .with_context(|| format!("reading notes file {}", path.display()));
+    }
+    Ok(notes.map(str::to_owned).unwrap_or_else(|| {
+        format!("Automated release {version} ({} channel).", channel_name(channel))
+    }))
 }
 
 fn channel_name(channel: Channel) -> &'static str {
@@ -525,6 +582,65 @@ mod tests {
             }
             other => panic!("expected Publish, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn cli_parses_publish_with_extra_assets() {
+        // Both the bare updater binary and the installer in one publish.
+        let cli = Cli::try_parse_from([
+            "wylde-release",
+            "publish",
+            "--version",
+            "v0.1.0-alpha.1",
+            "--channel",
+            "beta",
+            "--binary",
+            "wylde-gui-x86_64-pc-windows-msvc.exe",
+            "--extra-asset",
+            "WyldeSetup-0.1.0-alpha.1.exe",
+            "--notes-file",
+            "RELEASE_NOTES.md",
+            "--dry-run",
+        ])
+        .expect("publish args parse");
+        match cli.command {
+            Cmd::Publish {
+                binary,
+                extra_asset,
+                notes_file,
+                ..
+            } => {
+                assert_eq!(binary, PathBuf::from("wylde-gui-x86_64-pc-windows-msvc.exe"));
+                assert_eq!(extra_asset, vec![PathBuf::from("WyldeSetup-0.1.0-alpha.1.exe")]);
+                assert_eq!(notes_file, Some(PathBuf::from("RELEASE_NOTES.md")));
+            }
+            other => panic!("expected Publish, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_notes_prefers_explicit_string_then_auto() {
+        // Explicit --notes string passes through.
+        assert_eq!(
+            resolve_notes(Some("hand notes"), None, "v1.0.0", Channel::Beta).unwrap(),
+            "hand notes"
+        );
+        // No notes at all ⇒ the one-line auto message naming the channel.
+        let auto = resolve_notes(None, None, "v1.0.0", Channel::Stable).unwrap();
+        assert!(auto.contains("v1.0.0"));
+        assert!(auto.contains("stable"));
+    }
+
+    #[test]
+    fn resolve_notes_reads_file_over_string() {
+        // No tempfile dep on this standalone crate — use the OS temp dir
+        // with a pid-unique name so parallel test runs don't collide.
+        let path = std::env::temp_dir().join(format!("wylde-release-notes-{}.md", std::process::id()));
+        std::fs::write(&path, "# From file\n").unwrap();
+        // notes-file wins over an also-present --notes string.
+        let resolved = resolve_notes(Some("ignored"), Some(&path), "v1.0.0", Channel::Beta).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(resolved, "# From file\n");
     }
 
     #[test]

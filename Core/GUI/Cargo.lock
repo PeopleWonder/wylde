@@ -8630,7 +8630,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-gpui-input"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "gpui",
  "unicode-segmentation",
@@ -8639,7 +8639,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-gui"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8658,7 +8658,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-gui-pipe"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "async-trait",
  "rmp-serde",
@@ -8674,7 +8674,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-harness"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8700,7 +8700,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-chat"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -8717,7 +8717,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-dashboard"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -8730,7 +8730,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-devices"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -8744,7 +8744,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-images"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -8759,7 +8759,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-memory"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -8773,7 +8773,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-models"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -8788,7 +8788,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-registry"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -8808,7 +8808,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-remote-access"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -8821,7 +8821,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-settings"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "auto-launch",
@@ -8835,7 +8835,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-tools"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -8847,7 +8847,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-workspaces"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -8861,14 +8861,14 @@ dependencies = [
 
 [[package]]
 name = "wylde-prebuild-guard"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "wylde-shared",
 ]
 
 [[package]]
 name = "wylde-shared"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -8886,14 +8886,14 @@ dependencies = [
 
 [[package]]
 name = "wylde-theme"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "gpui",
 ]
 
 [[package]]
 name = "wylde-updater"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "minisign-verify",
  "self-replace",
@@ -8907,7 +8907,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-webview"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "gpui",
