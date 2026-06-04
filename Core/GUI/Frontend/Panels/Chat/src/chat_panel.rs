@@ -43,9 +43,10 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::ipc::{
-    activate_workspace, cancel_turn, eject_model, list_models, recent_workspaces, respond_consent,
-    start_turn_with_model, stream_consent_pending, stream_tools, stream_turn, ConsentEvent,
-    PendingConsent, ToolChunk, TurnChunk, WorkspaceSummary,
+    activate_workspace, cancel_turn, clear_working_memory, eject_model, fetch_working_memory,
+    list_models, recent_workspaces, respond_consent, start_turn_with_model, stream_consent_pending,
+    stream_tools, stream_turn, ConsentEvent, PendingConsent, ToolChunk, TurnChunk,
+    WorkingMemoryEntry, WorkspaceSummary,
 };
 use crate::markdown;
 
@@ -139,6 +140,13 @@ pub struct ChatPanel {
     pub messages: Vec<ChatMessage>,
     pub active_turn_id: Option<String>,
     pub conversation_id: String,
+    /// Short-term ("working memory") buffer for the active conversation.
+    /// Loaded on mount and refreshed after each turn — the chat-turn
+    /// driver appends entries server-side as it works.  Rendered in the
+    /// collapsible strip toggled by [`ChatPanel::show_working_memory`].
+    pub working_memory: Vec<WorkingMemoryEntry>,
+    /// Whether the working-memory strip above the InferenceBar is open.
+    pub show_working_memory: bool,
     pub workspaces: Vec<WorkspaceSummary>,
     pub active_workspace_id: Option<String>,
     pub show_ws_dropdown: bool,
@@ -190,6 +198,8 @@ impl ChatPanel {
             messages: Vec::new(),
             active_turn_id: None,
             conversation_id: "default".to_owned(),
+            working_memory: Vec::new(),
+            show_working_memory: false,
             workspaces: Vec::new(),
             active_workspace_id: None,
             show_ws_dropdown: false,
@@ -214,6 +224,7 @@ impl ChatPanel {
             let panel = Self::new(cx);
             Self::spawn_load_workspaces(cx);
             Self::spawn_load_models(cx);
+            Self::spawn_load_working_memory(cx);
             Self::spawn_consent_subscription(cx);
             panel
         })
@@ -245,6 +256,58 @@ impl ChatPanel {
                 }
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    /// Load the working-memory buffer for the active conversation.  Run
+    /// once on mount and again after each turn settles, so the strip
+    /// reflects whatever the chat-turn driver appended while it worked.
+    pub fn spawn_load_working_memory(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            Self::reload_working_memory(&this, app_cx).await;
+        })
+        .detach();
+    }
+
+    /// Read `memory.short_term.get` for the panel's current
+    /// `conversation_id` and replace the buffer.  Soft-fail: a transport
+    /// error (harness still cold-starting, conversation not persisted
+    /// yet) leaves the existing buffer untouched rather than surfacing a
+    /// loud error in the chat surface.  Shared by the mount load, the
+    /// post-turn refresh, and the clear flow.
+    async fn reload_working_memory(this: &gpui::WeakEntity<Self>, app_cx: &mut AsyncApp) {
+        let Ok(cid) = this.update(app_cx, |panel, _| panel.conversation_id.clone()) else {
+            return;
+        };
+        if let Ok(entries) = fetch_working_memory(&cid).await {
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.working_memory = entries;
+                cx.notify();
+            });
+        }
+    }
+
+    /// Toggle the working-memory strip.  Mutually exclusive with the two
+    /// InferenceBar pickers so only one overlay is open at a time.
+    pub fn toggle_working_memory(&mut self, cx: &mut Context<Self>) {
+        self.show_working_memory = !self.show_working_memory;
+        self.show_ws_dropdown = false;
+        self.show_model_dropdown = false;
+        cx.notify();
+    }
+
+    /// "Clear working memory" — fire `memory.short_term.clear` for the
+    /// active conversation, then reload so the strip reflects the now-empty
+    /// buffer.  Optimistically clears the local copy first so the UI
+    /// responds immediately; the reload reconciles against the harness.
+    pub fn clear_working_memory(&mut self, cx: &mut Context<Self>) {
+        let cid = self.conversation_id.clone();
+        self.working_memory.clear();
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let _ = clear_working_memory(&cid).await;
+            Self::reload_working_memory(&this, app_cx).await;
         })
         .detach();
     }
@@ -398,8 +461,8 @@ impl ChatPanel {
                 model.as_deref(),
             )
             .await;
-            let turn_id = match start {
-                Ok(r) => r.turn_id,
+            let (turn_id, reply_conversation_id) = match start {
+                Ok(r) => (r.turn_id, r.conversation_id),
                 Err(e) => {
                     let _ = this.update(app_cx, |panel, cx| {
                         let msg = format!("[Failed to start turn: {e}]");
@@ -448,6 +511,13 @@ impl ChatPanel {
             // feeds the activity strip.  Both keyed off the same turn_id.
             let published = this
                 .update(app_cx, |panel, cx| {
+                    // Adopt the harness-minted conversation id so the
+                    // working-memory strip queries the right buffer (and
+                    // future turns thread the same conversation).  Empty
+                    // reply → keep the existing id.
+                    if !reply_conversation_id.is_empty() {
+                        panel.conversation_id = reply_conversation_id.clone();
+                    }
                     panel.active_turn_id = Some(turn_id.clone());
                     panel.starting = false;
                     panel.active_stream = Some(user_stream);
@@ -568,6 +638,11 @@ impl ChatPanel {
                     cx.notify();
                 }
             });
+
+            // The turn may have appended working-memory entries (tool
+            // calls, decisions, summaries) server-side; refresh the strip
+            // so it reflects the conversation's post-turn buffer.
+            Self::reload_working_memory(&this, app_cx).await;
         })
         .detach();
     }
@@ -1171,6 +1246,9 @@ fn inference_bar(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
     if panel.show_model_dropdown {
         bar = bar.child(model_dropdown(panel, cx));
     }
+    if panel.show_working_memory {
+        bar = bar.child(working_memory_panel(panel, cx));
+    }
 
     // Second row: prompt input + send/stop button.
     bar = bar.child(prompt_row(panel, cx));
@@ -1213,6 +1291,109 @@ fn pill_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
             }),
         ))
         .child(eject_button(panel, cx))
+        .child(working_memory_pill(panel, cx))
+}
+
+/// Working-memory toggle pill — shows the live entry count for the active
+/// conversation and opens the strip listing them.  Mirrors the workspace /
+/// model pills so the InferenceBar row stays visually uniform.
+fn working_memory_pill(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
+    let label = SharedString::from(format!("memory · {}", panel.working_memory.len()));
+    pill_button(
+        ElementId::Name("chat-wm-toggle".into()),
+        label,
+        cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+            this.toggle_working_memory(cx);
+        }),
+    )
+}
+
+/// The working-memory strip: a header row ("Working memory" + a Clear
+/// button) over the per-entry rows for the active conversation.  Each row
+/// is the entry `kind` tag + its one-line `summary`.  Empty buffer → a
+/// muted hint instead of an empty box.
+fn working_memory_panel(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
+    let mut col = dropdown_shell();
+
+    // Header: title + Clear (disabled when the buffer is already empty).
+    let mut header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .pb_1()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                .child(SharedString::from("Working memory")),
+        );
+    if !panel.working_memory.is_empty() {
+        header = header.child(
+            div()
+                .id(ElementId::Name("chat-wm-clear".into()))
+                .px_2()
+                .py_1()
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(rgb(pack(BORDER_SUBTLE)))
+                .cursor_pointer()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+                        this.clear_working_memory(cx);
+                    }),
+                )
+                .child(SharedString::from("Clear")),
+        );
+    }
+    col = col.child(header);
+
+    if panel.working_memory.is_empty() {
+        return col.child(empty_dropdown_row(
+            "No working memory yet — entries accrue as Wylde works this conversation.",
+        ));
+    }
+
+    for entry in &panel.working_memory {
+        col = col.child(working_memory_row(entry));
+    }
+    col
+}
+
+/// One working-memory row: a `kind` tag pill + the entry's summary line.
+fn working_memory_row(entry: &WorkingMemoryEntry) -> gpui::Div {
+    let summary = if entry.summary.is_empty() {
+        SharedString::from("(no detail)")
+    } else {
+        SharedString::from(entry.summary.clone())
+    };
+    div()
+        .flex()
+        .flex_row()
+        .gap_2()
+        .items_start()
+        .py_1()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(BRAND)))
+                .child(SharedString::from(entry.kind.clone())),
+        )
+        .child(
+            div()
+                .flex_1()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(summary),
+        )
 }
 
 /// Eject button — releases the active model from VRAM via `ollama.eject`.

@@ -476,6 +476,100 @@ impl ToolChunk {
     }
 }
 
+// ── Short-term (working) memory ───────────────────────────────────────
+
+/// One short-term ("working memory") entry for the active conversation.
+///
+/// The chat-turn driver appends these as it works — the harness
+/// convention is `{"kind": "<tool|file|decision|summary>", "at": <ts>,
+/// "data": {...}}` (see `Core/harness/memory/conversation.py::
+/// append_working_memory`).  `data` is freeform, so we project it down to
+/// a single human-readable `summary` line for the strip; the raw payload
+/// is intentionally dropped so the view can't accidentally surface a
+/// tool's full input/output.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WorkingMemoryEntry {
+    pub kind: String,
+    pub summary: String,
+}
+
+impl WorkingMemoryEntry {
+    pub fn from_value(v: &Value) -> Self {
+        let kind = v
+            .get("kind")
+            .and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("entry")
+            .to_owned();
+        Self {
+            kind,
+            summary: summarize_working_data(v.get("data")),
+        }
+    }
+}
+
+/// Collapse a freeform working-memory `data` value into one short line.
+/// Strings pass through; objects prefer a known descriptive field
+/// (`summary` / `text` / `title` / `path` / `name`) and fall back to a
+/// comma-joined key list; everything else is rendered compactly.
+fn summarize_working_data(data: Option<&Value>) -> String {
+    match data {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Object(map)) => {
+            for key in ["summary", "text", "title", "path", "name"] {
+                if let Some(s) = map.get(key).and_then(|x| x.as_str()) {
+                    if !s.is_empty() {
+                        return s.to_owned();
+                    }
+                }
+            }
+            map.keys().cloned().collect::<Vec<_>>().join(", ")
+        }
+        Some(other) => other.to_string(),
+    }
+}
+
+/// `memory.short_term.get` — the rolling working-memory buffer for
+/// `conversation_id`.  Reply shape is `{ working_memory: [...],
+/// conversation_id }`; a missing / non-array `working_memory` reads as
+/// an empty buffer (a conversation that hasn't accrued any yet).
+pub async fn fetch_working_memory(
+    conversation_id: &str,
+) -> Result<Vec<WorkingMemoryEntry>, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "memory.short_term.get",
+            "payload": { "conversation_id": conversation_id },
+        })),
+    )
+    .await?;
+    let Some(arr) = v.get("working_memory").and_then(|x| x.as_array()) else {
+        return Ok(Vec::new());
+    };
+    Ok(arr.iter().map(WorkingMemoryEntry::from_value).collect())
+}
+
+/// `memory.short_term.clear` — drop the working-memory buffer for
+/// `conversation_id`.  Returns whether anything was actually cleared
+/// (`{ cleared: bool, conversation_id }`).
+pub async fn clear_working_memory(conversation_id: &str) -> Result<bool, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "memory.short_term.clear",
+            "payload": { "conversation_id": conversation_id },
+        })),
+    )
+    .await?;
+    Ok(v.get("cleared").and_then(|x| x.as_bool()).unwrap_or(false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,5 +693,63 @@ mod tests {
         let _ = respond_consent;
         let _ = stream_turn;
         let _ = stream_consent_pending;
+        let _ = fetch_working_memory;
+        let _ = clear_working_memory;
+    }
+
+    #[test]
+    fn working_memory_entry_parses_object_data_with_summary() {
+        let e = WorkingMemoryEntry::from_value(&json!({
+            "kind": "tool",
+            "at": 1_700_000_000_i64,
+            "data": { "summary": "searched memory for 'rust'", "name": "memory.long_term.search" },
+        }));
+        assert_eq!(e.kind, "tool");
+        // `summary` wins over `name`.
+        assert_eq!(e.summary, "searched memory for 'rust'");
+    }
+
+    #[test]
+    fn working_memory_entry_falls_back_through_known_keys() {
+        // No `summary`/`text`/`title` → first present of path/name.
+        let e = WorkingMemoryEntry::from_value(&json!({
+            "kind": "file",
+            "data": { "path": "src/lib.rs", "bytes": 42 },
+        }));
+        assert_eq!(e.kind, "file");
+        assert_eq!(e.summary, "src/lib.rs");
+    }
+
+    #[test]
+    fn working_memory_entry_string_data_passes_through() {
+        let e = WorkingMemoryEntry::from_value(&json!({
+            "kind": "decision",
+            "data": "use the strangler fallback",
+        }));
+        assert_eq!(e.summary, "use the strangler fallback");
+    }
+
+    #[test]
+    fn working_memory_entry_defaults_kind_when_absent() {
+        let e = WorkingMemoryEntry::from_value(&json!({ "data": "x" }));
+        assert_eq!(e.kind, "entry");
+    }
+
+    #[test]
+    fn working_memory_entry_unknown_object_joins_keys() {
+        let e = WorkingMemoryEntry::from_value(&json!({
+            "kind": "raw",
+            "data": { "alpha": 1, "beta": 2 },
+        }));
+        // Order is the serde_json map order; both keys present.
+        assert!(e.summary.contains("alpha"));
+        assert!(e.summary.contains("beta"));
+    }
+
+    #[test]
+    fn working_memory_entry_missing_data_is_empty_summary() {
+        let e = WorkingMemoryEntry::from_value(&json!({ "kind": "summary" }));
+        assert_eq!(e.kind, "summary");
+        assert!(e.summary.is_empty());
     }
 }
