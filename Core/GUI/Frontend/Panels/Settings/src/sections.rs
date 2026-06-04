@@ -206,10 +206,68 @@ pub fn updates_section(prefs: &UpdatePrefs, current_version: &str, cx: &mut Cx) 
                 "Last checked",
                 &prefs
                     .last_checked
-                    .map(|ts| ts.to_string())
+                    .map(humanize_last_checked)
                     .unwrap_or_else(|| "never".into()),
             )),
     )
+}
+
+/// Render a persisted `last_checked` epoch as a human-readable relative
+/// time ("just now", "5 minutes ago", "3 days ago").  Before this the
+/// footer rendered `ts.to_string()` — a raw unix timestamp like
+/// `1717372800` leaking straight into the Settings UI.
+///
+/// The lifecycle daemon owns the stored value and may write it in
+/// seconds or milliseconds, so we normalise by magnitude (see
+/// [`humanize_since`]) before computing the delta.
+pub(crate) fn humanize_last_checked(ts: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    humanize_since(now, ts)
+}
+
+/// Pure relative-time bucket math, split out from [`humanize_last_checked`]
+/// so it's unit-testable without reading the wall clock.  Both `now_secs`
+/// and `ts` are unix epochs; a `ts` past the seconds-epoch ceiling
+/// (~year 33658) is treated as milliseconds and divided down.
+fn humanize_since(now_secs: u64, ts: u64) -> String {
+    // A seconds-epoch won't reach 1e12 until the year 33658, so anything
+    // at/over that threshold is a milliseconds value.
+    let ts_secs = if ts >= 1_000_000_000_000 { ts / 1000 } else { ts };
+    if ts_secs == 0 {
+        return "never".into();
+    }
+    // Future timestamp (clock skew) — clamp to "just now" rather than
+    // underflowing the subtraction below.
+    if ts_secs >= now_secs {
+        return "just now".into();
+    }
+    let delta = now_secs - ts_secs;
+    const MIN: u64 = 60;
+    const HOUR: u64 = 60 * MIN;
+    const DAY: u64 = 24 * HOUR;
+    if delta < MIN {
+        "just now".into()
+    } else if delta < HOUR {
+        let n = delta / MIN;
+        format!("{n} minute{} ago", plural(n))
+    } else if delta < DAY {
+        let n = delta / HOUR;
+        format!("{n} hour{} ago", plural(n))
+    } else {
+        let n = delta / DAY;
+        format!("{n} day{} ago", plural(n))
+    }
+}
+
+fn plural(n: u64) -> &'static str {
+    if n == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 /// Startup section — autostart toggle.  Single row.
@@ -469,5 +527,30 @@ mod tests {
     #[test]
     fn error_banner_renders() {
         let _ = error_banner("consent: pipe down");
+    }
+
+    #[test]
+    fn humanize_since_buckets() {
+        let now = 1_000_000_000u64;
+        assert_eq!(humanize_since(now, 0), "never");
+        assert_eq!(humanize_since(now, now), "just now");
+        // Future timestamp (clock skew) clamps rather than underflowing.
+        assert_eq!(humanize_since(now, now + 50), "just now");
+        assert_eq!(humanize_since(now, now - 30), "just now");
+        assert_eq!(humanize_since(now, now - 60), "1 minute ago");
+        assert_eq!(humanize_since(now, now - 5 * 60), "5 minutes ago");
+        assert_eq!(humanize_since(now, now - 3600), "1 hour ago");
+        assert_eq!(humanize_since(now, now - 5 * 3600), "5 hours ago");
+        assert_eq!(humanize_since(now, now - 86_400), "1 day ago");
+        assert_eq!(humanize_since(now, now - 3 * 86_400), "3 days ago");
+    }
+
+    #[test]
+    fn humanize_since_detects_millis() {
+        // `ts` one hour earlier than `now`, but expressed in milliseconds:
+        // the magnitude heuristic must divide it back to seconds.
+        let now = 2_000_000_000u64;
+        let ts_millis = (now - 3600) * 1000;
+        assert_eq!(humanize_since(now, ts_millis), "1 hour ago");
     }
 }

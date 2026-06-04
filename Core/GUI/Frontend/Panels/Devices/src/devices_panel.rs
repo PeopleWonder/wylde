@@ -11,8 +11,9 @@
 //!     instant the mobile finishes pairing.
 //!   * Paired list — one row per device with name, fingerprint,
 //!     paired-on date, last-seen pill, segmented tier control, recent-
-//!     action strip (placeholder until the verb lands), Rotate-token
-//!     + Revoke buttons.  Inline confirmation strips replace modals.
+//!     action strip (fed by `device_gate.recent_actions`, wired
+//!     2026-05-30), Rotate-token + Revoke buttons.  Inline
+//!     confirmation strips replace modals.
 
 use std::collections::HashMap;
 use std::time::Duration;
