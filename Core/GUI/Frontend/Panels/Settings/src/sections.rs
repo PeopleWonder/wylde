@@ -13,11 +13,12 @@
 //! at the call site, keeping the row builders reusable.
 
 use gpui::{
-    div, prelude::*, px, rgb, ElementId, FontWeight, MouseButton, SharedString, Stateful,
+    div, prelude::*, px, rgb, ElementId, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
+    SharedString, Stateful,
 };
 use wylde_theme::colors::{
-    BORDER_DEFAULT, BORDER_EMPHASIS, BORDER_SUBTLE, BRAND, BRAND_LIGHT, SURFACE_800, SURFACE_900,
-    TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    BORDER_DEFAULT, BORDER_EMPHASIS, BORDER_FOCUSED, BORDER_SUBTLE, BRAND, BRAND_LIGHT, SURFACE_800,
+    SURFACE_900, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
@@ -278,6 +279,104 @@ fn labeled_pill_row(
         .child(state_pill(value))
 }
 
+/// The push-to-talk hotkey row: a `(label, pill)` like [`labeled_pill_row`],
+/// but the pill is a *live-capture* affordance instead of a cycle.
+///
+/// Resting state shows the current chord on a brand pill (matching the
+/// other voice rows). Clicking arms capture — the panel focuses the pill
+/// and the pill swaps to a focus-ringed "Press any key combination…"
+/// prompt; the next chord (via the panel's `on_hotkey_key`) commits.
+/// `note` carries a transient reserved-key message shown beneath.
+///
+/// `track_focus` + `on_key_down` mirror the `TextInput` widget's
+/// keyboard-capture pattern — the only focusable elements in the panel.
+fn hotkey_capture_row(
+    focus: &FocusHandle,
+    capturing: bool,
+    value: &str,
+    note: Option<&str>,
+    cx: &mut Cx,
+) -> gpui::Div {
+    // The pill itself: focusable, so its `on_key_down` receives the chord
+    // while armed; click toggles capture on/off.
+    let display = if capturing {
+        crate::hotkey::CAPTURE_PROMPT
+    } else {
+        value
+    };
+    let mut pill = div()
+        .id("settings-voice-hotkey")
+        .cursor_pointer()
+        .rounded(px(4.0))
+        .border_1()
+        .px_2()
+        .py(px(2.0))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+        .track_focus(focus)
+        .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+            this.on_hotkey_key(ev, window, cx);
+        }))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _ev, window, cx| this.toggle_hotkey_capture(window, cx)),
+        )
+        .child(SharedString::from(display.to_owned()));
+
+    if capturing {
+        // Armed: muted prompt on the surface, with the focus ring.  The
+        // ring is alpha-bearing — pass it straight (no `pack`) so the
+        // hue composites instead of flattening to an opaque line.
+        pill = pill
+            .bg(rgb(pack(SURFACE_800)))
+            .border_color(BORDER_FOCUSED)
+            .text_color(rgb(pack(TEXT_SECONDARY)));
+    } else {
+        // Resting: brand pill, matching the other voice rows.
+        pill = pill
+            .bg(rgb(pack(BRAND)))
+            .border_color(rgb(pack(BORDER_DEFAULT)))
+            .text_color(rgb(pack(TEXT_PRIMARY)));
+    }
+
+    let top = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::SM))
+                .text_color(rgb(pack(TEXT_PRIMARY)))
+                .child(SharedString::from("Push-to-talk hotkey")),
+        )
+        .child(pill);
+
+    let mut row = div().flex().flex_col().gap_1().child(top);
+
+    // While armed, a one-line hint; if a reserved key was pressed, swap in
+    // the rejection note instead.
+    if capturing {
+        let hint = note.unwrap_or("Esc to cancel · Enter and Tab are reserved.");
+        row = row.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(if note.is_some() {
+                    BRAND_LIGHT
+                } else {
+                    TEXT_MUTED
+                })))
+                .child(SharedString::from(hint.to_owned())),
+        );
+    }
+
+    row
+}
+
 /// A small clickable button. `dim` greys it out while an action is in
 /// flight (the click handler also no-ops re-entrant clicks).
 fn action_button(id: impl Into<ElementId>, label: &str, dim: bool) -> Stateful<gpui::Div> {
@@ -453,18 +552,28 @@ pub fn ollama_section(o: &OllamaSettings) -> gpui::Div {
 
 /// Voice section (Slice 6) — capture mode, push-to-talk hotkey, STT
 /// backend preference, mic device, mic sensitivity, wake word, and a
-/// one-shot "Test mic" affordance. Each editable row is a pill the user
+/// one-shot "Test mic" affordance. Most editable rows are pills the user
 /// cycles (the panel owns the cycle order + the write); the wake-word
-/// enable is a toggle. Reads/writes go to `\\.\pipe\wylde-voice` via the
-/// `voice.get_config` / `voice.set_config` verbs.
+/// enable is a toggle; the push-to-talk hotkey is a *live-capture* pill
+/// (click to arm, press a chord to bind). Reads/writes go to
+/// `\\.\pipe\wylde-voice` via the `voice.get_config` / `voice.set_config`
+/// verbs.
 ///
 /// The whole section degrades gracefully: when the voice service is
 /// offline (`offline = true`) it renders on its defaults plus a note,
 /// and writes simply surface the pipe error in the page banner.
+///
+/// `hotkey_focus` / `capturing` / `hotkey_note` thread the hotkey
+/// widget's capture state down from the panel: the pill takes keyboard
+/// focus while armed and shows a prompt + any reserved-key note.
+#[allow(clippy::too_many_arguments)]
 pub fn voice_section(
     voice: &VoiceSettings,
     test: &VoiceTest,
     offline: bool,
+    hotkey_focus: &FocusHandle,
+    capturing: bool,
+    hotkey_note: Option<&str>,
     cx: &mut Cx,
 ) -> gpui::Div {
     let mut c = card().child(section_title(
@@ -493,13 +602,15 @@ pub fn voice_section(
         cx.listener(|this, _ev, _window, cx| this.cycle_voice_mode(cx)),
     ));
 
-    // Push-to-talk hotkey — cycles the preset chords. Only meaningful in
-    // push-to-talk mode, but shown always so the choice is discoverable.
-    c = c.child(labeled_pill_row(
-        "settings-voice-hotkey",
-        "Push-to-talk hotkey",
+    // Push-to-talk hotkey — live capture. Click to arm, then press the
+    // chord. Only meaningful in push-to-talk mode, but shown always so
+    // the choice is discoverable.
+    c = c.child(hotkey_capture_row(
+        hotkey_focus,
+        capturing,
         &voice.push_to_talk_hotkey,
-        cx.listener(|this, _ev, _window, cx| this.cycle_ptt_hotkey(cx)),
+        hotkey_note,
+        cx,
     ));
 
     // STT backend preference — Auto / CPU / NPU.

@@ -20,6 +20,7 @@
 //! the source of truth for the alpha — this crate runs side-by-side
 //! through the gpui rewrite cutover.
 
+pub mod hotkey;
 pub mod ipc;
 pub mod sections;
 pub mod settings_panel;

@@ -346,8 +346,12 @@ pub async fn read_ollama_settings() -> Result<OllamaSettings, String> {
 // optional: a failed read leaves the section on its defaults plus an
 // "offline" note rather than blocking the rest of the panel.
 
-/// Push-to-talk chord presets the picker cycles through. Mirrors
-/// `wylde_voice::config_persist::PTT_HOTKEY_PRESETS`.
+/// Well-known push-to-talk chords, kept as a back-compat seed list and
+/// the source of the shipped default (`"Ctrl+Space"`). The picker no
+/// longer *cycles* these — the hotkey row is now a live-capture widget
+/// (see `crate::hotkey`) — but the list still documents the persisted
+/// string style and anchors the default-value invariant in tests.
+/// Mirrors `wylde_voice::config_persist::PTT_HOTKEY_PRESETS`.
 pub const PTT_HOTKEY_PRESETS: &[&str] =
     &["Ctrl+Space", "Alt+Space", "Right Ctrl", "F8", "CapsLock"];
 
