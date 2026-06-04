@@ -27,23 +27,28 @@ EXCLUDED_DIRS: Tuple[str, ...] = (
 )
 
 
-# Files exempt from rule 1 (no_internal_http).  Gateway is the trust-
-# boundary HTTP service — all its routes legitimately speak HTTP.
-# Ollama / Memgraph clients talk to external systems on the local box.
+# Files exempt from rule 1 (no_internal_http).  The Ollama / Memgraph
+# clients talk to external systems on the local box; extensions may call
+# the Gateway boundary.
 NO_HTTP_EXEMPT_PREFIXES: Tuple[str, ...] = (
-    "Gateway",  # the boundary
     "Core/harness/backend/ollama_client.py",  # external LLM daemon
     "Core/harness/model_registry/_routing/ollama_watcher.py",
     "Core/harness/backend/request_building.py",  # builds Ollama bodies
     "Core/harness/tooling/tools/ollama",  # /api/* helpers
     "Core/harness/tooling/tools/visual/browser_",  # Playwright HTTP
     "Core/Memgraph",  # Bolt (7687) is DB wire protocol
-    "Core/resource_monitor",  # diagnostics, exposes its own HTTP
-    "VPN",  # WireGuard / STUN / TURN
     "Extensions",  # extensions can call Gateway
     # (The old `Core/GUI/src-tauri/src` exemption was dropped at the
     # slice-11 cutover — that tree is deleted, and rule 1 walks only
     # .py/.svelte/.js/.ts, so the gpui Rust GUI isn't scanned here.)
+    #
+    # The `Gateway`, `VPN`, and `Core/resource_monitor` exemptions were
+    # dropped once the strangler deleted their Python sources — Gateway
+    # (boundary HTTP), VPN (WireGuard/STUN/TURN), and the vram-broker
+    # (resource_monitor, deleted in 7072947). No .py/.svelte/.js/.ts
+    # source remains under those prefixes, so the exemptions matched
+    # nothing — same cleanup as the earlier device_gate / vram_broker
+    # prunes.
 )
 
 
