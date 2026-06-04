@@ -20,7 +20,10 @@
 //! via `on_window_should_close`.
 //!
 //! Pieces still post-alpha:
-//!   * Updater + auto-launch + installer (the slice-spec pin-point).
+//!   * Updater + installer (the slice-spec pin-point).  Auto-launch
+//!     already shipped: the Settings panel's Phase 12.3 "Launch at
+//!     login" toggle drives the `auto-launch` crate directly
+//!     (`wylde-panel-settings`'s `ipc::set_autostart_enabled`).
 
 use std::sync::Arc;
 
