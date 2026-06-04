@@ -114,7 +114,6 @@ async fn unregistered_verb_returns_no_action_for_strangler_fallback() {
     // reverts to in-process Python instead of bricking the call.
     for verb in [
         "memory.workspace.list",
-        "memory.short_term.get",
         "memory.reflect",
         "conversations.new",
         "prompts.list",
@@ -178,6 +177,98 @@ async fn memory_long_term_save_then_list_round_trips_over_live_pipe() {
     match prior {
         Some(v) => std::env::set_var("WYLDE_DATA_DIR", v),
         None => std::env::remove_var("WYLDE_DATA_DIR"),
+    }
+}
+
+#[tokio::test]
+async fn memory_short_term_append_get_clear_round_trips_over_live_pipe() {
+    let _g = registry_guard().await;
+
+    // Per-test tempdir so this run doesn't touch the user's real
+    // `<data_dir>/conversations/`. Clear CONVERSATIONS_DIR too in case
+    // the runner has it set — it would bypass the tempdir otherwise.
+    let td = tempfile::tempdir().expect("tempdir");
+    let prior = std::env::var_os("WYLDE_DATA_DIR");
+    let prior_conv = std::env::var_os("CONVERSATIONS_DIR");
+    std::env::remove_var("CONVERSATIONS_DIR");
+    std::env::set_var("WYLDE_DATA_DIR", td.path());
+
+    let (service, server, task) = spin_up_pipe().await;
+    let cid = "e2e-short-term";
+
+    // Empty buffer for a never-seen conversation.
+    let empty = ipc::send_action(
+        &service,
+        "memory.short_term.get",
+        json!({"conversation_id": cid}),
+    )
+    .await;
+    assert!(empty.ok, "get reply: {empty:?}");
+    assert_eq!(empty.data["conversation_id"], cid);
+    assert_eq!(empty.data["working_memory"].as_array().unwrap().len(), 0);
+
+    // Append two entries.
+    let appended = ipc::send_action(
+        &service,
+        "memory.short_term.append",
+        json!({"conversation_id": cid, "entry": {"kind": "tool", "data": {"name": "git_status"}}}),
+    )
+    .await;
+    assert!(appended.ok, "append reply: {appended:?}");
+    assert_eq!(appended.data["working_memory"].as_array().unwrap().len(), 1);
+
+    let _ = ipc::send_action(
+        &service,
+        "memory.short_term.append",
+        json!({"conversation_id": cid, "entry": {"kind": "decision", "data": "use SQLite"}}),
+    )
+    .await;
+
+    // Read back, in order.
+    let got = ipc::send_action(
+        &service,
+        "memory.short_term.get",
+        json!({"conversation_id": cid}),
+    )
+    .await;
+    assert!(got.ok);
+    let entries = got.data["working_memory"].as_array().expect("array");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["kind"], "tool");
+    assert_eq!(entries[1]["kind"], "decision");
+
+    // Clear → true, then empty + clear → false.
+    let cleared = ipc::send_action(
+        &service,
+        "memory.short_term.clear",
+        json!({"conversation_id": cid}),
+    )
+    .await;
+    assert!(cleared.ok);
+    assert_eq!(cleared.data["cleared"], true);
+
+    let again = ipc::send_action(
+        &service,
+        "memory.short_term.clear",
+        json!({"conversation_id": cid}),
+    )
+    .await;
+    assert_eq!(again.data["cleared"], false);
+
+    // Bad payload surfaces bad_request, not a transport error.
+    let bad = ipc::send_action(&service, "memory.short_term.get", json!({})).await;
+    assert!(!bad.ok);
+    assert_eq!(bad.error.as_ref().unwrap().code, "bad_request");
+
+    server.stop();
+    let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
+
+    match prior {
+        Some(v) => std::env::set_var("WYLDE_DATA_DIR", v),
+        None => std::env::remove_var("WYLDE_DATA_DIR"),
+    }
+    if let Some(v) = prior_conv {
+        std::env::set_var("CONVERSATIONS_DIR", v);
     }
 }
 

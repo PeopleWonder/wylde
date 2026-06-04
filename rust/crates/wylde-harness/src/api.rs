@@ -49,6 +49,7 @@ use wylde_shared::ipc::{Reply, StreamSender};
 use crate::config::Config;
 use crate::memory::long_term::{self, LongTermMemory, SaveError};
 use crate::memory::rag::actions as rag_actions;
+use crate::memory::short_term::actions as short_term_actions;
 use crate::memory::workspaces::actions as workspace_actions;
 use crate::model_registry::actions as model_actions;
 use crate::tooling::consent::{self, Decision};
@@ -111,6 +112,11 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_workspaces_get_persona(&self, payload: Value) -> Reply;
     async fn memory_workspaces_set_persona(&self, payload: Value) -> Reply;
     async fn memory_workspaces_delete(&self, payload: Value) -> Reply;
+
+    // ── memory.short_term.* (3 verbs; conversation working memory) ───
+    async fn memory_short_term_get(&self, payload: Value) -> Reply;
+    async fn memory_short_term_append(&self, payload: Value) -> Reply;
+    async fn memory_short_term_clear(&self, payload: Value) -> Reply;
 
     // ── consent.* (6 verbs + 1 streaming; Phase 12.2 + 12.6) ─────────
     async fn consent_list(&self, payload: Value) -> Reply;
@@ -403,6 +409,21 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn memory_workspaces_delete(&self, payload: Value) -> Reply {
         workspace_actions::handle_delete(payload).await
+    }
+
+    // ── memory.short_term.* ──────────────────────────────────────────
+    // Pass-throughs — JSON shaping lives in short_term::actions.
+
+    async fn memory_short_term_get(&self, payload: Value) -> Reply {
+        short_term_actions::handle_get(payload).await
+    }
+
+    async fn memory_short_term_append(&self, payload: Value) -> Reply {
+        short_term_actions::handle_append(payload).await
+    }
+
+    async fn memory_short_term_clear(&self, payload: Value) -> Reply {
+        short_term_actions::handle_clear(payload).await
     }
 
     // ── consent.* (Phase 12.2) ───────────────────────────────────────

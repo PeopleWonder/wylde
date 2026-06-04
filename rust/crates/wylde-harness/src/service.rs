@@ -9,9 +9,9 @@
 //!
 //! See [`crate::pipe::ALL_PIPE_ACTIONS`] for the full list. The
 //! Python `Core/harness/pipe/` modules whose subsystem hasn't been
-//! ported yet (memory.workspace.*, memory.short_term.*, prompts.*,
-//! conversations.*, models.*, rag.workspaces.*, memory.reflect,
-//! memory.long_term.search) are deliberately NOT registered here —
+//! ported yet (memory.workspace.*, prompts.*,
+//! conversations.*, rag.workspaces.*, memory.reflect) are deliberately
+//! NOT registered here —
 //! they surface as `no_action` from the IPC dispatcher, which the
 //! Python strangler's transport-code fallback treats as a signal to
 //! revert to the in-process Python driver. See
@@ -107,6 +107,10 @@ mod tests {
             "memory.workspaces.get_persona",
             "memory.workspaces.set_persona",
             "memory.workspaces.delete",
+            // memory.short_term.* — conversation working memory
+            "memory.short_term.get",
+            "memory.short_term.append",
+            "memory.short_term.clear",
             // models.* — harness Slice 3a
             "models.list",
             "models.get_profile",
