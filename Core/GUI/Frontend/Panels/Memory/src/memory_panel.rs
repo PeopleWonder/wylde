@@ -544,13 +544,12 @@ fn short_term_placeholder() -> gpui::Div {
                 .text_size(px(size::XS))
                 .text_color(rgb(pack(TEXT_MUTED)))
                 .child(SharedString::from(
-                    "Short-term memory is the rolling context of the active chat. \
-                     The harness serves `memory.short_term.{get,clear}` (Python), but \
-                     they're conversation-scoped — they need a `conversation_id`, and \
-                     this global Memory browser has no active-conversation context to \
-                     pass. The live working-memory view belongs in the Chat panel, \
-                     which owns the conversation id; surfacing it here waits on a \
-                     cross-panel active-conversation channel.",
+                    "Short-term memory is the rolling context of the active chat — \
+                     conversation-scoped, so it lives with the surface that owns the \
+                     conversation id: the Chat panel. Open a chat and toggle its \
+                     \"memory\" pill to see (and clear) the live working-memory buffer \
+                     for that conversation. This global browser intentionally stays \
+                     focused on the long-term and workspace layers.",
                 )),
         )
 }
