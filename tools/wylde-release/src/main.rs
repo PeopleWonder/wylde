@@ -39,6 +39,10 @@ const DEFAULT_KEY_PATH: &str = "rust/crates/wylde-updater/keys/wylde-signing.key
 /// Env var an operator can set instead of passing `--key` every time.
 const KEY_PATH_ENV: &str = "RSIGN_KEY_PATH";
 
+/// Env var that turns on passwordless signing without the `-W` flag (set to
+/// `1`/`true`/`yes`). The CLI flag still wins when explicitly given.
+const PASSWORDLESS_ENV: &str = "RSIGN_PASSWORDLESS";
+
 /// The public repo the in-app updater polls; `publish` uploads here.
 const DEFAULT_REPO: &str = "PeopleWonder/wylde";
 
@@ -78,6 +82,12 @@ enum Cmd {
         /// default in-repo `keys/` path.
         #[arg(long)]
         key: Option<PathBuf>,
+        /// The signing key is passwordless (generated with `rsign generate
+        /// -W`). Passes `-W` to `rsign sign` so it never prompts on the
+        /// console — required for the project's production key and for
+        /// unattended release runs. `RSIGN_PASSWORDLESS=1` sets it too.
+        #[arg(short = 'W', long)]
+        passwordless: bool,
     },
 
     /// Sign (if needed) and publish a release to GitHub Releases.
@@ -109,6 +119,10 @@ enum Cmd {
         /// `$RSIGN_KEY_PATH`, then the default in-repo `keys/` path.
         #[arg(long)]
         key: Option<PathBuf>,
+        /// The signing key is passwordless — passes `-W` to any
+        /// sign-if-missing step (see `sign --passwordless`).
+        #[arg(short = 'W', long)]
+        passwordless: bool,
         /// Target `owner/repo`. Defaults to the public updater repo.
         #[arg(long, default_value = DEFAULT_REPO)]
         repo: String,
@@ -158,9 +172,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Cmd::GenerateKey { key, comment } => generate_key(key, &comment),
-        Cmd::Sign { binary, key } => {
+        Cmd::Sign {
+            binary,
+            key,
+            passwordless,
+        } => {
             let key = resolve_key_path(key);
-            let sig = sign(&binary, &key)?;
+            let sig = sign(&binary, &key, resolve_passwordless(passwordless))?;
             println!("signed: {} -> {}", binary.display(), sig.display());
             Ok(())
         }
@@ -170,6 +188,7 @@ fn main() -> Result<()> {
             binary,
             extra_asset,
             key,
+            passwordless,
             repo,
             notes,
             notes_file,
@@ -180,6 +199,7 @@ fn main() -> Result<()> {
             &binary,
             &extra_asset,
             key,
+            resolve_passwordless(passwordless),
             &repo,
             notes.as_deref(),
             notes_file.as_deref(),
@@ -303,8 +323,27 @@ fn generate_key(key: Option<PathBuf>, comment: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolve whether to sign passwordlessly: the `-W`/`--passwordless` flag
+/// wins; otherwise honour `RSIGN_PASSWORDLESS` (`1`/`true`/`yes`).
+fn resolve_passwordless(flag: bool) -> bool {
+    if flag {
+        return true;
+    }
+    matches!(
+        std::env::var(PASSWORDLESS_ENV)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes"
+    )
+}
+
 /// Sign `binary` with `key`, returning the `.minisig` path written.
-fn sign(binary: &Path, key: &Path) -> Result<PathBuf> {
+///
+/// `passwordless` adds `-W` so `rsign` never prompts on the console — needed
+/// for the project's passwordless production key and unattended runs.
+fn sign(binary: &Path, key: &Path, passwordless: bool) -> Result<PathBuf> {
     if !binary.exists() {
         bail!("binary to sign does not exist: {}", binary.display());
     }
@@ -316,15 +355,19 @@ fn sign(binary: &Path, key: &Path) -> Result<PathBuf> {
         );
     }
     let sig = sig_path_for(binary);
-    run(Command::new("rsign").args([
-        "sign",
-        "-s",
-        &key.to_string_lossy(),
-        "-x",
-        &sig.to_string_lossy(),
-        &binary.to_string_lossy(),
-    ]))
-    .context("rsign sign failed (is `rsign` installed and on PATH?)")?;
+    let mut args: Vec<String> = vec!["sign".into()];
+    if passwordless {
+        args.push("-W".into());
+    }
+    args.extend([
+        "-s".into(),
+        key.to_string_lossy().into_owned(),
+        "-x".into(),
+        sig.to_string_lossy().into_owned(),
+        binary.to_string_lossy().into_owned(),
+    ]);
+    run(Command::new("rsign").args(&args))
+        .context("rsign sign failed (is `rsign` installed and on PATH?)")?;
     Ok(sig)
 }
 
@@ -335,6 +378,7 @@ fn publish(
     binary: &Path,
     extra_assets: &[PathBuf],
     key: Option<PathBuf>,
+    passwordless: bool,
     repo: &str,
     notes: Option<&str>,
     notes_file: Option<&Path>,
@@ -358,14 +402,15 @@ fn publish(
         if !sig.exists() {
             if dry_run {
                 println!(
-                    "[dry-run] would sign: rsign sign -s {} -x {} {}",
+                    "[dry-run] would sign: rsign sign {}-s {} -x {} {}",
+                    if passwordless { "-W " } else { "" },
                     key.display(),
                     sig.display(),
                     asset.display()
                 );
             } else {
                 println!("No signature at {} — signing first…", sig.display());
-                sign(asset, &key)?;
+                sign(asset, &key, passwordless)?;
             }
         }
         asset_paths.push(asset.to_path_buf());
@@ -616,6 +661,20 @@ mod tests {
             }
             other => panic!("expected Publish, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_passwordless_flag_wins_then_env() {
+        // Explicit flag is always honoured.
+        assert!(resolve_passwordless(true));
+        // Without the flag, the env var decides.
+        std::env::remove_var(PASSWORDLESS_ENV);
+        assert!(!resolve_passwordless(false));
+        std::env::set_var(PASSWORDLESS_ENV, "1");
+        assert!(resolve_passwordless(false));
+        std::env::set_var(PASSWORDLESS_ENV, "no");
+        assert!(!resolve_passwordless(false));
+        std::env::remove_var(PASSWORDLESS_ENV);
     }
 
     #[test]
