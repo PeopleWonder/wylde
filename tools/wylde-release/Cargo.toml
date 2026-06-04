@@ -1,0 +1,47 @@
+# `wylde-release` — the dev-machine-only sign + publish tool for the
+# Phase 12.5 self-updater (slice 3b).
+#
+# DELIBERATELY STANDALONE.  This crate is *not* a member of either the
+# backend workspace (`rust/Cargo.toml`) or the GUI workspace
+# (`Core/GUI/Cargo.toml`):
+#
+#   * It only ever runs on Aaron's release machine — it has no place in
+#     the shipped dependency graph, and pulling `clap` into the backend
+#     lock file for a tool no user ever runs would be noise.
+#   * It shells out to `rsign` and `gh` via `std::process::Command`.  The
+#     repo's `no_external_process_spawn_rust` linter only walks
+#     `rust/crates/<crate>/src/`, so living under `tools/` keeps the spawn
+#     calls out of its path — the same reasoning that puts
+#     `rust/build-support/wylde-prebuild-guard` outside `crates/`.
+#
+# The empty `[workspace]` table makes that standalone status explicit:
+# `cargo` stops walking up for a parent workspace here, so this crate has
+# its own lock file and `cargo test --workspace` over the backend/GUI
+# trees never tries to build it.
+[workspace]
+
+[package]
+name = "wylde-release"
+description = "Dev-machine CLI to sign and publish Wylde GUI builds to GitHub Releases for the Phase 12.5 self-updater. Wraps `rsign` (minisign signing) and `gh` (release upload); not shipped to users."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+authors = ["Wylde User"]
+
+[[bin]]
+name = "wylde-release"
+path = "src/main.rs"
+
+[dependencies]
+# Arg parsing — derive API keeps the subcommand table declarative.
+clap = { version = "4", features = ["derive"] }
+# Coarse error type; every subcommand bubbles up `anyhow::Result` and
+# `main` prints the chain.
+anyhow = "1"
+# The updater crate, by path, purely so `verify-public-key` can compare a
+# candidate against the key actually baked into the shipped binary
+# (`wylde_updater::PUBLIC_KEY`). Resolves its own workspace inheritance
+# against `rust/Cargo.toml` regardless of this crate's standalone status —
+# the GUI workspace depends on it the same way.
+wylde-updater = { path = "../../rust/crates/wylde-updater" }
