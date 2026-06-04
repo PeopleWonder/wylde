@@ -108,7 +108,7 @@ build-support/wylde-prebuild-guard — opt-in build-script helper, see §15
 | `wylde-vpn` | `\\.\pipe\wylde-vpn` | python | `WYLDE_WYLDE_VPN_IMPL` | `tunnel/`, `nat/`, `pairing.rs`, `peers/`, `discovery/`, `monitoring/`. WyldeLink mesh + mDNS + WireGuard wrapper. |
 | `wylde-extension-bridge` | `\\.\pipe\wylde-extension-bridge` | rust | n/a | Browser-extension host + MCP surface (`mcp/`) — discovers per-extension manifests, routes requests. |
 | `wylde-harness` | `\\.\pipe\wylde-harness` | rust (5.D flip) | `WYLDE_WYLDE_HARNESS_IMPL` and `WYLDE_HARNESS_IMPL` | The chat brain. See §3. |
-| `wylde-voice` | `\\.\pipe\wylde-voice` | **rust (11.E flip 2026-05-27)** | `WYLDE_WYLDE_VOICE_IMPL` and `WYLDE_VOICE_IMPL` | Whisper STT (`transcribe/`) + Kokoro TTS (`synth/`) + cpal mic + openWakeWord + lease integration. 8 GUI-facing voice actions ported in Phase 11.E. Python `Voice/` deletion punchlisted 2026-06-10 to 2026-06-24. |
+| `wylde-voice` | `\\.\pipe\wylde-voice` | rust | n/a | Whisper STT (`transcribe/`) + Kokoro TTS (`synth/`) + cpal mic + openWakeWord + lease integration. 8 GUI-facing voice actions ported in Phase 11.E. **Rust-only since the Phase 11.E cutover** — the Python `Voice/` tree was deleted, the `WYLDE_WYLDE_VOICE_IMPL` / `WYLDE_VOICE_IMPL` rollback knob dropped, and the live session STT/TTS paths moved in-process (the orchestrator calls `voice.transcribe` / `voice.synthesize` directly instead of round-tripping the retired harness `models.transcribe` / `models.synthesize`). |
 
 `wylde-shared` is the only library-only crate; every other crate has both `lib.rs` and `main.rs` and ships as a service binary. The `actions/` (or single `actions.rs`) module per crate is where pipe verbs are registered onto the shared `ipc::server` registry.
 

@@ -15,9 +15,14 @@ still gated off (transport-class error). Set
 ``WYLDE_HARNESS_MODELS_IMPL=python`` to revert.
 
 The two remaining verbs — ``models.transcribe`` / ``models.synthesize`` —
-stay Python-only: they drive the Voice STT/TTS engines, which aren't hosted
-in the harness crate, so there's no Rust handler to forward to. They are
-deliberately excluded from :data:`_FORWARD_ACTIONS`.
+were **retired in the Phase 11.E voice cutover**. They used to drive the
+Python ``Voice`` STT/TTS engines (the Voice service round-tripped audio
+through this pipe). The Python ``Voice/`` tree was deleted once
+``wylde-voice`` moved Whisper STT and Kokoro TTS in-process, and the voice
+orchestrator now calls ``voice.transcribe`` / ``voice.synthesize`` on the
+``wylde-voice`` service directly. The handlers stay registered (so the verb
+names resolve) but return ``unavailable`` — there is no engine here to
+drive. They remain excluded from :data:`_FORWARD_ACTIONS`.
 
 Two deviations from the ``_chat.py`` precedent, both deliberate:
 
@@ -217,116 +222,40 @@ def _models_list_action(payload: Any) -> Dict[str, Any]:
 
 def _models_transcribe_action(payload: Any) -> Dict[str, Any]:
     """Speech-to-text. Voice service hits this with audio bytes; the
-    harness runs Whisper (or whatever STT engine the deployment
-    configured) and returns the transcript.
+    harness used to run Whisper here via the Python ``Voice`` engine.
 
-    Payload shape: ``{audio_b64, sample_rate?, sample_dtype?,
-    language?, model?}``. Audio is base64-encoded so msgpack envelopes
-    round-trip cleanly. ``sample_dtype`` is ``"int16"`` (default —
-    matches the Voice service's ``record.py`` raw mic output) or
-    ``"float32"``.
-
-    The implementation lives at ``Voice.transcribe.Transcriber`` for
-    now — that's a transitional path noted in the design (Voice owns
-    the code; clients reach it ONLY through this pipe action). A
-    follow-up will move the engine into the harness proper.
+    **Retired in the Phase 11.E voice cutover.** The Python ``Voice/``
+    tree that backed this action was deleted once ``wylde-voice`` moved
+    Whisper STT in-process; the voice orchestrator now calls the
+    ``voice.transcribe`` action on the ``wylde-voice`` service directly,
+    so this harness verb no longer has an engine to drive. It stays
+    registered (the verb name still resolves) but always returns
+    ``unavailable``.
     """
-    p = _payload_dict(payload)
-    audio_b64 = p.get("audio_b64")
-    if not isinstance(audio_b64, str) or not audio_b64:
-        raise _ActionError("bad_request", "audio_b64 is required")
-    import base64
-
-    try:
-        audio_bytes = base64.b64decode(audio_b64)
-    except Exception as exc:  # noqa: BLE001
-        raise _ActionError("bad_request", f"audio_b64 decode failed: {exc}")
-    language = p.get("language") if isinstance(p.get("language"), str) else None
-    model = p.get("model") if isinstance(p.get("model"), str) else None
-
-    try:
-        from Voice import transcribe as _voice_transcribe
-        from Voice.config import load as _voice_config_load
-        import numpy as _np
-    except ImportError as exc:
-        raise _ActionError("unavailable", f"transcribe backend not importable: {exc}")
-
-    sample_dtype = p.get("sample_dtype") or "int16"
-    try:
-        if sample_dtype == "float32":
-            audio = _np.frombuffer(audio_bytes, dtype=_np.float32)
-        else:
-            audio_i16 = _np.frombuffer(audio_bytes, dtype=_np.int16)
-            audio = audio_i16.astype(_np.float32) / 32768.0
-    except Exception as exc:  # noqa: BLE001
-        raise _ActionError("bad_request", f"audio decode failed: {exc}")
-
-    cfg = _voice_config_load()
-    transcriber = _voice_transcribe.Transcriber(cfg.stt)
-    if not getattr(transcriber, "loaded", False):
-        try:
-            transcriber.load()
-        except Exception as exc:  # noqa: BLE001
-            raise _ActionError("unavailable", f"STT engine load failed: {exc}")
-    try:
-        text = transcriber.transcribe(audio, language=language)
-    except Exception as exc:  # noqa: BLE001
-        raise _ActionError("transcribe_failed", str(exc))
-    return {
-        "text": text or "",
-        "model": model or getattr(cfg.stt, "model", "") or "",
-        "sample_rate": int(p.get("sample_rate") or 16000),
-    }
+    raise _ActionError(
+        "unavailable",
+        "models.transcribe is retired — Whisper STT moved in-process to "
+        "the wylde-voice service; call voice.transcribe instead",
+    )
 
 
 def _models_synthesize_action(payload: Any) -> Dict[str, Any]:
-    """Text-to-speech. Voice hits this with a string; the harness
-    returns audio bytes (base64-encoded float32 PCM at the
-    synthesizer's native sample rate).
+    """Text-to-speech. Voice used to hit this with a string and get back
+    audio bytes from the Python ``Voice`` Kokoro engine.
 
-    Same transitional note as ``models.transcribe``: the implementation
-    lives under ``Voice/`` for now and is accessible only via this
-    pipe action. Voice's own orchestrator NEVER imports the engine
-    directly — it always round-trips through the harness pipe so the
-    architectural separation the Wylde user locked in holds at the API level.
+    **Retired in the Phase 11.E voice cutover.** The Python ``Voice/``
+    tree that backed this action was deleted once ``wylde-voice`` moved
+    Kokoro TTS in-process; the voice orchestrator now calls the
+    ``voice.synthesize`` action on the ``wylde-voice`` service directly,
+    so this harness verb no longer has an engine to drive. It stays
+    registered (the verb name still resolves) but always returns
+    ``unavailable``.
     """
-    p = _payload_dict(payload)
-    text = p.get("text")
-    if not isinstance(text, str) or not text.strip():
-        raise _ActionError("bad_request", "text is required")
-    voice = p.get("voice") if isinstance(p.get("voice"), str) else None
-    speed = p.get("speed")
-    if not isinstance(speed, (int, float)):
-        speed = None
-
-    try:
-        from Voice import synthesize as _voice_synth
-        from Voice.config import load as _voice_config_load
-        import numpy as _np
-    except ImportError as exc:
-        raise _ActionError("unavailable", f"TTS backend not importable: {exc}")
-
-    cfg = _voice_config_load()
-    synth = _voice_synth.Synthesizer(cfg.tts)
-    if not getattr(synth, "loaded", False):
-        try:
-            synth.load()
-        except Exception as exc:  # noqa: BLE001
-            raise _ActionError("unavailable", f"TTS engine load failed: {exc}")
-    try:
-        audio = synth.synthesize(text, voice=voice, speed=speed)
-    except Exception as exc:  # noqa: BLE001
-        raise _ActionError("synthesize_failed", str(exc))
-    audio = _np.asarray(audio, dtype=_np.float32)
-    import base64
-
-    audio_b64 = base64.b64encode(audio.tobytes()).decode("ascii")
-    return {
-        "audio_b64": audio_b64,
-        "sample_rate": int(getattr(synth, "sample_rate", 24000)),
-        "format": "float32_pcm",
-        "voice": voice or "",
-    }
+    raise _ActionError(
+        "unavailable",
+        "models.synthesize is retired — Kokoro TTS moved in-process to "
+        "the wylde-voice service; call voice.synthesize instead",
+    )
 
 
 def _models_get_profile_action(payload: Any) -> Dict[str, Any]:

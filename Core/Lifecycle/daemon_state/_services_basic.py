@@ -4,13 +4,16 @@ Memgraph, Voice, extension_bridge, memory_scheduler — four
 daemon-managed components. Memgraph and the memory scheduler have NO
 strangler-fig impl switch (Memgraph supervises a Neo4j JVM and stays
 Python-only; the scheduler is an in-process Python thread with no Rust
-equivalent). Voice and extension_bridge ARE impl-dispatched via
-``WYLDE_<SERVICE>_IMPL`` — Voice defaults to ``rust`` after the Phase
-11.E cutover (2026-05-27), extension_bridge defaults to ``python``
-pending its dogfood window. Each ``_start_X`` boots the service as a
-subprocess (or in-process thread for the scheduler) and records the
-spawn so orphan-detection knows about it; each ``_stop_X`` sends the
-OS-appropriate graceful signal, waits, and force-kills on timeout.
+equivalent). Voice is now Rust-only — the Python ``Voice/`` tree was
+deleted in the Phase 11.E cutover, so ``_start_voice`` spawns the
+``wylde-voice`` binary with no Python fallback (same shape as
+device_gate/vram_broker/gateway). extension_bridge is still
+impl-dispatched via ``WYLDE_WYLDE_EXTENSION_BRIDGE_IMPL`` (defaults to
+``python`` pending its dogfood window). Each ``_start_X`` boots the
+service as a subprocess (or in-process thread for the scheduler) and
+records the spawn so orphan-detection knows about it; each ``_stop_X``
+sends the OS-appropriate graceful signal, waits, and force-kills on
+timeout.
 
 Split out of :mod:`._services` so that file stays under the file-size
 cap — the same move that pulled the strangler-fig helpers into
@@ -136,19 +139,17 @@ def _stop_memgraph() -> None:
 def _start_voice() -> None:
     """Boot Voice as a subprocess of the Lifecycle daemon.
 
-    Phase 11 strangler-fig: the historical Python impl (``Voice.run``,
-    sounddevice + faster-whisper + kokoro pipeline) and the Rust port
-    (``wylde-voice``, cpal + ort + openWakeWord) coexist. Impl is
-    selected via ``WYLDE_WYLDE_VOICE_IMPL=python|rust``. Default is
-    ``rust`` — Slice 11.E+ (2026-05-27) flipped it after the eight
-    GUI-facing actions (``voice.toggle`` / ``voice.set_mode`` / friends)
-    were ported. Both impls bind the SAME ``\\.\\pipe\\wylde-voice`` and
-    accept the SAME action shape, so only one runs at a time and GUI
-    routing is unchanged. ``WYLDE_WYLDE_VOICE_IMPL=python`` is the
-    rollback path during the strangler-fig soak; the Python ``Voice/``
-    tree stays on disk for that window. This mirrors the Rust daemon's
-    ``wylde-lifecycle::services::start_voice`` (``default = Rust`` via
-    ``impl_for_with_default``) so behaviour is consistent regardless of
+    Rust-only since the Phase 11.E cutover: the historical Python impl
+    (``Voice.run`` — sounddevice + faster-whisper + kokoro) was DELETED
+    once the Rust port (``wylde-voice``, cpal + ort Whisper/Kokoro +
+    openWakeWord) reached parity and the live session STT/TTS paths moved
+    in-process (the orchestrator calls ``voice.transcribe`` /
+    ``voice.synthesize`` directly instead of round-tripping to the Python
+    harness). There is no Python fallback — a missing Rust binary means
+    voice simply doesn't start (the dashboard paints it down).
+    ``WYLDE_WYLDE_VOICE_IMPL`` no longer has a ``python`` target. This
+    mirrors the Rust daemon's ``wylde-lifecycle::services::start_voice``
+    (``python_module: None``) so behaviour is consistent regardless of
     which daemon (``WYLDE_LIFECYCLE_IMPL``) is running.
 
     NO-SPAWN MODE (test/parity only — see the no-spawn warning in
@@ -156,9 +157,7 @@ def _start_voice() -> None:
     handle and forks nothing.
     """
     if _ds.nospawn_enabled():
-        _ds._voice_proc = _ds._NoSpawnProc(
-            "wylde-voice", impl=_impl_for("wylde-voice", default="rust")
-        )
+        _ds._voice_proc = _ds._NoSpawnProc("wylde-voice", impl="rust")
         _lc_logger.info(
             "voice: NO-SPAWN — would-have-spawned recorded; no child forked"
         )
@@ -166,61 +165,26 @@ def _start_voice() -> None:
     if _ds._voice_proc is not None and _ds._voice_proc.poll() is None:
         return  # already running
 
-    impl_choice = _impl_for("wylde-voice", default="rust")
-    rust_bin = _rust_binary_path("wylde-voice") if impl_choice == "rust" else None
-
-    if impl_choice == "rust" and rust_bin is not None:
-        proc = _spawn_rust_service(
-            service="wylde-voice",
-            rust_bin=rust_bin,
-        )
-        if proc is not None:
-            _ds._voice_proc = proc
-            _lc_logger.info("voice: spawned impl=rust pid=%d", proc.pid)
-            _ds._record_spawn("wylde-voice", proc.pid, impl="rust")
-            return
-        _lc_logger.warning("voice: rust spawn failed; falling back to python")
-    elif impl_choice == "rust":
+    rust_bin = _rust_binary_path("wylde-voice")
+    if rust_bin is None:
         _lc_logger.warning(
-            "voice: default impl=rust but no binary found; falling back to "
-            "python (rollback path) — build with "
-            "`cargo build --release -p wylde-voice` to engage rust"
+            "voice: no rust binary found; voice will not start — the Python "
+            "Voice package was removed, so build with "
+            "`cargo build --release -p wylde-voice`"
         )
-
-    # Python branch (rollback during soak; also covers the rust-fallback
-    # case when no binary is on disk).
-    cmd = [sys.executable, "-m", "Voice.run"]
-    env = os.environ.copy()
-    env.setdefault("WYLDE_SERVICE_NAME", "wylde-voice")
-    namespace_root = str(WYLDE_ROOT.parent)
-    existing = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = (
-        namespace_root + os.pathsep + existing if existing else namespace_root
-    )
-
-    creation_flags = 0
-    if sys.platform == "win32":
-        creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
-
-    try:
-        _ds._voice_proc = subprocess.Popen(
-            cmd,
-            cwd=str(WYLDE_ROOT),
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            creationflags=creation_flags,
-        )
-        _lc_logger.info("voice: spawned impl=python pid=%d", _ds._voice_proc.pid)
-        # Manifest writes + heartbeat are owned by the service itself
-        # (Voice/run.py). The daemon only records the spawn intent so
-        # orphan-detection can distinguish "we spawned this and it
-        # vanished" from "we never tried to spawn this".
-        _ds._record_spawn("wylde-voice", _ds._voice_proc.pid)
-    except Exception:  # noqa: BLE001
-        _lc_logger.exception("daemon: voice spawn failed")
         _ds._voice_proc = None
+        return
+
+    proc = _spawn_rust_service(service="wylde-voice", rust_bin=rust_bin)
+    if proc is None:
+        _ds._voice_proc = None
+        return
+    _ds._voice_proc = proc
+    _lc_logger.info("voice: spawned impl=rust pid=%d", proc.pid)
+    # The service owns its manifest + heartbeat. The daemon only records
+    # the spawn intent so orphan-detection can distinguish "we spawned
+    # this and it vanished" from "we never tried to spawn this".
+    _ds._record_spawn("wylde-voice", proc.pid, impl="rust")
 
 
 def _stop_voice() -> None:
