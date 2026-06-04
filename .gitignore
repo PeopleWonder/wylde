@@ -20,6 +20,9 @@ Core/GUI/target/
 # Cargo build artifacts (backend Rust workspace at rust/)
 rust/target/
 
+# Installer build output (tools/installer/build-installer.ps1 stages here)
+release-artifacts/
+
 # Any other Cargo target dirs (catch-all)
 target/
 

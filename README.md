@@ -77,6 +77,19 @@ WebView child window.
 > clone-to-running instructions (under 10 minutes). The sections below are
 > the reference detail behind that guide.
 
+### Quick install (Windows)
+
+Grab the latest **`WyldeSetup-<version>.exe`** from the
+[GitHub Releases](https://github.com/PeopleWonder/wylde/releases) page and run
+it. The installer is **per-user — no admin / UAC prompt** — and lands in
+`%LOCALAPPDATA%\Programs\Wylde\`. It adds a Start-menu shortcut (and optional
+desktop shortcut / autostart) that launches Wylde daemon-first. Uninstall any
+time from **Settings → Apps**.
+
+> The alpha installer is unsigned, so SmartScreen will warn the first time —
+> choose *More info → Run anyway*. Building the installer yourself is covered
+> in [docs/installer.md](docs/installer.md).
+
 ### Prerequisites
 
 - **Rust** (stable toolchain) for the services and the GUI.
