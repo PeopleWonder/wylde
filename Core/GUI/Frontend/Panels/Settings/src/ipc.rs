@@ -368,8 +368,9 @@ mod tests {
 
     #[test]
     fn ollama_settings_missing_keys_stay_none() {
-        // A partial block (or a key the Gateway schema doesn't persist,
-        // e.g. min_p) leaves the field None so the row renders "—".
+        // A partial block (any subset of the Ollama keys) leaves every
+        // absent field None so its row renders "—" — the panel never
+        // assumes the backend persisted a full settings object.
         let o = OllamaSettings::from_value(&json!({ "temperature": 0.8 }));
         assert_eq!(o.temperature, Some(0.8));
         assert!(o.min_p.is_none());
