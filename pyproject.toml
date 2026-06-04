@@ -225,12 +225,11 @@ disallow_incomplete_defs = true
 warn_return_any = true
 strict_equality = true
 
-[[tool.mypy.overrides]]
-module = ["VPN.*"]
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-warn_return_any = true
-strict_equality = true
+# VPN strict override removed 2026-06-04 — the Python VPN/ package was deleted
+# 2026-06-02 (commit 9143c46, 3,343 LOC) after wylde-vpn (Rust) reached parity
+# and the daemon spawn path collapsed rust-only. 0 git-tracked VPN/*.py remain,
+# so the override matched no modules. Mirrors the device_gate / resource_monitor
+# removals below.
 
 [[tool.mypy.overrides]]
 module = ["Trainer.*"]
@@ -239,12 +238,10 @@ disallow_incomplete_defs = true
 warn_return_any = true
 strict_equality = true
 
-[[tool.mypy.overrides]]
-module = ["Gateway.*"]
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-warn_return_any = true
-strict_equality = true
+# Gateway strict override removed 2026-06-04 — the Python Gateway/ package was
+# deleted (collapsed rust-only 2026-06-02, commit 1b8e5bf); wylde_check rule
+# test_no_gateway_import now forbids `from Gateway`. 0 git-tracked Gateway/*.py
+# remain, so the override matched no modules.
 
 [[tool.mypy.overrides]]
 module = ["Extensions.Webcrawler.*"]
