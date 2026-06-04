@@ -8,8 +8,7 @@
 //!
 //!   * `fetch`   — GET a URL, return the body as text or parsed JSON.
 //!   * `scrape`  — GET HTML, optionally apply a list of CSS selectors.
-//!   * `extract` — apply a `{field:{selector,attribute,multiple}}` rule set to
-//!                 HTML (fetched from `url` or passed inline as `html`).
+//!   * `extract` — apply a `{field:{selector,attribute,multiple}}` rule set to HTML (fetched from `url` or passed inline as `html`).
 //!
 //! Greenfield Rust (NOT a line-by-line transpile) following the
 //! `wylde-ollama` / `wylde-treesitter` sidecar precedent: `reqwest` for HTTP,

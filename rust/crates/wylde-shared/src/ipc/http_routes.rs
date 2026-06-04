@@ -11,8 +11,8 @@
 //!
 //! IMPORTANT — this is **not** a raw-HTTP text parser. The pipe transport
 //! is already framed msgpack (`[u32 BE len][rmp body]`); the request line
-//! and "headers" arrive pre-parsed as the envelope's `http_verb` + `method`
-//! + `data` fields (see [`crate::ipc::server`]'s `IncomingFrame`). So a
+//! and "headers" arrive pre-parsed as the envelope's `http_verb`,
+//! `method`, and `data` fields (see [`crate::ipc::server`]'s `IncomingFrame`). So a
 //! route is matched purely on `(method, path)` — no `httparse`, no raw
 //! `GET /… HTTP/1.1` line to tokenise. If a future caller ever needs to
 //! push genuine raw-HTTP bytes over the pipe, that's a separate transport
