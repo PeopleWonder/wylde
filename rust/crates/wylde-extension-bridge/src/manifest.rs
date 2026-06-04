@@ -189,7 +189,7 @@ fn default_scope() -> String { "global".to_string() }
 fn default_schema_version() -> u32 { 1 }
 fn default_tier() -> String { "read".to_string() }
 
-/// How a UI panel is rendered inside the Wylde Tauri shell.
+/// How a UI panel is rendered inside the Wylde gpui shell.
 ///
 /// Only `iframe` is shipped today; the tagged-enum shape leaves room
 /// for in-process renderers (`svelte_module`, `web_component`) without
@@ -517,7 +517,7 @@ fn validate_resources(path: &Path, m: &McpServerManifest) -> Result<(), Manifest
     Ok(())
 }
 
-/// Validate the merged ui_panels list. The Tauri shell embeds these
+/// Validate the merged ui_panels list. The gpui shell embeds these
 /// URLs as `<iframe src>`, so anything pointing outside the local
 /// machine would let a manifest exfiltrate session data to a remote
 /// origin. We hard-refuse non-loopback URLs at load time so the GUI
