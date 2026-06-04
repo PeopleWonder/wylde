@@ -65,6 +65,7 @@ pub mod embeddings;
 pub mod long_term;
 pub mod memgraph;
 pub mod rag;
+pub mod short_term;
 pub mod vector;
 pub mod workspaces;
 

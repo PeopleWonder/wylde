@@ -26,7 +26,6 @@
 //! partial port can't brick chat. The deferred punchlist:
 //!
 //! * `memory.workspace.*` (6 verbs) — `workspace_memory` not in Rust.
-//! * `memory.short_term.*` (3 verbs) — `conversation` not in Rust.
 //! * `memory.reflect` — `reflection` not in Rust.
 //! * `conversations.*` (4 verbs) — `conversation` not in Rust.
 //! * `prompts.*` (5 verbs) — `system_prompts` not in Rust.
@@ -41,6 +40,14 @@
 //! get_profile, show, delete, unload, set_active, set_default,
 //! get_default), gated behind `WYLDE_HARNESS_MODELS_IMPL=rust` so the
 //! Python implementation stays authoritative until Slice 3b forwards.
+//!
+//! The three `memory.short_term.*` verbs (`get` / `append` / `clear`)
+//! are now registered (Rust port of the working-memory half of
+//! `Core/harness/memory/conversation.py`); the Python `_memory.py`
+//! handlers became thin forwarders to this pipe, mirroring the chat.*
+//! Phase 5.D cutover. The broader conversation surface (`conversations.*`,
+//! `memory.reflect`) still lives on Python and shares the same JSON
+//! files, so the Rust merge-save preserves every sibling field.
 
 use std::sync::Arc;
 
@@ -59,6 +66,8 @@ const HANDLER_MODULE_LONG_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.long_term.*)";
 const HANDLER_MODULE_WORKSPACES: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.workspaces.*)";
+const HANDLER_MODULE_SHORT_TERM: &str =
+    "wylde_harness::api::DefaultHarnessApi (memory.short_term.*)";
 const HANDLER_MODULE_CONSENT: &str = "wylde_harness::api::DefaultHarnessApi (consent.*)";
 
 /// Every action the harness pipe registers. Tests compare this against
@@ -104,6 +113,10 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.workspaces.get_persona",
     "memory.workspaces.set_persona",
     "memory.workspaces.delete",
+    // memory.short_term.* — conversation working memory (3 verbs)
+    "memory.short_term.get",
+    "memory.short_term.append",
+    "memory.short_term.clear",
     // consent.* — per-tool consent gate (Phase 12.2; 6 unary + 1 streaming = 7 verbs)
     "consent.list",
     "consent.set",
@@ -569,6 +582,51 @@ where
          index folder AND the durable workspace memory folder. Payload \
          {workspace_id}.",
         HANDLER_MODULE_WORKSPACES,
+    );
+
+    // ── memory.short_term.* (conversation working memory) ────────────
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.short_term.get",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_short_term_get(p).await }
+        },
+        "Rolling working-memory buffer for a conversation — tool calls, \
+         files opened, decisions reached, summaries read. Stored as the \
+         `working_memory` array inside the conversation JSON document. \
+         Payload {conversation_id}. Returns {working_memory, \
+         conversation_id}; unknown conversation reads as an empty buffer.",
+        HANDLER_MODULE_SHORT_TERM,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.short_term.append",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_short_term_append(p).await }
+        },
+        "Append one freeform working-memory entry (convention {kind, at, \
+         data}). Mints a stub conversation if none exists and stamps `at` \
+         when absent. Payload {conversation_id, entry}; entry must be a \
+         map. Returns {conversation_id, working_memory} after the append.",
+        HANDLER_MODULE_SHORT_TERM,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.short_term.clear",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_short_term_clear(p).await }
+        },
+        "Drop the working-memory buffer (e.g. starting a fresh task in an \
+         existing conversation). Other conversation fields are preserved. \
+         Payload {conversation_id}. Returns {cleared, conversation_id} — \
+         cleared is false when there was nothing to drop.",
+        HANDLER_MODULE_SHORT_TERM,
     );
 
     // ── consent.* (Phase 12.2) ───────────────────────────────────────

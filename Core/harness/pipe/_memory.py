@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ._common import (
     _ActionError,
-    _conv_module,
     _long_term_module,
     _payload_dict,
     _reflection_module,
@@ -183,6 +182,79 @@ def _memory_workspace_curate_action(payload: Any) -> Dict[str, Any]:
 
 
 # ── Memory: short-term ────────────────────────────────────────────────
+#
+# Short-term Rust port (2026-06-04)
+# ---------------------------------
+# The three working-memory verbs now live in Rust
+# (``rust/crates/wylde-harness/src/memory/short_term/``). These handlers
+# became thin forwarders to the Rust ``wylde-harness`` pipe, mirroring the
+# chat.* Phase 5.D cutover in ``_chat.py``. The underlying conversation
+# document store (``..memory.conversation``) is UNCHANGED and stays
+# load-bearing for ``conversations.*`` and ``memory.reflect``, which still
+# read/write ``working_memory`` on the same JSON files — the Rust
+# merge-save preserves every sibling field so the two sides interleave
+# safely. Only the pipe-verb implementation moved off Python. If the Rust
+# pipe is unreachable the verb raises ``harness_unavailable`` (no
+# in-process fallback, same as the chat.* forwarders).
+
+# Reply error codes meaning "the Rust pipe didn't actually serve this"
+# (binary down, daemon mis-spawn, verb not registered). Mirrors the
+# ``_TRANSPORT_FALLBACK_CODES`` set in ``_chat.py``.
+_SHORT_TERM_FALLBACK_CODES = {
+    "not_found",
+    "pipe_unavailable",
+    "pipe_connect",
+    "pipe_timeout",
+    "pipe_io",
+    "handshake_timeout",
+    "handshake_io",
+    "handshake_rejected",
+    "no_action",
+    "not_implemented",
+}
+
+_SHORT_TERM_FORWARD_TIMEOUT = 15.0
+
+
+def _forward_short_term_to_rust(
+    action: str, payload: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Forward one ``memory.short_term.*`` action to the Rust
+    ``wylde-harness`` pipe and return the reply ``data`` dict.
+
+    Returns ``None`` on a transport-class failure so the caller raises
+    ``harness_unavailable``; a genuine service-level error (e.g. the Rust
+    handler's ``bad_request``) is re-raised verbatim as an
+    :class:`_ActionError` so the wire shape stays identical. Mirrors
+    ``_chat.py::_forward_chat_action_to_rust``.
+    """
+    try:
+        from Core.shared.ipc import send_action as _ipc_send_action
+    except ImportError:  # pragma: no cover — IPC shim always present in prod
+        return None
+    try:
+        reply = _ipc_send_action(
+            "wylde-harness", action, payload, timeout=_SHORT_TERM_FORWARD_TIMEOUT
+        )
+    except Exception:  # noqa: BLE001 — transport failures become harness_unavailable
+        return None
+
+    if not getattr(reply, "ok", False):
+        err = getattr(reply, "error", None) or {}
+        code = err.get("code") if isinstance(err, dict) else None
+        if code in _SHORT_TERM_FALLBACK_CODES:
+            return None
+        message = ""
+        if isinstance(err, dict):
+            message = str(
+                err.get("message") or err.get("code") or "rust_short_term_error"
+            )
+        raise _ActionError(str(code or "rust_short_term_error"), message)
+
+    data = getattr(reply, "data", None)
+    if not isinstance(data, dict):
+        return None
+    return data
 
 
 def _memory_short_term_get_action(payload: Any) -> Dict[str, Any]:
@@ -190,10 +262,15 @@ def _memory_short_term_get_action(payload: Any) -> Dict[str, Any]:
     cid = p.get("conversation_id")
     if not isinstance(cid, str) or not cid:
         raise _ActionError("bad_request", "conversation_id is required")
-    return {
-        "working_memory": _conv_module().get_working_memory(cid),
-        "conversation_id": cid,
-    }
+    data = _forward_short_term_to_rust(
+        "memory.short_term.get", {"conversation_id": cid}
+    )
+    if data is None:
+        raise _ActionError(
+            "harness_unavailable",
+            "wylde-harness pipe is unreachable (memory.short_term.get)",
+        )
+    return data
 
 
 def _memory_short_term_append_action(payload: Any) -> Dict[str, Any]:
@@ -204,8 +281,15 @@ def _memory_short_term_append_action(payload: Any) -> Dict[str, Any]:
         raise _ActionError("bad_request", "conversation_id is required")
     if not isinstance(entry, dict):
         raise _ActionError("bad_request", "entry must be a map")
-    doc = _conv_module().append_working_memory(cid, entry)
-    return {"conversation_id": cid, "working_memory": doc.get("working_memory") or []}
+    data = _forward_short_term_to_rust(
+        "memory.short_term.append", {"conversation_id": cid, "entry": entry}
+    )
+    if data is None:
+        raise _ActionError(
+            "harness_unavailable",
+            "wylde-harness pipe is unreachable (memory.short_term.append)",
+        )
+    return data
 
 
 def _memory_short_term_clear_action(payload: Any) -> Dict[str, Any]:
@@ -213,7 +297,15 @@ def _memory_short_term_clear_action(payload: Any) -> Dict[str, Any]:
     cid = p.get("conversation_id")
     if not isinstance(cid, str) or not cid:
         raise _ActionError("bad_request", "conversation_id is required")
-    return {"cleared": _conv_module().clear_working_memory(cid), "conversation_id": cid}
+    data = _forward_short_term_to_rust(
+        "memory.short_term.clear", {"conversation_id": cid}
+    )
+    if data is None:
+        raise _ActionError(
+            "harness_unavailable",
+            "wylde-harness pipe is unreachable (memory.short_term.clear)",
+        )
+    return data
 
 
 # ── Memory: reflection ────────────────────────────────────────────────
