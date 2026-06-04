@@ -74,7 +74,16 @@ impl SettingsPanel {
     /// the View and the panel takes care of pulling its own data.
     pub fn view(_window: &mut Window, cx: &mut App) -> AnyView {
         cx.new(|cx| {
-            let panel = Self::new();
+            let mut panel = Self::new();
+            // Seed from the background startup check (Phase 12.5, slice
+            // 3d): if it already resolved an available update, land the
+            // user on a ready "Install" button rather than making them
+            // click "Check now" again.  A "no update"/error result leaves
+            // the section Idle — it surfaces only as the refreshed
+            // "Last checked" footer below.
+            if let Some(info) = wylde_gui_pipe::updater_state::available_info() {
+                panel.update_check = UpdateCheck::Available(info);
+            }
             Self::spawn_refresh(cx);
             panel
         })

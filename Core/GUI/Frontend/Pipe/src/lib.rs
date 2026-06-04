@@ -35,6 +35,7 @@ pub mod memory_long_term;
 pub mod memory_workspaces;
 pub mod nav_bus;
 pub mod tools;
+pub mod updater_state;
 
 pub use conversation_bus::{
     current_active_conversation, publish_active_conversation, publish_conversation_list_changed,

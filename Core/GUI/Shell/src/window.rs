@@ -189,6 +189,11 @@ pub fn open_main_window(cx: &mut App) -> Option<WindowHandle<Shell>> {
             // verb the Dashboard reads — one extra long-lived poll, no
             // new IPC surface.
             shell.spawn_resource_meter(cx);
+            // Fire the one background update check (Phase 12.5, slice 3d).
+            // Fire-and-forget; gated on the user's update prefs so an
+            // opted-out install makes no network call.  Flips the Settings
+            // row's hint dot when a newer release is found.
+            shell.spawn_startup_update_check(cx);
             // Drain the cross-panel nav bus inside the Shell entity.
             // The forever-task lives as long as the entity does;
             // dropping the Shell drops the WeakEntity which short-
