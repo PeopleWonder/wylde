@@ -5086,22 +5086,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wylde-trainer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "wylde-prebuild-guard",
- "wylde-shared",
-]
-
-[[package]]
 name = "wylde-treesitter"
 version = "0.1.0"
 dependencies = [

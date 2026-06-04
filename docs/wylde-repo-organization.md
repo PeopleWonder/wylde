@@ -52,7 +52,6 @@ The vault root (`%USERPROFILE%\Documents\Obsidian Vault\Wylde\`) contains everyt
 | `Core/` | The Python "core" — anything cross-service, supervisor, harness brain, Memgraph supervisor, lifecycle daemon, shared IPC. Also hosts `Core/GUI/`, which is *not* Python — it is the standalone gpui (Rust) GUI workspace (§13). |
 | `Voice/` | Voice service (Python): wake-word, STT, TTS orchestration. Rust port lives in `rust/crates/wylde-voice/`. |
 | `VPN/` | VPN service (Python): WyldeLink mesh, NAT discovery, peer pairing, monitoring. Rust port at `rust/crates/wylde-vpn/`. |
-| `Trainer/` | Trainer service (Python): LLaMA-Factory wrapper + Caption sub-tool. Rust port at `rust/crates/wylde-trainer/`. |
 | `Gateway/` | Legacy Python Gateway (Flask). The active Gateway is the Rust crate; Python kept as rollback. |
 | `N8N/` | N8N integration: workflow templates + Python tool wrappers. |
 | `Extensions/` | Browser-extension hosts (Webcrawler, Wylde_Study) + the `extension_bridge` service. |
@@ -82,7 +81,6 @@ crates/wylde-device-gate     — per-device auth
 crates/wylde-gateway         — Axum-on-127.0.0.1:8005, the unified HTTP boundary
 crates/wylde-lifecycle       — daemon supervisor (spawns + heartbeats peers)
 crates/wylde-ollama          — Ollama proxy + lease integration
-crates/wylde-trainer         — Trainer pipe + worker client
 crates/wylde-vpn             — WyldeLink mesh + NAT + pairing + tunnel
 crates/wylde-extension-bridge — browser-extension MCP host
 crates/wylde-harness         — chat brain (turn + tooling + memory)
@@ -104,7 +102,6 @@ build-support/wylde-prebuild-guard — opt-in build-script helper, see §15
 | `wylde-gateway` | `\\.\pipe\wylde-gateway` + HTTP `127.0.0.1:8005` | rust | n/a | Axum app, route modules per area (`chat`, `voice`, `rag`, `memory`, `models`, `images`, `tool_registry`, `extensions`, …), egress allowlist + kill switch, mcp surface, auth tiers (public/local — see Principle #16). |
 | `wylde-lifecycle` | `\\.\pipe\wylde-lifecycle` | rust | `WYLDE_WYLDE_LIFECYCLE_IMPL` | Daemon supervisor; `control.rs` for start/stop, `daemon.rs` for spawn-and-heartbeat, `registry.rs` for service slots, `state/services.rs` per-service slots. The Rust impl is canonical; the Python `Core/Lifecycle/daemon.py` is kept as the rollback path. |
 | `wylde-ollama` | `\\.\pipe\wylde-ollama` | rust | n/a | Proxies the local Ollama HTTP API behind the lease primitive; `actions/` hosts the chat / generate / embed surface. |
-| `wylde-trainer` | `\\.\pipe\wylde-trainer` | python | `WYLDE_WYLDE_TRAINER_IMPL` | LLaMA-Factory + caption worker client. Heavyweight (torch/transformers) so still mostly Python-bound. |
 | `wylde-vpn` | `\\.\pipe\wylde-vpn` | python | `WYLDE_WYLDE_VPN_IMPL` | `tunnel/`, `nat/`, `pairing.rs`, `peers/`, `discovery/`, `monitoring/`. WyldeLink mesh + mDNS + WireGuard wrapper. |
 | `wylde-extension-bridge` | `\\.\pipe\wylde-extension-bridge` | rust | n/a | Browser-extension host + MCP surface (`mcp/`) — discovers per-extension manifests, routes requests. |
 | `wylde-harness` | `\\.\pipe\wylde-harness` | rust (5.D flip) | `WYLDE_WYLDE_HARNESS_IMPL` and `WYLDE_HARNESS_IMPL` | The chat brain. See §3. |
@@ -193,7 +190,7 @@ These directories pre-date the migration. Each contains a `run.py`, a `manifest.
 
 * **`Voice/`** — Python orchestrator (now **rollback only** post-Phase-11.E cutover, 2026-05-27). `wake_word.py` (Porcupine-style detector), `transcribe.py` (faster-whisper STT wrapper), `synthesize.py` (kokoro-onnx TTS wrapper), `orchestrator.py` (text→phoneme + STT/TTS pipeline glue), `audio_io.py`, `device_manager.py`, `record.py`, `state.py`, `pipe.py`. Rust port (`wylde-voice`) now owns STT + Kokoro TTS + cpal mic + openWakeWord; the 8 GUI-facing voice actions ported in Phase 11.E. Python deletion scheduled 2026-06-10 to 2026-06-24.
 * **`VPN/`** — WyldeLink mesh. `api.py`, `tunnel/`, `nat/`, `peers/`, `pairing/`, `discovery/`, `monitoring/`, `entrypoint.sh`, `start_wylde_vpn.bat`. Implements Principle #16's auth boundary. Rust port at `wylde-vpn` exists.
-* **`Trainer/`** — `Caption/` sub-tool (image/video captioning via vision-language models — `captioner.py`, `batch.py`, `video.py`, `rust_worker.py`, `download_models.py`) plus the top-level LLaMA-Factory wrapper. Rust port at `wylde-trainer` exists but heavyweight torch deps keep Python canonical.
+* **`Trainer/`** — *Extracted from the alpha 2026-06-04 — see `docs/retired-trainer-scope.md`.* Held the `Caption/` captioning sub-tool plus the top-level LLaMA-Factory wrapper and the `wylde-trainer` Rust pipe; deferred as a separate project, restorable from git `68ef1d1`.
 * **`Gateway/`** — Legacy Python Flask gateway. The active gateway is the Rust crate (`wylde-gateway`); this tree is the rollback. `app.py`, `routes/`, `middleware/`, `egress/`, `services/`, `streaming.py`, `proxy_core.py`, `_audit/`, `secrets/`, `auth/`. Browser-extension routing started here (`extension_routes.py`) but has moved into the Rust crate's `routes/extensions.rs`.
 * **`N8N/`** — Workflow engine integration. `client.py` (HTTP client to the bundled N8N), `tools/` (Python tool wrappers), `workflow_templates/`. Note from the mypy-strict memory ([feedback_strict_mypy_catches_latent](../../.claude/projects/.../memory/feedback_strict_mypy_catches_latent.md)): the Python `N8N/tools/*` imports `from Wylde.N8N.client import …` which doesn't actually resolve at runtime; every call has been silently falling through to its ImportError envelope. Real fix waits on either the import-path correction or a Rust port.
 * **`Extensions/`** — Browser-extension hosts and the bridge. `extension_bridge/` is the service (`run.py`, `dispatcher.py`, `loader.py`, `registry.py`, `pipe.py`, `contract.py`) backed in Rust by `wylde-extension-bridge`. `Webcrawler/` and `Wylde_Study/` are per-extension MCP servers + tool registries (`mcp-server.json`, `handler.py`, `tools/`, `tests/`). `Wylde_Study/browser_extension/` is the actual Chrome/Brave extension source.
@@ -211,7 +208,6 @@ These are the **only** non-Rust runtime dependencies Wylde owns at the platform 
 | --- | --- | --- | --- |
 | **Memgraph (Neo4j JVM bundle)** | Graph database — entities, chunks, relations (CALLS / IMPORTS / INHERITS / CONFIGURES / EXPOSES / MENTIONED_IN). | `Core/Memgraph/` (Python supervisor for the JVM). Harness clients talk to Neo4j directly via Bolt — the legacy `\\.\pipe\wylde-memgraph` msgpack pipe is rollback-only as of the 2026-05-26 cutover. | Bolt 7687 (canonical); `\\.\pipe\wylde-memgraph` (rollback) |
 | **Ollama** | Local LLM inference runtime. | `wylde-ollama` Rust crate (proxy + lease integration) | `\\.\pipe\wylde-ollama`, upstream Ollama HTTP 11434 |
-| **LLaMA-Factory** | Fine-tuning framework. | `Trainer/` Python + `wylde-trainer` Rust shell | (subprocess-spawned worker) |
 | **N8N** | Workflow / automation engine. | `N8N/` Python (HTTP client) | HTTP 5678 (bundled) |
 
 When the GUI needs the LLM it goes gpui panel → `wylde-gui-pipe` (in-process `wylde_harness::HarnessApi` short-circuit for unary verbs, or the named pipe otherwise) → harness → ollama pipe — no webview hop. When tooling needs the graph it goes harness → memgraph pipe → Bolt → Neo4j. When training fires off captioning it goes Trainer pipe → caption worker → torch.
@@ -378,7 +374,7 @@ The most-loaded rules right now: **rule 31** (`shutdown_reaps_manifest_orphans`)
 | `Frontend/Extension_handlers/WebView/` | `wylde-webview` | `wry`-based WebView host for extension iframe panels (the slice 12.7 `ui_panels` field). Loopback-validated; the *only* place a WebView is allowed (wylde_check `webview_only_in_extension_handlers`). |
 | `Frontend/Panels/<Name>/` | `wylde-panel-<name>` | The 11 first-party panels, each a gpui `View` crate (a workspace member, enforced by `panel_crate_must_be_workspace_member`). |
 
-The 11 first-party panel crates: `Settings` (`wylde-panel-settings`), `Workspaces` (`wylde-panel-workspaces`), `Tools` (`wylde-panel-tools`), `Memory` (`wylde-panel-memory`), `Chat` (`wylde-panel-chat`), `Models` (`wylde-panel-models`), `Dashboard` (`wylde-panel-dashboard`), `Devices` (`wylde-panel-devices`), `RemoteAccess` (`wylde-panel-remote-access`), `Images` (`wylde-panel-images`), `Training` (`wylde-panel-training`). Each panel sub-crate is typically `lib.rs` + a `<name>_panel.rs` (the `impl Render` gpui View) + `ipc.rs` (its pipe-call helpers) + a `manifest.json` registry entry.
+The 10 first-party panel crates: `Settings` (`wylde-panel-settings`), `Workspaces` (`wylde-panel-workspaces`), `Tools` (`wylde-panel-tools`), `Memory` (`wylde-panel-memory`), `Chat` (`wylde-panel-chat`), `Models` (`wylde-panel-models`), `Dashboard` (`wylde-panel-dashboard`), `Devices` (`wylde-panel-devices`), `RemoteAccess` (`wylde-panel-remote-access`), `Images` (`wylde-panel-images`). Each panel sub-crate is typically `lib.rs` + a `<name>_panel.rs` (the `impl Render` gpui View) + `ipc.rs` (its pipe-call helpers) + a `manifest.json` registry entry. (The `Training` panel was extracted 2026-06-04 — see `docs/retired-trainer-scope.md`.)
 
 **Panels are gpui Views, not Svelte components/pages.** A first-party panel's manifest `factory` resolves a gpui `View` (enforced by wylde_check `first_party_manifest_must_be_gpui_view`). Extensions contribute panels via the `ui_panels` manifest field (slice 12.7); those are iframe panels hosted in `wylde-webview`, loopback-only. The aggregator (`wylde-panel-aggregator` in `Manifest/Extension_handlers/`) globs every panel manifest, the runtime registry overlays extension panels via `extensions.list_panels`, and `gui.list_tabs` exposes the unified set to the nav.
 

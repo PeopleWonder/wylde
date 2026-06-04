@@ -47,7 +47,6 @@ _WYLDE_ROOT = Path(__file__).resolve().parents[3]
 _SERVICE_ROOTS: Tuple[str, ...] = (
     "Voice",
     "VoiceAssistant",  # wylde-check: dead-ref-ok
-    "Trainer",
     "Extensions",
     "Gateway",
     "device_gate",

@@ -7,7 +7,6 @@ members = [
     "crates/wylde-gateway",
     "crates/wylde-lifecycle",
     "crates/wylde-ollama",
-    "crates/wylde-trainer",
     "crates/wylde-vpn",
     "crates/wylde-extension-bridge",
     "crates/wylde-harness",

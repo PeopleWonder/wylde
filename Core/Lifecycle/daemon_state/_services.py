@@ -48,19 +48,9 @@ from ._services_basic import (  # noqa: F401
     _stop_voice,
 )
 
-# Trainer pair (Phase 3 — Caption pipe surface + Python worker). Split
-# out so this file stays under the 700-line cap; re-exported so callers
-# keep importing the full start/stop set from ``._services``.
-from ._services_trainer import (  # noqa: F401
-    _start_wylde_trainer,
-    _start_wylde_trainer_worker,
-    _stop_wylde_trainer,
-    _stop_wylde_trainer_worker,
-)
-
 # Harness pair (Phase 5 — consolidated chat-turn / tooling / memory
-# driver port). Split out for the same reason as the trainer pair;
-# re-exported so callers keep importing the full start/stop set from
+# driver port). Split out to keep this file readable; re-exported so
+# callers keep importing the full start/stop set from
 # ``._services``. the Wylde user's 2026-05-24 architectural call consolidated
 # the prior ``wylde-harness-turn`` standalone crate back into a unified
 # ``wylde-harness`` crate with submodules — this is the post-rename
@@ -496,10 +486,6 @@ __all__ = [
     "_stop_wylde_ollama",
     "_start_wylde_vpn",
     "_stop_wylde_vpn",
-    "_start_wylde_trainer",
-    "_stop_wylde_trainer",
-    "_start_wylde_trainer_worker",
-    "_stop_wylde_trainer_worker",
     "_start_wylde_harness",
     "_stop_wylde_harness",
     "_start_memory_scheduler",

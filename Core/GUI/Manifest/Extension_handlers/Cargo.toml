@@ -40,4 +40,3 @@ wylde-panel-dashboard  = { path = "../../Frontend/Panels/Dashboard" }
 wylde-panel-devices    = { path = "../../Frontend/Panels/Devices" }
 wylde-panel-remote-access = { path = "../../Frontend/Panels/RemoteAccess" }
 wylde-panel-images     = { path = "../../Frontend/Panels/Images" }
-wylde-panel-training   = { path = "../../Frontend/Panels/Training" }

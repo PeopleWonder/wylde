@@ -135,14 +135,6 @@ pub fn default_first_party() -> FactoryMap {
         Box::new(wylde_panel_images::ImagesPanel::view),
     );
 
-    // Training panel — slice 9 (active runs strip + past runs list with
-    // bar-histogram sparkline + start-new-training form + resume from
-    // checkpoint).  Speaks the wylde-trainer pipe directly.
-    m.register(
-        "wylde_panel_training::TrainingPanel::view",
-        Box::new(wylde_panel_training::TrainingPanel::view),
-    );
-
     m
 }
 
@@ -208,12 +200,6 @@ mod tests {
     fn default_map_contains_images_panel() {
         let m = default_first_party();
         assert!(m.contains("wylde_panel_images::ImagesPanel::view"));
-    }
-
-    #[test]
-    fn default_map_contains_training_panel() {
-        let m = default_first_party();
-        assert!(m.contains("wylde_panel_training::TrainingPanel::view"));
     }
 
     #[test]

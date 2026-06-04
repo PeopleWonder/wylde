@@ -59,6 +59,12 @@ active.
 
 ## D — Trainer: jobs / start_training / stop / status / datasets
 
+> **Superseded 2026-06-04:** the entire trainer track (the `wylde-trainer`
+> crate, `Trainer/` Python incl. Caption, and the gpui Training panel) was
+> extracted from the alpha — see `docs/retired-trainer-scope.md`. The plan
+> below is preserved as the intended approach for when the track resumes as
+> a separate `wylde-trainer` project.
+
 **Verbs the panel wants:** `training.jobs`, `training.start`,
 `training.stop`, `training.status`, `training.datasets` (panel currently
 reaches for `/api/*` routes that never existed).

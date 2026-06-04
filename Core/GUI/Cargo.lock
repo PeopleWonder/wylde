@@ -8801,7 +8801,6 @@ dependencies = [
  "wylde-panel-remote-access",
  "wylde-panel-settings",
  "wylde-panel-tools",
- "wylde-panel-training",
  "wylde-panel-workspaces",
 ]
 
@@ -8840,20 +8839,6 @@ dependencies = [
  "gpui",
  "serde",
  "serde_json",
- "wylde-gui-pipe",
- "wylde-theme",
-]
-
-[[package]]
-name = "wylde-panel-training"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "gpui",
- "serde",
- "serde_json",
- "tokio",
- "wylde-gpui-input",
  "wylde-gui-pipe",
  "wylde-theme",
 ]
