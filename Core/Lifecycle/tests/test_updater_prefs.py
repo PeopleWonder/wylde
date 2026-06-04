@@ -30,6 +30,7 @@ def test_get_prefs_missing_file_returns_defaults() -> None:
         "enabled": False,
         "auto_check": False,
         "frequency": "weekly",
+        "channel": "stable",
         "last_checked": None,
     }
 
@@ -63,8 +64,22 @@ def test_set_prefs_merges_successive_partial_patches() -> None:
         "enabled": True,
         "auto_check": True,
         "frequency": "daily",
+        "channel": "stable",
         "last_checked": None,
     }
+
+
+def test_set_prefs_persists_channel() -> None:
+    merged = updater_prefs.updater_set_prefs_action({"channel": "beta"})
+    assert merged["channel"] == "beta"
+    # A fresh read sees the persisted channel.
+    assert updater_prefs.updater_get_prefs_action({})["channel"] == "beta"
+
+
+def test_set_prefs_rejects_bad_channel() -> None:
+    with pytest.raises(IpcError) as exc:
+        updater_prefs.updater_set_prefs_action({"channel": "nightly"})
+    assert exc.value.code == "bad_request"
 
 
 def test_set_prefs_accepts_last_checked_int_and_null() -> None:

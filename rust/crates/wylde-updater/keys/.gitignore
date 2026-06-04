@@ -1,0 +1,10 @@
+# NEVER commit private signing key material. The matching PUBLIC key is
+# embedded (and committed) in src/pubkey.rs — public by design.
+# See docs/self-updater-design.md → "Key management".
+*.key
+*.sec
+*.pem
+secret*
+signing-key*
+# but keep the format example
+!pubkey.pub.example

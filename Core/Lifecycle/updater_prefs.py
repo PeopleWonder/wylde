@@ -35,6 +35,12 @@ _PREFS_PATH: Path = WYLDE_ROOT / "data" / "preferences" / "updater.json"
 # default the Rust ``UpdatePrefs`` mirror falls back to.
 _VALID_FREQUENCIES: frozenset[str] = frozenset({"daily", "weekly", "monthly"})
 
+# Release channels the updater understands (Phase 12.5).  ``beta`` is a
+# superset of ``stable`` — it additionally surfaces GitHub pre-releases.
+# Mirrors ``wylde_updater::Channel``; the privacy-conservative default is
+# ``stable`` (never opt a user into pre-releases implicitly).
+_VALID_CHANNELS: frozenset[str] = frozenset({"stable", "beta"})
+
 # Canonical default shape.  Byte-for-byte what the Rust
 # ``UpdatePrefs::from_value(&{})`` produces so a missing file and an
 # empty file round-trip to the same view-side state.
@@ -42,6 +48,7 @@ _DEFAULTS: dict[str, Any] = {
     "enabled": False,
     "auto_check": False,
     "frequency": "weekly",
+    "channel": "stable",
     "last_checked": None,
 }
 
@@ -110,6 +117,12 @@ def _coerce_patch(patch: dict[str, Any], current: dict[str, Any]) -> dict[str, A
             allowed = ", ".join(sorted(_VALID_FREQUENCIES))
             raise _bad_request(f"frequency must be one of: {allowed}")
         merged["frequency"] = freq
+    if "channel" in patch:
+        chan = patch["channel"]
+        if not isinstance(chan, str) or chan not in _VALID_CHANNELS:
+            allowed = ", ".join(sorted(_VALID_CHANNELS))
+            raise _bad_request(f"channel must be one of: {allowed}")
+        merged["channel"] = chan
     if "last_checked" in patch:
         ts = patch["last_checked"]
         # bool is an int subclass — reject it explicitly so a stray

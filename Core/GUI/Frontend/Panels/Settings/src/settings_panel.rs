@@ -24,9 +24,10 @@ use wylde_theme::colors::{SURFACE_900, TEXT_PRIMARY, TEXT_SECONDARY};
 use wylde_theme::typography::{size, FAMILY_INTER};
 
 use crate::ipc::{
-    clear_tool_decision, get_autostart_enabled, list_consent, read_ollama_settings,
-    read_update_prefs, reset_consent, set_autostart_enabled, set_no_auth, set_tool_decision,
-    write_update_prefs, ConsentSnapshot, OllamaSettings, UpdatePrefs,
+    check_for_update, clear_tool_decision, download_and_install, get_autostart_enabled,
+    list_consent, read_ollama_settings, read_update_prefs, reset_consent, set_autostart_enabled,
+    set_no_auth, set_tool_decision, write_update_prefs, ConsentSnapshot, OllamaSettings,
+    UpdateCheck, UpdatePrefs,
 };
 use crate::sections::{
     consent_section, error_banner, ollama_section, pack, startup_section, updates_section,
@@ -37,6 +38,8 @@ use crate::sections::{
 /// directly without going through the factory.
 pub struct SettingsPanel {
     pub update_prefs: UpdatePrefs,
+    /// State of the manual "Check now" / "Install" flow (Phase 12.5).
+    pub update_check: UpdateCheck,
     pub autostart_enabled: bool,
     pub autostart_error: Option<String>,
     pub ollama: OllamaSettings,
@@ -51,6 +54,7 @@ impl SettingsPanel {
     pub fn new() -> Self {
         Self {
             update_prefs: UpdatePrefs::default(),
+            update_check: UpdateCheck::default(),
             autostart_enabled: false,
             autostart_error: None,
             ollama: OllamaSettings::default(),
@@ -168,6 +172,76 @@ impl SettingsPanel {
         self.error = None;
         cx.notify();
         self.persist_update_prefs(json!({ "frequency": next }), cx);
+    }
+
+    /// Cycle the release channel stable ⇄ beta and persist it. Switching
+    /// channel invalidates any prior check result (beta may surface a
+    /// newer pre-release, stable may hide one), so reset to `Idle`.
+    pub fn cycle_channel(&mut self, cx: &mut Context<Self>) {
+        let next = match self.update_prefs.channel.as_str() {
+            "beta" => "stable",
+            _ => "beta",
+        };
+        self.update_prefs.channel = next.to_owned();
+        self.update_check = UpdateCheck::Idle;
+        self.error = None;
+        cx.notify();
+        self.persist_update_prefs(json!({ "channel": next }), cx);
+    }
+
+    /// "Check now" — query GitHub Releases for the selected channel. Runs
+    /// even when the master toggle is off (an explicit manual check is the
+    /// one network call the privacy-first default still permits).
+    pub fn check_now(&mut self, cx: &mut Context<Self>) {
+        // Ignore re-entrant clicks while a check or install is in flight.
+        if matches!(
+            self.update_check,
+            UpdateCheck::Checking | UpdateCheck::Installing
+        ) {
+            return;
+        }
+        let channel = self.update_prefs.channel();
+        let version = self.app_version.clone();
+        self.update_check = UpdateCheck::Checking;
+        self.error = None;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = check_for_update(channel, version).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.update_check = match outcome {
+                    Ok(wylde_updater::UpdateStatus::UpToDate { .. }) => UpdateCheck::UpToDate,
+                    Ok(wylde_updater::UpdateStatus::Available(info)) => {
+                        UpdateCheck::Available(info)
+                    }
+                    Err(e) => UpdateCheck::Failed(e),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// "Install update" — download, verify, and swap the running binary.
+    /// Only acts when a check has resolved an available update.
+    pub fn install_update(&mut self, cx: &mut Context<Self>) {
+        let UpdateCheck::Available(info) = &self.update_check else {
+            return;
+        };
+        let info = info.clone();
+        self.update_check = UpdateCheck::Installing;
+        self.error = None;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = download_and_install(info).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.update_check = match outcome {
+                    Ok(()) => UpdateCheck::Installed,
+                    Err(e) => UpdateCheck::Failed(e),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Shared tail for the three updater toggles: write the patch, then
@@ -325,7 +399,12 @@ impl Render for SettingsPanel {
             .bg(rgb(pack(SURFACE_900)))
             .p_6()
             .child(
-                col.child(updates_section(&self.update_prefs, &self.app_version, cx))
+                col.child(updates_section(
+                    &self.update_prefs,
+                    &self.update_check,
+                    &self.app_version,
+                    cx,
+                ))
                     .child(startup_section(
                         self.autostart_enabled,
                         self.autostart_error.as_deref(),
@@ -372,6 +451,8 @@ mod tests {
         assert!(!p.autostart_enabled);
         assert!(p.autostart_error.is_none());
         assert_eq!(p.update_prefs.frequency, "weekly");
+        assert_eq!(p.update_prefs.channel, "stable");
+        assert!(matches!(p.update_check, UpdateCheck::Idle));
         assert!(p.ollama.num_ctx.is_none());
         assert!(p.consent.tools.is_empty());
         assert!(p.error.is_none());
@@ -412,6 +493,9 @@ mod tests {
         let _ = crate::ipc::reset_consent;
         let _ = crate::ipc::read_update_prefs;
         let _ = crate::ipc::write_update_prefs;
+        // Updater driver (Phase 12.5): manual check + install.
+        let _ = crate::ipc::check_for_update;
+        let _ = crate::ipc::download_and_install;
         let _ = crate::ipc::get_autostart_enabled;
         let _ = crate::ipc::set_autostart_enabled;
         // Ollama defaults read off the Gateway (`GET /api/settings/ollama`).
@@ -437,6 +521,21 @@ mod tests {
         assert_eq!(next("monthly"), "weekly");
         // Unknown/legacy value snaps back to the weekly baseline.
         assert_eq!(next("annually"), "weekly");
+    }
+
+    /// The channel cycle is a binary stable ⇄ beta toggle; an unknown
+    /// legacy value arms to beta on first click (anything not "beta").
+    #[test]
+    fn channel_cycles_stable_and_beta() {
+        fn next(cur: &str) -> &'static str {
+            match cur {
+                "beta" => "stable",
+                _ => "beta",
+            }
+        }
+        assert_eq!(next("stable"), "beta");
+        assert_eq!(next("beta"), "stable");
+        assert_eq!(next("nightly"), "beta");
     }
 
     /// The per-tool decision flip is approved ⇄ denied; an unset tool
