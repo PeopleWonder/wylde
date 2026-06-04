@@ -211,7 +211,19 @@ def test_record_file_written_outside_turn_is_silent_noop() -> None:
 
 
 def _hook_path() -> Path:
-    return _VAULT_ROOT / "Wylde" / "Core" / "harness" / "dev" / "lint_hook.py"
+    # The hook lives at ``<repo>/Core/harness/dev/lint_hook.py``.  Older
+    # layouts nested the repo under a ``Wylde/`` dir (now archived as
+    # ``Wylde-archive/``); fall back to that path so the test resolves in
+    # either tree.  ``_HERE.parents[6]`` is the repo root from this file's
+    # location (Core/harness/tooling/tools/fs/tests/).
+    candidates = (
+        _HERE.parents[6] / "Core" / "harness" / "dev" / "lint_hook.py",
+        _VAULT_ROOT / "Wylde" / "Core" / "harness" / "dev" / "lint_hook.py",
+    )
+    for c in candidates:
+        if c.exists():
+            return c
+    return candidates[0]
 
 
 def test_lint_hook_skips_unknown_extension(tmp_path: Path) -> None:

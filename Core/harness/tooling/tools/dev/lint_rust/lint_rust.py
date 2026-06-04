@@ -1,7 +1,8 @@
 """lint_rust — cargo clippy wrapper.
 
-Runs ``cargo clippy --message-format=json`` from ``Core/GUI/src-tauri/``.
-NDJSON output is parsed into the normalised findings shape.
+Runs ``cargo clippy --message-format=json`` from ``Core/GUI/`` (the gpui
+GUI workspace; the old Tauri ``src-tauri/`` tree was deleted at the gpui
+cutover).  NDJSON output is parsed into the normalised findings shape.
 """
 
 from __future__ import annotations
@@ -19,16 +20,16 @@ from .._lint_lib import (
 
 def run_lint_rust(params: Dict[str, Any]) -> Dict[str, Any]:
     del params  # no params today
-    tauri_dir = wylde_root() / "Core" / "GUI" / "src-tauri"
-    if not tauri_dir.exists():
+    gui_dir = wylde_root() / "Core" / "GUI"
+    if not gui_dir.exists():
         return envelope_error(
-            f"Core/GUI/src-tauri/ not found at {tauri_dir}",
+            f"Core/GUI/ not found at {gui_dir}",
             tool="lint_rust",
             code="path_not_found",
         )
 
     argv = ["cargo", "clippy", "--message-format=json", "--", "-D", "warnings"]
-    result = run_lint_subprocess(argv, cwd=tauri_dir, timeout=300.0)
+    result = run_lint_subprocess(argv, cwd=gui_dir, timeout=300.0)
     if not result["ok"]:
         return envelope_error(
             result.get("error") or "clippy invocation failed",
