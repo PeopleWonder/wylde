@@ -183,6 +183,13 @@ if (-not $MakeNsis) {
     if ($cmd) { $MakeNsis = $cmd.Source }
 }
 if (-not $MakeNsis) {
+    # Portable NSIS (no-UAC install) -- the recommended path on Aaron's box.
+    # Extracted under %USERPROFILE%\Tools\NSIS\nsis-<ver>\; see docs/installer.md.
+    # Newest version wins if several are unpacked side by side.
+    $MakeNsis = Get-ChildItem "$env:USERPROFILE\Tools\NSIS\*\makensis.exe" -ErrorAction SilentlyContinue |
+        Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $MakeNsis) {
     foreach ($p in @(
         "$env:ProgramFiles\NSIS\makensis.exe",
         "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
@@ -193,11 +200,14 @@ if (-not $MakeNsis) {
     Write-Error @"
 makensis.exe not found.
 
-Install NSIS (Nullsoft Scriptable Install System) and re-run:
-    https://nsis.sourceforge.io/Download
-    (or: winget install NSIS.NSIS)
+Recommended (no UAC): download the portable NSIS zip and extract it under
+%USERPROFILE%\Tools\NSIS\  (this script auto-discovers nsis-<ver>\makensis.exe
+there). See docs/installer.md "Portable NSIS (no-UAC build host)".
 
-Then either add NSIS to PATH or pass -MakeNsis "C:\Program Files (x86)\NSIS\makensis.exe".
+Otherwise install NSIS system-wide (https://nsis.sourceforge.io/Download or
+winget install NSIS.NSIS -- both trigger UAC), then add it to PATH or pass
+-MakeNsis "C:\Program Files (x86)\NSIS\makensis.exe".
+
 To stage without packing in the meantime, re-run with -StageOnly.
 "@
     exit 1

@@ -21,11 +21,32 @@ Tooling lives under `tools/installer/`:
    `wylde-gui.exe` and the backend service binaries.
 2. **NSIS** (Nullsoft Scriptable Install System) — provides `makensis.exe`,
    which compiles the `.nsi` into the setup executable.
-   - Download: <https://nsis.sourceforge.io/Download>
-   - Or: `winget install NSIS.NSIS`
-   - The build script finds `makensis` on `PATH` or in the standard
-     `C:\Program Files (x86)\NSIS\` / `C:\Program Files\NSIS\` locations.
-     You can also pass `-MakeNsis "<path>\makensis.exe"` explicitly.
+   - The build script auto-discovers `makensis` from any of, in order:
+     `-MakeNsis "<path>\makensis.exe"`, `PATH`, the **portable** location
+     `%USERPROFILE%\Tools\NSIS\nsis-<ver>\makensis.exe` (newest wins), then
+     the system installs at `C:\Program Files (x86)\NSIS\` / `C:\Program Files\NSIS\`.
+
+### Portable NSIS (no-UAC build host)
+
+`winget install NSIS.NSIS` and the `*-setup.exe` both install system-wide and
+**trigger a UAC prompt** — a problem when driving the box remotely (the UAC
+dialog locks the desktop until physically dismissed). The portable zip avoids
+elevation entirely:
+
+1. Grab the latest portable zip from SourceForge. The canonical files page is
+   <https://sourceforge.net/projects/nsis/files/NSIS%203/> — pick the newest
+   `nsis-<ver>.zip` (the `.zip`, **not** `-setup.exe`). The direct mirror URL
+   carries a signed `?ts=` token, so fetch via the `.../nsis-<ver>.zip/download`
+   redirect rather than hard-coding a mirror host.
+2. Extract to `%USERPROFILE%\Tools\NSIS\` — yields
+   `%USERPROFILE%\Tools\NSIS\nsis-<ver>\makensis.exe`. No PATH edit needed; the
+   build script globs that location automatically.
+3. Verify: `& "$env:USERPROFILE\Tools\NSIS\nsis-<ver>\makensis.exe" /VERSION`
+   should print e.g. `v3.12`.
+
+> Verified on this box: **NSIS 3.12 portable** at
+> `C:\Users\aaron\Tools\NSIS\nsis-3.12\makensis.exe` — a full pack + per-user
+> test install + uninstall round-trip passed (see the build-state memory note).
 
 NSIS is only needed for the final **pack** step. You can stage and inspect
 the install tree without it (`-StageOnly`).
