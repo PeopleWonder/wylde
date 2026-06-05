@@ -35,11 +35,15 @@ use wylde_theme::colors::{
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
+use crate::catalog::{self, CatalogEntry};
 use crate::ipc::{
     delete_installed_model, list_installed_models, list_loaded_model_names, pull_model,
     read_hardware, HardwareSnapshot, InstalledModel, PullProgress,
 };
 use crate::recommend::{pick as pick_recommendations, Recommendation};
+
+/// Max catalog suggestions shown in the autocomplete dropdown.
+const CATALOG_SUGGESTION_LIMIT: usize = 10;
 
 /// How often the panel re-polls `ollama.list_loaded` so the "in use"
 /// pill tracks what the broker is actually holding.  Same 5 s cadence
@@ -50,6 +54,17 @@ pub struct ModelsPanel {
     pub installed: Vec<InstalledModel>,
     pub loaded: Vec<String>,
     pub pull_input: Entity<TextInput>,
+    /// Mirror of `pull_input`'s text, updated on every `Changed`.  Drives
+    /// the catalog autocomplete dropdown: a plain field read in render
+    /// rather than reaching into the input handle per frame.
+    pub pull_query: String,
+    /// The tag last chosen from the autocomplete dropdown.  While the
+    /// live query still equals it the dropdown stays closed (the user is
+    /// looking at their pick, not searching); typing anything else
+    /// diverges the query and re-opens the suggestions.  Selecting a row
+    /// calls `set_text`, which re-emits `Changed` — comparing against
+    /// this latch is what keeps that event from re-opening the dropdown.
+    pub pull_selected: Option<String>,
     /// Single-line input owning the live filter query.  Pure
     /// presentation — the backend always serves the full installed list;
     /// this box only narrows what the View renders.  Empty means "show
@@ -82,7 +97,7 @@ impl ModelsPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let pull_input = cx.new(|input_cx| {
             TextInput::single_line(input_cx)
-                .with_placeholder("Model to pull (e.g. qwen2.5:1.5b)")
+                .with_placeholder("Search models to pull (e.g. llama, qwen 7b, coder)…")
                 .with_submit_mode(SubmitMode::EnterSubmits)
                 .with_min_height(32.0)
                 .with_element_key("models-pull-input")
@@ -91,11 +106,23 @@ impl ModelsPanel {
         let input_sub = cx.subscribe(
             &pull_input,
             move |this: &mut Self, _entity, event: &InputEvent, cx: &mut Context<Self>| {
-                if let InputEvent::Submit(_text) = event {
-                    let name = pull_input_for_sub.read(cx).text().trim().to_owned();
-                    if !name.is_empty() {
-                        pull_input_for_sub.update(cx, |i, cx| i.clear(cx));
-                        this.start_pull(name, cx);
+                match event {
+                    // Live keystrokes feed the autocomplete.  Mirror the
+                    // text so render reads a plain field.
+                    InputEvent::Changed(text) => {
+                        this.pull_query = text.clone();
+                        cx.notify();
+                    }
+                    // Enter pulls exactly what's typed — works for a
+                    // catalogued tag or an uncatalogued one alike.
+                    InputEvent::Submit(_text) => {
+                        let name = pull_input_for_sub.read(cx).text().trim().to_owned();
+                        if !name.is_empty() {
+                            pull_input_for_sub.update(cx, |i, cx| i.clear(cx));
+                            this.pull_query.clear();
+                            this.pull_selected = None;
+                            this.start_pull(name, cx);
+                        }
                     }
                 }
             },
@@ -122,6 +149,8 @@ impl ModelsPanel {
             installed: Vec::new(),
             loaded: Vec::new(),
             pull_input,
+            pull_query: String::new(),
+            pull_selected: None,
             search_input,
             search_query: String::new(),
             active_pull: None,
@@ -218,6 +247,11 @@ impl ModelsPanel {
         if self.active_pull.is_some() {
             return;
         }
+        // A pull is starting — collapse the autocomplete so it doesn't
+        // pop back over the progress bar (or linger once the pull ends).
+        self.pull_query.clear();
+        self.pull_selected = None;
+        self.pull_input.update(cx, |i, cx| i.clear(cx));
         let stream = match pull_model(&name) {
             Ok(s) => s,
             Err(e) => {
@@ -314,6 +348,23 @@ impl ModelsPanel {
             drop(p);
             cx.notify();
         }
+    }
+
+    /// Pick a catalog suggestion: drop its exact tag into the field and
+    /// latch it so the dropdown closes (the user can now hit Pull / Enter
+    /// or keep typing to search again).  Does not start the pull — Aaron
+    /// asked to confirm the size before committing, so selection only
+    /// fills the field and surfaces the detail strip.
+    pub fn select_catalog(&mut self, tag: String, cx: &mut Context<Self>) {
+        // `set_text` re-emits `Changed(tag)`, which the subscription
+        // folds into `pull_query`; setting it here too keeps the field
+        // correct even if that event is deferred.  Because it now equals
+        // `pull_selected`, the dropdown stays closed.
+        self.pull_input
+            .update(cx, |i, cx| i.set_text(tag.clone(), cx));
+        self.pull_query = tag.clone();
+        self.pull_selected = Some(tag);
+        cx.notify();
     }
 
     /// Reset the filter — clears both the mirrored query and the input
@@ -523,13 +574,296 @@ fn pull_section(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> gpui::Div
     }
     col = col.child(input_row);
 
+    // A pull in flight owns the strip — progress bar, no autocomplete.
     if let Some(pull) = &panel.active_pull {
-        col = col.child(pull_progress_strip(pull));
+        return col.child(pull_progress_strip(pull));
+    }
+
+    let query = panel.pull_query.trim();
+    // "Searching" means the live query has diverged from the last
+    // selected tag — show the dropdown.  A query that still equals the
+    // selection means the user is looking at their pick (detail strip),
+    // not searching.
+    let searching = !query.is_empty() && panel.pull_selected.as_deref() != Some(query);
+
+    if searching {
+        col = col.child(catalog_dropdown(query, cx));
+    } else if let Some(entry) = catalog::exact(query) {
+        // Idle on a known tag (typically just after selecting a row):
+        // show the parameters + download-size detail so the user knows
+        // what Pull will commit to.
+        col = col.child(catalog_detail_strip(entry));
     } else {
         col = col.child(recommendations_strip(panel, cx));
     }
 
     col
+}
+
+/// Search-as-you-type suggestion list under the pull input.  Up to
+/// `CATALOG_SUGGESTION_LIMIT` fuzzy matches, each selectable; if the
+/// typed query isn't itself an exact catalog tag, a trailing "Pull
+/// anyway" row covers uncatalogued / brand-new tags.
+fn catalog_dropdown(query: &str, cx: &mut Context<ModelsPanel>) -> gpui::Div {
+    let matches = catalog::fuzzy_search(query, CATALOG_SUGGESTION_LIMIT);
+
+    let mut list = div()
+        .flex()
+        .flex_col()
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .bg(rgb(pack(SURFACE_800)))
+        .overflow_hidden();
+
+    if matches.is_empty() {
+        list = list.child(no_catalog_match_hint(query));
+    } else {
+        for entry in matches {
+            list = list.child(catalog_row(entry, cx));
+        }
+    }
+
+    // The escape hatch: pull exactly what was typed even if we don't
+    // list it.  `ollama pull <tag>` works regardless of our catalog.
+    if catalog::exact(query).is_none() {
+        list = list.child(pull_anyway_row(query, cx));
+    }
+
+    list
+}
+
+/// One selectable suggestion: family letter-icon, name + tag, the
+/// category/param meta line, and a size badge on the right.
+fn catalog_row(entry: &CatalogEntry, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
+    let tag_for_click = entry.tag.clone();
+    let id: ElementId = ElementId::Name(format!("models-cat::{}", entry.tag).into());
+
+    let mut meta_bits: Vec<String> = vec![format!("{} params", entry.parameters)];
+    if let Some(ctx) = entry.context {
+        meta_bits.push(format!("{} ctx", humanize_context(ctx)));
+    }
+    if let Some(lic) = &entry.license {
+        meta_bits.push(lic.clone());
+    }
+
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .px_3()
+        .py_2()
+        .border_b_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .cursor_pointer()
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut ModelsPanel, _ev, _window, cx| {
+                this.select_catalog(tag_for_click.clone(), cx);
+            }),
+        )
+        .child(family_icon(entry))
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_baseline()
+                        .gap_2()
+                        .child(
+                            div()
+                                .font_family(FAMILY_INTER)
+                                .text_size(px(size::SM))
+                                .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                                .text_color(rgb(pack(TEXT_PRIMARY)))
+                                .child(SharedString::from(entry.display_name.clone())),
+                        )
+                        .child(
+                            div()
+                                .font_family(FAMILY_INTER)
+                                .text_size(px(size::MICRO))
+                                .text_color(rgb(pack(TEXT_MUTED)))
+                                .child(SharedString::from(entry.tag.clone())),
+                        ),
+                )
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::MICRO))
+                        .text_color(rgb(pack(TEXT_MUTED)))
+                        .child(SharedString::from(meta_bits.join(" · "))),
+                ),
+        )
+        .child(size_badge(entry.size_label()))
+}
+
+/// Letter badge standing in for a family logo — first two alnum chars of
+/// the family, upper-cased.
+fn family_icon(entry: &CatalogEntry) -> gpui::Div {
+    div()
+        .w(px(28.0))
+        .h(px(28.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .bg(rgb(pack(SURFACE_900)))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::MICRO))
+        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+        .text_color(rgb(pack(BRAND)))
+        .child(SharedString::from(entry.icon_letters()))
+}
+
+/// Rounded download-size pill shown on the right of a suggestion / in the
+/// detail strip.
+fn size_badge(label: String) -> gpui::Div {
+    div()
+        .px_2()
+        .py(px(1.0))
+        .rounded(px(999.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .bg(rgb(pack(SURFACE_900)))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::MICRO))
+        .text_color(rgb(pack(TEXT_SECONDARY)))
+        .child(SharedString::from(label))
+}
+
+/// The "Pull anyway" fallback row for an uncatalogued query.
+fn pull_anyway_row(query: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
+    let tag = query.to_owned();
+    let tag_for_click = tag.clone();
+    div()
+        .id(ElementId::Name("models-pull-anyway".into()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .bg(rgb(pack(SURFACE_900)))
+        .cursor_pointer()
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut ModelsPanel, _ev, _window, cx| {
+                this.start_pull(tag_for_click.clone(), cx);
+            }),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::SM))
+                .text_color(rgb(pack(BRAND)))
+                .child(SharedString::from("↓")),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(SharedString::from(format!(
+                    "Pull “{tag}” anyway — not in our catalog, but Ollama may have it",
+                ))),
+        )
+}
+
+/// Empty-state line shown inside the dropdown when no catalog entry
+/// fuzzy-matches the query (the "Pull anyway" row still follows).
+fn no_catalog_match_hint(query: &str) -> gpui::Div {
+    div()
+        .px_3()
+        .py_2()
+        .border_b_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .child(SharedString::from(format!(
+            "No catalog match for “{query}”.",
+        )))
+}
+
+/// Detail strip for the currently-selected catalog tag — surfaces
+/// parameters + download size (+ context / license / blurb) so the user
+/// knows what Pull commits to before clicking.
+fn catalog_detail_strip(entry: &CatalogEntry) -> gpui::Div {
+    let mut meta_bits: Vec<String> = vec![
+        format!("{} params", entry.parameters),
+        format!("{} download", entry.size_label()),
+    ];
+    if let Some(ctx) = entry.context {
+        meta_bits.push(format!("{} context", humanize_context(ctx)));
+    }
+    if let Some(lic) = &entry.license {
+        meta_bits.push(lic.clone());
+    }
+
+    let mut col = div()
+        .bg(rgb(pack(SURFACE_800)))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .rounded(px(6.0))
+        .p_3()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_3()
+                .child(family_icon(entry))
+                .child(
+                    div()
+                        .flex_1()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::SM))
+                        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                        .child(SharedString::from(entry.display_name.clone())),
+                )
+                .child(size_badge(entry.size_label())),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(meta_bits.join(" · "))),
+        );
+
+    if !entry.description.is_empty() {
+        col = col.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(SharedString::from(entry.description.clone())),
+        );
+    }
+
+    col
+}
+
+/// Render a context-window token count compactly — `131072` → `"128K"`.
+fn humanize_context(tokens: u64) -> String {
+    if tokens >= 1024 {
+        format!("{}K", (tokens as f64 / 1024.0).round() as u64)
+    } else {
+        tokens.to_string()
+    }
 }
 
 fn pull_submit_button(
@@ -1276,6 +1610,15 @@ mod tests {
         ];
         let got = names(&fuzzy_rank(&models, "qwen"));
         assert_eq!(got, vec!["qwen2.5:7b".to_owned(), "zzz-qwen-custom".to_owned()]);
+    }
+
+    #[test]
+    fn humanize_context_compacts_to_k() {
+        assert_eq!(humanize_context(131072), "128K");
+        assert_eq!(humanize_context(32768), "32K");
+        assert_eq!(humanize_context(8192), "8K");
+        assert_eq!(humanize_context(163840), "160K");
+        assert_eq!(humanize_context(512), "512");
     }
 
     #[test]
