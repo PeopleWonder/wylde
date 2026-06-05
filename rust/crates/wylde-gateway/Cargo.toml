@@ -20,6 +20,11 @@ wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
 
 [dependencies]
 wylde-shared = { path = "../wylde-shared" }
+# In-process verb backing for the `/api/settings/ollama` TCP facade.
+# The route calls the same `models.get_effective` /
+# `settings.ollama.*` handlers the named-pipe surface uses, as direct
+# Rust calls (NOT an IPC round-trip), so the two surfaces can't drift.
+wylde-harness = { path = "../wylde-harness" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
