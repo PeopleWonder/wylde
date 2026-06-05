@@ -61,8 +61,6 @@ from ._models import (
     _models_set_active_action,
     _models_set_default_action,
     _models_show_action,
-    _models_synthesize_action,
-    _models_transcribe_action,
     _models_unload_action,
 )
 from ._prompts import (
@@ -97,8 +95,6 @@ _ACTIONS = {
     "tools.list": _tools_list_action,
     "tools.run": _tools_run_action,
     "models.list": _models_list_action,
-    "models.transcribe": _models_transcribe_action,
-    "models.synthesize": _models_synthesize_action,
     "models.get_profile": _models_get_profile_action,
     "models.show": _models_show_action,
     "models.delete": _models_delete_action,

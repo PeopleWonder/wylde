@@ -4,10 +4,10 @@
 //!
 //! ## Scope vs. the Python surface
 //!
-//! Python exposes ten `models.*` verbs. This module implements the eight
-//! that are backed by Rust subsystems already present in this crate
-//! (the model registry, the routing profiles, the `model_state` store)
-//! or by `wylde-ollama` over IPC:
+//! Python exposes eight `models.*` verbs. This module implements all
+//! eight — they are backed by Rust subsystems already present in this
+//! crate (the model registry, the routing profiles, the `model_state`
+//! store) or by `wylde-ollama` over IPC:
 //!
 //! | verb               | backing                                   |
 //! |--------------------|-------------------------------------------|
@@ -20,12 +20,11 @@
 //! | `models.set_default` | [`crate::model_registry::model_state`]      |
 //! | `models.get_default` | [`crate::model_registry::model_state`]      |
 //!
-//! The remaining two — `models.transcribe` / `models.synthesize` — are
-//! **forward-only**: they run the Voice STT/TTS engines, which are not
-//! hosted inside this harness crate. They are deliberately NOT registered
-//! on the Rust pipe (they surface as `no_action`, which the Python
-//! strangler treats as "stay on Python"). They forward in a later slice
-//! once the Voice port exposes an engine the harness can proxy.
+//! Two more verbs — `models.transcribe` / `models.synthesize` — used to
+//! drive the Python Voice STT/TTS engines. They were retired at the
+//! Phase-11.E voice cutover (STT/TTS moved in-process into `wylde-voice`,
+//! reached via the `voice.*` actions) and deleted entirely in the
+//! Bucket-A IPC cleanup. They were never registered on the Rust pipe.
 //!
 //! ## Flag gate — `WYLDE_HARNESS_MODELS_IMPL`
 //!

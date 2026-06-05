@@ -17,19 +17,21 @@
 //! Gated on `require_local` — the JSONL sink must never be reachable
 //! from a mobile / VPN peer. Matches the Python route's tier.
 //!
-//! ## Wire format vs Python
+//! ## Wire format
 //!
-//! Success is the flat `{ok: true, recorded: true}` shape the Python
-//! route returns — deliberately *not* the `{ok, data}` envelope, since
-//! there is no payload to carry. Error paths use the canonical nested
-//! `{ok: false, error: {code, message}}` envelope via [`failure`].
+//! Success is the canonical `{ok: true, data: {recorded: true}}`
+//! envelope via [`success`] — the Bucket-A IPC cleanup wrapped this
+//! route so it matches the rest of the JSON surface (the original Python
+//! route returned a flat `{ok: true, recorded: true}`). Error paths use
+//! the canonical nested `{ok: false, error: {code, message}}` envelope
+//! via [`failure`].
 
 use std::path::PathBuf;
 
 use axum::extract::Json;
 use axum::http::StatusCode;
 use axum::middleware::from_fn;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::post;
 use axum::Router;
 use serde_json::{json, Value};
@@ -37,7 +39,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::auth::require_local;
-use crate::envelopes::failure;
+use crate::envelopes::{failure, success};
 
 /// Required fields on the normalized GUI error event.
 const REQUIRED_FIELDS: [&str; 3] = ["timestamp_iso", "source", "message"];
@@ -109,7 +111,7 @@ pub async fn gui_error(body: Option<Json<Value>>) -> Response {
 
     let record = normalize(&payload);
     match append_line(&record).await {
-        Ok(()) => (StatusCode::OK, Json(json!({"ok": true, "recorded": true}))).into_response(),
+        Ok(()) => success(json!({"recorded": true})),
         Err(err) => failure(
             "io_error",
             &format!("could not append to gui_errors.jsonl: {err}"),
@@ -214,7 +216,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v = body_json(resp).await;
         assert_eq!(v["ok"], true);
-        assert_eq!(v["recorded"], true);
+        assert_eq!(v["data"]["recorded"], true);
 
         let logged =
             std::fs::read_to_string(tmp.path().join("logs").join("gui_errors.jsonl")).unwrap();

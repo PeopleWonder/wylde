@@ -22,11 +22,10 @@
 //! (localhost-HTTP transport, sibling to the wave-1 pipe transport)
 //! plus [`streaming`] (NDJSON→SSE bridge, consumer is
 //! `/api/models/pull`). Wave 2d adds the peripheral surface:
-//! `/api/voice` (Flask-style pipe proxy to `wylde-voice`); `/api/devices`
-//! (action-style on `wylde-device-gate` via `services::device_gate`);
-//! `/api/push` (Flask-style pipe proxy to `wylde-vpn`); `/api/link`
-//! (HTTP loopback proxy to `127.0.0.1:8020`, with
-//! `device_gate.complete_pairing` for `/pair`); `/api/images`
+//! `/api/devices` (action-style on `wylde-device-gate` via
+//! `services::device_gate`); `/api/link` (HTTP loopback proxy to
+//! `127.0.0.1:8020`, with `device_gate.complete_pairing` for `/pair`);
+//! `/api/images`
 //! (HTTP loopback proxy to `127.0.0.1:8014`, with on-disk library
 //! reads); and `/api/settings` (file-backed Ollama defaults). The
 //! rest of the Python Gateway (extensions / tool_registry routes,
@@ -54,9 +53,7 @@
 //! | `Gateway/routes/chat.py` (run_turn)     | [`routes::chat`]                  |
 //! | `Gateway/routes/rag.py`                 | [`routes::rag`]                   |
 //! | `Gateway/routes/models.py`              | [`routes::models`]                |
-//! | `Gateway/routes/voice.py`               | [`routes::voice`]                 |
 //! | `Gateway/routes/devices.py`             | [`routes::devices`]               |
-//! | `Gateway/routes/push.py`                | [`routes::push`]                  |
 //! | `Gateway/routes/link.py`                | [`routes::link`]                  |
 //! | `Gateway/routes/images.py`              | [`routes::images`]                |
 //! | `Gateway/routes/settings.py`            | [`routes::settings`]              |

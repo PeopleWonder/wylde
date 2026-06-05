@@ -10,6 +10,17 @@
 //!
 //! Auth: every endpoint gates on `require_local` (CIDR-based) — the
 //! loopback + WyldeLink CGNAT tier, matching the Python `egress.py`.
+//!
+//! ## Wire format
+//!
+//! `destinations`, `kill`, and `forward` return the canonical
+//! `{ok: true, data}` envelope. **`/api/egress/stream` deliberately
+//! bypasses the envelope**: it pipes the upstream's raw byte stream
+//! (SSE / NDJSON / chunked) straight through with the upstream
+//! `Content-Type`, so there is no JSON body to wrap. This is
+//! intentional and was confirmed during the Bucket-A IPC cleanup; the
+//! only other raw route in the gateway is `/api/link/qr/:token` (raw
+//! SVG image).
 
 use std::collections::HashMap;
 use std::time::Duration;

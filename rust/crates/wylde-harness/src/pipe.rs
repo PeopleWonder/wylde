@@ -30,10 +30,11 @@
 //! * `prompts.*` (5 verbs) — `system_prompts` not in Rust.
 //! * `rag.workspaces.*` (10 verbs) — overlaps `memory.workspaces.*`;
 //!   namespace reconciliation + indexer port pending.
-//! * `models.transcribe` / `models.synthesize` (2 verbs) — forward-only;
-//!   they run the Voice STT/TTS engines, which aren't hosted in this
-//!   crate. Absent here so the strangler keeps them on Python until the
-//!   Voice port exposes a proxyable engine.
+//!
+//! (`models.transcribe` / `models.synthesize` were retired at the voice
+//! cutover and deleted in the Bucket-A IPC cleanup — STT/TTS run
+//! in-process in `wylde-voice`, reached via `voice.*`. They are not part
+//! of this surface.)
 //!
 //! Harness Slice 3a registered the other eight `models.*` verbs (list,
 //! get_profile, show, delete, unload, set_active, set_default,
@@ -95,7 +96,8 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "tools.list",
     "tools.run",
     // models.* — registry surface + Ollama-side ops (8 verbs; Slice 3a).
-    // transcribe/synthesize are forward-only (Voice-coupled) and not here.
+    // transcribe/synthesize were retired at the voice cutover (now
+    // voice.* in wylde-voice) and deleted in the Bucket-A IPC cleanup.
     "models.list",
     "models.get_profile",
     "models.show",

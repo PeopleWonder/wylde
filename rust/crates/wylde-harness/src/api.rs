@@ -81,9 +81,9 @@ pub trait HarnessApi: Send + Sync {
     async fn tools_run(&self, payload: Value) -> Reply;
 
     // ── models.* (8 verbs; harness Slice 3a) ─────────────────────────
-    // The two Voice-coupled verbs (`models.transcribe` /
-    // `models.synthesize`) are forward-only and intentionally absent —
-    // see `crate::model_registry::actions` for the rationale.
+    // `models.transcribe` / `models.synthesize` were retired at the voice
+    // cutover and deleted in the Bucket-A IPC cleanup (STT/TTS run
+    // in-process in `wylde-voice`, reached via `voice.*`).
     async fn models_list(&self, payload: Value) -> Reply;
     async fn models_get_profile(&self, payload: Value) -> Reply;
     async fn models_show(&self, payload: Value) -> Reply;

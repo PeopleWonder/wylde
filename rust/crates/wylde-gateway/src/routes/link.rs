@@ -37,6 +37,13 @@
 //! Failure responses use the canonical nested envelope (same
 //! cross-wave convention picked by wave 2c).
 //!
+//! **Deliberate envelope bypass:** `/qr/:token` returns a raw
+//! `image/svg+xml` body with no `{ok, data}` wrapper — the QR image is a
+//! binary payload, not JSON, so wrapping it would be meaningless. This
+//! is intentional and was confirmed during the Bucket-A IPC cleanup;
+//! the only other raw route in the gateway is `/api/egress/stream`
+//! (raw byte stream).
+//!
 //! ## Auth
 //!
 //! Every link route gates on `require_local` (loopback + WyldeLink

@@ -27,7 +27,7 @@ Out of scope for Gateway: GUI ↔ backend, chat-turn orchestration, service-to-s
 | `\\.\pipe\wylde-lifecycle` | **[live]** | `Core/Lifecycle/daemon.py:117` — service.list/.start/.stop/.wake/.health/.shutdown_all |
 | `\\.\pipe\wylde-gateway` | **[live]** | `Gateway/pipe.py:154` — same actions Gateway HTTP serves, in-process callers use this |
 | `\\.\pipe\wylde-memgraph` | **[live]** | `Core/Memgraph/run.py` + `graph_service.py` — Neo4j-backed graph CRUD; spawned as a subprocess of the Lifecycle daemon (Phase 2c) |
-| `\\.\pipe\wylde-harness` | **[live]** | `Core/harness/pipe.py:start()`, started by the Lifecycle daemon at boot — five chat.* actions plus `tools.list`, `tools.run`, `models.list`, `models.transcribe`, `models.synthesize`, `models.get_profile`, RAG/workspace/memory CRUD, reflection |
+| `\\.\pipe\wylde-harness` | **[live]** | `Core/harness/pipe.py:start()`, started by the Lifecycle daemon at boot — five chat.* actions plus `tools.list`, `tools.run`, `models.list`, `models.get_profile`, `models.show`, `models.{delete,unload,set_active,set_default,get_default}`, RAG/workspace/memory CRUD, reflection |
 | `\\.\pipe\wylde-voice` | **[live]** | `Voice/pipe.py:start()`, spawned as a subprocess by the Lifecycle daemon (Phase 2e) — ten `voice.*` actions: `toggle`, `start_session`, `end_session`, `set_mode`, `get_mode`, `set_active_conversation`, `get_status`, `check_wake_word_model`, `pull_wake_word_model`, `subscribe_status` |
 | `\\.\pipe\wylde-device-gate` | **[live]** | `device_gate/pipe.py:start()`, spawned as a subprocess by the Lifecycle daemon (Phase 2f) — ten `device_gate.*` actions: `list_devices`, `start_pairing`, `cancel_pairing`, `get_pairing_status`, `complete_pairing`, `verify`, `set_tier`, `rotate_token`, `revoke`, `consume_pending_events` |
 | `\\.\pipe\wylde-vpn` | **[opt-in]** | `VPN/api.py` — WyldeLink management surface (status, peers, STUN, pairing, push). Default-off per principle #15; users opt in when remoting from outside the LAN. Hoisted to top-level in Phase 12 (was `device_gate/VPN/` before). |
@@ -157,9 +157,14 @@ in-process at `Core/harness/model_registry/` and will be reachable via
 the future `\\.\pipe\wylde-harness` actions (`models.list`,
 `models.get_profile`, `models.discovery.*`).
 
-#### Push [live route, dead pipe] — `wylde-vpn`
+#### Push [removed]
 
-`/api/push/subscribe` `:36`, `/unsubscribe` `:59`, `/pending` `:77`. Repoint to in-process `device_gate/VPN/peers/push.py` or stand up the VPN pipe.
+The `/api/push/{subscribe,unsubscribe,pending}` routes were removed in the
+Bucket-A IPC cleanup. They proxied a Flask-style pipe surface on
+`wylde-vpn` whose `peers.push` handlers were never wired (the VPN Python
+store was deleted), so they only ever 404'd in production. No Gateway HTTP
+push surface today; re-introduce one only when a live peer-push store
+exists.
 
 #### RAG [live route, dead pipe] — also KEEP-MCP
 
@@ -181,7 +186,7 @@ checkpoints now happens in-process via `Core/harness/model_registry/`.
 
 `Voice/pipe.py` serves ten `voice.*` actions on `\\.\pipe\wylde-voice`. The Lifecycle daemon spawns Voice as a subprocess at Phase 2e (parallel to Memgraph). The gpui GUI calls the `voice.*` actions over the pipe directly from Rust via `wylde-gui-pipe` (`Core/GUI/Frontend/Pipe/`); `voice.subscribe_status` rides the streaming `stream_call` path, the rest are unary `call`s.
 
-Voice owns audio I/O and the orchestration loop (capture → harness STT → harness chat → harness TTS → play); STT/TTS engines themselves run in the harness model registry and are reached via `models.transcribe` / `models.synthesize` actions on `\\.\pipe\wylde-harness`. Voice does NOT host the engines.
+Voice owns audio I/O and the orchestration loop (capture → STT → harness chat → TTS → play). Since the Phase-11.E voice cutover the STT (Whisper) and TTS (Kokoro) engines run **in-process inside `wylde-voice`** itself, reached via the `voice.transcribe` / `voice.synthesize` actions. The old harness `models.transcribe` / `models.synthesize` verbs that used to drive the deleted Python `Voice/` engines were retired in the Bucket-A IPC cleanup.
 
 Active conversation: Voice mirrors whatever the GUI pushes via `voice.set_active_conversation`; cold start falls back to the most-recent conversation in `Core/harness/memory/conversation.list_conversations()`. Voice never creates conversations.
 
@@ -481,7 +486,7 @@ Namespace package — no `Core/harness/__init__.py`. Pieces a future driver will
 | `Voice/state.py` | `VoiceState` (thread-safe), `VoiceConfig` (persistent mode/wake-word) | `Voice/state.py` |
 | `Voice/audio_io.py` | `AudioCaptureProtocol` / `AudioPlaybackProtocol` + sounddevice-backed defaults + fakes for tests | `Voice/audio_io.py` |
 | `Voice/wake_word.py` | `WakeWordDetector` stub, `is_model_installed`, `initiate_pull` | `Voice/wake_word.py` |
-| `Voice/transcribe.py`, `Voice/synthesize.py` | Whisper / Kokoro engines; called by harness via `models.transcribe` / `models.synthesize`, NOT by Voice directly | – |
+| `Voice/transcribe.py`, `Voice/synthesize.py` | Whisper / Kokoro engines (legacy Python `Voice/` tree, deleted at the Phase-11.E voice cutover). They were once called by the harness `models.transcribe` / `models.synthesize` verbs, which were themselves retired in the Bucket-A IPC cleanup; STT/TTS now run in-process in `wylde-voice` via `voice.*`. | – |
 
 Voice is a subprocess of the Lifecycle daemon (Phase 2e in `Core/Lifecycle/daemon.py:_start_voice`). The harness owns STT/TTS engines; Voice talks to them only through the harness pipe.
 

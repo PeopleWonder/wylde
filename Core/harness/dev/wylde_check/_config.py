@@ -158,8 +158,6 @@ GATEWAY_ROUTE_PREFIXES: Tuple[str, ...] = (
     "/api/prompts",  # system-prompt overrides + presets (mobile-bound)
     "/api/devices",
     "/api/link",
-    "/api/push",
-    "/api/voice",
     "/api/settings",
     "/api/system",
     "/api/rag",
