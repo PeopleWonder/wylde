@@ -38,7 +38,8 @@ pub fn install() {
     register_action_with_meta(
         "ollama.health",
         |payload: Value| async move { models::handle_health(payload, upstream::client()).await },
-        "GET / — Ollama liveness. Reply: {ok: true} or err ollama_unreachable.",
+        "Wrapper liveness + upstream probe (GET /api/tags). Reply: \
+         {ok: true, pong: true, upstream: \"ok\"|\"unreachable\"|\"timeout\", upstream_models?}.",
         "wylde_ollama::actions::models",
     );
     register_action_with_meta(
