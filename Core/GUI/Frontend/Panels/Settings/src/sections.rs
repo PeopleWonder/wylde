@@ -935,6 +935,195 @@ pub fn error_banner(message: &str) -> gpui::Div {
         .child(SharedString::from(message.to_owned()))
 }
 
+// ── Privacy & Network ─────────────────────────────────────────────────
+
+/// Privacy & Network section — the centralized opt-in for features that
+/// may make an outside network connection. Today: the HuggingFace
+/// online-search toggle, plus a "Reset privacy warnings" affordance that
+/// re-arms the first-time modal. Placed next to Updates (the other
+/// outside-connection feature) at the top of the page.
+pub fn privacy_section(privacy: crate::ipc::PrivacyPrefs, cx: &mut Cx) -> gpui::Div {
+    card()
+        .child(section_title(
+            "Privacy & Network",
+            "Features that may reach the internet. Everything here is off by default.",
+        ))
+        .child(
+            toggle_row(
+                "settings-privacy-hf-search",
+                "Online model search (HuggingFace)",
+                "Search HuggingFace's public catalog for models beyond the built-in list. \
+                 Each search sends only your query term, over HTTPS.",
+                privacy.hf_search_enabled,
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _window, cx| this.toggle_hf_search(cx)),
+            ),
+        )
+        .child(
+            div()
+                .id("settings-privacy-reset")
+                .cursor_pointer()
+                .self_start()
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(rgb(pack(BORDER_DEFAULT)))
+                .px_2()
+                .py(px(2.0))
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _ev, _window, cx| this.reset_privacy_warnings(cx)),
+                )
+                .child(SharedString::from("Reset privacy warnings")),
+        )
+}
+
+/// The first-time "Allow online model search?" modal. A dimmed backdrop
+/// (occluding clicks to the settings behind) with a centered dialog card:
+/// title, the privacy explanation, a "Don't show again" checkbox, and
+/// Cancel / Enable buttons. Rendered by the panel root as an absolute
+/// overlay only while armed.
+pub fn hf_privacy_modal(dont_show_again: bool, cx: &mut Cx) -> gpui::Div {
+    div()
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        // Dim backdrop — translucent black, passed straight (the `pack`
+        // idiom would drop the alpha and render it opaque).
+        .bg(gpui::rgba(0x00_00_00_99))
+        .child(
+            div()
+                .w(px(440.0))
+                .bg(rgb(pack(SURFACE_800)))
+                .border_1()
+                .border_color(rgb(pack(BORDER_EMPHASIS)))
+                .rounded(px(8.0))
+                .shadow_lg()
+                .p_5()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::BASE))
+                        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                        .child(SharedString::from("Allow online model search?")),
+                )
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_SECONDARY)))
+                        .child(SharedString::from(
+                            "Wylde will query HuggingFace's public API \
+                             (https://huggingface.co/api/models) when you search for models \
+                             not in the curated catalog. Each query sends your search term to \
+                             HuggingFace; no other data is shared. The connection is HTTPS. You \
+                             can disable this anytime in Settings.",
+                        )),
+                )
+                .child(modal_checkbox_row(dont_show_again, cx))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            modal_button("settings-hf-modal-cancel", "Cancel", false).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _ev, _window, cx| this.cancel_hf_modal(cx)),
+                            ),
+                        )
+                        .child(
+                            modal_button("settings-hf-modal-enable", "Enable", true).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _ev, _window, cx| this.confirm_hf_modal(cx)),
+                            ),
+                        ),
+                ),
+        )
+}
+
+/// The modal's "Don't show this warning again" checkbox row — a clickable
+/// box glyph (filled brand when checked) + label.
+fn modal_checkbox_row(checked: bool, cx: &mut Cx) -> Stateful<gpui::Div> {
+    let (glyph, bg, border) = if checked {
+        ("✓", BRAND, BORDER_EMPHASIS)
+    } else {
+        ("", SURFACE_900, BORDER_DEFAULT)
+    };
+    div()
+        .id("settings-hf-modal-dontshow")
+        .cursor_pointer()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _ev, _window, cx| this.toggle_hf_dont_show_again(cx)),
+        )
+        .child(
+            div()
+                .w(px(16.0))
+                .h(px(16.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(3.0))
+                .border_1()
+                .border_color(rgb(pack(border)))
+                .bg(rgb(pack(bg)))
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                .text_color(rgb(pack(TEXT_PRIMARY)))
+                .child(SharedString::from(glyph)),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(SharedString::from("Don't show this warning again")),
+        )
+}
+
+/// A modal action button. `primary` fills it with the brand colour (the
+/// "Enable" affirmative); otherwise it's an outline (the "Cancel").
+fn modal_button(id: impl Into<ElementId>, label: &str, primary: bool) -> Stateful<gpui::Div> {
+    let mut b = div()
+        .id(id.into())
+        .cursor_pointer()
+        .rounded(px(4.0))
+        .border_1()
+        .px_3()
+        .py(px(4.0))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+        .text_color(rgb(pack(TEXT_PRIMARY)))
+        .child(SharedString::from(label.to_owned()));
+    if primary {
+        b = b.bg(rgb(pack(BRAND))).border_color(rgb(pack(BORDER_EMPHASIS)));
+    } else {
+        b = b
+            .bg(rgb(pack(SURFACE_900)))
+            .border_color(rgb(pack(BORDER_DEFAULT)));
+    }
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -950,6 +1139,12 @@ mod tests {
     fn state_badge_renders_both_states() {
         let _ = state_badge(true);
         let _ = state_badge(false);
+    }
+
+    #[test]
+    fn modal_button_renders_primary_and_secondary() {
+        let _ = modal_button("x-enable", "Enable", true);
+        let _ = modal_button("x-cancel", "Cancel", false);
     }
 
     #[test]

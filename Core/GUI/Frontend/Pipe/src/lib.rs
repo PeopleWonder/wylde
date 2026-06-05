@@ -34,6 +34,7 @@ pub mod conversation_bus;
 pub mod memory_long_term;
 pub mod memory_workspaces;
 pub mod nav_bus;
+pub mod privacy_prefs;
 pub mod tools;
 pub mod updater_state;
 

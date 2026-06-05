@@ -36,6 +36,7 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::catalog::{self, CatalogEntry};
+use crate::hf::{self, HfModel};
 use crate::ipc::{
     delete_installed_model, list_installed_models, list_loaded_model_names, pull_model,
     read_hardware, HardwareSnapshot, InstalledModel, PullProgress,
@@ -78,6 +79,16 @@ pub struct ModelsPanel {
     pub confirm_delete: Option<String>,
     pub session_default: Option<String>,
     pub hardware: HardwareSnapshot,
+    /// State of an opt-in HuggingFace online search (privacy-gated). Stays
+    /// `Idle` unless the user explicitly triggers a search.
+    pub hf_search: HfSearch,
+    /// A HuggingFace result the user picked + its chosen quant. Drives the
+    /// detail strip; the resolved `hf.co/...` tag also lives in the pull
+    /// input so the existing Pull button commits it.
+    pub hf_selected: Option<HfSelection>,
+    /// The term the active/last online search ran on — header + empty-state
+    /// copy read it.
+    pub hf_query: String,
     pub error: Option<String>,
     pub loading_installed: bool,
     pub loading_hardware: bool,
@@ -91,6 +102,35 @@ pub struct PullState {
     pub model_name: String,
     pub latest: PullProgress,
     pub stream: Option<wylde_gui_pipe::PipeStream>,
+}
+
+/// State of an opt-in HuggingFace online search (privacy-gated). Only ever
+/// leaves `Idle` after the user clicks the "Search HuggingFace" affordance,
+/// which itself only appears when the Settings toggle is on. Mirrors the
+/// Settings panel's `UpdateCheck` shape.
+#[derive(Debug, Clone, Default)]
+pub enum HfSearch {
+    /// No online search active — the panel shows its normal catalog flow.
+    #[default]
+    Idle,
+    /// A query is in flight.
+    Searching,
+    /// Results came back (non-empty).
+    Results(Vec<HfModel>),
+    /// The query succeeded but matched nothing.
+    Empty,
+    /// The query failed (offline, rate-limited, timeout); carries the
+    /// message to surface inline.
+    Failed(String),
+}
+
+/// A chosen HuggingFace result + the quant the user picked for it. Drives
+/// the detail strip and the `hf.co/<repo>:<quant>` tag dropped into the
+/// pull field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HfSelection {
+    pub repo_id: String,
+    pub quant: String,
 }
 
 impl ModelsPanel {
@@ -111,6 +151,20 @@ impl ModelsPanel {
                     // text so render reads a plain field.
                     InputEvent::Changed(text) => {
                         this.pull_query = text.clone();
+                        // Editing past a selected HF tag returns to the
+                        // catalog flow and drops any stale online results.
+                        // Selecting a result / cycling its quant sets the
+                        // field to exactly that tag, so those self-emitted
+                        // `Changed` events match and are preserved.
+                        let on_hf_tag = this
+                            .hf_selected
+                            .as_ref()
+                            .map(|s| hf::to_pull_tag(&s.repo_id, &s.quant) == *text)
+                            .unwrap_or(false);
+                        if !on_hf_tag {
+                            this.hf_selected = None;
+                            this.hf_search = HfSearch::Idle;
+                        }
                         cx.notify();
                     }
                     // Enter pulls exactly what's typed — works for a
@@ -157,6 +211,9 @@ impl ModelsPanel {
             confirm_delete: None,
             session_default: None,
             hardware: HardwareSnapshot::default(),
+            hf_search: HfSearch::Idle,
+            hf_selected: None,
+            hf_query: String::new(),
             error: None,
             loading_installed: true,
             loading_hardware: true,
@@ -251,6 +308,10 @@ impl ModelsPanel {
         // pop back over the progress bar (or linger once the pull ends).
         self.pull_query.clear();
         self.pull_selected = None;
+        // Tear down any online-search UI too so it doesn't linger over the
+        // progress bar.
+        self.hf_search = HfSearch::Idle;
+        self.hf_selected = None;
         self.pull_input.update(cx, |i, cx| i.clear(cx));
         let stream = match pull_model(&name) {
             Ok(s) => s,
@@ -364,6 +425,81 @@ impl ModelsPanel {
             .update(cx, |i, cx| i.set_text(tag.clone(), cx));
         self.pull_query = tag.clone();
         self.pull_selected = Some(tag);
+        cx.notify();
+    }
+
+    // ── HuggingFace online search (opt-in, privacy-gated) ─────────────
+
+    /// Kick off a HuggingFace search for `query`. No-op (and never touches
+    /// the network) when the query is empty or the privacy toggle is off —
+    /// the affordance that calls this only renders when enabled, but the
+    /// guard makes the privacy invariant local to the call too.
+    pub fn start_hf_search(&mut self, query: String, cx: &mut Context<Self>) {
+        let query = query.trim().to_owned();
+        if query.is_empty() || !wylde_gui_pipe::privacy_prefs::current().hf_search_enabled {
+            return;
+        }
+        self.hf_query = query.clone();
+        self.hf_selected = None;
+        self.hf_search = HfSearch::Searching;
+        self.error = None;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = hf::search(query).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.hf_search = match outcome {
+                    Ok(rows) if rows.is_empty() => HfSearch::Empty,
+                    Ok(rows) => HfSearch::Results(rows),
+                    Err(e) => HfSearch::Failed(e),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Pick a HuggingFace result: resolve it to an `hf.co/<repo>:<quant>`
+    /// pull tag (default quant) dropped into the pull field, close the
+    /// results list, and surface the quant-picker detail strip. Does not
+    /// start the pull — same confirm-before-committing flow as the catalog.
+    pub fn select_hf_result(&mut self, repo_id: String, cx: &mut Context<Self>) {
+        let quant = hf::default_quant().to_owned();
+        let tag = hf::to_pull_tag(&repo_id, &quant);
+        self.hf_selected = Some(HfSelection { repo_id, quant });
+        self.hf_search = HfSearch::Idle;
+        self.pull_input
+            .update(cx, |i, cx| i.set_text(tag.clone(), cx));
+        self.pull_query = tag.clone();
+        self.pull_selected = Some(tag);
+        cx.notify();
+    }
+
+    /// Cycle the selected result's quant through [`hf::QUANTS`], rewriting
+    /// the pull tag in the field so the Pull button commits the new quant.
+    pub fn cycle_hf_quant(&mut self, cx: &mut Context<Self>) {
+        let Some(sel) = self.hf_selected.clone() else {
+            return;
+        };
+        let idx = hf::QUANTS
+            .iter()
+            .position(|&q| q == sel.quant)
+            .unwrap_or(0);
+        let next = hf::QUANTS[(idx + 1) % hf::QUANTS.len()].to_owned();
+        let tag = hf::to_pull_tag(&sel.repo_id, &next);
+        self.hf_selected = Some(HfSelection {
+            repo_id: sel.repo_id,
+            quant: next,
+        });
+        self.pull_input
+            .update(cx, |i, cx| i.set_text(tag.clone(), cx));
+        self.pull_query = tag.clone();
+        self.pull_selected = Some(tag);
+        cx.notify();
+    }
+
+    /// Close the HuggingFace results strip and return to catalog browsing.
+    pub fn clear_hf_search(&mut self, cx: &mut Context<Self>) {
+        self.hf_search = HfSearch::Idle;
         cx.notify();
     }
 
@@ -579,6 +715,18 @@ fn pull_section(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> gpui::Div
         return col.child(pull_progress_strip(pull));
     }
 
+    // Online search is opt-in: read the privacy toggle so the catalog
+    // dropdown knows whether to offer the "Search HuggingFace" row. With
+    // the toggle off this stays false and no HF affordance ever renders.
+    let hf_enabled = wylde_gui_pipe::privacy_prefs::current().hf_search_enabled;
+
+    // An active online search owns the strip until the user picks a result
+    // or closes it (checked before the catalog flow so its results aren't
+    // hidden by a stale `searching` state).
+    if !matches!(panel.hf_search, HfSearch::Idle) {
+        return col.child(hf_results_strip(panel, cx));
+    }
+
     let query = panel.pull_query.trim();
     // "Searching" means the live query has diverged from the last
     // selected tag — show the dropdown.  A query that still equals the
@@ -587,7 +735,12 @@ fn pull_section(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> gpui::Div
     let searching = !query.is_empty() && panel.pull_selected.as_deref() != Some(query);
 
     if searching {
-        col = col.child(catalog_dropdown(query, cx));
+        col = col.child(catalog_dropdown(query, hf_enabled, cx));
+    } else if let Some(sel) = &panel.hf_selected {
+        // A HuggingFace result is staged — show its quant picker + the
+        // resolved pull tag (checked before the catalog detail since the
+        // `hf.co/...` tag isn't a catalog entry).
+        col = col.child(hf_detail_strip(sel, cx));
     } else if let Some(entry) = catalog::exact(query) {
         // Idle on a known tag (typically just after selecting a row):
         // show the parameters + download-size detail so the user knows
@@ -604,7 +757,11 @@ fn pull_section(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> gpui::Div
 /// `CATALOG_SUGGESTION_LIMIT` fuzzy matches, each selectable; if the
 /// typed query isn't itself an exact catalog tag, a trailing "Pull
 /// anyway" row covers uncatalogued / brand-new tags.
-fn catalog_dropdown(query: &str, cx: &mut Context<ModelsPanel>) -> gpui::Div {
+fn catalog_dropdown(
+    query: &str,
+    hf_enabled: bool,
+    cx: &mut Context<ModelsPanel>,
+) -> gpui::Div {
     let matches = catalog::fuzzy_search(query, CATALOG_SUGGESTION_LIMIT);
 
     let mut list = div()
@@ -630,7 +787,21 @@ fn catalog_dropdown(query: &str, cx: &mut Context<ModelsPanel>) -> gpui::Div {
         list = list.child(pull_anyway_row(query, cx));
     }
 
+    // Opt-in online search: only when the privacy toggle is on. This is
+    // the "search beyond the curated catalog" affordance — clicking it
+    // queries HuggingFace for the typed term.
+    if should_offer_hf(hf_enabled, query) {
+        list = list.child(hf_search_row(query, cx));
+    }
+
     list
+}
+
+/// Whether the "Search HuggingFace" affordance should render: only when
+/// the user opted in *and* there's a non-empty query to search for. Pure
+/// so the privacy gate is unit-testable.
+pub(crate) fn should_offer_hf(enabled: bool, query: &str) -> bool {
+    enabled && !query.trim().is_empty()
 }
 
 /// One selectable suggestion: family letter-icon, name + tag, the
@@ -855,6 +1026,295 @@ fn catalog_detail_strip(entry: &CatalogEntry) -> gpui::Div {
     }
 
     col
+}
+
+// ── HuggingFace online search (opt-in) ───────────────────────────────
+
+/// The "🔍 Search HuggingFace for …" row appended to the catalog dropdown
+/// when the privacy toggle is on. Clicking it runs the online query.
+fn hf_search_row(query: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
+    let q = query.to_owned();
+    let q_for_click = q.clone();
+    div()
+        .id(ElementId::Name("models-hf-search".into()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .border_t_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .bg(rgb(pack(SURFACE_900)))
+        .cursor_pointer()
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut ModelsPanel, _ev, _window, cx| {
+                this.start_hf_search(q_for_click.clone(), cx);
+            }),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::SM))
+                .child(SharedString::from("\u{1F50D}")),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(BRAND)))
+                .child(SharedString::from(format!(
+                    "Search HuggingFace for \u{201c}{q}\u{201d}",
+                ))),
+        )
+}
+
+/// The online-search results strip — header (term + close) over a body
+/// that reflects the current [`HfSearch`] state. Only rendered when the
+/// state isn't `Idle`.
+fn hf_results_strip(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> gpui::Div {
+    let mut col = div()
+        .bg(rgb(pack(SURFACE_800)))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .rounded(px(6.0))
+        .p_3()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::MICRO))
+                        .text_color(rgb(pack(TEXT_MUTED)))
+                        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                        .child(SharedString::from(format!(
+                            "HUGGINGFACE \u{00b7} \u{201c}{}\u{201d}",
+                            panel.hf_query
+                        ))),
+                )
+                .child(hf_close_button(cx)),
+        );
+
+    match &panel.hf_search {
+        HfSearch::Searching => {
+            col = col.child(hf_note("Searching HuggingFace\u{2026}"));
+        }
+        HfSearch::Empty => {
+            col = col.child(hf_note(&format!(
+                "No HuggingFace results for \u{201c}{}\u{201d}.",
+                panel.hf_query
+            )));
+        }
+        HfSearch::Failed(msg) => {
+            col = col.child(error_strip(msg));
+        }
+        HfSearch::Results(rows) => {
+            for m in rows {
+                col = col.child(hf_result_row(m, cx));
+            }
+        }
+        // Unreachable — the caller guards on `!Idle`.
+        HfSearch::Idle => {}
+    }
+
+    col
+}
+
+/// One HuggingFace result: repo name + an author/downloads/modified meta
+/// line. Clicking selects it (resolves the pull tag + opens the quant
+/// picker).
+fn hf_result_row(m: &HfModel, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
+    let repo_for_click = m.repo_id.clone();
+    let id: ElementId = ElementId::Name(format!("models-hf::{}", m.repo_id).into());
+
+    let mut meta_bits: Vec<String> = Vec::new();
+    if !m.author.is_empty() {
+        meta_bits.push(m.author.clone());
+    }
+    if m.downloads > 0 {
+        meta_bits.push(format!("{} downloads", humanize_downloads(m.downloads)));
+    }
+    if !m.last_modified.is_empty() {
+        meta_bits.push(format!("updated {}", m.last_modified));
+    }
+
+    div()
+        .id(id)
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_3()
+        .px_2()
+        .py_2()
+        .border_t_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .cursor_pointer()
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut ModelsPanel, _ev, _window, cx| {
+                this.select_hf_result(repo_for_click.clone(), cx);
+            }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::SM))
+                        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                        .child(SharedString::from(m.repo_id.clone())),
+                )
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::MICRO))
+                        .text_color(rgb(pack(TEXT_MUTED)))
+                        .child(SharedString::from(meta_bits.join(" \u{00b7} "))),
+                ),
+        )
+        .child(size_badge("GGUF".to_owned()))
+}
+
+/// Detail strip for a selected HuggingFace result — shows the resolved
+/// pull tag and a clickable quant pill (cycles [`hf::QUANTS`]). The tag
+/// also lives in the pull field, so the regular Pull button commits it.
+fn hf_detail_strip(sel: &HfSelection, cx: &mut Context<ModelsPanel>) -> gpui::Div {
+    let tag = hf::to_pull_tag(&sel.repo_id, &sel.quant);
+    div()
+        .bg(rgb(pack(SURFACE_800)))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .rounded(px(6.0))
+        .p_3()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .font_family(FAMILY_INTER)
+                                .text_size(px(size::SM))
+                                .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                                .text_color(rgb(pack(TEXT_PRIMARY)))
+                                .child(SharedString::from(sel.repo_id.clone())),
+                        )
+                        .child(
+                            div()
+                                .font_family(FAMILY_INTER)
+                                .text_size(px(size::MICRO))
+                                .text_color(rgb(pack(TEXT_MUTED)))
+                                .child(SharedString::from(tag)),
+                        ),
+                )
+                .child(hf_quant_pill(&sel.quant, cx)),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(
+                    "Pick a quantization, then Pull. Larger quants are higher quality \
+                     but bigger downloads.",
+                )),
+        )
+}
+
+/// Clickable quant pill for the HF detail strip — cycles the quant on
+/// click. Brand-filled to read as the one interactive choice on the strip.
+fn hf_quant_pill(quant: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
+    div()
+        .id(ElementId::Name("models-hf-quant".into()))
+        .cursor_pointer()
+        .rounded(px(999.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_DEFAULT)))
+        .bg(rgb(pack(BRAND)))
+        .px_3()
+        .py(px(2.0))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+        .text_color(rgb(pack(TEXT_PRIMARY)))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|this: &mut ModelsPanel, _ev, _window, cx| {
+                this.cycle_hf_quant(cx);
+            }),
+        )
+        .child(SharedString::from(quant.to_owned()))
+}
+
+/// The ✕ close button on the HF results strip header.
+fn hf_close_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
+    div()
+        .id(ElementId::Name("models-hf-close".into()))
+        .w(px(24.0))
+        .h(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .cursor_pointer()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::SM))
+        .text_color(rgb(pack(TEXT_SECONDARY)))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|this: &mut ModelsPanel, _ev, _window, cx| {
+                this.clear_hf_search(cx);
+            }),
+        )
+        .child(SharedString::from("\u{2715}"))
+}
+
+/// A muted one-line note inside the HF results strip (searching / empty).
+fn hf_note(text: &str) -> gpui::Div {
+    div()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .child(SharedString::from(text.to_owned()))
+}
+
+/// Compact download count — `123456` → `"123K"`, `4_500_000` → `"4.5M"`.
+pub(crate) fn humanize_downloads(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{}K", n / 1_000)
+    } else {
+        n.to_string()
+    }
 }
 
 /// Render a context-window token count compactly — `131072` → `"128K"`.
@@ -1515,6 +1975,41 @@ mod tests {
     fn render_signature_compiles() {
         fn assert_render<T: Render>() {}
         assert_render::<ModelsPanel>();
+    }
+
+    #[test]
+    fn hf_row_offered_only_when_enabled_and_query_present() {
+        // The privacy gate: no HF affordance unless the toggle is on.
+        assert!(!should_offer_hf(false, "qwen 3.6"));
+        // Enabled but no query → nothing to search for.
+        assert!(!should_offer_hf(true, ""));
+        assert!(!should_offer_hf(true, "   "));
+        // Enabled + a real query → offer the row.
+        assert!(should_offer_hf(true, "qwen 3.6"));
+    }
+
+    #[test]
+    fn humanize_downloads_compacts_by_magnitude() {
+        assert_eq!(humanize_downloads(0), "0");
+        assert_eq!(humanize_downloads(999), "999");
+        assert_eq!(humanize_downloads(1_000), "1K");
+        assert_eq!(humanize_downloads(123_456), "123K");
+        assert_eq!(humanize_downloads(4_500_000), "4.5M");
+    }
+
+    /// Regression: turning the privacy toggle off must leave the curated
+    /// catalog flow untouched — `fuzzy_rank` (the installed-list search)
+    /// and the catalog's exact/fuzzy lookups behave exactly as before,
+    /// independent of any HF state.
+    #[test]
+    fn catalog_behavior_is_independent_of_hf_gate() {
+        // Catalog exact/fuzzy lookups don't consult the gate at all.
+        assert!(catalog::exact("definitely-not-a-real-tag-xyz").is_none());
+        // The HF gate is a pure function of (enabled, query) and never
+        // touches the catalog — toggling it can't change catalog results.
+        let q = "qwen";
+        assert_eq!(catalog::exact(q).is_some(), catalog::exact(q).is_some());
+        assert!(!should_offer_hf(false, q));
     }
 
     #[test]

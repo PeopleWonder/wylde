@@ -25,6 +25,7 @@
 //! else moves.
 
 pub mod catalog;
+pub mod hf;
 pub mod ipc;
 pub mod models_panel;
 pub mod recommend;
