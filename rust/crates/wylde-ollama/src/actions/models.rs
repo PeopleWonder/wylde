@@ -45,6 +45,12 @@ pub async fn handle_health(_payload: Value, up: Arc<Upstream>) -> Reply {
     if let Some(n) = probe.models {
         data["upstream_models"] = json!(n);
     }
+    // Latency is present only when the upstream answered (status == ok).
+    // The Dashboard reads it to flag a reachable-but-slow daemon as a
+    // degraded/yellow tile, distinct from a healthy green.
+    if let Some(ms) = probe.latency_ms {
+        data["latency_ms"] = json!(ms);
+    }
     Reply::ok(data)
 }
 
@@ -379,6 +385,12 @@ mod tests {
         assert_eq!(reply.data["pong"], true);
         assert_eq!(reply.data["upstream"], "ok");
         assert_eq!(reply.data["upstream_models"], 2);
+        // Latency is surfaced when the upstream answers.
+        assert!(
+            reply.data["latency_ms"].is_u64(),
+            "ok health must carry latency_ms, got {:?}",
+            reply.data.get("latency_ms"),
+        );
     }
 
     #[tokio::test]
@@ -403,6 +415,7 @@ mod tests {
             "expected a down-state, got {upstream:?}"
         );
         assert!(reply.data.get("upstream_models").is_none());
+        assert!(reply.data.get("latency_ms").is_none());
     }
 
     #[tokio::test]

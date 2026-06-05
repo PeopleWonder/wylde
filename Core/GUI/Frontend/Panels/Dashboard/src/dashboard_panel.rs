@@ -32,7 +32,7 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::ipc::{
     probe_service, read_hardware_card, read_loaded_models, read_recent_memories, HardwareCard,
-    HealthStatus, LoadedModel, RecentMemory, MONITORED_SERVICES,
+    HealthStatus, LoadedModel, RecentMemory, ServiceHealth, MONITORED_SERVICES,
 };
 
 /// Polling interval for the auto-refresh loop.  Matches the Svelte
@@ -47,7 +47,7 @@ const RECENT_LIMIT: usize = 5;
 const RECENT_PREVIEW_CHARS: usize = 96;
 
 pub struct DashboardPanel {
-    pub service_health: Vec<(String, HealthStatus)>,
+    pub service_health: Vec<(String, ServiceHealth)>,
     pub hardware: HardwareCard,
     /// `true` once we've successfully read the broker.  Lets the
     /// hardware card flip from "(loading…)" to "last known: …" if a
@@ -64,7 +64,7 @@ impl DashboardPanel {
     pub fn new() -> Self {
         let service_health = MONITORED_SERVICES
             .iter()
-            .map(|s| ((*s).to_owned(), HealthStatus::Unknown))
+            .map(|s| ((*s).to_owned(), ServiceHealth::plain(HealthStatus::Unknown)))
             .collect();
         Self {
             service_health,
@@ -124,10 +124,10 @@ impl DashboardPanel {
         });
 
         let health_fut = async {
-            let mut out: Vec<(String, HealthStatus)> = Vec::new();
+            let mut out: Vec<(String, ServiceHealth)> = Vec::new();
             for svc in MONITORED_SERVICES {
-                let status = probe_service(svc).await;
-                out.push(((*svc).to_owned(), status));
+                let health = probe_service(svc).await;
+                out.push(((*svc).to_owned(), health));
             }
             out
         };
@@ -317,8 +317,8 @@ fn service_health_strip(
         .flex_row()
         .flex_wrap()
         .gap_2();
-    for (name, status) in &panel.service_health {
-        row = row.child(service_chip(name, *status, cx));
+    for (name, health) in &panel.service_health {
+        row = row.child(service_chip(name, health, cx));
     }
     div()
         .bg(rgb(pack(SURFACE_800)))
@@ -331,13 +331,13 @@ fn service_health_strip(
 
 fn service_chip(
     name: &str,
-    status: HealthStatus,
+    health: &ServiceHealth,
     cx: &mut Context<DashboardPanel>,
 ) -> Stateful<gpui::Div> {
     let label = SharedString::from(short_service_name(name));
-    let colour = status_colour(status);
+    let colour = status_colour(health.status);
     let id: ElementId = ElementId::Name(format!("dashboard-svc::{name}").into());
-    div()
+    let mut chip = div()
         .id(id)
         .px_2()
         .py_1()
@@ -372,7 +372,41 @@ fn service_chip(
                 .text_size(px(size::XS))
                 .text_color(rgb(pack(TEXT_PRIMARY)))
                 .child(label),
-        )
+        );
+    // Degraded (and any future detail-bearing) tile gets a hover tooltip
+    // explaining the specific degradation — "Ollama daemon unreachable…"
+    // or "Slow response (>2s)".
+    if let Some(detail) = &health.detail {
+        let text = SharedString::from(detail.clone());
+        chip = chip.tooltip(move |_window, cx| {
+            let text = text.clone();
+            cx.new(|_| ChipTooltip { text }).into()
+        });
+    }
+    chip
+}
+
+/// Minimal hover tooltip for a degraded service chip. gpui core ships no
+/// ready-made tooltip view (that lives in zed's `ui` crate, which Wylde
+/// doesn't depend on), so this is a tiny styled bubble of its own.
+struct ChipTooltip {
+    text: SharedString,
+}
+
+impl Render for ChipTooltip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .bg(rgb(pack(SURFACE_800)))
+            .border_1()
+            .border_color(rgb(pack(BORDER_DEFAULT)))
+            .rounded(px(4.0))
+            .px_2()
+            .py_1()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::XS))
+            .text_color(rgb(pack(TEXT_PRIMARY)))
+            .child(self.text.clone())
+    }
 }
 
 fn hardware_card(panel: &DashboardPanel) -> gpui::Div {
@@ -631,6 +665,10 @@ pub(crate) fn short_service_name(s: &str) -> String {
 pub(crate) fn status_colour(status: HealthStatus) -> gpui::Rgba {
     match status {
         HealthStatus::Healthy => BRAND,
+        // Amber for "pipe up but degraded" — mirrors the red literal
+        // pattern below rather than a theme token (the theme has no
+        // warning colour yet).
+        HealthStatus::Degraded => gpui::rgb(0xf5_9e_0b),
         HealthStatus::Unhealthy => gpui::rgb(0xef_4444),
         HealthStatus::Unknown => TEXT_MUTED,
     }
@@ -739,8 +777,9 @@ mod tests {
     fn new_with_defaults_marks_every_service_unknown() {
         let p = DashboardPanel::new();
         assert_eq!(p.service_health.len(), MONITORED_SERVICES.len());
-        for (_, status) in &p.service_health {
-            assert_eq!(*status, HealthStatus::Unknown);
+        for (_, health) in &p.service_health {
+            assert_eq!(health.status, HealthStatus::Unknown);
+            assert!(health.detail.is_none());
         }
         assert!(!p.initial_load_done);
         assert!(p.recent_memories.is_empty());
@@ -780,11 +819,21 @@ mod tests {
     #[test]
     fn status_colour_distinguishes_each_bucket() {
         let healthy = status_colour(HealthStatus::Healthy);
+        let degraded = status_colour(HealthStatus::Degraded);
         let unhealthy = status_colour(HealthStatus::Unhealthy);
         let unknown = status_colour(HealthStatus::Unknown);
-        assert_ne!(pack(healthy), pack(unhealthy));
-        assert_ne!(pack(healthy), pack(unknown));
-        assert_ne!(pack(unhealthy), pack(unknown));
+        // All four buckets must be visually distinct.
+        let packed = [
+            pack(healthy),
+            pack(degraded),
+            pack(unhealthy),
+            pack(unknown),
+        ];
+        for i in 0..packed.len() {
+            for j in (i + 1)..packed.len() {
+                assert_ne!(packed[i], packed[j], "colours {i} and {j} collide");
+            }
+        }
     }
 
     #[test]

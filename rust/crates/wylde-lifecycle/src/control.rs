@@ -58,7 +58,9 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use wylde_shared::ipc::{register_action, send_with_verb, IpcError, Reply};
+use wylde_shared::ipc::{
+    register_action, send_with_verb, IpcError, Reply, ACTION_DISPATCH_PATH,
+};
 
 use crate::registry::{self, ServiceInfo};
 use crate::state::services::{
@@ -417,6 +419,15 @@ async fn service_health_action(payload: Value) -> Reply {
     if name == service_name::MEMGRAPH {
         return memgraph_health().await;
     }
+    // Ollama special-case: a plain `/__ping__` only proves the wrapper's
+    // pipe is up — it says nothing about whether the upstream Ollama
+    // daemon on `127.0.0.1:11434` is actually reachable. That gap let the
+    // Dashboard show a green ollama tile while inference was dead. Compose
+    // the pipe liveness with the wrapper's own upstream probe so the
+    // Dashboard can render a degraded/yellow tile.
+    if name == service_name::OLLAMA {
+        return ollama_health().await;
+    }
     let reply = send_with_verb(&name, LIVENESS_METHOD, "GET", Value::Null, HEALTH_PROBE_TIMEOUT).await;
     if reply.ok {
         return Reply::ok(json!({
@@ -469,6 +480,60 @@ async fn memgraph_health() -> Reply {
             format!("memgraph bolt probe failed: nothing accepting on 127.0.0.1:{port}"),
         ))
     }
+}
+
+/// Composed liveness for `wylde-ollama`. See [`service_health_action`]
+/// for why ollama is special-cased.
+///
+/// Probing `/__ping__` over the wrapper pipe only answers "is the wrapper
+/// up?". The honest liveness signal for the LLM layer is "is the upstream
+/// Ollama daemon on `127.0.0.1:11434` reachable?", which only the wrapper
+/// can answer. So instead of a bare ping we dispatch the wrapper's own
+/// `ollama.health` action: reaching it over the pipe *is* the pipe-ping
+/// (transport failure ⇒ `probe_failed`, a red tile), and its reply folds
+/// in the upstream status (`ok` | `unreachable` | `timeout`) plus
+/// `latency_ms`. The Dashboard reads `reply.upstream` / `reply.latency_ms`
+/// to render the tri-state: green (upstream ok + fast), yellow (pipe up
+/// but upstream down/slow), red (pipe down).
+///
+/// The envelope mirrors the generic path's `{name, reply}` shape so the
+/// GUI's health projection treats it uniformly.
+async fn ollama_health() -> Reply {
+    let body = json!({ "action": "ollama.health", "payload": {} });
+    let reply = send_with_verb(
+        service_name::OLLAMA,
+        ACTION_DISPATCH_PATH,
+        "POST",
+        body,
+        HEALTH_PROBE_TIMEOUT,
+    )
+    .await;
+    if reply.ok {
+        // Wrapper answered over the pipe (pipe is up). `reply.data` carries
+        // `{ok, pong, upstream, upstream_models?, latency_ms?}`.
+        return Reply::ok(json!({
+            "name": service_name::OLLAMA,
+            "reply": reply.data,
+        }));
+    }
+    // Wrapper didn't answer — mirror the generic path's discrimination:
+    // a transport error means the pipe is down (`probe_failed`); anything
+    // else is a service-level not-ok (`service_unhealthy`).
+    let err = reply
+        .error
+        .unwrap_or_else(|| IpcError::new("unknown", "unknown"));
+    let (code, msg) = if TRANSPORT_ERROR_CODES.contains(&err.code.as_str()) {
+        (
+            "probe_failed",
+            format!("health probe failed: {}", err.message),
+        )
+    } else {
+        (
+            "service_unhealthy",
+            format!("wylde-ollama replied not-ok: {}", err.message),
+        )
+    };
+    Reply::err(IpcError::new(code, msg))
 }
 
 /// Production spawn for a daemon-managed service. Idempotent on
@@ -907,6 +972,37 @@ mod tests {
         .await;
         assert!(!reply.ok);
         assert_eq!(reply.error.unwrap().code, "probe_failed");
+
+        cleanup();
+    }
+
+    #[tokio::test]
+    async fn service_health_ollama_routes_through_composed_probe() {
+        let _g = registry_guard().await;
+        cleanup();
+        register_with_ipc();
+
+        // `wylde-ollama` is special-cased to compose pipe liveness with
+        // the wrapper's upstream probe. The exact outcome depends on
+        // whether the wrapper pipe is up in this env, so assert the
+        // *shape* of each branch rather than pinning one:
+        //   * pipe up   → ok envelope `{name, reply: {upstream, ...}}`
+        //   * pipe down → `probe_failed` (red tile)
+        let reply = dispatch_action(json!({
+            "action": "service.health",
+            "payload": {"name": "wylde-ollama"},
+        }))
+        .await;
+        if reply.ok {
+            assert_eq!(reply.data["name"], "wylde-ollama");
+            assert!(
+                reply.data["reply"]["upstream"].is_string(),
+                "composed ollama health must fold in the upstream status, got {:?}",
+                reply.data,
+            );
+        } else {
+            assert_eq!(reply.error.unwrap().code, "probe_failed");
+        }
 
         cleanup();
     }
