@@ -40,6 +40,10 @@ pub mod settings;
 pub mod state;
 pub mod tooling;
 pub mod turn;
+/// Config-file-backed workspaces (redesign scaffold — see
+/// `docs/plans/workspaces-redesign-2026-06-04.md`). Distinct from the
+/// verb-driven [`memory::workspaces`], which it is slated to replace.
+pub mod workspaces;
 
 pub use api::{DefaultHarnessApi, HarnessApi};
 pub use service::{install, reset_for_tests, stop};
