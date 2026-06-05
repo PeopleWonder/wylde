@@ -547,6 +547,31 @@ async fn voice_action(action: &str, payload: Value) -> Result<Value, String> {
     .await
 }
 
+// ── Privacy & Network prefs ───────────────────────────────────────────
+//
+// The "Privacy & Network" section is the centralized opt-in for features
+// that may make an outside network connection (today: HuggingFace online
+// model search). Unlike the other sections it does *not* go over a pipe —
+// the prefs are a tiny local JSON file owned by the shared Pipe crate's
+// `privacy_prefs` cache, so the read/write is synchronous and no backend
+// service is in the loop. The Models panel reads the same cache to decide
+// whether to surface its HuggingFace affordance.
+
+/// The privacy-prefs shape, re-exported so the panel + its sections can
+/// name the type without reaching across crates at every call site.
+pub use wylde_gui_pipe::privacy_prefs::PrivacyPrefs;
+
+/// Read the current privacy prefs (cheap copy out of the shared cache).
+pub fn read_privacy_prefs() -> PrivacyPrefs {
+    wylde_gui_pipe::privacy_prefs::current()
+}
+
+/// Persist a new privacy-prefs snapshot (updates the shared cache + the
+/// on-disk file). Synchronous — the file is a few bytes.
+pub fn write_privacy_prefs(prefs: PrivacyPrefs) -> Result<(), String> {
+    wylde_gui_pipe::privacy_prefs::persist(prefs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

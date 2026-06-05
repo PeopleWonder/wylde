@@ -33,6 +33,12 @@ nucleo-matcher = "0.3"
 # Tokio for sleeps + bridge handle used by the stream consumer.
 tokio.workspace = true
 
+# HuggingFace online model search (opt-in, privacy-gated). Uses the
+# workspace's existing HTTP client — the `blocking` feature is added on
+# top so the GGUF search runs synchronously inside the Pipe crate's
+# blocking bridge (the same pattern the updater uses); no new HTTP crate.
+reqwest = { workspace = true, features = ["blocking"] }
+
 # gpui — every panel imports the same set: div builders, Render, etc.
 gpui.workspace = true
 

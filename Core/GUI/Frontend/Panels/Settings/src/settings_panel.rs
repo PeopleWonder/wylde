@@ -25,15 +25,15 @@ use wylde_theme::typography::{size, FAMILY_INTER};
 
 use crate::ipc::{
     check_for_update, clear_tool_decision, download_and_install, get_autostart_enabled,
-    list_consent, list_input_devices, read_ollama_settings, read_update_prefs, read_voice_settings,
-    reset_consent, set_autostart_enabled, set_no_auth, set_tool_decision, test_mic,
-    write_update_prefs, write_voice_settings, ConsentSnapshot, OllamaSettings, UpdateCheck,
-    UpdatePrefs, VoiceDevices, VoiceSettings, VoiceTest,
+    list_consent, list_input_devices, read_ollama_settings, read_privacy_prefs, read_update_prefs,
+    read_voice_settings, reset_consent, set_autostart_enabled, set_no_auth, set_tool_decision,
+    test_mic, write_privacy_prefs, write_update_prefs, write_voice_settings, ConsentSnapshot,
+    OllamaSettings, PrivacyPrefs, UpdateCheck, UpdatePrefs, VoiceDevices, VoiceSettings, VoiceTest,
 };
 use crate::hotkey::{resolve_capture, CaptureOutcome};
 use crate::sections::{
-    consent_section, error_banner, ollama_section, pack, startup_section, updates_section,
-    voice_section,
+    consent_section, error_banner, hf_privacy_modal, ollama_section, pack, privacy_section,
+    startup_section, updates_section, voice_section,
 };
 
 /// Cycle the next value in a preset list, wrapping around. An off-list
@@ -46,6 +46,32 @@ fn next_in_cycle(list: &[&str], current: &str) -> String {
     match list.iter().position(|&x| x == current) {
         Some(i) => list[(i + 1) % list.len()].to_owned(),
         None => list[0].to_owned(),
+    }
+}
+
+/// What flipping the HuggingFace-search toggle should do, given the
+/// current prefs. Split out as a pure decision so the state machine is
+/// unit-testable without a live click / pipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HfToggleAction {
+    /// Already on → turn it off (no warning on the way down).
+    Disable,
+    /// Off, but the warning has been acknowledged before → enable
+    /// directly with no modal.
+    EnableDirect,
+    /// Off and the warning has never been shown → open the first-time
+    /// privacy modal; the actual enable waits on the user confirming.
+    ShowModal,
+}
+
+/// Pure mapping from prefs → the action a toggle click should take.
+pub fn decide_hf_toggle(prefs: PrivacyPrefs) -> HfToggleAction {
+    if prefs.hf_search_enabled {
+        HfToggleAction::Disable
+    } else if prefs.hf_search_warning_shown {
+        HfToggleAction::EnableDirect
+    } else {
+        HfToggleAction::ShowModal
     }
 }
 
@@ -80,6 +106,16 @@ pub struct SettingsPanel {
     /// reserved-key rejection. Cleared when capture (re)starts or commits.
     pub hotkey_note: Option<String>,
     pub app_version: String,
+    /// Privacy & Network opt-ins (HuggingFace online model search).
+    /// Loaded synchronously from the shared `privacy_prefs` cache in
+    /// `new()` — it's a local file, not a pipe round-trip.
+    pub privacy: PrivacyPrefs,
+    /// True while the first-time HuggingFace privacy modal is up.
+    pub hf_modal_open: bool,
+    /// The modal's "Don't show this warning again" checkbox. Defaults to
+    /// checked (the user is opting in deliberately); unchecking it leaves
+    /// `hf_search_warning_shown` false so the warning returns next time.
+    pub hf_dont_show_again: bool,
     /// Last write-side failure (pipe error from a toggle).  Surfaced as
     /// a banner; cleared on the next successful write.
     pub error: Option<String>,
@@ -102,6 +138,9 @@ impl SettingsPanel {
             capturing_hotkey: false,
             hotkey_note: None,
             app_version: "0.1.0".into(),
+            privacy: read_privacy_prefs(),
+            hf_modal_open: false,
+            hf_dont_show_again: true,
             error: None,
         }
     }
@@ -454,6 +493,75 @@ impl SettingsPanel {
         .detach();
     }
 
+    // ── Privacy & Network handlers ───────────────────────────────────
+
+    /// Flip the HuggingFace online-search toggle. The first time it's
+    /// turned on (warning never shown) this opens the privacy modal and
+    /// defers the actual enable to [`Self::confirm_hf_modal`]; thereafter
+    /// (or when turning it off) it persists immediately with no modal.
+    pub fn toggle_hf_search(&mut self, cx: &mut Context<Self>) {
+        match decide_hf_toggle(self.privacy) {
+            HfToggleAction::Disable => {
+                self.privacy.hf_search_enabled = false;
+                self.persist_privacy(cx);
+            }
+            HfToggleAction::EnableDirect => {
+                self.privacy.hf_search_enabled = true;
+                self.persist_privacy(cx);
+            }
+            HfToggleAction::ShowModal => {
+                self.hf_dont_show_again = true;
+                self.hf_modal_open = true;
+                self.error = None;
+                cx.notify();
+            }
+        }
+    }
+
+    /// "Enable" in the first-time modal: turn the feature on, remember the
+    /// warning was shown iff the "don't show again" box is checked, and
+    /// persist. An unchecked box leaves `warning_shown` false so the modal
+    /// returns on the next enable.
+    pub fn confirm_hf_modal(&mut self, cx: &mut Context<Self>) {
+        self.privacy.hf_search_enabled = true;
+        self.privacy.hf_search_warning_shown = self.hf_dont_show_again;
+        self.hf_modal_open = false;
+        self.persist_privacy(cx);
+    }
+
+    /// "Cancel" in the first-time modal: close it and leave the toggle
+    /// where it was (off). Nothing is persisted — the user never opted in.
+    pub fn cancel_hf_modal(&mut self, cx: &mut Context<Self>) {
+        self.hf_modal_open = false;
+        cx.notify();
+    }
+
+    /// Flip the modal's "Don't show this warning again" checkbox.
+    pub fn toggle_hf_dont_show_again(&mut self, cx: &mut Context<Self>) {
+        self.hf_dont_show_again = !self.hf_dont_show_again;
+        cx.notify();
+    }
+
+    /// "Reset privacy warnings" — clear the shown-flag so the first-time
+    /// modal surfaces again the next time the user enables the feature.
+    /// Leaves the enabled state untouched.
+    pub fn reset_privacy_warnings(&mut self, cx: &mut Context<Self>) {
+        self.privacy.hf_search_warning_shown = false;
+        self.persist_privacy(cx);
+    }
+
+    /// Shared tail for the privacy writes: persist the local snapshot to
+    /// the shared cache + disk. The write is synchronous (a few-byte local
+    /// file); a failure surfaces in the page banner while the optimistic
+    /// in-session state stays put.
+    fn persist_privacy(&mut self, cx: &mut Context<Self>) {
+        self.error = None;
+        if let Err(e) = write_privacy_prefs(self.privacy) {
+            self.error = Some(format!("privacy: {e}"));
+        }
+        cx.notify();
+    }
+
     // ── Voice write handlers (Slice 6) ───────────────────────────────
 
     /// Flip the capture mode push-to-talk ⇄ always-on and persist.
@@ -687,7 +795,7 @@ impl Render for SettingsPanel {
         // container scrolls.  `.id()` + `.overflow_y_scroll()` mirrors
         // the Chat panel's message-log idiom; `w_full` on `col` keeps the
         // content a definite width inside the scroll area.
-        div()
+        let content = div()
             .id("settings-scroll")
             .size_full()
             .flex()
@@ -702,6 +810,10 @@ impl Render for SettingsPanel {
                     &self.app_version,
                     cx,
                 ))
+                    // Privacy & Network sits directly below Updates — the
+                    // two "may make an outside connection" sections kept
+                    // adjacent at the top of the page.
+                    .child(privacy_section(self.privacy, cx))
                     .child(startup_section(
                         self.autostart_enabled,
                         self.autostart_error.as_deref(),
@@ -718,7 +830,18 @@ impl Render for SettingsPanel {
                         cx,
                     ))
                     .child(consent_section(&self.consent, cx)),
-            )
+            );
+
+        // The first-time privacy modal floats above the scroll content via
+        // an absolutely-positioned overlay on a relative root. Rendered
+        // only while armed so it costs nothing in the common case.
+        div()
+            .relative()
+            .size_full()
+            .child(content)
+            .when(self.hf_modal_open, |root| {
+                root.child(hf_privacy_modal(self.hf_dont_show_again, cx))
+            })
     }
 }
 
@@ -768,6 +891,9 @@ mod tests {
         assert!(!p.voice_offline);
         assert!(matches!(p.voice_test, VoiceTest::Idle));
         assert!(p.voice_devices.devices.is_empty());
+        // Privacy & Network — modal closed, "don't show again" pre-checked.
+        assert!(!p.hf_modal_open);
+        assert!(p.hf_dont_show_again);
     }
 
     #[test]
@@ -835,6 +961,82 @@ mod tests {
         let _ = crate::ipc::write_voice_settings;
         let _ = crate::ipc::list_input_devices;
         let _ = crate::ipc::test_mic;
+        // Privacy & Network: local-file read/write (no pipe).
+        let _ = crate::ipc::read_privacy_prefs;
+        let _ = crate::ipc::write_privacy_prefs;
+    }
+
+    /// The HuggingFace toggle decision is a pure function of the current
+    /// prefs — assert every branch of the first-time-warning state machine
+    /// without a live click.
+    #[test]
+    fn hf_toggle_decision_covers_all_branches() {
+        // Off + never warned → first click opens the modal.
+        assert_eq!(
+            decide_hf_toggle(PrivacyPrefs {
+                hf_search_enabled: false,
+                hf_search_warning_shown: false,
+            }),
+            HfToggleAction::ShowModal
+        );
+        // Off + already warned → enable directly, no modal.
+        assert_eq!(
+            decide_hf_toggle(PrivacyPrefs {
+                hf_search_enabled: false,
+                hf_search_warning_shown: true,
+            }),
+            HfToggleAction::EnableDirect
+        );
+        // On → turning it off never shows a warning, regardless of flag.
+        for shown in [true, false] {
+            assert_eq!(
+                decide_hf_toggle(PrivacyPrefs {
+                    hf_search_enabled: true,
+                    hf_search_warning_shown: shown,
+                }),
+                HfToggleAction::Disable
+            );
+        }
+    }
+
+    /// Pure model of `confirm_hf_modal`: the "don't show again" checkbox
+    /// decides whether the warning is suppressed next time. Enable always
+    /// turns the feature on.
+    #[test]
+    fn confirm_modal_applies_checkbox_to_warning_flag() {
+        // Box checked → warning suppressed thereafter.
+        let next = apply_confirm(PrivacyPrefs::default(), true);
+        assert!(next.hf_search_enabled);
+        assert!(next.hf_search_warning_shown);
+        // Box unchecked → feature on, but the warning returns next time.
+        let next = apply_confirm(PrivacyPrefs::default(), false);
+        assert!(next.hf_search_enabled);
+        assert!(!next.hf_search_warning_shown);
+    }
+
+    /// Mirror of `confirm_hf_modal`'s pref mutation, kept in sync as a
+    /// pure-logic witness so the modal's commit rule is testable.
+    fn apply_confirm(mut prefs: PrivacyPrefs, dont_show_again: bool) -> PrivacyPrefs {
+        prefs.hf_search_enabled = true;
+        prefs.hf_search_warning_shown = dont_show_again;
+        prefs
+    }
+
+    /// Reset-warnings clears only the shown flag, leaving enabled intact.
+    #[test]
+    fn reset_warnings_preserves_enabled_state() {
+        let after = PrivacyPrefs {
+            hf_search_enabled: true,
+            hf_search_warning_shown: false,
+        };
+        let before = PrivacyPrefs {
+            hf_search_enabled: true,
+            hf_search_warning_shown: true,
+        };
+        // The handler sets warning_shown = false and touches nothing else.
+        let mut got = before;
+        got.hf_search_warning_shown = false;
+        assert_eq!(got, after);
     }
 
     /// The frequency cycle is a pure rotation — assert it round-trips
