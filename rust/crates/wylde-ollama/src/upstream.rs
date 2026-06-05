@@ -60,11 +60,18 @@ impl UpstreamStatus {
 }
 
 /// Result of a cheap upstream health probe: a status plus, when
-/// reachable, the installed-model count from `/api/tags`.
+/// reachable, the installed-model count from `/api/tags` and the
+/// round-trip latency in milliseconds. The Dashboard uses `latency_ms`
+/// to flag a reachable-but-slow upstream (`status == Ok` but the daemon
+/// took >2s) as a degraded/yellow tile, distinct from a healthy green.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UpstreamProbe {
     pub status: UpstreamStatus,
     pub models: Option<u64>,
+    /// Round-trip latency of the `/api/tags` probe. `Some` only when the
+    /// upstream actually answered (`status == Ok`); `None` for
+    /// unreachable/timeout where there is no meaningful latency.
+    pub latency_ms: Option<u64>,
 }
 
 /// True for send errors where the request never reached the upstream —
@@ -136,8 +143,14 @@ impl Upstream {
     /// count. Goes through the retry path so a stale post-resume
     /// connection reconnects instead of false-reddening the dashboard.
     pub async fn probe(&self, timeout_s: u64) -> UpstreamProbe {
+        let started = std::time::Instant::now();
         match self.request(Method::GET, "/api/tags", None, timeout_s).await {
             Ok(resp) if resp.status().is_success() => {
+                // Measure latency at first-byte (status received) rather
+                // than after the body decode below, so a large /api/tags
+                // payload doesn't inflate the "is the daemon responsive?"
+                // signal the Dashboard reads.
+                let latency_ms = started.elapsed().as_millis() as u64;
                 let models = resp
                     .json::<Value>()
                     .await
@@ -150,6 +163,7 @@ impl Upstream {
                 UpstreamProbe {
                     status: UpstreamStatus::Ok,
                     models,
+                    latency_ms: Some(latency_ms),
                 }
             }
             // A non-2xx means something is answering on the port but the
@@ -157,14 +171,17 @@ impl Upstream {
             Ok(_) => UpstreamProbe {
                 status: UpstreamStatus::Unreachable,
                 models: None,
+                latency_ms: None,
             },
             Err(e) if e.is_timeout() => UpstreamProbe {
                 status: UpstreamStatus::Timeout,
                 models: None,
+                latency_ms: None,
             },
             Err(_) => UpstreamProbe {
                 status: UpstreamStatus::Unreachable,
                 models: None,
+                latency_ms: None,
             },
         }
     }
@@ -282,6 +299,8 @@ mod tests {
         let probe = up.probe(2).await;
         assert_eq!(probe.status, UpstreamStatus::Ok);
         assert_eq!(probe.models, Some(3));
+        // A reachable upstream reports a (small, local) latency.
+        assert!(probe.latency_ms.is_some(), "ok probe must report latency");
     }
 
     #[tokio::test]
@@ -301,6 +320,8 @@ mod tests {
         let probe = up.probe(2).await;
         assert_ne!(probe.status, UpstreamStatus::Ok);
         assert_eq!(probe.models, None);
+        // No meaningful latency for a down upstream.
+        assert_eq!(probe.latency_ms, None);
     }
 
     #[tokio::test]

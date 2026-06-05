@@ -50,6 +50,11 @@ pub const MONITORED_SERVICES: &[&str] = &[
 pub enum HealthStatus {
     Unknown,
     Healthy,
+    /// Pipe is up but the service is in a partially-degraded state — e.g.
+    /// `wylde-ollama`'s wrapper answers but its upstream Ollama daemon is
+    /// unreachable or slow. Renders yellow. The accompanying detail string
+    /// (see [`ServiceHealth::detail`]) explains the specific degradation.
+    Degraded,
     Unhealthy,
 }
 
@@ -58,10 +63,39 @@ impl HealthStatus {
         match self {
             Self::Unknown => "unknown",
             Self::Healthy => "healthy",
+            Self::Degraded => "degraded",
             Self::Unhealthy => "unhealthy",
         }
     }
 }
+
+/// A service's projected health plus an optional hover/tooltip detail.
+///
+/// `detail` is `Some` only for states that warrant an explanation — today
+/// the degraded ollama tile ("Ollama daemon unreachable…", "Slow response
+/// (>2s)"). Green/red tiles carry `None`: the dot colour already says it.
+/// Tri-state lives here (rather than on a shared widget) because the dot
+/// is rendered inline by the Dashboard's `service_chip`; any future
+/// service can opt into yellow simply by returning `Degraded` + a detail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceHealth {
+    pub status: HealthStatus,
+    pub detail: Option<String>,
+}
+
+impl ServiceHealth {
+    /// A bare status with no hover detail (the common green/red case).
+    pub fn plain(status: HealthStatus) -> Self {
+        Self {
+            status,
+            detail: None,
+        }
+    }
+}
+
+/// Latency (ms) above which a *reachable* upstream is still flagged
+/// degraded/yellow. Mirrors the "Slow response (>2s)" hover copy.
+pub const OLLAMA_SLOW_MS: u64 = 2000;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HardwareCard {
@@ -244,11 +278,11 @@ impl RecentMemory {
 
 // ── Unary verbs ──────────────────────────────────────────────────────
 
-/// Probe one service via `lifecycle.service.health`.  Returns the
-/// projected `HealthStatus` rather than `Result<_, _>` because the
-/// dashboard wants "unhealthy" and "couldn't reach the daemon" to
-/// look the same from the strip's point of view.
-pub async fn probe_service(name: &str) -> HealthStatus {
+/// Probe one service via `lifecycle.service.health`.  Returns a
+/// [`ServiceHealth`] rather than `Result<_, _>` because the dashboard
+/// wants "unhealthy" and "couldn't reach the daemon" to look the same
+/// from the strip's point of view.
+pub async fn probe_service(name: &str) -> ServiceHealth {
     let outcome = wylde_gui_pipe::call(
         SVC_LIFECYCLE,
         "POST",
@@ -260,31 +294,87 @@ pub async fn probe_service(name: &str) -> HealthStatus {
     )
     .await;
     match outcome {
-        Ok(v) => {
-            // The lifecycle handler returns a small object whose
-            // `ok`/`status` field signals health.  We accept any of
-            // the common positive shapes (`{ok: true}`, `{healthy:
-            // true}`, `{status: "running"}`) and treat anything else
-            // as unhealthy — same forgiving approach the Shell's
-            // startup probe uses.
-            if let Some(b) = v.get("ok").and_then(|x| x.as_bool()) {
-                return if b { HealthStatus::Healthy } else { HealthStatus::Unhealthy };
+        // The lifecycle daemon answered `ok` — project the body into a
+        // health state. Pure logic lives in `project_health` so it's unit
+        // testable without a live pipe.
+        Ok(v) => project_health(name, &v),
+        // Couldn't reach the daemon (or it replied not-ok, which
+        // `wylde_gui_pipe::call` surfaces as `Err`) — red.
+        Err(_) => ServiceHealth::plain(HealthStatus::Unhealthy),
+    }
+}
+
+/// Project a `service.health` ok-reply body into a [`ServiceHealth`].
+///
+/// For `wylde-ollama` the lifecycle daemon composes the wrapper pipe
+/// liveness with the upstream Ollama probe (see
+/// `wylde_lifecycle::control::ollama_health`), so the body carries a
+/// nested `reply.upstream` / `reply.latency_ms` we fold into the
+/// tri-state. Every other service keeps the original forgiving shape
+/// (`{ok}` / `{healthy}` / `{status}`).
+fn project_health(name: &str, v: &Value) -> ServiceHealth {
+    if name == SVC_OLLAMA {
+        if let Some(reply) = v.get("reply") {
+            if reply.get("upstream").and_then(|x| x.as_str()).is_some() {
+                return project_ollama_health(reply);
             }
-            if let Some(b) = v.get("healthy").and_then(|x| x.as_bool()) {
-                return if b { HealthStatus::Healthy } else { HealthStatus::Unhealthy };
-            }
-            if let Some(s) = v.get("status").and_then(|x| x.as_str()) {
-                return match s {
-                    "running" | "ok" | "healthy" | "up" => HealthStatus::Healthy,
-                    "stopped" | "down" | "unhealthy" | "error" => HealthStatus::Unhealthy,
-                    _ => HealthStatus::Unknown,
-                };
-            }
-            // Lifecycle returned ok with no recognisable field — call
-            // it healthy on the principle that the daemon answered.
-            HealthStatus::Healthy
         }
-        Err(_) => HealthStatus::Unhealthy,
+    }
+    // Accept any of the common positive shapes (`{ok: true}`, `{healthy:
+    // true}`, `{status: "running"}`) and treat anything else as unhealthy
+    // — same forgiving approach the Shell's startup probe uses.
+    if let Some(b) = v.get("ok").and_then(|x| x.as_bool()) {
+        return ServiceHealth::plain(if b {
+            HealthStatus::Healthy
+        } else {
+            HealthStatus::Unhealthy
+        });
+    }
+    if let Some(b) = v.get("healthy").and_then(|x| x.as_bool()) {
+        return ServiceHealth::plain(if b {
+            HealthStatus::Healthy
+        } else {
+            HealthStatus::Unhealthy
+        });
+    }
+    if let Some(s) = v.get("status").and_then(|x| x.as_str()) {
+        return ServiceHealth::plain(match s {
+            "running" | "ok" | "healthy" | "up" => HealthStatus::Healthy,
+            "stopped" | "down" | "unhealthy" | "error" => HealthStatus::Unhealthy,
+            _ => HealthStatus::Unknown,
+        });
+    }
+    // Lifecycle returned ok with no recognisable field — call it healthy
+    // on the principle that the daemon answered.
+    ServiceHealth::plain(HealthStatus::Healthy)
+}
+
+/// Fold `wylde-ollama`'s composed `reply` blob (`{upstream, latency_ms,
+/// ...}`) into a tri-state:
+///   * upstream `ok` + fast → green (`Healthy`)
+///   * upstream `ok` but ≥ [`OLLAMA_SLOW_MS`] → yellow ("Slow response")
+///   * upstream `unreachable` / `timeout` → yellow (daemon down) — the
+///     wrapper pipe is still up, so it's degraded, not red
+///   * anything unrecognised → green (the wrapper answered)
+fn project_ollama_health(reply: &Value) -> ServiceHealth {
+    let upstream = reply.get("upstream").and_then(|x| x.as_str()).unwrap_or("");
+    let latency_ms = reply.get("latency_ms").and_then(|x| x.as_u64());
+    match upstream {
+        "ok" => {
+            if matches!(latency_ms, Some(ms) if ms >= OLLAMA_SLOW_MS) {
+                ServiceHealth {
+                    status: HealthStatus::Degraded,
+                    detail: Some("Slow response (>2s)".to_owned()),
+                }
+            } else {
+                ServiceHealth::plain(HealthStatus::Healthy)
+            }
+        }
+        "unreachable" | "timeout" => ServiceHealth {
+            status: HealthStatus::Degraded,
+            detail: Some("Ollama daemon unreachable at 127.0.0.1:11434".to_owned()),
+        },
+        _ => ServiceHealth::plain(HealthStatus::Healthy),
     }
 }
 
@@ -402,7 +492,75 @@ mod tests {
     fn health_status_strings_are_stable() {
         assert_eq!(HealthStatus::Unknown.as_str(), "unknown");
         assert_eq!(HealthStatus::Healthy.as_str(), "healthy");
+        assert_eq!(HealthStatus::Degraded.as_str(), "degraded");
         assert_eq!(HealthStatus::Unhealthy.as_str(), "unhealthy");
+    }
+
+    #[test]
+    fn project_health_generic_ok_is_healthy() {
+        let h = project_health("wylde-harness", &json!({"name": "wylde-harness", "reply": {"pong": true}}));
+        // Generic services have no `ok`/`healthy`/`status` at top level and
+        // no upstream — the daemon answered, so healthy with no detail.
+        assert_eq!(h, ServiceHealth::plain(HealthStatus::Healthy));
+    }
+
+    #[test]
+    fn project_health_respects_explicit_status_field() {
+        let down = project_health("wylde-x", &json!({"status": "down"}));
+        assert_eq!(down, ServiceHealth::plain(HealthStatus::Unhealthy));
+        let up = project_health("wylde-x", &json!({"ok": true}));
+        assert_eq!(up, ServiceHealth::plain(HealthStatus::Healthy));
+    }
+
+    #[test]
+    fn ollama_upstream_ok_fast_is_green() {
+        let reply = json!({"name": "wylde-ollama", "reply": {"ok": true, "upstream": "ok", "latency_ms": 120}});
+        let h = project_health("wylde-ollama", &reply);
+        assert_eq!(h.status, HealthStatus::Healthy);
+        assert!(h.detail.is_none());
+    }
+
+    #[test]
+    fn ollama_upstream_ok_slow_is_yellow_with_detail() {
+        let reply = json!({"name": "wylde-ollama", "reply": {"ok": true, "upstream": "ok", "latency_ms": 2500}});
+        let h = project_health("wylde-ollama", &reply);
+        assert_eq!(h.status, HealthStatus::Degraded);
+        assert_eq!(h.detail.as_deref(), Some("Slow response (>2s)"));
+    }
+
+    #[test]
+    fn ollama_upstream_unreachable_is_yellow_with_detail() {
+        for state in ["unreachable", "timeout"] {
+            let reply = json!({"name": "wylde-ollama", "reply": {"ok": true, "upstream": state}});
+            let h = project_health("wylde-ollama", &reply);
+            assert_eq!(h.status, HealthStatus::Degraded, "state={state}");
+            assert_eq!(
+                h.detail.as_deref(),
+                Some("Ollama daemon unreachable at 127.0.0.1:11434"),
+                "state={state}",
+            );
+        }
+    }
+
+    #[test]
+    fn ollama_without_composed_reply_falls_back_to_generic() {
+        // Older lifecycle (pre-compose) returns `{name, reply: {pong}}`
+        // with no `upstream` — must not crash, just project healthy.
+        let reply = json!({"name": "wylde-ollama", "reply": {"pong": true}});
+        let h = project_health("wylde-ollama", &reply);
+        assert_eq!(h.status, HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn ollama_slow_threshold_is_exactly_2s() {
+        // Frozen so a future tweak surfaces in review and stays aligned
+        // with the "(>2s)" hover copy.
+        assert_eq!(OLLAMA_SLOW_MS, 2000);
+        // Exactly at the threshold counts as slow (>= comparison).
+        let at = project_ollama_health(&json!({"upstream": "ok", "latency_ms": 2000}));
+        assert_eq!(at.status, HealthStatus::Degraded);
+        let under = project_ollama_health(&json!({"upstream": "ok", "latency_ms": 1999}));
+        assert_eq!(under.status, HealthStatus::Healthy);
     }
 
     #[test]
