@@ -91,37 +91,74 @@ pub fn impl_for() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Process-wide lock serialising the three `impl_for` tests below.
+    ///
+    /// All three mutate the single process-global
+    /// `WYLDE_HARNESS_MEMORY_IMPL` env var. Per-test snapshot+restore is
+    /// *not* enough under cargo's default parallel runner: env vars are
+    /// shared across the whole process, so one test's `remove_var` /
+    /// `set_var` can clobber another between *its* set and *its* assert.
+    /// That race made `impl_for_honours_python_rollback` flaky — green in
+    /// isolation, intermittently red in the full suite (e.g. the defaults
+    /// test removing the var after the rollback test set it to `python`
+    /// but before it asserted). Holding this mutex for the duration of
+    /// each test means only one runs at a time, so the snapshot/restore
+    /// is observed atomically.
+    ///
+    /// Local `Mutex` rather than the `serial_test` crate to match the
+    /// crate's existing idiom (`tooling::consent::serial_test_guard`) and
+    /// avoid a new dependency for three tests.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard: holds [`ENV_LOCK`] (serialising env-mutating tests),
+    /// snapshots `WYLDE_HARNESS_MEMORY_IMPL` on construction, and restores
+    /// it on drop — including on a panicking failed assertion, so a
+    /// failure can't leak the var into the next test.
+    struct EnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn acquire() -> Self {
+            // Recover from a poisoned lock (a prior test panicked while
+            // holding it) instead of cascade-failing — the env is
+            // restored on drop regardless.
+            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = std::env::var("WYLDE_HARNESS_MEMORY_IMPL").ok(); // wylde-check: discard-result-ok
+            Self { _lock: lock, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => std::env::set_var("WYLDE_HARNESS_MEMORY_IMPL", v),
+                None => std::env::remove_var("WYLDE_HARNESS_MEMORY_IMPL"),
+            }
+        }
+    }
 
     #[test]
     fn impl_for_defaults_to_rust_when_env_unset() {
-        // Snapshot + restore so we don't leak into sibling tests.
-        let prev = std::env::var("WYLDE_HARNESS_MEMORY_IMPL").ok(); // wylde-check: discard-result-ok
+        let _env = EnvGuard::acquire();
         std::env::remove_var("WYLDE_HARNESS_MEMORY_IMPL");
         assert_eq!(impl_for(), "rust");
-        if let Some(v) = prev {
-            std::env::set_var("WYLDE_HARNESS_MEMORY_IMPL", v);
-        }
     }
 
     #[test]
     fn impl_for_clamps_unknown_values_to_rust() {
-        let prev = std::env::var("WYLDE_HARNESS_MEMORY_IMPL").ok(); // wylde-check: discard-result-ok
+        let _env = EnvGuard::acquire();
         std::env::set_var("WYLDE_HARNESS_MEMORY_IMPL", "javascript");
         assert_eq!(impl_for(), "rust");
-        match prev {
-            Some(v) => std::env::set_var("WYLDE_HARNESS_MEMORY_IMPL", v),
-            None => std::env::remove_var("WYLDE_HARNESS_MEMORY_IMPL"),
-        }
     }
 
     #[test]
     fn impl_for_honours_python_rollback() {
-        let prev = std::env::var("WYLDE_HARNESS_MEMORY_IMPL").ok(); // wylde-check: discard-result-ok
+        let _env = EnvGuard::acquire();
         std::env::set_var("WYLDE_HARNESS_MEMORY_IMPL", "python");
         assert_eq!(impl_for(), "python");
-        match prev {
-            Some(v) => std::env::set_var("WYLDE_HARNESS_MEMORY_IMPL", v),
-            None => std::env::remove_var("WYLDE_HARNESS_MEMORY_IMPL"),
-        }
     }
 }
