@@ -32,11 +32,11 @@
 pub mod chat;
 pub mod conversation_bus;
 pub mod memory_long_term;
-pub mod memory_workspaces;
 pub mod model_bus;
 pub mod nav_bus;
 pub mod privacy_prefs;
 pub mod tools;
+pub mod workspaces;
 pub mod updater_state;
 
 pub use conversation_bus::{
@@ -655,7 +655,7 @@ pub async fn try_dispatch_harness<A: HarnessApi + ?Sized>(
         r
     } else if let Some(r) = memory_long_term::dispatch(api, verb, payload.clone()).await {
         r
-    } else if let Some(r) = memory_workspaces::dispatch(api, verb, payload).await {
+    } else if let Some(r) = workspaces::dispatch(api, verb, payload).await {
         r
     } else {
         return None;

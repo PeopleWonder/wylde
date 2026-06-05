@@ -52,55 +52,74 @@ fn merged_payload(body: Option<Json<Value>>, extra: Vec<(&str, Value)>) -> Value
     Value::Object(map)
 }
 
-/// `GET /api/workspaces` — list every registered workspace.
+/// Endpoints whose backing verb was retired by the config-file-backed
+/// workspaces redesign (the LanceDB file indexer + the configurable MRU
+/// cap are gone). Returns 410 so a stale HTTP consumer gets a clear
+/// signal rather than a `no_action` 500.
+fn retired(what: &str) -> Response {
+    failure(
+        "retired",
+        &format!("{what} was retired in the workspaces redesign"),
+        StatusCode::GONE,
+    )
+}
+
+/// `GET /api/workspaces` — list the MRU-5 workspaces.
 pub async fn list_workspaces(headers: HeaderMap) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    harness_dispatch("rag.workspaces.list", Value::Null).await
+    harness_dispatch("workspaces.list_mru", Value::Null).await
 }
 
-/// `GET /api/workspaces/recent[?limit=N]` — MRU-ordered list.
+/// `GET /api/workspaces/recent[?limit=N]` — MRU-5 list (limit ignored;
+/// the window is the harness's static MRU-5).
 pub async fn recent_workspaces(
     headers: HeaderMap,
-    Query(q): Query<HashMap<String, String>>,
+    Query(_q): Query<HashMap<String, String>>,
 ) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    let payload = match q.get("limit").and_then(|s| s.parse::<i64>().ok()) {
-        Some(n) => json!({ "limit": n }),
-        None => Value::Null,
-    };
-    harness_dispatch("rag.workspaces.recent", payload).await
+    harness_dispatch("workspaces.list_mru", Value::Null).await
 }
 
-/// `GET /api/workspaces/mru_limit` — current MRU cap + min/max/default.
+/// `GET /api/workspaces/mru_limit` — retired (static MRU-5).
 pub async fn get_mru_limit(headers: HeaderMap) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    harness_dispatch("rag.workspaces.get_mru_limit", Value::Null).await
+    retired("the configurable MRU limit")
 }
 
-/// `PUT /api/workspaces/mru_limit` — change the MRU cap. Body: `{"limit": N}`.
-pub async fn set_mru_limit(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
+/// `PUT /api/workspaces/mru_limit` — retired (static MRU-5).
+pub async fn set_mru_limit(headers: HeaderMap, _body: Option<Json<Value>>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
-    harness_dispatch("rag.workspaces.set_mru_limit", payload).await
+    retired("the configurable MRU limit")
 }
 
-/// `POST /api/workspaces/activate` — open / re-open a workspace by path.
-///
-/// Body shape: `{"path": <path>, "full_reindex"?: bool, "conversation_id"?: str}`.
+/// `POST /api/workspaces/activate` — register + activate a workspace by
+/// path. Redesign replacement for `rag.workspaces.activate`. Body:
+/// `{"path": <path>, ...}` — `path` is remapped to the redesign's
+/// `folder` field; `full_reindex` / `conversation_id` are ignored.
 pub async fn activate_workspace(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
-    harness_dispatch("rag.workspaces.activate", payload).await
+    let folder = body
+        .and_then(|Json(v)| {
+            v.get("path")
+                .or_else(|| v.get("folder"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_default();
+    if folder.trim().is_empty() {
+        return failure("bad_request", "path is required", StatusCode::BAD_REQUEST);
+    }
+    harness_dispatch("workspaces.create", json!({ "folder": folder })).await
 }
 
 /// `DELETE /api/workspaces/:workspace_id` — drop a workspace.
@@ -115,68 +134,32 @@ pub async fn delete_workspace(headers: HeaderMap, Path(workspace_id): Path<Strin
             StatusCode::BAD_REQUEST,
         );
     }
-    harness_dispatch(
-        "rag.workspaces.delete",
-        json!({ "workspace_id": workspace_id }),
-    )
-    .await
+    harness_dispatch("workspaces.delete", json!({ "workspace_id": workspace_id })).await
 }
 
-/// `GET /api/workspaces/:workspace_id/status` — read index status.
-pub async fn workspace_status(headers: HeaderMap, Path(workspace_id): Path<String>) -> Response {
+/// `GET /api/workspaces/:workspace_id/status` — retired (no file indexer).
+pub async fn workspace_status(headers: HeaderMap, _workspace_id: Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    if workspace_id.trim().is_empty() {
-        return failure(
-            "bad_request",
-            "workspace_id is required",
-            StatusCode::BAD_REQUEST,
-        );
-    }
-    harness_dispatch(
-        "rag.workspaces.status",
-        json!({ "workspace_id": workspace_id }),
-    )
-    .await
+    retired("workspace index status")
 }
 
-/// `POST /api/workspaces/:workspace_id/reindex` — full reindex.
-pub async fn reindex_workspace(headers: HeaderMap, Path(workspace_id): Path<String>) -> Response {
+/// `POST /api/workspaces/:workspace_id/reindex` — retired (no file indexer).
+pub async fn reindex_workspace(headers: HeaderMap, _workspace_id: Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    if workspace_id.trim().is_empty() {
-        return failure(
-            "bad_request",
-            "workspace_id is required",
-            StatusCode::BAD_REQUEST,
-        );
-    }
-    harness_dispatch(
-        "rag.workspaces.reindex",
-        json!({ "workspace_id": workspace_id }),
-    )
-    .await
+    retired("workspace re-index")
 }
 
-/// `GET /api/workspaces/:workspace_id/persona` — read the persona override.
-pub async fn get_persona(headers: HeaderMap, Path(workspace_id): Path<String>) -> Response {
+/// `GET /api/workspaces/:workspace_id/persona` — retired (no read verb;
+/// persona now lives in `persona.md`, read via the workspace bundle).
+pub async fn get_persona(headers: HeaderMap, _workspace_id: Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    if workspace_id.trim().is_empty() {
-        return failure(
-            "bad_request",
-            "workspace_id is required",
-            StatusCode::BAD_REQUEST,
-        );
-    }
-    harness_dispatch(
-        "rag.workspaces.get_persona",
-        json!({ "workspace_id": workspace_id }),
-    )
-    .await
+    retired("the persona read endpoint")
 }
 
 /// `PUT /api/workspaces/:workspace_id/persona` — set persona text.
@@ -199,7 +182,7 @@ pub async fn set_persona(
         );
     }
     let payload = merged_payload(body, vec![("workspace_id", Value::String(workspace_id))]);
-    harness_dispatch("rag.workspaces.set_persona", payload).await
+    harness_dispatch("workspaces.set_persona", payload).await
 }
 
 /// Build the workspaces sub-router.

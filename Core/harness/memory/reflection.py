@@ -32,7 +32,10 @@ from . import long_term as _long_term
 from . import workspace_memory as _ws_mem
 from . import scoring as _scoring
 from . import conversation as _conversation
-from . import workspaces as _workspaces
+
+# workspaces: removed in config-file-backed redesign (2026-06-05) —
+# workspace registry now lives in Rust; reflection no longer verifies
+# workspace existence (see _conversation_target).
 from .long_term import LongTermMemory
 from .workspace_memory import WorkspaceMemory
 
@@ -404,23 +407,19 @@ def _conversation_target(conversation_id: str) -> Tuple[str, str]:
     """Resolve where a conversation reflection should land.
 
     Returns ``("workspace", workspace_id)`` when the conversation is
-    bound to a workspace that's still present in the registry, or
-    ``("long_term", "")`` otherwise. A binding to a since-evicted
-    workspace falls back to long-term — the user's intent ("durable
-    insight from this chat") still holds even if the workspace went
-    away.
+    bound to a workspace, or ``("long_term", "")`` otherwise.
+
+    workspaces: removed in config-file-backed redesign (2026-06-05) —
+    the Python workspace registry that previously gated this no longer
+    exists; the binding is treated as resolvable, so any non-empty
+    workspace id routes to ``("workspace", ws_id)`` without an
+    existence check (Rust now owns workspace lifecycle).
     """
     try:
         ws_id = _conversation.get_workspace(conversation_id)
     except Exception:  # noqa: BLE001
         ws_id = ""
     if not ws_id:
-        return ("long_term", "")
-    try:
-        record = _workspaces.get_workspace(ws_id)
-    except Exception:  # noqa: BLE001
-        record = None
-    if record is None:
         return ("long_term", "")
     return ("workspace", ws_id)
 

@@ -51,7 +51,9 @@ def scheduler_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         _common = _importlib.import_module("Core.harness.memory._common")
         embeddings = _importlib.import_module("Core.harness.memory.embeddings")
         conversation = _importlib.import_module("Core.harness.memory.conversation")
-        workspaces = _importlib.import_module("Core.harness.memory.workspaces")
+        # workspaces: removed in config-file-backed redesign (2026-06-05) —
+        # the workspace MRU/registry moved to Rust; the scheduler's
+        # workspace reflect/curate ticks are now no-ops.
         workspace_memory = _importlib.import_module(
             "Core.harness.memory.workspace_memory"
         )
@@ -64,7 +66,6 @@ def scheduler_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         conversation = _importlib.import_module(
             "Wylde.Core.harness.memory.conversation"
         )
-        workspaces = _importlib.import_module("Wylde.Core.harness.memory.workspaces")
         workspace_memory = _importlib.import_module(
             "Wylde.Core.harness.memory.workspace_memory"
         )
@@ -80,11 +81,9 @@ def scheduler_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     # stale workspaces across tests.
     importlib.reload(_common)
     importlib.reload(embeddings)
+    # workspaces: removed in config-file-backed redesign (2026-06-05) —
+    # only workspace_memory submodules need reloading now.
     for _name in (
-        f"{workspaces.__name__}._mru",
-        f"{workspaces.__name__}._store",
-        f"{workspaces.__name__}._index",
-        f"{workspaces.__name__}._search",
         f"{workspace_memory.__name__}._store",
         f"{workspace_memory.__name__}._search",
         f"{workspace_memory.__name__}._curate",
@@ -94,7 +93,6 @@ def scheduler_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
             importlib.reload(_sub)
     for mod in (
         conversation,
-        workspaces,
         workspace_memory,
         long_term,
         reflection,
@@ -113,7 +111,6 @@ def scheduler_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     return {
         "scheduler": scheduler,
         "conversation": conversation,
-        "workspaces": workspaces,
         "workspace_memory": workspace_memory,
         "long_term": long_term,
         "reflection": reflection,
@@ -228,56 +225,11 @@ def test_long_term_fires_on_first_tick_then_respects_cadence(
     assert sched.tick()["long_term"] == 1
 
 
-def test_workspace_reflection_and_curation_per_workspace(
-    scheduler_env: Any, tmp_path: Path
-) -> None:
-    sched_mod = scheduler_env["scheduler"]
-    ws = scheduler_env["workspaces"]
-    wm = scheduler_env["workspace_memory"]
-
-    folder = tmp_path / "ws_sched"
-    folder.mkdir()
-    (folder / "x.txt").write_text("anything", encoding="utf-8")
-    record = ws.activate(str(folder))
-
-    for i in range(4):
-        wm.save(record.id, f"workspace memory {i}", importance=5, source="test")
-
-    clock = _Clock()
-    cadence = sched_mod.CadenceConfig(
-        poll_interval_s=1,
-        long_term_reflect_s=10_000,  # don't fire long-term in this test
-        workspace_reflect_s=100,
-        workspace_curate_s=200,
-        conversation_idle_s=10_000,
-    )
-    sched = sched_mod.MemoryScheduler(
-        chat_fn=_make_chat_fn(verdict="keep"),
-        cadence=cadence,
-        clock=clock.now,
-    )
-
-    counts = sched.tick()
-    assert counts["workspace_reflect"] == 1
-    assert counts["workspace_curate"] == 1
-
-    # 50s later — neither reflection nor curation fires (under cadence).
-    clock.advance(50)
-    counts = sched.tick()
-    assert counts["workspace_reflect"] == 0
-    assert counts["workspace_curate"] == 0
-
-    # 60s later (110s total) — workspace reflection fires; curation
-    # still under its 200s cadence.
-    clock.advance(60)
-    counts = sched.tick()
-    assert counts["workspace_reflect"] == 1
-    assert counts["workspace_curate"] == 0
-
-    # 100s later (210s past curate's last fire) — curation fires.
-    clock.advance(100)
-    counts = sched.tick()
-    assert counts["workspace_curate"] == 1
+# workspaces: removed in config-file-backed redesign (2026-06-05) —
+# test_workspace_reflection_and_curation_per_workspace drove the
+# scheduler's per-workspace reflect/curate ticks through the deleted
+# `workspaces` module (activate + MRU iteration). Those ticks are now
+# no-ops (Rust owns the workspace registry), so the test was removed.
 
 
 def test_conversation_reflection_idle_window(scheduler_env: Any) -> None:

@@ -52,7 +52,9 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from . import workspaces as _ws
+# workspaces: removed in config-file-backed redesign (2026-06-05) —
+# workspace file RAG is now owned by Rust; this module no longer sources
+# vector candidates from a Python workspace index.
 
 logger = logging.getLogger("wylde.harness.memory.retrieval")
 
@@ -170,10 +172,11 @@ def hybrid_search(
         return []
     raw = raw_query or query_text
 
-    # Pull a generous pool of vector candidates. We over-fetch so BM25
-    # has room to surface keyword-matching chunks the vector may have
-    # missed.
-    vector_hits = _ws.search_files(workspace_id, query_text, limit=candidate_pool)
+    # workspaces: removed in config-file-backed redesign (2026-06-05) —
+    # the workspace file index that previously sourced the vector
+    # candidate pool now lives in Rust. With no Python workspace RAG
+    # source, this branch yields no candidates (clean break, pointer-only).
+    vector_hits: List[Any] = []
     if not vector_hits:
         return []
 

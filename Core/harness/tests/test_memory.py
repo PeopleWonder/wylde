@@ -35,7 +35,8 @@ def isolated_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         _common = _importlib.import_module("Core.harness.memory._common")
         embeddings = _importlib.import_module("Core.harness.memory.embeddings")
         long_term = _importlib.import_module("Core.harness.memory.long_term")
-        workspaces = _importlib.import_module("Core.harness.memory.workspaces")
+        # workspaces: removed in config-file-backed redesign (2026-06-05) —
+        # Rust now owns the workspace registry/MRU index.
         workspace_memory = _importlib.import_module(
             "Core.harness.memory.workspace_memory"
         )
@@ -46,7 +47,6 @@ def isolated_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         _common = _importlib.import_module("Wylde.Core.harness.memory._common")
         embeddings = _importlib.import_module("Wylde.Core.harness.memory.embeddings")
         long_term = _importlib.import_module("Wylde.Core.harness.memory.long_term")
-        workspaces = _importlib.import_module("Wylde.Core.harness.memory.workspaces")
         workspace_memory = _importlib.import_module(
             "Wylde.Core.harness.memory.workspace_memory"
         )
@@ -64,11 +64,9 @@ def isolated_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     # real .wylde/data/ directory.
     importlib.reload(_common)
     importlib.reload(embeddings)
+    # workspaces: removed in config-file-backed redesign (2026-06-05) —
+    # only workspace_memory submodules need reloading now.
     for _name in (
-        f"{workspaces.__name__}._mru",
-        f"{workspaces.__name__}._store",
-        f"{workspaces.__name__}._index",
-        f"{workspaces.__name__}._search",
         f"{workspace_memory.__name__}._store",
         f"{workspace_memory.__name__}._search",
         f"{workspace_memory.__name__}._curate",
@@ -80,7 +78,6 @@ def isolated_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
         scoring,
         conversation,
         long_term,
-        workspaces,
         workspace_memory,
         reflection,
     ):
@@ -104,7 +101,6 @@ def isolated_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     return {
         "long_term": long_term,
         "workspace_memory": workspace_memory,
-        "workspaces": workspaces,
         "conversation": conversation,
         "scoring": scoring,
         "reflection": reflection,
@@ -184,109 +180,16 @@ def test_long_term_delete_removes_chain(isolated_memory: Any) -> None:
 
 
 # ── Workspace memory ───────────────────────────────────────────────────
-
-
-def test_workspace_memory_isolated_per_workspace(
-    isolated_memory: Any, tmp_path: Path
-) -> None:
-    ws = isolated_memory["workspaces"]
-    wm = isolated_memory["workspace_memory"]
-
-    fa = tmp_path / "ws_A"
-    fa.mkdir()
-    (fa / "f.txt").write_text("alpha", encoding="utf-8")
-    fb = tmp_path / "ws_B"
-    fb.mkdir()
-    (fb / "f.txt").write_text("beta", encoding="utf-8")
-
-    ra = ws.activate(str(fa))
-    rb = ws.activate(str(fb))
-
-    wm.save(ra.id, "memory for A only", importance=5)
-    wm.save(rb.id, "memory for B only", importance=5)
-
-    a_rows = wm.list_records(ra.id)
-    b_rows = wm.list_records(rb.id)
-    assert len(a_rows) == 1 and a_rows[0].body == "memory for A only"
-    assert len(b_rows) == 1 and b_rows[0].body == "memory for B only"
-
-
-def test_workspace_memory_persists_across_eviction(
-    isolated_memory: Any, tmp_path: Path
-) -> None:
-    """MRU eviction deletes the index folder but workspace memory
-    survives at ``workspace_memories/<slug>/`` — that's the durable
-    storage the Wylde user locked in the design correction. The LLM's curated
-    insights about a project shouldn't die just because the file
-    cache was evicted."""
-    ws = isolated_memory["workspaces"]
-    wm = isolated_memory["workspace_memory"]
-
-    folder = tmp_path / "ws_durable"
-    folder.mkdir()
-    (folder / "x.txt").write_text("the file", encoding="utf-8")
-    record = ws.activate(str(folder))
-    durable_slug = record.id
-
-    # Drop a memory entry into the durable workspace memory store.
-    saved = wm.save(
-        durable_slug, "key insight about this project", importance=7, source="test"
-    )
-    memory_dir = wm.WORKSPACE_MEMORIES_DIR / durable_slug
-    assert memory_dir.exists(), "durable memory dir should exist after save"
-
-    # Activate 5 more workspaces — the durable one falls off the MRU.
-    for i in range(5):
-        f = tmp_path / f"filler_{i}"
-        f.mkdir()
-        (f / "x.txt").write_text(f"filler {i}", encoding="utf-8")
-        ws.activate(str(f))
-
-    # Confirm eviction: the durable workspace is no longer in the registry.
-    remaining_ids = {w.id for w in ws.list_workspaces()}
-    assert durable_slug not in remaining_ids, "durable workspace should be evicted"
-
-    # Index folder must be gone (eviction removed it).
-    assert not (ws.INDEXES_DIR / durable_slug).exists(), (
-        "index folder should be removed by MRU eviction"
-    )
-
-    # But the durable memory folder MUST still exist.
-    assert memory_dir.exists(), "workspace memory folder must survive MRU eviction"
-
-    # And the saved entry is still readable.
-    survivors = wm.list_records(durable_slug)
-    assert any(r.id == saved.id for r in survivors), (
-        "saved memory entry should survive eviction"
-    )
-
-
-def test_explicit_workspace_delete_removes_both(
-    isolated_memory: Any, tmp_path: Path
-) -> None:
-    """The explicit-delete path (user clicks "remove this workspace")
-    should take BOTH the index folder AND the durable memory folder."""
-    ws = isolated_memory["workspaces"]
-    wm = isolated_memory["workspace_memory"]
-
-    folder = tmp_path / "ws_kill"
-    folder.mkdir()
-    (folder / "x.txt").write_text("doomed", encoding="utf-8")
-    record = ws.activate(str(folder))
-    wm.save(
-        record.id, "memory in soon-to-be-deleted workspace", importance=5, source="test"
-    )
-
-    index_dir = ws.INDEXES_DIR / record.id
-    memory_dir = wm.WORKSPACE_MEMORIES_DIR / record.id
-    assert index_dir.exists() or memory_dir.exists()
-
-    assert ws.delete_workspace(record.id)
-
-    # Both must be gone.
-    assert not index_dir.exists(), "index folder should be removed"
-    assert not memory_dir.exists(), "durable memory folder should be removed"
-    assert not any(w.id == record.id for w in ws.list_workspaces())
+#
+# workspaces: removed in config-file-backed redesign (2026-06-05) —
+# the workspace registry/MRU index (activate, list_workspaces,
+# delete_workspace, INDEXES_DIR eviction) moved to Rust, so the tests
+# that drove it through the Python `workspaces` module were removed:
+#   - test_workspace_memory_isolated_per_workspace
+#   - test_workspace_memory_persists_across_eviction
+#   - test_explicit_workspace_delete_removes_both
+# (workspace_memory itself still exists; its curation behaviour is
+# covered indirectly via the reflection tests below.)
 
 
 # ── Short-term ─────────────────────────────────────────────────────────
@@ -345,98 +248,11 @@ def test_short_term_persists_across_in_memory_close(isolated_memory: Any) -> Non
     assert conv.get_working_memory(cid) == []
 
 
-def test_workspace_curation_supersedes_stale(
-    isolated_memory: Any, tmp_path: Path
-) -> Any:
-    """Synthetic chat_fn votes ``supersede`` on every memory whose body
-    starts with ``Stale:`` and ``keep`` on the rest. The curator must
-    mark exactly the staled ones with a tombstone supersession (audit
-    trail intact, hidden from default retrieval, visible via
-    ``include_superseded=True``)."""
-    ws = isolated_memory["workspaces"]
-    wm = isolated_memory["workspace_memory"]
-
-    folder = tmp_path / "ws_curate"
-    folder.mkdir()
-    (folder / "x.txt").write_text("anything", encoding="utf-8")
-    record = ws.activate(str(folder))
-
-    bodies = [
-        "the Wylde user prefers tabs over spaces.",
-        "Stale: the legacy rag service is at port 5000.",
-        "The harness uses lancedb for vector search.",
-        "Stale: NSSM is required to install services on Windows.",
-        "Workspaces are MRU-capped at 5.",
-        "Stale: fletch-web is the canonical HTTP gateway.",
-    ]
-    saved = [wm.save(record.id, b, importance=5, source="test") for b in bodies]
-
-    class _Step:
-        def __init__(self, text: Any) -> None:
-            self.text = text
-
-    def fake_chat(*, messages: Any, tools: Any, model: Any, **_kw: Any) -> Any:
-        # Pull the user prompt; emit one verdict per indexed line.
-        user_msg = messages[-1]["content"] if messages else ""
-        out = []
-        for raw in user_msg.splitlines():
-            raw = raw.strip()
-            if not raw or "." not in raw:
-                continue
-            try:
-                idx = int(raw.split(".", 1)[0])
-            except ValueError:
-                continue
-            if "Stale:" in raw:
-                out.append(
-                    f'{{"index": {idx}, "verdict": "supersede", '
-                    f'"reason": "no longer relevant"}}'
-                )
-            else:
-                out.append(f'{{"index": {idx}, "verdict": "keep"}}')
-        return _Step("\n".join(out))
-
-    result = wm.curate(record.id, chat_fn=fake_chat)
-    assert not result.skipped, f"curation skipped: {result.skip_reason}"
-    assert result.inputs_considered == 6
-
-    superseded_ids = {s["old_id"] for s in result.superseded}
-    expected_stale = {s.id for s, b in zip(saved, bodies) if b.startswith("Stale:")}
-    assert superseded_ids == expected_stale, (
-        f"expected {expected_stale}, got {superseded_ids}"
-    )
-
-    # Default list hides them.
-    visible_default = {r.id for r in wm.list_records(record.id)}
-    assert visible_default.isdisjoint(expected_stale)
-
-    # include_superseded surfaces them — audit trail intact.
-    visible_full = {r.id for r in wm.list_records(record.id, include_superseded=True)}
-    assert expected_stale <= visible_full
-
-    # Tombstone supersession pointer.
-    for old_id in expected_stale:
-        rec = wm.get(record.id, old_id)
-        assert rec is not None
-        assert rec.superseded_by.startswith("tombstone:"), (
-            f"expected tombstone supersession, got {rec.superseded_by!r}"
-        )
-
-
-def test_workspace_curation_skipped_without_chat_fn(
-    isolated_memory: Any, tmp_path: Path
-) -> None:
-    wm = isolated_memory["workspace_memory"]
-    ws = isolated_memory["workspaces"]
-    folder = tmp_path / "ws_curate_noop"
-    folder.mkdir()
-    (folder / "x.txt").write_text("anything", encoding="utf-8")
-    record = ws.activate(str(folder))
-    wm.save(record.id, "anything", importance=5)
-
-    result = wm.curate(record.id, chat_fn=None)
-    assert result.skipped
-    assert "no chat_fn" in result.skip_reason.lower()
+# workspaces: removed in config-file-backed redesign (2026-06-05) —
+# test_workspace_curation_supersedes_stale and
+# test_workspace_curation_skipped_without_chat_fn drove curation through
+# a workspace activated via the deleted `workspaces` module; removed with
+# that module. (workspace_memory.curate itself is unchanged.)
 
 
 def test_set_workspace_binding(isolated_memory: Any) -> None:
@@ -497,72 +313,11 @@ def test_reflection_synthesises_inputs(isolated_memory: Any) -> Any:
     assert inputs_before <= full
 
 
-def test_conversation_reflection_promotes_to_workspace(
-    isolated_memory: Any, tmp_path: Path
-) -> Any:
-    """A conversation bound to a workspace consolidates its working
-    memory into THAT workspace's memory store; long-term stays clean."""
-    pytest.importorskip("lancedb")
-    refl = isolated_memory["reflection"]
-    conv = isolated_memory["conversation"]
-    ws = isolated_memory["workspaces"]
-    wm = isolated_memory["workspace_memory"]
-    lt = isolated_memory["long_term"]
-
-    folder = tmp_path / "ws_conv_reflect"
-    folder.mkdir()
-    (folder / "x.txt").write_text("any", encoding="utf-8")
-    record = ws.activate(str(folder))
-
-    cid = "conv_with_ws"
-    conv.set_workspace(cid, record.id)
-    conv.append_working_memory(cid, {"kind": "tool", "data": {"name": "fs_read"}})
-    conv.append_working_memory(cid, {"kind": "decision", "data": "use lancedb"})
-    conv.append_working_memory(
-        cid, {"kind": "summary", "data": "found the bug in scorer"}
-    )
-
-    class _Step:
-        def __init__(self, text: Any) -> None:
-            self.text = text
-
-    SYNTH = (
-        "When debugging the harness scorer, prefer LanceDB-backed traces over fs reads."
-    )
-
-    def _chat(*, messages: Any, tools: Any, model: Any, **_kw: Any) -> Any:
-        return _Step(SYNTH)
-
-    result = refl.reflect(f"conversation:{cid}", chat_fn=_chat, min_inputs=2)
-    assert not result.skipped, f"reflection skipped: {result.skip_reason}"
-    assert result.reflection_id, "reflection should produce a record id"
-    assert result.inputs_considered == 3
-    assert result.reflection_body == SYNTH
-
-    # The synthesis lives in workspace memory, NOT long-term.
-    ws_records = wm.list_records(record.id)
-    assert any(r.id == result.reflection_id for r in ws_records), (
-        "synthesis missing from workspace memory"
-    )
-    saved = next(r for r in ws_records if r.id == result.reflection_id)
-    assert saved.body == SYNTH
-    assert saved.source.startswith("reflection:conversation:")
-    assert saved.importance >= 7
-
-    lt_records = lt.list_records(include_superseded=True)
-    assert all(r.id != result.reflection_id for r in lt_records), (
-        "synthesis should not have leaked into long-term"
-    )
-
-    # Working-memory entries are now flagged as superseded by the
-    # reflection id — visible on the document but filtered from the
-    # chat-turn short-term slot.
-    raw = conv.read_conversation(cid)["working_memory"]
-    assert len(raw) == 3
-    for e in raw:
-        assert e.get("superseded_by") == result.reflection_id, (
-            f"entry {e} should be marked superseded"
-        )
+# workspaces: removed in config-file-backed redesign (2026-06-05) —
+# test_conversation_reflection_promotes_to_workspace activated a workspace
+# via the deleted `workspaces` module to bind a conversation to it; removed
+# with that module. The no-workspace reflection path is still covered by
+# test_conversation_reflection_promotes_to_long_term_when_no_workspace below.
 
 
 def test_conversation_reflection_promotes_to_long_term_when_no_workspace(

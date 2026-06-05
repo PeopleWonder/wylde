@@ -13,7 +13,10 @@ from typing import Any, Dict, Optional, TYPE_CHECKING
 
 from .. import long_term as _long_term
 from .. import workspace_memory as _ws_mem
-from .. import workspaces as _workspaces
+
+# workspaces: removed in config-file-backed redesign (2026-06-05) —
+# the Python workspace registry now lives in Rust; the save_workspace
+# path no longer checks workspace existence before writing.
 from ..long_term import LongTermMemory
 from ..workspace_memory import WorkspaceMemory
 
@@ -71,13 +74,9 @@ def _apply_verdict(
                 "importance": record.importance,
                 "action": "save_workspace_fallback_long_term",
             }
-        # Skip if the workspace was evicted between turn-end and now.
-        try:
-            ws_record = _workspaces.get_workspace(workspace_id)
-        except Exception:  # noqa: BLE001
-            ws_record = None
-        if ws_record is None:
-            return None
+        # workspaces: removed in config-file-backed redesign (2026-06-05) —
+        # workspace existence is no longer verified here (Rust owns the
+        # registry); a bound workspace_id is treated as resolvable.
         record = _ws_mem.save(
             workspace_id=workspace_id,
             body=v.body,

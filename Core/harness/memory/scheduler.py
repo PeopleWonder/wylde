@@ -37,7 +37,10 @@ from typing import Any, Callable, Dict, Optional
 
 from . import reflection as _reflection
 from . import workspace_memory as _ws_mem
-from . import workspaces as _ws
+
+# workspaces: removed in config-file-backed redesign (2026-06-05) —
+# the `workspaces` MRU index now lives in Rust; the periodic per-workspace
+# reflect/curate ticks below are now no-ops.
 from . import conversation as _conv
 from ._common import DATA_DIR, ensure_dir
 
@@ -284,28 +287,14 @@ class MemoryScheduler:
         return fired
 
     def _tick_workspaces_reflect(self, now: float) -> int:
-        fired = 0
-        for w in _ws.recent_workspaces():
-            wid = w.id
-            last = float(self._state.workspace_reflected_at.get(wid) or 0.0)
-            if now - last < self._cadence.workspace_reflect_s:
-                continue
-            self._fire_reflect(f"workspace:{wid}")
-            self._state.workspace_reflected_at[wid] = now
-            fired += 1
-        return fired
+        # workspaces: removed in config-file-backed redesign (2026-06-05) —
+        # no Python workspace MRU index to iterate; no-op.
+        return 0
 
     def _tick_workspaces_curate(self, now: float) -> int:
-        fired = 0
-        for w in _ws.recent_workspaces():
-            wid = w.id
-            last = float(self._state.workspace_curated_at.get(wid) or 0.0)
-            if now - last < self._cadence.workspace_curate_s:
-                continue
-            self._fire_curate(wid)
-            self._state.workspace_curated_at[wid] = now
-            fired += 1
-        return fired
+        # workspaces: removed in config-file-backed redesign (2026-06-05) —
+        # no Python workspace MRU index to iterate; no-op.
+        return 0
 
     def _tick_long_term(self, now: float) -> int:
         if now - self._state.long_term_reflected_at < self._cadence.long_term_reflect_s:

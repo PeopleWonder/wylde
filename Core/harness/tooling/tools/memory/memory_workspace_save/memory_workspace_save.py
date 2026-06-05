@@ -30,10 +30,14 @@ def run_memory_workspace_save(params: Dict[str, Any]) -> Dict[str, Any]:
     if not workspace_id:
         return {
             "status": "error",
+            # workspaces: removed in config-file-backed redesign
+            # (2026-06-05) — the rag.workspaces.activate verb is gone
+            # (Rust owns workspace activation now), so the guidance no
+            # longer points at it.
             "error": (
                 "no active workspace bound to this conversation; "
-                "use memory.long_term.save instead, or activate a "
-                "workspace first via rag.workspaces.activate."
+                "use memory.long_term.save instead, or bind a workspace "
+                "to this conversation first."
             ),
         }
 

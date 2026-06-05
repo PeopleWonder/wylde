@@ -42,15 +42,10 @@ def _payload_dict(payload: Any) -> Dict[str, Any]:
 # Voice/*) until the corresponding action actually fires.
 
 
-def _ws_module() -> Any:
-    try:
-        from ..memory import workspaces as _ws
-
-        return _ws
-    except ImportError:
-        from Core.harness.memory import workspaces as _ws
-
-        return _ws
+# workspaces: removed in config-file-backed redesign (2026-06-05) —
+# the _ws_module() lazy loader for ..memory.workspaces is gone; Rust
+# owns the workspace registry/RAG. (_ws_mem_module below is unrelated —
+# it loads memory.workspace_memory, which still exists.)
 
 
 def _ws_mem_module() -> Any:

@@ -50,8 +50,10 @@ def _memory_dir(workspace_id: str) -> Path:
 def delete_memory_dir(workspace_id: str) -> bool:
     """Recursively remove the durable workspace memory folder.
 
-    Called only by :func:`Core.harness.memory.workspaces.delete_workspace`
-    on explicit user delete. MRU eviction must NOT call this.
+    Invoked on explicit user delete of a workspace. (The former Python
+    caller ``workspaces.delete_workspace`` was removed in the
+    config-file-backed redesign — 2026-06-05; Rust now owns the
+    workspace registry.) MRU eviction must NOT call this.
     Returns True if a folder was removed.
     """
     target = WORKSPACE_MEMORIES_DIR / workspace_id

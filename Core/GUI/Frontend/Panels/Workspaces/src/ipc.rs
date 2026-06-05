@@ -1,10 +1,12 @@
 //! Per-panel IPC helpers for the Workspaces panel.
 //!
-//! Wraps the harness's `rag.workspaces.*` verbs into typed reads /
-//! writes the View body consumes.  Each call goes through the shared
-//! `wylde_gui_pipe::call` wire client so the in-process HarnessApi
-//! short-circuit applies automatically once the dispatcher is wired
-//! for these verbs (Phase 9.x punchlist — they're over-the-wire today).
+//! Wraps the harness's `workspaces.*` verbs (config-file-backed redesign,
+//! 2026-06-05) into typed reads / writes the View body consumes. The
+//! legacy `rag.workspaces.*` surface (and its LanceDB file-indexer) was
+//! retired in the clean break, so index-only fields (`file_count`,
+//! `last_indexed_at`, `indexing`) are no longer populated and the
+//! re-index control is inert. The MRU window is the harness's static
+//! MRU-5.
 
 use serde_json::{json, Value};
 
@@ -31,8 +33,11 @@ impl WorkspaceSummary {
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_owned(),
+            // Redesign `WorkspaceDefinition` uses `folder`; fall back to
+            // the legacy `path` key for resilience.
             path: v
-                .get("path")
+                .get("folder")
+                .or_else(|| v.get("path"))
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_owned(),
@@ -64,69 +69,51 @@ pub async fn list_workspaces() -> Result<Vec<WorkspaceSummary>, String> {
         "wylde-harness",
         "POST",
         "/__action__",
-        Some(json!({ "action": "rag.workspaces.list", "payload": {} })),
+        Some(json!({ "action": "workspaces.list_mru", "payload": {} })),
     )
     .await?;
     Ok(parse_workspace_array(&v))
 }
 
-/// Read the MRU-clipped list — what the InferenceBar dropdown shows.
-pub async fn recent_workspaces(limit: u32) -> Result<Vec<WorkspaceSummary>, String> {
-    let v = wylde_gui_pipe::call(
-        "wylde-harness",
-        "POST",
-        "/__action__",
-        Some(json!({
-            "action": "rag.workspaces.recent",
-            "payload": { "limit": limit },
-        })),
-    )
-    .await?;
-    Ok(parse_workspace_array(&v))
+/// Read the MRU-5 list — same `workspaces.list_mru` source as the
+/// InferenceBar dropdown (the `limit` arg is ignored; the harness caps
+/// at the static MRU-5 window).
+pub async fn recent_workspaces(_limit: u32) -> Result<Vec<WorkspaceSummary>, String> {
+    list_workspaces().await
 }
 
-/// Activate a workspace at `path` — creates the workspace + slug if
-/// it's new, otherwise refreshes the index.  Mirrors the harness shape:
-/// the caller never names the slug, the harness derives it.
-pub async fn activate_workspace(path: &str, full_reindex: bool) -> Result<Value, String> {
+/// Register a workspace at `path` (and activate it). Redesign
+/// replacement for `rag.workspaces.activate`; the harness derives the
+/// slug. `full_reindex` is accepted for call-site compatibility but
+/// ignored — there is no file indexer in the redesign.
+pub async fn activate_workspace(path: &str, _full_reindex: bool) -> Result<Value, String> {
     wylde_gui_pipe::call(
         "wylde-harness",
         "POST",
         "/__action__",
         Some(json!({
-            "action": "rag.workspaces.activate",
-            "payload": {
-                "path": path,
-                "conversation_id": null,
-                "full_reindex": full_reindex,
-            },
+            "action": "workspaces.create",
+            "payload": { "folder": path },
         })),
     )
     .await
 }
 
-/// Force a full re-index of an existing workspace.
-pub async fn reindex_workspace(workspace_id: &str) -> Result<Value, String> {
-    wylde_gui_pipe::call(
-        "wylde-harness",
-        "POST",
-        "/__action__",
-        Some(json!({
-            "action": "rag.workspaces.reindex",
-            "payload": { "workspace_id": workspace_id },
-        })),
-    )
-    .await
+/// Re-index is retired in the config-file-backed redesign (the LanceDB
+/// file indexer is gone). Kept so the panel's button compiles; it
+/// returns an explanatory error rather than dispatching a dead verb.
+pub async fn reindex_workspace(_workspace_id: &str) -> Result<Value, String> {
+    Err("workspace re-index is retired in the workspaces redesign".to_owned())
 }
 
-/// Remove a workspace from the harness's MRU + delete its index.
+/// Remove a workspace + its on-disk bundle.
 pub async fn delete_workspace(workspace_id: &str) -> Result<Value, String> {
     wylde_gui_pipe::call(
         "wylde-harness",
         "POST",
         "/__action__",
         Some(json!({
-            "action": "rag.workspaces.delete",
+            "action": "workspaces.delete",
             "payload": { "workspace_id": workspace_id },
         })),
     )

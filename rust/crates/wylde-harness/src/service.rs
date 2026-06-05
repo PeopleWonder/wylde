@@ -99,14 +99,13 @@ mod tests {
             "memory.long_term.update",
             "memory.long_term.delete",
             "memory.long_term.history",
-            "memory.workspaces.list",
-            "memory.workspaces.recent",
-            "memory.workspaces.get",
-            "memory.workspaces.get_mru_limit",
-            "memory.workspaces.set_mru_limit",
-            "memory.workspaces.get_persona",
-            "memory.workspaces.set_persona",
-            "memory.workspaces.delete",
+            // workspaces.* — config-file-backed redesign
+            "workspaces.set_active",
+            "workspaces.create",
+            "workspaces.update",
+            "workspaces.delete",
+            "workspaces.set_persona",
+            "workspaces.list_mru",
             // memory.short_term.* — conversation working memory
             "memory.short_term.get",
             "memory.short_term.append",
@@ -118,6 +117,7 @@ mod tests {
             "conversations.delete",
             "conversations.get_active",
             "conversations.set_active",
+            "conversations.set_workspace",
             // models.* — harness Slice 3a
             "models.list",
             "models.get_profile",
@@ -190,7 +190,7 @@ mod tests {
         assert!(!meta["tools.list"].streaming);
         assert!(!meta["tools.run"].streaming);
         assert!(!meta["memory.long_term.list"].streaming);
-        assert!(!meta["memory.workspaces.list"].streaming);
+        assert!(!meta["workspaces.list_mru"].streaming);
 
         reset_for_tests();
     }

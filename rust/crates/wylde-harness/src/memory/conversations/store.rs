@@ -145,6 +145,63 @@ pub fn read_conversation(conv_id: &str) -> Result<Value, ReadError> {
     read_doc(conv_id).map(Value::Object).map_err(ReadError::NotFound)
 }
 
+/// Epoch seconds as `i64`, matching the `created_at` / `updated_at`
+/// convention used across the conversation document.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Atomically write a conversation document (temp + rename), preserving
+/// every field the caller hands in. Used by [`set_workspace`].
+fn write_doc(conv_id: &str, doc: &Map<String, Value>) -> std::io::Result<()> {
+    let path = path_for(conv_id);
+    if let Some(parent) = path.parent() {
+        ensure_dir(parent)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let body = serde_json::to_string_pretty(&Value::Object(doc.clone()))
+        .unwrap_or_else(|_| "{}".to_owned());
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
+/// Re-assign a conversation's `workspace_id` (Q4 — mutable binding).
+///
+/// Upserts: if the conversation document doesn't exist yet (a freshly
+/// minted id the user is about to chat in), a minimal document is
+/// created so the binding persists. An empty / `None` `workspace_id`
+/// clears the binding. Returns the updated document. The write is
+/// best-effort (swallowed like the active-pointer write); the GUI
+/// re-reads afterward.
+pub fn set_workspace(
+    conv_id: &str,
+    workspace_id: Option<&str>,
+) -> Result<Value, InvalidConversationId> {
+    validate_id(conv_id)?;
+    let now = now_secs();
+    let mut doc = read_doc(conv_id).unwrap_or_else(|_| {
+        let mut m = Map::new();
+        m.insert("id".into(), Value::String(conv_id.to_owned()));
+        m.insert("title".into(), Value::String("Untitled".to_owned()));
+        m.insert("created_at".into(), json!(now));
+        m.insert("messages".into(), Value::Array(Vec::new()));
+        m.insert("working_memory".into(), Value::Array(Vec::new()));
+        m
+    });
+    let cleaned = workspace_id.map(str::trim).filter(|s| !s.is_empty());
+    doc.insert(
+        "workspace_id".into(),
+        Value::String(cleaned.unwrap_or("").to_owned()),
+    );
+    doc.insert("updated_at".into(), json!(now));
+    let _ = write_doc(conv_id, &doc); // best-effort, like set_active_conversation
+    Ok(Value::Object(doc))
+}
+
 /// Remove a conversation file. Returns `true` iff a file was deleted.
 /// Mirrors Python's `delete_conversation`. Validates the id first so a
 /// caller can't aim the unlink outside the conversations dir.
@@ -215,6 +272,9 @@ pub fn list_conversations() -> Vec<Value> {
             .filter(|s| !s.is_empty())
             .unwrap_or("Untitled");
         let model = doc.get("model").and_then(Value::as_str).unwrap_or("");
+        // Additive (Q4): the switcher restores the workspace selection
+        // from this. Existing readers ignore the unknown key.
+        let workspace_id = doc.get("workspace_id").and_then(Value::as_str).unwrap_or("");
         metas.push(json!({
             "id": cid,
             "title": title,
@@ -223,6 +283,7 @@ pub fn list_conversations() -> Vec<Value> {
             "message_count": msg_count,
             "working_memory_count": wm_count,
             "model": model,
+            "workspace_id": workspace_id,
         }));
     }
     // Newest-first by updated_at, matching Python's reverse sort.
@@ -436,6 +497,52 @@ mod tests {
         set_active_conversation(Some("conv-def"));
         assert_eq!(set_active_conversation(None), None);
         assert_eq!(get_active_conversation(), None);
+    }
+
+    #[test]
+    fn set_workspace_is_mutable_upsert_and_clear() {
+        let _env = TestEnv::new();
+        // Upsert onto a not-yet-saved conversation id.
+        let doc = set_workspace("conv-ws-1", Some("proj-abc123")).unwrap();
+        assert_eq!(doc["workspace_id"], "proj-abc123");
+        assert_eq!(doc["id"], "conv-ws-1");
+        // Re-assign (mutable).
+        let doc2 = set_workspace("conv-ws-1", Some("other-def456")).unwrap();
+        assert_eq!(doc2["workspace_id"], "other-def456");
+        // Persisted + visible to read + list.
+        let read = read_conversation("conv-ws-1").unwrap();
+        assert_eq!(read["workspace_id"], "other-def456");
+        let metas = list_conversations();
+        assert_eq!(metas[0]["workspace_id"], "other-def456");
+        // Clear.
+        let cleared = set_workspace("conv-ws-1", None).unwrap();
+        assert_eq!(cleared["workspace_id"], "");
+    }
+
+    #[test]
+    fn set_workspace_rejects_invalid_id() {
+        let _env = TestEnv::new();
+        assert!(set_workspace("../escape", Some("x")).is_err());
+    }
+
+    #[test]
+    fn set_workspace_preserves_existing_fields() {
+        let _env = TestEnv::new();
+        seed_conversation(
+            "keepme",
+            json!({
+                "id": "keepme", "title": "Keep", "created_at": 5, "updated_at": 5,
+                "messages": [{"role": "user", "content": "hi"}],
+                "working_memory": [{"kind": "x"}], "model": "qwen2.5",
+            }),
+        );
+        set_workspace("keepme", Some("ws-1")).unwrap();
+        let doc = read_conversation("keepme").unwrap();
+        assert_eq!(doc["title"], "Keep");
+        assert_eq!(doc["model"], "qwen2.5");
+        assert_eq!(doc["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["working_memory"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["workspace_id"], "ws-1");
     }
 
     #[test]
