@@ -25,6 +25,11 @@ wylde-gui-pipe = { path = "../../Pipe" }
 # Pinned through the workspace dep so a rev bump touches one place.
 gpui.workspace = true
 
+# Shared text-input widget — backs the editable Ollama inference fields
+# (placeholder = model default, value = stored override). Same widget the
+# Chat composer uses.
+wylde-gpui-input = { path = "../../Input" }
+
 # Autostart toggle — Phase 12.3 default-off semantics preserved.  In
 # the Svelte alpha this was a tauri-plugin call; the gpui edition uses
 # the same `auto-launch` crate slice 1 declared.
@@ -39,3 +44,7 @@ wylde-updater.workspace = true
 serde.workspace      = true
 serde_json.workspace = true
 anyhow.workspace     = true
+
+# Async primitives for the model-bus drain (broadcast `RecvError`) + the
+# field-edit debounce. Same workspace pin every panel uses.
+tokio.workspace = true

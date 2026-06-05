@@ -92,6 +92,114 @@ pub async fn handle_show(payload: Value, up: Arc<Upstream>) -> Reply {
     parse_passthrough_json(resp).await
 }
 
+/// The nine inference fields the Settings panel surfaces. The four
+/// integer-typed keys are split from the float-typed ones so the parser
+/// coerces each to the JSON number kind the panel expects.
+const DEFAULTS_INT_KEYS: [&str; 4] = ["num_ctx", "num_predict", "top_k", "seed"];
+const DEFAULTS_FLOAT_KEYS: [&str; 4] = ["temperature", "top_p", "min_p", "repeat_penalty"];
+
+/// `ollama.get_model_defaults` — the model's *own* declared inference
+/// defaults, parsed from `/api/show`'s `parameters` blob.
+///
+/// The reply is **sparse**: only the keys the model author set in its
+/// Modelfile appear (commonly just `temperature` / `top_p` / `stop`).
+/// Everything else has no model-specific default and is filled by the
+/// Settings panel's global fallback table client-side, so this verb stays
+/// honest about "what the model actually says".
+///
+/// This is a **local** call to `127.0.0.1:11434` — same trust boundary as
+/// every other `ollama.*` verb — so it is intentionally NOT behind the
+/// `privacy_prefs` opt-in (which gates only features that reach outside
+/// the box).
+///
+/// Errors: `model_not_found` (404), `ollama_unreachable` (transport).
+pub async fn handle_get_model_defaults(payload: Value, up: Arc<Upstream>) -> Reply {
+    let model = match require_string(&payload, "model") {
+        Ok(m) => m,
+        Err(e) => return Reply::err(e),
+    };
+    let cfg = Config::get();
+    let body = json!({ "model": model });
+    let resp = match up
+        .request(Method::POST, "/api/show", Some(&body), cfg.show_timeout_s)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return Reply::err(ollama_unreachable_err(&e)),
+    };
+    if resp.status() == StatusCode::NOT_FOUND {
+        return Reply::err(model_not_found_err(&model));
+    }
+    let status = resp.status();
+    if !status.is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Reply::err(ollama_http_err(
+            status.as_u16(),
+            excerpt(&body, BODY_EXCERPT_CAP),
+        ));
+    }
+    let bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(e) => return Reply::err(ollama_unreachable_err(&e)),
+    };
+    let envelope: Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            return Reply::err(ollama_http_err(
+                status.as_u16(),
+                format!("decode failed: {e}"),
+            ))
+        }
+    };
+    let params = envelope
+        .get("parameters")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    Reply::ok(Value::Object(parse_parameters(params)))
+}
+
+/// Parse Ollama's `/api/show` `parameters` blob — a newline-delimited
+/// `key value` text block (the model's `PARAMETER` directives) — into the
+/// sparse subset of the nine fields the Settings panel cares about.
+///
+/// Brittle by nature (it's free text on Ollama's side), so it's defensive:
+/// blank/garbage lines are skipped, the value is whitespace-split off the
+/// first token, surrounding quotes are stripped, repeated `stop` lines are
+/// dropped, and a value that won't coerce to the key's expected number
+/// kind is ignored rather than poisoning the map. A later duplicate key
+/// wins (matches Ollama applying the last `PARAMETER`).
+fn parse_parameters(blob: &str) -> serde_json::Map<String, Value> {
+    let mut out = serde_json::Map::new();
+    for line in blob.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, rest)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        let key = key.trim();
+        let raw = rest.trim().trim_matches('"').trim();
+        if raw.is_empty() {
+            continue;
+        }
+        if DEFAULTS_INT_KEYS.contains(&key) {
+            if let Ok(n) = raw.parse::<i64>() {
+                out.insert(key.to_owned(), json!(n));
+            }
+        } else if DEFAULTS_FLOAT_KEYS.contains(&key) {
+            if let Ok(f) = raw.parse::<f64>() {
+                out.insert(key.to_owned(), json!(f));
+            }
+        } else if key == "keep_alive" {
+            // Rare/never in practice, but accept a string if present.
+            out.insert(key.to_owned(), json!(raw));
+        }
+        // Any other key (notably the repeatable `stop`) is dropped.
+    }
+    out
+}
+
 pub async fn handle_delete(payload: Value, up: Arc<Upstream>) -> Reply {
     // Python sends `{"name": ...}` (ollama_client.py:170); the Ollama
     // /api/delete spec also accepts {"model": ...}. We accept either on
@@ -404,6 +512,90 @@ mod tests {
         let r = handle_show(json!({}), up).await;
         assert!(!r.ok);
         assert_eq!(r.error.unwrap().code, "invalid_request");
+    }
+
+    #[test]
+    fn parse_parameters_extracts_sparse_typed_keys() {
+        let blob = "stop \"<|im_end|>\"\n\
+                    temperature 0.7\n\
+                    top_p 0.9\n\
+                    top_k 40\n\
+                    num_ctx 8192\n\
+                    repeat_penalty 1.15\n\
+                    seed 42\n\
+                    stop \"<|user|>\"\n";
+        let m = parse_parameters(blob);
+        // Floats coerce to f64, ints to i64.
+        assert_eq!(m.get("temperature"), Some(&json!(0.7)));
+        assert_eq!(m.get("top_p"), Some(&json!(0.9)));
+        assert_eq!(m.get("top_k"), Some(&json!(40)));
+        assert_eq!(m.get("num_ctx"), Some(&json!(8192)));
+        assert_eq!(m.get("repeat_penalty"), Some(&json!(1.15)));
+        assert_eq!(m.get("seed"), Some(&json!(42)));
+        // `stop` (repeatable) is dropped; absent keys stay absent (sparse).
+        assert!(!m.contains_key("stop"));
+        assert!(!m.contains_key("min_p"));
+        assert!(!m.contains_key("keep_alive"));
+    }
+
+    #[test]
+    fn parse_parameters_is_defensive() {
+        // Blank lines, garbage, non-numeric value for an int key, and a
+        // missing value are all skipped without poisoning the map.
+        let blob = "\n   \nnum_ctx notanumber\ntemperature\nseed 7\n";
+        let m = parse_parameters(blob);
+        assert!(!m.contains_key("num_ctx")); // non-numeric int dropped
+        assert!(!m.contains_key("temperature")); // no value dropped
+        assert_eq!(m.get("seed"), Some(&json!(7)));
+    }
+
+    #[test]
+    fn parse_parameters_empty_blob_is_empty() {
+        assert!(parse_parameters("").is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_model_defaults_parses_show_parameters() {
+        let (server, up) = fake_upstream().await;
+        let envelope = json!({
+            "details": {"family": "qwen"},
+            "parameters": "temperature 0.6\ntop_p 0.95\nstop \"<|im_end|>\""
+        });
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .and(body_json(json!({"model": "qwen2.5:0.5b"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(envelope))
+            .mount(&server)
+            .await;
+        let reply = handle_get_model_defaults(json!({"model": "qwen2.5:0.5b"}), up).await;
+        assert!(reply.ok);
+        assert_eq!(reply.data["temperature"], json!(0.6));
+        assert_eq!(reply.data["top_p"], json!(0.95));
+        // Sparse: the model didn't declare these.
+        assert!(reply.data.get("num_ctx").is_none());
+        assert!(reply.data.get("stop").is_none());
+    }
+
+    #[tokio::test]
+    async fn get_model_defaults_maps_404_to_model_not_found() {
+        let (server, up) = fake_upstream().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .mount(&server)
+            .await;
+        let reply = handle_get_model_defaults(json!({"model": "ghost"}), up).await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "model_not_found");
+    }
+
+    #[tokio::test]
+    async fn get_model_defaults_maps_transport_to_unreachable() {
+        // Nothing listening → transport error.
+        let up = crate::upstream::for_test("http://127.0.0.1:1");
+        let reply = handle_get_model_defaults(json!({"model": "x"}), up).await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "ollama_unreachable");
     }
 
     #[tokio::test]

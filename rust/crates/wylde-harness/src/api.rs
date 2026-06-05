@@ -53,6 +53,7 @@ use crate::memory::rag::actions as rag_actions;
 use crate::memory::short_term::actions as short_term_actions;
 use crate::memory::workspaces::actions as workspace_actions;
 use crate::model_registry::actions as model_actions;
+use crate::settings::actions as settings_actions;
 use crate::tooling::consent::{self, Decision};
 use crate::tooling::registry::global;
 use crate::tooling::runner::{catalog_payload, dispatch_tool};
@@ -91,6 +92,13 @@ pub trait HarnessApi: Send + Sync {
     async fn models_set_active(&self, payload: Value) -> Reply;
     async fn models_set_default(&self, payload: Value) -> Reply;
     async fn models_get_default(&self, payload: Value) -> Reply;
+    async fn models_get_effective(&self, payload: Value) -> Reply;
+
+    // ── settings.ollama.* (4 verbs; per-model inference override store) ─
+    async fn settings_ollama_get_overrides(&self, payload: Value) -> Reply;
+    async fn settings_ollama_set_overrides(&self, payload: Value) -> Reply;
+    async fn settings_ollama_clear_override(&self, payload: Value) -> Reply;
+    async fn settings_ollama_list_models_with_overrides(&self, payload: Value) -> Reply;
 
     // ── rag.* (2 verbs; Wylde_Study S2a) ─────────────────────────────
     async fn rag_add_episodic(&self, payload: Value) -> Reply;
@@ -267,6 +275,29 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn models_get_default(&self, payload: Value) -> Reply {
         model_actions::handle_get_default(payload).await
+    }
+
+    async fn models_get_effective(&self, payload: Value) -> Reply {
+        model_actions::handle_get_effective(payload).await
+    }
+
+    // ── settings.ollama.* ────────────────────────────────────────────
+    // Pass-throughs to the per-model override store's action handlers.
+
+    async fn settings_ollama_get_overrides(&self, payload: Value) -> Reply {
+        settings_actions::handle_get_overrides(payload).await
+    }
+
+    async fn settings_ollama_set_overrides(&self, payload: Value) -> Reply {
+        settings_actions::handle_set_overrides(payload).await
+    }
+
+    async fn settings_ollama_clear_override(&self, payload: Value) -> Reply {
+        settings_actions::handle_clear_override(payload).await
+    }
+
+    async fn settings_ollama_list_models_with_overrides(&self, payload: Value) -> Reply {
+        settings_actions::handle_list_models_with_overrides(payload).await
     }
 
     // ── rag.* (Wylde_Study S2a) ──────────────────────────────────────

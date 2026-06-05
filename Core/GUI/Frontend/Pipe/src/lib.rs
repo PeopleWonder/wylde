@@ -33,6 +33,7 @@ pub mod chat;
 pub mod conversation_bus;
 pub mod memory_long_term;
 pub mod memory_workspaces;
+pub mod model_bus;
 pub mod nav_bus;
 pub mod privacy_prefs;
 pub mod tools;
@@ -41,6 +42,10 @@ pub mod updater_state;
 pub use conversation_bus::{
     current_active_conversation, publish_active_conversation, publish_conversation_list_changed,
     subscribe as subscribe_conversation_bus, ConversationEvent,
+};
+pub use model_bus::{
+    current_active_model, publish_active_model, publish_starred_default,
+    subscribe as subscribe_model_bus, ModelEvent,
 };
 pub use nav_bus::{install_nav_sender, is_nav_installed, request_nav};
 

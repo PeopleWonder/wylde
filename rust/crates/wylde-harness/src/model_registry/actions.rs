@@ -293,6 +293,41 @@ pub async fn handle_get_default(_payload: Value) -> Reply {
     Reply::ok(json!({ "model": model_state::get_default_model() }))
 }
 
+/// `models.get_effective` — the model whose defaults would apply to the
+/// *next* chat turn, resolving the inference-bar pick first and the
+/// starred default second (Aaron's "B with A fallback").
+///
+/// Resolution order: active (`active_model.json`) → default
+/// (`default_model.json`) → `WYLDE_DEFAULT_MODEL` env → `null`. The two
+/// later arms are folded into [`model_state::get_default_model`], so this
+/// is `active ?? default-with-env`.
+///
+/// Reply: `{model: <name>|null, source: "active"|"default"|"env"|null}`.
+/// `source` distinguishes the inference-bar pick from the star/env so the
+/// Settings header can explain *why* a model is showing.
+pub async fn handle_get_effective(_payload: Value) -> Reply {
+    if !rust_enabled() {
+        return disabled();
+    }
+    if let Some(active) = model_state::get_active_model() {
+        return Reply::ok(json!({ "model": active, "source": "active" }));
+    }
+    // No live pick → fall back to the star. `get_default_model` already
+    // folds the env fallback, so distinguish persisted-vs-env by peeking
+    // at the on-disk default before its env arm fires.
+    match model_state::get_default_model() {
+        Some(model) => {
+            let source = if model_state::get_persisted_default().is_some() {
+                "default"
+            } else {
+                "env"
+            };
+            Reply::ok(json!({ "model": model, "source": source }))
+        }
+        None => Reply::ok(json!({ "model": Value::Null, "source": Value::Null })),
+    }
+}
+
 #[cfg(test)]
 // These async tests hold the sync `TEST_ENV_LOCK` across the in-process
 // handler `.await` to serialise env-var mutation against the sibling
@@ -394,6 +429,40 @@ mod tests {
         // Clearing → null again.
         let r = handle_set_default(json!({ "model": null })).await;
         assert_eq!(r.data["model"], Value::Null);
+        std::env::remove_var("WYLDE_HARNESS_MODELS_IMPL");
+    }
+
+    #[tokio::test]
+    async fn get_effective_resolution_chain() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _td = enabled_isolated();
+
+        // Nothing set → null / null.
+        let r = handle_get_effective(Value::Null).await;
+        assert!(r.ok);
+        assert_eq!(r.data["model"], Value::Null);
+        assert_eq!(r.data["source"], Value::Null);
+
+        // Only the env default → source "env".
+        std::env::set_var("WYLDE_DEFAULT_MODEL", "env:model");
+        model_state::reset_for_tests();
+        let r = handle_get_effective(Value::Null).await;
+        assert_eq!(r.data["model"], "env:model");
+        assert_eq!(r.data["source"], "env");
+
+        // A persisted star wins over env → source "default".
+        let _ = handle_set_default(json!({ "model": "star:model" })).await;
+        let r = handle_get_effective(Value::Null).await;
+        assert_eq!(r.data["model"], "star:model");
+        assert_eq!(r.data["source"], "default");
+
+        // The active inference-bar pick wins over the star → source "active".
+        let _ = handle_set_active(json!({ "model": "active:model" })).await;
+        let r = handle_get_effective(Value::Null).await;
+        assert_eq!(r.data["model"], "active:model");
+        assert_eq!(r.data["source"], "active");
+
+        std::env::remove_var("WYLDE_DEFAULT_MODEL");
         std::env::remove_var("WYLDE_HARNESS_MODELS_IMPL");
     }
 

@@ -525,27 +525,204 @@ pub fn startup_section(enabled: bool, err: Option<&str>, cx: &mut Cx) -> gpui::D
     c
 }
 
-/// Ollama inference defaults — read-only display.  Editable controls
-/// come with the gpui-component slice (a later Frontend slice); this
-/// section deliberately has no write path yet.
-pub fn ollama_section(o: &OllamaSettings) -> gpui::Div {
-    let rows = [
-        ("Context window (num_ctx)", o.num_ctx.map(|v| v.to_string())),
-        ("Max output (num_predict)", o.num_predict.map(|v| v.to_string())),
-        ("Temperature", o.temperature.map(|v| format!("{v:.2}"))),
-        ("Top-p", o.top_p.map(|v| format!("{v:.2}"))),
-        ("Top-k", o.top_k.map(|v| v.to_string())),
-        ("Min-p", o.min_p.map(|v| format!("{v:.2}"))),
-        ("Repeat penalty", o.repeat_penalty.map(|v| format!("{v:.2}"))),
-        ("Seed", o.seed.map(|v| v.to_string())),
-        ("Keep alive", o.keep_alive.clone()),
-    ];
+// ── Ollama inference (per-model defaults + overrides) ─────────────────
+
+/// How a field's value is typed when persisted as an override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    /// Integer (`i64`): num_ctx, num_predict, top_k, seed.
+    Int,
+    /// Float (`f64`): temperature, top_p, min_p, repeat_penalty.
+    Float,
+    /// Free string: keep_alive (`"5m"`, `"-1"`, …).
+    Text,
+}
+
+/// One of the nine Ollama inference fields the section renders.
+pub struct OllamaField {
+    /// The override-store key (also the `/api/show` parameter name).
+    pub key: &'static str,
+    /// Human label shown above the input.
+    pub label: &'static str,
+    /// How to coerce a typed value before persisting.
+    pub kind: FieldKind,
+    /// Ollama's documented global default (scope §3.3), shown as the
+    /// placeholder when the model itself declares no value for this field.
+    pub fallback: &'static str,
+}
+
+/// The nine fields in render order. The fallback column is Ollama's
+/// documented Modelfile defaults per the scope doc.
+pub const OLLAMA_FIELDS: [OllamaField; 9] = [
+    OllamaField { key: "num_ctx", label: "Context window (num_ctx)", kind: FieldKind::Int, fallback: "4096" },
+    OllamaField { key: "num_predict", label: "Max output (num_predict)", kind: FieldKind::Int, fallback: "-1" },
+    OllamaField { key: "temperature", label: "Temperature", kind: FieldKind::Float, fallback: "0.8" },
+    OllamaField { key: "top_p", label: "Top-p", kind: FieldKind::Float, fallback: "0.9" },
+    OllamaField { key: "top_k", label: "Top-k", kind: FieldKind::Int, fallback: "40" },
+    OllamaField { key: "min_p", label: "Min-p", kind: FieldKind::Float, fallback: "0.0" },
+    OllamaField { key: "repeat_penalty", label: "Repeat penalty", kind: FieldKind::Float, fallback: "1.1" },
+    OllamaField { key: "seed", label: "Seed", kind: FieldKind::Int, fallback: "0" },
+    OllamaField { key: "keep_alive", label: "Keep alive", kind: FieldKind::Text, fallback: "5m" },
+];
+
+/// Format an `OllamaSettings` field as a display string by key, or `None`
+/// when that field is unset. Shared by placeholder (model defaults) and
+/// value (stored overrides) sourcing.
+pub fn ollama_field_string(o: &OllamaSettings, key: &str) -> Option<String> {
+    match key {
+        "num_ctx" => o.num_ctx.map(|v| v.to_string()),
+        "num_predict" => o.num_predict.map(|v| v.to_string()),
+        "temperature" => o.temperature.map(|v| format!("{v}")),
+        "top_p" => o.top_p.map(|v| format!("{v}")),
+        "top_k" => o.top_k.map(|v| v.to_string()),
+        "min_p" => o.min_p.map(|v| format!("{v}")),
+        "repeat_penalty" => o.repeat_penalty.map(|v| format!("{v}")),
+        "seed" => o.seed.map(|v| v.to_string()),
+        "keep_alive" => o.keep_alive.clone(),
+        _ => None,
+    }
+}
+
+/// Whether a key currently has a stored override (drives ↺ visibility +
+/// the normal-weight value styling).
+pub fn ollama_has_override(overrides: &OllamaSettings, key: &str) -> bool {
+    ollama_field_string(overrides, key).is_some()
+}
+
+/// Transient card shown while the effective model + its defaults are
+/// being resolved, so the section doesn't flash the empty state first.
+pub fn ollama_loading_card() -> gpui::Div {
+    card().child(
+        div()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::SM))
+            .text_color(rgb(pack(TEXT_MUTED)))
+            .child("Ollama inference — loading…"),
+    )
+}
+
+/// State 1 — no model selected. A small muted header (Aaron's exact
+/// wording) plus a "Go to Models panel" link; deliberately *not* a full
+/// card with subtext.
+fn ollama_empty_state(cx: &mut Cx) -> gpui::Div {
+    card()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::SM))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child("No Model Currently Loaded"),
+        )
+        .child(
+            div()
+                .id("settings-ollama-goto-models")
+                .cursor_pointer()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(BRAND_LIGHT)))
+                .child("Go to Models panel →")
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _ev, _window, cx| this.goto_models(cx)),
+                ),
+        )
+}
+
+/// The ↺ per-field reset affordance — present only when an override is
+/// stored for `key`. Clicking clears that override so the field falls
+/// back to its placeholder.
+fn ollama_reset_button(key: &'static str, cx: &mut Cx) -> Stateful<gpui::Div> {
+    div()
+        .id(SharedString::from(format!("ollama-reset-{key}")))
+        .cursor_pointer()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::MICRO))
+        .text_color(rgb(pack(BRAND_LIGHT)))
+        .child("↺ reset")
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _ev, _window, cx| this.reset_ollama_field(key, cx)),
+        )
+}
+
+/// One editable field: label (+ ↺ when overridden) over the text input.
+/// Placeholder vs value styling is the input's own (greyed placeholder =
+/// model default; normal-weight text = stored override).
+fn ollama_field_row(
+    field: &OllamaField,
+    input: &gpui::Entity<wylde_gpui_input::TextInput>,
+    has_override: bool,
+    cx: &mut Cx,
+) -> gpui::Div {
+    let mut head = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(field.label)),
+        );
+    if has_override {
+        head = head.child(ollama_reset_button(field.key, cx));
+    }
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(head)
+        .child(input.clone())
+}
+
+/// Ollama inference section — the four-state machine (scope §5).
+///
+///   * State 1 (no model): [`ollama_empty_state`].
+///   * State 2 (model + Ollama unreachable): the editable grid with a
+///     greyed-dash placeholder set on each input + a note.
+///   * State 3 (loaded): the editable grid, placeholder = model default
+///     (∪ global fallback), value = stored override, per-field ↺.
+///   * State 4 is the same render driven by a `model_bus`-triggered
+///     refresh — no separate branch here.
+///
+/// `inputs` is the panel's array of nine `TextInput` entities (parallel
+/// to [`OLLAMA_FIELDS`]); placeholders/values are kept in sync by the
+/// panel, so this builder only lays them out. An empty `inputs` (the
+/// section hasn't initialised its inputs yet) renders the header only.
+#[allow(clippy::too_many_arguments)]
+pub fn ollama_section(
+    model: Option<&str>,
+    unreachable_note: Option<&str>,
+    inputs: &[gpui::Entity<wylde_gpui_input::TextInput>],
+    overrides: &OllamaSettings,
+    cx: &mut Cx,
+) -> gpui::Div {
+    // State 1 — no model resolved.
+    let Some(model) = model else {
+        return ollama_empty_state(cx);
+    };
+
     let mut c = card().child(section_title(
-        "Ollama inference",
-        "Defaults applied to every chat. Leave a field blank to use Ollama's built-in.",
+        &format!("Ollama inference · {model}"),
+        "Placeholder = this model's default. Type to override; ↺ resets a field.",
     ));
-    for (label, value) in rows {
-        c = c.child(meta_pair(label, &value.unwrap_or_else(|| "—".into())));
+
+    // State 2 note — Ollama upstream couldn't be queried for defaults.
+    if let Some(note) = unreachable_note {
+        c = c.child(error_strip(note));
+    }
+
+    // The editable grid (States 2 & 3 share it; the difference is the
+    // placeholder the panel set on each input + the note above).
+    for (i, field) in OLLAMA_FIELDS.iter().enumerate() {
+        let Some(input) = inputs.get(i) else {
+            continue;
+        };
+        let has_override = ollama_has_override(overrides, field.key);
+        c = c.child(ollama_field_row(field, input, has_override, cx));
     }
     c
 }

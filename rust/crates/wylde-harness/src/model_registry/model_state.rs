@@ -216,6 +216,20 @@ pub fn get_default_model() -> Option<String> {
     }
 }
 
+/// The *persisted* starred default only — the on-disk
+/// `default_model.json` value, with **no** `WYLDE_DEFAULT_MODEL` env
+/// fallback. Lets [`models.get_effective`] distinguish a real saved star
+/// (`source: "default"`) from a value that only came from the env
+/// (`source: "env"`).
+pub fn get_persisted_default() -> Option<String> {
+    let mut cell = lock(&DEFAULT);
+    if !cell.loaded {
+        cell.cached = read_disk(&default_path());
+        cell.loaded = true;
+    }
+    cell.cached.clone().filter(|v| !v.is_empty())
+}
+
 /// Persist `name` as the starred default. Empty / `None` clears it
 /// (subsequent reads fall back to `WYLDE_DEFAULT_MODEL` then `None`).
 /// Returns the persisted value.

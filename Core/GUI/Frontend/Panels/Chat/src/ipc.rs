@@ -319,6 +319,26 @@ pub async fn eject_model(model: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// `models.set_active` — persist the inference-bar pick so it's
+/// observable cross-process (Settings reads it via `models.get_effective`
+/// to preview the model whose defaults apply to the next turn). `None`
+/// clears it ("(auto)"). Fire-and-confirm: the caller publishes the
+/// model bus optimistically and only logs a transport failure.
+pub async fn set_active_model(model: Option<&str>) -> Result<(), String> {
+    let model = match model {
+        Some(m) => json!(m),
+        None => Value::Null,
+    };
+    wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "models.set_active", "payload": { "model": model } })),
+    )
+    .await
+    .map(|_| ())
+}
+
 /// `memory.workspaces.recent` — MRU-clipped workspace list for the
 /// InferenceBar dropdown.
 pub async fn recent_workspaces(limit: u32) -> Result<Vec<WorkspaceSummary>, String> {
