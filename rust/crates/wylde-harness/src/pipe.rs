@@ -67,6 +67,8 @@ use crate::api::HarnessApi;
 const HANDLER_MODULE_CHAT: &str = "wylde_harness::api::DefaultHarnessApi (chat.*)";
 const HANDLER_MODULE_TOOLS: &str = "wylde_harness::api::DefaultHarnessApi (tools.*)";
 const HANDLER_MODULE_MODELS: &str = "wylde_harness::api::DefaultHarnessApi (models.*)";
+const HANDLER_MODULE_SETTINGS: &str =
+    "wylde_harness::api::DefaultHarnessApi (settings.ollama.*)";
 const HANDLER_MODULE_RAG: &str = "wylde_harness::api::DefaultHarnessApi (rag.*)";
 const HANDLER_MODULE_LONG_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.long_term.*)";
@@ -102,6 +104,12 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "models.set_active",
     "models.set_default",
     "models.get_default",
+    "models.get_effective",
+    // settings.ollama.* — per-model inference override store (4 verbs)
+    "settings.ollama.get_overrides",
+    "settings.ollama.set_overrides",
+    "settings.ollama.clear_override",
+    "settings.ollama.list_models_with_overrides",
     // rag.* — episodic write + semantic search (2 verbs; Wylde_Study S2a)
     "rag.add_episodic",
     "rag.search",
@@ -387,6 +395,73 @@ where
         "Return the starred default model: persisted choice, else the \
          WYLDE_DEFAULT_MODEL env, else null. No payload. Returns {model}.",
         HANDLER_MODULE_MODELS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "models.get_effective",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.models_get_effective(p).await }
+        },
+        "Resolve the model whose defaults apply to the next chat turn: \
+         active inference-bar pick → starred default → WYLDE_DEFAULT_MODEL \
+         env → null. No payload. Returns {model, source} where source is \
+         one of active|default|env|null.",
+        HANDLER_MODULE_MODELS,
+    );
+
+    // ── settings.ollama.* (per-model inference override store) ────────
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "settings.ollama.get_overrides",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.settings_ollama_get_overrides(p).await }
+        },
+        "Sparse per-model Ollama inference overrides. Payload {model, \
+         profile?}. Returns {model, profile, overrides} where overrides \
+         is the sparse map of only the keys the user set (empty when none).",
+        HANDLER_MODULE_SETTINGS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "settings.ollama.set_overrides",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.settings_ollama_set_overrides(p).await }
+        },
+        "Set/merge one per-model override key. Payload {model, key, value, \
+         profile?}. Returns {model, profile, overrides} after the merge.",
+        HANDLER_MODULE_SETTINGS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "settings.ollama.clear_override",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.settings_ollama_clear_override(p).await }
+        },
+        "Delete one per-model override key (the field falls back to its \
+         placeholder). Payload {model, key, profile?}. Returns {model, \
+         profile, overrides} with the remaining keys.",
+        HANDLER_MODULE_SETTINGS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "settings.ollama.list_models_with_overrides",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.settings_ollama_list_models_with_overrides(p).await }
+        },
+        "List real model tags that have at least one stored override \
+         (for the future profiles UI). Payload {profile?}. Returns \
+         {profile, models}.",
+        HANDLER_MODULE_SETTINGS,
     );
 
     // ── rag.* (Wylde_Study S2a) ──────────────────────────────────────

@@ -8831,6 +8831,8 @@ dependencies = [
  "gpui",
  "serde",
  "serde_json",
+ "tokio",
+ "wylde-gpui-input",
  "wylde-gui-pipe",
  "wylde-theme",
  "wylde-updater",

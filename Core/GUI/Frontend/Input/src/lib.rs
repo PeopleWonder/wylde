@@ -213,6 +213,26 @@ impl TextInput {
         cx.notify();
     }
 
+    /// Set the buffer text **without** emitting [`InputEvent::Changed`].
+    ///
+    /// For syncing an input's value *from* backend state (e.g. the
+    /// Settings → Ollama section repainting a field when the model
+    /// changes): emitting `Changed` there would feed the parent's own
+    /// persist-on-change handler and loop a write back to the store.
+    pub fn set_text_silent(&mut self, s: impl Into<String>, cx: &mut Context<Self>) {
+        self.buffer.set_text(s);
+        cx.notify();
+    }
+
+    /// Update the placeholder shown when the buffer is empty. Lets a
+    /// parent repaint the "what value would apply" hint at runtime (the
+    /// Settings → Ollama section swaps it as the selected model changes)
+    /// without rebuilding the input entity.
+    pub fn set_placeholder(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.placeholder = text.into();
+        cx.notify();
+    }
+
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.buffer.set_text("");
         cx.emit(InputEvent::Changed(String::new()));

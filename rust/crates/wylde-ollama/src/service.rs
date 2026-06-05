@@ -11,11 +11,12 @@ use wylde_shared::ipc::{
 use crate::actions::{chat, embed, models, pull};
 use crate::upstream;
 
-const ALL_ACTIONS: [&str; 11] = [
+const ALL_ACTIONS: [&str; 12] = [
     "ollama.health",
     "ollama.list_models",
     "ollama.list_loaded",
     "ollama.show",
+    "ollama.get_model_defaults",
     "ollama.delete",
     "ollama.eject",
     "ollama.preload",
@@ -34,7 +35,7 @@ pub fn install() {
         return;
     }
 
-    // ── Unary actions (8) ────────────────────────────────────────────
+    // ── Unary actions (9) ────────────────────────────────────────────
     register_action_with_meta(
         "ollama.health",
         |payload: Value| async move { models::handle_health(payload, upstream::client()).await },
@@ -62,6 +63,16 @@ pub fn install() {
         "ollama.show",
         |payload: Value| async move { models::handle_show(payload, upstream::client()).await },
         "POST /api/show {model} — model metadata (details/model_info/parameters).",
+        "wylde_ollama::actions::models",
+    );
+    register_action_with_meta(
+        "ollama.get_model_defaults",
+        |payload: Value| async move {
+            models::handle_get_model_defaults(payload, upstream::client()).await
+        },
+        "POST /api/show {model} → sparse model-declared inference defaults \
+         parsed from the `parameters` blob (only keys the model sets, e.g. \
+         temperature/top_p). 404 → model_not_found; transport → ollama_unreachable.",
         "wylde_ollama::actions::models",
     );
     register_action_with_meta(
@@ -117,7 +128,7 @@ pub fn install() {
         "wylde_ollama::actions::pull",
     );
 
-    tracing::info!("wylde-ollama: registered 11 actions");
+    tracing::info!("wylde-ollama: registered {} actions", ALL_ACTIONS.len());
 }
 
 /// Signal stop. Currently a no-op — the service has no background

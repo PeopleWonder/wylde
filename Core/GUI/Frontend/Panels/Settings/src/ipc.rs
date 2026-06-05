@@ -277,12 +277,17 @@ fn autostart_handle() -> Result<auto_launch::AutoLaunch, String> {
 // ── Ollama defaults ──────────────────────────────────────────────────
 
 /// The persisted Ollama inference defaults, surfaced read-only in the
-/// Settings panel.  Field set mirrors the canonical
-/// `request_building.py::DEFAULT_OLLAMA_SETTINGS` block.
+/// A **sparse** block of the nine Ollama inference fields. Every field is
+/// `Option`, so the same type carries two different sparse payloads in the
+/// redesign:
 ///
-/// The source of truth is the Gateway's file-backed settings store
-/// (`$WYLDE_ROOT/data/settings/ollama.json`), read via the
-/// `GET /api/settings/ollama` route — see [`read_ollama_settings`].
+///   * the model's own declared defaults (`ollama.get_model_defaults`),
+///     used as the greyed *placeholder* per field, and
+///   * the user's stored *overrides* (`settings.ollama.get_overrides`),
+///     used as the normal-weight *value* per field.
+///
+/// Sparseness is load-bearing: it lets the panel tell "user set
+/// temperature = 0.7" apart from "the model default happens to be 0.7".
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct OllamaSettings {
     pub num_ctx: Option<i64>,
@@ -297,11 +302,9 @@ pub struct OllamaSettings {
 }
 
 impl OllamaSettings {
-    /// Parse the merged settings block the Gateway returns.  Every field
-    /// is optional: a missing or null key (or a key the Gateway's schema
-    /// doesn't persist) stays `None` and renders as "—".  `keep_alive`
-    /// accepts either a string (`"5m"`, `"-1"`) or a bare number,
-    /// matching the values Ollama itself takes.
+    /// Parse a sparse object of the nine fields. A missing or null key
+    /// stays `None`. `keep_alive` accepts a string (`"5m"`, `"-1"`) or a
+    /// bare number, matching the values Ollama itself takes.
     pub fn from_value(v: &Value) -> Self {
         let keep_alive = v.get("keep_alive").and_then(|x| match x {
             Value::String(s) => Some(s.clone()),
@@ -322,20 +325,105 @@ impl OllamaSettings {
     }
 }
 
-/// Read the persisted Ollama inference defaults from the Gateway
-/// (`GET /api/settings/ollama`).  The Gateway merges any saved
-/// overrides onto its built-in defaults, so the reply always carries a
-/// full block; an unreachable Gateway surfaces as `Err` and the panel
-/// keeps its loading defaults (every field "—").
-pub async fn read_ollama_settings() -> Result<OllamaSettings, String> {
+/// The effective model whose defaults apply to the next chat turn, plus
+/// why it was chosen. Mirrors the `models.get_effective` reply.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EffectiveModel {
+    /// Resolved model tag, or `None` when nothing is selected.
+    pub model: Option<String>,
+    /// `"active"` | `"default"` | `"env"` | `None` — provenance of `model`.
+    pub source: Option<String>,
+}
+
+/// Resolve the effective model via the harness (`models.get_effective`):
+/// active inference-bar pick → starred default → `WYLDE_DEFAULT_MODEL` →
+/// none. A down harness surfaces as `Err`; the panel then treats it as
+/// "no model" (State 1) rather than guessing.
+pub async fn read_effective_model() -> Result<EffectiveModel, String> {
     let v = wylde_gui_pipe::call(
-        "wylde-gateway",
-        "GET",
-        "/api/settings/ollama",
-        None,
+        "wylde-harness",
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "models.get_effective", "payload": {} })),
+    )
+    .await?;
+    Ok(EffectiveModel {
+        model: v
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned),
+        source: v.get("source").and_then(Value::as_str).map(str::to_owned),
+    })
+}
+
+/// Read a model's own declared inference defaults
+/// (`ollama.get_model_defaults`) — sparse, only the keys the model sets.
+/// The panel applies the global fallback table for the rest, client-side.
+/// Errors propagate verbatim so the panel can branch on
+/// `ollama_unreachable` / `model_not_found` (State 2).
+pub async fn read_model_defaults(model: &str) -> Result<OllamaSettings, String> {
+    let v = wylde_gui_pipe::call(
+        "wylde-ollama",
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "ollama.get_model_defaults",
+            "payload": { "model": model },
+        })),
     )
     .await?;
     Ok(OllamaSettings::from_value(&v))
+}
+
+/// Read the user's *stored* per-model overrides
+/// (`settings.ollama.get_overrides`) — sparse, `{}` when none.
+pub async fn read_ollama_overrides(model: &str) -> Result<OllamaSettings, String> {
+    let v = wylde_gui_pipe::call(
+        "wylde-harness",
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "settings.ollama.get_overrides",
+            "payload": { "model": model },
+        })),
+    )
+    .await?;
+    let overrides = v.get("overrides").cloned().unwrap_or_else(|| json!({}));
+    Ok(OllamaSettings::from_value(&overrides))
+}
+
+/// Set/merge a single per-model override key
+/// (`settings.ollama.set_overrides`). `value` is any JSON scalar.
+pub async fn set_ollama_override(model: &str, key: &str, value: Value) -> Result<(), String> {
+    wylde_gui_pipe::call(
+        "wylde-harness",
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "settings.ollama.set_overrides",
+            "payload": { "model": model, "key": key, "value": value },
+        })),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Clear a single per-model override key (the ↺ reset →
+/// `settings.ollama.clear_override`). The field falls back to its
+/// placeholder.
+pub async fn clear_ollama_override(model: &str, key: &str) -> Result<(), String> {
+    wylde_gui_pipe::call(
+        "wylde-harness",
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "settings.ollama.clear_override",
+            "payload": { "model": model, "key": key },
+        })),
+    )
+    .await
+    .map(|_| ())
 }
 
 // ── Voice settings (Slice 6) ──────────────────────────────────────────

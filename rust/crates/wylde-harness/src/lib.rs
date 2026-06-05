@@ -36,6 +36,7 @@ pub mod memory;
 pub mod model_registry;
 pub mod pipe;
 pub mod service;
+pub mod settings;
 pub mod state;
 pub mod tooling;
 pub mod turn;

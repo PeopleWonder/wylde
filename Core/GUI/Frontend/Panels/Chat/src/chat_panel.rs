@@ -46,7 +46,8 @@ use crate::ipc::{
     activate_workspace, cancel_turn, clear_working_memory, delete_conversation, eject_model,
     fetch_conversation_messages, fetch_working_memory, get_active_conversation, list_conversations,
     list_models, new_conversation, recent_workspaces, respond_consent, set_active_conversation,
-    start_turn_with_model, stream_consent_pending, stream_tools, stream_turn, ConsentEvent,
+    set_active_model, start_turn_with_model, stream_consent_pending, stream_tools, stream_turn,
+    ConsentEvent,
     ConversationMeta, PendingConsent, ToolChunk, TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
 };
 use crate::markdown;
@@ -1042,11 +1043,26 @@ impl ChatPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.active_model = model;
+        self.active_model = model.clone();
         self.show_model_dropdown = false;
         // Picker closed → restore focus to the prompt input.
         self.focus_prompt(window, cx);
         cx.notify();
+
+        // Persist the pick so other processes/panels can observe it: the
+        // Settings → Ollama section resolves the *effective* model via
+        // `models.get_effective`, which reads this `active_model.json`.
+        // Fire-and-forget — a transport failure only means Settings won't
+        // track this pick until the next refresh, never blocks the click.
+        let persist = model.clone();
+        cx.spawn(async move |_this, _app_cx: &mut AsyncApp| {
+            let _ = set_active_model(persist.as_deref()).await;
+        })
+        .detach();
+
+        // Publish on the model bus so an open Settings panel re-queries
+        // this model's parameter defaults live (its "State 4").
+        let _ = wylde_gui_pipe::publish_active_model(model);
     }
 
     /// Eject the active model from VRAM via `ollama.eject`.  No-op when

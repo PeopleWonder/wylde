@@ -553,6 +553,9 @@ impl ModelsPanel {
         // stays put so the UI doesn't flicker back.
         self.session_default = name.clone();
         cx.notify();
+        // Tell any open Settings panel the starred default changed so it
+        // re-resolves the effective model + its parameter placeholders.
+        let _ = wylde_gui_pipe::publish_starred_default(name.clone());
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let outcome = crate::ipc::set_default(name.as_deref()).await;
             if let Err(e) = outcome {

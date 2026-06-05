@@ -16,25 +16,80 @@
 //! This matches the Models panel's `set_default` precedent.
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, FocusHandle, IntoElement,
-    KeyDownEvent, Render, Window,
+    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, Entity, FocusHandle,
+    IntoElement, KeyDownEvent, Render, Subscription, Window,
 };
-use serde_json::json;
+use serde_json::{json, Value};
+use wylde_gpui_input::{InputEvent, TextInput};
 use wylde_theme::colors::{SURFACE_900, TEXT_PRIMARY, TEXT_SECONDARY};
 use wylde_theme::typography::{size, FAMILY_INTER};
 
 use crate::ipc::{
-    check_for_update, clear_tool_decision, download_and_install, get_autostart_enabled,
-    list_consent, list_input_devices, read_ollama_settings, read_privacy_prefs, read_update_prefs,
-    read_voice_settings, reset_consent, set_autostart_enabled, set_no_auth, set_tool_decision,
-    test_mic, write_privacy_prefs, write_update_prefs, write_voice_settings, ConsentSnapshot,
-    OllamaSettings, PrivacyPrefs, UpdateCheck, UpdatePrefs, VoiceDevices, VoiceSettings, VoiceTest,
+    check_for_update, clear_ollama_override, clear_tool_decision, download_and_install,
+    get_autostart_enabled, list_consent, list_input_devices, read_effective_model,
+    read_model_defaults, read_ollama_overrides, read_privacy_prefs, read_update_prefs,
+    read_voice_settings, reset_consent, set_autostart_enabled, set_no_auth, set_ollama_override,
+    set_tool_decision, test_mic, write_privacy_prefs, write_update_prefs, write_voice_settings,
+    ConsentSnapshot, OllamaSettings, PrivacyPrefs, UpdateCheck, UpdatePrefs, VoiceDevices,
+    VoiceSettings, VoiceTest,
 };
 use crate::hotkey::{resolve_capture, CaptureOutcome};
 use crate::sections::{
-    consent_section, error_banner, hf_privacy_modal, ollama_section, pack, privacy_section,
-    startup_section, updates_section, voice_section,
+    consent_section, error_banner, hf_privacy_modal, ollama_field_string, ollama_loading_card,
+    ollama_section, pack, privacy_section, startup_section, updates_section, voice_section,
+    FieldKind, OLLAMA_FIELDS,
 };
+
+/// Debounce window before a typed Ollama-field edit is persisted, so a
+/// burst of keystrokes collapses into a single `settings.ollama.*` write.
+const OLLAMA_WRITE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Render state of the Ollama inference section (scope §5). State 4 (live
+/// re-query on a model change) is not a variant — it's this same machine
+/// re-driven by a `model_bus` event.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum OllamaSection {
+    /// Resolving the effective model / its defaults — transient.
+    #[default]
+    Loading,
+    /// State 1 — nothing selected. Renders the empty state.
+    NoModel,
+    /// States 2 & 3 — a model is selected; the editable grid renders.
+    /// `unreachable_note` is `Some` in State 2 (Ollama couldn't be
+    /// queried for defaults), `None` in State 3 (defaults loaded).
+    Editable { unreachable_note: Option<String> },
+}
+
+/// What a typed field edit should do to the override store.
+#[derive(Debug, Clone, PartialEq)]
+enum FieldWrite {
+    /// Field blanked → clear the override (fall back to placeholder).
+    Clear,
+    /// A valid value → set/merge the override.
+    Set(Value),
+    /// Garbage that won't coerce to the field's number kind → do nothing
+    /// (don't poison the store with an unparseable value).
+    Skip,
+}
+
+/// Coerce a field's text to a [`FieldWrite`] per its [`FieldKind`].
+fn parse_ollama_field(kind: FieldKind, text: &str) -> FieldWrite {
+    let t = text.trim();
+    if t.is_empty() {
+        return FieldWrite::Clear;
+    }
+    match kind {
+        FieldKind::Int => t
+            .parse::<i64>()
+            .map(|n| FieldWrite::Set(json!(n)))
+            .unwrap_or(FieldWrite::Skip),
+        FieldKind::Float => t
+            .parse::<f64>()
+            .map(|f| FieldWrite::Set(json!(f)))
+            .unwrap_or(FieldWrite::Skip),
+        FieldKind::Text => FieldWrite::Set(json!(t)),
+    }
+}
 
 /// Cycle the next value in a preset list, wrapping around. An off-list
 /// current value advances to the first entry. Pure helper so the voice
@@ -84,7 +139,25 @@ pub struct SettingsPanel {
     pub update_check: UpdateCheck,
     pub autostart_enabled: bool,
     pub autostart_error: Option<String>,
-    pub ollama: OllamaSettings,
+    /// Render state of the Ollama inference section.
+    pub ollama_section: OllamaSection,
+    /// The effective model the section is previewing (header + write
+    /// target). `None` outside the [`OllamaSection::Editable`] state.
+    pub ollama_model: Option<String>,
+    /// The model's own declared defaults (sparse) — the per-field
+    /// placeholder source. Empty in State 2.
+    pub ollama_defaults: OllamaSettings,
+    /// The user's stored overrides (sparse) — the per-field value +
+    /// what drives ↺ visibility.
+    pub ollama_overrides: OllamaSettings,
+    /// One `TextInput` per [`OLLAMA_FIELDS`] entry, created once in
+    /// [`Self::view`]. Empty in headless test construction.
+    pub ollama_inputs: Vec<Entity<TextInput>>,
+    /// Change subscriptions for `ollama_inputs`, kept alive here.
+    pub ollama_input_subs: Vec<Subscription>,
+    /// Per-field debounce generation — bumped on each keystroke; a
+    /// pending write only fires if its generation is still current.
+    pub ollama_debounce_gen: Vec<u64>,
     pub consent: ConsentSnapshot,
     /// Persisted voice config (Slice 6). Starts at defaults; reconciled
     /// by `voice.get_config` in `spawn_refresh`.
@@ -128,7 +201,13 @@ impl SettingsPanel {
             update_check: UpdateCheck::default(),
             autostart_enabled: false,
             autostart_error: None,
-            ollama: OllamaSettings::default(),
+            ollama_section: OllamaSection::Loading,
+            ollama_model: None,
+            ollama_defaults: OllamaSettings::default(),
+            ollama_overrides: OllamaSettings::default(),
+            ollama_inputs: Vec::new(),
+            ollama_input_subs: Vec::new(),
+            ollama_debounce_gen: vec![0; OLLAMA_FIELDS.len()],
             consent: ConsentSnapshot::default(),
             voice: VoiceSettings::default(),
             voice_devices: VoiceDevices::default(),
@@ -165,7 +244,13 @@ impl SettingsPanel {
             if let Some(info) = wylde_gui_pipe::updater_state::available_info() {
                 panel.update_check = UpdateCheck::Available(info);
             }
+            // Mint the Ollama field inputs + their change subscriptions
+            // once, before the first refresh syncs values onto them.
+            panel.init_ollama_inputs(cx);
             Self::spawn_refresh(cx);
+            // Follow cross-panel model changes (Chat pick / Models star)
+            // so the Ollama section re-queries live (State 4).
+            Self::spawn_model_bus_drain(cx);
             panel
         })
         .into()
@@ -198,19 +283,9 @@ impl SettingsPanel {
         })
         .detach();
 
-        // Ollama inference defaults — read-only block off the Gateway's
-        // file-backed settings store.  A failed read leaves the loading
-        // defaults in place (every row "—") rather than surfacing an
-        // error banner, since the block is informational.
-        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
-            if let Ok(ollama) = read_ollama_settings().await {
-                let _ = this.update(app_cx, |panel, cx| {
-                    panel.ollama = ollama;
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
+        // Ollama inference — resolve the effective model, then its
+        // defaults + stored overrides (the 4-state machine).
+        Self::refresh_ollama(cx);
 
         // Autostart — synchronous OS read, but we wrap it in a task
         // so it doesn't block the View constructor on slow registry
@@ -256,6 +331,271 @@ impl SettingsPanel {
                     panel.voice_devices = devices;
                     cx.notify();
                 });
+            }
+        })
+        .detach();
+    }
+
+    // ── Ollama inference section (per-model defaults + overrides) ─────
+
+    /// Mint one `TextInput` per [`OLLAMA_FIELDS`] entry and subscribe to
+    /// each one's `Changed` event (→ debounced persist). Called once from
+    /// [`Self::view`]; idempotent-ish (a second call rebuilds the inputs).
+    pub fn init_ollama_inputs(&mut self, cx: &mut Context<Self>) {
+        let mut inputs = Vec::with_capacity(OLLAMA_FIELDS.len());
+        let mut subs = Vec::with_capacity(OLLAMA_FIELDS.len());
+        for (i, field) in OLLAMA_FIELDS.iter().enumerate() {
+            let key = field.key;
+            let input = cx.new(|c| {
+                TextInput::single_line(c)
+                    .with_submit_mode(wylde_gpui_input::SubmitMode::Never)
+                    .with_element_key(format!("ollama-{key}"))
+            });
+            let sub = cx.subscribe(&input, move |this, _input, ev, cx| {
+                if let InputEvent::Changed(text) = ev {
+                    this.on_ollama_field_changed(i, text.clone(), cx);
+                }
+            });
+            inputs.push(input);
+            subs.push(sub);
+        }
+        self.ollama_inputs = inputs;
+        self.ollama_input_subs = subs;
+    }
+
+    /// Resolve the effective model, then its declared defaults + the
+    /// user's stored overrides, and land the section in the right state.
+    /// Drives the initial load and every `model_bus`-triggered refresh.
+    pub fn refresh_ollama(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.ollama_section = OllamaSection::Loading;
+                cx.notify();
+            });
+
+            // 1. Effective model (active → default → env → none).
+            let model = match read_effective_model().await {
+                Ok(eff) => eff.model,
+                Err(_) => None,
+            };
+            let Some(model) = model else {
+                let _ = this.update(app_cx, |panel, cx| {
+                    panel.ollama_model = None;
+                    panel.ollama_section = OllamaSection::NoModel;
+                    cx.notify();
+                });
+                return;
+            };
+
+            // 2. Stored overrides (harness) — empty when none / unread.
+            let overrides = read_ollama_overrides(&model).await.unwrap_or_default();
+
+            // 3. Model defaults (Ollama upstream) — a transport / 404
+            // failure becomes the State-2 note rather than an error.
+            let (defaults, note) = match read_model_defaults(&model).await {
+                Ok(d) => (d, None),
+                Err(e) if e.starts_with("ollama_unreachable") => (
+                    OllamaSettings::default(),
+                    Some(format!(
+                        "Couldn't query {model} — Ollama upstream is unreachable."
+                    )),
+                ),
+                Err(e) if e.starts_with("model_not_found") => (
+                    OllamaSettings::default(),
+                    Some(format!("{model} is not installed on Ollama.")),
+                ),
+                Err(e) => (
+                    OllamaSettings::default(),
+                    Some(format!("Couldn't query {model}: {e}")),
+                ),
+            };
+
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.ollama_model = Some(model);
+                panel.ollama_defaults = defaults;
+                panel.ollama_overrides = overrides;
+                panel.ollama_section = OllamaSection::Editable {
+                    unreachable_note: note,
+                };
+                panel.sync_ollama_inputs(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Repaint each input's placeholder (model default ∪ global fallback,
+    /// or `—` in the unreachable state) and value (stored override) from
+    /// the freshly-loaded state. Uses the *silent* text setter so this
+    /// resync doesn't feed the change handler and loop a write back.
+    fn sync_ollama_inputs(&mut self, cx: &mut Context<Self>) {
+        let unreachable = matches!(
+            &self.ollama_section,
+            OllamaSection::Editable {
+                unreachable_note: Some(_)
+            }
+        );
+        for (i, field) in OLLAMA_FIELDS.iter().enumerate() {
+            let Some(input) = self.ollama_inputs.get(i).cloned() else {
+                continue;
+            };
+            let placeholder = if unreachable {
+                "—".to_string()
+            } else {
+                ollama_field_string(&self.ollama_defaults, field.key)
+                    .unwrap_or_else(|| field.fallback.to_string())
+            };
+            let value = ollama_field_string(&self.ollama_overrides, field.key).unwrap_or_default();
+            input.update(cx, |inp, cx| {
+                inp.set_placeholder(placeholder.clone(), cx);
+                inp.set_text_silent(value.clone(), cx);
+            });
+        }
+    }
+
+    /// A field's text changed — debounce, then persist the override (or
+    /// clear it when the field is blanked). Garbage that won't coerce to
+    /// the field's number kind is left unpersisted.
+    fn on_ollama_field_changed(&mut self, idx: usize, text: String, cx: &mut Context<Self>) {
+        let Some(model) = self.ollama_model.clone() else {
+            return;
+        };
+        let Some(field) = OLLAMA_FIELDS.get(idx) else {
+            return;
+        };
+        let key = field.key;
+        let kind = field.kind;
+        // Bump the generation so an earlier pending write for this field
+        // (still parked on its timer) aborts when it wakes.
+        if let Some(g) = self.ollama_debounce_gen.get_mut(idx) {
+            *g += 1;
+        }
+        let gen = self.ollama_debounce_gen[idx];
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            app_cx
+                .background_executor()
+                .timer(OLLAMA_WRITE_DEBOUNCE)
+                .await;
+            // Superseded by a newer keystroke? Then that one owns the write.
+            let current = this
+                .update(app_cx, |panel, _| panel.ollama_debounce_gen.get(idx).copied())
+                .ok()
+                .flatten();
+            if current != Some(gen) {
+                return;
+            }
+            let action = parse_ollama_field(kind, &text);
+            if matches!(action, FieldWrite::Skip) {
+                return;
+            }
+            let outcome = match &action {
+                FieldWrite::Clear => clear_ollama_override(&model, key).await,
+                FieldWrite::Set(v) => set_ollama_override(&model, key, v.clone()).await,
+                FieldWrite::Skip => return,
+            };
+            let _ = this.update(app_cx, |panel, cx| {
+                match outcome {
+                    Ok(()) => {
+                        let value = match action {
+                            FieldWrite::Set(v) => Some(v),
+                            _ => None,
+                        };
+                        panel.apply_override_field(key, value);
+                        panel.error = None;
+                    }
+                    Err(e) => panel.error = Some(format!("ollama settings: {e}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// ↺ reset — clear a field's stored override so it falls back to its
+    /// placeholder. Optimistic: blank the input + drop the local override
+    /// immediately, then issue the `clear_override` write.
+    pub fn reset_ollama_field(&mut self, key: &'static str, cx: &mut Context<Self>) {
+        let Some(model) = self.ollama_model.clone() else {
+            return;
+        };
+        self.apply_override_field(key, None);
+        if let Some(idx) = OLLAMA_FIELDS.iter().position(|f| f.key == key) {
+            if let Some(input) = self.ollama_inputs.get(idx).cloned() {
+                input.update(cx, |inp, cx| inp.set_text_silent("", cx));
+            }
+            // Abort any in-flight debounce for this field.
+            if let Some(g) = self.ollama_debounce_gen.get_mut(idx) {
+                *g += 1;
+            }
+        }
+        self.error = None;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            if let Err(e) = clear_ollama_override(&model, key).await {
+                let _ = this.update(app_cx, |panel, cx| {
+                    panel.error = Some(format!("ollama settings: {e}"));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Apply a single override field to the in-memory `ollama_overrides`
+    /// (so ↺ visibility + value styling update without a re-read).
+    /// `None` clears the field.
+    fn apply_override_field(&mut self, key: &str, value: Option<Value>) {
+        let o = &mut self.ollama_overrides;
+        match key {
+            "num_ctx" => o.num_ctx = value.as_ref().and_then(Value::as_i64),
+            "num_predict" => o.num_predict = value.as_ref().and_then(Value::as_i64),
+            "temperature" => o.temperature = value.as_ref().and_then(Value::as_f64),
+            "top_p" => o.top_p = value.as_ref().and_then(Value::as_f64),
+            "top_k" => o.top_k = value.as_ref().and_then(Value::as_i64),
+            "min_p" => o.min_p = value.as_ref().and_then(Value::as_f64),
+            "repeat_penalty" => o.repeat_penalty = value.as_ref().and_then(Value::as_f64),
+            "seed" => o.seed = value.as_ref().and_then(Value::as_i64),
+            "keep_alive" => {
+                o.keep_alive = value.as_ref().and_then(|v| v.as_str().map(str::to_owned))
+            }
+            _ => {}
+        }
+    }
+
+    /// Empty-state CTA → jump to the Models panel via the nav bus.
+    pub fn goto_models(&mut self, _cx: &mut Context<Self>) {
+        let _ = wylde_gui_pipe::request_nav("core/models");
+    }
+
+    /// Follow the cross-panel model bus: any active-pick / star change
+    /// re-runs [`Self::refresh_ollama`] so the section's placeholders
+    /// (and effective model) track live (State 4).
+    pub fn spawn_model_bus_drain(cx: &mut Context<Self>) {
+        use tokio::sync::broadcast::error::RecvError;
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let mut rx = wylde_gui_pipe::subscribe_model_bus();
+            // Seed once from the latch in case Chat published before we
+            // mounted (the broadcast itself won't replay).
+            if wylde_gui_pipe::current_active_model().is_some() {
+                let alive = this
+                    .update(app_cx, |_panel, cx| Self::refresh_ollama(cx))
+                    .is_ok();
+                if !alive {
+                    return;
+                }
+            }
+            loop {
+                match rx.recv().await {
+                    Ok(_) | Err(RecvError::Lagged(_)) => {
+                        let alive = this
+                            .update(app_cx, |_panel, cx| Self::refresh_ollama(cx))
+                            .is_ok();
+                        if !alive {
+                            return;
+                        }
+                    }
+                    Err(RecvError::Closed) => return,
+                }
             }
         })
         .detach();
@@ -777,6 +1117,23 @@ impl Render for SettingsPanel {
             .get_or_insert_with(|| cx.focus_handle())
             .clone();
 
+        // Ollama inference section — render the current state of the
+        // 4-state machine. Built before the section chain so its borrows
+        // of `self` release first.
+        let ollama_el = match &self.ollama_section {
+            OllamaSection::Loading => ollama_loading_card(),
+            OllamaSection::NoModel => {
+                ollama_section(None, None, &[], &OllamaSettings::default(), cx)
+            }
+            OllamaSection::Editable { unreachable_note } => ollama_section(
+                self.ollama_model.as_deref(),
+                unreachable_note.as_deref(),
+                &self.ollama_inputs,
+                &self.ollama_overrides,
+                cx,
+            ),
+        };
+
         // Top-level layout: a single-column flex with vertical gap and
         // page padding.  Matches the Svelte container
         // `space-y-6 max-w-3xl` shape — left-justified, breathing room.
@@ -819,7 +1176,7 @@ impl Render for SettingsPanel {
                         self.autostart_error.as_deref(),
                         cx,
                     ))
-                    .child(ollama_section(&self.ollama))
+                    .child(ollama_el)
                     .child(voice_section(
                         &self.voice,
                         &self.voice_test,
@@ -882,7 +1239,12 @@ mod tests {
         assert_eq!(p.update_prefs.frequency, "weekly");
         assert_eq!(p.update_prefs.channel, "stable");
         assert!(matches!(p.update_check, UpdateCheck::Idle));
-        assert!(p.ollama.num_ctx.is_none());
+        // Ollama section starts Loading with no model + no inputs yet
+        // (inputs are minted in `view()`, which needs a cx).
+        assert!(matches!(p.ollama_section, OllamaSection::Loading));
+        assert!(p.ollama_model.is_none());
+        assert!(p.ollama_inputs.is_empty());
+        assert_eq!(p.ollama_debounce_gen.len(), OLLAMA_FIELDS.len());
         assert!(p.consent.tools.is_empty());
         assert!(p.error.is_none());
         // Slice 6 — voice section starts on defaults, online, idle test.
@@ -954,8 +1316,13 @@ mod tests {
         let _ = crate::ipc::download_and_install;
         let _ = crate::ipc::get_autostart_enabled;
         let _ = crate::ipc::set_autostart_enabled;
-        // Ollama defaults read off the Gateway (`GET /api/settings/ollama`).
-        let _ = crate::ipc::read_ollama_settings;
+        // Ollama inference — per-model defaults/overrides via harness +
+        // ollama verbs (the Gateway HTTP read is retired; see ipc.rs).
+        let _ = crate::ipc::read_effective_model;
+        let _ = crate::ipc::read_model_defaults;
+        let _ = crate::ipc::read_ollama_overrides;
+        let _ = crate::ipc::set_ollama_override;
+        let _ = crate::ipc::clear_ollama_override;
         // Voice config (Slice 6): read/write + device list + test.
         let _ = crate::ipc::read_voice_settings;
         let _ = crate::ipc::write_voice_settings;
@@ -1089,5 +1456,80 @@ mod tests {
         assert_eq!(next("approved"), "denied");
         assert_eq!(next("denied"), "approved");
         assert_eq!(next(""), "approved");
+    }
+
+    // ── Ollama inference section ──────────────────────────────────────
+
+    /// The field-edit parser: blank clears, valid coerces to the field's
+    /// number kind, garbage is skipped (never persisted), text is verbatim.
+    #[test]
+    fn parse_ollama_field_covers_kinds_and_garbage() {
+        // Blank → clear regardless of kind.
+        assert_eq!(parse_ollama_field(FieldKind::Int, "   "), FieldWrite::Clear);
+        assert_eq!(parse_ollama_field(FieldKind::Float, ""), FieldWrite::Clear);
+        // Valid coercions.
+        assert_eq!(
+            parse_ollama_field(FieldKind::Int, " 8192 "),
+            FieldWrite::Set(json!(8192))
+        );
+        assert_eq!(
+            parse_ollama_field(FieldKind::Float, "0.7"),
+            FieldWrite::Set(json!(0.7))
+        );
+        assert_eq!(
+            parse_ollama_field(FieldKind::Text, "5m"),
+            FieldWrite::Set(json!("5m"))
+        );
+        // Garbage for a numeric field → skip (don't poison the store).
+        assert_eq!(parse_ollama_field(FieldKind::Int, "abc"), FieldWrite::Skip);
+        assert_eq!(parse_ollama_field(FieldKind::Float, "1.2.3"), FieldWrite::Skip);
+        // A float string in an int field is a skip, not a truncation.
+        assert_eq!(parse_ollama_field(FieldKind::Int, "4.5"), FieldWrite::Skip);
+    }
+
+    /// `apply_override_field` keeps the in-memory overrides (and thus ↺
+    /// visibility) in sync without a re-read: Set populates, None clears.
+    #[test]
+    fn apply_override_field_sets_and_clears() {
+        let mut p = SettingsPanel::new();
+        p.apply_override_field("temperature", Some(json!(0.7)));
+        assert_eq!(p.ollama_overrides.temperature, Some(0.7));
+        assert!(crate::sections::ollama_has_override(
+            &p.ollama_overrides,
+            "temperature"
+        ));
+        // Clear → field drops out of the sparse override set.
+        p.apply_override_field("temperature", None);
+        assert_eq!(p.ollama_overrides.temperature, None);
+        assert!(!crate::sections::ollama_has_override(
+            &p.ollama_overrides,
+            "temperature"
+        ));
+    }
+
+    /// The default section state is `Loading`, and `NoModel` is distinct
+    /// from `Editable` so the render branches don't collide.
+    #[test]
+    fn ollama_section_state_defaults_and_variants_differ() {
+        assert_eq!(OllamaSection::default(), OllamaSection::Loading);
+        assert_ne!(OllamaSection::NoModel, OllamaSection::Loading);
+        assert_ne!(
+            OllamaSection::Editable {
+                unreachable_note: None
+            },
+            OllamaSection::Editable {
+                unreachable_note: Some("down".into())
+            }
+        );
+    }
+
+    /// The new per-model override verbs must each be wired through ipc.
+    #[test]
+    fn ollama_override_verbs_are_wired() {
+        let _ = crate::ipc::read_effective_model;
+        let _ = crate::ipc::read_model_defaults;
+        let _ = crate::ipc::read_ollama_overrides;
+        let _ = crate::ipc::set_ollama_override;
+        let _ = crate::ipc::clear_ollama_override;
     }
 }
