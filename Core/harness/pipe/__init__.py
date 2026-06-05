@@ -177,21 +177,6 @@ def _register_actions() -> Any:
     return ipc
 
 
-def _build_stub_app() -> Any:
-    """Minimal Flask app for the ipc fallback. Action dispatch never
-    falls through to this in practice; the empty app is just so the
-    PipeServer initialiser has something to hold."""
-    from flask import Flask
-
-    app = Flask("wylde-harness")
-
-    @app.route("/health", methods=["GET"])
-    def _health() -> Any:  # pragma: no cover
-        return {"ok": True, "service": SERVICE_NAME}
-
-    return app
-
-
 def start() -> bool:
     """Start the harness pipe in a daemon thread.
 
@@ -207,7 +192,12 @@ def start() -> bool:
         if ipc is None:
             return False
         try:
-            ipc.serve_forever_background(SERVICE_NAME, _build_stub_app())
+            # Action-only surface: _register_actions() (above) binds every
+            # harness action on the shared registry, so the pipe stands up on
+            # those alone — no Flask app needed. A bare ``/health`` GET (the
+            # one non-action probe) is answered in-band by the PipeServer when
+            # ``app is None``.
+            ipc.serve_forever_background(SERVICE_NAME)
         except Exception as exc:  # noqa: BLE001
             logger.warning("harness pipe: serve_forever_background failed (%s)", exc)
             return False

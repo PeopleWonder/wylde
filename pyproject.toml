@@ -8,9 +8,9 @@ license = {text = "GPL-3.0-or-later"}
 # Core runtime dependencies — pulled in by every service.
 #
 # Every entry below has at least one direct import in live source. Deps
-# only used transitively by other packages (e.g. starlette via fastapi,
-# werkzeug via flask) are intentionally not declared here — let pip
-# resolve them via the upstream packages.
+# only used transitively by other packages (e.g. starlette via fastapi)
+# are intentionally not declared here — let pip resolve them via the
+# upstream packages.
 dependencies = [
     # Gateway web framework + ASGI server (Gateway/app.py + 26 other files).
     "fastapi>=0.136",
@@ -59,24 +59,23 @@ dependencies = [
 
 [project.optional-dependencies]
 # resource_monitor — VRAM/GPU broker.
-# Flask serves the broker HTTP API; pynvml drives the NVML device probe in
+# pynvml drives the NVML device probe in
 # Core/resource_monitor/broker/registry.py. The historical sysmon.py with
 # its docker / psutil container probe was dissolved — those deps are gone.
+# (Flask, which formerly served the broker HTTP API, was dropped once the
+# broker moved off HTTP onto the named-pipe transport — no service imports
+# it anymore.)
 resource-monitor = [
-    "flask>=3.0.0",
     "pynvml>=11.5.0",
 ]
 
 # Memgraph — Neo4j-backed knowledge graph.
-# (Werkzeug is pulled in transitively by flask — not declared here.)
 memgraph = [
-    "flask>=3.0.0",
     "neo4j>=5.20",
 ]
 
 # VPN — WyldeLink management API + mDNS pairing.
 vpn = [
-    "flask>=3.0.0",
     "qrcode==8.0",
     "zeroconf>=0.131.0",
 ]
