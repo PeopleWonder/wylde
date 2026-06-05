@@ -2,10 +2,13 @@
 
 **Status:** SCOPING ONLY — no implementation. Aaron reviews + answers the
 open questions before any code lands.
-**Date:** 2026-06-04
+**Date:** 2026-06-04 (refreshed 2026-06-05 — re-audited and rebased onto
+current `main` `bb21fd3`, which added the opt-in HuggingFace model search +
+the centralized Privacy & Network store; the Ollama-inference section itself
+is **unchanged** by that merge, so this scope still holds verbatim).
 **Branch:** `scope/settings-ollama-defaults-ux`
 **Builds on:** `d02aaa3` (gpui Settings: surface stored Ollama defaults via
-Gateway read)
+Gateway read); current `main` is `bb21fd3`.
 
 ---
 
@@ -372,6 +375,14 @@ pub async fn read_model_defaults(model: &str) -> Result<OllamaSettings, String>
 ```
 returning the same `OllamaSettings` struct (already sparse-friendly — every
 field is `Option`).
+
+**No privacy gate.** `bb21fd3` added the centralized Privacy & Network opt-in
+store (`wylde_gui_pipe::privacy_prefs`) as the home for any feature that
+reaches *outside* the box (HF search lives behind it). `ollama.get_model_defaults`
+calls **local** Ollama (`127.0.0.1:11434`) only, so it must **not** be gated
+by `privacy_prefs` — it's the same trust boundary as every other `ollama.*`
+verb already in use. Flagging this so a future implementer doesn't reflexively
+wrap it in the new opt-in.
 
 ### 6.2 Sparse overrides read — required for placeholder semantics
 
