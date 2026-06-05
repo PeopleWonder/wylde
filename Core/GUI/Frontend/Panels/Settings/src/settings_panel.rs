@@ -673,6 +673,7 @@ impl Render for SettingsPanel {
         // page padding.  Matches the Svelte container
         // `space-y-6 max-w-3xl` shape — left-justified, breathing room.
         let mut col = div()
+            .w_full()
             .max_w(px(720.0))
             .flex()
             .flex_col()
@@ -681,9 +682,18 @@ impl Render for SettingsPanel {
         if let Some(err) = &self.error {
             col = col.child(error_banner(err));
         }
+        // Scroll viewport: the section stack (updates, startup, ollama,
+        // voice, consent) overflows a short window, so the outer
+        // container scrolls.  `.id()` + `.overflow_y_scroll()` mirrors
+        // the Chat panel's message-log idiom; `w_full` on `col` keeps the
+        // content a definite width inside the scroll area.
         div()
+            .id("settings-scroll")
             .size_full()
+            .flex()
+            .flex_col()
             .bg(rgb(pack(SURFACE_900)))
+            .overflow_y_scroll()
             .p_6()
             .child(
                 col.child(updates_section(

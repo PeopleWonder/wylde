@@ -182,7 +182,16 @@ impl Default for DashboardPanel {
 impl Render for DashboardPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let header = header_row(self, cx);
+        // `w_full` pins a definite width on the column.  Without it the
+        // column is shrink-to-fit (flex-basis auto), so the wrapping
+        // service-health strip below has no stable container width to
+        // wrap against: taffy's content-sizing pass measures it single-
+        // line (short) while the layout pass measures it wrapped (tall),
+        // and the two disagree every re-render — the panel ping-pongs
+        // between "big and tall" and the correct height.  Pinning the
+        // width makes the wrap deterministic and kills the oscillation.
         let mut column = div()
+            .w_full()
             .max_w(px(860.0))
             .flex()
             .flex_col()
@@ -201,9 +210,18 @@ impl Render for DashboardPanel {
         column = column.child(section_title("Recent activity"));
         column = column.child(recent_activity_card(self, cx));
 
+        // Outer container is the scroll viewport: a definite-height
+        // (`size_full`) flex column with `overflow_y_scroll`, so when the
+        // stacked sections exceed the window the user can wheel-scroll to
+        // the rest.  Mirrors the Chat panel's message-log idiom (`.id()`
+        // + `.overflow_y_scroll()`).
         div()
+            .id("dashboard-scroll")
             .size_full()
+            .flex()
+            .flex_col()
             .bg(rgb(pack(SURFACE_900)))
+            .overflow_y_scroll()
             .p_6()
             .child(column)
     }
