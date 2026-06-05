@@ -198,12 +198,23 @@ def serve_forever_background(
             _w._HAS_MSGPACK,
         )
         return
-    if app is None:
+    if app is None and not _REGISTERED_ACTIONS:
+        # No app *and* no registered action handlers — the pipe would
+        # accept connections but have nothing to dispatch (every request
+        # would fall through to a Flask test client that doesn't exist).
+        # That's the only genuinely-empty case; bail rather than stand up
+        # a dead pipe.
         logger.warning(
-            "ipc: serve_forever_background called without app; "
+            "ipc: serve_forever_background called without app or actions; "
             "pipe will accept but have nothing to dispatch"
         )
         return
+    # app may be None here for action-only services (e.g. the extension
+    # bridge): the pipe answers __ping__ in-band and routes /__action__
+    # through the registered-action table, neither of which touches the
+    # app. The app is only consulted for legacy non-action HTTP envelopes,
+    # which action-only services never receive — so they need no Flask
+    # placeholder just to satisfy the constructor.
     server = PipeServer(service, app, external_bridge=bridge)
     server.start()
     # Self-attest the serve_loop phase so wylde_check sees the full startup
@@ -513,6 +524,33 @@ class PipeServer:
                         "message": f"{type(e).__name__}: {e}",
                     },
                 }
+
+        # Action-only services run with no HTTP app (app is None). Their
+        # real traffic is __ping__ (answered in-band above) and /__action__
+        # (the action table), neither of which reaches here. The one
+        # non-action probe that can is a bare /health GET — the shape
+        # ``health_action`` in Core/Lifecycle/control.py sends. Answer it
+        # in-band with the same payload the old Flask stub returned, so an
+        # app-less service stays health-probeable without standing up Flask
+        # purely to host a one-line /health route. Any other method has no
+        # route to hit; return a structured error instead of crashing on
+        # ``TestClient(None)`` below.
+        if self.app is None:
+            path = method if method.startswith("/") else f"/{method}"
+            if path == "/health":
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "data": {"ok": True, "service": self.service},
+                }
+            return {
+                "ok": False,
+                "status": 404,
+                "error": {
+                    "code": "no_route",
+                    "message": f"no app to dispatch {path!r}",
+                },
+            }
 
         # Default path: run the route via its test client. Supports both
         # Flask (app.test_client()) and ASGI/FastAPI (starlette TestClient).

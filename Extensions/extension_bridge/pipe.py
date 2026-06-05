@@ -154,26 +154,19 @@ def register_actions() -> Optional[ModuleType]:
     return ipc
 
 
-def _build_stub_app() -> Optional[Any]:
-    """Minimal Flask app for the ipc fallback path. Action dispatch
-    never falls through to this — actions live in the dispatch table
-    the shared ipc module owns — but ``serve_forever_background``
-    requires an app object before it will start the pipe server."""
-    try:
-        from flask import Flask
-    except ImportError:
-        return None
-    app = Flask("wylde-extension-bridge")
-
-    @app.route("/health", methods=["GET"])
-    def _health() -> Dict[str, Any]:  # pragma: no cover - smoke surface
-        return {"ok": True, "service": SERVICE_NAME}
-
-    return app
-
-
 def start() -> bool:
     """Start the extension-bridge pipe in a daemon thread.
+
+    Pipe-only: every request the bridge serves is either the in-band
+    ``__ping__`` health probe or the ``extensions.dispatch`` action,
+    both of which the shared PipeServer answers from the registered
+    action table — neither path touches a Flask app. So we hand
+    ``serve_forever_background`` no app at all; it stands up the pipe on
+    the strength of the registered actions alone. (The previous code
+    built a throwaway Flask app purely to satisfy a now-relaxed
+    ``app is None`` guard; when Flask happened to be absent that app was
+    ``None`` and the guard silently skipped binding the pipe, leaving a
+    live process with no pipe — the "extension-bridge offline" zombie.)
 
     Idempotent. Returns True if the pipe is now serving (or was
     already), False if dependencies are missing (msgpack/pywin32
@@ -186,7 +179,7 @@ def start() -> bool:
         if ipc is None:
             return False
         try:
-            ipc.serve_forever_background(SERVICE_NAME, _build_stub_app())
+            ipc.serve_forever_background(SERVICE_NAME)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "extension_bridge pipe: serve_forever_background failed (%s)", exc
