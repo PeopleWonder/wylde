@@ -244,31 +244,33 @@ async fn run_turn_dispatches_internal_tool_through_registry_then_completes() {
 
 #[tokio::test]
 async fn run_turn_records_deferred_tool_as_summary_row_with_error_reason() {
-    // `git.git_status` is a non-destructive Phase-6-deferred stub
-    // (sandbox-spawn decision pending). The model emits it, dispatch
-    // resolves it, the registry returns phase_6_deferred, and the
-    // summary row carries ok: false plus the error code. Picked a
-    // non-destructive entry so the tier gate (default `tool_use`)
-    // doesn't short-circuit before the deferred check.
+    // `voice.mic.chunks` is a non-destructive Phase-11-deferred stub —
+    // a streaming subscription whose model-callable surface is unary
+    // only, so it is catalogued but has no live handler. The model
+    // emits it, dispatch resolves it, the registry returns
+    // phase_11_deferred, and the summary row carries ok: false plus the
+    // error code. Picked a non-destructive entry so the tier gate
+    // (default `tool_use`) doesn't short-circuit before the deferred
+    // check.
     //
-    // Slice 11.E (2026-05-26) flipped the voice.transcribe /
-    // voice.synthesize tools to active, so this test now exercises a
-    // shell-sandbox deferred tool instead.
+    // (Was `git.git_status` until the 2026-06-05 catalog cleanup
+    // deleted the phase-6 shell/git/dev stubs; repointed at the
+    // surviving voice streaming subscription.)
     let (_g, h) = test_guard().await;
     set_program(h, |n| {
         if n == 0 {
             Reply::ToolCall {
-                name: "git.git_status".into(),
+                name: "voice.mic.chunks".into(),
                 args: json!({}),
             }
         } else {
-            Reply::Content("git status deferred".into())
+            Reply::Content("voice mic chunks deferred".into())
         }
     })
     .await;
 
     let reply = chat::handle_run_turn(json!({
-        "user_message": "show git status",
+        "user_message": "subscribe to mic chunks",
         "conversation_id": "c1",
         "model": "stub",
     }))
@@ -281,7 +283,7 @@ async fn run_turn_records_deferred_tool_as_summary_row_with_error_reason() {
     assert!(summary[0]["error"]
         .as_str()
         .unwrap()
-        .contains("phase_6_deferred"));
+        .contains("phase_11_deferred"));
 }
 
 #[tokio::test]

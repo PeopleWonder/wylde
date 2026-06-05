@@ -16,14 +16,31 @@
 //! * [`time_tools`] — `time_now`, `time_format` — self-contained
 //!   utilities new in Phase 6.
 //!
+//! ## Advertised vs registered (the verb cutover)
+//!
+//! Since the Slice-6 verb cutover the model-facing catalog is just the
+//! eight `wylde_*` verbs (group `"verbs"`) plus the four imperative
+//! voice device tools (`turn::prompt::SURVIVING_NAMED_TOOLS`). Every
+//! other *active* named tool in these modules — `fs.*`, `search.*`,
+//! `memory.*`, `rag.*`, `meta.*`, `ollama.*`, `time.*`, `diff.*`, and
+//! voice `transcribe`/`synthesize` — is **registered and dispatchable
+//! but no longer advertised**. Its functionality is reached through a
+//! verb + a resource type (`tooling::resource::resources::*`); the named
+//! entry is kept only so an old model-emitted name still resolves
+//! through the alias map / salvage path. This is intentional, not an
+//! oversight (see `turn/prompt.rs` and the cutover tests in
+//! `tooling/tools/verbs.rs`) — auditors should treat these as
+//! "keep-unadvertised, backward-compat", not dead code.
+//!
 //! ## Phase-deferred stubs
 //!
-//! * [`deferred`] — every Python tool whose Rust port depends on the
-//!   memory layer (Phase 7), the visual / computer-use layer (Phase 11),
-//!   or a shell sandbox decision that hasn't landed yet. Each is
-//!   registered with `phase_<n>_deferred` so the alias map sees them
-//!   and the model gets a clean "not yet" error instead of
-//!   `unknown_tool` confusion.
+//! * [`deferred`] — the handful of tools whose Rust port depends on the
+//!   workspace-memory layer (Phase 7) or that are catalog-only by design
+//!   (the Phase-11 voice streaming subscriptions). Each is registered
+//!   with `phase_<n>_deferred` so the alias map sees them and the model
+//!   gets a clean "not yet" error instead of `unknown_tool` confusion.
+//!   The dead Phase-6 shell/git/dev and Phase-11 visual "coming soon"
+//!   stubs were removed in the 2026-06-05 catalog cleanup.
 
 pub mod deferred;
 pub mod diff;
