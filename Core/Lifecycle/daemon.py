@@ -127,29 +127,6 @@ def _resolve_pipe_service_name() -> str:
     return override or "wylde-lifecycle"
 
 
-def _build_stub_app() -> Any:
-    """Return a minimal Flask app with no routes.
-
-    The pipe server in ``Core.shared.ipc`` requires *some* WSGI app for
-    its non-action dispatch path — it falls through to the Flask test
-    client when an envelope doesn't carry the ``/__action__`` magic
-    method. The lifecycle pipe is action-only; that fallback should
-    never fire, but a no-route app is the safe shape if it does.
-
-    Flask is imported lazily so unit tests can exercise control.py
-    without pulling in werkzeug.
-    """
-    from flask import Flask
-
-    app = Flask("wylde-lifecycle")
-
-    @app.route("/health", methods=["GET"])
-    def _health() -> Any:  # pragma: no cover - smoke surface
-        return {"ok": True, "service": "wylde-lifecycle"}
-
-    return app
-
-
 def _install_signal_handlers(stop_event: threading.Event) -> None:
     """Translate SIGINT / SIGTERM into a clean exit.
 
@@ -247,7 +224,12 @@ def serve_forever() -> int:
     try:
         from Core.shared import ipc
 
-        ipc.serve_forever_background(service_name, _build_stub_app())
+        # Action-only surface: control.register_with_ipc() (above) binds
+        # every lifecycle action on the shared registry, so the pipe stands
+        # up on the strength of those actions alone — no Flask app needed.
+        # The one non-action probe a caller can send, a bare ``/health`` GET,
+        # is answered in-band by the PipeServer when ``app is None``.
+        ipc.serve_forever_background(service_name)
     except Exception:  # noqa: BLE001
         _lc_logger.exception(
             "daemon: serve_forever_background failed — running headless"
