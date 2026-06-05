@@ -1,5 +1,5 @@
 //! Read-side + lightweight write actions:
-//!   * `ollama.health`        — GET /
+//!   * `ollama.health`        — wrapper liveness + upstream GET /api/tags probe
 //!   * `ollama.list_models`   — GET /api/tags
 //!   * `ollama.list_loaded`   — GET /api/ps
 //!   * `ollama.show`          — POST /api/show {model}
@@ -25,14 +25,27 @@ use crate::upstream::Upstream;
 
 const BODY_EXCERPT_CAP: usize = 300;
 
+/// `ollama.health` — wrapper liveness **plus** an upstream probe.
+///
+/// The wrapper is up by definition if this handler runs, so `ok`/`pong`
+/// are always `true`. The reply additionally carries the upstream Ollama
+/// status (`"ok"` | `"unreachable"` | `"timeout"`) and, when reachable,
+/// the installed-model count, so the Dashboard can distinguish "wrapper
+/// answering its pipe" from "the LLM layer is actually reachable" — the
+/// green-but-unreachable gap. Upstream being down does **not** fail the
+/// probe: the wrapper is still reported up, with the upstream flagged.
 pub async fn handle_health(_payload: Value, up: Arc<Upstream>) -> Reply {
-    match up.health().await {
-        Ok(()) => Reply::ok(json!({"ok": true})),
-        Err(_e) => Reply::err(wylde_shared::ipc::IpcError::new(
-            "ollama_unreachable",
-            "ollama daemon did not respond OK to GET /",
-        )),
+    let cfg = Config::get();
+    let probe = up.probe(cfg.health_timeout_s).await;
+    let mut data = json!({
+        "ok": true,
+        "pong": true,
+        "upstream": probe.status.as_str(),
+    });
+    if let Some(n) = probe.models {
+        data["upstream_models"] = json!(n);
     }
+    Reply::ok(data)
 }
 
 pub async fn handle_list_models(_payload: Value, up: Arc<Upstream>) -> Reply {
@@ -243,26 +256,66 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn health_ok() {
+    async fn health_upstream_ok_reports_models() {
         let (server, up) = fake_upstream().await;
         Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("Ollama is running"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "models": [{"name": "qwen2.5:0.5b"}, {"name": "nomic-embed"}]
+            })))
             .mount(&server)
             .await;
         let reply = handle_health(Value::Null, up).await;
         assert!(reply.ok);
         assert_eq!(reply.data["ok"], true);
+        assert_eq!(reply.data["pong"], true);
+        assert_eq!(reply.data["upstream"], "ok");
+        assert_eq!(reply.data["upstream_models"], 2);
     }
 
     #[tokio::test]
-    async fn health_unreachable() {
-        // Point at a port nothing is listening on. reqwest will get a
-        // connection-refused which we surface as ollama_unreachable.
-        let up = crate::upstream::for_test("http://127.0.0.1:1");
+    async fn health_upstream_unreachable_still_reports_wrapper_up() {
+        // Bind-then-drop a port so it reliably refuses. The wrapper itself
+        // is up (this handler ran), so we report ok:true with the upstream
+        // flagged unreachable rather than failing the probe.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let up = crate::upstream::for_test(&format!("http://127.0.0.1:{port}"));
         let reply = handle_health(Value::Null, up).await;
-        assert!(!reply.ok);
-        assert_eq!(reply.error.unwrap().code, "ollama_unreachable");
+        assert!(reply.ok);
+        assert_eq!(reply.data["ok"], true);
+        assert_eq!(reply.data["pong"], true);
+        // A dead loopback port reads as unreachable or (if Windows drops
+        // the SYN to the deadline) timeout — either way a down-state, not "ok".
+        let upstream = reply.data["upstream"].as_str().unwrap();
+        assert!(
+            upstream == "unreachable" || upstream == "timeout",
+            "expected a down-state, got {upstream:?}"
+        );
+        assert!(reply.data.get("upstream_models").is_none());
+    }
+
+    #[tokio::test]
+    async fn health_upstream_timeout_is_flagged() {
+        let (server, up) = fake_upstream().await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(1500))
+                    .set_body_json(json!({"models": []})),
+            )
+            .mount(&server)
+            .await;
+        // health_timeout_s defaults to 3s — too long for a fast test, so
+        // probe directly with a 1s deadline against the slow mock.
+        let probe = up.probe(1).await;
+        assert_eq!(
+            probe.status,
+            crate::upstream::UpstreamStatus::Timeout
+        );
     }
 
     #[tokio::test]
