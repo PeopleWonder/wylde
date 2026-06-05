@@ -140,11 +140,11 @@ def test_forward_falls_through_on_non_dict_data() -> None:
 
 
 def test_non_forwardable_action_stays_python() -> None:
-    """transcribe/synthesize have no Rust handler — never forward them even
-    if a caller passes the verb in."""
+    """A verb outside _FORWARD_ACTIONS has no Rust handler — never forward it
+    even if a caller passes the verb in."""
     sentinel = mock.MagicMock()
     with mock.patch("Core.shared.ipc.send_action", sentinel):
-        out = _models._try_forward_models_to_rust("models.transcribe", {"audio_b64": "x"})
+        out = _models._try_forward_models_to_rust("models.not_a_real_verb", {"x": "y"})
     assert out is None
     sentinel.assert_not_called()
 

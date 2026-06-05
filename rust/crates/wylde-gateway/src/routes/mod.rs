@@ -6,10 +6,16 @@
 //! (memory CRUD across the three layers, workspaces CRUD + persona,
 //! and the `/api/rag` MCP proxy); wave 2c added the model-adjacent
 //! surface (`/api/models` — Ollama proxy with streaming `/pull`);
-//! wave 2d adds the peripheral surface (`/api/voice`, `/api/devices`,
-//! `/api/push`, `/api/link`, `/api/images`, `/api/settings`). The
-//! remaining egress / secrets / MCP / tool_registry / extensions
-//! routes are queued for wave 2e+ — see `docs/r3_gateway_deferred.md`.
+//! wave 2d adds the peripheral surface (`/api/devices`, `/api/link`,
+//! `/api/images`, `/api/settings`). The remaining egress / secrets /
+//! MCP / tool_registry / extensions routes are queued for wave 2e+ —
+//! see `docs/r3_gateway_deferred.md`.
+//!
+//! The `/api/voice` and `/api/push` routes were removed in the Bucket-A
+//! IPC cleanup: both proxied a Flask-style pipe surface whose upstream
+//! handlers were never wired (Voice STT/TTS moved in-process at the
+//! voice cutover; the VPN Python `peers.push` store was deleted), so
+//! they only ever 404'd in production.
 //! The training row was removed from the queue in wave 2c: Python's
 //! `routes/training.py` was deleted in the Phase-9 audit (chat-driven
 //! trainer flow + direct GUI→pipe), so the Rust port has no training
@@ -30,11 +36,9 @@ pub mod mcp;
 pub mod memory;
 pub mod models;
 pub mod prompts;
-pub mod push;
 pub mod rag;
 pub mod settings;
 pub mod tool_registry;
-pub mod voice;
 pub mod workspaces;
 
 use axum::Router;
@@ -51,9 +55,7 @@ pub fn include_all(router: Router) -> Router {
         .merge(workspaces::router())
         .merge(rag::router())
         .merge(models::router())
-        .merge(voice::router())
         .merge(devices::router())
-        .merge(push::router())
         .merge(link::router())
         .merge(images::router())
         .merge(settings::router())

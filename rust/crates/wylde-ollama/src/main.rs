@@ -1,6 +1,6 @@
 //! wylde-ollama service entry point.
 //!
-//! Boots the manifest, registers the action surface (10 actions), opens
+//! Boots the manifest, registers the action surface (12 actions), opens
 //! the pipe at `\\.\pipe\wylde-ollama`, and serves until Ctrl-C. Same
 //! shape as `wylde-vram-broker/main.rs` — the Wylde user's standing pattern.
 
@@ -33,8 +33,10 @@ async fn main() -> Result<()> {
                     "ollama.list_models",
                     "ollama.list_loaded",
                     "ollama.show",
+                    "ollama.get_model_defaults",
                     "ollama.delete",
                     "ollama.eject",
+                    "ollama.preload",
                     "ollama.pull",
                     "ollama.chat",
                     "ollama.chat_stream",

@@ -34,10 +34,12 @@ local Ollama daemon at `127.0.0.1:11434`. Brought online
 [`proxy_core::http_call`] (a `reqwest`-based localhost-HTTP transport)
 and `streaming.rs` (NDJSON→SSE bridge — `Gateway/streaming.py::ndjson_to_sse`).
 
-Wave 2d added the peripheral route surface: `routes/voice.rs`,
-`routes/devices.rs`, `routes/push.rs`, `routes/link.rs`,
-`routes/images.rs`, `routes/settings.rs`. Voice + push mirror Python's
-Flask-style pipe surface via [`wylde_shared::ipc::send`]. Devices
+Wave 2d added the peripheral route surface: `routes/devices.rs`,
+`routes/link.rs`, `routes/images.rs`, `routes/settings.rs`. (The
+wave-2d `routes/voice.rs` and `routes/push.rs` were removed in the
+Bucket-A IPC cleanup — both mirrored Python's Flask-style pipe surface
+via [`wylde_shared::ipc::send`] onto upstream handlers that were never
+wired, so they only ever 404'd in production.) Devices
 dispatches `device_gate.*` actions through `services::device_gate`. Link
 proxies the VPN management HTTP API at `127.0.0.1:8020`. Images proxies
 the image-gen service at `127.0.0.1:8014` and reads the on-disk library
@@ -98,7 +100,7 @@ async-`Mutex` `HashMap<token, (Device, expires_at)>` that evicts stale
 entries on read. Every route that was substituting Bearer-token
 `common::authorize` for `require_local` now layers the real tier: the
 loopback/CGNAT routes (`chat`'s Ollama proxies, `models`, `images`,
-`link`, `voice`, `push`, `rag`, `settings`, `tool_registry`, `egress`,
+`link`, `rag`, `settings`, `tool_registry`, `egress`,
 `extensions`, and the `devices` GUI surface) gate on `require_local`;
 `chat.run_turn` and `devices/me` gate on `require_device`; `/health` is
 explicit `require_public`. The harness-mirror routes (`conversations`,

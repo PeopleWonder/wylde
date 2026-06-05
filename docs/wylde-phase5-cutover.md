@@ -21,9 +21,12 @@ default to `rust`:
 > `set_default`, `get_default`) over the harness pipe, and the Rust
 > handlers run live unless the flag is an explicit `python` (the rollback
 > path, where they return `not_implemented` and the Python body takes
-> over). `models.transcribe` / `models.synthesize` stay Python-only — they
-> drive the Voice STT/TTS engines, which aren't hosted in the harness
-> crate, so there's no Rust handler to forward to. A self-loop guard in
+> over). `models.transcribe` / `models.synthesize` stayed Python-only at
+> this phase — they drove the Voice STT/TTS engines, which weren't hosted
+> in the harness crate, so there was no Rust handler to forward to. (Those
+> two verbs were later retired at the Phase-11.E voice cutover — STT/TTS
+> moved in-process into `wylde-voice`, reached via `voice.*` — and deleted
+> entirely in the Bucket-A IPC cleanup.) A self-loop guard in
 > `_models.py` suppresses the forward when the Python harness is itself the
 > live pipe server (the env var is decoupled from the daemon's
 > service-selection flag, so the `python`-server + `rust`-models

@@ -119,11 +119,10 @@ async fn unregistered_verb_returns_no_action_for_strangler_fallback() {
         // longer fall through to the strangler, so they're not listed here.
         "prompts.list",
         "rag.workspaces.list",
-        // models.* registry/Ollama verbs are registered as of Slice 3a;
-        // the Voice-coupled transcribe/synthesize stay forward-only and
-        // must still surface as no_action for the strangler fallback.
-        "models.transcribe",
-        "models.synthesize",
+        // models.* registry/Ollama verbs are registered as of Slice 3a.
+        // (The old Voice-coupled `models.transcribe`/`models.synthesize`
+        // were retired at the voice cutover and deleted in the Bucket-A
+        // IPC cleanup — they're gone from both pipes now.)
     ] {
         let reply = ipc::send_action(&service, verb, json!({})).await;
         assert!(

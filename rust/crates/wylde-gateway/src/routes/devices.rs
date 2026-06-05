@@ -8,15 +8,16 @@
 //!   record at `/api/devices/me` so the app can show the current tier
 //!   and last-seen timestamp.
 //!
-//! ## Wire format vs harness routes
+//! ## Wire format
 //!
-//! Unlike the wave-2a/2b/2c harness routes (which wrap action replies
-//! in `{ok: true, data: <reply>}`), the Python /api/devices routes
-//! return the action reply **verbatim** as the response body. For
-//! example `/api/devices` returns `{"devices": [...], "count": N}` —
-//! no outer `ok`/`data` wrapper. This port preserves that shape via
-//! [`raw_success`] below; the failure shape is the canonical
-//! `{ok: false, error: {code, message}}` (matches Python's
+//! Every `/api/devices` route wraps its action reply in the canonical
+//! `{ok: true, data: <reply>}` envelope via [`success`], the same shape
+//! every other harness/gateway JSON route uses. (The original Python
+//! `devices.py` returned the action reply verbatim — e.g. `/api/devices`
+//! emitted `{"devices": [...], "count": N}` with no outer wrapper — but
+//! that inconsistency was retired in the Bucket-A IPC cleanup so callers
+//! see one envelope across the whole surface.) The failure shape is the
+//! canonical `{ok: false, error: {code, message}}` (matches Python's
 //! `services/device_gate.py::_call_action` error envelope).
 //!
 //! ## Auth
@@ -35,7 +36,7 @@ use axum::{Extension, Router};
 use serde_json::{json, Value};
 
 use crate::auth::{require_device, require_local, Device};
-use crate::envelopes::failure;
+use crate::envelopes::{failure, success};
 use crate::middleware::{device_limiter, forward_device_events, per_device_rate_limit};
 use crate::services::device_gate as svc;
 
@@ -91,28 +92,21 @@ pub async fn revoke(Path(device_id): Path<String>) -> Response {
 /// `X-Wylde-Events` header is handled by the [`forward_device_events`]
 /// layer mounted on this route, not the handler itself.
 pub async fn me(Extension(device): Extension<Device>) -> Response {
-    raw_success(json!({"device_id": device.device_id, "tier": device.tier}))
+    success(json!({"device_id": device.device_id, "tier": device.tier}))
 }
 
-/// Translate the [`svc::GateResult`] tuple into the Python wire format:
-/// success returns the action data verbatim (NO `{ok, data}` wrapper);
-/// failure returns the canonical `{ok: false, error: {code, message}}`.
+/// Translate the [`svc::GateResult`] tuple into the canonical wire
+/// format: success wraps the action data in `{ok: true, data}`; failure
+/// returns the canonical `{ok: false, error: {code, message}}`.
 fn finish(result: svc::GateResult) -> Response {
     match result {
-        Ok(data) => raw_success(data),
+        Ok(data) => success(data),
         Err((status, body)) => {
             // services::device_gate already produced the canonical
             // failure envelope; pass it through with the upstream status.
             (status, axum::Json(body)).into_response()
         }
     }
-}
-
-/// Build a 200 response whose body is `data` verbatim — no `{ok, data}`
-/// wrapper. Matches Python's `JSONResponse(body, status_code=200)` in
-/// `Gateway/routes/devices.py`.
-fn raw_success(data: Value) -> Response {
-    (StatusCode::OK, axum::Json(data)).into_response()
 }
 
 /// Build the `/api/devices` sub-router.
@@ -264,15 +258,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn raw_success_omits_envelope_wrapper() {
-        // Verify the bytes carry no `{ok, data}` wrapper — this is the
-        // wire-format contract with Python's /api/devices.
-        let resp = raw_success(json!({"devices": [], "count": 0}));
+    async fn success_wraps_action_data_in_envelope() {
+        // Verify the bytes carry the canonical `{ok: true, data}` wrapper
+        // — the Bucket-A IPC cleanup brought /api/devices in line with the
+        // rest of the JSON surface.
+        let resp = success(json!({"devices": [], "count": 0}));
         assert_eq!(resp.status(), StatusCode::OK);
         let body = to_bytes(resp.into_body(), 1024).await.unwrap();
         let v: Value = serde_json::from_slice(&body).unwrap();
-        assert!(v.get("ok").is_none(), "response must not wrap in {{ok}}");
-        assert_eq!(v["devices"], json!([]));
-        assert_eq!(v["count"], 0);
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["data"]["devices"], json!([]));
+        assert_eq!(v["data"]["count"], 0);
     }
 }

@@ -1,4 +1,4 @@
-"""models.* action handlers — registry surface + STT/TTS + Ollama-side ops.
+"""models.* action handlers — registry surface + Ollama-side ops.
 
 Harness Slice 3b strangler-fig
 ------------------------------
@@ -14,15 +14,14 @@ in-process Python body when the Rust pipe is unreachable / the handler is
 still gated off (transport-class error). Set
 ``WYLDE_HARNESS_MODELS_IMPL=python`` to revert.
 
-The two remaining verbs — ``models.transcribe`` / ``models.synthesize`` —
-were **retired in the Phase 11.E voice cutover**. They used to drive the
-Python ``Voice`` STT/TTS engines (the Voice service round-tripped audio
-through this pipe). The Python ``Voice/`` tree was deleted once
-``wylde-voice`` moved Whisper STT and Kokoro TTS in-process, and the voice
-orchestrator now calls ``voice.transcribe`` / ``voice.synthesize`` on the
-``wylde-voice`` service directly. The handlers stay registered (so the verb
-names resolve) but return ``unavailable`` — there is no engine here to
-drive. They remain excluded from :data:`_FORWARD_ACTIONS`.
+The harness once exposed two more verbs — ``models.transcribe`` /
+``models.synthesize`` — that drove the Python ``Voice`` STT/TTS engines.
+They were **retired in the Phase 11.E voice cutover** (``wylde-voice``
+moved Whisper STT and Kokoro TTS in-process, and the voice orchestrator
+now calls ``voice.transcribe`` / ``voice.synthesize`` on the
+``wylde-voice`` service directly) and **deleted entirely in the Bucket-A
+IPC cleanup** — the verb names no longer resolve. Callers use the
+``voice.*`` actions instead.
 
 Two deviations from the ``_chat.py`` precedent, both deliberate:
 
@@ -53,8 +52,7 @@ from ._common import (
     logger,
 )
 
-# The eight verbs with a Rust handler (Slice 3a). transcribe / synthesize
-# are Voice-engine-backed and stay Python-only — see the module docstring.
+# The eight verbs with a Rust handler (Slice 3a).
 _FORWARD_ACTIONS = frozenset(
     {
         "models.list",
@@ -141,7 +139,7 @@ def _try_forward_models_to_rust(
     envelope shape a Python failure would.
     """
     # Only the eight Slice-3a verbs have a Rust handler. A caller asking to
-    # forward anything else (transcribe/synthesize, a typo) stays on Python.
+    # forward anything else (an unknown verb, a typo) stays on Python.
     if action not in _FORWARD_ACTIONS:
         return None
     # Self-call guard — see _harness_is_local_server. Run Python locally
@@ -218,44 +216,6 @@ def _models_list_action(payload: Any) -> Dict[str, Any]:
         else:
             out.append({"value": str(entry)})
     return {"models": out, "count": len(out), "kind": kind or "all"}
-
-
-def _models_transcribe_action(payload: Any) -> Dict[str, Any]:
-    """Speech-to-text. Voice service hits this with audio bytes; the
-    harness used to run Whisper here via the Python ``Voice`` engine.
-
-    **Retired in the Phase 11.E voice cutover.** The Python ``Voice/``
-    tree that backed this action was deleted once ``wylde-voice`` moved
-    Whisper STT in-process; the voice orchestrator now calls the
-    ``voice.transcribe`` action on the ``wylde-voice`` service directly,
-    so this harness verb no longer has an engine to drive. It stays
-    registered (the verb name still resolves) but always returns
-    ``unavailable``.
-    """
-    raise _ActionError(
-        "unavailable",
-        "models.transcribe is retired — Whisper STT moved in-process to "
-        "the wylde-voice service; call voice.transcribe instead",
-    )
-
-
-def _models_synthesize_action(payload: Any) -> Dict[str, Any]:
-    """Text-to-speech. Voice used to hit this with a string and get back
-    audio bytes from the Python ``Voice`` Kokoro engine.
-
-    **Retired in the Phase 11.E voice cutover.** The Python ``Voice/``
-    tree that backed this action was deleted once ``wylde-voice`` moved
-    Kokoro TTS in-process; the voice orchestrator now calls the
-    ``voice.synthesize`` action on the ``wylde-voice`` service directly,
-    so this harness verb no longer has an engine to drive. It stays
-    registered (the verb name still resolves) but always returns
-    ``unavailable``.
-    """
-    raise _ActionError(
-        "unavailable",
-        "models.synthesize is retired — Kokoro TTS moved in-process to "
-        "the wylde-voice service; call voice.synthesize instead",
-    )
 
 
 def _models_get_profile_action(payload: Any) -> Dict[str, Any]:
