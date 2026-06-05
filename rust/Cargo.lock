@@ -4985,6 +4985,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "uuid",
+ "wylde-harness",
  "wylde-prebuild-guard",
  "wylde-shared",
 ]
