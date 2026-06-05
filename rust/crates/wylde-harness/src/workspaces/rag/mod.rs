@@ -9,9 +9,8 @@
 //!
 //! This is the read/scope side only. The heavy indexing machinery
 //! (LanceDB, the embedder) is out of scope for the redesign scaffold and
-//! continues to live where it does today (see
-//! [`crate::memory::workspaces`] notes + the design doc's migration
-//! section).
+//! continues to live where it does today (see the design doc's
+//! migration section).
 //!
 //! ## Split
 //!

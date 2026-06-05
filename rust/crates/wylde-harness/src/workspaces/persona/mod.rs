@@ -10,7 +10,7 @@
 //! is set.
 //!
 //! This supersedes the `persona` string field that the old verb-driven
-//! [`crate::memory::workspaces::store::Workspace`] carried inline; see
+//! the retired `memory::workspaces::store::Workspace` carried inline; see
 //! the migration section of the design doc.
 //!
 //! ## Split
@@ -20,4 +20,4 @@
 
 pub mod template;
 
-pub use template::PersonaOverride;
+pub use template::{load, persona_path, save, PersonaOverride};

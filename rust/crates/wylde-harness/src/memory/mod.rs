@@ -7,10 +7,9 @@
 //! Phase 7 is large (~9K LOC across the Python module) and lands as a
 //! sequence of slices that each ship a coherent subsurface:
 //!
-//! * **7.A** (SHIPPED) — [`workspaces`] *registry-only* half:
-//!   `Workspace` struct + JSON registry + MRU cap + persona +
-//!   delete-from-registry + index-folder rmtree. EXCLUDES `activate`
-//!   (would need LanceDB + embedder for the index pass).
+//! * **7.A** (RETIRED) — the verb-driven `workspaces` registry-only port
+//!   was superseded by the config-file-backed redesign in
+//!   [`crate::workspaces`]; its `slug_for` moved there.
 //! * **7.B** — workspace indexing: `activate` / `refresh` / `reindex` /
 //!   `status` / `search_files`. Requires either a LanceDB Rust client
 //!   or a temporary IPC bridge back to Python.
@@ -38,7 +37,6 @@
 //!
 //! * [`common`] — `DATA_DIR`, `ensure_dir`, embed-dim constants,
 //!   Memgraph service identity. Equivalent of `_common.py`.
-//! * [`workspaces`] — folder model. 7.A.
 //! * `long_term/` — 7.C (not yet present).
 //! * `rag/` — 7.D (not yet present).
 //! * `memgraph/` — 7.E (not yet present).
@@ -68,18 +66,15 @@ pub mod memgraph;
 pub mod rag;
 pub mod short_term;
 pub mod vector;
-pub mod workspaces;
+
+// NOTE: the legacy verb-driven `workspaces` registry port
+// (`memory.workspaces.*`) was retired by the config-file-backed
+// workspaces redesign (`crate::workspaces`). Its `slug_for` moved to
+// `crate::workspaces::registry::slug`.
 
 /// Read `WYLDE_HARNESS_MEMORY_IMPL` once per call. Default `rust`
 /// (post-2026-05-26 cutover); unknown values clamp to `rust`. Setting
 /// `WYLDE_HARNESS_MEMORY_IMPL=python` is the rollback escape hatch.
-///
-/// Slice 7.A registers `memory.workspaces.*` actions on the Rust pipe
-/// unconditionally — they're new wire surface, not a re-bind of any
-/// existing Python action. The Python `_rag_workspaces.py` handlers
-/// stay canonical; a future slice will add a forward layer there that
-/// reads this env var and routes the registry-side actions to Rust
-/// once parity tests cover the JSON shape.
 pub fn impl_for() -> &'static str {
     let raw = std::env::var("WYLDE_HARNESS_MEMORY_IMPL").unwrap_or_default();
     match raw.trim().to_ascii_lowercase().as_str() {

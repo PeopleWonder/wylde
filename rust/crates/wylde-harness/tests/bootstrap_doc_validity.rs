@@ -175,7 +175,7 @@ fn appendix_lists_core_pipe_verbs_for_each_subsystem() {
         "consent.list",
         "consent.respond",
         "memory.long_term.save",
-        "memory.workspaces.list",
+        "workspaces.list_mru",
     ] {
         assert!(
             ids.contains(required),

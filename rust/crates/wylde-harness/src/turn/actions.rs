@@ -75,6 +75,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
 
     let turn_id = optional_string(&payload, "turn_id").unwrap_or_else(state::new_turn_id);
     let device_tier = optional_string(&payload, "device_tier").unwrap_or_default();
+    let workspace_id = optional_string(&payload, "workspace_id");
     let normalised_tier = tool_round::normalise_device_tier(if device_tier.is_empty() {
         None
     } else {
@@ -94,7 +95,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     // mid-run_turn still sees them).
     let handle = state::register_turn(turn_id.clone(), conversation_id.clone());
 
-    let mut messages = initial_messages(&user_message);
+    let mut messages = initial_messages(&user_message, workspace_id.as_deref()).await;
     let tools = tools_payload();
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
@@ -305,6 +306,7 @@ pub async fn handle_start_turn(payload: Value) -> Reply {
     });
 
     let turn_id = optional_string(&payload, "turn_id").unwrap_or_else(state::new_turn_id);
+    let workspace_id = optional_string(&payload, "workspace_id");
     let handle = state::register_turn(turn_id.clone(), conversation_id.clone());
 
     let drive_handle = Arc::clone(&handle);
@@ -321,6 +323,7 @@ pub async fn handle_start_turn(payload: Value) -> Reply {
             drive_user_message,
             drive_model,
             drive_tier,
+            workspace_id,
         )
         .await;
     });
@@ -446,8 +449,9 @@ async fn drive_streaming_turn(
     user_message: String,
     model: String,
     device_tier: String,
+    workspace_id: Option<String>,
 ) {
-    let mut messages = initial_messages(&user_message);
+    let mut messages = initial_messages(&user_message, workspace_id.as_deref()).await;
     let tools = tools_payload();
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
@@ -693,10 +697,22 @@ fn build_alias_map() -> HashMap<String, String> {
 /// the salvage parser has nothing to recover. The catalog is read from
 /// the in-process registry so the prompt always reflects the live tool
 /// set.
-fn initial_messages(user_message: &str) -> Vec<Value> {
+/// `workspace_id` (when present + known) folds the active workspace's
+/// persona / workspace-memory / RAG slots onto the end of the system
+/// prompt — the deferred `_build_system_prompt_with_slots` work, now
+/// owned by [`crate::workspaces::prompt`]. An absent / unknown / empty id
+/// yields an empty context, so a plain chat turn is byte-identical to
+/// before.
+async fn initial_messages(user_message: &str, workspace_id: Option<&str>) -> Vec<Value> {
     let catalog = crate::tooling::runner::catalog_payload(crate::tooling::registry::global());
     let verb_mode = crate::tooling::resource::verb_mode_active();
-    let system_prompt = prompt::build_system_prompt(&catalog, verb_mode);
+    let mut system_prompt = prompt::build_system_prompt(&catalog, verb_mode);
+
+    if let Some(ws_id) = workspace_id.map(str::trim).filter(|s| !s.is_empty()) {
+        let ctx = crate::workspaces::prompt::inject::gather(ws_id, user_message).await;
+        system_prompt.push_str(&crate::workspaces::prompt::inject::render_slots(&ctx));
+    }
+
     vec![
         json!({"role": "system", "content": system_prompt}),
         json!({"role": "user", "content": user_message}),
@@ -1138,13 +1154,13 @@ mod tests {
 
     // ── Phase 6 system-prompt injection tests ───────────────────────────
 
-    #[test]
-    fn initial_messages_prepends_system_tool_catalog() {
+    #[tokio::test]
+    async fn initial_messages_prepends_system_tool_catalog() {
         // The opening messages array must be [system, user], and the
         // system content must advertise tools (a known tool name from
         // the live registry) so the model emits tool-call JSON instead
         // of claiming it has no tools.
-        let messages = initial_messages("What time is it?");
+        let messages = initial_messages("What time is it?", None).await;
         assert_eq!(messages.len(), 2, "expected [system, user]: {messages:?}");
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[1]["role"], "user");
@@ -1170,12 +1186,12 @@ mod tests {
         );
     }
 
-    #[test]
-    fn run_turn_request_body_carries_system_then_user() {
+    #[tokio::test]
+    async fn run_turn_request_body_carries_system_then_user() {
         // Mirror the exact body construction in handle_run_turn /
         // drive_streaming_turn: messages = initial_messages(...), then
         // folded into the Ollama request body. Assert the wire shape.
-        let messages = initial_messages("Read the README and tell me the license");
+        let messages = initial_messages("Read the README and tell me the license", None).await;
         let body = json!({
             "model": "stub-model",
             "messages": messages,
@@ -1194,15 +1210,15 @@ mod tests {
 
     // ── Fix B: native Ollama `tools:` field + tool_calls parsing ─────────
 
-    #[test]
-    fn request_body_carries_tools_field_with_json_schema() {
+    #[tokio::test]
+    async fn request_body_carries_tools_field_with_json_schema() {
         // Mirror the body construction in handle_run_turn /
         // drive_streaming_turn: tools = tools_payload(), folded into the
         // request body. Assert the wire shape Ollama expects.
         let tools = tools_payload();
         let body = json!({
             "model": "stub-model",
-            "messages": initial_messages("hi"),
+            "messages": initial_messages("hi", None).await,
             "tools": tools,
             "stream": false,
         });

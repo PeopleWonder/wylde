@@ -41,9 +41,9 @@ pub async fn ingest(body: Option<Json<Value>>) -> Response {
 
 /// `GET /api/rag/collections` — list configured workspaces. Equivalent
 /// to `GET /api/workspaces` in [`super::workspaces`]; kept here as the
-/// legacy MCP-facing alias Python ships with.
+/// legacy MCP-facing alias.
 pub async fn collections() -> Response {
-    harness_dispatch("rag.workspaces.list", Value::Null).await
+    harness_dispatch("workspaces.list_mru", Value::Null).await
 }
 
 /// Build the rag sub-router.

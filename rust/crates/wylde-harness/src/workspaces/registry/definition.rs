@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// turn anchored to it is built.
 ///
 /// Timestamps are `f64` Unix epoch seconds to match the existing
-/// [`crate::memory::workspaces::store::Workspace`] convention.
+/// retired `memory::workspaces::store::Workspace` convention.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct WorkspaceDefinition {
     /// Stable id. Deterministically derived from `folder` (see the
@@ -45,16 +45,87 @@ pub struct WorkspaceDefinition {
 
     /// When `true`, [`super::super::rag`] scopes retrieval to `folder`
     /// for turns in this workspace.
-    #[serde(default)]
+    #[serde(default = "default_rag_enabled")]
     pub rag_enabled: bool,
+}
+
+fn default_rag_enabled() -> bool {
+    true
 }
 
 impl WorkspaceDefinition {
     /// Build a fresh definition from a folder path.
     ///
-    /// TODO: derive `id` via the shared slug helper, default `name` to
-    /// the basename, stamp `created_at` / `updated_at`.
-    pub fn new(_folder: &str) -> Self {
-        todo!("workspaces redesign: WorkspaceDefinition::new")
+    /// `id` is derived deterministically via [`super::slug::slug_for`]
+    /// (so re-adding the same folder is idempotent), `name` defaults to
+    /// the folder's basename, and both timestamps are stamped now. RAG
+    /// is on by default; persona is opt-in.
+    pub fn new(folder: &str) -> Self {
+        let now = super::epoch_now();
+        Self {
+            id: super::slug::slug_for(folder),
+            name: basename(folder),
+            folder: folder.to_owned(),
+            created_at: now,
+            updated_at: now,
+            persona_enabled: false,
+            rag_enabled: true,
+        }
+    }
+}
+
+impl WorkspaceDefinition {
+    /// Serialize to a `serde_json::Value` for handing straight to the
+    /// IPC layer / GUI.
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+/// Human-readable display name from a folder path: the last non-empty
+/// path component, falling back to the whole string then `"workspace"`.
+fn basename(folder: &str) -> String {
+    let trimmed = folder.trim_end_matches(['/', '\\']);
+    let base = trimmed
+        .rsplit(['/', '\\'])
+        .find(|s| !s.is_empty())
+        .unwrap_or(trimmed)
+        .trim();
+    if base.is_empty() {
+        "workspace".to_owned()
+    } else {
+        base.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_derives_id_name_and_timestamps() {
+        let def = WorkspaceDefinition::new("/tmp/My Project");
+        assert!(def.id.starts_with("My_Project-"), "id was {}", def.id);
+        assert_eq!(def.name, "My Project");
+        assert_eq!(def.folder, "/tmp/My Project");
+        assert!(def.rag_enabled);
+        assert!(!def.persona_enabled);
+        assert!(def.created_at > 0.0);
+        assert_eq!(def.created_at, def.updated_at);
+    }
+
+    #[test]
+    fn basename_handles_windows_and_trailing_seps() {
+        assert_eq!(basename(r"C:\Users\aaron\proj"), "proj");
+        assert_eq!(basename("/home/x/code/"), "code");
+        assert_eq!(basename("/"), "workspace");
+    }
+
+    #[test]
+    fn roundtrips_through_json() {
+        let def = WorkspaceDefinition::new("/tmp/proj");
+        let s = serde_json::to_string(&def).unwrap();
+        let back: WorkspaceDefinition = serde_json::from_str(&s).unwrap();
+        assert_eq!(def, back);
     }
 }

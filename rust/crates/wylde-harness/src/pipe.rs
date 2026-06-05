@@ -74,7 +74,7 @@ const HANDLER_MODULE_RAG: &str = "wylde_harness::api::DefaultHarnessApi (rag.*)"
 const HANDLER_MODULE_LONG_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.long_term.*)";
 const HANDLER_MODULE_WORKSPACES: &str =
-    "wylde_harness::api::DefaultHarnessApi (memory.workspaces.*)";
+    "wylde_harness::api::DefaultHarnessApi (workspaces.*)";
 const HANDLER_MODULE_SHORT_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.short_term.*)";
 const HANDLER_MODULE_CONVERSATIONS: &str =
@@ -122,26 +122,25 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.long_term.delete",
     "memory.long_term.history",
     "memory.long_term.search",
-    // memory.workspaces.* — workspace registry (8 verbs; Phase 7.A)
-    "memory.workspaces.list",
-    "memory.workspaces.recent",
-    "memory.workspaces.get",
-    "memory.workspaces.get_mru_limit",
-    "memory.workspaces.set_mru_limit",
-    "memory.workspaces.get_persona",
-    "memory.workspaces.set_persona",
-    "memory.workspaces.delete",
+    // workspaces.* — config-file-backed workspaces redesign (6 verbs)
+    "workspaces.set_active",
+    "workspaces.create",
+    "workspaces.update",
+    "workspaces.delete",
+    "workspaces.set_persona",
+    "workspaces.list_mru",
     // memory.short_term.* — conversation working memory (3 verbs)
     "memory.short_term.get",
     "memory.short_term.append",
     "memory.short_term.clear",
-    // conversations.* — conversation lifecycle + active selection (6 verbs)
+    // conversations.* — lifecycle + active selection + workspace (7 verbs)
     "conversations.new",
     "conversations.list",
     "conversations.get",
     "conversations.delete",
     "conversations.get_active",
     "conversations.set_active",
+    "conversations.set_workspace",
     // consent.* — per-tool consent gate (Phase 12.2; 6 unary + 1 streaming = 7 verbs)
     "consent.list",
     "consent.set",
@@ -580,99 +579,81 @@ where
         HANDLER_MODULE_LONG_TERM,
     );
 
-    // ── memory.workspaces.* ──────────────────────────────────────────
+    // ── workspaces.* (config-file-backed redesign) ───────────────────
 
     let a = Arc::clone(&api);
     register_action_with_meta(
-        "memory.workspaces.list",
+        "workspaces.set_active",
         move |p: Value| {
             let a = Arc::clone(&a);
-            async move { a.memory_workspaces_list(p).await }
+            async move { a.workspaces_set_active(p).await }
         },
-        "Every workspace in MRU order. Returns {workspaces: [Workspace, ...]}.",
+        "Set the active workspace + bump it to the MRU head. Payload \
+         {workspace_id}. Returns {active_id, mru}; not_found for an \
+         unknown id.",
         HANDLER_MODULE_WORKSPACES,
     );
 
     let a = Arc::clone(&api);
     register_action_with_meta(
-        "memory.workspaces.recent",
+        "workspaces.create",
         move |p: Value| {
             let a = Arc::clone(&a);
-            async move { a.memory_workspaces_recent(p).await }
+            async move { a.workspaces_create(p).await }
         },
-        "First N workspaces in MRU order. Payload {limit?}; default is \
-         the user-configured MRU cap.",
+        "Register a folder as a workspace (and activate it). Payload \
+         {folder, name?}. Returns the WorkspaceDefinition; bad_request \
+         if the folder doesn't exist.",
         HANDLER_MODULE_WORKSPACES,
     );
 
     let a = Arc::clone(&api);
     register_action_with_meta(
-        "memory.workspaces.get",
+        "workspaces.update",
         move |p: Value| {
             let a = Arc::clone(&a);
-            async move { a.memory_workspaces_get(p).await }
+            async move { a.workspaces_update(p).await }
         },
-        "One workspace by id. Payload {workspace_id}. Returns \
-         the Workspace JSON or not_found.",
+        "Rename / toggle features. Payload {workspace_id, name?, \
+         persona_enabled?, rag_enabled?}. Returns the updated \
+         WorkspaceDefinition; not_found for an unknown id.",
         HANDLER_MODULE_WORKSPACES,
     );
 
     let a = Arc::clone(&api);
     register_action_with_meta(
-        "memory.workspaces.get_mru_limit",
+        "workspaces.delete",
         move |p: Value| {
             let a = Arc::clone(&a);
-            async move { a.memory_workspaces_get_mru_limit(p).await }
+            async move { a.workspaces_delete(p).await }
         },
-        "Current MRU cap + bounds. Returns {limit, min, max, default}.",
+        "Remove a workspace + its <workspace_id>/ bundle dir. Payload \
+         {workspace_id}. Returns {ok, workspace_id}.",
         HANDLER_MODULE_WORKSPACES,
     );
 
     let a = Arc::clone(&api);
     register_action_with_meta(
-        "memory.workspaces.set_mru_limit",
+        "workspaces.set_persona",
         move |p: Value| {
             let a = Arc::clone(&a);
-            async move { a.memory_workspaces_set_mru_limit(p).await }
+            async move { a.workspaces_set_persona(p).await }
         },
-        "Persist a new MRU cap; immediately evicts any workspaces past \
-         the new cap (index folders removed, durable workspace memory \
-         preserved). Payload {limit}.",
+        "Write persona.md for a workspace (and enable/disable the persona \
+         slot). Payload {workspace_id, text?}. Returns {ok, workspace_id}.",
         HANDLER_MODULE_WORKSPACES,
     );
 
     let a = Arc::clone(&api);
     register_action_with_meta(
-        "memory.workspaces.get_persona",
+        "workspaces.list_mru",
         move |p: Value| {
             let a = Arc::clone(&a);
-            async move { a.memory_workspaces_get_persona(p).await }
+            async move { a.workspaces_list_mru(p).await }
         },
-        "Persona text for a workspace. Payload {workspace_id}.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "memory.workspaces.set_persona",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.memory_workspaces_set_persona(p).await }
-        },
-        "Persist persona text for a workspace. Payload {workspace_id, text?}.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "memory.workspaces.delete",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.memory_workspaces_delete(p).await }
-        },
-        "Explicit delete: removes from registry, deletes the on-disk \
-         index folder AND the durable workspace memory folder. Payload \
-         {workspace_id}.",
+        "MRU-5 workspace list + active id for the InferenceBar dropdown. \
+         No payload. Returns {workspaces: [WorkspaceDefinition, ...], \
+         active_id}.",
         HANDLER_MODULE_WORKSPACES,
     );
 
@@ -799,6 +780,20 @@ where
         "Persist the active-conversation selection so it survives an app \
          restart. Payload {id}; an empty/absent id clears the selection. \
          Returns {id} (the persisted value, \"\" when cleared).",
+        HANDLER_MODULE_CONVERSATIONS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "conversations.set_workspace",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.conversations_set_workspace(p).await }
+        },
+        "Re-assign a conversation's workspace (mutable binding). Payload \
+         {id, workspace_id?}; an empty/absent workspace_id clears the \
+         binding. Upserts the document. Returns the updated conversation \
+         document; bad_request for a missing/invalid id.",
         HANDLER_MODULE_CONVERSATIONS,
     );
 

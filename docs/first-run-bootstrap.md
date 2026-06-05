@@ -157,17 +157,14 @@ memory.long_term.save {
 ## Step 4 — create the first workspace
 
 A workspace is Wylde's name for a project context. Call
-`memory.workspaces.list` first; if the result is empty, create one
-that matches their stated use. There is no `memory.workspaces.create`
-verb yet — workspaces are auto-created on first memory write inside
-them via the harness's workspace registry. So instead: write a single
-workspace memory through whatever tool the model has access to in
-that scope. (For Phase 12.2: skip this step if no workspace exists;
-the user will create one naturally when they start their first
-project.)
+`workspaces.list_mru` first; if the result is empty, create one that
+matches their stated use with `workspaces.create { folder, name? }` —
+this registers the folder as a workspace and activates it. (For
+Phase 12.2: skip this step if no folder is in scope yet; the user
+will create one naturally when they start their first project.)
 
 Set the persona for the new workspace:
-`memory.workspaces.set_persona { workspace_id, text }` where `text`
+`workspaces.set_persona { workspace_id, text }` where `text`
 is a 1-2 sentence orientation derived from Step 3 ("This workspace
 is for working on a Rust port of a Python service for the Wylde user, a solo
 maintainer.") The persona is what future LLM turns see at the top of
@@ -223,10 +220,9 @@ that test.
 - `memory.long_term.list`, `memory.long_term.save`,
   `memory.long_term.update`, `memory.long_term.delete`,
   `memory.long_term.history`
-- `memory.workspaces.list`, `memory.workspaces.recent`,
-  `memory.workspaces.get`, `memory.workspaces.set_persona`,
-  `memory.workspaces.get_persona`, `memory.workspaces.get_mru_limit`,
-  `memory.workspaces.set_mru_limit`, `memory.workspaces.delete`
+- `workspaces.list_mru`, `workspaces.set_active`, `workspaces.create`,
+  `workspaces.update`, `workspaces.set_persona`, `workspaces.delete`
+- `conversations.set_workspace`
 - `consent.list`, `consent.set`, `consent.respond`,
   `consent.clear`, `consent.set_no_auth`, `consent.reset`
 - `chat.run_turn`, `chat.start_turn`, `chat.cancel`,

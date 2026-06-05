@@ -45,25 +45,37 @@ impl StartTurnReply {
 }
 
 /// One workspace, MRU-clipped for the InferenceBar dropdown.
+///
+/// Parsed from the workspaces-redesign `WorkspaceDefinition` shape
+/// (`{id, name, folder, ...}`). `path` maps from the new `folder` field
+/// (with a `path` fallback) so the dropdown render code is unchanged.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkspaceSummary {
     pub id: String,
+    pub name: String,
     pub path: String,
 }
 
 impl WorkspaceSummary {
     pub fn from_value(v: &Value) -> Self {
+        let str_field = |k: &str| {
+            v.get(k)
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned()
+        };
+        let path = {
+            let folder = str_field("folder");
+            if folder.is_empty() {
+                str_field("path")
+            } else {
+                folder
+            }
+        };
         Self {
-            id: v
-                .get("id")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_owned(),
-            path: v
-                .get("path")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_owned(),
+            id: str_field("id"),
+            name: str_field("name"),
+            path,
         }
     }
 }
@@ -339,16 +351,17 @@ pub async fn set_active_model(model: Option<&str>) -> Result<(), String> {
     .map(|_| ())
 }
 
-/// `memory.workspaces.recent` — MRU-clipped workspace list for the
-/// InferenceBar dropdown.
-pub async fn recent_workspaces(limit: u32) -> Result<Vec<WorkspaceSummary>, String> {
+/// `workspaces.list_mru` — MRU-5 workspace list for the InferenceBar
+/// dropdown (workspaces-redesign). The `limit` arg is kept for the call
+/// site but the harness caps at the static MRU-5 window.
+pub async fn recent_workspaces(_limit: u32) -> Result<Vec<WorkspaceSummary>, String> {
     let v = wylde_gui_pipe::call(
         SVC_HARNESS,
         "POST",
         "/__action__",
         Some(json!({
-            "action": "memory.workspaces.recent",
-            "payload": { "limit": limit },
+            "action": "workspaces.list_mru",
+            "payload": {},
         })),
     )
     .await?;
@@ -358,27 +371,40 @@ pub async fn recent_workspaces(limit: u32) -> Result<Vec<WorkspaceSummary>, Stri
     Ok(arr.iter().map(WorkspaceSummary::from_value).collect())
 }
 
-/// `rag.workspaces.activate` — wire the picked folder up as a
-/// workspace.  Mirrors the Workspaces panel's flow so a workspace
-/// added here shows up there too.
+/// `workspaces.create` — register the picked folder as a workspace (and
+/// activate it). Workspaces-redesign replacement for the old
+/// `rag.workspaces.activate`; creation auto-promotes to the MRU head.
 pub async fn activate_workspace(path: &str) -> Result<WorkspaceSummary, String> {
     let v = wylde_gui_pipe::call(
         SVC_HARNESS,
         "POST",
         "/__action__",
         Some(json!({
-            "action": "rag.workspaces.activate",
-            "payload": {
-                "path": path,
-                "conversation_id": null,
-                "full_reindex": false,
-            },
+            "action": "workspaces.create",
+            "payload": { "folder": path },
         })),
     )
     .await?;
-    // `rag.workspaces.activate` returns the full workspace record; we
-    // only need the (id, path) projection for the dropdown.
+    // `workspaces.create` returns the full WorkspaceDefinition; we only
+    // need the (id, name, folder) projection for the dropdown.
     Ok(WorkspaceSummary::from_value(&v))
+}
+
+/// `workspaces.set_active` — mark a workspace active + bump it to the
+/// MRU head. Dispatched when the user picks from the InferenceBar
+/// dropdown so the active pointer + MRU order persist on the harness.
+pub async fn set_active_workspace(workspace_id: &str) -> Result<(), String> {
+    wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "workspaces.set_active",
+            "payload": { "workspace_id": workspace_id },
+        })),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// `consent.respond` — Allow / Deny / Once response to a pending
@@ -774,12 +800,18 @@ mod tests {
 
     #[test]
     fn workspace_summary_parses() {
+        // New WorkspaceDefinition shape (folder + name).
         let s = WorkspaceSummary::from_value(&json!({
-            "id": "wylde",
-            "path": "/tmp/wylde",
+            "id": "wylde-ab12cd",
+            "name": "Wylde",
+            "folder": "/tmp/wylde",
         }));
-        assert_eq!(s.id, "wylde");
+        assert_eq!(s.id, "wylde-ab12cd");
+        assert_eq!(s.name, "Wylde");
         assert_eq!(s.path, "/tmp/wylde");
+        // Legacy `path` key still parses via fallback.
+        let legacy = WorkspaceSummary::from_value(&json!({ "id": "x", "path": "/p" }));
+        assert_eq!(legacy.path, "/p");
     }
 
     #[test]

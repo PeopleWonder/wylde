@@ -63,6 +63,24 @@ pub async fn handle_delete(payload: Value) -> Reply {
     }
 }
 
+/// `conversations.set_workspace` — re-assign a conversation's workspace
+/// (Q4 mutable binding). Payload `{ id, workspace_id? }`; an empty /
+/// absent `workspace_id` clears the binding. Upserts the document so the
+/// binding sticks even on a freshly minted conversation. Returns the
+/// updated document. `bad_request` for a missing / invalid id.
+pub async fn handle_set_workspace(payload: Value) -> Reply {
+    let Some(cid) = require_string(&payload, "id") else {
+        return Reply::err_msg("bad_request", "id is required");
+    };
+    // An empty workspace_id is meaningful (clears the binding), so read it
+    // raw rather than via `require_string`.
+    let workspace_id = payload.get("workspace_id").and_then(Value::as_str);
+    match store::set_workspace(&cid, workspace_id) {
+        Ok(doc) => Reply::ok(doc),
+        Err(e) => Reply::err_msg("bad_request", e.0),
+    }
+}
+
 /// `conversations.get_active` — the persisted active-conversation
 /// selection, or `""` when none. No payload. Returns `{ id }`.
 pub async fn handle_get_active(_payload: Value) -> Reply {
@@ -167,6 +185,25 @@ mod tests {
         let reply = handle_delete(json!({})).await;
         assert!(!reply.ok);
         assert_eq!(reply.error.unwrap().code, "bad_request");
+    }
+
+    #[tokio::test]
+    async fn set_workspace_upserts_and_returns_doc() {
+        let _env = TestEnv::new();
+        let missing_id = handle_set_workspace(json!({})).await;
+        assert!(!missing_id.ok);
+        assert_eq!(missing_id.error.unwrap().code, "bad_request");
+
+        let set = handle_set_workspace(json!({"id": "conv-w", "workspace_id": "ws-99"})).await;
+        assert!(set.ok);
+        assert_eq!(set.data["workspace_id"], "ws-99");
+        // Mutable re-assign.
+        let reassigned =
+            handle_set_workspace(json!({"id": "conv-w", "workspace_id": "ws-77"})).await;
+        assert_eq!(reassigned.data["workspace_id"], "ws-77");
+        // Visible to get.
+        let got = handle_get(json!({"id": "conv-w"})).await;
+        assert_eq!(got.data["workspace_id"], "ws-77");
     }
 
     #[tokio::test]

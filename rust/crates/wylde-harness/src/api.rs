@@ -39,7 +39,7 @@
 //! Tauri-side in-process dispatcher share one implementation. The
 //! `pipe/chat.rs` and `pipe/memory_workspaces.rs` files were thin
 //! registration shells over verb handlers that already live in
-//! [`crate::turn::actions`] and [`crate::memory::workspaces::actions`] —
+//! [`crate::turn::actions`] and the retired `memory.workspaces` actions —
 //! those trait methods are pass-throughs.
 
 use async_trait::async_trait;
@@ -51,10 +51,10 @@ use crate::memory::conversations::actions as conversations_actions;
 use crate::memory::long_term::{self, LongTermMemory, SaveError};
 use crate::memory::rag::actions as rag_actions;
 use crate::memory::short_term::actions as short_term_actions;
-use crate::memory::workspaces::actions as workspace_actions;
 use crate::model_registry::actions as model_actions;
 use crate::settings::actions as settings_actions;
 use crate::tooling::consent::{self, Decision};
+use crate::workspaces::api as workspaces_api;
 use crate::tooling::registry::global;
 use crate::tooling::runner::{catalog_payload, dispatch_tool};
 use crate::turn::actions as turn_actions;
@@ -112,28 +112,27 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_long_term_history(&self, payload: Value) -> Reply;
     async fn memory_long_term_search(&self, payload: Value) -> Reply;
 
-    // ── memory.workspaces.* (8 verbs; Phase 7.A) ─────────────────────
-    async fn memory_workspaces_list(&self, payload: Value) -> Reply;
-    async fn memory_workspaces_recent(&self, payload: Value) -> Reply;
-    async fn memory_workspaces_get(&self, payload: Value) -> Reply;
-    async fn memory_workspaces_get_mru_limit(&self, payload: Value) -> Reply;
-    async fn memory_workspaces_set_mru_limit(&self, payload: Value) -> Reply;
-    async fn memory_workspaces_get_persona(&self, payload: Value) -> Reply;
-    async fn memory_workspaces_set_persona(&self, payload: Value) -> Reply;
-    async fn memory_workspaces_delete(&self, payload: Value) -> Reply;
+    // ── workspaces.* (6 verbs; config-file-backed redesign) ──────────
+    async fn workspaces_set_active(&self, payload: Value) -> Reply;
+    async fn workspaces_create(&self, payload: Value) -> Reply;
+    async fn workspaces_update(&self, payload: Value) -> Reply;
+    async fn workspaces_delete(&self, payload: Value) -> Reply;
+    async fn workspaces_set_persona(&self, payload: Value) -> Reply;
+    async fn workspaces_list_mru(&self, payload: Value) -> Reply;
 
     // ── memory.short_term.* (3 verbs; conversation working memory) ───
     async fn memory_short_term_get(&self, payload: Value) -> Reply;
     async fn memory_short_term_append(&self, payload: Value) -> Reply;
     async fn memory_short_term_clear(&self, payload: Value) -> Reply;
 
-    // ── conversations.* (6 verbs; conversation lifecycle + active sel) ─
+    // ── conversations.* (7 verbs; lifecycle + active sel + workspace) ─
     async fn conversations_new(&self, payload: Value) -> Reply;
     async fn conversations_list(&self, payload: Value) -> Reply;
     async fn conversations_get(&self, payload: Value) -> Reply;
     async fn conversations_delete(&self, payload: Value) -> Reply;
     async fn conversations_get_active(&self, payload: Value) -> Reply;
     async fn conversations_set_active(&self, payload: Value) -> Reply;
+    async fn conversations_set_workspace(&self, payload: Value) -> Reply;
 
     // ── consent.* (6 verbs + 1 streaming; Phase 12.2 + 12.6) ─────────
     async fn consent_list(&self, payload: Value) -> Reply;
@@ -416,39 +415,31 @@ impl HarnessApi for DefaultHarnessApi {
         }
     }
 
-    // ── memory.workspaces.* ──────────────────────────────────────────
-    // Pass-throughs — JSON shaping already lives in workspaces::actions.
+    // ── workspaces.* ─────────────────────────────────────────────────
+    // Pass-throughs — JSON shaping lives in workspaces::api.
 
-    async fn memory_workspaces_list(&self, payload: Value) -> Reply {
-        workspace_actions::handle_list(payload).await
+    async fn workspaces_set_active(&self, payload: Value) -> Reply {
+        workspaces_api::handle_set_active(payload).await
     }
 
-    async fn memory_workspaces_recent(&self, payload: Value) -> Reply {
-        workspace_actions::handle_recent(payload).await
+    async fn workspaces_create(&self, payload: Value) -> Reply {
+        workspaces_api::handle_create(payload).await
     }
 
-    async fn memory_workspaces_get(&self, payload: Value) -> Reply {
-        workspace_actions::handle_get(payload).await
+    async fn workspaces_update(&self, payload: Value) -> Reply {
+        workspaces_api::handle_update(payload).await
     }
 
-    async fn memory_workspaces_get_mru_limit(&self, payload: Value) -> Reply {
-        workspace_actions::handle_get_mru_limit(payload).await
+    async fn workspaces_delete(&self, payload: Value) -> Reply {
+        workspaces_api::handle_delete(payload).await
     }
 
-    async fn memory_workspaces_set_mru_limit(&self, payload: Value) -> Reply {
-        workspace_actions::handle_set_mru_limit(payload).await
+    async fn workspaces_set_persona(&self, payload: Value) -> Reply {
+        workspaces_api::handle_set_persona(payload).await
     }
 
-    async fn memory_workspaces_get_persona(&self, payload: Value) -> Reply {
-        workspace_actions::handle_get_persona(payload).await
-    }
-
-    async fn memory_workspaces_set_persona(&self, payload: Value) -> Reply {
-        workspace_actions::handle_set_persona(payload).await
-    }
-
-    async fn memory_workspaces_delete(&self, payload: Value) -> Reply {
-        workspace_actions::handle_delete(payload).await
+    async fn workspaces_list_mru(&self, payload: Value) -> Reply {
+        workspaces_api::handle_list_mru(payload).await
     }
 
     // ── memory.short_term.* ──────────────────────────────────────────
@@ -491,6 +482,10 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn conversations_set_active(&self, payload: Value) -> Reply {
         conversations_actions::handle_set_active(payload).await
+    }
+
+    async fn conversations_set_workspace(&self, payload: Value) -> Reply {
+        conversations_actions::handle_set_workspace(payload).await
     }
 
     // ── consent.* (Phase 12.2) ───────────────────────────────────────

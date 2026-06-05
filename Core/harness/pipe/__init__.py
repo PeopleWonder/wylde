@@ -6,10 +6,10 @@ action handlers, ``_ACTIONS`` registry, ``_ActionError``) is private
 but re-exported here so tests and the ``gui_action_contract`` rule can
 keep reaching them through ``Core.harness.pipe``.
 
-The split is by surface: chat / tools / models / rag.workspaces /
-memory / conversations / prompts each live in a sibling ``_*.py``
-module. ``_common.py`` owns ``_ActionError``, ``_payload_dict``, and
-the lazy-import helpers shared across the handlers.
+The split is by surface: chat / tools / models / memory /
+conversations / prompts each live in a sibling ``_*.py`` module.
+``_common.py`` owns ``_ActionError``, ``_payload_dict``, and the
+lazy-import helpers shared across the handlers.
 """
 
 from __future__ import annotations
@@ -70,18 +70,9 @@ from ._prompts import (
     _prompts_save_preset_action,
     _prompts_set_active_action,
 )
-from ._rag_workspaces import (
-    _rag_workspaces_activate_action,
-    _rag_workspaces_delete_action,
-    _rag_workspaces_get_mru_limit_action,
-    _rag_workspaces_get_persona_action,
-    _rag_workspaces_list_action,
-    _rag_workspaces_recent_action,
-    _rag_workspaces_reindex_action,
-    _rag_workspaces_set_mru_limit_action,
-    _rag_workspaces_set_persona_action,
-    _rag_workspaces_status_action,
-)
+# workspaces: removed in config-file-backed redesign (2026-06-05) —
+# the rag.workspaces.* verb surface and its _rag_workspaces handlers are
+# gone; workspace RAG is now owned by the Rust harness.
 from ._tools import _tools_list_action, _tools_run_action
 
 _started = False
@@ -102,17 +93,8 @@ _ACTIONS = {
     "models.set_active": _models_set_active_action,
     "models.set_default": _models_set_default_action,
     "models.get_default": _models_get_default_action,
-    # RAG workspaces
-    "rag.workspaces.list": _rag_workspaces_list_action,
-    "rag.workspaces.recent": _rag_workspaces_recent_action,
-    "rag.workspaces.activate": _rag_workspaces_activate_action,
-    "rag.workspaces.reindex": _rag_workspaces_reindex_action,
-    "rag.workspaces.status": _rag_workspaces_status_action,
-    "rag.workspaces.delete": _rag_workspaces_delete_action,
-    "rag.workspaces.set_persona": _rag_workspaces_set_persona_action,
-    "rag.workspaces.get_persona": _rag_workspaces_get_persona_action,
-    "rag.workspaces.get_mru_limit": _rag_workspaces_get_mru_limit_action,
-    "rag.workspaces.set_mru_limit": _rag_workspaces_set_mru_limit_action,
+    # workspaces: removed in config-file-backed redesign (2026-06-05) —
+    # the rag.workspaces.* verbs are retired; Rust owns workspace RAG.
     # Memory: long-term
     "memory.long_term.list": _memory_long_term_list_action,
     "memory.long_term.search": _memory_long_term_search_action,

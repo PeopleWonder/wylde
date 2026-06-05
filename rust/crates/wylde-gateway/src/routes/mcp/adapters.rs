@@ -178,14 +178,15 @@ pub async fn list_resources() -> Result<Value, BridgeError> {
             "mimeType": "application/json",
         }));
     }
-    let wss = harness("rag.workspaces.list", json!({})).await?;
+    let wss = harness("workspaces.list_mru", json!({})).await?;
     for ws in entries(&wss, "workspaces") {
         let wid = ws.get("id").and_then(Value::as_str).unwrap_or("");
         if wid.is_empty() {
             continue;
         }
         let name = ws
-            .get("path")
+            .get("folder")
+            .or_else(|| ws.get("path"))
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .unwrap_or(wid);
@@ -266,15 +267,19 @@ pub async fn read_resource(uri: &str) -> Result<Value, BridgeError> {
     }
 }
 
-/// Read a file under a workspace's indexed folder. The workspace root
-/// comes from the `rag.workspaces.list` registry.
+/// Read a file under a workspace's folder. The workspace root comes from
+/// the `workspaces.list_mru` registry.
 async fn read_workspace_file(workspace_id: &str, rel_path: &str) -> Result<String, BridgeError> {
-    let wss = harness("rag.workspaces.list", json!({})).await?;
+    let wss = harness("workspaces.list_mru", json!({})).await?;
     let workspace = entries(&wss, "workspaces")
         .into_iter()
         .find(|w| w.get("id").and_then(Value::as_str) == Some(workspace_id))
         .ok_or_else(|| BridgeError::msg(format!("workspace not found: {workspace_id:?}")))?;
-    let root = workspace.get("path").and_then(Value::as_str).unwrap_or("");
+    let root = workspace
+        .get("folder")
+        .or_else(|| workspace.get("path"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
     if root.is_empty() {
         return Err(BridgeError::msg(format!(
             "workspace {workspace_id:?} has no indexed path"

@@ -46,8 +46,8 @@ use crate::ipc::{
     activate_workspace, cancel_turn, clear_working_memory, delete_conversation, eject_model,
     fetch_conversation_messages, fetch_working_memory, get_active_conversation, list_conversations,
     list_models, new_conversation, recent_workspaces, respond_consent, set_active_conversation,
-    set_active_model, start_turn_with_model, stream_consent_pending, stream_tools, stream_turn,
-    ConsentEvent,
+    set_active_model, set_active_workspace, start_turn_with_model, stream_consent_pending,
+    stream_tools, stream_turn, ConsentEvent,
     ConversationMeta, PendingConsent, ToolChunk, TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
 };
 use crate::markdown;
@@ -1024,6 +1024,20 @@ impl ChatPanel {
     pub fn select_workspace(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.active_workspace_id = Some(id.to_owned());
         self.show_ws_dropdown = false;
+        // Persist the active pointer + MRU bump on the harness, then
+        // refresh the dropdown so it reflects the new MRU order.
+        let id_owned = id.to_owned();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let _ = set_active_workspace(&id_owned).await;
+            let mru = recent_workspaces(WORKSPACE_MRU_LIMIT).await.unwrap_or_default();
+            let _ = this.update(app_cx, |panel, cx| {
+                if !mru.is_empty() {
+                    panel.workspaces = mru;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         // Picker closed → hand focus straight back to the prompt so the
         // user can keep typing without re-clicking the input.
         self.focus_prompt(window, cx);
