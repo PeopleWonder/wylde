@@ -1,21 +1,22 @@
-//! Translate a workspace folder into a RAG query scope.
+//! Translate a workspace folder into a RAG query scope, and retrieve the
+//! folder-scoped snippets the prompt builder injects.
 //!
-//! **Pointer-only (Q6).** The redesign does NOT own RAG index
-//! bookkeeping — `rag_state.json` stays with the LanceDB indexer wherever
-//! it lives today. This module only derives the *scope* (which folder a
-//! turn's retrieval is bounded to) from a [`WorkspaceDefinition`] and
-//! exposes the retrieval entrypoint the prompt builder calls.
-//!
-//! [`retrieve`] is intentionally a stub that returns no snippets: there
-//! is no first-class Rust workspace-file search yet (the indexer is
-//! Python/LanceDB and the legacy `search_files` path is retired in the
-//! clean break). When a Rust folder-scoped search lands it slots in here
-//! without changing the prompt-builder contract — `gather` already wires
-//! the result into the RAG slot.
+//! The redesign scaffold left [`retrieve`] a pointer-only stub because the
+//! file indexer was Python/LanceDB and not yet ported. The Rust indexer
+//! now lives in [`super::indexer`], so [`retrieve`] resolves the scope to
+//! real snippets: it embeds the user message and k-NN-searches the
+//! workspace's index. It stays **fail-soft** — a missing index, an empty
+//! workspace, or an unreachable embedder all yield no snippets (never an
+//! error), preserving the plain-chat fallback.
+
+use super::indexer::search;
 
 /// The retrieval scope derived from a workspace.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceRagScope {
+    /// Stable id of the workspace whose index is searched.
+    pub workspace_id: String,
+
     /// Absolute workspace folder retrieval is bounded to.
     pub folder: String,
 
@@ -35,26 +36,57 @@ impl WorkspaceRagScope {
             return None;
         }
         Some(Self {
+            workspace_id: def.id.clone(),
             folder: def.folder.clone(),
             limit: Self::DEFAULT_LIMIT,
         })
     }
 }
 
-/// Retrieve scoped snippets for the current turn.
+/// Retrieve scoped snippets for the current turn, formatted for the
+/// `## Workspace files` prompt slot.
 ///
-/// **Pointer-only:** returns an empty vector. The heavy folder-scoped
-/// search (LanceDB) is owned by the indexer and not ported to Rust in
-/// this redesign — see the module docs and Q6. The signature is the
-/// stable seam a future Rust search drops into.
-pub fn retrieve(_scope: &WorkspaceRagScope, _user_message: &str) -> Vec<String> {
-    Vec::new()
+/// Embeds `user_message`, k-NN-searches the workspace index, and renders
+/// each hit as a `` `relative/path` (lines a–b) `` header followed by the
+/// chunk body. Returns an empty vector when the index is absent/empty or
+/// the embedder is unreachable — the slot then contributes nothing.
+pub async fn retrieve(scope: &WorkspaceRagScope, user_message: &str) -> Vec<String> {
+    let hits = search::query(&scope.workspace_id, user_message, scope.limit).await;
+    hits.into_iter().map(|h| render_hit(scope, &h)).collect()
+}
+
+/// Format one search hit into a prompt snippet. The path is shown relative
+/// to the workspace folder when it sits under it (shorter + less leaky),
+/// falling back to the absolute path otherwise.
+fn render_hit(scope: &WorkspaceRagScope, hit: &search::SearchHit) -> String {
+    let display = relativize(&scope.folder, &hit.file_path);
+    let [start, end] = hit.line_range;
+    let loc = if start == end {
+        format!("line {start}")
+    } else {
+        format!("lines {start}-{end}")
+    };
+    format!("`{display}` ({loc})\n{}", hit.content.trim())
+}
+
+/// Strip the workspace-folder prefix from `path` for display. Best-effort:
+/// returns the original path if it isn't under `folder`.
+fn relativize(folder: &str, path: &str) -> String {
+    let folder_norm = folder.replace('\\', "/");
+    let path_norm = path.replace('\\', "/");
+    let prefix = folder_norm.trim_end_matches('/');
+    path_norm
+        .strip_prefix(prefix)
+        .map(|rest| rest.trim_start_matches('/').to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(path_norm)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::registry::WorkspaceDefinition;
+    use super::*;
+    use crate::workspaces::test_support::TestEnv;
 
     #[test]
     fn from_definition_respects_rag_enabled() {
@@ -62,6 +94,7 @@ mod tests {
         def.rag_enabled = true;
         let scope = WorkspaceRagScope::from_definition(&def).expect("scope when enabled");
         assert_eq!(scope.folder, "/tmp/scoped");
+        assert_eq!(scope.workspace_id, def.id);
         assert_eq!(scope.limit, WorkspaceRagScope::DEFAULT_LIMIT);
 
         def.rag_enabled = false;
@@ -75,12 +108,43 @@ mod tests {
         assert!(WorkspaceRagScope::from_definition(&def).is_none());
     }
 
-    #[test]
-    fn retrieve_is_pointer_only_empty() {
+    #[tokio::test]
+    async fn retrieve_is_empty_without_an_index() {
+        let _env = TestEnv::new();
         let scope = WorkspaceRagScope {
+            workspace_id: "no-index-000000".into(),
             folder: "/tmp/x".into(),
             limit: 5,
         };
-        assert!(retrieve(&scope, "anything").is_empty());
+        // No index on disk → fail-soft empty, never an error.
+        assert!(retrieve(&scope, "anything").await.is_empty());
+    }
+
+    #[test]
+    fn relativize_strips_folder_prefix_cross_platform() {
+        assert_eq!(relativize("/home/x/proj", "/home/x/proj/docs/a.md"), "docs/a.md");
+        assert_eq!(relativize(r"C:\proj", r"C:\proj\src\main.rs"), "src/main.rs");
+        // Not under the folder → unchanged (normalised separators).
+        assert_eq!(relativize("/home/x/proj", "/other/a.md"), "/other/a.md");
+    }
+
+    #[test]
+    fn render_hit_includes_path_and_line_range() {
+        let scope = WorkspaceRagScope {
+            workspace_id: "w".into(),
+            folder: "/proj".into(),
+            limit: 5,
+        };
+        let hit = search::SearchHit {
+            file_path: "/proj/notes.md".into(),
+            line_range: [3, 9],
+            content: "  body text  ".into(),
+            score: 0.5,
+            chunk_idx: 0,
+        };
+        let s = render_hit(&scope, &hit);
+        assert!(s.contains("`notes.md`"));
+        assert!(s.contains("lines 3-9"));
+        assert!(s.contains("body text"));
     }
 }

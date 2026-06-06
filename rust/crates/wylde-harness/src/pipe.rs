@@ -129,6 +129,8 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "workspaces.delete",
     "workspaces.set_persona",
     "workspaces.list_mru",
+    "workspaces.rag_query",
+    "workspaces.reindex",
     // memory.short_term.* — conversation working memory (3 verbs)
     "memory.short_term.get",
     "memory.short_term.append",
@@ -654,6 +656,33 @@ where
         "MRU-5 workspace list + active id for the InferenceBar dropdown. \
          No payload. Returns {workspaces: [WorkspaceDefinition, ...], \
          active_id}.",
+        HANDLER_MODULE_WORKSPACES,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "workspaces.rag_query",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.workspaces_rag_query(p).await }
+        },
+        "k-NN search over a workspace's file index. Payload {workspace_id, \
+         query, k?}. Returns {workspace_id, hits: [{file_path, line_range, \
+         content, score, chunk_idx}]}. Fail-soft: a missing index / empty \
+         workspace / unreachable embedder returns an empty hits list.",
+        HANDLER_MODULE_WORKSPACES,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "workspaces.reindex",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.workspaces_reindex(p).await }
+        },
+        "Force a full reindex of a workspace's folder (the Reindex button). \
+         Payload {workspace_id}. Returns {ok, workspace_id, file_count, \
+         chunk_count, last_error}; not_found for an unknown id.",
         HANDLER_MODULE_WORKSPACES,
     );
 

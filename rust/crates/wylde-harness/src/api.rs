@@ -119,6 +119,8 @@ pub trait HarnessApi: Send + Sync {
     async fn workspaces_delete(&self, payload: Value) -> Reply;
     async fn workspaces_set_persona(&self, payload: Value) -> Reply;
     async fn workspaces_list_mru(&self, payload: Value) -> Reply;
+    async fn workspaces_rag_query(&self, payload: Value) -> Reply;
+    async fn workspaces_reindex(&self, payload: Value) -> Reply;
 
     // ── memory.short_term.* (3 verbs; conversation working memory) ───
     async fn memory_short_term_get(&self, payload: Value) -> Reply;
@@ -440,6 +442,14 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn workspaces_list_mru(&self, payload: Value) -> Reply {
         workspaces_api::handle_list_mru(payload).await
+    }
+
+    async fn workspaces_rag_query(&self, payload: Value) -> Reply {
+        workspaces_api::handle_rag_query(payload).await
+    }
+
+    async fn workspaces_reindex(&self, payload: Value) -> Reply {
+        workspaces_api::handle_reindex(payload).await
     }
 
     // ── memory.short_term.* ──────────────────────────────────────────
