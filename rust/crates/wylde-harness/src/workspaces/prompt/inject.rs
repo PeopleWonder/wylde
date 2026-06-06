@@ -69,7 +69,7 @@ pub async fn gather(workspace_id: &str, user_message: &str) -> WorkspaceContext 
     };
 
     let rag_snippets = match WorkspaceRagScope::from_definition(&def) {
-        Some(scope) => rag::scope::retrieve(&scope, user_message),
+        Some(scope) => rag::scope::retrieve(&scope, user_message).await,
         None => Vec::new(),
     };
 

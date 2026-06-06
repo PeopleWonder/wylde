@@ -29,6 +29,7 @@
 use serde_json::{json, Value};
 use wylde_shared::ipc::Reply;
 
+use super::rag::indexer;
 use super::{persona, registry};
 
 fn require_string(payload: &Value, key: &str) -> Option<String> {
@@ -46,10 +47,16 @@ pub async fn handle_set_active(payload: Value) -> Reply {
         return Reply::err_msg("bad_request", "workspace_id is required");
     };
     match registry::set_active(&id) {
-        Ok(state) => Reply::ok(json!({
-            "active_id": state.active_id,
-            "mru": state.mru,
-        })),
+        Ok(state) => {
+            // Activating an existing workspace delta-reindexes its folder
+            // in the background (mirrors the retired Python `activate` →
+            // `_index_delta`); a never-indexed workspace gets a full pass.
+            indexer::spawn_background_index(id.clone());
+            Reply::ok(json!({
+                "active_id": state.active_id,
+                "mru": state.mru,
+            }))
+        }
         Err(registry::RegistryError::NotFound(_)) => {
             Reply::err_msg("not_found", format!("workspace {id:?} not found"))
         }
@@ -69,6 +76,9 @@ pub async fn handle_create(payload: Value) -> Reply {
     }
     let name = payload.get("name").and_then(Value::as_str);
     let def = registry::create(&folder, name);
+    // Index the folder in the background so create stays non-blocking;
+    // first-time create has no index yet → a full pass.
+    indexer::spawn_background_index(def.id.clone());
     Reply::ok(def.to_value())
 }
 
@@ -123,6 +133,49 @@ pub async fn handle_list_mru(_payload: Value) -> Reply {
     let (defs, active_id) = registry::list_mru();
     let workspaces: Vec<Value> = defs.iter().map(|d| d.to_value()).collect();
     Reply::ok(json!({ "workspaces": workspaces, "active_id": active_id }))
+}
+
+/// `workspaces.rag_query` — k-NN search over a workspace's file index.
+/// Payload: `{ "workspace_id": string, "query": string, "k"?: number }`.
+/// Returns `{ hits: [{file_path, line_range, content, score, chunk_idx}] }`.
+///
+/// Fail-soft: an unknown workspace, a missing/empty index, or an
+/// unreachable embedder all return an empty `hits` list (never an error),
+/// preserving the pointer-only fallback.
+pub async fn handle_rag_query(payload: Value) -> Reply {
+    let Some(id) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let query = payload.get("query").and_then(Value::as_str).unwrap_or("");
+    let k = payload
+        .get("k")
+        .and_then(Value::as_u64)
+        .map(|k| k as usize)
+        .unwrap_or(super::rag::WorkspaceRagScope::DEFAULT_LIMIT);
+    let hits = indexer::search::query(&id, query, k).await;
+    let hits: Vec<Value> = hits.iter().map(|h| h.to_value()).collect();
+    Reply::ok(json!({ "workspace_id": id, "hits": hits }))
+}
+
+/// `workspaces.reindex` — force a synchronous full reindex of a
+/// workspace's folder (the GUI "Reindex" button). Payload:
+/// `{ "workspace_id": string }`. Returns the resulting
+/// `{ ok, file_count, chunk_count, indexing, last_error }` status.
+pub async fn handle_reindex(payload: Value) -> Reply {
+    let Some(id) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(def) = registry::get(&id) else {
+        return Reply::err_msg("not_found", format!("workspace {id:?} not found"));
+    };
+    let outcome = indexer::reindex_full(&def).await;
+    Reply::ok(json!({
+        "ok": outcome.error.is_none(),
+        "workspace_id": id,
+        "file_count": outcome.file_count,
+        "chunk_count": outcome.chunk_count,
+        "last_error": outcome.error,
+    }))
 }
 
 #[cfg(test)]

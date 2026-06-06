@@ -16,7 +16,13 @@
 //!
 //! * [`scope`] — folder → [`WorkspaceRagScope`] translation + the
 //!   retrieval entrypoint the prompt builder calls.
+//! * [`indexer`] — the file-RAG index itself: walk → chunk → embed →
+//!   store + k-NN search + delta-reindex. This is the Rust port of the
+//!   retired Python/LanceDB indexer the redesign scaffold deferred; it
+//!   slots in behind [`scope::retrieve`] without changing the
+//!   prompt-builder contract.
 
+pub mod indexer;
 pub mod scope;
 
 pub use scope::WorkspaceRagScope;

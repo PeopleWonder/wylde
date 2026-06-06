@@ -106,6 +106,8 @@ mod tests {
             "workspaces.delete",
             "workspaces.set_persona",
             "workspaces.list_mru",
+            "workspaces.rag_query",
+            "workspaces.reindex",
             // memory.short_term.* — conversation working memory
             "memory.short_term.get",
             "memory.short_term.append",
