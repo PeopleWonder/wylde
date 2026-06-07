@@ -12,8 +12,6 @@ don't depend on Ollama. Coverage:
   directly via Python).
 * Long-term reflection fires on first tick (no prior state) and not
   again before its cadence elapses.
-* Workspace reflection + curation each fire per-workspace at their
-  own cadences.
 * Conversation reflection fires only after the conversation has been
   idle for the configured window.
 * State persists across scheduler restart — same instance reads its
@@ -203,8 +201,6 @@ def test_long_term_fires_on_first_tick_then_respects_cadence(
     cadence = sched_mod.CadenceConfig(
         poll_interval_s=1,
         long_term_reflect_s=100,
-        workspace_reflect_s=10_000,
-        workspace_curate_s=10_000,
         conversation_idle_s=10_000,
     )
     sched = sched_mod.MemoryScheduler(
@@ -256,8 +252,6 @@ def test_conversation_reflection_idle_window(scheduler_env: Any) -> None:
     cadence = sched_mod.CadenceConfig(
         poll_interval_s=1,
         long_term_reflect_s=10_000,
-        workspace_reflect_s=10_000,
-        workspace_curate_s=10_000,
         conversation_idle_s=300,  # 5 min idle window
     )
 
@@ -296,8 +290,6 @@ def test_state_persists_across_restart(scheduler_env: Any, tmp_path: Path) -> No
     cadence = sched_mod.CadenceConfig(
         poll_interval_s=1,
         long_term_reflect_s=1000,
-        workspace_reflect_s=10_000,
-        workspace_curate_s=10_000,
         conversation_idle_s=10_000,
     )
     sched1 = sched_mod.MemoryScheduler(
