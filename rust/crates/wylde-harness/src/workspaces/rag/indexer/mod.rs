@@ -1,10 +1,15 @@
 //! Workspace file-RAG indexer — walk → chunk → embed → store, plus k-NN
-//! search and delta-reindex.
+//! search and delta-reindex. Each index pass *also* drives a graph-ingest
+//! pass ([`graph_writer`]) — extract structural entities + write
+//! Chunk/Entity nodes + typed edges — so a workspace owns its full ingest
+//! pipeline (vector + graph) end-to-end, with no N8N hop.
 //!
 //! Rust port of the retired Python `Core/harness/memory/workspaces/`
 //! `_index.py` + `_search.py` (LanceDB), restoring the snippet-returning
 //! behaviour the workspaces redesign reduced to a pointer-only stub
-//! (PR #12, `bc243f2`). See `store.rs` for the storage-backend choice.
+//! (PR #12, `bc243f2`). See `store.rs` for the storage-backend choice. The
+//! graph half folds in the entity-extraction + Memgraph-write steps the
+//! retired N8N `rag-ingest.json` workflow used to own (see [`graph_writer`]).
 //!
 //! ## Entry points
 //!
@@ -23,6 +28,7 @@
 //! through `crate::memory::embeddings`, i.e. the `ollama.embed` pipe verb
 //! / `nomic-embed-text`. One backend, one call site — no second embedder.
 
+pub mod graph_writer;
 pub mod search;
 pub mod store;
 pub mod walk;
@@ -59,6 +65,11 @@ pub async fn reindex(def: &WorkspaceDefinition) -> IndexOutcome {
 pub async fn reindex_full(def: &WorkspaceDefinition) -> IndexOutcome {
     set_indexing(&def.id, true);
     let raw = walk::walk_and_chunk(&def.folder);
+    // Graph-ingest alongside the vector embed: extract structural entities
+    // and write Chunk/Entity nodes + typed edges. Fail-soft and fully
+    // independent of the embed below (see `graph_writer`), so a sidecar or
+    // graph-backend outage never blocks RAG.
+    log_graph(&def.id, &graph_writer::write_graph(def, &raw).await);
     let outcome = match embed_chunks(raw).await {
         Ok(chunks) => {
             let stats = persist(&def.id, &chunks);
@@ -94,6 +105,10 @@ pub async fn reindex_delta(def: &WorkspaceDefinition) -> IndexOutcome {
     let existing_count = existing.len() as u32;
 
     let walked = walk::walk_and_chunk(&def.folder);
+    // Re-ingest the graph for the full current folder each pass — `upsert`
+    // / `relate` MERGE, so this is idempotent. (Stale-node pruning on file
+    // delete is a future-slice concern; `delete_workspace` covers cleanup.)
+    log_graph(&def.id, &graph_writer::write_graph(def, &walked).await);
     let plan = plan_delta(existing, walked);
 
     let reembedded = match embed_chunks(plan.to_embed).await {
@@ -263,6 +278,26 @@ fn persist(workspace_id: &str, chunks: &[IndexedChunk]) -> IndexOutcome {
         file_count,
         chunk_count: chunks.len() as u32,
         error: None,
+    }
+}
+
+/// Log the graph-write pass outcome at the level matching success/failure.
+/// Graph-write is best-effort and reported separately from the embed
+/// [`IndexOutcome`] — it never changes the vector index result.
+fn log_graph(workspace_id: &str, g: &graph_writer::GraphOutcome) {
+    if let Some(e) = &g.error {
+        tracing::warn!("workspaces.rag.graph: {workspace_id} — graph-write degraded: {e}");
+    } else {
+        tracing::info!(
+            "workspaces.rag.graph: {workspace_id} — {} chunk nodes from {} files \
+             ({} skipped); edges CALLS={} IMPORTS={} INHERITS={}",
+            g.chunk_nodes,
+            g.files_parsed,
+            g.files_skipped,
+            g.calls,
+            g.imports,
+            g.inherits
+        );
     }
 }
 

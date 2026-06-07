@@ -5016,6 +5016,7 @@ dependencies = [
  "wiremock",
  "wylde-prebuild-guard",
  "wylde-shared",
+ "wylde-treesitter",
 ]
 
 [[package]]
