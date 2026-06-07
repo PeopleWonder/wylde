@@ -15,7 +15,7 @@ path = "src/lib.rs"
 # Wylde-wide colour change touches one file.
 wylde-theme = { path = "../../Theme" }
 
-# Pipe surface — workspaces lives behind `rag.workspaces.*` verbs on
+# Pipe surface — workspaces lives behind `workspaces.*` verbs on
 # `\\.\pipe\wylde-harness`; the panel reaches it through the shared
 # wire client.
 wylde-gui-pipe = { path = "../../Pipe" }

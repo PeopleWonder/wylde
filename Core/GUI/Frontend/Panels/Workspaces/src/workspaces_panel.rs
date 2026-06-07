@@ -1,14 +1,14 @@
 //! Workspaces panel View.
 //!
 //! State (held inline on the View):
-//!   * `workspaces` — last-read `rag.workspaces.list` reply.
+//!   * `workspaces` — last-read `workspaces.list_mru` reply.
 //!   * `active_id`  — currently-active workspace as the user sees it
-//!     (set on click + initialised from the harness's
-//!     `last_activated_at`-sorted first row).
+//!     (set on "Switch" click + initialised from the MRU head; the
+//!     "Switch" handler also persists it via `workspaces.set_active`).
 //!   * `error`      — last pipe error.  Surfaced as a red strip at
 //!     the top of the body so the user knows the panel is stale
 //!     rather than silently empty.
-//!   * `loading`    — `true` until the first `rag.workspaces.list`
+//!   * `loading`    — `true` until the first `workspaces.list_mru`
 //!     reply arrives; the View paints a "Loading…" row in the
 //!     interim instead of a blank pane.
 //!
@@ -30,7 +30,8 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::ipc::{
-    activate_workspace, delete_workspace, list_workspaces, reindex_workspace, WorkspaceSummary,
+    activate_workspace, delete_workspace, list_workspaces, reindex_workspace, set_active_workspace,
+    WorkspaceSummary,
 };
 
 /// Root Workspaces panel.
@@ -91,7 +92,7 @@ impl WorkspacesPanel {
 
     /// Add-workspace flow: open the OS folder picker (blocking — done
     /// on a tokio blocking task), forward the picked path to
-    /// `rag.workspaces.activate`, then re-read the list.
+    /// `workspaces.create`, then re-read the list.
     pub fn spawn_add(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             // The native picker is blocking.  This task runs on gpui's
@@ -126,12 +127,34 @@ impl WorkspacesPanel {
         .detach();
     }
 
-    /// Per-row "Switch" handler — just updates the local active id.
-    /// The harness is the source of truth for which workspace is bound
-    /// to a conversation; the panel's "active" tag is UX state only.
-    pub fn set_active(&mut self, id: &str, cx: &mut Context<Self>) {
-        self.active_id = Some(id.to_owned());
-        cx.notify();
+    /// Per-row "Switch" handler — persist the active workspace on the
+    /// harness via `workspaces.set_active` (sets the active pointer + bumps
+    /// the MRU, same verb the InferenceBar dropdown uses), update the
+    /// panel's "active" tag optimistically, then refresh the list so the
+    /// MRU re-order is reflected.
+    pub fn spawn_set_active(id: String, cx: &mut Context<Self>) {
+        // Optimistic local update so the highlight moves immediately.
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.active_id = Some(id.clone());
+                cx.notify();
+            });
+            let outcome = set_active_workspace(&id).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                if let Err(e) = outcome {
+                    panel.error = Some(e);
+                }
+                cx.notify();
+            });
+            let ws = list_workspaces().await.unwrap_or_default();
+            let _ = this.update(app_cx, |panel, cx| {
+                if !ws.is_empty() {
+                    panel.workspaces = ws;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Per-row "Re-index" handler — fires a full rebuild and refreshes.
@@ -400,8 +423,8 @@ fn workspace_card(
         row = row.child(action_button(
             ElementId::Name(format!("ws-switch::{}", ws.id).into()),
             "Switch",
-            cx.listener(move |this: &mut WorkspacesPanel, _ev, _window, cx| {
-                this.set_active(&id_for_switch, cx);
+            cx.listener(move |_this: &mut WorkspacesPanel, _ev, _window, cx| {
+                WorkspacesPanel::spawn_set_active(id_for_switch.clone(), cx);
             }),
         ));
     }

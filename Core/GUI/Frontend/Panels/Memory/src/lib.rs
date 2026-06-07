@@ -5,10 +5,9 @@
 //!   * **Long-term** — curated, importance-gated records shared across
 //!     every conversation.  Pulled via `memory.long_term.list`; search
 //!     uses `memory.long_term.search`.
-//!   * **Workspace** — the active workspace's persona + per-workspace
-//!     memory hints.  Pulled via `memory.workspaces.get`.  The active
-//!     workspace itself is sourced from `memory.workspaces.recent` so
-//!     a separate "active" pipe-verb dependency isn't introduced.
+//!   * **Workspace** — the recent workspaces (MRU-5).  Sourced from
+//!     `workspaces.list_mru` (config-file-backed redesign, PR #12 —
+//!     the retired `memory.workspaces.*` surface returned `no_action`).
 //!   * **Short-term** — the rolling per-conversation buffer.  The Rust
 //!     harness does not yet serve `memory.short_term.*` (see the §9
 //!     strangler-fig deferred list); we surface the layer as a

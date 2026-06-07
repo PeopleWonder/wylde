@@ -2,11 +2,11 @@
 //!
 //! Wraps the harness's `workspaces.*` verbs (config-file-backed redesign,
 //! 2026-06-05) into typed reads / writes the View body consumes. The
-//! legacy `rag.workspaces.*` surface (and its LanceDB file-indexer) was
-//! retired in the clean break, so index-only fields (`file_count`,
-//! `last_indexed_at`, `indexing`) are no longer populated and the
-//! re-index control is inert. The MRU window is the harness's static
-//! MRU-5.
+//! legacy `rag.workspaces.*` surface was retired in the clean break.
+//! `list_mru` is the slim MRU-5 projection, so index-only fields
+//! (`file_count`, `last_indexed_at`, `indexing`) are not populated on the
+//! list rows; the re-index control drives the Rust file-indexer ported in
+//! PR #18 via `workspaces.reindex`.
 
 use serde_json::{json, Value};
 
@@ -83,9 +83,9 @@ pub async fn recent_workspaces(_limit: u32) -> Result<Vec<WorkspaceSummary>, Str
 }
 
 /// Register a workspace at `path` (and activate it). Redesign
-/// replacement for `rag.workspaces.activate`; the harness derives the
-/// slug. `full_reindex` is accepted for call-site compatibility but
-/// ignored — there is no file indexer in the redesign.
+/// replacement for `rag.workspaces.activate`'s create-on-new path; the
+/// harness derives the slug. `full_reindex` is accepted for call-site
+/// compatibility but ignored — `create` always indexes the new folder.
 pub async fn activate_workspace(path: &str, _full_reindex: bool) -> Result<Value, String> {
     wylde_gui_pipe::call(
         "wylde-harness",
@@ -99,11 +99,36 @@ pub async fn activate_workspace(path: &str, _full_reindex: bool) -> Result<Value
     .await
 }
 
-/// Re-index is retired in the config-file-backed redesign (the LanceDB
-/// file indexer is gone). Kept so the panel's button compiles; it
-/// returns an explanatory error rather than dispatching a dead verb.
-pub async fn reindex_workspace(_workspace_id: &str) -> Result<Value, String> {
-    Err("workspace re-index is retired in the workspaces redesign".to_owned())
+/// Mark an existing workspace active + bump it to the MRU head. Redesign
+/// replacement for `rag.workspaces.activate`'s activate-existing path
+/// (the InferenceBar uses the same `workspaces.set_active` verb).
+pub async fn set_active_workspace(workspace_id: &str) -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        "wylde-harness",
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "workspaces.set_active",
+            "payload": { "workspace_id": workspace_id },
+        })),
+    )
+    .await
+}
+
+/// Force a full re-index of a workspace's folder — the "Re-index"
+/// button. Drives the Rust file-indexer ported in PR #18 via the
+/// `workspaces.reindex` verb.
+pub async fn reindex_workspace(workspace_id: &str) -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        "wylde-harness",
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "workspaces.reindex",
+            "payload": { "workspace_id": workspace_id },
+        })),
+    )
+    .await
 }
 
 /// Remove a workspace + its on-disk bundle.
@@ -238,11 +263,12 @@ mod tests {
     #[test]
     fn each_pipe_call_uses_expected_verb() {
         // Build-time witness: every async helper compiles and the
-        // verbs match the harness's `rag.workspaces.*` surface.  Same
+        // verbs match the harness's `workspaces.*` surface.  Same
         // pattern slice 2's Settings tests used.
         let _ = list_workspaces;
         let _ = recent_workspaces;
         let _ = activate_workspace;
+        let _ = set_active_workspace;
         let _ = reindex_workspace;
         let _ = delete_workspace;
     }
