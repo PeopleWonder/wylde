@@ -76,12 +76,13 @@ Three layers, top to bottom:
 │         ▲                                                   │
 │         │                                                   │
 │  ┌──────┴──────────┐                                        │
-│  │  N8N rag-ingest │  triggered by file watcher (Slice G)   │
-│  └─────────────────┘                                        │
+│  │ harness graph_writer │  Workspaces owns ingest end-to-end │
+│  │ (reindex + watcher G) │  — no N8N hop                     │
+│  └──────────────────────┘                                   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Key insight:** the data layer is ~80% done. Tree-sitter sidecar is live with 6 grammars and 4 verbs; N8N's RAG ingest already pipes entities into Memgraph. The bottleneck is that nothing *consumes* the graph data yet — neither the GUI nor the chat turn driver. That's what this plan addresses.
+**Key insight:** the data layer is ~80% done. Tree-sitter sidecar is live with 6 grammars and 4 verbs; **the harness's `workspaces::rag::indexer` now owns ingest end-to-end** — each workspace index pass extracts entities via the sidecar pipe and writes Chunk/Entity nodes + `CALLS`/`IMPORTS`/`INHERITS` edges to Memgraph directly (PR #22, 2026-06-07; the old N8N `rag-ingest` workflow is retired). N8N is for *user* workflows only. The bottleneck is that nothing *consumes* the graph data yet — neither the GUI nor the chat turn driver. That's what this plan addresses.
 
 ---
 
@@ -89,13 +90,22 @@ Three layers, top to bottom:
 
 Each slice = one branch, one PR. Suggested order optimizes for fastest visible payoff and easiest validation.
 
-### Slice A — Payoff verification + data-layer gap-fix (prerequisite)
+### Slice A — Payoff verification + data-layer gap-fix (prerequisite) — ✅ COMPLETE (superseded)
 
-**Branch:** `verify/tree-sitter-memgraph-payoff` (already spawned)
+**Superseded by** `feat/decouple-workspace-ingest-from-n8n` (PR #22, merged 2026-06-07).
 
-Verify the tree-sitter → Memgraph pipeline actually populates `CALLS`/`IMPORTS`/`INHERITS` edges. If any stage is broken, fix before going further. **No new features land on top of unverified data.**
+The verification step found the real gap: the harness `workspaces::rag::indexer` (PR #18) embedded chunks but **never wrote the graph** — that half still lived in N8N. Rather than just verify, that PR closed the gap by folding entity-extraction + Memgraph upsert/relate into the harness (`workspaces::rag::indexer::graph_writer`) and retiring the N8N `rag-ingest` workflow. End-to-end verified against the harness `workspaces/` corpus:
 
-**Deliverable:** verdict matrix per pipeline stage + sample edges + any data-layer fixes needed.
+| Stage | Verdict | Evidence |
+|---|---|---|
+| tree-sitter `extract_entities` (pipe) | ✅ | 22 files parsed, 0 skipped |
+| Chunk/Entity upsert (Bolt) | ✅ | 50 workspace-scoped Chunk nodes, 1057 MENTIONED_IN |
+| `CALLS` edges | ✅ | 945 written; sample `create→save_definition`, `create→epoch_now` |
+| `IMPORTS` edges | ✅ | 89 |
+| `INHERITS` edges | ✅ | 5 (`impl Trait for T`) |
+| workspace scoping + cleanup | ✅ | `delete_workspace` → 50 chunks + 382 orphan entities removed, 0 remaining |
+
+**No new features land on top of unverified data** — that bar is now met; the data layer is live and harness-owned.
 
 ### Slice B — `workspaces.graph` verb
 
@@ -166,13 +176,13 @@ Build the two unfinished verbs from the original tree-sitter plan:
 
 Wire into the GUI: outline becomes a per-file sidebar tree; highlight powers syntax coloring in any text view (workspace file browser, future IDE panels).
 
-### Slice G — Real-time delta re-indexing
+### Slice G — Real-time delta re-indexing (canonical ingest trigger)
 
 **Branch:** `feat/workspace-file-watcher`
 
-When a file changes in an active workspace folder, re-extract just that file via `treesitter.extract_entities` and delta-upsert into Memgraph (instead of waiting for the next full N8N ingest cycle). Workspaces becomes always-fresh.
+Now that ingest is harness-owned (`graph_writer`), the file watcher is **the canonical ongoing ingest trigger**, not a nice-to-have optimization. The reindex pass handles the initial/full ingest on create/activate; the watcher keeps the graph current after that. When a file changes in an active workspace folder, re-extract just that file via `treesitter.extract_entities` and delta-upsert into Memgraph. Workspaces becomes always-fresh.
 
-**Implementation:** `notify` Rust crate watches the workspace folder; debounces edits (200ms); per-file Memgraph `upsert` + `relate` calls.
+**Implementation:** `notify` Rust crate watches the workspace folder; debounces edits (200ms); calls the same `graph_writer` path (per-file `treesitter.extract_entities` → `memgraph.upsert` + `relate`) the reindex pass uses. The TODO hook already noted in `graph_writer`'s module docs lands here.
 
 ### Slice H — More grammars (as-needed)
 
@@ -231,9 +241,9 @@ This is the slice that takes Wylde from "AI that knows your codebase superficial
 
 ### Slice G (file watcher) — *always-fresh graph*
 
-**Before:** the graph reflects whatever N8N's last ingest run captured. You make an edit, the graph stales until next cron run.
+**Before:** the graph reflects whatever the last reindex pass (on create/activate, or the `workspaces.reindex` verb) captured. You make an edit, the graph stales until the next pass.
 
-**After:** save a file → the graph updates within seconds. AI context for "what I'm currently working on" is always current.
+**After:** save a file → the harness re-ingests just that file → the graph updates within seconds. AI context for "what I'm currently working on" is always current.
 
 **AI dev:** matters most for "I just wrote `foo`, now help me wire it in" workflows — the LLM sees `foo` exists immediately. No "the model doesn't know about your new function" friction.
 
