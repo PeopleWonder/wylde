@@ -58,46 +58,33 @@ curl -X POST http://localhost:5678/webhook/agent-orchestra \
 | `requested_by` | `'n8n'`  | Attribution tag; shows up in traces.                 |
 | `trace_hint`   | `''`     | Optional free-form tag for grouping runs.            |
 
-## `rag-ingest.json` — RAG Ingest (AST-aware chunking)
+## `rag-ingest.json` — RETIRED (2026-06-07)
 
-The memory-layer indexing pipeline. Triggered by
-`Core/harness/memory/ingest.py::trigger_ingest` (webhook
-`/webhook/wylde-ingest`).
+**Removed.** Workspace RAG ingest is now **harness-owned end-to-end** — no
+N8N hop. The chunk → embed half was ported to Rust in PR #18
+(`workspaces::rag::indexer`); the entity-extraction → Memgraph
+upsert/relate half (this workflow's "Build Graph + Attach Entities" node
+plus the upsert + 3× `relate` calls) was folded into the harness in
+`workspaces::rag::indexer::graph_writer` (2026-06-07). Each workspace
+index pass now extracts entities via the `wylde-treesitter` sidecar pipe
+and writes Chunk/Entity nodes + `CALLS`/`IMPORTS`/`INHERITS` edges over
+direct Bolt, all inside the harness.
 
-### What changed (tree-sitter Slice 2)
-The **chunking node** is now an n8n **HTTP Request** node pointed at the
-`wylde-treesitter` sidecar's localhost HTTP front door:
+**The principle: ingest is harness-owned; N8N is for *user* workflows
+only.** Pipelines the harness owns (RAG indexing, graph ingest) live in
+Rust where they are testable, versioned, and fail-soft. N8N hosts the
+user-authored automation surface (e.g. `agent-orchestra.json`), not core
+data-plane plumbing. See memory `wylde-n8n-principle`.
 
-```
-POST {{ $env.WYLDE_TREESITTER_HTTP_URL || 'http://127.0.0.1:8030' }}/chunk
-{ "path": "<abs file path>", "max_chunk_bytes": <optional> }
-→ { path, language, ast_aware, chunk_count,
-    chunks: [ { start_line, end_line, byte_start, byte_end, kind, symbol_name? } ] }
-```
-
-This replaces the previous heuristic chunker (fixed line/character windows)
-so chunks fall on **function/class boundaries** instead of arbitrary cuts.
-Unknown languages fall back to byte windows. Per
-`docs/plans/treesitter-sidecar.md`: the workflow calls the Rust sidecar
-**directly via the HTTP Request node** — there is no Python adapter and no
-Execute-Command CLI shim. Only Python is parsed today (one statically-linked
-grammar); more languages land in Slice 5.
-
-The sidecar binds **loopback only** (`127.0.0.1`). Override the base URL with
-`WYLDE_TREESITTER_HTTP_URL` if n8n runs in a container that reaches the host
-by a different name (e.g. `http://host.docker.internal:8030`).
-
-### Node graph
-`Webhook → Normalise → Discover Files (pre-chunk) → **Chunk (Tree-sitter
-Sidecar)** → Expand Chunks → Embed + Index (post-chunk) → Summarise →
-Respond`. The pre-chunk discovery and post-chunk embed/index wiring are
-unchanged — only the chunk node was swapped. Graph entity/edge upsert
-(memgraph) lands in Slice 3.
-
-### Body fields
-| Field          | Default     | Meaning                                                  |
-| -------------- | ----------- | -------------------------------------------------------- |
-| `target_path`  | required    | Root path to index.                                      |
-| `workspace_id` | `'default'` | Logical workspace bucket (chunk + graph filters).        |
-| `paths`        | `[]`        | Explicit file subset; skips discovery when non-empty.    |
-| `options`      | `{}`        | Pass-through knobs, e.g. `{ "max_chunk_bytes": 24576 }`. |
+> ⚠️ **Live-N8N note for Aaron.** This file is only the importable
+> *template*. If `rag-ingest.json` was ever imported into the running N8N
+> instance and activated, it is still live in N8N's DB — deactivate it
+> manually (it has no harness caller for the Workspaces path anymore).
+>
+> ⚠️ **Orphaned global-memory caller.** The harness's global-memory
+> `rag_index` / `rag_reindex` tools (`memory::rag::ingest::trigger_ingest`
+> → `POST /webhook/wylde-ingest`) still target this same webhook. They are
+> a *separate* path from Workspaces and were **out of scope** for this
+> slice, so their code was left intact. With the template retired they
+> should, in a follow-up, either be ported to the harness indexer the same
+> way or be retired alongside the workflow. Flagged for Aaron.
