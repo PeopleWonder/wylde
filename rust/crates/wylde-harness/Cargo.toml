@@ -86,3 +86,13 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+# Real tree-sitter entity extraction for the workspace graph-ingest
+# integration test — parses real `.rs` fixtures in-process instead of
+# round-tripping the sidecar pipe. Test-only: production graph-ingest
+# reaches the sidecar over IPC (`treesitter.extract_entities`) and never
+# links this crate.
+wylde-treesitter = { path = "../wylde-treesitter" }
+# Raw Cypher for the `#[ignore]` live graph-ingest round-trip test
+# (workspace-scoped node/edge counts + sample edges). Same driver the
+# `rust` memgraph branch uses; here it's for read-back verification only.
+neo4rs = "0.8"
