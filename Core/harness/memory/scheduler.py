@@ -1,22 +1,18 @@
-"""Daemon-side reflection + curation scheduler.
+"""Daemon-side reflection scheduler.
 
 A single background thread that polls every ``poll_interval`` seconds
-and fires :func:`Core.harness.memory.reflection.reflect` and
-:func:`Core.harness.memory.workspace_memory.curate` at separate
+and fires :func:`Core.harness.memory.reflection.reflect` at separate
 cadences — most chat-turn latency stays out of the way because the
 scheduler runs them on idle.
 
 Cadence defaults (override via env or constructor kwargs)::
 
     conversation reflection : every 10 min of conversation idle
-    workspace reflection    : every 6 hours per workspace
     long-term reflection    : every 24 hours
-    workspace curation      : every 24 hours per workspace
 
 State is persisted to ``$DATA_DIR/scheduler_state.json`` so a daemon
 restart doesn't replay the entire backlog. The state file tracks
-``last_reflected_at`` per (conversation_id, workspace_id, "long_term")
-and ``last_curated_at`` per workspace.
+``last_reflected_at`` per (conversation_id, "long_term").
 
 The scheduler needs an LLM-callable. The Lifecycle daemon constructs a
 default chat_fn from :mod:`Core.harness.backend.backend_routing` and
@@ -36,11 +32,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from . import reflection as _reflection
-from . import workspace_memory as _ws_mem
-
-# workspaces: removed in config-file-backed redesign (2026-06-05) —
-# the `workspaces` MRU index now lives in Rust; the periodic per-workspace
-# reflect/curate ticks below are now no-ops.
 from . import conversation as _conv
 from ._common import DATA_DIR, ensure_dir
 
@@ -56,14 +47,8 @@ DEFAULT_POLL_INTERVAL_S = float(os.getenv("WYLDE_SCHED_POLL_S", "60"))
 DEFAULT_CONVERSATION_IDLE_S = float(
     os.getenv("WYLDE_SCHED_CONV_IDLE_S", "600")
 )  # 10 min
-DEFAULT_WORKSPACE_REFLECT_S = float(
-    os.getenv("WYLDE_SCHED_WS_REFLECT_S", "21600")
-)  # 6 h
 DEFAULT_LONG_TERM_REFLECT_S = float(
     os.getenv("WYLDE_SCHED_LT_REFLECT_S", "86400")
-)  # 24 h
-DEFAULT_WORKSPACE_CURATE_S = float(
-    os.getenv("WYLDE_SCHED_WS_CURATE_S", "86400")
 )  # 24 h
 
 
@@ -76,15 +61,11 @@ class SchedulerState:
     only; loaded once at start, persisted after every fire."""
 
     long_term_reflected_at: float = 0.0
-    workspace_reflected_at: Dict[str, float] = field(default_factory=dict)
-    workspace_curated_at: Dict[str, float] = field(default_factory=dict)
     conversation_reflected_at: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "long_term_reflected_at": self.long_term_reflected_at,
-            "workspace_reflected_at": dict(self.workspace_reflected_at),
-            "workspace_curated_at": dict(self.workspace_curated_at),
             "conversation_reflected_at": dict(self.conversation_reflected_at),
         }
 
@@ -92,8 +73,6 @@ class SchedulerState:
     def from_dict(cls, d: Dict[str, Any]) -> "SchedulerState":
         return cls(
             long_term_reflected_at=float(d.get("long_term_reflected_at") or 0.0),
-            workspace_reflected_at=dict(d.get("workspace_reflected_at") or {}),
-            workspace_curated_at=dict(d.get("workspace_curated_at") or {}),
             conversation_reflected_at=dict(d.get("conversation_reflected_at") or {}),
         )
 
@@ -126,9 +105,7 @@ class CadenceConfig:
 
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S
     conversation_idle_s: float = DEFAULT_CONVERSATION_IDLE_S
-    workspace_reflect_s: float = DEFAULT_WORKSPACE_REFLECT_S
     long_term_reflect_s: float = DEFAULT_LONG_TERM_REFLECT_S
-    workspace_curate_s: float = DEFAULT_WORKSPACE_CURATE_S
 
 
 class MemoryScheduler:
@@ -184,11 +161,8 @@ class MemoryScheduler:
         )
         self._thread.start()
         self._logger.info(
-            "scheduler: started (poll=%.0fs, ws_reflect=%.0fs, "
-            "ws_curate=%.0fs, lt_reflect=%.0fs)",
+            "scheduler: started (poll=%.0fs, lt_reflect=%.0fs)",
             self._cadence.poll_interval_s,
-            self._cadence.workspace_reflect_s,
-            self._cadence.workspace_curate_s,
             self._cadence.long_term_reflect_s,
         )
         return True
@@ -223,8 +197,6 @@ class MemoryScheduler:
         """
         counts = {
             "conversation": 0,
-            "workspace_reflect": 0,
-            "workspace_curate": 0,
             "long_term": 0,
         }
         if self._chat_fn is None:
@@ -237,18 +209,6 @@ class MemoryScheduler:
             counts["conversation"] = self._tick_conversations(now)
         except Exception:  # noqa: BLE001
             self._logger.exception("scheduler: conversation tick raised")
-
-        # Workspace reflection — periodic per workspace.
-        try:
-            counts["workspace_reflect"] = self._tick_workspaces_reflect(now)
-        except Exception:  # noqa: BLE001
-            self._logger.exception("scheduler: workspace reflect tick raised")
-
-        # Workspace curation — longer cadence per workspace.
-        try:
-            counts["workspace_curate"] = self._tick_workspaces_curate(now)
-        except Exception:  # noqa: BLE001
-            self._logger.exception("scheduler: workspace curate tick raised")
 
         # Long-term reflection — global, daily.
         try:
@@ -286,16 +246,6 @@ class MemoryScheduler:
             fired += 1
         return fired
 
-    def _tick_workspaces_reflect(self, now: float) -> int:
-        # workspaces: removed in config-file-backed redesign (2026-06-05) —
-        # no Python workspace MRU index to iterate; no-op.
-        return 0
-
-    def _tick_workspaces_curate(self, now: float) -> int:
-        # workspaces: removed in config-file-backed redesign (2026-06-05) —
-        # no Python workspace MRU index to iterate; no-op.
-        return 0
-
     def _tick_long_term(self, now: float) -> int:
         if now - self._state.long_term_reflected_at < self._cadence.long_term_reflect_s:
             return 0
@@ -317,21 +267,6 @@ class MemoryScheduler:
             )
         except Exception:  # noqa: BLE001
             self._logger.exception("scheduler: reflect(%s) failed", scope)
-
-    def _fire_curate(self, workspace_id: str) -> None:
-        try:
-            result = _ws_mem.curate(workspace_id, chat_fn=self._chat_fn)
-            self._logger.info(
-                "scheduler: curated workspace %s (skipped=%s, kept=%d, "
-                "superseded=%d, merged=%d)",
-                workspace_id,
-                result.skipped,
-                len(result.kept),
-                len(result.superseded),
-                len(result.merged),
-            )
-        except Exception:  # noqa: BLE001
-            self._logger.exception("scheduler: curate(%s) failed", workspace_id)
 
 
 # ── Production chat_fn factory ─────────────────────────────────────────
