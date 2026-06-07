@@ -66,9 +66,12 @@ impl LongTermRecord {
     }
 }
 
-/// One workspace summary as `memory.workspaces.recent` reports it.  The
-/// shape lines up with `rag.workspaces.*` so a future namespace merge
-/// (deferred per the §9 punchlist) won't ripple into the panel.
+/// One workspace summary as `workspaces.list_mru` reports it
+/// (config-file-backed redesign, PR #12).  The MRU entries are
+/// `WorkspaceDefinition` records, so `path` is sourced from `folder`;
+/// `persona` text and `last_activated_at` are not part of the slim
+/// list-MRU projection and stay `None` (the row degrades to "No persona
+/// set" / "Never activated").
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WorkspaceSummary {
     pub id: String,
@@ -85,8 +88,11 @@ impl WorkspaceSummary {
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_owned(),
+            // Redesign `WorkspaceDefinition` uses `folder`; fall back to
+            // the legacy `path` key for resilience.
             path: v
-                .get("path")
+                .get("folder")
+                .or_else(|| v.get("path"))
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_owned(),
@@ -139,15 +145,19 @@ pub async fn search_long_term(query: &str, limit: u32) -> Result<Vec<LongTermRec
     Ok(arr.iter().map(LongTermRecord::from_value).collect())
 }
 
-/// Read up to `limit` most-recent workspaces.
-pub async fn recent_workspaces(limit: u32) -> Result<Vec<WorkspaceSummary>, String> {
+/// Read the most-recent workspaces.  Migrated to `workspaces.list_mru`
+/// (config-file-backed redesign, PR #12) — the retired
+/// `memory.workspaces.recent` verb returned `no_action`.  The harness
+/// caps at its static MRU-5 window, so `limit` is accepted for call-site
+/// compatibility but ignored.
+pub async fn recent_workspaces(_limit: u32) -> Result<Vec<WorkspaceSummary>, String> {
     let v = wylde_gui_pipe::call(
         SVC_HARNESS,
         "POST",
         "/__action__",
         Some(json!({
-            "action": "memory.workspaces.recent",
-            "payload": { "limit": limit },
+            "action": "workspaces.list_mru",
+            "payload": {},
         })),
     )
     .await?;

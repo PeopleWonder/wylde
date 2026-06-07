@@ -1,15 +1,15 @@
 //! Workspaces panel — gpui-era port of
 //! `Core/GUI/src/pages/Workspaces.svelte`.
 //!
-//! Scope of slice 3:
+//! Scope (config-file-backed workspaces redesign, PR #12 + RAG indexer
+//! PR #18 — `workspaces.*` verb surface):
 //!   - List the workspaces the harness reports via
-//!     `rag.workspaces.list` (MRU order, single path per workspace
-//!     under the harness model — see `wylde_rag_workspaces` memory).
+//!     `workspaces.list_mru` (static MRU-5, single folder per workspace).
 //!   - Show the currently-active workspace inline at the top.
 //!   - Add a workspace via the native folder picker (`rfd`) →
-//!     `rag.workspaces.activate`.
-//!   - Re-index (`rag.workspaces.reindex`) and remove
-//!     (`rag.workspaces.delete`) per-row.
+//!     `workspaces.create`; "Switch" → `workspaces.set_active`.
+//!   - Re-index (`workspaces.reindex`) and remove
+//!     (`workspaces.delete`) per-row.
 //!
 //! Out of scope for this slice (next slices):
 //!   - Per-workspace persona editor.

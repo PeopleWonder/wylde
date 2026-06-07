@@ -15,7 +15,7 @@
 //!   * `search_generation`    — monotonic counter incremented on each
 //!     keystroke so a stale 300 ms task can detect it's been overtaken
 //!     and bail before issuing a search.
-//!   * `workspaces`           — last `memory.workspaces.recent` reply.
+//!   * `workspaces`           — last `workspaces.list_mru` reply.
 //!   * `expanded`             — set of record ids the user clicked to
 //!     reveal the full body.
 //!   * `error`                — last pipe error.
