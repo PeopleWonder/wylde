@@ -25,7 +25,7 @@
 //! ## Single embedding backend
 //!
 //! Every embedding (chunks at index time, the query at search time) goes
-//! through `crate::memory::embeddings`, i.e. the `ollama.embed` pipe verb
+//! through `crate::embeddings`, i.e. the `ollama.embed` pipe verb
 //! / `nomic-embed-text`. One backend, one call site — no second embedder.
 
 pub mod graph_writer;
@@ -36,7 +36,7 @@ pub mod walk;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-use crate::workspaces::registry::{self, WorkspaceDefinition};
+use crate::registry::{self, WorkspaceDefinition};
 use store::{IndexedChunk, RagState};
 
 /// Result of an index pass.
@@ -227,7 +227,7 @@ async fn embed_chunks(raw: Vec<walk::Chunk>) -> Result<Vec<IndexedChunk>, String
         return Ok(Vec::new());
     }
     let texts: Vec<String> = raw.iter().map(|c| c.content.clone()).collect();
-    let vectors = crate::memory::embeddings::embed(texts)
+    let vectors = crate::embeddings::embed(texts)
         .await
         .map_err(|e| e.to_string())?;
     if vectors.len() != raw.len() {

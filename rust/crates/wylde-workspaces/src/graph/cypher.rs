@@ -1,0 +1,76 @@
+//! Cypher templates for the workspace graph-ingest writes.
+//!
+//! A narrow relocation of the harness `memory::memgraph::cypher` (Slice 0b):
+//! only the statements the workspace ingest + cleanup paths use (`upsert`,
+//! `relate`, `delete_workspace`). The strings are byte-identical to the
+//! harness copies so the two services write the same shapes to the one Neo4j.
+
+/// `upsert` — merge chunks + entities + MENTIONED_IN edges. Stale
+/// MENTIONED_IN edges are cleared per-chunk so a re-emit doesn't accumulate
+/// cruft.
+pub const UPSERT_ENTITIES: &str = "
+UNWIND $batch AS row
+MERGE (c:Chunk {id: row.id})
+SET   c.path = row.path, c.symbol = row.symbol, c.language = row.language,
+      c.workspace = row.workspace
+WITH  c, row
+OPTIONAL MATCH (c)<-[e:MENTIONED_IN]-(:Entity)
+DELETE e
+WITH  c, row
+UNWIND row.entities AS ent_name
+MERGE (e:Entity {name: ent_name})
+MERGE (e)-[:MENTIONED_IN]->(c)
+";
+
+/// `delete_workspace` step 1 — DETACH DELETE every Chunk in a workspace.
+pub const DELETE_WORKSPACE_CHUNKS: &str = "
+MATCH (c:Chunk {workspace: $ws})
+WITH count(c) AS n, collect(c) AS cs
+UNWIND cs AS c DETACH DELETE c
+RETURN n
+";
+
+/// `delete_workspace` step 2 — prune Entity nodes whose only edges were
+/// MENTIONED_IN edges into the now-deleted chunks.
+pub const DELETE_ORPHAN_ENTITIES: &str = "
+MATCH (e:Entity)
+WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk)
+WITH count(e) AS n, collect(e) AS es
+UNWIND es AS e DETACH DELETE e
+RETURN n
+";
+
+/// `relate` — typed Entity→Entity edges. Built per `rel_type` because Cypher
+/// disallows `$`-substitution in relationship-type positions; the caller MUST
+/// validate `rel_type` against [`super::schema::relation_type_is_valid`].
+pub fn relate_typed(rel_type: &str) -> String {
+    format!(
+        "
+UNWIND $pairs AS row
+MERGE (a:Entity {{name: row.source}})
+MERGE (b:Entity {{name: row.target}})
+MERGE (a)-[:{rel_type}]->(b)
+"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upsert_entities_mentions_required_fields() {
+        for needle in [
+            "$batch", "Chunk", "Entity", "MENTIONED_IN", "row.id", "row.workspace",
+        ] {
+            assert!(UPSERT_ENTITIES.contains(needle), "UPSERT_ENTITIES missing {needle}");
+        }
+    }
+
+    #[test]
+    fn relate_interpolates_rel_type() {
+        let r = relate_typed("CALLS");
+        assert!(r.contains("[:CALLS]"));
+        assert!(r.contains("$pairs"));
+    }
+}

@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use super::definition::WorkspaceDefinition;
-use crate::memory::common::{data_dir, ensure_dir};
+use crate::common::{data_dir, ensure_dir};
 
 /// `<data_dir>/workspaces/` — the redesign's storage root. Holds
 /// `index.json` plus one `<workspace_id>/` subdir per workspace.
@@ -74,7 +74,7 @@ pub fn load_all() -> Vec<WorkspaceDefinition> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspaces::test_support::TestEnv;
+    use crate::test_support::TestEnv;
 
     #[test]
     fn save_then_load_definition_round_trips() {

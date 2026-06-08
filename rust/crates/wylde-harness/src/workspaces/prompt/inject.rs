@@ -7,9 +7,13 @@
 //! the turn driver appends to the system prompt.
 
 use super::super::memory::{query, WorkspaceMemoryQuery};
-use super::super::persona;
-use super::super::rag::WorkspaceRagScope;
-use super::super::{rag, registry};
+// Slice 0b: registry / persona / rag relocated to the `wylde-workspaces`
+// crate. The prompt builder still gathers them in-process (read-only) via the
+// lib; Slice 0d repoints this to the service pipe. `memory` (above) stays
+// harness-owned until Slice 0c.
+use wylde_workspaces::persona;
+use wylde_workspaces::rag::{self, WorkspaceRagScope};
+use wylde_workspaces::registry;
 
 /// Everything a workspace contributes to one chat turn's system prompt,
 /// resolved from the active workspace's config + stores.

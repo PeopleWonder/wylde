@@ -35,6 +35,17 @@ pub struct Config {
     /// Repo / install root, used for the action-contract write path and as
     /// the base for `data_dir` when the latter isn't set explicitly.
     pub wylde_root: PathBuf,
+
+    /// IPC service name of the embedder (`ollama.embed`). Default
+    /// `wylde-ollama`; override via `WYLDE_WORKSPACES_OLLAMA_SERVICE`.
+    /// Consumed by [`crate::embeddings`] for ingest + RAG-query embeds.
+    pub ollama_service: String,
+
+    /// IPC service name of the tree-sitter sidecar
+    /// (`treesitter.extract_entities`). Default `wylde-treesitter`; override
+    /// via `WYLDE_WORKSPACES_TREESITTER_SERVICE`. Consumed by the graph-ingest
+    /// half of [`crate::rag::indexer`].
+    pub treesitter_service: String,
 }
 
 impl Config {
@@ -53,10 +64,24 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|| wylde_root.join("data").join("workspaces"));
 
+        let ollama_service = std::env::var("WYLDE_WORKSPACES_OLLAMA_SERVICE")
+            .ok()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "wylde-ollama".to_owned());
+
+        let treesitter_service = std::env::var("WYLDE_WORKSPACES_TREESITTER_SERVICE")
+            .ok()
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "wylde-treesitter".to_owned());
+
         Self {
             service_name,
             data_dir,
             wylde_root,
+            ollama_service,
+            treesitter_service,
         }
     }
 

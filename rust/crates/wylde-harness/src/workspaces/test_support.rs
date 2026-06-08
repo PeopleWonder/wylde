@@ -17,12 +17,16 @@ use tempfile::TempDir;
 
 use crate::memory::common::TEST_ENV_LOCK as ENV_LOCK;
 
+/// Env var the workspaces compat-shim proxy reads for its forward target.
+const SHIM_SERVICE_ENV: &str = "WYLDE_HARNESS_WORKSPACES_SERVICE";
+
 /// Per-test data-dir sandbox. Hold this for the body of any test that
 /// touches the workspaces store on disk.
 pub struct TestEnv {
     _guard: MutexGuard<'static, ()>,
     _tempdir: TempDir,
     prior: Option<std::ffi::OsString>,
+    prior_shim: Option<std::ffi::OsString>,
 }
 
 impl TestEnv {
@@ -31,10 +35,25 @@ impl TestEnv {
         let tempdir = TempDir::new().expect("create test tempdir");
         let prior = std::env::var_os("WYLDE_DATA_DIR");
         std::env::set_var("WYLDE_DATA_DIR", tempdir.path());
+        // Point the workspaces compat-shim proxy at a guaranteed-dead pipe so
+        // any verb call deterministically falls back to the in-process path
+        // against this test's isolated data dir — never a real running
+        // `wylde-workspaces` service (which would use the prod data dir and
+        // break the test / pollute prod). The name is unique per env instance.
+        let prior_shim = std::env::var_os(SHIM_SERVICE_ENV);
+        std::env::set_var(
+            SHIM_SERVICE_ENV,
+            format!(
+                "wylde-workspaces-test-dead-{}-{:p}",
+                std::process::id(),
+                &tempdir as *const _
+            ),
+        );
         Self {
             _guard: guard,
             _tempdir: tempdir,
             prior,
+            prior_shim,
         }
     }
 
@@ -45,6 +64,11 @@ impl TestEnv {
     /// an absolute path keeps the slug deterministic regardless of what a
     /// concurrent test does to the process cwd. The path is not created on
     /// disk (the registry facade doesn't require it to exist).
+    ///
+    /// Currently unused in the harness (the registry tests that used it
+    /// relocated to `wylde-workspaces` in Slice 0b); retained for the
+    /// memory-tier tests that move in Slice 0c.
+    #[allow(dead_code)]
     pub fn ws_path(&self, name: &str) -> String {
         self._tempdir
             .path()
@@ -59,6 +83,10 @@ impl Drop for TestEnv {
         match self.prior.take() {
             Some(v) => std::env::set_var("WYLDE_DATA_DIR", v),
             None => std::env::remove_var("WYLDE_DATA_DIR"),
+        }
+        match self.prior_shim.take() {
+            Some(v) => std::env::set_var(SHIM_SERVICE_ENV, v),
+            None => std::env::remove_var(SHIM_SERVICE_ENV),
         }
     }
 }

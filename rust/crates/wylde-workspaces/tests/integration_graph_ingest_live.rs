@@ -19,14 +19,14 @@
 
 #![cfg(windows)]
 
-use wylde_harness::memory::memgraph::BoltClient;
-use wylde_harness::workspaces::rag::indexer::{graph_writer, walk};
-use wylde_harness::workspaces::registry::WorkspaceDefinition;
+use wylde_workspaces::graph::BoltClient;
+use wylde_workspaces::rag::indexer::{graph_writer, walk};
+use wylde_workspaces::registry::WorkspaceDefinition;
 
 /// The corpus to ingest — the harness's own `workspaces/` tree. It has
 /// `impl Trait for T` (→ INHERITS), cross-fn calls (→ CALLS), and `use`
 /// imports (→ IMPORTS), so all three edge types are exercised.
-const CORPUS: &str = "src/workspaces";
+const CORPUS: &str = "src";
 
 fn unique_ws() -> String {
     let nonce = std::time::SystemTime::now()

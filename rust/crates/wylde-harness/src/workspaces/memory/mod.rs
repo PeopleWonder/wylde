@@ -8,7 +8,7 @@
 //! curated memory entries; at prompt-build time the highest-scoring
 //! entries are injected as a workspace-memory slot.
 //!
-//! Do NOT confuse this with [`super::registry`]: registry stores
+//! Do NOT confuse this with the relocated `wylde_workspaces::registry`: registry stores
 //! *configs*, this stores *memory entries*.
 //!
 //! Storage: `<data_dir>/workspaces/<workspace_id>/memory.json`.

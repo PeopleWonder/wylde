@@ -7,21 +7,47 @@
 //! the shared dispatcher's `no_action` reply for free — the same code every
 //! service emits — so we don't reinvent routing.
 //!
-//! Slice 0a registers exactly one verb: [`PING`]. It's a no-op liveness
-//! proof that the pipe round-trips through the shared client crate. Every
-//! later slice (registry, notes, conversations, anchors, graph) adds its
-//! `workspaces.*` verbs to [`install`].
+//! Slice 0a registered exactly one verb: [`PING`]. Slice 0b adds the
+//! relocated workspace verb surface ([`crate::api`]) — registry CRUD +
+//! active-selection, persona write, and the RAG query / reindex verbs — so
+//! the new pipe natively serves everything the harness pipe used to. The
+//! harness keeps the same verbs as a thin proxy (compat shim) during the
+//! migration window; both pipes answer the same `workspaces.*` names.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{json, Value};
 use wylde_shared::ipc::{register_action_with_meta, unregister_action, Reply};
 
-/// The sole verb in Slice 0a. A no-op that proves the transport works.
+use crate::api;
+
+const META_MODULE: &str = "wylde_workspaces::action_dispatch";
+
+/// A no-op verb that proves the transport works.
 pub const PING: &str = "ping";
 
+// ── Relocated workspace verbs (Slice 0b) ─────────────────────────────────
+pub const SET_ACTIVE: &str = "workspaces.set_active";
+pub const CREATE: &str = "workspaces.create";
+pub const UPDATE: &str = "workspaces.update";
+pub const DELETE: &str = "workspaces.delete";
+pub const SET_PERSONA: &str = "workspaces.set_persona";
+pub const LIST_MRU: &str = "workspaces.list_mru";
+pub const RAG_QUERY: &str = "workspaces.rag_query";
+pub const REINDEX: &str = "workspaces.reindex";
+
 /// Every action this service registers. Grows one slice at a time.
-pub const ALL_ACTIONS: &[&str] = &[PING];
+pub const ALL_ACTIONS: &[&str] = &[
+    PING,
+    SET_ACTIVE,
+    CREATE,
+    UPDATE,
+    DELETE,
+    SET_PERSONA,
+    LIST_MRU,
+    RAG_QUERY,
+    REINDEX,
+];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 
@@ -39,7 +65,66 @@ pub fn install() {
         PING,
         |_payload: Value| async move { handle_ping() },
         "Liveness proof. Reply: {ok: true, service: \"wylde-workspaces\", version: <crate version>}.",
-        "wylde_workspaces::action_dispatch",
+        META_MODULE,
+    );
+
+    register_action_with_meta(
+        SET_ACTIVE,
+        |p: Value| async move { api::handle_set_active(p).await },
+        "Set the active workspace + bump MRU. Payload: {workspace_id}. \
+         Reply: {active_id, mru}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CREATE,
+        |p: Value| async move { api::handle_create(p).await },
+        "Register a folder as a workspace (and activate it). Payload: \
+         {folder, name?}. Reply: WorkspaceDefinition.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        UPDATE,
+        |p: Value| async move { api::handle_update(p).await },
+        "Rename / toggle persona_enabled / rag_enabled. Payload: \
+         {workspace_id, name?, persona_enabled?, rag_enabled?}. Reply: \
+         WorkspaceDefinition.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        DELETE,
+        |p: Value| async move { api::handle_delete(p).await },
+        "Remove a workspace + its data dir. Payload: {workspace_id}. \
+         Reply: {ok, workspace_id}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        SET_PERSONA,
+        |p: Value| async move { api::handle_set_persona(p).await },
+        "Write persona.md for a workspace. Payload: {workspace_id, text?}. \
+         Reply: {ok, workspace_id}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        LIST_MRU,
+        |p: Value| async move { api::handle_list_mru(p).await },
+        "MRU-5 workspace list + active id. No payload. Reply: \
+         {workspaces: [WorkspaceDefinition], active_id}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        RAG_QUERY,
+        |p: Value| async move { api::handle_rag_query(p).await },
+        "k-NN search over a workspace's file index. Payload: \
+         {workspace_id, query, k?}. Reply: {workspace_id, hits}. Fail-soft \
+         to empty hits.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        REINDEX,
+        |p: Value| async move { api::handle_reindex(p).await },
+        "Force a synchronous full reindex of a workspace's folder. Payload: \
+         {workspace_id}. Reply: {ok, file_count, chunk_count, last_error}.",
+        META_MODULE,
     );
 
     tracing::info!(

@@ -30,8 +30,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::memory::common::ensure_dir;
-use crate::workspaces::registry::persistence::workspace_dir;
+use crate::common::ensure_dir;
+use crate::registry::persistence::workspace_dir;
 
 /// One embedded chunk persisted to `chunks.jsonl`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -60,7 +60,7 @@ pub struct IndexedChunk {
 ///
 /// This is the redesign's home for the indexing flag (the retired
 /// `memory::workspaces::store::Workspace.indexing` field has no analogue
-/// on the config-only [`crate::workspaces::registry::WorkspaceDefinition`],
+/// on the config-only [`crate::registry::WorkspaceDefinition`],
 /// so the live status lives here next to the data it describes).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct RagState {
@@ -158,7 +158,7 @@ pub fn save_state(workspace_id: &str, state: &RagState) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspaces::test_support::TestEnv;
+    use crate::test_support::TestEnv;
 
     fn sample(id: &str, path: &str) -> IndexedChunk {
         IndexedChunk {
