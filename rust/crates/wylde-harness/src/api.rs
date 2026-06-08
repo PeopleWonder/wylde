@@ -55,6 +55,8 @@ use crate::model_registry::actions as model_actions;
 use crate::settings::actions as settings_actions;
 use crate::tooling::consent::{self, Decision};
 use crate::workspaces::api as workspaces_api;
+use crate::workspaces::conversations_api as workspaces_conversations_api;
+use crate::workspaces::notes_api as workspaces_notes_api;
 use crate::tooling::registry::global;
 use crate::tooling::runner::{catalog_payload, dispatch_tool};
 use crate::turn::actions as turn_actions;
@@ -121,6 +123,19 @@ pub trait HarnessApi: Send + Sync {
     async fn workspaces_list_mru(&self, payload: Value) -> Reply;
     async fn workspaces_rag_query(&self, payload: Value) -> Reply;
     async fn workspaces_reindex(&self, payload: Value) -> Reply;
+
+    // ── workspaces.notes.* (6 verbs; Slice 0c — relocated notes tier) ─
+    async fn workspaces_notes_list(&self, payload: Value) -> Reply;
+    async fn workspaces_notes_add(&self, payload: Value) -> Reply;
+    async fn workspaces_notes_update(&self, payload: Value) -> Reply;
+    async fn workspaces_notes_delete(&self, payload: Value) -> Reply;
+    async fn workspaces_notes_search(&self, payload: Value) -> Reply;
+    async fn workspaces_notes_propose(&self, payload: Value) -> Reply;
+
+    // ── workspaces.conversations.* (3 verbs; Slice 0c — workspace convos) ─
+    async fn workspaces_conversations_list(&self, payload: Value) -> Reply;
+    async fn workspaces_conversations_get(&self, payload: Value) -> Reply;
+    async fn workspaces_conversations_delete(&self, payload: Value) -> Reply;
 
     // ── memory.short_term.* (3 verbs; conversation working memory) ───
     async fn memory_short_term_get(&self, payload: Value) -> Reply;
@@ -450,6 +465,37 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn workspaces_reindex(&self, payload: Value) -> Reply {
         workspaces_api::handle_reindex(payload).await
+    }
+
+    // ── workspaces.notes.* (Slice 0c) ────────────────────────────────
+    async fn workspaces_notes_list(&self, payload: Value) -> Reply {
+        workspaces_notes_api::handle_list(payload).await
+    }
+    async fn workspaces_notes_add(&self, payload: Value) -> Reply {
+        workspaces_notes_api::handle_add(payload).await
+    }
+    async fn workspaces_notes_update(&self, payload: Value) -> Reply {
+        workspaces_notes_api::handle_update(payload).await
+    }
+    async fn workspaces_notes_delete(&self, payload: Value) -> Reply {
+        workspaces_notes_api::handle_delete(payload).await
+    }
+    async fn workspaces_notes_search(&self, payload: Value) -> Reply {
+        workspaces_notes_api::handle_search(payload).await
+    }
+    async fn workspaces_notes_propose(&self, payload: Value) -> Reply {
+        workspaces_notes_api::handle_propose(payload).await
+    }
+
+    // ── workspaces.conversations.* (Slice 0c) ────────────────────────
+    async fn workspaces_conversations_list(&self, payload: Value) -> Reply {
+        workspaces_conversations_api::handle_list(payload).await
+    }
+    async fn workspaces_conversations_get(&self, payload: Value) -> Reply {
+        workspaces_conversations_api::handle_get(payload).await
+    }
+    async fn workspaces_conversations_delete(&self, payload: Value) -> Reply {
+        workspaces_conversations_api::handle_delete(payload).await
     }
 
     // ── memory.short_term.* ──────────────────────────────────────────

@@ -54,7 +54,11 @@ fn should_fall_back(e: &ClientError) -> bool {
 /// Forward `verb`+`payload` to the service. `Ok(reply)` is the decision
 /// (service answer or surfaced app error); `Err(())` signals "service
 /// unreachable — run the local fallback".
-async fn forward(verb: &str, payload: Value) -> Result<Reply, ()> {
+///
+/// `pub(crate)` so the sibling notes / conversations compat-shim proxies
+/// ([`super::notes_api`], [`super::conversations_api`]) reuse the exact same
+/// forward-then-fall-back decision (Slice 0c).
+pub(crate) async fn forward(verb: &str, payload: Value) -> Result<Reply, ()> {
     match client().call_verb(verb, payload, 1).await {
         Ok(data) => Ok(Reply::ok(data)),
         Err(e) if should_fall_back(&e) => Err(()),

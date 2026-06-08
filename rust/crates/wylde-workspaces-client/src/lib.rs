@@ -195,6 +195,132 @@ impl WorkspacesClient {
         .await
     }
 
+    // ── Slice 0c — workspace notes tier ─────────────────────────────────
+
+    /// `workspaces.notes.list` — every note for a workspace.
+    pub async fn notes_list(&self, workspace_id: &str) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.notes.list",
+            serde_json::json!({ "workspace_id": workspace_id }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.notes.add` — append a note (embeds on write).
+    pub async fn notes_add(
+        &self,
+        workspace_id: &str,
+        text: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.notes.add",
+            serde_json::json!({ "workspace_id": workspace_id, "text": text }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.notes.update` — edit a note's text (re-embeds).
+    pub async fn notes_update(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        text: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.notes.update",
+            serde_json::json!({ "workspace_id": workspace_id, "id": id, "text": text }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.notes.delete` — remove a note by id.
+    pub async fn notes_delete(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.notes.delete",
+            serde_json::json!({ "workspace_id": workspace_id, "id": id }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.notes.search` — recency+relevance ranked note search.
+    pub async fn notes_search(
+        &self,
+        workspace_id: &str,
+        query: &str,
+        limit: Option<u64>,
+    ) -> Result<Value, WorkspacesClientError> {
+        let mut payload = serde_json::json!({ "workspace_id": workspace_id, "query": query });
+        if let Some(l) = limit {
+            payload["limit"] = serde_json::Value::from(l);
+        }
+        self.call_verb("workspaces.notes.search", payload, 1).await
+    }
+
+    /// `workspaces.notes.propose` — reflection candidate (not persisted).
+    pub async fn notes_propose(
+        &self,
+        workspace_id: &str,
+        text: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.notes.propose",
+            serde_json::json!({ "workspace_id": workspace_id, "text": text }),
+            1,
+        )
+        .await
+    }
+
+    // ── Slice 0c — workspace-scoped conversations ───────────────────────
+
+    /// `workspaces.conversations.list` — metadata for one workspace.
+    pub async fn conversations_list(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.conversations.list",
+            serde_json::json!({ "workspace_id": workspace_id }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.conversations.get` — the full conversation document.
+    pub async fn conversations_get(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.conversations.get",
+            serde_json::json!({ "workspace_id": workspace_id, "id": id }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.conversations.delete` — remove one workspace conversation.
+    pub async fn conversations_delete(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.conversations.delete",
+            serde_json::json!({ "workspace_id": workspace_id, "id": id }),
+            1,
+        )
+        .await
+    }
+
     /// Drive one verb call through the full resilience pipeline: cache →
     /// breaker → timed transport attempt(s) with retry → breaker bookkeeping.
     ///

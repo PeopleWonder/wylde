@@ -44,8 +44,8 @@ async fn main() -> Result<()> {
         &cfg.service_name,
         None,
         "core",
-        "Workspace-scoped service — registry, notes, conversations, anchors, code graph. \
-         Slice 0a scaffold: ping only.",
+        "Workspace-scoped service — registry, persona, RAG, notes, workspace \
+         conversations, code graph.",
         json!({
             "wylde_workspaces": {
                 "actions": wylde_workspaces::action_dispatch::ALL_ACTIONS,
@@ -55,6 +55,21 @@ async fn main() -> Result<()> {
         Some("rust:wylde-workspaces"),
     )?;
     let _heartbeat = manifest.start_heartbeat(Duration::from_secs(60));
+
+    // Idempotent first-startup data migration (Slice 0-migrate): relocate
+    // pre-split workspace conversations from the flat harness store into the
+    // new per-workspace bundle layout. Marker-gated, so re-runs are no-ops.
+    // Runs ONLY here (the live service) — never from the harness fallback —
+    // so production's flat store stays intact until go-live (Slice A).
+    let report = wylde_workspaces::migration::run_pending();
+    if !report.skipped {
+        tracing::info!(
+            "wylde-workspaces: migration v1 complete (moved={}, kept_standalone={}, errors={})",
+            report.moved,
+            report.kept_standalone,
+            report.errors,
+        );
+    }
 
     // Populate the registry BEFORE serving so the first client connection
     // finds the `ping` handler.

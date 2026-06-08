@@ -1,13 +1,14 @@
-//! Fetch + score workspace-memory entries for prompt injection.
+//! Fetch + score workspace-notes entries for prompt injection and search.
 //!
-//! The prompt builder ([`super::super::prompt`]) asks this module for
-//! the top-K entries to inject as the workspace-memory slot.
+//! Relocated from the harness `workspaces::memory::query` (Slice 0c). The
+//! prompt builder asks [`top_entries`] for the top-K notes to inject as the
+//! workspace-memory slot; the `workspaces.notes.search` verb reuses the same
+//! ranking with the search query in place of the turn's user message.
 //!
 //! ## Scoring (Q3 — recency + relevance, α = 0.4 / 0.6)
 //!
-//! Per turn we embed the user's incoming message **once** (reusing the
-//! existing `nomic-embed-text` embedder — no new model load) and score
-//! each entry by
+//! Per turn we embed the query **once** (reusing the existing
+//! `nomic-embed-text` embedder — no new model load) and score each entry by
 //!
 //! ```text
 //! score = α · recency + (1 − α) · cosine(query, entry)
@@ -18,10 +19,9 @@
 //! `[0, 1]`; `cosine` is the dot product of the (L2-normalized at write
 //! time) embeddings, treated as 0 when either side has no embedding.
 //!
-//! **Graceful degradation:** if the embedder is unreachable (Ollama
-//! down) or the message is empty, the relevance term is 0 and the blend
-//! collapses to pure recency — the slot still works, just without
-//! semantic ranking.
+//! **Graceful degradation:** if the embedder is unreachable (Ollama down) or
+//! the query is empty, the relevance term is 0 and the blend collapses to
+//! pure recency — the slot still works, just without semantic ranking.
 
 use super::entry::{self, WorkspaceMemoryEntry};
 
@@ -33,17 +33,17 @@ pub const RECENCY_DECAY_DAYS: f64 = 30.0;
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
 
-/// A request for the most relevant workspace-memory entries to inject.
+/// A request for the most relevant workspace-notes entries to inject.
 #[derive(Clone, Debug)]
 pub struct WorkspaceMemoryQuery {
     /// Which workspace's bucket to read.
     pub workspace_id: String,
 
-    /// The current user message — embedded once for relevance scoring.
-    /// May be empty for a pure-recency fetch.
+    /// The query text — embedded once for relevance scoring. May be empty
+    /// for a pure-recency fetch.
     pub user_message: String,
 
-    /// Max entries to inject.
+    /// Max entries to return.
     pub limit: usize,
 }
 
@@ -92,27 +92,44 @@ pub async fn embed_text(text: &str) -> Vec<f32> {
     if text.trim().is_empty() {
         return Vec::new();
     }
-    crate::memory::embeddings::embed_one(text.to_owned())
+    crate::embeddings::embed_one(text.to_owned())
         .await
         .unwrap_or_default()
 }
 
-/// Return the top entries to inject for `query`, highest-scoring first.
-/// Embeds the user message once, blends recency + relevance, truncates
-/// to `query.limit`.
-pub async fn top_entries(query: &WorkspaceMemoryQuery) -> Vec<WorkspaceMemoryEntry> {
-    let entries = entry::load(&query.workspace_id);
-    if entries.is_empty() {
-        return entries;
-    }
-    let now = wylde_workspaces::registry::epoch_now();
-    let query_vec = embed_text(&query.user_message).await;
+/// Default time budget for an embed on a write verb. The `workspaces.notes.*`
+/// write verbs are Medium-tier (2s client budget); the embedder's own retry
+/// ladder is ~3.5s when the backend is unreachable, which would blow that
+/// budget. Bound it well under 2s so a down/slow embedder degrades the note
+/// to recency-only (empty embedding) instead of timing the verb out.
+pub const EMBED_WRITE_BUDGET: std::time::Duration = std::time::Duration::from_millis(1200);
 
+/// Like [`embed_text`] but abandons the embed (returning an empty vector) if
+/// it doesn't complete within `budget`. Keeps the embed-on-write path inside
+/// the verb's timeout tier — a missing embedding just costs relevance
+/// ranking, never the write itself.
+pub async fn embed_text_bounded(text: &str, budget: std::time::Duration) -> Vec<f32> {
+    // On timeout (`Elapsed`) the embed is abandoned → empty vector.
+    tokio::time::timeout(budget, embed_text(text))
+        .await
+        .unwrap_or_default()
+}
+
+/// Rank loaded `entries` against a pre-computed `query_vec`, highest-scoring
+/// first, truncated to `limit`. Pure (no I/O) — separated from the embed so
+/// callers choose their own embed policy (bounded for the search verb,
+/// unbounded for the in-process prompt builder).
+pub fn rank_entries(
+    entries: Vec<WorkspaceMemoryEntry>,
+    query_vec: &[f32],
+    limit: usize,
+) -> Vec<WorkspaceMemoryEntry> {
+    let now = crate::registry::epoch_now();
     let mut scored: Vec<(f64, WorkspaceMemoryEntry)> = entries
         .into_iter()
         .map(|e| {
             let recency = recency_score(e.last_used_at, now);
-            let relevance = cosine(&query_vec, &e.embedding);
+            let relevance = cosine(query_vec, &e.embedding);
             (blended_score(recency, relevance, ALPHA_RECENCY), e)
         })
         .collect();
@@ -120,9 +137,37 @@ pub async fn top_entries(query: &WorkspaceMemoryQuery) -> Vec<WorkspaceMemoryEnt
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     scored
         .into_iter()
-        .take(query.limit.max(1))
+        .take(limit.max(1))
         .map(|(_, e)| e)
         .collect()
+}
+
+/// Return the top entries to inject/return for `query`, highest-scoring
+/// first. Embeds the query once (unbounded — the in-process prompt builder
+/// has no IPC deadline), blends recency + relevance, truncates to
+/// `query.limit`.
+pub async fn top_entries(query: &WorkspaceMemoryQuery) -> Vec<WorkspaceMemoryEntry> {
+    let entries = entry::load(&query.workspace_id);
+    if entries.is_empty() {
+        return entries;
+    }
+    let query_vec = embed_text(&query.user_message).await;
+    rank_entries(entries, &query_vec, query.limit)
+}
+
+/// Like [`top_entries`] but bounds the query embed to `budget` so it fits a
+/// verb's timeout tier (the `workspaces.notes.search` path). A slow/down
+/// embedder degrades to pure-recency ranking rather than timing out.
+pub async fn top_entries_bounded(
+    query: &WorkspaceMemoryQuery,
+    budget: std::time::Duration,
+) -> Vec<WorkspaceMemoryEntry> {
+    let entries = entry::load(&query.workspace_id);
+    if entries.is_empty() {
+        return entries;
+    }
+    let query_vec = embed_text_bounded(&query.user_message, budget).await;
+    rank_entries(entries, &query_vec, query.limit)
 }
 
 #[cfg(test)]
