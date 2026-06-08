@@ -1,0 +1,23 @@
+[package]
+name = "wylde-workspaces-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Library only — this is the shared IPC client every consumer (harness chat
+# turn driver, GUI Workspaces panel, Chat composer) depends on instead of
+# hand-rolling the pipe. No binary.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true }

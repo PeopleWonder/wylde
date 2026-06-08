@@ -15,6 +15,11 @@ members = [
     "crates/wylde-ext-webcrawler",
     "crates/wylde-ext-study",
     "crates/wylde-updater",
+    # Thought Bubble System (Phase 0, Slice 0a). The new workspace-scoped
+    # service + the shared IPC client every consumer depends on. See the
+    # build-order doc on the Nextcloud Wylde collective.
+    "crates/wylde-workspaces",
+    "crates/wylde-workspaces-client",
     # `crates/wylde-memgraph` removed 2026-05-25 — the memgraph client is
     # an in-process submodule of `wylde-harness/src/memory/memgraph/` per
     # the one-crate harness convention; the bundled Neo4j JVM stays
