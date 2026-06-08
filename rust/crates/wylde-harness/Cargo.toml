@@ -21,6 +21,14 @@ wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
 
 [dependencies]
 wylde-shared = { path = "../wylde-shared" }
+# Thought Bubble System Slice 0b: the workspace registry / persona / RAG
+# logic moved to `wylde-workspaces`. The harness depends on the LIB for its
+# in-process callers (the prompt builder's `gather`) + the compat-shim
+# fallback when the new service isn't reachable, and on the shared CLIENT to
+# forward the workspace verbs to the running service over its pipe. No cycle:
+# `wylde-workspaces` is self-sufficient and does NOT depend back on the harness.
+wylde-workspaces = { path = "../wylde-workspaces" }
+wylde-workspaces-client = { path = "../wylde-workspaces-client" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -30,23 +30,78 @@ pub struct VerbDef {
 
 /// The verb table. Looked up by [`lookup`].
 ///
-/// Slice 0a: `ping` only — Fast tier, idempotent-read retry, no cache.
-/// Later slices append their verbs here (see Build Order Appendix A for the
-/// full tier/retry/TTL matrix):
-///   - `workspaces.list_mru`   Fast · read · 30s   (0b)
-///   - `workspaces.graph`      Medium · read · 5s  (B)
-///   - `workspaces.symbols.find` Fast · read · 60s (F-data)
-///   - `workspaces.symbol_context` PerHop · read · — (G-data)
-///   - …
-static TABLE: &[VerbDef] = &[VerbDef {
-    name: "ping",
-    timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
-    retry: RetryPolicy::ExponentialBackoff {
-        max_attempts: 3,
-        initial_ms: 50,
+/// Slice 0a: `ping`. Slice 0b: the relocated registry / persona / RAG verbs,
+/// per Build Order Appendix A (tier · retry · TTL). The three verbs Appendix
+/// A's 0b rows omit — `set_persona`, `rag_query`, `reindex` — are assigned by
+/// their shape: `set_persona` is a small idempotent write (Fast); `rag_query`
+/// embeds the query so it gets the Slow budget to clear the embedder's retry
+/// window (it's fail-soft to empty, an idempotent read); `reindex` is the
+/// long-running ingest kick (Slow · no-retry), matching Appendix A's
+/// reindex/ingest note.
+///
+/// Later slices append their verbs here (graph / symbols.find / anchors / …).
+static TABLE: &[VerbDef] = &[
+    VerbDef {
+        name: "ping",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::ExponentialBackoff {
+            max_attempts: 3,
+            initial_ms: 50,
+        },
+        cache_ttl: None,
     },
-    cache_ttl: None,
-}];
+    // ── Slice 0b — registry / active-selection ──────────────────────────
+    VerbDef {
+        name: "workspaces.list_mru",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: Some(Duration::from_secs(30)),
+    },
+    VerbDef {
+        name: "workspaces.set_active",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_write(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.create",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::SLOW),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.update",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_write(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.delete",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
+    // ── Slice 0b — persona ──────────────────────────────────────────────
+    VerbDef {
+        name: "workspaces.set_persona",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_write(),
+        cache_ttl: None,
+    },
+    // ── Slice 0b — RAG (PR #18 indexer) ─────────────────────────────────
+    VerbDef {
+        name: "workspaces.rag_query",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::SLOW),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.reindex",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::SLOW),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
+];
 
 /// Look up the policy for `verb`, or `None` if the client doesn't know it.
 pub fn lookup(verb: &str) -> Option<&'static VerbDef> {

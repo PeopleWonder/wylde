@@ -5,7 +5,7 @@
 //! hand-edit it. It supersedes the inline `persona` string the retired
 //! verb-driven store carried (design doc migration §8).
 
-use crate::memory::common::ensure_dir;
+use crate::common::ensure_dir;
 
 /// A rendered persona ready to fold into the system prompt.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -49,7 +49,7 @@ pub fn save(workspace_id: &str, text: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspaces::test_support::TestEnv;
+    use crate::test_support::TestEnv;
 
     #[test]
     fn save_then_load_round_trips() {

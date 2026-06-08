@@ -2,7 +2,7 @@
 //!
 //! Persisted to `<data_dir>/workspaces/index.json` (the registry
 //! index), mirroring the `active_conversation.json` pattern in
-//! [`crate::memory::conversations::store`]. The MRU list drives the
+//! the harness `memory::conversations::store`. The MRU list drives the
 //! "MRU-5 dropdown" in the InferenceBar.
 //!
 //! Kept separate from [`super::definition`] so activating a workspace
@@ -18,7 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::memory::common::ensure_dir;
+use crate::common::ensure_dir;
 
 /// MRU window the InferenceBar dropdown shows, and the hard cap on how
 /// many workspaces the registry retains. Static (Q2): if this ever needs
@@ -103,7 +103,7 @@ pub fn save(state: &WorkspaceState) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspaces::test_support::TestEnv;
+    use crate::test_support::TestEnv;
 
     #[test]
     fn promote_moves_to_head_and_sets_active() {

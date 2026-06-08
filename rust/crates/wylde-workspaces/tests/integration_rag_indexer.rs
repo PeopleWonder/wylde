@@ -26,8 +26,8 @@ use std::time::{Duration, SystemTime};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
-use wylde_harness::workspaces::rag::indexer::{self, search};
-use wylde_harness::workspaces::registry;
+use wylde_workspaces::rag::indexer::{self, search};
+use wylde_workspaces::registry;
 use wylde_shared::ipc;
 
 /// Tiny fixed vocabulary — each dimension is the case-insensitive
@@ -65,7 +65,7 @@ async fn mock() -> &'static Mock {
     M.get_or_init(|| async {
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let service = format!("ollama-embed-mock-{suffix}");
-        std::env::set_var("WYLDE_HARNESS_OLLAMA_SERVICE", &service);
+        std::env::set_var("WYLDE_WORKSPACES_OLLAMA_SERVICE", &service);
         std::env::set_var("WYLDE_EMBED_NATIVE_DIM", VOCAB.len().to_string());
         std::env::set_var("WYLDE_EMBED_DIM", VOCAB.len().to_string());
 

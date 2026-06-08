@@ -27,9 +27,23 @@ serde_json.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+# SHA-256 for the slug derivation (registry) + stable chunk ids (rag indexer).
+# Mirrors the harness deps the relocated code carried.
+sha2 = "0.10"
+# Hex encoding for the per-chunk id (rag indexer).
+hex = "0.4"
+# Bolt driver for the direct-to-Neo4j graph-ingest writes (graph/bolt.rs).
+# Same crate + Bolt server the harness memgraph client uses.
+neo4rs = "0.8"
 
 [dev-dependencies]
-# The integration round-trip test drives the service through the shared
-# client crate (Slice 0a acceptance) and writes throwaway data dirs.
+# The integration round-trip tests drive the service through the shared
+# client crate and write throwaway data dirs.
 wylde-workspaces-client = { path = "../wylde-workspaces-client" }
 tempfile = "3"
+# Real tree-sitter entity extraction for the graph-ingest integration test —
+# parses real `.rs` fixtures in-process instead of round-tripping the sidecar
+# pipe. Test-only: production graph-ingest reaches the sidecar over IPC.
+wylde-treesitter = { path = "../wylde-treesitter" }
+# Unique pipe / service names in the integration tests.
+uuid = { version = "1", features = ["v4"] }

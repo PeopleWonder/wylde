@@ -53,7 +53,7 @@ pub use state::{WorkspaceState, MRU_WINDOW};
 /// would break exact-equality reload checks). Millisecond precision is
 /// far finer than any workspace timestamp needs and serializes to a
 /// short, unambiguous decimal that round-trips exactly.
-pub(crate) fn epoch_now() -> f64 {
+pub fn epoch_now() -> f64 {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
@@ -176,7 +176,7 @@ fn promote_and_persist(workspace_id: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspaces::test_support::TestEnv;
+    use crate::test_support::TestEnv;
 
     #[test]
     fn create_registers_activates_and_is_idempotent() {

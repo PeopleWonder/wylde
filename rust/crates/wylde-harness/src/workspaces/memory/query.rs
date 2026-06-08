@@ -105,7 +105,7 @@ pub async fn top_entries(query: &WorkspaceMemoryQuery) -> Vec<WorkspaceMemoryEnt
     if entries.is_empty() {
         return entries;
     }
-    let now = super::super::registry::epoch_now();
+    let now = wylde_workspaces::registry::epoch_now();
     let query_vec = embed_text(&query.user_message).await;
 
     let mut scored: Vec<(f64, WorkspaceMemoryEntry)> = entries

@@ -86,7 +86,7 @@ fn relativize(folder: &str, path: &str) -> String {
 mod tests {
     use super::super::super::registry::WorkspaceDefinition;
     use super::*;
-    use crate::workspaces::test_support::TestEnv;
+    use crate::test_support::TestEnv;
 
     #[test]
     fn from_definition_respects_rag_enabled() {

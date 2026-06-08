@@ -105,6 +105,96 @@ impl WorkspacesClient {
             .map_err(|e| WorkspacesClientError::decode(format!("ping reply: {e}")))
     }
 
+    // ── Slice 0b verb wrappers ─────────────────────────────────────────
+    //
+    // Thin, one-line wrappers over `call_verb`. They return the raw `data`
+    // payload (the shapes are documented in `wylde_workspaces::api` /
+    // `action_dispatch`); the harness compat-shim proxy forwards the original
+    // request payload through `call_verb` directly, so these exist for typed
+    // consumers (the GUI panel in later slices) and the client test suite.
+
+    /// `workspaces.list_mru` — MRU-5 workspaces + active id.
+    pub async fn list_mru(&self) -> Result<Value, WorkspacesClientError> {
+        self.call_verb("workspaces.list_mru", Value::Null, 1).await
+    }
+
+    /// `workspaces.set_active` — activate a workspace + bump MRU.
+    pub async fn set_active(&self, workspace_id: &str) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.set_active",
+            serde_json::json!({ "workspace_id": workspace_id }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.create` — register (and activate) a folder as a workspace.
+    pub async fn create(
+        &self,
+        folder: &str,
+        name: Option<&str>,
+    ) -> Result<Value, WorkspacesClientError> {
+        let mut payload = serde_json::json!({ "folder": folder });
+        if let Some(n) = name {
+            payload["name"] = serde_json::Value::String(n.to_owned());
+        }
+        self.call_verb("workspaces.create", payload, 1).await
+    }
+
+    /// `workspaces.update` — rename / toggle feature flags. Pass the full
+    /// `{workspace_id, name?, persona_enabled?, rag_enabled?}` payload.
+    pub async fn update(&self, payload: Value) -> Result<Value, WorkspacesClientError> {
+        self.call_verb("workspaces.update", payload, 1).await
+    }
+
+    /// `workspaces.delete` — remove a workspace + its data dir.
+    pub async fn delete(&self, workspace_id: &str) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.delete",
+            serde_json::json!({ "workspace_id": workspace_id }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.set_persona` — write `persona.md`.
+    pub async fn set_persona(
+        &self,
+        workspace_id: &str,
+        text: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.set_persona",
+            serde_json::json!({ "workspace_id": workspace_id, "text": text }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.rag_query` — k-NN search over a workspace's file index.
+    pub async fn rag_query(
+        &self,
+        workspace_id: &str,
+        query: &str,
+        k: Option<u64>,
+    ) -> Result<Value, WorkspacesClientError> {
+        let mut payload = serde_json::json!({ "workspace_id": workspace_id, "query": query });
+        if let Some(k) = k {
+            payload["k"] = serde_json::Value::from(k);
+        }
+        self.call_verb("workspaces.rag_query", payload, 1).await
+    }
+
+    /// `workspaces.reindex` — force a synchronous full reindex.
+    pub async fn reindex(&self, workspace_id: &str) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.reindex",
+            serde_json::json!({ "workspace_id": workspace_id }),
+            1,
+        )
+        .await
+    }
+
     /// Drive one verb call through the full resilience pipeline: cache →
     /// breaker → timed transport attempt(s) with retry → breaker bookkeeping.
     ///

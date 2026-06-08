@@ -1,7 +1,7 @@
 //! Vector search over a workspace's file index.
 //!
 //! Embeds the query once via the shared `nomic-embed-text` embedder
-//! (`crate::memory::embeddings`), then does a brute-force cosine scan over
+//! (`crate::embeddings`), then does a brute-force cosine scan over
 //! the persisted chunks — see `store.rs` for why brute-force, not ANN.
 //!
 //! **Never errors.** A missing index, an empty query, or an unreachable
@@ -11,7 +11,7 @@
 use serde_json::{json, Value};
 
 use super::store::{self, IndexedChunk};
-use crate::workspaces::memory::query::cosine;
+use crate::rag::cosine;
 
 /// One ranked search hit. Shape mirrors the retired Python verb:
 /// `{file_path, line_range, content, score}`.
@@ -55,7 +55,7 @@ pub async fn query(workspace_id: &str, query_text: &str, k: usize) -> Vec<Search
     if chunks.is_empty() {
         return Vec::new();
     }
-    let query_vec = match crate::memory::embeddings::embed_one(query_text.to_owned()).await {
+    let query_vec = match crate::embeddings::embed_one(query_text.to_owned()).await {
         Ok(v) if !v.is_empty() => v,
         Ok(_) => return Vec::new(),
         Err(e) => {

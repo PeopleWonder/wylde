@@ -46,7 +46,7 @@ impl WorkspaceMemoryEntry {
     /// sortable timestamp-based token; callers that want relevance
     /// scoring populate `embedding` via [`super::query::embed_text`].
     pub fn new(id: impl Into<String>, text: impl Into<String>) -> Self {
-        let now = super::super::registry::epoch_now();
+        let now = wylde_workspaces::registry::epoch_now();
         Self {
             id: id.into(),
             text: text.into(),
@@ -59,7 +59,7 @@ impl WorkspaceMemoryEntry {
 
 /// `<data_dir>/workspaces/<workspace_id>/memory.jsonl`.
 pub fn memory_path(workspace_id: &str) -> std::path::PathBuf {
-    super::super::registry::persistence::workspace_dir(workspace_id).join("memory.jsonl")
+    wylde_workspaces::registry::persistence::workspace_dir(workspace_id).join("memory.jsonl")
 }
 
 /// Load every entry for a workspace (fail-soft: empty on missing/torn;
@@ -76,7 +76,7 @@ pub fn load(workspace_id: &str) -> Vec<WorkspaceMemoryEntry> {
 
 /// Atomically replace a workspace's `memory.jsonl`.
 pub fn save(workspace_id: &str, entries: &[WorkspaceMemoryEntry]) -> std::io::Result<()> {
-    let dir = super::super::registry::persistence::workspace_dir(workspace_id);
+    let dir = wylde_workspaces::registry::persistence::workspace_dir(workspace_id);
     ensure_dir(&dir)?;
     let path = dir.join("memory.jsonl");
     let mut body = String::new();
@@ -132,7 +132,7 @@ mod tests {
     fn load_skips_torn_lines() {
         let _env = TestEnv::new();
         let ws = "ws-torn-000000";
-        let dir = super::super::super::registry::persistence::workspace_dir(ws);
+        let dir = wylde_workspaces::registry::persistence::workspace_dir(ws);
         ensure_dir(&dir).unwrap();
         std::fs::write(
             memory_path(ws),

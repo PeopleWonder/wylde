@@ -17,7 +17,7 @@
 //! For every file already walked + chunked by [`super::walk`]:
 //!   1. Call `treesitter.extract_entities` over the **pipe**
 //!      (`\\.\pipe\wylde-treesitter`) — the canonical harness→sidecar
-//!      transport, same hop [`crate::tooling::resource::resources::treesitter`]
+//!      transport, same hop the harness `tooling::resource::resources::treesitter`
 //!      uses.
 //!   2. Attach the returned entity names to each of that file's chunks by
 //!      line range (mirroring the retired N8N node), and build the typed
@@ -62,8 +62,8 @@ use serde_json::{json, Value};
 use wylde_shared::ipc::{self, IpcError, Reply};
 
 use crate::config::Config;
-use crate::memory::memgraph::{BoltClient, EntityPair, REL_CALLS, REL_IMPORTS, REL_INHERITS};
-use crate::workspaces::registry::WorkspaceDefinition;
+use crate::graph::{BoltClient, EntityPair, REL_CALLS, REL_IMPORTS, REL_INHERITS};
+use crate::registry::WorkspaceDefinition;
 
 use super::chunk_id;
 use super::walk::Chunk;
@@ -101,7 +101,7 @@ trait EntityExtractor {
 
 /// The graph write surface this module needs — exactly the two verbs the
 /// retired N8N workflow called. Implemented by [`BoltClient`] and a test
-/// mock. Deliberately narrower than [`crate::memory::memgraph::MemgraphTraversal`]
+/// mock. Deliberately narrower than the harness `memgraph::MemgraphTraversal`
 /// (which is read-only); the write verbs live on the concrete client.
 trait GraphSink {
     fn upsert(&self, chunks: Vec<Value>) -> impl std::future::Future<Output = Reply> + Send;
