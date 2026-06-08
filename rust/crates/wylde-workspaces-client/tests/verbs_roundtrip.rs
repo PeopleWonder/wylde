@@ -36,6 +36,17 @@ fn slice_0b_verbs_have_expected_policies() {
         ("workspaces.set_persona", TimeoutPolicy::Fixed(FAST), true, None),
         ("workspaces.rag_query", TimeoutPolicy::Fixed(SLOW), true, None),
         ("workspaces.reindex", TimeoutPolicy::Fixed(SLOW), false, None),
+        // ── Slice 0c — notes (Build Order Appendix A) ──────────────────
+        ("workspaces.notes.list", TimeoutPolicy::Fixed(MEDIUM), true, None),
+        ("workspaces.notes.add", TimeoutPolicy::Fixed(MEDIUM), true, None),
+        ("workspaces.notes.update", TimeoutPolicy::Fixed(MEDIUM), true, None),
+        ("workspaces.notes.delete", TimeoutPolicy::Fixed(MEDIUM), false, None),
+        ("workspaces.notes.search", TimeoutPolicy::Fixed(MEDIUM), true, None),
+        ("workspaces.notes.propose", TimeoutPolicy::Fixed(MEDIUM), false, None),
+        // ── Slice 0c — workspace conversations (shape-assigned) ────────
+        ("workspaces.conversations.list", TimeoutPolicy::Fixed(MEDIUM), true, None),
+        ("workspaces.conversations.get", TimeoutPolicy::Fixed(MEDIUM), true, None),
+        ("workspaces.conversations.delete", TimeoutPolicy::Fixed(MEDIUM), false, None),
     ];
     for (name, timeout, has_retry, ttl) in expected {
         let def = verbs::lookup(name).unwrap_or_else(|| panic!("{name} missing from verb table"));
@@ -137,6 +148,70 @@ async fn wrappers_send_correct_action_and_payload_and_parse_reply() {
         "workspaces.set_persona",
         "workspaces.rag_query",
         "workspaces.reindex",
+    ] {
+        ipc::unregister_action(v);
+    }
+}
+
+#[tokio::test]
+async fn slice_0c_wrappers_send_correct_action_and_payload() {
+    let service = unique_service_name();
+    let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+
+    register_recording("workspaces.notes.list", &calls, json!({"workspace_id": "w-1", "notes": [], "count": 0}));
+    register_recording("workspaces.notes.add", &calls, json!({"id": "n-1", "text": "t"}));
+    register_recording("workspaces.notes.update", &calls, json!({"id": "n-1", "text": "t2"}));
+    register_recording("workspaces.notes.delete", &calls, json!({"ok": true, "id": "n-1"}));
+    register_recording("workspaces.notes.search", &calls, json!({"workspace_id": "w-1", "notes": [], "count": 0}));
+    register_recording("workspaces.notes.propose", &calls, json!({"candidate": {"id": "n-2", "text": "t"}}));
+    register_recording("workspaces.conversations.list", &calls, json!({"workspace_id": "w-1", "conversations": [], "count": 0}));
+    register_recording("workspaces.conversations.get", &calls, json!({"id": "c-1", "title": "T"}));
+    register_recording("workspaces.conversations.delete", &calls, json!({"ok": true, "id": "c-1"}));
+
+    let server = Arc::new(ipc::PipeServer::new(&service));
+    let server_clone = Arc::clone(&server);
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("server runtime");
+        let _ = rt.block_on(server_clone.accept_loop());
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let client = WorkspacesClient::for_service(&service);
+
+    assert_eq!(client.notes_list("w-1").await.unwrap()["count"], 0);
+    assert_eq!(client.notes_add("w-1", "t").await.unwrap()["id"], "n-1");
+    assert_eq!(client.notes_update("w-1", "n-1", "t2").await.unwrap()["text"], "t2");
+    assert_eq!(client.notes_delete("w-1", "n-1").await.unwrap()["ok"], true);
+    assert_eq!(client.notes_search("w-1", "q", Some(3)).await.unwrap()["count"], 0);
+    assert_eq!(client.notes_propose("w-1", "t").await.unwrap()["candidate"]["id"], "n-2");
+    assert_eq!(client.conversations_list("w-1").await.unwrap()["count"], 0);
+    assert_eq!(client.conversations_get("w-1", "c-1").await.unwrap()["title"], "T");
+    assert_eq!(client.conversations_delete("w-1", "c-1").await.unwrap()["ok"], true);
+
+    let recorded = calls.lock().unwrap().clone();
+    let payload_for = |verb: &str| -> Value {
+        recorded.iter().find(|(v, _)| v == verb).map(|(_, p)| p.clone()).unwrap()
+    };
+    assert_eq!(payload_for("workspaces.notes.add"), json!({"workspace_id": "w-1", "text": "t"}));
+    assert_eq!(payload_for("workspaces.notes.update"), json!({"workspace_id": "w-1", "id": "n-1", "text": "t2"}));
+    assert_eq!(payload_for("workspaces.notes.search"), json!({"workspace_id": "w-1", "query": "q", "limit": 3}));
+    assert_eq!(payload_for("workspaces.notes.propose"), json!({"workspace_id": "w-1", "text": "t"}));
+    assert_eq!(payload_for("workspaces.conversations.get"), json!({"workspace_id": "w-1", "id": "c-1"}));
+    assert_eq!(payload_for("workspaces.conversations.delete"), json!({"workspace_id": "w-1", "id": "c-1"}));
+
+    for v in [
+        "workspaces.notes.list",
+        "workspaces.notes.add",
+        "workspaces.notes.update",
+        "workspaces.notes.delete",
+        "workspaces.notes.search",
+        "workspaces.notes.propose",
+        "workspaces.conversations.list",
+        "workspaces.conversations.get",
+        "workspaces.conversations.delete",
     ] {
         ipc::unregister_action(v);
     }

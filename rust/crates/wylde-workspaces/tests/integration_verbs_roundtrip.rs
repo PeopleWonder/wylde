@@ -169,3 +169,104 @@ async fn all_relocated_verbs_round_trip_over_the_new_pipe() {
 
     shutdown(child);
 }
+
+/// Slice 0c acceptance: the relocated notes + workspace-conversation verbs
+/// round-trip over the real pipe through the shared client.
+#[tokio::test]
+async fn slice_0c_notes_and_conversations_round_trip() {
+    let service_name = unique_service_name();
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let wylde_root = tempfile::tempdir().expect("wylde root");
+    let proj = tempfile::tempdir().expect("proj");
+
+    let mut child = spawn_service(&service_name, data_dir.path(), wylde_root.path());
+    let client =
+        WorkspacesClient::new(std::path::PathBuf::from(format!(r"\\.\pipe\{service_name}")));
+    await_ready(&client, &mut child).await;
+
+    // Register a workspace to scope the notes / conversations to.
+    let ws = client
+        .create(&proj.path().to_string_lossy(), Some("Proj"))
+        .await
+        .expect("create");
+    let ws_id = ws["id"].as_str().expect("ws id").to_owned();
+
+    // ── notes: add → list → update → delete (embedder is absent in the ──
+    //    test env, so notes persist with an empty embedding — non-fatal). ─
+    let added = client.notes_add(&ws_id, "uses tokio").await.expect("notes.add");
+    let note_id = added["id"].as_str().expect("note id").to_owned();
+    assert_eq!(added["text"], "uses tokio");
+
+    let listed = client.notes_list(&ws_id).await.expect("notes.list");
+    assert_eq!(listed["count"], 1);
+    assert_eq!(listed["notes"][0]["id"], note_id);
+
+    let updated = client
+        .notes_update(&ws_id, &note_id, "uses cargo")
+        .await
+        .expect("notes.update");
+    assert_eq!(updated["text"], "uses cargo");
+
+    // update of an unknown id surfaces not_found over the pipe.
+    match client.notes_update(&ws_id, "ghost", "x").await {
+        Err(e) => assert_eq!(e.code, "not_found"),
+        Ok(v) => panic!("expected not_found, got {v}"),
+    }
+
+    let searched = client
+        .notes_search(&ws_id, "anything", Some(5))
+        .await
+        .expect("notes.search");
+    assert_eq!(searched["count"], 1, "the one note ranks by recency");
+
+    // propose returns a non-persisted candidate.
+    let proposed = client.notes_propose(&ws_id, "prefers Rust").await.expect("propose");
+    assert_eq!(proposed["candidate"]["text"], "prefers Rust");
+    assert_eq!(
+        client.notes_list(&ws_id).await.unwrap()["count"],
+        1,
+        "propose did not persist"
+    );
+
+    let deleted = client.notes_delete(&ws_id, &note_id).await.expect("notes.delete");
+    assert_eq!(deleted["ok"], true);
+    assert_eq!(client.notes_list(&ws_id).await.unwrap()["count"], 0);
+
+    // ── workspace conversations: seed a per-workspace file on disk, then ─
+    //    list / get / delete it over the pipe. ────────────────────────────
+    let conv_dir = data_dir
+        .path()
+        .join("workspaces")
+        .join(&ws_id)
+        .join("conversations");
+    std::fs::create_dir_all(&conv_dir).expect("conv dir");
+    std::fs::write(
+        conv_dir.join("c1.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "id": "c1", "title": "WS chat", "updated_at": 5,
+            "messages": [{"role": "user", "content": "hi"}],
+            "working_memory": [], "workspace_id": ws_id,
+        }))
+        .unwrap(),
+    )
+    .expect("seed conv");
+
+    let convs = client.conversations_list(&ws_id).await.expect("conv.list");
+    assert_eq!(convs["count"], 1);
+    assert_eq!(convs["conversations"][0]["id"], "c1");
+
+    let got = client.conversations_get(&ws_id, "c1").await.expect("conv.get");
+    assert_eq!(got["title"], "WS chat");
+
+    // not_found surfaces over the pipe.
+    match client.conversations_get(&ws_id, "ghost").await {
+        Err(e) => assert_eq!(e.code, "not_found"),
+        Ok(v) => panic!("expected not_found, got {v}"),
+    }
+
+    let del = client.conversations_delete(&ws_id, "c1").await.expect("conv.delete");
+    assert_eq!(del["ok"], true);
+    assert_eq!(client.conversations_list(&ws_id).await.unwrap()["count"], 0);
+
+    shutdown(child);
+}

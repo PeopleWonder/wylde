@@ -1,27 +1,18 @@
-//! `memory/` — the per-workspace memory-entries layer.
+//! `memory` — compat re-export of the relocated workspace-notes tier.
 //!
 //! **Conceptual path:** `Core/Harness/Workspaces/Memory/`.
 //!
-//! This is the **middle tier** of the 3-layer memory architecture
-//! (long-term / **workspace** / short-term, per memory
-//! `wylde_memory_architecture`). Each workspace owns one bucket of
-//! curated memory entries; at prompt-build time the highest-scoring
-//! entries are injected as a workspace-memory slot.
+//! Slice 0c moved this tier (the workspace-layer notes — entry type, JSONL
+//! IO, recency+relevance scoring) into the `wylde-workspaces` service at
+//! [`wylde_workspaces::notes`]. It's re-exported here so the existing
+//! `crate::workspaces::memory::*` paths — chiefly the prompt builder
+//! ([`super::prompt`], which gathers the workspace-memory slot in-process)
+//! — keep resolving unchanged through the migration window. Slice 0d
+//! repoints those readers at the service pipe and removes this shim.
 //!
-//! Do NOT confuse this with the relocated `wylde_workspaces::registry`: registry stores
-//! *configs*, this stores *memory entries*.
-//!
-//! Storage: `<data_dir>/workspaces/<workspace_id>/memory.json`.
-//!
-//! ## Split
-//!
-//! * [`entry`] — the [`WorkspaceMemoryEntry`] type + per-workspace
-//!   `memory.json` IO.
-//! * [`query`] — fetch + score entries for prompt injection
-//!   ([`WorkspaceMemoryQuery`]).
+//! The verb surface (`workspaces.notes.*`) lives on the service pipe, with
+//! harness compat-shim proxies in [`super::notes_api`].
 
-pub mod entry;
-pub mod query;
-
-pub use entry::WorkspaceMemoryEntry;
-pub use query::WorkspaceMemoryQuery;
+pub use wylde_workspaces::notes::{
+    entry, query, NoteEntry, WorkspaceMemoryEntry, WorkspaceMemoryQuery,
+};

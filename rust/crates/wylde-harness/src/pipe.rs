@@ -131,6 +131,17 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "workspaces.list_mru",
     "workspaces.rag_query",
     "workspaces.reindex",
+    // workspaces.notes.* — relocated notes tier (Slice 0c; compat-shim proxy)
+    "workspaces.notes.list",
+    "workspaces.notes.add",
+    "workspaces.notes.update",
+    "workspaces.notes.delete",
+    "workspaces.notes.search",
+    "workspaces.notes.propose",
+    // workspaces.conversations.* — workspace-scoped convos (Slice 0c; proxy)
+    "workspaces.conversations.list",
+    "workspaces.conversations.get",
+    "workspaces.conversations.delete",
     // memory.short_term.* — conversation working memory (3 verbs)
     "memory.short_term.get",
     "memory.short_term.append",
@@ -683,6 +694,124 @@ where
         "Force a full reindex of a workspace's folder (the Reindex button). \
          Payload {workspace_id}. Returns {ok, workspace_id, file_count, \
          chunk_count, last_error}; not_found for an unknown id.",
+        HANDLER_MODULE_WORKSPACES,
+    );
+
+    // ── workspaces.notes.* (Slice 0c; compat-shim proxy → service) ───
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "workspaces.notes.list",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.workspaces_notes_list(p).await }
+        },
+        "Every note for a workspace (the workspace-tier memory). Payload \
+         {workspace_id}. Returns {workspace_id, notes, count}. Proxies the \
+         wylde-workspaces service, falling back in-process when it's down.",
+        HANDLER_MODULE_WORKSPACES,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "workspaces.notes.add",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.workspaces_notes_add(p).await }
+        },
+        "Append a workspace note (embeds on write). Payload {workspace_id, \
+         text}. Returns the new note {id, text, created_at, last_used_at}.",
+        HANDLER_MODULE_WORKSPACES,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "workspaces.notes.update",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.workspaces_notes_update(p).await }
+        },
+        "Edit a note's text (re-embeds). Payload {workspace_id, id, text}. \
+         Returns the updated note; not_found for an unknown id.",
+        HANDLER_MODULE_WORKSPACES,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "workspaces.notes.delete",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.workspaces_notes_delete(p).await }
+        },
+        "Remove a note by id. Payload {workspace_id, id}. Returns {ok, id} — \
+         ok is false when the note was already absent.",
+        HANDLER_MODULE_WORKSPACES,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "workspaces.notes.search",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.workspaces_notes_search(p).await }
+        },
+        "Recency+relevance ranked search over a workspace's notes. Payload \
+         {workspace_id, query, limit?}. Fail-soft to empty. Returns \
+         {workspace_id, notes, count}.",
+        HANDLER_MODULE_WORKSPACES,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "workspaces.notes.propose",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.workspaces_notes_propose(p).await }
+        },
+        "Reflection candidate note (NOT persisted; user accepts via \
+         workspaces.notes.add). Payload {workspace_id, text}. Returns \
+         {candidate} or {candidate: null} for blank text.",
+        HANDLER_MODULE_WORKSPACES,
+    );
+
+    // ── workspaces.conversations.* (Slice 0c; compat-shim proxy) ─────
+    // Workspace-scoped conversations only. Standalone conversations
+    // (workspace_id == None) stay on the harness `conversations.*` verbs.
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "workspaces.conversations.list",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.workspaces_conversations_list(p).await }
+        },
+        "Metadata for one workspace's conversations, newest-first. Payload \
+         {workspace_id}. Returns {workspace_id, conversations, count}. \
+         Proxies the wylde-workspaces service with in-process fallback.",
+        HANDLER_MODULE_WORKSPACES,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "workspaces.conversations.get",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.workspaces_conversations_get(p).await }
+        },
+        "Full workspace conversation document. Payload {workspace_id, id}. \
+         bad_request for a missing/invalid id, not_found when absent.",
+        HANDLER_MODULE_WORKSPACES,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "workspaces.conversations.delete",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.workspaces_conversations_delete(p).await }
+        },
+        "Remove one workspace conversation. Payload {workspace_id, id}. \
+         Returns {ok, id}.",
         HANDLER_MODULE_WORKSPACES,
     );
 

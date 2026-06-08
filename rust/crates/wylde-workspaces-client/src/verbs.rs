@@ -101,6 +101,66 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::NoRetry,
         cache_ttl: None,
     },
+    // ── Slice 0c — workspace notes tier (Build Order Appendix A) ─────────
+    VerbDef {
+        name: "workspaces.notes.list",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.notes.add",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::idempotent_write(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.notes.update",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::idempotent_write(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.notes.delete",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.notes.search",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.notes.propose",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
+    // ── Slice 0c — workspace-scoped conversations ───────────────────────
+    // Not in Appendix A under this name (it lists the `chat.*` workspace
+    // surface for Slices E/J); the 0c lifecycle subset is assigned by shape
+    // — Medium reads, non-idempotent delete — per the plan's "most note /
+    // conversation verbs are Medium tier" guidance.
+    VerbDef {
+        name: "workspaces.conversations.list",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.conversations.get",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.conversations.delete",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
 ];
 
 /// Look up the policy for `verb`, or `None` if the client doesn't know it.

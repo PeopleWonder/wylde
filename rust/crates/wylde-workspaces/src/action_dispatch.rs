@@ -36,6 +36,19 @@ pub const LIST_MRU: &str = "workspaces.list_mru";
 pub const RAG_QUERY: &str = "workspaces.rag_query";
 pub const REINDEX: &str = "workspaces.reindex";
 
+// ── Workspace notes tier (Slice 0c) ──────────────────────────────────────
+pub const NOTES_LIST: &str = "workspaces.notes.list";
+pub const NOTES_ADD: &str = "workspaces.notes.add";
+pub const NOTES_UPDATE: &str = "workspaces.notes.update";
+pub const NOTES_DELETE: &str = "workspaces.notes.delete";
+pub const NOTES_SEARCH: &str = "workspaces.notes.search";
+pub const NOTES_PROPOSE: &str = "workspaces.notes.propose";
+
+// ── Workspace-scoped conversations (Slice 0c) ────────────────────────────
+pub const CONVERSATIONS_LIST: &str = "workspaces.conversations.list";
+pub const CONVERSATIONS_GET: &str = "workspaces.conversations.get";
+pub const CONVERSATIONS_DELETE: &str = "workspaces.conversations.delete";
+
 /// Every action this service registers. Grows one slice at a time.
 pub const ALL_ACTIONS: &[&str] = &[
     PING,
@@ -47,6 +60,17 @@ pub const ALL_ACTIONS: &[&str] = &[
     LIST_MRU,
     RAG_QUERY,
     REINDEX,
+    // Slice 0c — notes
+    NOTES_LIST,
+    NOTES_ADD,
+    NOTES_UPDATE,
+    NOTES_DELETE,
+    NOTES_SEARCH,
+    NOTES_PROPOSE,
+    // Slice 0c — workspace conversations
+    CONVERSATIONS_LIST,
+    CONVERSATIONS_GET,
+    CONVERSATIONS_DELETE,
 ];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -124,6 +148,74 @@ pub fn install() {
         |p: Value| async move { api::handle_reindex(p).await },
         "Force a synchronous full reindex of a workspace's folder. Payload: \
          {workspace_id}. Reply: {ok, file_count, chunk_count, last_error}.",
+        META_MODULE,
+    );
+
+    // ── Slice 0c — workspace notes tier ──────────────────────────────────
+    register_action_with_meta(
+        NOTES_LIST,
+        |p: Value| async move { crate::notes::api::handle_list(p).await },
+        "Every note for a workspace. Payload: {workspace_id}. Reply: \
+         {workspace_id, notes, count}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        NOTES_ADD,
+        |p: Value| async move { crate::notes::api::handle_add(p).await },
+        "Append a workspace note (embeds on write). Payload: {workspace_id, \
+         text}. Reply: the new note {id, text, created_at, last_used_at}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        NOTES_UPDATE,
+        |p: Value| async move { crate::notes::api::handle_update(p).await },
+        "Edit a note's text (re-embeds). Payload: {workspace_id, id, text}. \
+         Reply: the updated note. not_found for an unknown id.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        NOTES_DELETE,
+        |p: Value| async move { crate::notes::api::handle_delete(p).await },
+        "Remove a note by id. Payload: {workspace_id, id}. Reply: {ok, id}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        NOTES_SEARCH,
+        |p: Value| async move { crate::notes::api::handle_search(p).await },
+        "Recency+relevance ranked search over a workspace's notes. Payload: \
+         {workspace_id, query, limit?}. Fail-soft to empty. Reply: \
+         {workspace_id, notes, count}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        NOTES_PROPOSE,
+        |p: Value| async move { crate::notes::api::handle_propose(p).await },
+        "Reflection candidate note (NOT persisted; user accepts via \
+         notes.add). Payload: {workspace_id, text}. Reply: {candidate} or \
+         {candidate: null} for blank text.",
+        META_MODULE,
+    );
+
+    // ── Slice 0c — workspace-scoped conversations ────────────────────────
+    register_action_with_meta(
+        CONVERSATIONS_LIST,
+        |p: Value| async move { crate::conversations::api::handle_list(p).await },
+        "Metadata for one workspace's conversations, newest-first. Payload: \
+         {workspace_id}. Reply: {workspace_id, conversations, count}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONVERSATIONS_GET,
+        |p: Value| async move { crate::conversations::api::handle_get(p).await },
+        "Full conversation document. Payload: {workspace_id, id}. \
+         bad_request for a missing/invalid id, not_found when absent.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONVERSATIONS_DELETE,
+        |p: Value| async move { crate::conversations::api::handle_delete(p).await },
+        "Remove one workspace conversation. Payload: {workspace_id, id}. \
+         Reply: {ok, id}.",
         META_MODULE,
     );
 
