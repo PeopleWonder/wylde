@@ -134,6 +134,48 @@ impl ForceDirected {
 
         PhysicsEngine::build(bodies, &edges, physics)
     }
+
+    /// Build an engine that **starts from an explicit `seed` layout** instead of
+    /// the depth-banded warm start. Used when resuming physics after an animated
+    /// layout swap (Slice C-layout): the tween lands the nodes at the target
+    /// positions, then the worker picks up from exactly there rather than
+    /// snapping back to a fresh warm start. The y-targets (dependency depth) and
+    /// edge rest lengths are still derived from the graph. A node missing from
+    /// `seed` falls back to its warm position.
+    pub fn build_engine_with_seed(
+        &self,
+        graph: &WorkspaceGraph,
+        physics: PhysicsConfig,
+        seed: &Layout,
+    ) -> PhysicsEngine {
+        let depths = Self::depths(graph);
+        let warm = self.warm_positions(graph, &depths);
+
+        let bodies: Vec<BodyInit> = graph
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, node)| {
+                let p = seed.get(&node.id).unwrap_or(warm[i]);
+                BodyInit {
+                    id: node.id.clone(),
+                    x: p.x,
+                    y: p.y,
+                    y_target: self.layout.y_target(depths[i]),
+                    pinned: false,
+                }
+            })
+            .collect();
+
+        let rest = self.layout.rest_length();
+        let edges: Vec<(String, String, f32)> = graph
+            .edges
+            .iter()
+            .map(|e| (e.src.clone(), e.dst.clone(), rest))
+            .collect();
+
+        PhysicsEngine::build(bodies, &edges, physics)
+    }
 }
 
 impl LayoutBackend for ForceDirected {
@@ -141,7 +183,7 @@ impl LayoutBackend for ForceDirected {
         "force_directed"
     }
 
-    fn seed(&self, graph: &WorkspaceGraph) -> Layout {
+    fn compute_positions(&self, graph: &WorkspaceGraph) -> Layout {
         let depths = Self::depths(graph);
         let warm = self.warm_positions(graph, &depths);
         let map = graph
@@ -266,7 +308,7 @@ mod tests {
             clusters: vec![],
         };
         let fd = ForceDirected::default();
-        let layout = fd.seed(&g);
+        let layout = fd.compute_positions(&g);
         let root_y = layout.get("root").unwrap().y;
         let leaf_y = layout.get("leaf").unwrap().y;
         assert_eq!(root_y, 0.0);
@@ -282,7 +324,7 @@ mod tests {
             clusters: vec![],
         };
         let fd = ForceDirected::default();
-        assert_eq!(fd.seed(&g), fd.seed(&g));
+        assert_eq!(fd.compute_positions(&g), fd.compute_positions(&g));
     }
 
     #[test]
@@ -296,5 +338,44 @@ mod tests {
         let engine = fd.build_engine(&g, PhysicsConfig::default());
         assert_eq!(engine.len(), 2);
         assert_eq!(fd.name(), "force_directed");
+    }
+
+    #[test]
+    fn build_engine_with_seed_starts_from_seed_positions() {
+        let g = WorkspaceGraph {
+            nodes: vec![node("root"), node("leaf")],
+            edges: vec![edge("root", "leaf", RelType::Calls)],
+            clusters: vec![],
+        };
+        // A seed that places nodes somewhere the warm start never would.
+        let mut map = std::collections::HashMap::new();
+        map.insert(
+            "root".to_owned(),
+            Position {
+                x: 500.0,
+                y: -300.0,
+                z: 0.0,
+            },
+        );
+        map.insert(
+            "leaf".to_owned(),
+            Position {
+                x: -123.0,
+                y: 456.0,
+                z: 0.0,
+            },
+        );
+        let seed = Layout::from_positions(map);
+        let fd = ForceDirected::default();
+        let engine = fd.build_engine_with_seed(&g, PhysicsConfig::default(), &seed);
+        // The worker's first latched frame reflects the seed, not a warm start.
+        let frame = engine.snapshot();
+        let root = frame
+            .positions
+            .iter()
+            .find(|(id, _)| &**id == "root")
+            .unwrap()
+            .1;
+        assert!((root.x - 500.0).abs() < 1e-3 && (root.y + 300.0).abs() < 1e-3);
     }
 }

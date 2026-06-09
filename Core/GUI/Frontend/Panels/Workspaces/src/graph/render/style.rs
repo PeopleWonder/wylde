@@ -311,6 +311,17 @@ pub struct GraphPanelStyle {
     pub background: PanelBackground,
 }
 
+/// One `animations.*` entry — a duration + cubic-bézier easing. Only the
+/// fields C-layout needs are modelled; the YAML's `description` is ignored.
+/// `easing` is `[x1, y1, x2, y2]` (CSS cubic-bezier control points).
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub struct AnimationSpec {
+    #[serde(default)]
+    pub duration_ms: f32,
+    #[serde(default)]
+    pub easing: [f32; 4],
+}
+
 /// The locked visual style consumed by the renderer. Only the C-scaffold
 /// sections are modelled; serde silently drops the rest.
 #[derive(Clone, Debug, Deserialize)]
@@ -321,6 +332,11 @@ pub struct Theme {
     pub node_types: HashMap<String, NodeTypeStyle>,
     pub edges: HashMap<String, EdgeStyle>,
     pub graph_panel: GraphPanelStyle,
+    /// Animation durations + easings (`animations.*`). C-layout reads
+    /// `graph_layout_swap`; absent in older assets → empty map (callers fall
+    /// back to the locked spec value).
+    #[serde(default)]
+    pub animations: HashMap<String, AnimationSpec>,
 }
 
 impl Theme {
@@ -367,6 +383,11 @@ impl Theme {
 
     pub fn edge_style(&self, key: &str) -> Option<&EdgeStyle> {
         self.edges.get(key)
+    }
+
+    /// Look up an `animations.*` spec by key (e.g. `"graph_layout_swap"`).
+    pub fn animation(&self, key: &str) -> Option<&AnimationSpec> {
+        self.animations.get(key)
     }
 }
 
@@ -458,6 +479,15 @@ mod tests {
         assert_eq!(t.node_type("constant").saturation_modifier, Some(0.4));
         // A kind without a multiplier defaults to 1.0.
         assert_eq!(t.node_type("function").size_multiplier(), 1.0);
+    }
+
+    #[test]
+    fn graph_layout_swap_animation_matches_locked_spec() {
+        let t = Theme::load_v1().unwrap();
+        let swap = t.animation("graph_layout_swap").expect("locked swap anim");
+        assert_eq!(swap.duration_ms, 500.0);
+        assert_eq!(swap.easing, [0.77, 0.0, 0.175, 1.0]);
+        assert!(t.animation("nope").is_none());
     }
 
     #[test]
