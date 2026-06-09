@@ -27,12 +27,12 @@ use wylde_theme::typography::{size, FAMILY_INTER};
 use crate::ipc::{
     accept_profile_proposal, check_for_update, clear_ollama_override, clear_tool_decision,
     download_and_install, get_autostart_enabled, list_consent, list_input_devices,
-    list_profile_proposals, read_effective_model, read_model_defaults, read_ollama_overrides,
-    read_privacy_prefs, read_update_prefs, read_user_profile, read_voice_settings,
-    reject_profile_proposal, reset_consent, set_autostart_enabled, set_no_auth, set_ollama_override,
-    set_tool_decision, test_mic, update_profile_field, write_privacy_prefs, write_update_prefs,
-    write_voice_settings, ConsentSnapshot, OllamaSettings, PrivacyPrefs, UpdateCheck, UpdatePrefs,
-    VoiceDevices, VoiceSettings, VoiceTest,
+    list_profile_proposals, read_effective_model, read_encryption_at_rest, read_model_defaults,
+    read_ollama_overrides, read_privacy_prefs, read_update_prefs, read_user_profile,
+    read_voice_settings, reject_profile_proposal, reset_consent, set_autostart_enabled, set_no_auth,
+    set_ollama_override, set_tool_decision, test_mic, update_profile_field, write_encryption_at_rest,
+    write_privacy_prefs, write_update_prefs, write_voice_settings, ConsentSnapshot, OllamaSettings,
+    PrivacyPrefs, UpdateCheck, UpdatePrefs, VoiceDevices, VoiceSettings, VoiceTest,
 };
 use crate::hotkey::{resolve_capture, CaptureOutcome};
 use crate::sections::{
@@ -200,6 +200,11 @@ pub struct SettingsPanel {
     /// Last write-side failure (pipe error from a toggle).  Surfaced as
     /// a banner; cleared on the next successful write.
     pub error: Option<String>,
+    /// Encryption-at-rest toggle (OI-14). Default on; loaded from the
+    /// harness `settings.encryption.get` verb in `spawn_refresh` (the
+    /// canonical `data_dir` lives there, so the choice applies to every
+    /// service's stores).
+    pub encryption_at_rest: bool,
 
     // ── Profile / Rules (Thought Bubble System Slice D) ──────────────
     /// Last-read user profile (read-only blocks + the source for the
@@ -247,6 +252,7 @@ impl SettingsPanel {
             hf_modal_open: false,
             hf_dont_show_again: true,
             error: None,
+            encryption_at_rest: true,
             user_profile: crate::ipc::UserProfile::default(),
             profile_proposals: Vec::new(),
             profile_name_input: None,
@@ -384,6 +390,19 @@ impl SettingsPanel {
             }
         })
         .detach();
+
+        // Encryption at rest (OI-14). Best-effort; default stays on if the
+        // read fails.
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            if let Ok(enabled) = read_encryption_at_rest().await {
+                let _ = this.update(app_cx, |panel, cx| {
+                    panel.encryption_at_rest = enabled;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+
         Self::refresh_profile_proposals(cx);
     }
 
@@ -1123,6 +1142,31 @@ impl SettingsPanel {
         }
     }
 
+    /// Flip the encryption-at-rest toggle (OI-14) and persist it through the
+    /// harness `settings.encryption.set` verb. Optimistically updates the UI;
+    /// on a pipe failure it reverts and surfaces the error banner.
+    pub fn toggle_encryption_at_rest(&mut self, cx: &mut Context<Self>) {
+        let next = !self.encryption_at_rest;
+        self.encryption_at_rest = next;
+        self.error = None;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = write_encryption_at_rest(next).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                match outcome {
+                    Ok(persisted) => panel.encryption_at_rest = persisted,
+                    Err(e) => {
+                        // Revert the optimistic flip and show the failure.
+                        panel.encryption_at_rest = !next;
+                        panel.error = Some(format!("Encryption toggle failed: {e}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// "Enable" in the first-time modal: turn the feature on, remember the
     /// warning was shown iff the "don't show again" box is checked, and
     /// persist. An unchecked box leaves `warning_shown` false so the modal
@@ -1435,7 +1479,7 @@ impl Render for SettingsPanel {
                     // Privacy & Network sits directly below Updates — the
                     // two "may make an outside connection" sections kept
                     // adjacent at the top of the page.
-                    .child(privacy_section(self.privacy, cx))
+                    .child(privacy_section(self.privacy, self.encryption_at_rest, cx))
                     .child(startup_section(
                         self.autostart_enabled,
                         self.autostart_error.as_deref(),

@@ -13,6 +13,10 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
+# Local agent scratchpad (slice reports + intermediate artifacts); keep the README
+outputs/*
+!outputs/README.md
+
 # gpui GUI build output (the Tauri+Svelte tree was deleted at the
 # slice-11 cutover; the standalone Core/GUI/ Cargo workspace builds here)
 Core/GUI/target/

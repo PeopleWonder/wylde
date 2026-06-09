@@ -352,10 +352,6 @@ pub async fn embed_query(query: &str) -> Option<Vec<f32>> {
 /// Regenerate the summary + embedding for one **standalone** conversation
 /// and persist them. Fail-soft: any error leaves the stored fields
 /// untouched and is returned for the caller to log/ignore.
-///
-/// Workspace conversations live in `wylde-workspaces` and are not writable
-/// from here; their summary pipeline is a follow-up (it needs a service-side
-/// embed + persist verb). See the module docs / Slice E report.
 pub async fn refresh_standalone(conv_id: &str) -> Result<Value, SummaryError> {
     let doc = conv_store::read_conversation(conv_id).map_err(|_| {
         SummaryError::NotFound(format!("standalone conversation {conv_id:?} not found"))
@@ -374,6 +370,55 @@ pub async fn refresh_standalone(conv_id: &str) -> Result<Value, SummaryError> {
     let fields = summary_fields(&summary, &tags, &embedding, count);
     conv_store::merge_fields(conv_id, fields)
         .map_err(|_| SummaryError::NotFound(format!("conversation {conv_id:?} vanished mid-write")))
+}
+
+/// Regenerate the summary + embedding for one **workspace** conversation —
+/// the parity twin of [`refresh_standalone`] (Phase 2 polish, Item 1).
+///
+/// Workspace conversations live in the `wylde-workspaces` service, so the
+/// harness fetches the doc over the pipe, runs the **same** LLM + embedder
+/// pipeline locally (the service has no Ollama client), then pushes the
+/// derived fields back via `workspaces.conversations.refresh_summary`. After
+/// that, [`super::api::search_history`] ranks workspace conversations by the
+/// same cosine path it already uses for standalone ones (their fetched docs
+/// now carry `auto_summary` / `topic_tags` / `embedding`).
+///
+/// Fail-soft like its twin: a slow/unreachable service or embedder error is
+/// returned for the caller to log; the stored doc keeps its prior fields.
+pub async fn refresh_workspace(workspace_id: &str, conv_id: &str) -> Result<Value, SummaryError> {
+    use wylde_workspaces_client::WorkspacesClient;
+
+    let client = WorkspacesClient::for_service(super::api::workspaces_service());
+    let doc = client
+        .conversations_get(workspace_id, conv_id)
+        .await
+        .map_err(|e| {
+            SummaryError::NotFound(format!(
+                "workspace conversation {conv_id:?} unreadable: {e}"
+            ))
+        })?;
+    let count = message_count(&doc);
+    let input = summary_input_text(&doc);
+    if input.trim().is_empty() {
+        return Err(SummaryError::Llm("conversation has no text to summarise".to_owned()));
+    }
+
+    let (summary, tags) = generate_summary(&input).await?;
+    let embedding = embeddings::embed_one(summary.clone())
+        .await
+        .map_err(|e| SummaryError::Embed(e.to_string()))?;
+
+    client
+        .conversations_refresh_summary(
+            workspace_id,
+            conv_id,
+            &summary,
+            &tags,
+            &embedding,
+            count as u64,
+        )
+        .await
+        .map_err(|e| SummaryError::Llm(format!("persist workspace summary: {e}")))
 }
 
 #[cfg(test)]

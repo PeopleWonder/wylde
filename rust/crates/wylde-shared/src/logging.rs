@@ -93,8 +93,15 @@ pub fn configure_logging(service: Option<&str>, level: Level) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
+    // `configure_logging` calls `attest_phase`, which mutates the same
+    // process-global manifest statics the `manifest::tests` touch. Share the
+    // `manifest` serial group so this can't interleave with (and clobber the
+    // persisted state of) a concurrent manifest test — the cross-module race
+    // that flaked `mark_orphan_dead_works`.
+    #[serial(manifest)]
     fn idempotent() {
         configure_logging(Some("test"), Level::INFO);
         configure_logging(Some("test"), Level::DEBUG);

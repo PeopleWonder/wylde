@@ -264,6 +264,25 @@ async fn slice_0c_notes_and_conversations_round_trip() {
         Ok(v) => panic!("expected not_found, got {v}"),
     }
 
+    // Slice E parity: push a computed summary+embedding and read it back. The
+    // derived fields land on the doc (what the scoped search ranks on) and
+    // updated_at is untouched.
+    client
+        .conversations_refresh_summary(
+            &ws_id,
+            "c1",
+            "Greeting exchange.",
+            &["greeting".to_string()],
+            &[0.1_f32, 0.2, 0.3],
+            1,
+        )
+        .await
+        .expect("conv.refresh_summary");
+    let summarised = client.conversations_get(&ws_id, "c1").await.expect("conv.get");
+    assert_eq!(summarised["auto_summary"], "Greeting exchange.");
+    assert_eq!(summarised["embedding"].as_array().unwrap().len(), 3);
+    assert_eq!(summarised["updated_at"], 5, "re-summary must not reorder");
+
     let del = client.conversations_delete(&ws_id, "c1").await.expect("conv.delete");
     assert_eq!(del["ok"], true);
     assert_eq!(client.conversations_list(&ws_id).await.unwrap()["count"], 0);

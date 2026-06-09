@@ -19,8 +19,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::common::ensure_dir;
-
 /// A single workspace-scoped note (the "memory entry" of the workspace
 /// tier). The Build Order struct index calls this `NoteEntry`; the proven
 /// on-disk field set is preserved verbatim (so existing `memory.jsonl` files
@@ -107,7 +105,8 @@ pub fn memory_path(workspace_id: &str) -> std::path::PathBuf {
 /// Load every entry for a workspace (fail-soft: empty on missing/torn;
 /// unparseable lines are skipped).
 pub fn load(workspace_id: &str) -> Vec<WorkspaceMemoryEntry> {
-    let Ok(raw) = std::fs::read_to_string(memory_path(workspace_id)) else {
+    let Ok(raw) = wylde_shared::encryption::read_to_string_at_rest(&memory_path(workspace_id))
+    else {
         return Vec::new();
     };
     raw.lines()
@@ -116,20 +115,15 @@ pub fn load(workspace_id: &str) -> Vec<WorkspaceMemoryEntry> {
         .collect()
 }
 
-/// Atomically replace a workspace's `memory.jsonl`.
+/// Encrypt-at-rest (OI-14) + atomically replace a workspace's `memory.jsonl`.
 pub fn save(workspace_id: &str, entries: &[WorkspaceMemoryEntry]) -> std::io::Result<()> {
-    let dir = crate::registry::persistence::workspace_dir(workspace_id);
-    ensure_dir(&dir)?;
-    let path = dir.join("memory.jsonl");
+    let path = crate::registry::persistence::workspace_dir(workspace_id).join("memory.jsonl");
     let mut body = String::new();
     for e in entries {
         body.push_str(&serde_json::to_string(e).unwrap());
         body.push('\n');
     }
-    let tmp = path.with_extension("jsonl.tmp");
-    std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    wylde_shared::encryption::write_at_rest(&path, body.as_bytes())
 }
 
 /// Append one entry (load → push → save). Convenience for the curation
@@ -202,8 +196,9 @@ mod tests {
         save(ws, &entries).unwrap();
         let back = load(ws);
         assert_eq!(back, entries);
-        // Verify it really is line-delimited.
-        let raw = std::fs::read_to_string(memory_path(ws)).unwrap();
+        // Verify it really is line-delimited (decrypt-at-rest first: the file
+        // is ciphertext on disk under OI-14).
+        let raw = wylde_shared::encryption::read_to_string_at_rest(&memory_path(ws)).unwrap();
         assert_eq!(raw.lines().filter(|l| !l.is_empty()).count(), 2);
     }
 
@@ -218,7 +213,7 @@ mod tests {
         let _env = TestEnv::new();
         let ws = "ws-torn-000000";
         let dir = crate::registry::persistence::workspace_dir(ws);
-        ensure_dir(&dir).unwrap();
+        crate::common::ensure_dir(&dir).unwrap();
         std::fs::write(
             memory_path(ws),
             "{not json}\n{\"id\":\"ok\",\"text\":\"good\"}\n",

@@ -33,7 +33,6 @@ use std::path::PathBuf;
 
 use serde_json::{Map, Value};
 
-use crate::common::ensure_dir;
 use crate::registry::persistence::workspace_dir;
 
 /// Mirrors the harness `_MAX_ID_LEN`.
@@ -101,7 +100,7 @@ fn read_doc(workspace_id: &str, conv_id: &str) -> Result<Map<String, Value>, Con
             "conversation '{conv_id}' not found in workspace '{workspace_id}'"
         )));
     }
-    let raw = std::fs::read_to_string(&path).map_err(|e| {
+    let raw = wylde_shared::encryption::read_to_string_at_rest(&path).map_err(|e| {
         ConversationNotFound(format!("conversation '{conv_id}' is unreadable: {e}"))
     })?;
     match serde_json::from_str::<Value>(&raw) {
@@ -139,15 +138,36 @@ pub fn save_conversation(workspace_id: &str, doc: &Map<String, Value>) -> std::i
         })?;
     validate_id(conv_id)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.0))?;
-    let dir = conversations_dir(workspace_id);
-    ensure_dir(&dir)?;
     let path = path_for(workspace_id, conv_id);
-    let tmp = path.with_extension("json.tmp");
     let body = serde_json::to_string_pretty(&Value::Object(doc.clone()))
         .unwrap_or_else(|_| "{}".to_owned());
-    std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    // Encrypt-at-rest (OI-14) + atomic temp-write + rename + owner-only.
+    wylde_shared::encryption::write_at_rest(&path, body.as_bytes())
+}
+
+/// Merge a set of derived fields into an existing conversation document and
+/// persist it, **without** bumping `updated_at`. Used by the Slice E summary
+/// pipeline (`workspaces.conversations.refresh_summary`): the harness computes
+/// the LLM summary + embedding and pushes them here, where they fold into the
+/// stored doc alongside the messages. A re-summary is not user activity, so the
+/// conversation must not jump to the top of the newest-first list — mirrors the
+/// harness standalone `merge_fields` (Slice E §3.4).
+///
+/// Returns the merged document. `Err(NotFound)` when the conversation is
+/// absent; `Err(InvalidId)` when `conv_id` is unsafe.
+pub fn merge_fields(
+    workspace_id: &str,
+    conv_id: &str,
+    fields: Map<String, Value>,
+) -> Result<Value, ReadError> {
+    validate_id(conv_id).map_err(ReadError::InvalidId)?;
+    let mut doc = read_doc(workspace_id, conv_id).map_err(ReadError::NotFound)?;
+    for (k, v) in fields {
+        doc.insert(k, v);
+    }
+    // Best-effort: a torn write leaves the prior doc; the next refresh retries.
+    let _ = save_conversation(workspace_id, &doc);
+    Ok(Value::Object(doc))
 }
 
 /// Remove a conversation file. Returns `true` iff a file was deleted.
@@ -182,7 +202,7 @@ pub fn list_conversations(workspace_id: &str) -> Vec<Value> {
         if !path.is_file() {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
+        let Ok(raw) = wylde_shared::encryption::read_to_string_at_rest(&path) else {
             continue;
         };
         let Ok(Value::Object(doc)) = serde_json::from_str::<Value>(&raw) else {
@@ -331,5 +351,44 @@ mod tests {
         let _env = TestEnv::new();
         let map = json!({"title": "no id"}).as_object().unwrap().clone();
         assert!(save_conversation("ws", &map).is_err());
+    }
+
+    #[test]
+    fn merge_fields_adds_summary_keeps_siblings_and_updated_at() {
+        let _env = TestEnv::new();
+        let ws = "ws-merge-000000";
+        seed(
+            ws,
+            "c1",
+            json!({"id": "c1", "title": "Keep", "updated_at": 10, "workspace_id": ws,
+                   "messages": [{"role": "user", "content": "x"}]}),
+        );
+        let mut fields = Map::new();
+        fields.insert("auto_summary".into(), json!("a précis"));
+        fields.insert("topic_tags".into(), json!(["t"]));
+        fields.insert("embedding".into(), json!([0.6, 0.8]));
+        fields.insert("summary_msg_count".into(), json!(1));
+        let merged = merge_fields(ws, "c1", fields).expect("merged");
+        assert_eq!(merged["auto_summary"], "a précis");
+
+        let doc = read_conversation(ws, "c1").expect("found");
+        assert_eq!(doc["auto_summary"], "a précis");
+        assert_eq!(doc["embedding"].as_array().unwrap().len(), 2);
+        // Siblings preserved; activity timestamp untouched (no reordering).
+        assert_eq!(doc["title"], "Keep");
+        assert_eq!(doc["updated_at"], 10);
+    }
+
+    #[test]
+    fn merge_fields_not_found_and_invalid() {
+        let _env = TestEnv::new();
+        match merge_fields("ws", "ghost", Map::new()) {
+            Err(ReadError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+        match merge_fields("ws", "bad/id", Map::new()) {
+            Err(ReadError::InvalidId(_)) => {}
+            other => panic!("expected InvalidId, got {other:?}"),
+        }
     }
 }

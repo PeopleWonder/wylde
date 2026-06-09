@@ -60,6 +60,7 @@ pub const NOTES_PROPOSE: &str = "workspaces.notes.propose";
 pub const CONVERSATIONS_LIST: &str = "workspaces.conversations.list";
 pub const CONVERSATIONS_GET: &str = "workspaces.conversations.get";
 pub const CONVERSATIONS_DELETE: &str = "workspaces.conversations.delete";
+pub const CONVERSATIONS_REFRESH_SUMMARY: &str = "workspaces.conversations.refresh_summary";
 
 // ── File watcher control (Slice I) ───────────────────────────────────────
 pub const WATCHER_STATUS: &str = "workspaces.watcher.status";
@@ -314,6 +315,15 @@ pub fn install() {
         |p: Value| async move { crate::conversations::api::handle_delete(p).await },
         "Remove one workspace conversation. Payload: {workspace_id, id}. \
          Reply: {ok, id}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONVERSATIONS_REFRESH_SUMMARY,
+        |p: Value| async move { crate::conversations::api::handle_refresh_summary(p).await },
+        "Persist an LLM summary + embedding for a workspace conversation \
+         (Slice E parity; harness generates, service stores). Payload: \
+         {workspace_id, conversation_id, summary, embedding, topic_tags?, \
+         summary_msg_count?}. Reply: {ok, id}. not_found when absent.",
         META_MODULE,
     );
 

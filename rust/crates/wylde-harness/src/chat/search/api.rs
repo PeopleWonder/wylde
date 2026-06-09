@@ -38,7 +38,7 @@ const MAX_WORKSPACE_FETCH: usize = 500;
 /// The service name the workspace backend forwards to. Mirrors
 /// [`crate::turn::workspace_context`] so the same env override points tests
 /// at a guaranteed-dead pipe and exercises the degraded path.
-fn workspaces_service() -> String {
+pub(crate) fn workspaces_service() -> String {
     std::env::var("WYLDE_HARNESS_WORKSPACES_SERVICE")
         .ok()
         .map(|s| s.trim().to_owned())

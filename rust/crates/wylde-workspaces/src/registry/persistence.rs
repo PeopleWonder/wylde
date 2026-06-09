@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use super::definition::WorkspaceDefinition;
-use crate::common::{data_dir, ensure_dir};
+use crate::common::data_dir;
 
 /// `<data_dir>/workspaces/` — the redesign's storage root. Holds
 /// `index.json` plus one `<workspace_id>/` subdir per workspace.
@@ -31,22 +31,18 @@ pub fn definition_path(workspace_id: &str) -> PathBuf {
 }
 
 /// Load one workspace's [`WorkspaceDefinition`]. Returns `None` on a
-/// missing or torn file (never panics).
+/// missing or torn file (never panics). Decrypts at rest (OI-14).
 pub fn load_definition(workspace_id: &str) -> Option<WorkspaceDefinition> {
-    let raw = std::fs::read_to_string(definition_path(workspace_id)).ok()?;
+    let raw =
+        wylde_shared::encryption::read_to_string_at_rest(&definition_path(workspace_id)).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
-/// Atomically write a workspace's `definition.json`, creating its bundle
-/// directory if needed.
+/// Encrypt-at-rest (OI-14) + atomically write a workspace's `definition.json`,
+/// creating its bundle directory if needed.
 pub fn save_definition(def: &WorkspaceDefinition) -> std::io::Result<()> {
-    let dir = workspace_dir(&def.id);
-    ensure_dir(&dir)?;
-    let path = dir.join("definition.json");
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(def).unwrap())?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    let body = serde_json::to_string_pretty(def).unwrap();
+    wylde_shared::encryption::write_at_rest(&definition_path(&def.id), body.as_bytes())
 }
 
 /// Remove a workspace's entire bundle directory (`definition.json`,

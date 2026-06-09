@@ -109,6 +109,10 @@ pub trait HarnessApi: Send + Sync {
     async fn settings_ollama_clear_override(&self, payload: Value) -> Reply;
     async fn settings_ollama_list_models_with_overrides(&self, payload: Value) -> Reply;
 
+    // ── settings.encryption.* (encryption-at-rest toggle, OI-14) ─────────
+    async fn settings_encryption_get(&self, payload: Value) -> Reply;
+    async fn settings_encryption_set(&self, payload: Value) -> Reply;
+
     // ── rag.* (2 verbs; Wylde_Study S2a) ─────────────────────────────
     async fn rag_add_episodic(&self, payload: Value) -> Reply;
     async fn rag_search(&self, payload: Value) -> Reply;
@@ -325,6 +329,15 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn settings_ollama_list_models_with_overrides(&self, payload: Value) -> Reply {
         settings_actions::handle_list_models_with_overrides(payload).await
+    }
+
+    // ── settings.encryption.* (OI-14 toggle) ─────────────────────────
+    async fn settings_encryption_get(&self, payload: Value) -> Reply {
+        settings_actions::handle_encryption_get(payload).await
+    }
+
+    async fn settings_encryption_set(&self, payload: Value) -> Reply {
+        settings_actions::handle_encryption_set(payload).await
     }
 
     // ── rag.* (Wylde_Study S2a) ──────────────────────────────────────

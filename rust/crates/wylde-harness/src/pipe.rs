@@ -124,6 +124,9 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "settings.ollama.set_overrides",
     "settings.ollama.clear_override",
     "settings.ollama.list_models_with_overrides",
+    // settings.encryption.* — encryption-at-rest toggle (OI-14, 2 verbs)
+    "settings.encryption.get",
+    "settings.encryption.set",
     // rag.* — episodic write + semantic search (2 verbs; Wylde_Study S2a)
     "rag.add_episodic",
     "rag.search",
@@ -552,6 +555,33 @@ where
         "List real model tags that have at least one stored override \
          (for the future profiles UI). Payload {profile?}. Returns \
          {profile, models}.",
+        HANDLER_MODULE_SETTINGS,
+    );
+
+    // ── settings.encryption.* (encryption-at-rest toggle, OI-14) ──────
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "settings.encryption.get",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.settings_encryption_get(p).await }
+        },
+        "Whether encryption-at-rest is enabled (OI-14; default on). \
+         Payload {}. Returns {enabled}.",
+        HANDLER_MODULE_SETTINGS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "settings.encryption.set",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.settings_encryption_set(p).await }
+        },
+        "Persist the encryption-at-rest toggle. Payload {enabled}. Turning \
+         it off rewrites each store as plaintext on its next save. Returns \
+         {enabled}.",
         HANDLER_MODULE_SETTINGS,
     );
 

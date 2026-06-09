@@ -517,6 +517,13 @@ mod tests {
 
     #[tokio::test]
     async fn dedupe_first_call_passes_second_call_suppressed() {
+        // Serialise against the other tests that touch the process-global
+        // turn registry + the resource registry `run_one_tool` dispatches
+        // through (which `install_for_tests` elsewhere swaps). The crate's
+        // existing `serial_test_guard()` is the lock those mutators already
+        // hold — a separate `serial_test(registry)` pool wouldn't serialise
+        // against them. This is the "registry" flaky cluster's real fix.
+        let _g = crate::tooling::consent::serial_test_guard().await;
         let id = crate::state::new_turn_id();
         let handle = register_turn(id.clone(), "c1".into());
         let mut state = ToolRoundState::new();
@@ -555,6 +562,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_one_tool_now_routes_through_registry_with_ok_summary() {
+        let _g = crate::tooling::consent::serial_test_guard().await;
         let cfg: &'static Config = Box::leak(Box::new(Config::default_for_tests()));
         let id = crate::state::new_turn_id();
         let handle = register_turn(id.clone(), "c1".into());
@@ -587,6 +595,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_one_tool_short_circuits_when_tier_blocks() {
+        let _g = crate::tooling::consent::serial_test_guard().await;
         let cfg: &'static Config = Box::leak(Box::new(Config::default_for_tests()));
         let id = crate::state::new_turn_id();
         let handle = register_turn(id.clone(), "c1".into());
@@ -617,6 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_one_tool_blocks_destructive_tool_on_tool_use_tier() {
+        let _g = crate::tooling::consent::serial_test_guard().await;
         let cfg: &'static Config = Box::leak(Box::new(Config::default_for_tests()));
         let id = crate::state::new_turn_id();
         let handle = register_turn(id.clone(), "c1".into());
@@ -640,6 +650,7 @@ mod tests {
 
     #[tokio::test]
     async fn run_one_tool_returns_phase_deferred_for_stub_entries() {
+        let _g = crate::tooling::consent::serial_test_guard().await;
         let cfg: &'static Config = Box::leak(Box::new(Config::default_for_tests()));
         let id = crate::state::new_turn_id();
         let handle = register_turn(id.clone(), "c1".into());

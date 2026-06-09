@@ -758,6 +758,36 @@ pub async fn read_user_profile() -> Result<UserProfile, String> {
     Ok(UserProfile::from_value(&v))
 }
 
+/// Read the encryption-at-rest toggle (`settings.encryption.get`, OI-14).
+/// Served from the harness so the value matches the `data_dir` the stores
+/// actually use. Defaults to `true` if the reply omits `enabled`.
+pub async fn read_encryption_at_rest() -> Result<bool, String> {
+    let v = wylde_gui_pipe::call(
+        "wylde-harness",
+        "POST",
+        "/__action__",
+        Some(profile_request("settings.encryption.get", json!({}))),
+    )
+    .await?;
+    Ok(v.get("enabled").and_then(Value::as_bool).unwrap_or(true))
+}
+
+/// Persist the encryption-at-rest toggle (`settings.encryption.set`, OI-14).
+/// Returns the value the harness stored.
+pub async fn write_encryption_at_rest(enabled: bool) -> Result<bool, String> {
+    let v = wylde_gui_pipe::call(
+        "wylde-harness",
+        "POST",
+        "/__action__",
+        Some(profile_request(
+            "settings.encryption.set",
+            json!({ "enabled": enabled }),
+        )),
+    )
+    .await?;
+    Ok(v.get("enabled").and_then(Value::as_bool).unwrap_or(enabled))
+}
+
 /// List pending profile proposals (`user_profile.list_proposals`).
 pub async fn list_profile_proposals() -> Result<Vec<ProfileProposal>, String> {
     let v = user_profile_call("user_profile.list_proposals", json!({})).await?;

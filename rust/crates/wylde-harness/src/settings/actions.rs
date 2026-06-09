@@ -37,6 +37,27 @@ fn require_model(payload: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// `settings.encryption.get {}` — whether encryption-at-rest (OI-14) is on.
+/// Reply: `{enabled}`. Backs the Settings "Encrypt local data at rest" toggle;
+/// served from the harness so the canonical `data_dir` (the one the stores
+/// use) is the single source of truth across processes.
+pub async fn handle_encryption_get(_payload: Value) -> Reply {
+    Reply::ok(json!({ "enabled": wylde_shared::encryption::is_encryption_enabled() }))
+}
+
+/// `settings.encryption.set {enabled}` — persist the encryption-at-rest
+/// toggle. Default on; turning it **off** makes each store rewrite as
+/// plaintext on its next save. Reply: `{enabled}` (the persisted value).
+pub async fn handle_encryption_set(payload: Value) -> Reply {
+    let Some(enabled) = payload.get("enabled").and_then(Value::as_bool) else {
+        return Reply::err_msg("bad_request", "enabled (bool) is required");
+    };
+    match wylde_shared::encryption::set_encryption_enabled(enabled) {
+        Ok(()) => Reply::ok(json!({ "enabled": enabled })),
+        Err(e) => Reply::err_msg("io_error", format!("persist encryption pref: {e}")),
+    }
+}
+
 /// `settings.ollama.get_overrides {model, profile?}` — the sparse
 /// overrides stored for `model`, `{}` when none. Reply:
 /// `{model, profile, overrides}`.
@@ -167,5 +188,29 @@ mod tests {
             no_value.error.as_ref().map(|e| e.code.as_str()),
             Some("bad_request")
         );
+    }
+
+    #[tokio::test]
+    async fn encryption_get_set_round_trip() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("WYLDE_DATA_DIR", tmp.path());
+        // The env override would mask the pref file these verbs write; clear it.
+        std::env::remove_var("WYLDE_ENCRYPTION_AT_REST");
+
+        // Default on.
+        assert_eq!(handle_encryption_get(json!({})).await.data["enabled"], true);
+        // Toggle off persists.
+        let set = handle_encryption_set(json!({ "enabled": false })).await;
+        assert_eq!(set.data["enabled"], false);
+        assert_eq!(handle_encryption_get(json!({})).await.data["enabled"], false);
+        // Back on.
+        handle_encryption_set(json!({ "enabled": true })).await;
+        assert_eq!(handle_encryption_get(json!({})).await.data["enabled"], true);
+        // Missing field → bad_request.
+        let bad = handle_encryption_set(json!({})).await;
+        assert_eq!(bad.error.as_ref().map(|e| e.code.as_str()), Some("bad_request"));
+
+        std::env::remove_var("WYLDE_DATA_DIR");
     }
 }

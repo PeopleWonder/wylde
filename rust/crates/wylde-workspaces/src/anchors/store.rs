@@ -20,10 +20,8 @@
 
 use std::path::PathBuf;
 
-use wylde_shared::secure_file::harden_perms;
 
 use super::anchor::{validate_aliases, AliasError, Anchor, AnchorScope, AnchorTarget};
-use crate::common::ensure_dir;
 use crate::registry::persistence::workspace_dir;
 
 /// `<data_dir>/workspaces/<workspace_id>/anchors.json`.
@@ -52,24 +50,21 @@ pub enum UpdateOutcome {
 }
 
 /// Load every anchor for a workspace. Fail-soft: empty on a missing/torn file.
+/// Decrypts at rest (OI-14).
 pub fn load(workspace_id: &str) -> Vec<Anchor> {
-    let Ok(raw) = std::fs::read_to_string(anchors_path(workspace_id)) else {
+    let Ok(raw) = wylde_shared::encryption::read_to_string_at_rest(&anchors_path(workspace_id))
+    else {
         return Vec::new();
     };
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
-/// Atomically replace a workspace's `anchors.json`, then harden it to
-/// owner-only. Creating the bundle dir if needed.
+/// Encrypt-at-rest (OI-14) + atomically replace a workspace's `anchors.json`,
+/// then harden it to owner-only — all via the shared engine.
 pub fn save(workspace_id: &str, anchors: &[Anchor]) -> std::io::Result<()> {
-    let dir = workspace_dir(workspace_id);
-    ensure_dir(&dir)?;
-    let path = dir.join("anchors.json");
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(anchors).unwrap())?;
-    std::fs::rename(&tmp, &path)?;
-    let _ = harden_perms(&path); // fail-soft (logged); never breaks the write
-    Ok(())
+    let path = workspace_dir(workspace_id).join("anchors.json");
+    let body = serde_json::to_string_pretty(anchors).unwrap();
+    wylde_shared::encryption::write_at_rest(&path, body.as_bytes())
 }
 
 /// Insert a new anchor. Refuses a duplicate token in this workspace — the
