@@ -22,10 +22,21 @@
 //! panel's Graph tab embeds.
 
 pub mod ipc;
+pub mod layout;
 pub mod model;
+pub mod physics;
 pub mod render;
 
+// Integration + perf suite (Build Order §4 file tree → `graph/tests/`). A
+// `#[path]` module so it can live in the spec's `tests/` directory without
+// colliding with this file's own inline `tests` module (the GraphView unit
+// tests at the bottom).
+#[cfg(test)]
+#[path = "tests/physics_tests.rs"]
+mod physics_tests;
+
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     canvas, div, point, prelude::*, px, size, App, AppContext, AsyncApp, Bounds, Context,
@@ -36,7 +47,9 @@ use wylde_theme::typography::{size as font_size, weight, FAMILY_INTER};
 
 use crate::workspaces_panel::pack;
 use ipc::{GraphFetchError, GraphLoad};
+use layout::{ForceDirected, LayoutBackend};
 use model::{Layout, WorkspaceGraph};
+use physics::{ActiveRegion, PhysicsConfig, PhysicsHandle, PositionFrame};
 use render::render_2d::Renderer2d;
 use render::{Camera, Color, RenderOutput, Renderer, Scene, Theme, Viewport};
 
@@ -50,14 +63,18 @@ struct CanvasRect {
     h: f32,
 }
 
-/// In-flight drag-to-pan state.
-#[derive(Clone, Copy, Debug)]
+/// In-flight drag state. A press that lands on a node drags that node (pins it
+/// in the physics worker); a press on empty space pans the camera.
+#[derive(Clone, Debug)]
 struct Drag {
     x: f32,
     y: f32,
     /// Set once the pointer moves past the click/drag threshold, so a release
     /// without movement is treated as a click (node hit-test) instead of a pan.
     moved: bool,
+    /// `Some(id)` → dragging that node (pin it to the cursor each move);
+    /// `None` → panning the camera.
+    node: Option<String>,
 }
 
 /// The graph panel view. Owns the loaded graph + its scaffold layout, the
@@ -67,6 +84,10 @@ pub struct GraphView {
     theme_error: Option<String>,
     graph: Rc<WorkspaceGraph>,
     layout: Rc<Layout>,
+    /// The off-thread physics worker driving `layout`. `None` until the first
+    /// graph loads (or when the graph is empty). Dropping it shuts the worker
+    /// down; replacing it on reload swaps in a fresh simulation.
+    physics: Option<PhysicsHandle>,
     camera: Camera,
     /// Whether the camera has been fitted to the graph yet (one-time on first
     /// non-empty paint).
@@ -97,6 +118,7 @@ impl GraphView {
             theme_error,
             graph: Rc::new(WorkspaceGraph::default()),
             layout: Rc::new(Layout::default()),
+            physics: None,
             camera: Camera::default(),
             fitted: false,
             dark: true,
@@ -133,10 +155,15 @@ impl GraphView {
                     }) => {
                         view.error = None;
                         view.workspace_id = workspace_id;
-                        view.layout = Rc::new(graph.scaffold_layout());
                         view.graph = Rc::new(graph);
+                        // Warm-start positions (depth-banded) so the first paint
+                        // is layered, not a spiral; the physics worker then
+                        // refines them off-thread.
+                        let fd = ForceDirected::default();
+                        view.layout = Rc::new(fd.seed(view.graph.as_ref()));
                         // Re-fit the camera to the freshly loaded graph.
                         view.fitted = false;
+                        view.start_physics(cx);
                     }
                     Err(e) => {
                         view.error = Some(e);
@@ -147,6 +174,56 @@ impl GraphView {
             });
         })
         .detach();
+    }
+
+    /// Spawn (or respawn) the off-thread physics worker for the current graph
+    /// and subscribe the view to its latched position frames. Dropping the old
+    /// handle stops the previous worker; the subscription loop ends when its
+    /// worker's sender drops.
+    fn start_physics(&mut self, cx: &mut Context<Self>) {
+        // Drop any prior worker before building a new one.
+        self.physics = None;
+        if self.graph.nodes.is_empty() {
+            return;
+        }
+        let fd = ForceDirected::default();
+        let engine = fd.build_engine(self.graph.as_ref(), PhysicsConfig::default());
+        let handle = PhysicsHandle::spawn(engine);
+        let mut rx = handle.receiver();
+        self.physics = Some(handle);
+
+        // Re-render whenever the worker latches a new frame. The render budget
+        // (16ms) is untouched — we only read the most recent positions.
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            while rx.changed().await.is_ok() {
+                let frame: Arc<PositionFrame> = rx.borrow_and_update().clone();
+                let alive = this
+                    .update(app_cx, |view, cx| {
+                        view.layout = Rc::new(frame.to_layout());
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !alive {
+                    break; // the view is gone — stop subscribing.
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Tell the worker the current visible model-space rect so it can cull
+    /// off-screen nodes (and resume — a camera move is a resume trigger). A
+    /// no-op when there is no worker.
+    fn push_viewport(&self) {
+        if let Some(h) = &self.physics {
+            let (x0, y0, x1, y1) = self.viewport(self.canvas).visible_model_rect();
+            h.set_region(Some(ActiveRegion {
+                min_x: x0,
+                min_y: y0,
+                max_x: x1,
+                max_y: y1,
+            }));
+        }
     }
 
     /// Build the viewport for a given canvas rect using the current camera.
@@ -191,48 +268,80 @@ impl GraphView {
             return;
         }
         self.camera.zoom_by(1.15f32.powf(units));
+        // A zoom is a resume trigger + changes which nodes are visible — refresh
+        // the worker's cull region.
+        self.push_viewport();
         cx.notify();
     }
 
     fn on_down(&mut self, ev: &MouseDownEvent, _cx: &mut Context<Self>) {
+        let (sx, sy) = (f32::from(ev.position.x), f32::from(ev.position.y));
+        // A press on a node drags that node; a press on empty space pans.
+        let node = self
+            .render_output(self.canvas, self.camera)
+            .and_then(|out| out.hit_test(sx, sy).map(str::to_owned));
         self.drag = Some(Drag {
-            x: f32::from(ev.position.x),
-            y: f32::from(ev.position.y),
+            x: sx,
+            y: sy,
             moved: false,
+            node,
         });
     }
 
     fn on_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let Some(drag) = self.drag.as_mut() else {
+        let (px_, py) = (f32::from(ev.position.x), f32::from(ev.position.y));
+        let Some(drag) = self.drag.as_ref() else {
             return;
         };
-        let (px_, py) = (f32::from(ev.position.x), f32::from(ev.position.y));
         let (dx, dy) = (px_ - drag.x, py - drag.y);
         if !drag.moved && dx.abs() + dy.abs() < DRAG_THRESHOLD {
             return;
         }
-        drag.moved = true;
-        drag.x = px_;
-        drag.y = py;
-        self.camera.pan_by(dx, dy);
+        let node = drag.node.clone();
+        if let Some(d) = self.drag.as_mut() {
+            d.moved = true;
+            d.x = px_;
+            d.y = py;
+        }
+        match node {
+            // Dragging a node: pin it to the cursor in model space; the worker
+            // freezes its physics and the rest of the graph flows around it.
+            Some(id) => {
+                let m = self.viewport(self.canvas).screen_to_model(px_, py);
+                if let Some(h) = &self.physics {
+                    h.pin(id, m.x, m.y);
+                }
+            }
+            // Empty space: pan the camera.
+            None => self.camera.pan_by(dx, dy),
+        }
         cx.notify();
     }
 
-    fn on_up(&mut self, ev: &MouseUpEvent, cx: &mut Context<Self>) {
+    fn on_up(&mut self, _ev: &MouseUpEvent, cx: &mut Context<Self>) {
         let Some(drag) = self.drag.take() else {
             return;
         };
-        if drag.moved {
-            return; // it was a pan, not a click.
-        }
-        // A click — hit-test the current scene and record the node id.
-        let cam = self.camera;
-        if let Some(out) = self.render_output(self.canvas, cam) {
-            if let Some(id) = out.hit_test(f32::from(ev.position.x), f32::from(ev.position.y)) {
-                let id = id.to_owned();
-                eprintln!("[workspaces.graph] clicked node {id}");
-                self.last_clicked = Some(id);
-                cx.notify();
+        match drag.node {
+            Some(id) => {
+                if drag.moved {
+                    // Drag finished — release the pin so the node rejoins the
+                    // flow and settles into place.
+                    if let Some(h) = &self.physics {
+                        h.release(id);
+                    }
+                } else {
+                    // A click (no movement) — record the selected node.
+                    eprintln!("[workspaces.graph] clicked node {id}");
+                    self.last_clicked = Some(id);
+                    cx.notify();
+                }
+            }
+            None => {
+                if drag.moved {
+                    // It was a pan — refresh the worker's cull region.
+                    self.push_viewport();
+                }
             }
         }
     }

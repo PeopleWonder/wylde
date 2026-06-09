@@ -39,6 +39,14 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Build a layout from an explicit id → position map. C-scaffold only ever
+    /// produced layouts via [`WorkspaceGraph::scaffold_layout`]; C-physics needs
+    /// to hand the physics worker's settled positions back as a `Layout`, so
+    /// this is the constructor the force-directed backend / worker bridge use.
+    pub fn from_positions(positions: HashMap<String, Position>) -> Self {
+        Layout { positions }
+    }
+
     pub fn get(&self, id: &str) -> Option<Position> {
         self.positions.get(id).copied()
     }
