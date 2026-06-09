@@ -20,9 +20,17 @@ pub mod api;
 pub mod projection;
 pub mod query;
 
+// ── Slice G-data (Phase 1) — symbol_context read verb ────────────────────
+// k-hop neighbourhood walk (callers/callees/types/siblings) + body fetch.
+// Read-only, like Slice B; reuses the write surface's `BoltClient` pool via
+// `BoltClient::graph_handle`. Self-contained in `neighborhood` (Cypher, live
+// source, walk, and the verb handler) so it doesn't touch `api`/`query`.
+pub mod neighborhood;
+
 use serde::{Deserialize, Serialize};
 
 pub use bolt::{BoltClient, BoltConfig, DEFAULT_BOLT_URL};
+pub use neighborhood::{ContextRel, RelatedSymbol, Symbol, SymbolContext};
 pub use projection::{
     Cluster, Edge, Node, NodeKind, NodeStyle, Position, RelType, WorkspaceGraph,
 };
