@@ -49,6 +49,7 @@ use crate::state::{self, TurnHandle};
 use crate::turn::prompt;
 use crate::turn::salvage::{self, RecoveredCall, SalvageResult};
 use crate::turn::tool_round::{self, ToolCall, ToolRoundState};
+use crate::turn::workspace_context;
 
 /// `chat.run_turn` — synchronous chat turn with the 5.C tool-round
 /// loop. Drives the LLM → salvage → dispatch cycle up to
@@ -95,7 +96,12 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     // mid-run_turn still sees them).
     let handle = state::register_turn(turn_id.clone(), conversation_id.clone());
 
-    let mut messages = initial_messages(&user_message, workspace_id.as_deref()).await;
+    // Fetch the active workspace's prompt context from the wylde-workspaces
+    // service (over the pipe, via the client). When the service is down the
+    // gather degrades to base context and we flag the turn so the response
+    // carries a one-line notice.
+    let ws_prompt = workspace_context::gather(workspace_id.as_deref(), &user_message).await;
+    let mut messages = initial_messages(&user_message, &ws_prompt.slots);
     let tools = tools_payload();
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
@@ -179,6 +185,10 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     // subscribers can race after this point.
     handle.mark_done();
     state::remove_turn(&turn_id);
+
+    // Surface the graceful-degradation notice when the workspaces service
+    // was requested but unreachable (scope v2 §7.5).
+    let final_text = workspace_context::apply_degraded_notice(final_text, ws_prompt.degraded);
 
     Reply::ok(json!({
         "turn_id": turn_id,
@@ -451,7 +461,8 @@ async fn drive_streaming_turn(
     device_tier: String,
     workspace_id: Option<String>,
 ) {
-    let mut messages = initial_messages(&user_message, workspace_id.as_deref()).await;
+    let ws_prompt = workspace_context::gather(workspace_id.as_deref(), &user_message).await;
+    let mut messages = initial_messages(&user_message, &ws_prompt.slots);
     let tools = tools_payload();
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
@@ -544,7 +555,11 @@ async fn drive_streaming_turn(
         if calls.is_empty() {
             // No tool calls — emit the cleaned text as a single Token
             // event (bulk emit; mirrors Python's no-stream-token path
-            // in `_driver.py:416-419`) and finish.
+            // in `_driver.py:416-419`) and finish. Prefix the graceful-
+            // degradation notice when the workspaces service was requested
+            // but unreachable (scope v2 §7.5).
+            let final_text =
+                workspace_context::apply_degraded_notice(final_text, ws_prompt.degraded);
             if !final_text.is_empty() {
                 handle
                     .push_turn_event(TurnEvent::Token {
@@ -697,21 +712,16 @@ fn build_alias_map() -> HashMap<String, String> {
 /// the salvage parser has nothing to recover. The catalog is read from
 /// the in-process registry so the prompt always reflects the live tool
 /// set.
-/// `workspace_id` (when present + known) folds the active workspace's
-/// persona / workspace-memory / RAG slots onto the end of the system
-/// prompt — the deferred `_build_system_prompt_with_slots` work, now
-/// owned by [`crate::workspaces::prompt`]. An absent / unknown / empty id
-/// yields an empty context, so a plain chat turn is byte-identical to
-/// before.
-async fn initial_messages(user_message: &str, workspace_id: Option<&str>) -> Vec<Value> {
+/// `workspace_slots` is the active workspace's pre-rendered prompt block
+/// (persona / workspace-memory / RAG), fetched from the `wylde-workspaces`
+/// service via [`workspace_context::gather`] and appended onto the end of
+/// the system prompt. An empty string (no active workspace, or the service
+/// degraded) leaves a plain chat turn byte-identical to before.
+fn initial_messages(user_message: &str, workspace_slots: &str) -> Vec<Value> {
     let catalog = crate::tooling::runner::catalog_payload(crate::tooling::registry::global());
     let verb_mode = crate::tooling::resource::verb_mode_active();
     let mut system_prompt = prompt::build_system_prompt(&catalog, verb_mode);
-
-    if let Some(ws_id) = workspace_id.map(str::trim).filter(|s| !s.is_empty()) {
-        let ctx = crate::workspaces::prompt::inject::gather(ws_id, user_message).await;
-        system_prompt.push_str(&crate::workspaces::prompt::inject::render_slots(&ctx));
-    }
+    system_prompt.push_str(workspace_slots);
 
     vec![
         json!({"role": "system", "content": system_prompt}),
@@ -1160,7 +1170,7 @@ mod tests {
         // system content must advertise tools (a known tool name from
         // the live registry) so the model emits tool-call JSON instead
         // of claiming it has no tools.
-        let messages = initial_messages("What time is it?", None).await;
+        let messages = initial_messages("What time is it?", "");
         assert_eq!(messages.len(), 2, "expected [system, user]: {messages:?}");
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[1]["role"], "user");
@@ -1191,7 +1201,7 @@ mod tests {
         // Mirror the exact body construction in handle_run_turn /
         // drive_streaming_turn: messages = initial_messages(...), then
         // folded into the Ollama request body. Assert the wire shape.
-        let messages = initial_messages("Read the README and tell me the license", None).await;
+        let messages = initial_messages("Read the README and tell me the license", "");
         let body = json!({
             "model": "stub-model",
             "messages": messages,
@@ -1218,7 +1228,7 @@ mod tests {
         let tools = tools_payload();
         let body = json!({
             "model": "stub-model",
-            "messages": initial_messages("hi", None).await,
+            "messages": initial_messages("hi", ""),
             "tools": tools,
             "stream": false,
         });

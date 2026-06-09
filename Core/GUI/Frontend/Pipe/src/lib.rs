@@ -36,7 +36,6 @@ pub mod model_bus;
 pub mod nav_bus;
 pub mod privacy_prefs;
 pub mod tools;
-pub mod workspaces;
 pub mod updater_state;
 
 pub use conversation_bus::{
@@ -649,13 +648,16 @@ pub async fn try_dispatch_harness<A: HarnessApi + ?Sized>(
     verb: &str,
     payload: Value,
 ) -> Option<Result<Value, String>> {
+    // workspaces.* is no longer dispatchable in-process: the verbs moved to
+    // the wylde-workspaces service (Slice 0d), so the GUI reaches them over
+    // that service's pipe (via `call("wylde-workspaces", …)`), never through
+    // the harness HarnessApi. Only the harness-owned surfaces short-circuit
+    // here.
     let reply = if let Some(r) = chat::dispatch(api, verb, payload.clone()).await {
         r
     } else if let Some(r) = tools::dispatch(api, verb, payload.clone()).await {
         r
-    } else if let Some(r) = memory_long_term::dispatch(api, verb, payload.clone()).await {
-        r
-    } else if let Some(r) = workspaces::dispatch(api, verb, payload).await {
+    } else if let Some(r) = memory_long_term::dispatch(api, verb, payload).await {
         r
     } else {
         return None;

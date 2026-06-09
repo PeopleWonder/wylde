@@ -54,9 +54,6 @@ use crate::memory::short_term::actions as short_term_actions;
 use crate::model_registry::actions as model_actions;
 use crate::settings::actions as settings_actions;
 use crate::tooling::consent::{self, Decision};
-use crate::workspaces::api as workspaces_api;
-use crate::workspaces::conversations_api as workspaces_conversations_api;
-use crate::workspaces::notes_api as workspaces_notes_api;
 use crate::tooling::registry::global;
 use crate::tooling::runner::{catalog_payload, dispatch_tool};
 use crate::turn::actions as turn_actions;
@@ -114,28 +111,9 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_long_term_history(&self, payload: Value) -> Reply;
     async fn memory_long_term_search(&self, payload: Value) -> Reply;
 
-    // ── workspaces.* (6 verbs; config-file-backed redesign) ──────────
-    async fn workspaces_set_active(&self, payload: Value) -> Reply;
-    async fn workspaces_create(&self, payload: Value) -> Reply;
-    async fn workspaces_update(&self, payload: Value) -> Reply;
-    async fn workspaces_delete(&self, payload: Value) -> Reply;
-    async fn workspaces_set_persona(&self, payload: Value) -> Reply;
-    async fn workspaces_list_mru(&self, payload: Value) -> Reply;
-    async fn workspaces_rag_query(&self, payload: Value) -> Reply;
-    async fn workspaces_reindex(&self, payload: Value) -> Reply;
-
-    // ── workspaces.notes.* (6 verbs; Slice 0c — relocated notes tier) ─
-    async fn workspaces_notes_list(&self, payload: Value) -> Reply;
-    async fn workspaces_notes_add(&self, payload: Value) -> Reply;
-    async fn workspaces_notes_update(&self, payload: Value) -> Reply;
-    async fn workspaces_notes_delete(&self, payload: Value) -> Reply;
-    async fn workspaces_notes_search(&self, payload: Value) -> Reply;
-    async fn workspaces_notes_propose(&self, payload: Value) -> Reply;
-
-    // ── workspaces.conversations.* (3 verbs; Slice 0c — workspace convos) ─
-    async fn workspaces_conversations_list(&self, payload: Value) -> Reply;
-    async fn workspaces_conversations_get(&self, payload: Value) -> Reply;
-    async fn workspaces_conversations_delete(&self, payload: Value) -> Reply;
+    // ── workspaces.* — RETIRED from the harness (Slice 0d) ───────────
+    // All workspace verbs moved to the wylde-workspaces service; the
+    // harness is a pure client. No HarnessApi methods remain.
 
     // ── memory.short_term.* (3 verbs; conversation working memory) ───
     async fn memory_short_term_get(&self, payload: Value) -> Reply;
@@ -432,71 +410,10 @@ impl HarnessApi for DefaultHarnessApi {
         }
     }
 
-    // ── workspaces.* ─────────────────────────────────────────────────
-    // Pass-throughs — JSON shaping lives in workspaces::api.
-
-    async fn workspaces_set_active(&self, payload: Value) -> Reply {
-        workspaces_api::handle_set_active(payload).await
-    }
-
-    async fn workspaces_create(&self, payload: Value) -> Reply {
-        workspaces_api::handle_create(payload).await
-    }
-
-    async fn workspaces_update(&self, payload: Value) -> Reply {
-        workspaces_api::handle_update(payload).await
-    }
-
-    async fn workspaces_delete(&self, payload: Value) -> Reply {
-        workspaces_api::handle_delete(payload).await
-    }
-
-    async fn workspaces_set_persona(&self, payload: Value) -> Reply {
-        workspaces_api::handle_set_persona(payload).await
-    }
-
-    async fn workspaces_list_mru(&self, payload: Value) -> Reply {
-        workspaces_api::handle_list_mru(payload).await
-    }
-
-    async fn workspaces_rag_query(&self, payload: Value) -> Reply {
-        workspaces_api::handle_rag_query(payload).await
-    }
-
-    async fn workspaces_reindex(&self, payload: Value) -> Reply {
-        workspaces_api::handle_reindex(payload).await
-    }
-
-    // ── workspaces.notes.* (Slice 0c) ────────────────────────────────
-    async fn workspaces_notes_list(&self, payload: Value) -> Reply {
-        workspaces_notes_api::handle_list(payload).await
-    }
-    async fn workspaces_notes_add(&self, payload: Value) -> Reply {
-        workspaces_notes_api::handle_add(payload).await
-    }
-    async fn workspaces_notes_update(&self, payload: Value) -> Reply {
-        workspaces_notes_api::handle_update(payload).await
-    }
-    async fn workspaces_notes_delete(&self, payload: Value) -> Reply {
-        workspaces_notes_api::handle_delete(payload).await
-    }
-    async fn workspaces_notes_search(&self, payload: Value) -> Reply {
-        workspaces_notes_api::handle_search(payload).await
-    }
-    async fn workspaces_notes_propose(&self, payload: Value) -> Reply {
-        workspaces_notes_api::handle_propose(payload).await
-    }
-
-    // ── workspaces.conversations.* (Slice 0c) ────────────────────────
-    async fn workspaces_conversations_list(&self, payload: Value) -> Reply {
-        workspaces_conversations_api::handle_list(payload).await
-    }
-    async fn workspaces_conversations_get(&self, payload: Value) -> Reply {
-        workspaces_conversations_api::handle_get(payload).await
-    }
-    async fn workspaces_conversations_delete(&self, payload: Value) -> Reply {
-        workspaces_conversations_api::handle_delete(payload).await
-    }
+    // ── workspaces.* — RETIRED from the harness (Slice 0d) ───────────
+    // Workspace state lives in the wylde-workspaces service; the harness
+    // is a pure client (see crate::turn::workspace_context for the chat
+    // driver's gather). No HarnessApi pass-throughs remain.
 
     // ── memory.short_term.* ──────────────────────────────────────────
     // Pass-throughs — JSON shaping lives in short_term::actions.

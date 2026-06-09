@@ -30,7 +30,7 @@ use serde_json::{json, Value};
 use wylde_shared::ipc::Reply;
 
 use super::rag::indexer;
-use super::{persona, registry};
+use super::{persona, prompt, registry};
 
 fn require_string(payload: &Value, key: &str) -> Option<String> {
     payload
@@ -178,6 +178,37 @@ pub async fn handle_reindex(payload: Value) -> Reply {
     }))
 }
 
+/// `workspaces.gather_prompt` — resolve a workspace's contribution to a
+/// chat turn's system prompt (persona + notes + RAG), rendered into the
+/// slot text the harness turn driver appends. Payload:
+/// `{ "workspace_id": string, "user_message"?: string }`.
+///
+/// Returns `{ slots, persona, memory_snippets, rag_snippets }`. `slots`
+/// is the ready-to-append rendered block (empty when the workspace
+/// contributes nothing or the id is unknown/blank); the structured fields
+/// are surfaced for future consumers. This is the read the chat turn
+/// driver calls via the client once per turn; the client treats it as
+/// best-effort enrichment and degrades to base context when the service
+/// is unreachable.
+pub async fn handle_gather_prompt(payload: Value) -> Reply {
+    let Some(id) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let user_message = payload
+        .get("user_message")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let ctx = prompt::gather(&id, user_message).await;
+    let slots = prompt::render_slots(&ctx);
+    Reply::ok(json!({
+        "workspace_id": id,
+        "slots": slots,
+        "persona": ctx.persona,
+        "memory_snippets": ctx.memory_snippets,
+        "rag_snippets": ctx.rag_snippets,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,6 +270,45 @@ mod tests {
         let clear = handle_set_persona(json!({ "workspace_id": id, "text": "" })).await;
         assert!(clear.ok);
         assert!(!registry::get(&id).unwrap().persona_enabled);
+    }
+
+    #[tokio::test]
+    async fn gather_prompt_blank_workspace_yields_empty_slots() {
+        let _env = TestEnv::new();
+        let reply = handle_gather_prompt(json!({ "workspace_id": "ghost-000000" })).await;
+        assert!(reply.ok);
+        assert_eq!(reply.data["slots"], "");
+        assert_eq!(reply.data["persona"], "");
+    }
+
+    #[tokio::test]
+    async fn gather_prompt_requires_workspace_id() {
+        let _env = TestEnv::new();
+        let reply = handle_gather_prompt(json!({})).await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "bad_request");
+    }
+
+    #[tokio::test]
+    async fn gather_prompt_renders_persona_slot() {
+        let _env = TestEnv::new();
+        let td = tempdir().unwrap();
+        let p = td.path().join("gather-ws");
+        std::fs::create_dir(&p).unwrap();
+        let id = handle_create(json!({ "folder": p.to_string_lossy() }))
+            .await
+            .data["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        handle_set_persona(json!({ "workspace_id": id, "text": "Be brief." })).await;
+
+        let reply = handle_gather_prompt(json!({ "workspace_id": id, "user_message": "hi" })).await;
+        assert!(reply.ok);
+        assert_eq!(reply.data["persona"], "Be brief.");
+        let slots = reply.data["slots"].as_str().unwrap();
+        assert!(slots.contains("# Workspace context"));
+        assert!(slots.contains("Be brief."));
     }
 
     #[tokio::test]

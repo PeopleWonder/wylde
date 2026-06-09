@@ -8698,7 +8698,6 @@ dependencies = [
  "uuid",
  "wylde-prebuild-guard",
  "wylde-shared",
- "wylde-workspaces",
  "wylde-workspaces-client",
 ]
 
@@ -8924,23 +8923,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "wry",
-]
-
-[[package]]
-name = "wylde-workspaces"
-version = "0.1.0-alpha.1"
-dependencies = [
- "anyhow",
- "hex",
- "neo4rs",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "wylde-prebuild-guard",
- "wylde-shared",
 ]
 
 [[package]]

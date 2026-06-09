@@ -221,7 +221,7 @@ impl Render for WorkspacesPanel {
             .child(header);
 
         if let Some(err) = &self.error {
-            column = column.child(error_strip(err));
+            column = column.child(error_strip(err, cx));
         }
 
         if self.loading {
@@ -523,18 +523,63 @@ fn loading_row() -> gpui::Div {
         .child(SharedString::from("Loading…"))
 }
 
-fn error_strip(msg: &str) -> gpui::Div {
-    div()
+/// True when a pipe error means the `wylde-workspaces` service is
+/// unreachable (down / not launched / slow), as opposed to a logical
+/// application error. Drives the friendly "service unavailable" fallback
+/// (scope v2 §7.5) — the panel keeps its last-known list and offers Retry.
+fn is_service_unavailable(err: &str) -> bool {
+    err.contains("pipe_unavailable")
+        || err.contains("pipe_connect")
+        || err.contains("pipe_timeout")
+        || err.contains("not running")
+        || err.contains("no_action")
+}
+
+/// Error banner. For a workspaces-service-unavailable error it shows the
+/// graceful-degradation message + a Retry button (re-reads the list); the
+/// panel preserves its last-known workspace rows underneath. Other errors
+/// render verbatim.
+fn error_strip(msg: &str, cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
+    let unavailable = is_service_unavailable(msg);
+    let text = if unavailable {
+        "Workspaces service unavailable — showing last-known data. \
+         Start the workspaces service, then Retry."
+            .to_owned()
+    } else {
+        msg.to_owned()
+    };
+
+    let mut strip = div()
         .bg(rgb(pack(SURFACE_800)))
         .border_1()
         .border_color(rgb(pack(BORDER_DEFAULT)))
         .rounded(px(4.0))
         .px_3()
         .py_2()
-        .font_family(FAMILY_INTER)
-        .text_size(px(size::XS))
-        .text_color(rgb(pack(TEXT_PRIMARY)))
-        .child(SharedString::from(msg.to_owned()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_PRIMARY)))
+                .child(SharedString::from(text)),
+        );
+
+    if unavailable {
+        strip = strip.child(action_button(
+            ElementId::Name("workspaces-retry".into()),
+            "Retry",
+            cx.listener(|_this: &mut WorkspacesPanel, _event, _window, cx| {
+                WorkspacesPanel::spawn_refresh(cx);
+            }),
+        ));
+    }
+
+    strip
 }
 
 /// Pack an `Rgba` into the `u32` shape gpui's `rgb()` accepts.  Same
@@ -587,5 +632,21 @@ mod tests {
     fn pack_round_trips_known_surface() {
         assert_eq!(pack(SURFACE_900), 0x0a_0e_17);
         assert_eq!(pack(BRAND), 0x0e_74_90);
+    }
+
+    #[test]
+    fn service_unavailable_detects_pipe_down_errors() {
+        // The shapes `wylde_gui_pipe::call` returns when wylde-workspaces
+        // isn't reachable → the "service unavailable + Retry" fallback.
+        assert!(is_service_unavailable(
+            "pipe_unavailable: service 'wylde-workspaces' is not running (pipe not found)"
+        ));
+        assert!(is_service_unavailable("pipe_connect: wylde-workspaces: oops"));
+        assert!(is_service_unavailable(
+            "pipe_timeout: no response from 'wylde-workspaces' within 10s"
+        ));
+        // A logical application error is NOT a service-unavailable fallback.
+        assert!(!is_service_unavailable("bad_request: workspace_id is required"));
+        assert!(!is_service_unavailable("not_found: workspace \"x\" not found"));
     }
 }

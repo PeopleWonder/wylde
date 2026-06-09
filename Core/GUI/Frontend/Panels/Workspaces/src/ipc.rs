@@ -1,8 +1,11 @@
 //! Per-panel IPC helpers for the Workspaces panel.
 //!
-//! Wraps the harness's `workspaces.*` verbs (config-file-backed redesign,
-//! 2026-06-05) into typed reads / writes the View body consumes. The
-//! legacy `rag.workspaces.*` surface was retired in the clean break.
+//! Wraps the `workspaces.*` verbs into typed reads / writes the View body
+//! consumes. As of Thought Bubble System Slice 0d these verbs are served by
+//! the dedicated `wylde-workspaces` service (not the harness pipe), so every
+//! call targets `"wylde-workspaces"`. A down/unlaunched service surfaces as
+//! a `pipe_unavailable` error the View renders as the §7.5 "service
+//! unavailable + Retry" fallback while preserving its last-known rows.
 //! `list_mru` is the slim MRU-5 projection, so index-only fields
 //! (`file_count`, `last_indexed_at`, `indexing`) are not populated on the
 //! list rows; the re-index control drives the Rust file-indexer ported in
@@ -66,7 +69,7 @@ impl WorkspaceSummary {
 /// 5-entry cap).
 pub async fn list_workspaces() -> Result<Vec<WorkspaceSummary>, String> {
     let v = wylde_gui_pipe::call(
-        "wylde-harness",
+        "wylde-workspaces",
         "POST",
         "/__action__",
         Some(json!({ "action": "workspaces.list_mru", "payload": {} })),
@@ -88,7 +91,7 @@ pub async fn recent_workspaces(_limit: u32) -> Result<Vec<WorkspaceSummary>, Str
 /// compatibility but ignored — `create` always indexes the new folder.
 pub async fn activate_workspace(path: &str, _full_reindex: bool) -> Result<Value, String> {
     wylde_gui_pipe::call(
-        "wylde-harness",
+        "wylde-workspaces",
         "POST",
         "/__action__",
         Some(json!({
@@ -104,7 +107,7 @@ pub async fn activate_workspace(path: &str, _full_reindex: bool) -> Result<Value
 /// (the InferenceBar uses the same `workspaces.set_active` verb).
 pub async fn set_active_workspace(workspace_id: &str) -> Result<Value, String> {
     wylde_gui_pipe::call(
-        "wylde-harness",
+        "wylde-workspaces",
         "POST",
         "/__action__",
         Some(json!({
@@ -120,7 +123,7 @@ pub async fn set_active_workspace(workspace_id: &str) -> Result<Value, String> {
 /// `workspaces.reindex` verb.
 pub async fn reindex_workspace(workspace_id: &str) -> Result<Value, String> {
     wylde_gui_pipe::call(
-        "wylde-harness",
+        "wylde-workspaces",
         "POST",
         "/__action__",
         Some(json!({
@@ -134,7 +137,7 @@ pub async fn reindex_workspace(workspace_id: &str) -> Result<Value, String> {
 /// Remove a workspace + its on-disk bundle.
 pub async fn delete_workspace(workspace_id: &str) -> Result<Value, String> {
     wylde_gui_pipe::call(
-        "wylde-harness",
+        "wylde-workspaces",
         "POST",
         "/__action__",
         Some(json!({

@@ -5017,7 +5017,6 @@ dependencies = [
  "wylde-prebuild-guard",
  "wylde-shared",
  "wylde-treesitter",
- "wylde-workspaces",
  "wylde-workspaces-client",
 ]
 
