@@ -74,6 +74,15 @@ pub mod service_name {
     /// binary leaves it down with a loud build hint (the `wylde-ollama`
     /// precedent). See `docs/plans/treesitter-sidecar.md`.
     pub const TREESITTER: &str = "wylde-treesitter";
+    /// Workspace-scoped service (Thought Bubble System Phase 0) — owns the
+    /// registry, persona, RAG indexer, notes, workspace conversations, and
+    /// the Neo4j code graph. Greenfield Rust, no Python fallback (the
+    /// `wylde-treesitter` precedent): a missing binary leaves it down with a
+    /// loud build hint. Started LAST in the boot sequence — it consumes
+    /// `wylde-ollama` (embedder), `wylde-treesitter` (chunk/extract), and
+    /// Memgraph (graph writes), so those must be up first. Consumers degrade
+    /// gracefully when it's down (Slice 0d), so a failed spawn is non-fatal.
+    pub const WORKSPACES: &str = "wylde-workspaces";
 }
 
 /// Window after spawn within which the service is expected to publish
@@ -446,9 +455,13 @@ pub async fn stop_all_daemon_managed() -> ShutdownSummary {
     // adjacent `stop_<service>` future is awaited. This mirrors the Python
     // `stop_all_daemon_managed`'s `_try(name, alive, fn)` ordering.
     // Shutdown order (per master plan Phase 1 §6a, extended for VPN +
-    // Harness):
-    //   Gateway → ExtensionBridge → Harness → Voice → DeviceGate →
-    //   Ollama → VPN → VramBroker → Memgraph
+    // Harness + Workspaces):
+    //   Gateway → Workspaces → TreeSitter → ExtensionBridge → Harness →
+    //   Voice → DeviceGate → Ollama → VPN → VramBroker → Memgraph
+    //
+    // Workspaces stops near the front: it consumes Ollama (embeddings),
+    // tree-sitter (chunk/extract over the pipe), and Memgraph (Bolt graph
+    // writes), so draining it before those releases the resources cleanly.
     //
     // Harness stops AFTER Gateway/ExtensionBridge (its callers are
     // gone) but BEFORE Ollama (its primary downstream — Ollama drains
@@ -460,11 +473,20 @@ pub async fn stop_all_daemon_managed() -> ShutdownSummary {
     // but ordering it after the VRAM consumers keeps the broker the
     // last "infrastructure" service torn down before Memgraph. Memgraph
     // last so anything still holding a Bolt driver releases first.
-    let steps: [(&str, bool, anyhow::Result<()>); 10] = [
+    let steps: [(&str, bool, anyhow::Result<()>); 11] = [
         (
             service_name::GATEWAY,
             is_service_alive(service_name::GATEWAY),
             services::stop_gateway().await,
+        ),
+        // wylde-workspaces is a consumer of Ollama / tree-sitter / Memgraph,
+        // so it must drain BEFORE them — stop it up front alongside the other
+        // front-tier services so its in-flight ingest releases the sidecar
+        // pipe + Bolt driver before those services go down.
+        (
+            service_name::WORKSPACES,
+            is_service_alive(service_name::WORKSPACES),
+            services::stop_workspaces().await,
         ),
         // Tree-sitter is a leaf sidecar (nothing depends on it) — drain it
         // early alongside the other front-tier services.

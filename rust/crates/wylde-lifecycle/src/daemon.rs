@@ -216,6 +216,15 @@ pub async fn serve_forever() -> Result<i32> {
     if let Err(e) = services::start_treesitter().await {
         tracing::error!("daemon: start_treesitter raised: {:#}", e);
     }
+    // wylde-workspaces — Thought Bubble System Phase 0 service. Spawned
+    // LAST: its ingest pipeline consumes wylde-ollama (embeddings),
+    // wylde-treesitter (chunk/extract over the pipe), and Memgraph (Bolt
+    // graph writes), all of which are started above. Greenfield Rust,
+    // default impl rust. A missing binary is non-fatal — every consumer
+    // degrades gracefully when it's absent (Slice 0d).
+    if let Err(e) = services::start_workspaces().await {
+        tracing::error!("daemon: start_workspaces raised: {:#}", e);
+    }
 
     if nospawn {
         tracing::info!(

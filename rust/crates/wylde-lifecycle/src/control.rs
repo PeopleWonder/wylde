@@ -66,21 +66,24 @@ use crate::registry::{self, ServiceInfo};
 use crate::state::services::{
     impl_for, start_device_gate, start_extension_bridge, start_gateway, start_harness,
     start_memgraph, start_ollama, start_treesitter, start_vpn, start_vram_broker, start_voice,
-    stop_device_gate, stop_extension_bridge, stop_gateway, stop_harness, stop_memgraph,
-    stop_ollama, stop_treesitter, stop_voice, stop_vpn, stop_vram_broker,
+    start_workspaces, stop_device_gate, stop_extension_bridge, stop_gateway, stop_harness,
+    stop_memgraph, stop_ollama, stop_treesitter, stop_voice, stop_vpn, stop_vram_broker,
+    stop_workspaces,
 };
 use crate::state::{
     is_service_alive, nospawn_enabled, nospawn_record, nospawn_snapshot, request_daemon_exit,
     service_name, service_pid, stop_all_daemon_managed, ShutdownSummary,
 };
 
-/// The eight daemon-managed services `lifecycle.start_service` accepts —
-/// the subprocess set the no-spawn boot short-circuits. `memory_scheduler`
-/// is excluded: it is an in-process subsystem, never a would-have-spawned
+/// The daemon-managed services `lifecycle.start_service` accepts — the
+/// subprocess set the no-spawn boot short-circuits. `memory_scheduler` is
+/// excluded: it is an in-process subsystem, never a would-have-spawned
 /// subprocess, on either daemon. `wylde-vpn` (Phase 2) is included even
 /// though it's an `optional` tier service — daemon-managed lifecycle is
-/// still authoritative for spawn/stop.
-const DAEMON_MANAGED_SERVICES: [&str; 10] = [
+/// still authoritative for spawn/stop. `wylde-workspaces` (Thought Bubble
+/// System Phase 0, Slice A) is the newest entrant — greenfield Rust,
+/// spawned last (it consumes ollama/treesitter/memgraph).
+const DAEMON_MANAGED_SERVICES: [&str; 11] = [
     service_name::MEMGRAPH,
     service_name::VOICE,
     service_name::DEVICE_GATE,
@@ -91,6 +94,7 @@ const DAEMON_MANAGED_SERVICES: [&str; 10] = [
     service_name::VPN,
     service_name::HARNESS,
     service_name::TREESITTER,
+    service_name::WORKSPACES,
 ];
 
 /// Heartbeat-age thresholds for the `service.list` status bucket.
@@ -364,6 +368,7 @@ async fn dispatch_start(name: &str) -> anyhow::Result<()> {
         service_name::VPN => start_vpn().await,
         service_name::HARNESS => start_harness().await,
         service_name::TREESITTER => start_treesitter().await,
+        service_name::WORKSPACES => start_workspaces().await,
         _ => anyhow::bail!("not a daemon-managed service: {name}"),
     }
 }
@@ -381,6 +386,7 @@ async fn dispatch_stop(name: &str) -> anyhow::Result<()> {
         service_name::VPN => stop_vpn().await,
         service_name::HARNESS => stop_harness().await,
         service_name::TREESITTER => stop_treesitter().await,
+        service_name::WORKSPACES => stop_workspaces().await,
         _ => anyhow::bail!("not a daemon-managed service: {name}"),
     }
 }
@@ -789,6 +795,59 @@ mod tests {
             contributes: json!({}),
             ..ServiceInfo::default()
         }
+    }
+
+    #[test]
+    fn workspaces_is_a_daemon_managed_service() {
+        // Slice A registration: wylde-workspaces must be in the
+        // daemon-managed set so `service.start` / `service.wake` accept it
+        // (rather than `not_registered`) and the no-spawn parity surface
+        // reports it. The count is the dashboard's expected-running-services
+        // tally — adding workspaces bumps it from 10 → 11 (N+1).
+        assert_eq!(
+            DAEMON_MANAGED_SERVICES.len(),
+            11,
+            "expected 11 daemon-managed services after registering wylde-workspaces"
+        );
+        assert!(
+            DAEMON_MANAGED_SERVICES.contains(&service_name::WORKSPACES),
+            "wylde-workspaces must be daemon-managed (Slice A)"
+        );
+    }
+
+    #[tokio::test]
+    async fn service_start_workspaces_is_registered_not_unknown() {
+        // The registration is wired end-to-end: `service.start` for
+        // wylde-workspaces must route into `dispatch_start` (→
+        // start_workspaces) rather than returning the `not_registered`
+        // envelope reserved for names outside the managed set. No binary is
+        // built in the unit-test env, so start_workspaces is a non-fatal
+        // no-op and the action returns ok — the point is purely that the
+        // name is recognised.
+        let _g = registry_guard().await;
+        let _sg = crate::state::tests::state_guard().await;
+        clear_nospawn();
+        cleanup();
+        register_with_ipc();
+
+        // Point the BIN override at a missing path so no real child spawns.
+        std::env::set_var("WYLDE_WYLDE_WORKSPACES_BIN", "/no/such/workspaces/binary");
+        let reply = dispatch_action(json!({
+            "action": "service.start",
+            "payload": {"name": "wylde-workspaces"},
+        }))
+        .await;
+        std::env::remove_var("WYLDE_WYLDE_WORKSPACES_BIN");
+
+        // Either ok (no-op spawn) — but NEVER the `not_registered` envelope.
+        if let Some(err) = reply.error {
+            assert_ne!(
+                err.code, "not_registered",
+                "wylde-workspaces must be a registered daemon-managed service"
+            );
+        }
+
+        cleanup();
     }
 
     #[test]

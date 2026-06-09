@@ -740,6 +740,66 @@ pub async fn stop_treesitter() -> Result<()> {
     stop_service(service_name::TREESITTER, Duration::from_secs(10)).await
 }
 
+// ── wylde-workspaces ────────────────────────────────────────────────────
+//
+// Greenfield Rust — there is no Python predecessor for `wylde-workspaces`
+// (Thought Bubble System Phase 0). The strangler-fig env var pattern is
+// kept for shape consistency (`WYLDE_WYLDE_WORKSPACES_IMPL`) but the python
+// branch only warns — there is no module to spawn. Same shape as
+// `start_ollama` / `start_treesitter`. Spawned LAST in the boot sequence
+// (see `daemon.rs`): it consumes `wylde-ollama` (embedder),
+// `wylde-treesitter` (chunk/extract), and Memgraph (Bolt graph writes), so
+// those must be up first. A missing binary leaves it down with a loud build
+// hint — every consumer degrades gracefully when it's absent (Slice 0d), so
+// a failed spawn is non-fatal to the rest of the stack.
+pub async fn start_workspaces() -> Result<()> {
+    if is_service_alive(service_name::WORKSPACES) {
+        let pid = manifest_pid(service_name::WORKSPACES)
+            .or_else(|| service_pid(service_name::WORKSPACES))
+            .unwrap_or(0);
+        tracing::info!(
+            "{}: already alive (manifest pid={}); skipping spawn",
+            service_name::WORKSPACES,
+            pid
+        );
+        return Ok(());
+    }
+    if nospawn_enabled() {
+        nospawn_record(service_name::WORKSPACES, ImplLang::Rust.as_str());
+        tracing::info!("workspaces: NO-SPAWN — would-have-spawned recorded; no child forked");
+        return Ok(());
+    }
+    // wylde-workspaces is greenfield Rust. The strangler-fig env var is
+    // accepted for shape consistency but Python isn't a valid impl.
+    let lang = impl_for(service_name::WORKSPACES);
+    if lang == ImplLang::Python {
+        tracing::warn!(
+            "workspaces: WYLDE_WYLDE_WORKSPACES_IMPL=python but wylde-workspaces is \
+             greenfield Rust (no Python predecessor); proceeding with rust binary"
+        );
+    }
+    let Some(bin) = rust_binary_path(service_name::WORKSPACES) else {
+        tracing::warn!(
+            "workspaces: no rust binary found (checked WYLDE_WYLDE_WORKSPACES_BIN, \
+             rust/bin/wylde-workspaces.exe, rust/target/release/wylde-workspaces.exe, \
+             rust/target/debug/wylde-workspaces.exe); workspaces will not start — \
+             consumers degrade gracefully, so the rest of the stack is unaffected. \
+             Build with `cargo build --release -p wylde-workspaces`"
+        );
+        return Ok(());
+    };
+    let child = spawn_rust_binary(service_name::WORKSPACES, &bin)?;
+    let pid = child.id().unwrap_or(0);
+    tracing::info!("daemon: spawned wylde-workspaces impl=rust pid={}", pid);
+    record_spawn(service_name::WORKSPACES, pid, ImplLang::Rust.as_str());
+    set_service_proc(service_name::WORKSPACES, child);
+    Ok(())
+}
+
+pub async fn stop_workspaces() -> Result<()> {
+    stop_service(service_name::WORKSPACES, Duration::from_secs(10)).await
+}
+
 // ── wylde-harness ─────────────────────────────────────────────────────
 //
 // Phase 5 of the Rust migration — the consolidated harness crate.
@@ -973,12 +1033,31 @@ mod tests {
             service_name::OLLAMA,
             service_name::HARNESS,
             service_name::VPN,
+            service_name::TREESITTER,
+            service_name::WORKSPACES,
         ] {
             assert!(
                 !names.contains(&unique),
                 "{unique} must stay hand-written, not in the table"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn start_workspaces_without_binary_is_non_fatal() {
+        // wylde-workspaces is greenfield Rust with no Python fallback. When
+        // no binary resolves (the env in this unit test), start must NOT
+        // bail — a missing binary leaves the service down but every consumer
+        // degrades gracefully (Slice 0d), so boot must continue. Point the
+        // BIN override at a missing path so the resolver returns None
+        // deterministically regardless of any built target on disk.
+        std::env::set_var("WYLDE_WYLDE_WORKSPACES_BIN", "/no/such/workspaces/binary");
+        let result = start_workspaces().await;
+        std::env::remove_var("WYLDE_WYLDE_WORKSPACES_BIN");
+        assert!(
+            result.is_ok(),
+            "start_workspaces with no binary must be a non-fatal no-op, got {result:?}"
+        );
     }
 
     #[test]
