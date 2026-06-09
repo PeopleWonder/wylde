@@ -40,6 +40,10 @@ pub mod settings;
 pub mod state;
 pub mod tooling;
 pub mod turn;
+// NEW — global, user-level facts read into every turn (Thought Bubble
+// System Slice D). Harness-owned, in-process; the workspace-scoped half
+// of the world model lives in `wylde-workspaces`, not here.
+pub mod user_profile;
 // Workspaces moved out of the harness entirely (Thought Bubble System
 // Slice 0d). All workspace-scoped state now lives in the `wylde-workspaces`
 // service; the harness reaches it as a pure client via the

@@ -58,6 +58,7 @@ use crate::tooling::registry::global;
 use crate::tooling::runner::{catalog_payload, dispatch_tool};
 use crate::turn::actions as turn_actions;
 use crate::turn::tool_round::TIER_TOOL_USE;
+use crate::user_profile::api as user_profile_actions;
 
 /// The harness's GUI-facing action surface, expressed as Rust methods so
 /// in-process callers (Tauri) can dispatch without the IPC hop.
@@ -137,6 +138,14 @@ pub trait HarnessApi: Send + Sync {
     async fn consent_set_no_auth(&self, payload: Value) -> Reply;
     async fn consent_reset(&self, payload: Value) -> Reply;
     async fn consent_stream_pending(&self, payload: Value, sender: StreamSender);
+
+    // ── user_profile.* (in-process; Thought Bubble System Slice D) ───
+    async fn user_profile_get(&self, payload: Value) -> Reply;
+    async fn user_profile_update(&self, payload: Value) -> Reply;
+    async fn user_profile_propose(&self, payload: Value) -> Reply;
+    async fn user_profile_accept(&self, payload: Value) -> Reply;
+    async fn user_profile_reject(&self, payload: Value) -> Reply;
+    async fn user_profile_list_proposals(&self, payload: Value) -> Reply;
 }
 
 /// In-process implementation that delegates to the harness's own
@@ -523,6 +532,34 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn consent_stream_pending(&self, payload: Value, sender: StreamSender) {
         consent_stream_pending_impl(payload, sender).await;
+    }
+
+    // ── user_profile.* ───────────────────────────────────────────────
+    // Pass-throughs — JSON shaping lives in user_profile::api. In-process
+    // (no pipe hop, no client tier); see that module's docs.
+
+    async fn user_profile_get(&self, payload: Value) -> Reply {
+        user_profile_actions::handle_get(payload).await
+    }
+
+    async fn user_profile_update(&self, payload: Value) -> Reply {
+        user_profile_actions::handle_update(payload).await
+    }
+
+    async fn user_profile_propose(&self, payload: Value) -> Reply {
+        user_profile_actions::handle_propose(payload).await
+    }
+
+    async fn user_profile_accept(&self, payload: Value) -> Reply {
+        user_profile_actions::handle_accept(payload).await
+    }
+
+    async fn user_profile_reject(&self, payload: Value) -> Reply {
+        user_profile_actions::handle_reject(payload).await
+    }
+
+    async fn user_profile_list_proposals(&self, payload: Value) -> Reply {
+        user_profile_actions::handle_list_proposals(payload).await
     }
 }
 
