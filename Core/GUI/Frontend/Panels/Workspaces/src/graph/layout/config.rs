@@ -54,6 +54,55 @@ impl LayoutConfig {
     }
 }
 
+/// Knobs for the [`super::hierarchical::Hierarchical`] backend — a module-tree
+/// layout (Plan v2 §7.1: "force-directed within services/modules", deterministic
+/// tree at the module level). `Copy` so the backend holds its own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HierarchicalConfig {
+    /// Vertical distance (model px) between successive levels of the module
+    /// tree (a deeper module sits this far below its parent).
+    pub module_v_spacing: f32,
+    /// Horizontal distance (model px) between adjacent module subtrees — the
+    /// leaf-to-leaf stride of the tidy tree pass.
+    pub module_h_spacing: f32,
+    /// Ring spacing (model px) for the compact circle that packs a module's own
+    /// nodes around its tree position.
+    pub intra_spacing: f32,
+}
+
+impl Default for HierarchicalConfig {
+    fn default() -> Self {
+        Self {
+            module_v_spacing: 240.0,
+            module_h_spacing: 220.0,
+            intra_spacing: 30.0,
+        }
+    }
+}
+
+/// Knobs for the [`super::stable_grid::StableGrid`] backend — a top-level
+/// service grid with deterministic, memorisable cells.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StableGridConfig {
+    /// Grid width (cells per row). Services flow row-major into the grid.
+    pub grid_cols: usize,
+    /// Distance (model px) between adjacent service-cell centres, both axes.
+    pub cell_size: f32,
+    /// Ring spacing (model px) for the compact circle that packs a service's
+    /// nodes around its cell centre.
+    pub intra_spacing: f32,
+}
+
+impl Default for StableGridConfig {
+    fn default() -> Self {
+        Self {
+            grid_cols: 4,
+            cell_size: 380.0,
+            intra_spacing: 30.0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +130,16 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(c.y_target(2), -240.0);
+    }
+
+    #[test]
+    fn deterministic_backend_configs_have_sane_defaults() {
+        let h = HierarchicalConfig::default();
+        assert!(h.module_v_spacing > 0.0 && h.module_h_spacing > 0.0);
+        assert!(h.intra_spacing > 0.0);
+
+        let g = StableGridConfig::default();
+        assert_eq!(g.grid_cols, 4);
+        assert!(g.cell_size > 0.0 && g.intra_spacing > 0.0);
     }
 }
