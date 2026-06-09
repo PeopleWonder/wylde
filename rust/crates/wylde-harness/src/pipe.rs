@@ -78,6 +78,7 @@ const HANDLER_MODULE_SHORT_TERM: &str =
 const HANDLER_MODULE_CONVERSATIONS: &str =
     "wylde_harness::api::DefaultHarnessApi (conversations.*)";
 const HANDLER_MODULE_CONSENT: &str = "wylde_harness::api::DefaultHarnessApi (consent.*)";
+const HANDLER_MODULE_GLOBAL_ANCHORS: &str = "wylde_harness::global_anchors::api (anchors.*)";
 
 /// Every action the harness pipe registers. Tests compare this against
 /// `list_action_meta()` to catch a missing registration. Order mirrors
@@ -144,6 +145,18 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "consent.set_no_auth",
     "consent.reset",
     "consent.stream_pending",
+    // anchors.* — GLOBAL anchor store (Thought Bubble System Slice N-data,
+    // harness half). In-process (user-level, not workspace-scoped). The four
+    // CRUD verbs are Build Order §3; the three reads mirror the workspace
+    // `workspaces.anchors.*` surface so consumers resolve tokens / do the
+    // inverse lookup / traverse the hierarchy symmetrically across both scopes.
+    "anchors.list",
+    "anchors.create",
+    "anchors.update",
+    "anchors.delete",
+    "anchors.find_by_token",
+    "anchors.find_by_target",
+    "anchors.list_under",
 ];
 
 /// Register every pipe action against `api` on the process-wide IPC
@@ -815,6 +828,74 @@ where
          overran. Payload: {heartbeat_secs?: u64}. Stream closes when \
          the client disconnects.",
         HANDLER_MODULE_CONSENT,
+    );
+
+    // ── anchors.* — GLOBAL anchor store (Slice N-data, harness half) ──────
+    //
+    // These are file-backed CRUD over `<data_dir>/global_anchors.json`, not a
+    // `HarnessApi` method — they have no shared state to thread through the
+    // trait, so they register as plain free-fn closures (like the
+    // `wylde-workspaces` service's own action handlers).
+    install_global_anchor_actions();
+}
+
+/// Register the seven in-process `anchors.*` (global-scope) verbs. Split out so
+/// `install_all_against` stays readable; called at the end of it.
+fn install_global_anchor_actions() {
+    use crate::global_anchors::api as ga;
+
+    register_action_with_meta(
+        "anchors.list",
+        |p: Value| async move { ga::handle_list(p).await },
+        "Every GLOBAL anchor. No payload. Reply: {scope: \"global\", anchors, \
+         count}. Same Anchor wire shape as workspaces.anchors.*.",
+        HANDLER_MODULE_GLOBAL_ANCHORS,
+    );
+    register_action_with_meta(
+        "anchors.create",
+        |p: Value| async move { ga::handle_create(p).await },
+        "Promote/mint a GLOBAL anchor. Payload: {identifier, kind?, target, \
+         description?, parent_anchor?, domain?, related_to?}. Reply: the \
+         Anchor. OI-5 collision: a duplicate identifier returns \
+         `already_exists_global` (details carry the existing definition for \
+         the rename/keep/replace dialog); never an overwrite.",
+        HANDLER_MODULE_GLOBAL_ANCHORS,
+    );
+    register_action_with_meta(
+        "anchors.update",
+        |p: Value| async move { ga::handle_update(p).await },
+        "Patch a GLOBAL anchor's description/target/related_to/parent_anchor/\
+         domain. Payload: {identifier, ...patch}. Reply: the updated Anchor. \
+         not_found for an unknown identifier.",
+        HANDLER_MODULE_GLOBAL_ANCHORS,
+    );
+    register_action_with_meta(
+        "anchors.delete",
+        |p: Value| async move { ga::handle_delete(p).await },
+        "Remove a GLOBAL anchor by identifier. Payload: {identifier}. Reply: \
+         {ok, identifier}.",
+        HANDLER_MODULE_GLOBAL_ANCHORS,
+    );
+    register_action_with_meta(
+        "anchors.find_by_token",
+        |p: Value| async move { ga::handle_find_by_token(p).await },
+        "Resolve a `{{token}}` (or bare name) to GLOBAL anchors. Payload: \
+         {token}. Reply: {scope, token, anchors, count}.",
+        HANDLER_MODULE_GLOBAL_ANCHORS,
+    );
+    register_action_with_meta(
+        "anchors.find_by_target",
+        |p: Value| async move { ga::handle_find_by_target(p).await },
+        "Inverse lookup (OI-20): GLOBAL anchors referencing a symbol. Payload: \
+         {symbol_id}. Reply: {scope, symbol_id, anchors, count}.",
+        HANDLER_MODULE_GLOBAL_ANCHORS,
+    );
+    register_action_with_meta(
+        "anchors.list_under",
+        |p: Value| async move { ga::handle_list_under(p).await },
+        "GLOBAL anchors under a taxonomy parent (OI-19). Payload: {parent_id}. \
+         Reply: {scope, parent_id, anchors, count}.",
+        HANDLER_MODULE_GLOBAL_ANCHORS,
     );
 }
 

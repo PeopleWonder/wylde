@@ -32,6 +32,7 @@ pub mod api;
 pub mod config;
 pub mod dispatch;
 pub mod events;
+pub mod global_anchors;
 pub mod memory;
 pub mod model_registry;
 pub mod pipe;

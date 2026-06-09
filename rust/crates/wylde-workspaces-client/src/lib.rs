@@ -438,17 +438,121 @@ impl WorkspacesClient {
     /// `workspaces.watcher.status` — the file-watcher observability snapshot
     /// (`{active_workspace, files_watched, last_event_at, paused}`).
     pub async fn watcher_status(&self) -> Result<Value, WorkspacesClientError> {
-        self.call_verb("workspaces.watcher.status", Value::Null, 1).await
+        self.call_verb("workspaces.watcher.status", Value::Null, 1)
+            .await
     }
 
     /// `workspaces.watcher.pause` — pause the active workspace's watcher.
     pub async fn watcher_pause(&self) -> Result<Value, WorkspacesClientError> {
-        self.call_verb("workspaces.watcher.pause", Value::Null, 1).await
+        self.call_verb("workspaces.watcher.pause", Value::Null, 1)
+            .await
     }
 
     /// `workspaces.watcher.resume` — resume + re-walk to catch up.
     pub async fn watcher_resume(&self) -> Result<Value, WorkspacesClientError> {
-        self.call_verb("workspaces.watcher.resume", Value::Null, 1).await
+        self.call_verb("workspaces.watcher.resume", Value::Null, 1)
+            .await
+    }
+
+    // ── Slice N-data — workspace anchor store ───────────────────────────
+    //
+    // Thin wrappers over `call_verb` returning the raw reply payload (the
+    // typed `Anchor` model lives in `wylde_shared::anchor`; this crate stays
+    // decoupled, like the other wrappers). The global `anchors.*` (Global
+    // scope) verbs are in-process on the harness pipe — they have no client
+    // wrapper here.
+
+    /// `workspaces.anchors.list` — every anchor for a workspace (30s cache).
+    pub async fn anchors_list(&self, workspace_id: &str) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.anchors.list",
+            serde_json::json!({ "workspace_id": workspace_id }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.anchors.create` — mint a workspace anchor. Pass the full
+    /// `{workspace_id, identifier, kind?, target, description?, parent_anchor?,
+    /// domain?, related_to?}` payload. An `already_exists` code (details carry
+    /// the existing definition) signals a duplicate identifier.
+    pub async fn anchors_create(&self, payload: Value) -> Result<Value, WorkspacesClientError> {
+        self.call_verb("workspaces.anchors.create", payload, 1)
+            .await
+    }
+
+    /// `workspaces.anchors.update` — patch an anchor. Pass the full
+    /// `{workspace_id, identifier, ...patch}` payload.
+    pub async fn anchors_update(&self, payload: Value) -> Result<Value, WorkspacesClientError> {
+        self.call_verb("workspaces.anchors.update", payload, 1)
+            .await
+    }
+
+    /// `workspaces.anchors.delete` — remove an anchor by identifier.
+    pub async fn anchors_delete(
+        &self,
+        workspace_id: &str,
+        identifier: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.anchors.delete",
+            serde_json::json!({ "workspace_id": workspace_id, "identifier": identifier }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.anchors.find_by_token` — resolve `{{token}}` (or bare name)
+    /// → anchors. The composer's per-keystroke recognition call.
+    pub async fn anchors_find_by_token(
+        &self,
+        workspace_id: &str,
+        token: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.anchors.find_by_token",
+            serde_json::json!({ "workspace_id": workspace_id, "token": token }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.anchors.find_by_target` — inverse lookup `symbol_id` →
+    /// anchors (OI-20).
+    pub async fn anchors_find_by_target(
+        &self,
+        workspace_id: &str,
+        symbol_id: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.anchors.find_by_target",
+            serde_json::json!({ "workspace_id": workspace_id, "symbol_id": symbol_id }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.anchors.list_under` — anchors under a taxonomy parent
+    /// (OI-19 hierarchy).
+    pub async fn anchors_list_under(
+        &self,
+        workspace_id: &str,
+        parent_id: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.anchors.list_under",
+            serde_json::json!({ "workspace_id": workspace_id, "parent_id": parent_id }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.anchors.propose` — an LLM reflection candidate (NOT
+    /// persisted). Pass the full `{workspace_id, identifier, target, ...,
+    /// confidence?, proposals_so_far?, last_proposal_at?}` payload.
+    pub async fn anchors_propose(&self, payload: Value) -> Result<Value, WorkspacesClientError> {
+        self.call_verb("workspaces.anchors.propose", payload, 1)
+            .await
     }
 
     /// Drive one verb call through the full resilience pipeline: cache →
