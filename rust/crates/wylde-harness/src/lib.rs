@@ -29,6 +29,9 @@
 //! * [`service::reset_for_tests`] — clear singletons; for tests only.
 
 pub mod api;
+// NEW — chat-surface harness modules above the turn driver. Hosts the
+// scoped chat-history search tools (Thought Bubble System Slice E).
+pub mod chat;
 pub mod config;
 pub mod dispatch;
 pub mod events;

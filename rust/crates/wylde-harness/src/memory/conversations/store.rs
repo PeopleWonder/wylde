@@ -202,6 +202,64 @@ pub fn set_workspace(
     Ok(Value::Object(doc))
 }
 
+/// Every standalone conversation document in full (not just metadata),
+/// newest-first by `updated_at`. The Slice E search backend needs the whole
+/// document — `auto_summary`, `topic_tags`, `embedding` — which
+/// [`list_conversations`] projects away. Skips the active-pointer file and
+/// any malformed / id-less object, exactly like the listing path.
+pub fn read_all_conversations() -> Vec<Value> {
+    let dir = conversations_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut docs: Vec<Map<String, Value>> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(Value::Object(doc)) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        // Same id guard the listing path uses — drops the active pointer.
+        match doc.get("id").and_then(Value::as_str) {
+            Some(s) if !s.is_empty() => {}
+            _ => continue,
+        }
+        docs.push(doc);
+    }
+    docs.sort_by(|a, b| {
+        let av = a.get("updated_at").and_then(Value::as_i64).unwrap_or(0);
+        let bv = b.get("updated_at").and_then(Value::as_i64).unwrap_or(0);
+        bv.cmp(&av)
+    });
+    docs.into_iter().map(Value::Object).collect()
+}
+
+/// Merge `fields` into conversation `conv_id`'s document and persist it
+/// atomically, preserving every sibling field. The Slice E summary pipeline
+/// uses this to attach `auto_summary` / `topic_tags` / `embedding` /
+/// `summary_msg_count` without disturbing `messages`, `working_memory`, or
+/// the activity timestamps — a summary refresh is **not** user activity, so
+/// `updated_at` is deliberately left untouched (re-summarising must not
+/// reorder the conversation list). Errors if the conversation is absent
+/// (this is a refresh, not an upsert) or the id is invalid.
+pub fn merge_fields(conv_id: &str, fields: Map<String, Value>) -> Result<Value, ReadError> {
+    validate_id(conv_id).map_err(ReadError::InvalidId)?;
+    let mut doc = read_doc(conv_id).map_err(ReadError::NotFound)?;
+    for (k, v) in fields {
+        doc.insert(k, v);
+    }
+    let _ = write_doc(conv_id, &doc); // best-effort, like set_workspace
+    Ok(Value::Object(doc))
+}
+
 /// Remove a conversation file. Returns `true` iff a file was deleted.
 /// Mirrors Python's `delete_conversation`. Validates the id first so a
 /// caller can't aim the unlink outside the conversations dir.
