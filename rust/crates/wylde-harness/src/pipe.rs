@@ -93,6 +93,17 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "chat.cancel",
     "chat.stream_turn",
     "chat.stream_tools",
+    // chat.* — scoped chat-history search (3 verbs; Thought Bubble System
+    // Slice E). Harness-dispatched: standalone conversations read locally,
+    // workspace conversations over the wylde-workspaces pipe. Per Build
+    // Order Appendix A these are descriptive tiers (search/get Medium · 2s,
+    // list Fast · 500ms, all idempotent reads) with NO client-crate cache —
+    // the §7.6 TTL cache applies to `workspaces.*` client verbs, not these
+    // in-harness handlers (spec Appendix A wins over the brief's 30/60s, as
+    // with Slices B/F/G/N-data).
+    "chat.search_history",
+    "chat.list_recent",
+    "chat.get_conversation",
     // tools.* — direct invocation + catalog (2 verbs)
     "tools.list",
     "tools.run",
@@ -278,6 +289,57 @@ where
          result / error / memory_written / warning) for a turn. Slice \
          5.B: tool decode/dispatch isn't wired yet, so this stream \
          emits nothing until 5.C lands the salvage-parser port.",
+        HANDLER_MODULE_CHAT,
+    );
+
+    // ── chat.* history search (Thought Bubble System Slice E) ─────────
+    // Scoped recall over past conversations. The strict workspace boundary
+    // (Plan v2 §3.2) is enforced in chat::search::scope; these handlers
+    // never read a store the resolver didn't authorise.
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "chat.search_history",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.chat_search_history(p).await }
+        },
+        "Semantic + lexical search over past conversations, STRICTLY \
+         scope-bounded (standalone chat sees standalone only; workspace \
+         chat sees its own workspace + standalone; never another \
+         workspace). Payload {query, date_range?:{from,to}, \
+         workspace_scope?:(\"current\"|\"standalone\"|{workspace_only:id}), \
+         active_workspace_id?, top_k?, threshold?}. Returns {hits, count, \
+         degraded}. A WorkspaceOnly id outside the current workspace is a \
+         bad_request — callers can't escape scope by passing an id.",
+        HANDLER_MODULE_CHAT,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "chat.list_recent",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.chat_list_recent(p).await }
+        },
+        "Most-recent conversations in the current scope, newest-first. \
+         Payload {limit?, date_range?, workspace_scope?, \
+         active_workspace_id?}. Returns {hits, count, degraded}; each hit \
+         scores 1.0. Same strict scope boundary as chat.search_history.",
+        HANDLER_MODULE_CHAT,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "chat.get_conversation",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.chat_get_conversation(p).await }
+        },
+        "Fetch one conversation document by id, scope-checked: a \
+         conversation in another workspace is not_found (the boundary \
+         holds for point reads too). Payload {id, workspace_scope?, \
+         active_workspace_id?}. Returns the full conversation document.",
         HANDLER_MODULE_CHAT,
     );
 

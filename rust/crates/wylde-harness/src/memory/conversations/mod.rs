@@ -24,4 +24,4 @@ pub mod actions;
 pub mod store;
 
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;

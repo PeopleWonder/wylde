@@ -46,6 +46,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use wylde_shared::ipc::{Reply, StreamSender};
 
+use crate::chat::search::api as chat_search;
 use crate::config::Config;
 use crate::memory::conversations::actions as conversations_actions;
 use crate::memory::long_term::{self, LongTermMemory, SaveError};
@@ -75,6 +76,14 @@ pub trait HarnessApi: Send + Sync {
     async fn chat_cancel(&self, payload: Value) -> Reply;
     async fn chat_stream_turn(&self, payload: Value, sender: StreamSender);
     async fn chat_stream_tools(&self, payload: Value, sender: StreamSender);
+
+    // ── chat.* history search (3 verbs; Thought Bubble System Slice E) ─
+    // Scoped chat-history recall. Strict workspace boundary enforced in
+    // `chat::search::scope`. In-process dispatch; the workspace backend is
+    // reached over the pipe via wylde-workspaces-client.
+    async fn chat_search_history(&self, payload: Value) -> Reply;
+    async fn chat_list_recent(&self, payload: Value) -> Reply;
+    async fn chat_get_conversation(&self, payload: Value) -> Reply;
 
     // ── tools.* (2 verbs) ────────────────────────────────────────────
     async fn tools_list(&self, payload: Value) -> Reply;
@@ -182,6 +191,21 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn chat_stream_tools(&self, payload: Value, sender: StreamSender) {
         turn_actions::handle_stream_tools(payload, sender).await;
+    }
+
+    // ── chat.* history search (Slice E) ──────────────────────────────
+    // Pass-throughs — scope resolution + ranking live in chat::search.
+
+    async fn chat_search_history(&self, payload: Value) -> Reply {
+        chat_search::handle_search_history(payload).await
+    }
+
+    async fn chat_list_recent(&self, payload: Value) -> Reply {
+        chat_search::handle_list_recent(payload).await
+    }
+
+    async fn chat_get_conversation(&self, payload: Value) -> Reply {
+        chat_search::handle_get_conversation(payload).await
     }
 
     // ── tools.* ──────────────────────────────────────────────────────
