@@ -35,3 +35,16 @@ tokio.workspace = true
 serde.workspace      = true
 serde_json.workspace = true
 anyhow.workspace     = true
+
+# YAML deserialiser for the locked Visual Style v1 theme. The graph panel
+# embeds `assets/visual_style_v1.yaml` via `include_str!` and parses it into
+# the `Theme` struct (graph/render/style.rs) — colours / sizes / edge styles
+# are read from the Theme, never hardcoded.
+serde_yaml.workspace = true
+
+[dev-dependencies]
+# Used by the graph-IPC integration test to stand up a mock `wylde-workspaces`
+# pipe server speaking the same msgpack wire format `wylde_gui_pipe::call` does
+# — exercises the data → panel-state path without a live service or memgraph.
+rmp-serde.workspace = true
+tokio = { workspace = true }

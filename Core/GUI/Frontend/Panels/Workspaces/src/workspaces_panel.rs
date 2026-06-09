@@ -20,8 +20,8 @@
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId,
-    FontWeight, IntoElement, Render, SharedString, Stateful, Window,
+    div, prelude::*, px, rgb, AnyElement, AnyView, App, AppContext, AsyncApp, Context, ElementId,
+    Entity, FontWeight, IntoElement, Render, SharedString, Stateful, Window,
 };
 use wylde_theme::colors::{
     BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_DIM, SURFACE_800, SURFACE_900, TEXT_MUTED,
@@ -29,17 +29,26 @@ use wylde_theme::colors::{
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
+use crate::graph::GraphView;
 use crate::ipc::{
     activate_workspace, delete_workspace, list_workspaces, reindex_workspace, set_active_workspace,
     WorkspaceSummary,
 };
+use crate::tabs::WorkspacesTab;
 
-/// Root Workspaces panel.
+/// Root Workspaces panel. Hosts a minimal tab system (Registry + Graph);
+/// the active tab's body is rendered below a tab bar.
 pub struct WorkspacesPanel {
     pub workspaces: Vec<WorkspaceSummary>,
     pub active_id: Option<String>,
     pub error: Option<String>,
     pub loading: bool,
+    /// The selected tab.
+    pub tab: WorkspacesTab,
+    /// The Graph tab's view, created once at mount (loads the active
+    /// workspace's code graph). `None` only in unit-test construction, where
+    /// no gpui context exists to create a child entity.
+    pub graph: Option<Entity<GraphView>>,
 }
 
 impl WorkspacesPanel {
@@ -49,6 +58,8 @@ impl WorkspacesPanel {
             active_id: None,
             error: None,
             loading: true,
+            tab: WorkspacesTab::Registry,
+            graph: None,
         }
     }
 
@@ -56,7 +67,16 @@ impl WorkspacesPanel {
     /// (`wylde_panel_workspaces::WorkspacesPanel::view`).
     pub fn view(_window: &mut Window, cx: &mut App) -> AnyView {
         cx.new(|cx| {
-            let panel = Self::new();
+            // Create the Graph tab's view eagerly so it starts loading the
+            // active workspace's graph in the background — switching tabs is
+            // then instant.
+            let graph = cx.new(|gcx| {
+                let view = GraphView::new();
+                GraphView::spawn_load(gcx);
+                view
+            });
+            let mut panel = Self::new();
+            panel.graph = Some(graph);
             Self::spawn_refresh(cx);
             panel
         })
@@ -100,8 +120,7 @@ impl WorkspacesPanel {
             // spawn_blocking` panics ("no reactor running").  Hop onto the
             // bridge runtime's blocking pool so the gpui dispatcher doesn't
             // stall and the await just parks on the join.
-            let picked: Option<PathBuf> =
-                wylde_gui_pipe::bridged_spawn_blocking(pick_folder).await;
+            let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(pick_folder).await;
             let Some(path) = picked else {
                 return;
             };
@@ -211,6 +230,53 @@ impl Default for WorkspacesPanel {
 
 impl Render for WorkspacesPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body: AnyElement = match self.tab {
+            WorkspacesTab::Graph => match self.graph.clone() {
+                Some(view) => view.into_any_element(),
+                // No child entity (test-only construction) — render nothing.
+                None => div().into_any_element(),
+            },
+            // Registry is the default; any not-yet-wired tab also falls back
+            // here (the tab bar only offers WIRED tabs, so this is the
+            // Registry body).
+            _ => self.registry_body(cx).into_any_element(),
+        };
+
+        div()
+            .size_full()
+            .bg(rgb(pack(SURFACE_900)))
+            .flex()
+            .flex_col()
+            .child(self.tab_bar(cx))
+            .child(
+                // The body fills the remaining height; `min_h_0` lets the
+                // graph canvas size to the slot instead of overflowing.
+                div().flex_1().min_h(px(0.0)).overflow_hidden().child(body),
+            )
+    }
+}
+
+impl WorkspacesPanel {
+    /// The tab bar — one button per [`WorkspacesTab::WIRED`] tab; the active
+    /// one is accented.
+    fn tab_bar(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let mut bar = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .px_4()
+            .py_2()
+            .border_b_1()
+            .border_color(rgb(pack(BORDER_SUBTLE)));
+        for tab in WorkspacesTab::WIRED.iter().copied() {
+            bar = bar.child(tab_button(tab, self.tab == tab, cx));
+        }
+        bar
+    }
+
+    /// The Registry tab body (the original panel content).
+    fn registry_body(&self, cx: &mut Context<Self>) -> gpui::Div {
         let header = header_row(cx);
 
         let mut column = div()
@@ -238,12 +304,50 @@ impl Render for WorkspacesPanel {
             }
         }
 
-        div()
-            .size_full()
-            .bg(rgb(pack(SURFACE_900)))
-            .p_6()
-            .child(column)
+        div().p_6().child(column)
     }
+}
+
+/// One tab-bar button. Clicking switches the active tab.
+fn tab_button(
+    tab: WorkspacesTab,
+    is_active: bool,
+    cx: &mut Context<WorkspacesPanel>,
+) -> Stateful<gpui::Div> {
+    let id: ElementId = ElementId::Name(format!("ws-tab::{}", tab.label()).into());
+    let (text_color, bg) = if is_active {
+        (TEXT_PRIMARY, Some(SURFACE_800))
+    } else {
+        (TEXT_SECONDARY, None)
+    };
+    let mut btn = div()
+        .id(id)
+        .px_3()
+        .py_1()
+        .rounded(px(4.0))
+        .cursor_pointer()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::SM))
+        .font_weight(FontWeight(if is_active {
+            weight::SEMIBOLD as f32
+        } else {
+            weight::REGULAR as f32
+        }))
+        .text_color(rgb(pack(text_color)))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut WorkspacesPanel, _ev, _window, cx| {
+                if this.tab != tab {
+                    this.tab = tab;
+                    cx.notify();
+                }
+            }),
+        )
+        .child(SharedString::from(tab.label()));
+    if let Some(c) = bg {
+        btn = btn.bg(rgb(pack(c)));
+    }
+    btn
 }
 
 fn header_row(cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
@@ -371,8 +475,16 @@ fn workspace_card(
     is_active: bool,
     cx: &mut Context<WorkspacesPanel>,
 ) -> gpui::Div {
-    let border = if is_active { BORDER_DEFAULT } else { BORDER_SUBTLE };
-    let title_color = if is_active { TEXT_PRIMARY } else { TEXT_SECONDARY };
+    let border = if is_active {
+        BORDER_DEFAULT
+    } else {
+        BORDER_SUBTLE
+    };
+    let title_color = if is_active {
+        TEXT_PRIMARY
+    } else {
+        TEXT_SECONDARY
+    };
 
     let id_for_switch = ws.id.clone();
     let id_for_reindex = ws.id.clone();
@@ -430,7 +542,11 @@ fn workspace_card(
     }
     row = row.child(action_button(
         ElementId::Name(format!("ws-reindex::{}", ws.id).into()),
-        if ws.indexing { "Indexing…" } else { "Re-index" },
+        if ws.indexing {
+            "Indexing…"
+        } else {
+            "Re-index"
+        },
         cx.listener(move |_this: &mut WorkspacesPanel, _ev, _window, cx| {
             WorkspacesPanel::spawn_reindex(id_for_reindex.clone(), cx);
         }),
@@ -470,10 +586,7 @@ fn meta_strip(ws: &WorkspaceSummary) -> gpui::Div {
         .file_count
         .map(|n| format!("{n} files"))
         .unwrap_or_else(|| "—".into());
-    let last = ws
-        .last_indexed_at
-        .clone()
-        .unwrap_or_else(|| "never".into());
+    let last = ws.last_indexed_at.clone().unwrap_or_else(|| "never".into());
     div()
         .flex()
         .flex_row()
@@ -641,12 +754,18 @@ mod tests {
         assert!(is_service_unavailable(
             "pipe_unavailable: service 'wylde-workspaces' is not running (pipe not found)"
         ));
-        assert!(is_service_unavailable("pipe_connect: wylde-workspaces: oops"));
+        assert!(is_service_unavailable(
+            "pipe_connect: wylde-workspaces: oops"
+        ));
         assert!(is_service_unavailable(
             "pipe_timeout: no response from 'wylde-workspaces' within 10s"
         ));
         // A logical application error is NOT a service-unavailable fallback.
-        assert!(!is_service_unavailable("bad_request: workspace_id is required"));
-        assert!(!is_service_unavailable("not_found: workspace \"x\" not found"));
+        assert!(!is_service_unavailable(
+            "bad_request: workspace_id is required"
+        ));
+        assert!(!is_service_unavailable(
+            "not_found: workspace \"x\" not found"
+        ));
     }
 }

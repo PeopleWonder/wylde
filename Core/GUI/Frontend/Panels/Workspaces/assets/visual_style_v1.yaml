@@ -1,0 +1,495 @@
+# ==============================================================================
+# WYLDE THOUGHT BUBBLE SYSTEM — VISUAL DESIGN SPECIFICATION
+# Target: Rust gpui Native Canvas (v1: 2D Scene Graph)
+# ==============================================================================
+#
+# In-repo VERSIONED MIRROR of the locked Visual Style v1 style guide.
+# The single source of truth lives on Nextcloud:
+#   Wylde collective → "The Thought Bubble System (visual style, v1)"
+# This file is embedded at compile time (`include_str!`) and parsed into the
+# `Theme` struct (graph/render/style.rs). If the Nextcloud page changes,
+# re-sync this file in the same commit. Phase 3 renderers read every colour /
+# size / style FROM the Theme — never hardcoded.
+
+# 1. Sphere aesthetic (cross-cutting — applies to graph nodes AND bubbles)
+sphere:
+  shading:
+    style: radial_gradient
+    highlight_position: { x: -0.25, y: -0.25 } # Distinct top-left illumination for depth
+    highlight_color_light: "#FFFFFF"
+    highlight_color_dark: "#FFFFFF"
+    base_color_modifier: 0.65                  # Rim is 65% of the core lightness (creates rich spherical falloff)
+    specular_intensity: 0.85                   # High sheen to make spheres pop from dark voids
+
+  size_mapping:
+    min_diameter_px: 12                        # High scannability even for deep-nested leaf nodes
+    max_diameter_px: 56                        # Hubs dominate visually without engulfing adjacent clusters
+    scaling_curve: sqrt                        # Moderates explosive hub growth better than linear
+
+  border:
+    width_px: 1
+    color_light: "rgba(0, 0, 0, 0.15)"
+    color_dark: "rgba(255, 255, 255, 0.2)"
+
+# 2. Language colors (per-language node tint)
+language_colors:
+  rust:        { light: "#D24B1D", dark: "#E05A2B" } # Warm, intentional orange
+  python:      { light: "#2B5B84", dark: "#3776AB" } # Balanced corporate blue
+  typescript:  { light: "#1E5F9E", dark: "#3178C6" } # Familiar development blue
+  javascript:  { light: "#A38200", dark: "#F7DF1E" } # Shifted down in light mode for AA contrast
+  tsx:         { light: "#006FA6", dark: "#007ACC" } # Clean dialect teal/blue
+  markdown:    { light: "#5C6370", dark: "#8C92AC" } # Muted slate/paper
+  go:          { light: "#008394", dark: "#00ADD8" } # Vibrant cyan
+  json:        { light: "#6B5B95", dark: "#9B86D3" } # Warm purple
+  yaml:        { light: "#A0522D", dark: "#D2691E" } # Earthy, declarative brown
+  html:        { light: "#C43E1C", dark: "#E34F26" } # Structural red-orange
+  css:         { light: "#1154A3", dark: "#1572B6" } # Stylistic primary blue
+  shell:       { light: "#3E7A5A", dark: "#4EAA79" } # Scripting terminal green
+  c:           { light: "#4A5568", dark: "#A0AEC0" } # Monolithic steel gray
+  cpp:         { light: "#004482", dark: "#00599C" } # Deep system blue
+  java:        { light: "#A35200", dark: "#EA2D42" } # Warm/Red brand standard
+
+# 3. Module color palette (stable per-module hue)
+module_palette:
+  - { light: "#E53E3E", dark: "#FC8181" } # Red
+  - { light: "#DD6B20", dark: "#F6AD55" } # Orange
+  - { light: "#B7791F", dark: "#F6E05E" } # Yellow-Gold
+  - { light: "#38A169", dark: "#68D391" } # Green
+  - { light: "#319795", dark: "#4FD1C5" } # Teal
+  - { light: "#3182CE", dark: "#63B3ED" } # Blue
+  - { light: "#4C51BF", dark: "#7F9CF5" } # Indigo
+  - { light: "#6B46C1", dark: "#B794F7" } # Purple
+  - { light: "#B83280", dark: "#F687B3" } # Pink
+  - { light: "#4A5568", dark: "#CBD5E0" } # Slate
+  - { light: "#2C7A7B", dark: "#81E6D9" } # Deep Mint
+  - { light: "#7B341E", dark: "#ED8936" } # Burnt Sienna
+
+# 4. Node type encoding (within the spherical aesthetic)
+node_types:
+  function:
+    description: standard solid sphere
+    visual_treatment: solid
+    icon_overlay: null
+
+  class_struct:
+    description: solid sphere with inner highlight ring
+    visual_treatment: solid_with_ring
+    ring_inset_px: 2
+    ring_thickness_px: 1.5
+
+  trait_interface:
+    description: sphere with outlined / donut sheen
+    visual_treatment: outlined_donut
+    donut_inner_radius_fraction: 0.4
+
+  module:
+    description: larger sphere acting as cluster boundary
+    visual_treatment: cluster_container
+    relative_size_multiplier: 1.4
+
+  constant:
+    description: smaller desaturated sphere
+    visual_treatment: small_desaturated
+    relative_size_multiplier: 0.75
+    saturation_modifier: 0.4
+
+  enum:
+    description: sphere with multi-color radial gradient
+    visual_treatment: multi_color_gradient
+    gradient_stops: 3              # Complex interior architecture
+
+  anchor_concept:
+    description: distinct stylized sphere — user-defined concept
+    visual_treatment: distinct_iconography
+    icon_overlay: "anchor_concept" # Refers to key in icons block
+    icon_size_fraction: 0.55
+
+# 5. Edge styles per relationship type
+edges:
+  calls:
+    line_style: solid
+    color_light: "rgba(0, 0, 0, 0.4)"
+    color_dark: "rgba(255, 255, 255, 0.45)"
+    thickness_px: 1.5
+    arrow_head: standard_arrow
+    animation_on_hover: glow
+
+  imports:
+    line_style: dashed
+    color_light: "rgba(74, 85, 104, 0.35)"
+    color_dark: "rgba(160, 174, 192, 0.4)"
+    thickness_px: 1.0
+    arrow_head: standard_arrow
+    dash_pattern: [6, 4]
+
+  inherits:
+    line_style: solid
+    color_light: "#2B6CB0"
+    color_dark: "#63B3ED"
+    thickness_px: 2.0
+    arrow_head: open_arrow
+
+  configures:
+    line_style: dotted
+    color_light: "#718096"
+    color_dark: "#A0AEC0"
+    thickness_px: 1.25
+    arrow_head: standard_arrow
+    dot_spacing_px: 3
+
+  exposes:
+    line_style: solid
+    color_light: "#2F855A"
+    color_dark: "#48BB78"
+    thickness_px: 1.75
+    arrow_head: double_arrow
+
+  related_to:
+    line_style: solid
+    color_light: "#B83280"        # Distinct magenta/pink layer to map conceptual links clearly
+    color_dark: "#F687B3"
+    thickness_px: 1.5
+    arrow_head: none
+
+# 6. Graph panel — backgrounds, selection, exit edges, clusters
+graph_panel:
+  background:
+    style: radial_gradient
+    color_light: "#F7FAFC"        # Crisp, non-blinding light background
+    color_dark: "#0B0E14"         # Deep, non-pure black "space" void
+    secondary_color_light: "#EDF2F7"
+    secondary_color_dark: "#040608"
+
+  selection_highlight:
+    color_light: "#3182CE"
+    color_dark: "#4FD1C5"
+    width_px: 2
+    glow_radius_px: 8
+    glow_intensity: 0.6
+
+  hover_highlight:
+    color_light: "rgba(66, 153, 225, 0.4)"
+    color_dark: "rgba(79, 209, 197, 0.5)"
+
+  exit_edges:
+    fade_distance_px: 40
+    label_background_light: "#EDF2F7"
+    label_background_dark: "#1A202C"
+    label_text_light: "#4A5568"
+    label_text_dark: "#E2E8F0"
+    label_font_size_px: 11
+
+  cluster_boundary:
+    style: faint_outline
+    border_color_light: "rgba(0, 0, 0, 0.08)"
+    border_color_dark: "rgba(255, 255, 255, 0.08)"
+    border_width_px: 1
+    corner_radius_px: 12
+    fill_color_light: "rgba(0, 0, 0, 0.01)"
+    fill_color_dark: "rgba(255, 255, 255, 0.01)"
+    fill_opacity: 1.0
+
+  breadcrumb_bar:
+    background_light: "#FFFFFF"
+    background_dark: "#141B24"
+    text_light: "#2D3748"
+    text_dark: "#E2E8F0"
+    separator_glyph: "›"
+    height_px: 36
+    font_size_px: 12
+
+# 7. Bubble system (the chat composer's bubble layer)
+bubbles:
+  compact:
+    diameter_px: 28
+    icon_size_fraction: 0.55
+    label_visibility: hover_only
+    truncated_label_max_chars: 14
+
+  expanded_card:
+    width_px: 320
+    max_height_px: 400
+    background_light: "#FFFFFF"
+    background_dark: "#141B24"
+    border_radius_px: 10
+    shadow_light: "0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05)"
+    shadow_dark: "0 20px 25px -5px rgba(0,0,0,0.4), 0 10px 10px -5px rgba(0,0,0,0.3)"
+    padding_px: 14
+    title_font_size_px: 13
+    body_font_size_px: 12
+    monospace_font_for_code: "JetBrains Mono"
+
+  drift_animation:
+    amplitude_x_px: 4             # Subtle sway to evoke "thought" without causing motion sickness
+    amplitude_y_px: 6
+    frequency_hz: 0.4             # Organic, slow float cycle
+    jitter_intensity: 0.15
+
+  excluded_state:
+    opacity: 0.4
+    saturation_modifier: 0.0
+    sink_offset_y_px: 24          # Drops bubbles down out of active field of vision
+    thumbtack_glyph: "thumbtack"
+    thumbtack_color_light: "#718096"
+    thumbtack_color_dark: "#718096"
+
+  scope_badges:
+    workspace_badge:
+      glyph: "workspace_scope_badge"
+      color_light: "#4A5568"
+      color_dark: "#A0AEC0"
+      position: bottom_right
+      size_px: 10
+    global_badge:
+      glyph: "global_scope_badge"
+      color_light: "#3182CE"
+      color_dark: "#63B3ED"
+      position: bottom_right
+      size_px: 10
+
+  ignored_badge:
+    glyph: "ignored_indicator"
+    color_light: "#E53E3E"
+    color_dark: "#FC8181"
+    position: top_left
+    size_px: 10
+
+  pin_glyph:
+    svg_path: "pin"
+    color_light: "#E53E3E"
+    color_dark: "#F6E05E"
+    size_px: 12
+
+  close_glyph:
+    svg_path: "close_x"
+    color_light: "#A0AEC0"
+    color_dark: "#4A5568"
+    size_px: 12
+    hover_color_light: "#E53E3E"
+    hover_color_dark: "#FC8181"
+
+  restore_glyph:
+    svg_path: "restore_arrow"
+    color_light: "#718096"
+    color_dark: "#A0AEC0"
+    size_px: 12
+
+# 8. Chat composer (per-word chips, tether lines, etc.)
+chat_composer:
+  highlight_underline:
+    thickness_px: 2
+    style: wavy
+
+  per_word_chip:
+    height_px: 18
+    horizontal_padding_px: 6
+    border_radius_px: 4
+    background_light: "#EDF2F7"
+    background_dark: "#2D3748"
+    text_light: "#4A5568"
+    text_dark: "#CBD5E0"
+    font_size_px: 10
+
+    ambiguous_state:
+      background_light: "#FEFCBF" # Soft yellow alert tint
+      background_dark: "#744210"
+      text_light: "#744210"
+      text_dark: "#FEFCBF"
+      icon_prefix: "?"
+
+  tether_line:
+    color_light: "#3182CE"
+    color_dark: "#4FD1C5"
+    thickness_px: 1.0
+    opacity: 0.4
+    dash_pattern: [4, 4]
+
+  overflow_indicator:
+    background_light: "#E2E8F0"
+    background_dark: "#4A5568"
+    text_light: "#4A5568"
+    text_dark: "#E2E8F0"
+    border_radius_px: 9999
+
+  connection_drawing_mode:
+    cursor_glyph: "M10.5 4V2.5h3V4h2.5v3h-1.5V5.5h-2V10h4V8.5h1.5v3h-1.5V10h-4v4.5h2V13h1.5v3h-2.5v-1.5h-3V16h-2.5v-3h1.5v1.5h2V10h-4v1.5H4v-3h1.5V10h4V5.5h-2V7H6V4h2.5v1.5h2V4z"
+    drag_line_color_light: "#3182CE"
+    drag_line_color_dark: "#4FD1C5"
+    drag_line_thickness_px: 1.5
+    drag_line_style: dashed
+
+# 9. Approval gates, menus, toasts, settings
+ui_chrome:
+  approval_gate_dialog:
+    width_px: 400
+    background_light: "#FFFFFF"
+    background_dark: "#141B24"
+    backdrop_opacity: 0.6
+    border_radius_px: 12
+    shadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)"
+    title_font_size_px: 16
+    body_font_size_px: 13
+    confirm_button_style:
+      background_light: "#3182CE"
+      background_dark: "#319795"
+      text_light: "#FFFFFF"
+      text_dark: "#FFFFFF"
+    cancel_button_style:
+      background_light: "#E2E8F0"
+      background_dark: "#2D3748"
+      text_light: "#4A5568"
+      text_dark: "#CBD5E0"
+
+  context_menu:
+    background_light: "#FFFFFF"
+    background_dark: "#141B24"
+    border_radius_px: 8
+    item_height_px: 28
+    item_padding_px: 10
+    item_hover_background_light: "#EDF2F7"
+    item_hover_background_dark: "#2D3748"
+    separator_color_light: "#E2E8F0"
+    separator_color_dark: "#2D3748"
+    font_size_px: 12
+    icon_size_px: 14
+    keyboard_shortcut_color_light: "#A0AEC0"
+    keyboard_shortcut_color_dark: "#718096"
+
+  toast_notification:
+    width_px: 280
+    background_light: "#1A202C"    # High contrast notice structure
+    background_dark: "#2D3748"
+    text_light: "#FFFFFF"
+    text_dark: "#FFFFFF"
+    border_radius_px: 6
+    auto_dismiss_ms: 4000
+    slide_in_from: bottom
+
+  settings_panel:
+    section_heading_font_size_px: 14
+    section_heading_color_light: "#1A202C"
+    section_heading_color_dark: "#EDF2F7"
+    input_field_style:
+      background_light: "#FFFFFF"
+      background_dark: "#141B24"
+      border_color_light: "#CBD5E0"
+      border_color_dark: "#4A5568"
+      border_radius_px: 6
+      focus_outline_color_light: "#3182CE"
+      focus_outline_color_dark: "#4FD1C5"
+    slider_track_color_light: "#E2E8F0"
+    slider_track_color_dark: "#2D3748"
+    slider_thumb_color_light: "#3182CE"
+    slider_thumb_color_dark: "#4FD1C5"
+
+# 10. Animation system — durations and easing curves
+animations:
+  bubble_spawn:
+    description: rise from below with scale + opacity
+    duration_ms: 220
+    easing: [0.175, 0.885, 0.32, 1.125]         # Custom cubic-bezier: subtle spring overshoot
+
+  bubble_expand:
+    description: compact → expanded card
+    duration_ms: 240
+    easing: [0.25, 1, 0.5, 1]                   # Clean easeOutQuart
+
+  bubble_collapse:
+    description: expanded → compact
+    duration_ms: 160
+    easing: [0.5, 0, 0.75, 0]                   # Rapid easeInQuart
+
+  bubble_dismiss:
+    description: pop out + fade
+    duration_ms: 150
+    easing: [0.4, 0, 1, 1]
+
+  bubble_exclude:
+    description: settle flat — drift stops, color drains, sinks down
+    duration_ms: 260
+    easing: [0.4, 0, 0.2, 1]                    # Standard acceleration curve
+
+  bubble_restore:
+    description: lift off ground — reverse exclude
+    duration_ms: 220
+    easing: [0.0, 0.0, 0.2, 1]
+
+  graph_zoom_into_cluster:
+    description: scroll-zoom passes threshold, enter cluster
+    duration_ms: 400
+    easing: [0.645, 0.045, 0.355, 1]            # Cinematic easeInOutCubic
+
+  graph_zoom_out:
+    description: leave cluster
+    duration_ms: 380
+    easing: [0.645, 0.045, 0.355, 1]
+
+  graph_layout_swap:
+    description: switching between force-directed and hierarchical
+    duration_ms: 500
+    easing: [0.77, 0, 0.175, 1]                 # Extended dramatic fluid morphing
+
+  graph_profile_switch:
+    description: switching settings profiles → camera tween
+    duration_ms: 500
+    easing: [0.25, 1, 0.5, 1]
+
+  cluster_expand_in_place:
+    description: right-click → "Expand Cluster" reveals children alongside
+    duration_ms: 300
+    easing: [0.16, 1, 0.3, 1]
+
+  connection_add_pop:
+    description: pop animation when a connection is drawn or removed
+    duration_ms: 250
+    easing: [0.34, 1.56, 0.64, 1]               # Distinct spring snap animation
+
+# 11. Iconography (SVG glyphs — Optimized for 24x24 canvas)
+icons:
+  pin:
+    svg_path: "M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"
+    description: "Standard engineering straight-pin layout"
+
+  thumbtack:
+    svg_path: "M7 11h10v2H7zm5-9h2v7h-2zm-3 14h8v2H9z"
+    description: "Flat alignment indicating grounding/exclusion"
+
+  workspace_scope_badge:
+    svg_path: "M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-2 10h-4v4h-2v-4H7v-2h4V7h2v4h4v2z"
+    description: "Directory / local cluster container symbol"
+
+  global_scope_badge:
+    svg_path: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.53c-.26-.81-1-1.4-1.9-1.4h-1v-3c0-.55-.45-1-1-1h-6v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"
+    description: "Interconnected system/world glyph"
+
+  ignored_indicator:
+    svg_path: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"
+    description: "Muted information notification marker"
+
+  close_x:
+    svg_path: "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
+    description: "Clean mathematical cross dismiss execution"
+
+  restore_arrow:
+    svg_path: "M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"
+    description: "Counter-clockwise layout reversal arrow"
+
+  anchor_concept:
+    svg_path: "M12 2L2 22h20L12 2zm0 4.17L18.83 18H5.17L12 6.17z"
+    description: "Distinct geometric triangle acting as a semantic anchor"
+
+  function_kind:
+    svg_path: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"
+    description: "Null / Base transparent implementation (default no overlay)"
+
+  class_struct_kind:
+    svg_path: "M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5v-5l-10 5-10-5v5z"
+    description: "Layered spatial structural prisms"
+
+  trait_kind:
+    svg_path: "M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10zm0-18c4.41 0 8 3.59 8 8s-3.59 8-8 8-8-3.59-8-8 3.59-8 8-8z"
+    description: "Concentric structural shell mapping interface definitions"
+
+  module_kind:
+    svg_path: "M4 4h7v7H4zm9 0h7v7h-7zm-9 9h7v7H4zm9 0h7v7h-7z"
+    description: "Composite sub-grid representing architectural organization"
