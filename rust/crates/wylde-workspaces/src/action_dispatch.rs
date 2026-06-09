@@ -66,6 +66,16 @@ pub const WATCHER_STATUS: &str = "workspaces.watcher.status";
 pub const WATCHER_PAUSE: &str = "workspaces.watcher.pause";
 pub const WATCHER_RESUME: &str = "workspaces.watcher.resume";
 
+// ── Workspace anchor store (Slice N-data — Phase 2) ──────────────────────
+pub const ANCHORS_LIST: &str = "workspaces.anchors.list";
+pub const ANCHORS_CREATE: &str = "workspaces.anchors.create";
+pub const ANCHORS_UPDATE: &str = "workspaces.anchors.update";
+pub const ANCHORS_DELETE: &str = "workspaces.anchors.delete";
+pub const ANCHORS_FIND_BY_TOKEN: &str = "workspaces.anchors.find_by_token";
+pub const ANCHORS_FIND_BY_TARGET: &str = "workspaces.anchors.find_by_target";
+pub const ANCHORS_LIST_UNDER: &str = "workspaces.anchors.list_under";
+pub const ANCHORS_PROPOSE: &str = "workspaces.anchors.propose";
+
 /// Every action this service registers. Grows one slice at a time.
 pub const ALL_ACTIONS: &[&str] = &[
     PING,
@@ -100,6 +110,15 @@ pub const ALL_ACTIONS: &[&str] = &[
     WATCHER_STATUS,
     WATCHER_PAUSE,
     WATCHER_RESUME,
+    // Slice N-data — workspace anchor store
+    ANCHORS_LIST,
+    ANCHORS_CREATE,
+    ANCHORS_UPDATE,
+    ANCHORS_DELETE,
+    ANCHORS_FIND_BY_TOKEN,
+    ANCHORS_FIND_BY_TARGET,
+    ANCHORS_LIST_UNDER,
+    ANCHORS_PROPOSE,
 ];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -317,6 +336,73 @@ pub fn install() {
         "Resume the file watcher and re-walk the workspace to catch up on \
          edits missed while paused. No payload. Reply: {ok, paused: false, \
          active_workspace}.",
+        META_MODULE,
+    );
+
+    // ── Slice N-data — workspace anchor store ────────────────────────────
+    register_action_with_meta(
+        ANCHORS_LIST,
+        |p: Value| async move { crate::anchors::api::handle_list(p).await },
+        "Every anchor for a workspace. Payload: {workspace_id}. Reply: \
+         {workspace_id, anchors, count}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        ANCHORS_CREATE,
+        |p: Value| async move { crate::anchors::api::handle_create(p).await },
+        "Mint a workspace anchor. Payload: {workspace_id, identifier, kind?, \
+         target, description?, parent_anchor?, domain?, related_to?}. Reply: \
+         the Anchor. `already_exists` (details carry the existing definition) \
+         on a duplicate identifier; `bad_request` on a bad identifier/target.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        ANCHORS_UPDATE,
+        |p: Value| async move { crate::anchors::api::handle_update(p).await },
+        "Patch an anchor's description/target/related_to/parent_anchor/domain. \
+         Payload: {workspace_id, identifier, ...patch}. Reply: the updated \
+         Anchor. not_found for an unknown identifier.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        ANCHORS_DELETE,
+        |p: Value| async move { crate::anchors::api::handle_delete(p).await },
+        "Remove an anchor by identifier. Payload: {workspace_id, identifier}. \
+         Reply: {ok, identifier}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        ANCHORS_FIND_BY_TOKEN,
+        |p: Value| async move { crate::anchors::api::handle_find_by_token(p).await },
+        "Resolve a `{{token}}` (or bare name) to a workspace's anchors — \
+         composer recognition. Payload: {workspace_id, token}. Reply: \
+         {workspace_id, token, anchors, count}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        ANCHORS_FIND_BY_TARGET,
+        |p: Value| async move { crate::anchors::api::handle_find_by_target(p).await },
+        "Inverse lookup (OI-20): every anchor referencing a symbol. Payload: \
+         {workspace_id, symbol_id}. Reply: {workspace_id, symbol_id, anchors, \
+         count}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        ANCHORS_LIST_UNDER,
+        |p: Value| async move { crate::anchors::api::handle_list_under(p).await },
+        "Anchors under a taxonomy parent (OI-19 hierarchy). Payload: \
+         {workspace_id, parent_id}. Reply: {workspace_id, parent_id, anchors, \
+         count}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        ANCHORS_PROPOSE,
+        |p: Value| async move { crate::anchors::api::handle_propose(p).await },
+        "LLM reflection candidate anchor (NOT persisted; user accepts via \
+         anchors.create). Applies OI-7 spam control from caller-supplied \
+         counters. Payload: {workspace_id, identifier, target, kind?, \
+         description?, confidence?, rationale?, proposals_so_far?, \
+         last_proposal_at?}. Reply: {candidate} or {candidate: null, reason}.",
         META_MODULE,
     );
 

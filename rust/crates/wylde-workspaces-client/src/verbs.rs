@@ -236,6 +236,60 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::idempotent_write(),
         cache_ttl: None,
     },
+    // ── Slice N-data — workspace anchor store (Build Order Appendix A) ────
+    // Tiers/retry/cache taken verbatim from the canonical Plan v2 §7.2/§7.3/
+    // §7.6 + Appendix A rows (NOT the slice brief, which had create/update/
+    // delete as Fast·NoRetry and a find_by_token cache — same brief-vs-spec
+    // reconciliation Slices B/F-data/G-data applied; see the slice report).
+    // Only `anchors.list` is cached (§7.6 lists exactly `anchors.list` 30s).
+    VerbDef {
+        name: "workspaces.anchors.list",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: Some(Duration::from_secs(30)),
+    },
+    VerbDef {
+        name: "workspaces.anchors.create",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::idempotent_write(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.anchors.update",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::idempotent_write(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.anchors.delete",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.anchors.find_by_token",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.anchors.find_by_target",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.anchors.list_under",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.anchors.propose",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
 ];
 
 /// Look up the policy for `verb`, or `None` if the client doesn't know it.
@@ -271,6 +325,37 @@ mod tests {
         // Idempotent read → exp-backoff with >1 attempt; no read-through cache.
         assert!(d.retry.max_attempts() > 1, "idempotent read retries");
         assert!(d.cache_ttl.is_none(), "symbol_context is not cached (§7.6)");
+    }
+
+    #[test]
+    fn anchor_verbs_match_appendix_a() {
+        // Canonical Plan v2 §7 / Build Order Appendix A tiers.
+        let list = lookup("workspaces.anchors.list").expect("list");
+        assert_eq!(list.timeout, TimeoutPolicy::fast());
+        assert_eq!(list.cache_ttl, Some(Duration::from_secs(30)));
+        assert!(list.retry.max_attempts() > 1, "idempotent read");
+
+        let create = lookup("workspaces.anchors.create").expect("create");
+        assert_eq!(create.timeout.budget(1), Duration::from_secs(2)); // Medium
+        assert_eq!(create.retry.max_attempts(), 2, "idempotent write = 1 retry");
+        assert!(create.cache_ttl.is_none());
+
+        let delete = lookup("workspaces.anchors.delete").expect("delete");
+        assert_eq!(delete.retry.max_attempts(), 1, "non-idempotent = no retry");
+
+        // find_by_token is Fast + uncached (§7.6 caches only anchors.list).
+        let fbt = lookup("workspaces.anchors.find_by_token").expect("find_by_token");
+        assert_eq!(fbt.timeout, TimeoutPolicy::fast());
+        assert!(fbt.cache_ttl.is_none());
+
+        let fbtg = lookup("workspaces.anchors.find_by_target").expect("find_by_target");
+        assert_eq!(fbtg.timeout.budget(1), Duration::from_secs(2)); // Medium
+
+        let under = lookup("workspaces.anchors.list_under").expect("list_under");
+        assert_eq!(under.timeout, TimeoutPolicy::fast());
+
+        let propose = lookup("workspaces.anchors.propose").expect("propose");
+        assert_eq!(propose.retry.max_attempts(), 1, "non-idempotent");
     }
 
     #[test]

@@ -34,6 +34,7 @@
 //!   * [`ipc::serve`] — bind the pipe and run the accept loop.
 
 pub mod action_dispatch;
+pub mod anchors;
 pub mod api;
 pub mod common;
 pub mod config;
