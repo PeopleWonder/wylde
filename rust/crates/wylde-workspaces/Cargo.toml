@@ -35,6 +35,11 @@ hex = "0.4"
 # Bolt driver for the direct-to-Neo4j graph-ingest writes (graph/bolt.rs).
 # Same crate + Bolt server the harness memgraph client uses.
 neo4rs = "0.8"
+# Cross-platform filesystem watcher for the per-workspace delta-reindex
+# (Slice I — watcher/). Windows uses ReadDirectoryChangesW under the hood. We
+# drive our OWN debouncer (watcher/debouncer.rs) over the raw events rather
+# than pull in a debouncer crate, so the coalescing window is one knob we own.
+notify = "6"
 
 [dev-dependencies]
 # The integration round-trip tests drive the service through the shared

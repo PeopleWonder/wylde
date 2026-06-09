@@ -352,6 +352,24 @@ impl WorkspacesClient {
         .await
     }
 
+    // ── Slice I — file watcher control ──────────────────────────────────
+
+    /// `workspaces.watcher.status` — the file-watcher observability snapshot
+    /// (`{active_workspace, files_watched, last_event_at, paused}`).
+    pub async fn watcher_status(&self) -> Result<Value, WorkspacesClientError> {
+        self.call_verb("workspaces.watcher.status", Value::Null, 1).await
+    }
+
+    /// `workspaces.watcher.pause` — pause the active workspace's watcher.
+    pub async fn watcher_pause(&self) -> Result<Value, WorkspacesClientError> {
+        self.call_verb("workspaces.watcher.pause", Value::Null, 1).await
+    }
+
+    /// `workspaces.watcher.resume` — resume + re-walk to catch up.
+    pub async fn watcher_resume(&self) -> Result<Value, WorkspacesClientError> {
+        self.call_verb("workspaces.watcher.resume", Value::Null, 1).await
+    }
+
     /// Drive one verb call through the full resilience pipeline: cache →
     /// breaker → timed transport attempt(s) with retry → breaker bookkeeping.
     ///

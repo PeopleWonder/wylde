@@ -30,6 +30,21 @@ UNWIND cs AS c DETACH DELETE c
 RETURN n
 ";
 
+/// `delete_file_nodes` step 1 (Slice I — file watcher) — DETACH DELETE every
+/// Chunk for one workspace whose `path` is exactly `$path` OR sits under it
+/// (`$prefix` = `$path` + the platform separator). The exact match covers a
+/// single deleted/renamed file; the prefix match covers a deleted directory's
+/// whole subtree in one statement. Scoped by `workspace` so a shared file path
+/// across workspaces only drops the active one's chunks. Shares the
+/// orphan-entity prune ([`DELETE_ORPHAN_ENTITIES`]) with `delete_workspace`.
+pub const DELETE_FILE_CHUNKS: &str = "
+MATCH (c:Chunk {workspace: $ws})
+WHERE c.path = $path OR c.path STARTS WITH $prefix
+WITH count(c) AS n, collect(c) AS cs
+UNWIND cs AS c DETACH DELETE c
+RETURN n
+";
+
 /// `delete_workspace` step 2 — prune Entity nodes whose only edges were
 /// MENTIONED_IN edges into the now-deleted chunks.
 pub const DELETE_ORPHAN_ENTITIES: &str = "

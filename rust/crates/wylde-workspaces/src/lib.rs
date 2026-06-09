@@ -48,6 +48,7 @@ pub mod persona;
 pub mod prompt;
 pub mod rag;
 pub mod registry;
+pub mod watcher;
 
 #[cfg(test)]
 mod test_support;
