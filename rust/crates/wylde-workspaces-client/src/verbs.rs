@@ -113,6 +113,18 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::NoRetry,
         cache_ttl: None,
     },
+    // ── Slice B — code graph read API (Build Order Appendix A / Plan v2 §7) ─
+    // "graph load" → Medium (§7.2); an idempotent read (§7.3, which lists
+    // `graph` by name → exp-backoff ≤4); 5s cache TTL (§7.6 — the graph
+    // changes on each ingest). NB: this follows the canonical Plan v2 §7 /
+    // Appendix A policy (Medium · retry · 5s), NOT the Slice-B task brief's
+    // "Slow · NoRetry" — see the slice report for the reconciliation.
+    VerbDef {
+        name: "workspaces.graph",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: Some(Duration::from_secs(5)),
+    },
     // ── Slice 0c — workspace notes tier (Build Order Appendix A) ─────────
     VerbDef {
         name: "workspaces.notes.list",

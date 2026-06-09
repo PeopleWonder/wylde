@@ -19,6 +19,7 @@ use tokio::sync::OnceCell;
 use wylde_shared::ipc::{IpcError, Reply};
 
 use super::cypher;
+use super::query::{self, EdgeRow, GraphRows, NodeRow};
 use super::schema as rel_schema;
 use super::EntityPair;
 
@@ -223,6 +224,84 @@ impl BoltClient {
             Err(_) => Reply::err_msg(error_codes::QUERY, format!("delete_workspace timed out after {timeout:?}")),
         }
     }
+
+    /// `fetch_workspace_graph` — read the workspace's code graph: every
+    /// `Entity` mentioned in one of the workspace's chunks (+ a representative
+    /// file/language) and every typed edge anchored on those entities. Pure
+    /// read — never mutates. Used by the `workspaces.graph` verb; the
+    /// [`super::projection`] layer turns the returned [`GraphRows`] into the
+    /// wire `WorkspaceGraph`. The query shapes live in [`super::query`].
+    pub async fn fetch_workspace_graph(
+        &self,
+        workspace: &str,
+    ) -> std::result::Result<GraphRows, IpcError> {
+        let ws = workspace.trim().to_owned();
+        if ws.is_empty() {
+            return Err(IpcError::new("bad_request", "'workspace' required"));
+        }
+        let timeout = self.config.connect_timeout;
+        let fut = async {
+            let graph = self.graph().await?;
+            let nodes = fetch_node_rows(graph, &ws).await?;
+            let edges = fetch_edge_rows(graph, &ws).await?;
+            Ok::<_, IpcError>(GraphRows { nodes, edges })
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(r) => r,
+            Err(_) => Err(IpcError::new(
+                error_codes::QUERY,
+                format!("fetch_workspace_graph timed out after {timeout:?}"),
+            )),
+        }
+    }
+}
+
+/// Run [`query::NODES_FOR_WORKSPACE`] and decode each row into a [`NodeRow`].
+async fn fetch_node_rows(graph: &Graph, ws: &str) -> std::result::Result<Vec<NodeRow>, IpcError> {
+    let mut rows = graph
+        .execute(neo4rs::query(query::NODES_FOR_WORKSPACE).param("ws", ws.to_owned()))
+        .await
+        .map_err(|e| IpcError::new(error_codes::QUERY, format!("graph nodes: {e}")))?;
+    let mut out = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| IpcError::new(error_codes::DECODE, format!("graph nodes decode: {e}")))?
+    {
+        let name: String = row.get("name").unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        out.push(NodeRow {
+            name,
+            file: row.get("file").unwrap_or_default(),
+            language: row.get("language").unwrap_or_default(),
+        });
+    }
+    Ok(out)
+}
+
+/// Run [`query::EDGES_FOR_WORKSPACE`] and decode each row into an [`EdgeRow`].
+async fn fetch_edge_rows(graph: &Graph, ws: &str) -> std::result::Result<Vec<EdgeRow>, IpcError> {
+    let mut rows = graph
+        .execute(neo4rs::query(query::EDGES_FOR_WORKSPACE).param("ws", ws.to_owned()))
+        .await
+        .map_err(|e| IpcError::new(error_codes::QUERY, format!("graph edges: {e}")))?;
+    let mut out = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .await
+        .map_err(|e| IpcError::new(error_codes::DECODE, format!("graph edges decode: {e}")))?
+    {
+        let src: String = row.get("src").unwrap_or_default();
+        let dst: String = row.get("dst").unwrap_or_default();
+        let rel: String = row.get("rel").unwrap_or_default();
+        if src.is_empty() || dst.is_empty() || rel.is_empty() {
+            continue;
+        }
+        out.push(EdgeRow { src, dst, rel });
+    }
+    Ok(out)
 }
 
 impl Default for BoltClient {

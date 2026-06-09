@@ -39,6 +39,9 @@ pub const REINDEX: &str = "workspaces.reindex";
 // ── Chat-turn prompt context (Slice 0d — relocated from the harness) ─────
 pub const GATHER_PROMPT: &str = "workspaces.gather_prompt";
 
+// ── Code graph read API (Slice B — Phase 1) ──────────────────────────────
+pub const GRAPH: &str = "workspaces.graph";
+
 // ── Workspace notes tier (Slice 0c) ──────────────────────────────────────
 pub const NOTES_LIST: &str = "workspaces.notes.list";
 pub const NOTES_ADD: &str = "workspaces.notes.add";
@@ -65,6 +68,8 @@ pub const ALL_ACTIONS: &[&str] = &[
     REINDEX,
     // Slice 0d — chat-turn prompt context
     GATHER_PROMPT,
+    // Slice B — code graph read API
+    GRAPH,
     // Slice 0c — notes
     NOTES_LIST,
     NOTES_ADD,
@@ -164,6 +169,17 @@ pub fn install() {
          Reply: {workspace_id, slots, persona, memory_snippets, \
          rag_snippets}. `slots` is the ready-to-append rendered block; \
          empty for an unknown/blank workspace.",
+        META_MODULE,
+    );
+
+    // ── Slice B — code graph read API ────────────────────────────────────
+    register_action_with_meta(
+        GRAPH,
+        |p: Value| async move { crate::graph::api::handle_graph(p).await },
+        "The active workspace's code graph, read live from Neo4j. Payload: \
+         {workspace_id}. Reply: WorkspaceGraph {nodes, edges, clusters}. \
+         Read-only; idempotent. Empty graph for an unknown/empty workspace; \
+         bolt_* codes when the graph backend is unreachable.",
         META_MODULE,
     );
 

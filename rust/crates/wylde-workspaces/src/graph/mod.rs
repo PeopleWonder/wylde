@@ -11,9 +11,21 @@ pub mod bolt;
 pub mod cypher;
 pub mod schema;
 
+// ── Slice B (Phase 1) — the read API ─────────────────────────────────────
+// Read-only `workspaces.graph` surface. Separate from the write surface
+// above (`bolt`/`cypher`/`schema`): `query` holds the Cypher reads + row
+// types, `projection` turns rows into the wire `WorkspaceGraph`, `api` is the
+// verb. The write half is untouched.
+pub mod api;
+pub mod projection;
+pub mod query;
+
 use serde::{Deserialize, Serialize};
 
 pub use bolt::{BoltClient, BoltConfig, DEFAULT_BOLT_URL};
+pub use projection::{
+    Cluster, Edge, Node, NodeKind, NodeStyle, Position, RelType, WorkspaceGraph,
+};
 pub use schema::{
     relation_type_is_valid, NODE_CHUNK, NODE_ENTITY, REL_CALLS, REL_CONFIGURES, REL_EXPOSES,
     REL_IMPORTS, REL_INHERITS, REL_MENTIONED_IN,
