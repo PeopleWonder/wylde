@@ -6,7 +6,8 @@
 //! step: resolving each parsed token against the workspace's anchor store.
 
 pub use wylde_shared::anchor_tokenizer::{
-    is_valid_identifier, normalize_token, parse_anchors, parse_qualifiers, QualifierSpan, TokenSpan,
+    is_valid_identifier, normalize_lookup_token, normalize_token, parse_anchors, parse_qualifiers,
+    QualifierSpan, TokenSpan,
 };
 
 use super::anchor::Anchor;

@@ -21,7 +21,7 @@
 
 use std::path::PathBuf;
 
-use wylde_shared::anchor::{Anchor, AnchorScope, AnchorTarget};
+use wylde_shared::anchor::{validate_aliases, AliasError, Anchor, AnchorScope, AnchorTarget};
 use wylde_shared::secure_file::harden_perms;
 
 use crate::memory::common::data_dir;
@@ -31,12 +31,24 @@ pub fn global_anchors_path() -> PathBuf {
     data_dir().join("global_anchors.json")
 }
 
-/// Outcome of a [`create`]: a fresh record, or a collision with the existing
-/// global one (OI-5 — the caller shows the rename/keep/replace dialog).
+/// Outcome of a [`create`]: a fresh record, a collision with the existing
+/// global one (OI-5 — the caller shows the rename/keep/replace dialog; the
+/// requested token is already taken as a global `identifier` **or** alias), or
+/// an invalid alias set (Slice N-data-aliases).
 #[derive(Clone, Debug, PartialEq)]
 pub enum CreateOutcome {
     Created(Anchor),
     AlreadyExists(Anchor),
+    AliasRejected(AliasError),
+}
+
+/// Outcome of an [`update`]: the patched record, no such identifier, or an
+/// invalid alias set on the patch.
+#[derive(Clone, Debug, PartialEq)]
+pub enum UpdateOutcome {
+    Updated(Anchor),
+    NotFound,
+    AliasRejected(AliasError),
 }
 
 /// Load every global anchor. Fail-soft: empty on a missing/torn file.
@@ -65,8 +77,12 @@ pub fn save(anchors: &[Anchor]) -> std::io::Result<()> {
 /// collision) — never an overwrite.
 pub fn create(mut anchor: Anchor) -> std::io::Result<CreateOutcome> {
     let mut all = load();
-    if let Some(existing) = all.iter().find(|a| a.identifier == anchor.identifier) {
+    if let Some(existing) = all.iter().find(|a| a.matches_token(&anchor.identifier)) {
         return Ok(CreateOutcome::AlreadyExists(existing.clone()));
+    }
+    match validate_aliases(&anchor.identifier, &anchor.aliases, &all) {
+        Ok(normalized) => anchor.aliases = normalized,
+        Err(e) => return Ok(CreateOutcome::AliasRejected(e)),
     }
     anchor.scope = AnchorScope::Global;
     all.push(anchor.clone());
@@ -95,17 +111,29 @@ pub fn replace(mut anchor: Anchor) -> std::io::Result<Option<Anchor>> {
 pub struct AnchorPatch {
     pub description: Option<String>,
     pub target: Option<AnchorTarget>,
+    /// Wholesale-replace the alias list (Slice N-data-aliases); `None` leaves it.
+    pub aliases: Option<Vec<String>>,
     pub related_to: Option<Vec<String>>,
     pub parent_anchor: Option<Option<String>>,
     pub domain: Option<Option<String>>,
 }
 
-/// Patch a global anchor by identifier. Re-stamps `last_used_at`. `None` if
-/// the identifier isn't present.
-pub fn update(identifier: &str, patch: AnchorPatch) -> std::io::Result<Option<Anchor>> {
+/// Patch a global anchor by identifier. Re-stamps `last_used_at`. A patched
+/// alias set is normalised + validated against the *other* global anchors
+/// before any mutation, so a bad set returns [`UpdateOutcome::AliasRejected`]
+/// and nothing is written; an unknown identifier returns
+/// [`UpdateOutcome::NotFound`].
+pub fn update(identifier: &str, patch: AnchorPatch) -> std::io::Result<UpdateOutcome> {
     let mut all = load();
     let Some(idx) = all.iter().position(|a| a.identifier == identifier) else {
-        return Ok(None);
+        return Ok(UpdateOutcome::NotFound);
+    };
+    let new_aliases = match patch.aliases {
+        Some(raw) => match validate_aliases(identifier, &raw, &all) {
+            Ok(normalized) => Some(normalized),
+            Err(e) => return Ok(UpdateOutcome::AliasRejected(e)),
+        },
+        None => None,
     };
     {
         let a = &mut all[idx];
@@ -114,6 +142,9 @@ pub fn update(identifier: &str, patch: AnchorPatch) -> std::io::Result<Option<An
         }
         if let Some(t) = patch.target {
             a.target = t;
+        }
+        if let Some(aliases) = new_aliases {
+            a.aliases = aliases;
         }
         if let Some(r) = patch.related_to {
             a.related_to = r;
@@ -128,7 +159,7 @@ pub fn update(identifier: &str, patch: AnchorPatch) -> std::io::Result<Option<An
     }
     let updated = all[idx].clone();
     save(&all)?;
-    Ok(Some(updated))
+    Ok(UpdateOutcome::Updated(updated))
 }
 
 /// Remove a global anchor by identifier. `true` iff one was removed.
@@ -146,11 +177,14 @@ pub fn delete(identifier: &str) -> std::io::Result<bool> {
     Ok(true)
 }
 
-/// Global anchors matching `token` (0 or 1 — identifiers are unique globally).
+/// Global anchors matching `token` against the canonical `identifier` **or** an
+/// `alias` (0 or 1 — tokens are unique globally). `token` must be
+/// whitespace-normalised
+/// ([`wylde_shared::anchor_tokenizer::normalize_lookup_token`]).
 pub fn find_by_token(token: &str) -> Vec<Anchor> {
     load()
         .into_iter()
-        .filter(|a| a.identifier == token)
+        .filter(|a| a.matches_token(token))
         .collect()
 }
 
@@ -297,7 +331,7 @@ mod tests {
         create(sym).unwrap();
         create(global_concept("infra")).unwrap();
 
-        let patched = update(
+        let patched = match update(
             "the_fn",
             AnchorPatch {
                 description: Some("now runs faster".into()),
@@ -305,7 +339,10 @@ mod tests {
             },
         )
         .unwrap()
-        .expect("found");
+        {
+            UpdateOutcome::Updated(a) => a,
+            other => panic!("expected Updated, got {other:?}"),
+        };
         assert_eq!(patched.description, "now runs faster");
 
         assert_eq!(find_by_token("the_fn").len(), 1);
@@ -315,6 +352,35 @@ mod tests {
         assert!(delete("the_fn").unwrap());
         assert!(find_by_token("the_fn").is_empty());
         assert!(!delete("the_fn").unwrap());
+    }
+
+    #[test]
+    fn create_with_aliases_resolves_via_find_by_token() {
+        let _e = Env::new();
+        let mut a = global_concept("set_active_graph_view");
+        a.aliases = vec!["  set   active ".into()];
+        let CreateOutcome::Created(stored) = create(a).unwrap() else {
+            panic!("created");
+        };
+        assert_eq!(stored.aliases, vec!["set active"], "normalised on write");
+        // Resolve via the alias → canonical anchor returned.
+        let hits = find_by_token("set active");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].identifier, "set_active_graph_view");
+    }
+
+    #[test]
+    fn create_rejects_alias_collision_globally() {
+        let _e = Env::new();
+        create(global_concept("first")).unwrap();
+        let mut second = global_concept("second");
+        second.aliases = vec!["first".into()]; // collides with another identifier
+        match create(second).unwrap() {
+            CreateOutcome::AliasRejected(AliasError::Collision { owned_by, .. }) => {
+                assert_eq!(owned_by, "first")
+            }
+            other => panic!("expected AliasRejected, got {other:?}"),
+        }
     }
 
     #[test]

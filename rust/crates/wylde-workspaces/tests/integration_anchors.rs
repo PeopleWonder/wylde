@@ -232,3 +232,74 @@ async fn anchor_verbs_round_trip_over_the_new_pipe() {
 
     shutdown(child);
 }
+
+/// Slice N-data-aliases: create an anchor with human-friendly aliases over the
+/// pipe, resolve it via a multi-word alias (canonical returned), and round-trip
+/// the alias-driven promotion entry point.
+#[tokio::test]
+async fn alias_lookup_and_promotion_over_the_pipe() {
+    let service_name = unique_service_name();
+    let data_dir = tempfile::tempdir().expect("data dir");
+    let wylde_root = tempfile::tempdir().expect("wylde root");
+    let proj = tempfile::tempdir().expect("proj");
+
+    let mut child = spawn_service(&service_name, data_dir.path(), wylde_root.path());
+    let pipe = std::path::PathBuf::from(format!(r"\\.\pipe\{service_name}"));
+    let client = WorkspacesClient::new(pipe.clone());
+    await_ready(&client, &mut child).await;
+
+    let ws = client
+        .create(&proj.path().to_string_lossy(), Some("Proj"))
+        .await
+        .expect("create workspace");
+    let ws_id = ws["id"].as_str().expect("ws id").to_owned();
+
+    // Create an anchor carrying two aliases (one multi-word, un-normalised).
+    let created = client
+        .anchors_create(json!({
+            "workspace_id": ws_id, "identifier": "set_active_graph_view", "kind": "concept",
+            "target": { "type": "concept", "text": "switch the graph panel view" },
+            "description": "switches the graph panel to the active workspace view",
+            "aliases": ["  set   active ", "graph view"],
+        }))
+        .await
+        .expect("create with aliases");
+    assert_eq!(created["aliases"][0], "set active", "normalised on write");
+    assert_eq!(created["aliases"][1], "graph view");
+
+    // Resolve via a spaced, braced alias → the canonical anchor comes back.
+    let by_alias = client
+        .anchors_find_by_token(&ws_id, "{{set active}}")
+        .await
+        .expect("find_by_token via alias");
+    assert_eq!(by_alias["count"], 1);
+    assert_eq!(by_alias["token"], "set active");
+    assert_eq!(
+        by_alias["anchors"][0]["identifier"],
+        "set_active_graph_view",
+        "canonical identifier returned, not the alias"
+    );
+
+    // Promote via the alias → the whole anchor (all aliases) is handed back as
+    // the promotion payload for the global landing point.
+    let promo = client
+        .anchors_promote_via_alias(&ws_id, "set_active_graph_view", "graph view")
+        .await
+        .expect("promote_via_alias");
+    assert_eq!(promo["promote"], true);
+    assert_eq!(promo["via_alias"], "graph view");
+    assert_eq!(promo["anchor"]["identifier"], "set_active_graph_view");
+    assert_eq!(promo["anchor"]["aliases"][0], "set active");
+    assert_eq!(promo["anchor"]["aliases"][1], "graph view");
+
+    // An alias that doesn't belong to the anchor → bad_request.
+    match client
+        .anchors_promote_via_alias(&ws_id, "set_active_graph_view", "not an alias")
+        .await
+    {
+        Err(e) => assert_eq!(e.code, "bad_request"),
+        Ok(v) => panic!("expected bad_request, got ok: {v}"),
+    }
+
+    shutdown(child);
+}

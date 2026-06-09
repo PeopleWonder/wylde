@@ -858,6 +858,36 @@ mod tests {
     // ── reply parsing ───────────────────────────────────────────────────
 
     #[test]
+    fn alias_matched_anchor_renders_canonical_identifier_only() {
+        // Slice N-data-aliases / deliverable #5: even when an anchor carries
+        // human-friendly aliases, the rendered vocabulary line the LLM sees
+        // uses the canonical `identifier` — never an alias. `find_by_token`
+        // already returns the canonical Anchor regardless of which alias hit;
+        // this pins that the rendering surfaces the canonical name.
+        let mut a = Anchor::new(
+            "set_active_graph_view",
+            AnchorKind::Concept,
+            AnchorTarget::Concept {
+                text: "switch view".into(),
+            },
+            AnchorScope::Workspace {
+                workspace_id: "ws".into(),
+            },
+            "switches the graph panel view",
+        );
+        a.aliases = vec!["set active".into(), "graph view".into()];
+        let line = render_anchor(&a);
+        assert!(
+            line.contains("{{set_active_graph_view}}"),
+            "canonical identifier rendered: {line}"
+        );
+        assert!(
+            !line.contains("set active") && !line.contains("graph view"),
+            "aliases must not leak into the LLM-facing line: {line}"
+        );
+    }
+
+    #[test]
     fn parse_symbol_ids_reads_entry_id_in_order() {
         let v = json!({"matches": [
             {"entry": {"id": "a", "name": "a"}, "score": 1.0},
