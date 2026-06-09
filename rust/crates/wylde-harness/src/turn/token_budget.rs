@@ -1,0 +1,292 @@
+// HOW TO MODIFY — token-budget eviction (OI-8 / Plan v2 §9.1)
+// ============================================================
+//
+// When the gathered chat context would exceed the model's token budget, the
+// assembled prompt is trimmed by dropping the LOWEST-priority material first.
+// This module owns that priority ladder. (A user-facing surface — Settings →
+// Token Budget with an "Open documentation" link — comes in a later slice;
+// this doc-comment is the source of truth until then.)
+//
+// THE PRIORITY LADDER (tier 1 = lowest = dropped first … tier 7 = NEVER dropped):
+//
+//   1. (lowest) Generic auto-context / vector-RAG fallback chunks
+//   2. Older standalone-conversation summaries
+//   3. Older workspace_notes
+//   4. Deeper-hop `symbol_context` results        ← drop the deepest hop first
+//   5. Older bubbles (unpinned before pinned)
+//   6. Older anchors (least-recently-used)
+//   7. (highest, NEVER dropped) user_profile · current-conversation short-term ·
+//      active pinned bubbles · vocabulary block for currently-referenced anchors
+//
+// HOW THIS MAPS ONTO THE Phase-2 `ChatContext`:
+//   * tier 2  → `conversation_summary`            (placeholder until a harness
+//                                                   summary source lands)
+//   * tier 3  → `workspace_context`               (persona + notes + RAG arrive
+//                                                   pre-merged from
+//                                                   `workspaces.gather_prompt`,
+//                                                   so they evict as one block)
+//   * tier 4  → `symbol_contexts`                 (shed the highest-hop_distance
+//                                                   neighbour lines first; only
+//                                                   once a block has no neighbours
+//                                                   left is the whole focal block
+//                                                   dropped)
+//   * tier 7  → `user_profile`, `conversation_short_term`, `vocabulary_anchors`
+//   Tiers 1, 5, 6 have no Phase-2 source yet (generic-RAG is folded into the
+//   workspace block; bubbles are Phase 4; every anchor gathered this turn is a
+//   *currently-referenced* one, i.e. tier 7). When those land, give them a
+//   field on `ChatContext` and a branch in `drop_one_lowest_priority` at the
+//   right rung — the order above is the contract.
+//
+// HOW TO ADJUST THE BUDGET:
+//   * The ceiling comes from `budget_tokens()`. Override per deployment with
+//     `WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET` (token count). Default is
+//     `DEFAULT_TOKEN_BUDGET` (large-model sized); set it to ~16k for small
+//     local models so their context window isn't blown.
+//   * Token counts are *estimated* (`estimate_tokens`, ~4 chars/token). This is
+//     deliberately cheap — the gather runs on the chat hot path. If you need a
+//     true tokenizer count, swap `estimate_tokens` only; the ladder is
+//     independent of how tokens are counted.
+//
+// HOW TO CHANGE THE ORDER:
+//   Edit `drop_one_lowest_priority` — it tries each tier bottom-up and returns
+//   after removing exactly ONE unit, so `evict` re-measures between drops and
+//   stops the moment it's under budget. Keep tier 7 unreachable (never drop it)
+//   — the user profile et al. are load-bearing and the whole feature assumes
+//   they're always present.
+//
+// NOTE — brief vs spec (the reconciliation the last six slices also made; the
+// authoritative Plan v2 §7/§9.1 + Build Order Appendix A win): the slice brief
+// ordered `workspace_notes` ABOVE `symbol_context` (notes dropped later). The
+// spec orders them the other way — workspace_notes is tier 3, symbol_context is
+// tier 4, so **notes evict before symbol context**. We follow the spec.
+
+//! Token-budget eviction for the gathered chat context (Slice G).
+//!
+//! See the `HOW TO MODIFY` block at the top of this file for the full priority
+//! ladder and how to tune it.
+
+use crate::turn::context_gather::ChatContext;
+use crate::turn::prompt_assembly;
+
+/// Default context-token ceiling when `WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET` is
+/// unset. Sized for a large model; small local models should override down.
+pub(crate) const DEFAULT_TOKEN_BUDGET: usize = 100_000;
+
+/// The configured context-token budget (env override → default).
+pub(crate) fn budget_tokens() -> usize {
+    std::env::var("WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_TOKEN_BUDGET)
+}
+
+/// Estimate the token count of `s`. Cheap ~4-chars-per-token heuristic — see
+/// the `HOW TO MODIFY` note on swapping in a real tokenizer.
+pub(crate) fn estimate_tokens(s: &str) -> usize {
+    s.chars().count().div_ceil(4)
+}
+
+/// Evict lowest-priority context (OI-8) until the assembled prompt fits
+/// `max_tokens`, or until only never-drop (tier 7) material remains.
+///
+/// Measures against the *rendered* output ([`prompt_assembly::render`]) so the
+/// budget reflects exactly what the model receives, not an internal sum.
+pub(crate) fn evict(ctx: &mut ChatContext, max_tokens: usize) {
+    loop {
+        let rendered = prompt_assembly::render(ctx);
+        if estimate_tokens(&rendered) <= max_tokens {
+            return;
+        }
+        if !drop_one_lowest_priority(ctx) {
+            // Nothing droppable left — the never-drop tier alone is over budget.
+            // Better to overshoot on the load-bearing slots than discard them.
+            return;
+        }
+    }
+}
+
+/// Remove exactly one unit of the lowest-priority surviving context. Returns
+/// `true` if something was dropped, `false` when only never-drop material is
+/// left. Tiers are tried bottom-up (lowest priority first).
+fn drop_one_lowest_priority(ctx: &mut ChatContext) -> bool {
+    // tier 1 — generic auto-context / vector-RAG fallback: no Phase-2 field.
+
+    // tier 2 — conversation summary.
+    if ctx.conversation_summary.take().is_some() {
+        return true;
+    }
+
+    // tier 3 — workspace context block (persona + notes + RAG).
+    if ctx.workspace_context.take().is_some() {
+        return true;
+    }
+
+    // tier 4 — symbol contexts: shed the deepest-hop neighbour line first;
+    // only once a block has no neighbours do we drop the whole focal block.
+    if drop_deepest_symbol_hop(ctx) {
+        return true;
+    }
+    if !ctx.symbol_contexts.is_empty() {
+        // All remaining blocks are bare focals — drop the last-gathered one
+        // (lowest-ranked; the prompt's first/strongest references came first).
+        ctx.symbol_contexts.pop();
+        return true;
+    }
+
+    // tiers 5/6 — bubbles / older anchors: no Phase-2 field.
+
+    // tier 7 — user_profile, conversation_short_term, vocabulary_anchors: never.
+    false
+}
+
+/// Drop the single neighbour line with the largest `hop` across all symbol
+/// contexts (ties broken by the later block / later line). Returns `false` when
+/// no block has any neighbour line left.
+fn drop_deepest_symbol_hop(ctx: &mut ChatContext) -> bool {
+    let mut best: Option<(usize, usize, u32)> = None; // (block_idx, line_idx, hop)
+    for (bi, block) in ctx.symbol_contexts.iter().enumerate() {
+        for (li, n) in block.neighbors.iter().enumerate() {
+            match best {
+                Some((_, _, h)) if n.hop <= h => {}
+                _ => best = Some((bi, li, n.hop)),
+            }
+        }
+    }
+    if let Some((bi, li, _)) = best {
+        ctx.symbol_contexts[bi].neighbors.remove(li);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::turn::context_gather::{AnchorBlock, NeighborLine, SymbolContextBlock};
+
+    fn block(id: &str, body: &str, hops: &[u32]) -> SymbolContextBlock {
+        SymbolContextBlock {
+            symbol_id: id.into(),
+            focal: format!("Symbol `{id}`\n{body}"),
+            neighbors: hops
+                .iter()
+                .map(|h| NeighborLine {
+                    hop: *h,
+                    text: format!("  calls `n{h}` at hop {h}"),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn under_budget_keeps_everything() {
+        let mut ctx = ChatContext {
+            user_profile: "Name: Aaron".into(),
+            symbol_contexts: vec![block("foo", "fn foo() {}", &[1, 2])],
+            ..ChatContext::default()
+        };
+        let before = ctx.clone();
+        evict(&mut ctx, 100_000);
+        assert_eq!(ctx, before);
+    }
+
+    #[test]
+    fn estimate_tokens_is_quarter_chars() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("abcd"), 1);
+        assert_eq!(estimate_tokens("abcde"), 2);
+    }
+
+    #[test]
+    fn budget_env_override() {
+        let key = "WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET";
+        let prior = std::env::var_os(key);
+        std::env::set_var(key, "16000");
+        assert_eq!(budget_tokens(), 16_000);
+        std::env::set_var(key, "garbage");
+        assert_eq!(budget_tokens(), DEFAULT_TOKEN_BUDGET);
+        match prior {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn deeper_hops_drop_before_user_profile() {
+        // A big profile we must never drop, plus a symbol context with a deep
+        // (hop-2) neighbour and a shallow (hop-1) one.
+        let mut ctx = ChatContext {
+            user_profile: "Name: Aaron\nStyle: terse".into(),
+            symbol_contexts: vec![block("foo", "fn foo() {}", &[1, 2])],
+            ..ChatContext::default()
+        };
+        // Budget that forces shedding the deep neighbour but little else.
+        let full = estimate_tokens(&prompt_assembly::render(&ctx));
+        evict(&mut ctx, full - 1);
+
+        // The deepest (hop-2) neighbour went first; the hop-1 one may survive.
+        let neighbors = &ctx.symbol_contexts[0].neighbors;
+        assert!(
+            neighbors.iter().all(|n| n.hop != 2),
+            "hop-2 neighbour must be evicted first"
+        );
+        // The user profile is always retained.
+        assert!(ctx.user_profile.contains("Aaron"));
+    }
+
+    #[test]
+    fn eviction_order_summary_then_workspace_then_symbols_then_focal() {
+        let mut ctx = ChatContext {
+            user_profile: "P".into(),
+            conversation_summary: Some("a summary".into()),
+            workspace_context: Some("workspace block".into()),
+            symbol_contexts: vec![block("foo", "fn foo() {}", &[1])],
+            ..ChatContext::default()
+        };
+        // Force one drop at a time by shrinking the budget below total but
+        // above the next-smaller assembly.
+
+        // 1st to go: the summary (tier 2).
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.conversation_summary.is_none());
+        assert!(ctx.workspace_context.is_some());
+
+        // 2nd: the workspace block (tier 3).
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.workspace_context.is_none());
+        assert!(!ctx.symbol_contexts.is_empty());
+
+        // 3rd: the symbol's neighbour line (tier 4, deeper-hops first).
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.symbol_contexts[0].neighbors.is_empty());
+
+        // 4th: the bare focal block.
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.symbol_contexts.is_empty());
+
+        // 5th: nothing left to drop (tier 7 is never-drop).
+        assert!(!drop_one_lowest_priority(&mut ctx));
+        assert_eq!(ctx.user_profile, "P");
+    }
+
+    #[test]
+    fn never_drops_profile_short_term_or_vocabulary_even_when_over_budget() {
+        let mut ctx = ChatContext {
+            user_profile: "a very long profile ".repeat(50),
+            conversation_short_term: vec!["- working memory line".into()],
+            vocabulary_anchors: vec![AnchorBlock {
+                identifier: "x".into(),
+                text: "{{x}} — def".into(),
+            }],
+            ..ChatContext::default()
+        };
+        // Absurdly small budget: nothing droppable, so the never-drop tier
+        // survives intact (overshoot rather than discard).
+        evict(&mut ctx, 1);
+        assert!(!ctx.user_profile.is_empty());
+        assert_eq!(ctx.conversation_short_term.len(), 1);
+        assert_eq!(ctx.vocabulary_anchors.len(), 1);
+    }
+}
