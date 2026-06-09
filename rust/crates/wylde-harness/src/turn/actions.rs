@@ -46,6 +46,7 @@ use wylde_shared::ipc::{self, IpcError, Reply, StreamSender};
 use crate::config::Config;
 use crate::events::{AbortReason, ToolErrorReason, ToolEvent, TurnEvent};
 use crate::state::{self, TurnHandle};
+use crate::turn::context_gather;
 use crate::turn::prompt;
 use crate::turn::salvage::{self, RecoveredCall, SalvageResult};
 use crate::turn::tool_round::{self, ToolCall, ToolRoundState};
@@ -96,12 +97,15 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     // mid-run_turn still sees them).
     let handle = state::register_turn(turn_id.clone(), conversation_id.clone());
 
-    // Fetch the active workspace's prompt context from the wylde-workspaces
-    // service (over the pipe, via the client). When the service is down the
-    // gather degrades to base context and we flag the turn so the response
-    // carries a one-line notice.
-    let ws_prompt = workspace_context::gather(workspace_id.as_deref(), &user_message).await;
-    let mut messages = initial_messages(&user_message, &ws_prompt.slots);
+    // Gather the turn's context (Thought Bubble System Slice G): detect symbol
+    // + anchor references in the prompt, pull their structural code-graph
+    // context, fold in the user profile + short-term memory + workspace prompt
+    // block, apply the OI-8 token budget, and render the named slots. When the
+    // workspaces service is down the gather degrades to base context and flags
+    // the turn so the response carries a one-line notice.
+    let gathered =
+        context_gather::gather(workspace_id.as_deref(), &user_message, &conversation_id).await;
+    let mut messages = initial_messages(&user_message, &gathered.system_slots);
     let tools = tools_payload();
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
@@ -198,7 +202,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
 
     // Surface the graceful-degradation notice when the workspaces service
     // was requested but unreachable (scope v2 §7.5).
-    let final_text = workspace_context::apply_degraded_notice(final_text, ws_prompt.degraded);
+    let final_text = workspace_context::apply_degraded_notice(final_text, gathered.degraded);
 
     Reply::ok(json!({
         "turn_id": turn_id,
@@ -331,6 +335,7 @@ pub async fn handle_start_turn(payload: Value) -> Reply {
 
     let drive_handle = Arc::clone(&handle);
     let drive_turn_id = turn_id.clone();
+    let drive_conversation_id = conversation_id.clone();
     let drive_model = model.clone();
     let drive_user_message = user_message.clone();
     let drive_tier = normalised_tier.to_owned();
@@ -340,6 +345,7 @@ pub async fn handle_start_turn(payload: Value) -> Reply {
             cfg,
             drive_handle,
             drive_turn_id,
+            drive_conversation_id,
             drive_user_message,
             drive_model,
             drive_tier,
@@ -462,17 +468,22 @@ async fn stream_events(handle: Arc<TurnHandle>, sender: StreamSender, source: So
 /// stream-complete, dispatches them, and feeds the results back into
 /// the next round. Bails out at [`tool_round::MAX_TOOL_LOOPS`] or
 /// when there are no more tool calls.
+#[allow(clippy::too_many_arguments)] // turn-driver fan-out; grouping into a
+// struct would only move the noise. Slice G added `conversation_id`.
 async fn drive_streaming_turn(
     cfg: &'static Config,
     handle: Arc<TurnHandle>,
     turn_id: String,
+    conversation_id: String,
     user_message: String,
     model: String,
     device_tier: String,
     workspace_id: Option<String>,
 ) {
-    let ws_prompt = workspace_context::gather(workspace_id.as_deref(), &user_message).await;
-    let mut messages = initial_messages(&user_message, &ws_prompt.slots);
+    // Gather the turn's context (Slice G) — see `handle_run_turn` for the flow.
+    let gathered =
+        context_gather::gather(workspace_id.as_deref(), &user_message, &conversation_id).await;
+    let mut messages = initial_messages(&user_message, &gathered.system_slots);
     let tools = tools_payload();
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
@@ -569,7 +580,7 @@ async fn drive_streaming_turn(
             // degradation notice when the workspaces service was requested
             // but unreachable (scope v2 §7.5).
             let final_text =
-                workspace_context::apply_degraded_notice(final_text, ws_prompt.degraded);
+                workspace_context::apply_degraded_notice(final_text, gathered.degraded);
             if !final_text.is_empty() {
                 handle
                     .push_turn_event(TurnEvent::Token {

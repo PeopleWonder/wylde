@@ -32,7 +32,7 @@ pub(crate) const WORKSPACES_UNAVAILABLE_NOTICE: &str =
 /// to `wylde-workspaces`; overridable via `WYLDE_HARNESS_WORKSPACES_SERVICE`
 /// so tests can point it at a guaranteed-dead pipe and exercise the
 /// degraded path deterministically (never a real running service).
-fn workspaces_service() -> String {
+pub(crate) fn workspaces_service() -> String {
     std::env::var("WYLDE_HARNESS_WORKSPACES_SERVICE")
         .ok()
         .map(|s| s.trim().to_owned())

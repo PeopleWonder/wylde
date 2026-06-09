@@ -1,0 +1,879 @@
+//! Pre-LLM **context gather** — the Thought Bubble System's structural
+//! retrieval hook (Slice G, Phase 2).
+//!
+//! **Conceptual path:** `Core/Harness/chat/turn/context_gather`.
+//!
+//! This is the "AI gets smarter" moment. Before a chat turn calls the LLM,
+//! [`gather`] inspects the user's prompt for **symbol** and **anchor**
+//! references, pulls their structural context out of the code graph via the
+//! Phase-0/1 read API (`workspaces.symbols.find` / `workspaces.symbol_context`
+//! / `workspaces.anchors.find_by_token`), folds in the always-on in-process
+//! slots (the user profile + the conversation's short-term working memory) and
+//! the workspace's rendered prompt block (`workspaces.gather_prompt`, persona +
+//! notes + RAG — already wired in Slice 0d), and assembles them into the
+//! system prompt. All the data infrastructure from Slices B / F-data / G-data /
+//! N-data / D / E finally has a consumer.
+//!
+//! ## The flow (Build Order §6 Slice G)
+//!
+//! 1. Tokenize the prompt into candidate identifier tokens.
+//! 2. For each token: resolve anchors (`find_by_token`) and **unambiguous**
+//!    symbols (`symbols.find` — a single match; ambiguous tokens are skipped,
+//!    Phase-4 composer disambiguation handles those). Anchor targets that are
+//!    code symbols become symbol references too.
+//! 3. Fetch each symbol's 1-hop [`SymbolContext`](crate) structural context.
+//! 4. Gather the always-on slots: user profile (in-process), conversation
+//!    short-term (in-process), workspace prompt block (service).
+//! 5. Build the layered [`ChatContext`].
+//! 6. Apply the OI-8 token budget ([`super::token_budget::evict`]).
+//! 7. Render named slots ([`super::prompt_assembly::render`]) and hand the
+//!    string to the turn driver, which appends it to the base system prompt.
+//!
+//! ## Graceful degradation (OI-1 / scope v2 §7.5)
+//!
+//! Wylde Core must work with workspaces disabled or unreachable. Each
+//! `workspaces.*` call is best-effort: an unreachable service (transport
+//! failure / open breaker) leaves that slot empty and the gather continues.
+//! When the active workspace's prompt block is unreachable the turn is flagged
+//! [`GatheredContext::degraded`] so the driver prefixes the established Slice-0d
+//! notice ([`super::workspace_context::WORKSPACES_UNAVAILABLE_NOTICE`]). The
+//! in-process slots (profile / short-term) never depend on the service, so a
+//! fully-down workspace still yields a useful prompt.
+
+use std::future::Future;
+
+use serde_json::Value;
+use wylde_shared::anchor::Anchor;
+use wylde_workspaces_client::{ClientError, WorkspacesClient};
+
+use crate::turn::workspace_context::workspaces_service;
+use crate::turn::{prompt_assembly, token_budget};
+
+/// Minimum length of a bare word to be treated as a candidate symbol/anchor
+/// token. Filters out articles / operators / one-or-two-char noise that would
+/// only waste `symbols.find` round-trips.
+const MIN_TOKEN_LEN: usize = 3;
+
+/// Cap on the number of distinct candidate tokens we run lookups for. Bounds
+/// the per-turn IPC fan-out so a long paste can't blow the <2s gather budget;
+/// the lookups for the retained tokens run concurrently.
+const MAX_LOOKUP_TOKENS: usize = 24;
+
+/// Cap on the number of symbol contexts fetched per turn. `symbol_context` is
+/// the heaviest read (per-hop budget); five focal symbols is plenty of
+/// structural grounding without risking the gather budget.
+const MAX_SYMBOL_CONTEXTS: usize = 5;
+
+/// `symbols.find` limit used for the ambiguity check. We ask for **two** so a
+/// single returned match proves the token is unambiguous; two or more means
+/// it's ambiguous and we skip it (Phase-4 composer disambiguation owns that).
+/// (The brief's pseudocode says `limit=1`, but a limit of 1 can't distinguish
+/// "exactly one" from "the first of many" — the very test it then performs;
+/// `limit=2` expresses the intended "only a single match" rule faithfully.)
+const SYMBOL_FIND_LIMIT: u64 = 2;
+
+// ── the gathered, layered context ────────────────────────────────────────
+
+/// One code-symbol's structural context, gathered for a referenced symbol.
+/// Holds the focal (kept until the whole block is evicted) and its neighbour
+/// lines tagged by hop distance so the token budget can shed deeper hops first
+/// (OI-8 tier 4).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct SymbolContextBlock {
+    /// The focal symbol id (its graph node key).
+    pub symbol_id: String,
+    /// Rendered focal header + body. Dropped only when the block is.
+    pub focal: String,
+    /// Neighbour lines (callers / callees / types / siblings), each tagged with
+    /// the hop distance it was reached at. Evicted deepest-hop-first.
+    pub neighbors: Vec<NeighborLine>,
+}
+
+/// A single rendered neighbour line plus the hop distance it sits at.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NeighborLine {
+    /// 1 for direct neighbours; 2+ for deeper call-graph reaches.
+    pub hop: u32,
+    /// The pre-rendered line (e.g. ``  calls `bar` (src/bar.rs)``).
+    pub text: String,
+}
+
+/// A vocabulary anchor the current prompt referenced. Always in the never-drop
+/// tier (OI-8 tier 7 — "vocabulary block for currently-referenced anchors").
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AnchorBlock {
+    /// The anchor's `{{identifier}}`.
+    pub identifier: String,
+    /// The rendered definition line.
+    pub text: String,
+}
+
+/// The layered context assembled for one turn (Plan v2 §6 / §9.1). Slots are
+/// rendered to text as they're gathered; [`super::token_budget`] evicts under
+/// pressure and [`super::prompt_assembly`] turns what survives into the
+/// system-prompt block.
+///
+/// Some OI-8 tiers have no Phase-2 source yet and are intentionally absent:
+/// pinned/unpinned **bubbles** (Phase 4), a separate **generic vector-RAG
+/// fallback** slot (RAG arrives pre-merged inside [`Self::workspace_context`]
+/// from `gather_prompt`), and a broad **older-anchors** pool (every anchor
+/// gathered here is a *currently-referenced* one, so it's never-drop). The
+/// eviction ladder documents all tiers for when those land.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct ChatContext {
+    /// The global user profile block (OI-8 tier 7 — never dropped).
+    pub user_profile: String,
+    /// Current-conversation short-term working memory (OI-8 tier 7 — never
+    /// dropped).
+    pub conversation_short_term: Vec<String>,
+    /// A running summary of the current conversation. Placeholder in Phase 2
+    /// (no harness summary source yet); modelled at OI-8 tier 2 so it's first
+    /// to go when present.
+    pub conversation_summary: Option<String>,
+    /// Anchors the prompt referenced — the never-drop vocabulary block (tier 7).
+    pub vocabulary_anchors: Vec<AnchorBlock>,
+    /// The workspace's rendered prompt block (persona + notes + RAG) from
+    /// `workspaces.gather_prompt`. OI-8 tier 3 (workspace_notes).
+    pub workspace_context: Option<String>,
+    /// Structural code-graph context for referenced symbols. OI-8 tier 4
+    /// (drop deeper hops first).
+    pub symbol_contexts: Vec<SymbolContextBlock>,
+}
+
+/// The result of gathering a turn's context.
+pub(crate) struct GatheredContext {
+    /// The rendered system-prompt slot block to append to the base prompt.
+    /// Empty when nothing was gathered (a plain chat turn stays byte-identical
+    /// to before).
+    pub system_slots: String,
+    /// True when an active workspace was requested but its prompt block was
+    /// unreachable — the driver surfaces the inline degraded notice.
+    pub degraded: bool,
+}
+
+// ── workspace data source (real + mockable) ──────────────────────────────
+
+/// Why a [`WorkspaceSource`] call didn't return data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SourceStatus {
+    /// Service unreachable (transport failure) or breaker open — degrade.
+    Unavailable,
+    /// The service answered but had nothing / an application error (unknown
+    /// workspace, bad request). Not degradation — just no data for this slot.
+    Empty,
+}
+
+type SourceResult<T> = Result<T, SourceStatus>;
+
+/// The reads the gather flow needs from the workspaces service, abstracted so
+/// the orchestration is unit-testable without a live pipe (mirrors the
+/// `NeighborhoodSource` pattern in `wylde-workspaces`). [`LiveSource`] wraps the
+/// real [`WorkspacesClient`]; tests supply an in-memory mock.
+pub(crate) trait WorkspaceSource {
+    /// `workspaces.gather_prompt` — the rendered persona + notes + RAG block.
+    fn gather_prompt(
+        &self,
+        ws: &str,
+        user_message: &str,
+    ) -> impl Future<Output = SourceResult<Option<String>>> + Send;
+
+    /// `workspaces.anchors.find_by_token` — anchors for one token.
+    fn find_anchors(
+        &self,
+        ws: &str,
+        token: &str,
+    ) -> impl Future<Output = SourceResult<Vec<Anchor>>> + Send;
+
+    /// `workspaces.symbols.find` — the matched **symbol ids** for one token
+    /// (capped at [`SYMBOL_FIND_LIMIT`] so the caller can test for ambiguity by
+    /// the returned count).
+    fn find_symbols(
+        &self,
+        ws: &str,
+        token: &str,
+    ) -> impl Future<Output = SourceResult<Vec<String>>> + Send;
+
+    /// `workspaces.symbol_context` — one symbol's raw structural context JSON
+    /// (the serialised `SymbolContext`).
+    fn symbol_context(
+        &self,
+        ws: &str,
+        symbol_id: &str,
+    ) -> impl Future<Output = SourceResult<Value>> + Send;
+}
+
+/// The production [`WorkspaceSource`] — talks to the real service through the
+/// shared [`WorkspacesClient`]. One client (one breaker + cache) is shared
+/// across all of a turn's calls.
+pub(crate) struct LiveSource {
+    client: WorkspacesClient,
+}
+
+impl LiveSource {
+    fn for_active() -> Self {
+        Self {
+            client: WorkspacesClient::for_service(workspaces_service()),
+        }
+    }
+}
+
+/// Map a client error to a [`SourceStatus`]: unreachable/breaker → degrade,
+/// everything else → just no data.
+fn classify(e: &ClientError) -> SourceStatus {
+    if e.transport || e.code == "breaker_open" {
+        SourceStatus::Unavailable
+    } else {
+        SourceStatus::Empty
+    }
+}
+
+impl WorkspaceSource for LiveSource {
+    async fn gather_prompt(&self, ws: &str, user_message: &str) -> SourceResult<Option<String>> {
+        // Reuse the established Slice-0d workspace-prompt fetch + degrade
+        // semantics (its own client + NoRetry policy) rather than re-deriving
+        // them — keeps one definition of "is the workspace reachable".
+        let prompt = crate::turn::workspace_context::gather(Some(ws), user_message).await;
+        if prompt.degraded {
+            Err(SourceStatus::Unavailable)
+        } else if prompt.slots.trim().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(prompt.slots))
+        }
+    }
+
+    async fn find_anchors(&self, ws: &str, token: &str) -> SourceResult<Vec<Anchor>> {
+        match self.client.anchors_find_by_token(ws, token).await {
+            Ok(v) => Ok(parse_anchors(&v)),
+            Err(e) => Err(classify(&e)),
+        }
+    }
+
+    async fn find_symbols(&self, ws: &str, token: &str) -> SourceResult<Vec<String>> {
+        match self
+            .client
+            .symbols_find(ws, token, Some(SYMBOL_FIND_LIMIT))
+            .await
+        {
+            Ok(v) => Ok(parse_symbol_ids(&v)),
+            Err(e) => Err(classify(&e)),
+        }
+    }
+
+    async fn symbol_context(&self, ws: &str, symbol_id: &str) -> SourceResult<Value> {
+        match self
+            .client
+            .symbol_context(ws, symbol_id, Some(1), true)
+            .await
+        {
+            Ok(v) => Ok(v),
+            Err(e) => Err(classify(&e)),
+        }
+    }
+}
+
+/// Parse a `{anchors: [...]}` reply into typed [`Anchor`]s, dropping any that
+/// don't deserialise (forward-compatible).
+fn parse_anchors(v: &Value) -> Vec<Anchor> {
+    v.get("anchors")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| serde_json::from_value::<Anchor>(a.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Parse a `{matches: [{entry: {id, ...}, score}]}` reply into the matched
+/// symbol ids, in rank order.
+fn parse_symbol_ids(v: &Value) -> Vec<String> {
+    v.get("matches")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| {
+                    m.get("entry")
+                        .and_then(|e| e.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// ── public entry point ────────────────────────────────────────────────────
+
+/// Gather a turn's context against the live workspaces service.
+///
+/// `workspace_id` is the active workspace (absent/blank → no workspace reads;
+/// only the in-process profile + short-term slots are gathered, so a plain
+/// chat turn with an empty profile stays byte-identical to before).
+/// `conversation_id` keys the short-term working-memory read.
+pub(crate) async fn gather(
+    workspace_id: Option<&str>,
+    user_message: &str,
+    conversation_id: &str,
+) -> GatheredContext {
+    gather_with(
+        &LiveSource::for_active(),
+        workspace_id,
+        user_message,
+        conversation_id,
+    )
+    .await
+}
+
+/// The source-injectable core of [`gather`] (the real path passes
+/// [`LiveSource`]; tests pass a mock).
+pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
+    source: &S,
+    workspace_id: Option<&str>,
+    user_message: &str,
+    conversation_id: &str,
+) -> GatheredContext {
+    // Always-on, in-process slots — never depend on the workspaces service.
+    let mut ctx = ChatContext {
+        user_profile: crate::user_profile::store::read().profile.to_prompt_block(),
+        conversation_short_term: read_short_term(conversation_id),
+        ..ChatContext::default()
+    };
+    let mut degraded = false;
+
+    if let Some(ws) = workspace_id.map(str::trim).filter(|s| !s.is_empty()) {
+        // The workspace prompt block (persona + notes + RAG). An unreachable
+        // service here is the degrade signal (Slice 0d semantics).
+        match source.gather_prompt(ws, user_message).await {
+            Ok(block) => ctx.workspace_context = block,
+            Err(SourceStatus::Unavailable) => degraded = true,
+            Err(SourceStatus::Empty) => {}
+        }
+
+        let tokens = candidate_tokens(user_message);
+
+        // Anchors + the symbol ids their code-symbol targets point at.
+        let (anchors, anchor_symbol_ids) = gather_anchors(source, ws, &tokens).await;
+        ctx.vocabulary_anchors = anchors;
+
+        // Unambiguous symbol references from the prompt's bare tokens, plus the
+        // anchor-target symbols, deduped and capped.
+        let mut symbol_ids = anchor_symbol_ids;
+        symbol_ids.extend(gather_unambiguous_symbols(source, ws, &tokens).await);
+        dedupe_preserving_order(&mut symbol_ids);
+        symbol_ids.truncate(MAX_SYMBOL_CONTEXTS);
+
+        ctx.symbol_contexts = gather_symbol_contexts(source, ws, &symbol_ids).await;
+    }
+
+    // Trim to the model's budget (OI-8), then render the named slots.
+    token_budget::evict(&mut ctx, token_budget::budget_tokens());
+    let system_slots = prompt_assembly::render(&ctx);
+
+    GatheredContext {
+        system_slots,
+        degraded,
+    }
+}
+
+// ── gather helpers ──────────────────────────────────────────────────────
+
+/// Read the conversation's short-term working memory as rendered lines.
+/// In-process and fail-soft: an invalid id / read error yields no lines.
+fn read_short_term(conversation_id: &str) -> Vec<String> {
+    if conversation_id.trim().is_empty() {
+        return Vec::new();
+    }
+    crate::memory::short_term::store::get_working_memory(conversation_id)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(render_working_memory_entry)
+        .collect()
+}
+
+/// Render one short-term working-memory entry to a compact line. Object entries
+/// expose their `data`/`text`/`content` field (the common shapes); anything
+/// else falls back to a compact JSON dump. Empty entries are skipped.
+fn render_working_memory_entry(entry: &Value) -> Option<String> {
+    let text = entry
+        .get("data")
+        .or_else(|| entry.get("text"))
+        .or_else(|| entry.get("content"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            if entry.is_string() {
+                entry.as_str().unwrap_or("").to_owned()
+            } else {
+                serde_json::to_string(entry).unwrap_or_default()
+            }
+        });
+    let text = text.trim();
+    (!text.is_empty()).then(|| format!("- {text}"))
+}
+
+/// Tokenize the prompt into distinct candidate identifier tokens: bare words of
+/// at least [`MIN_TOKEN_LEN`] identifier bytes plus every `{{anchor}}` token,
+/// in source order, deduped, capped at [`MAX_LOOKUP_TOKENS`].
+fn candidate_tokens(user_message: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+
+    // Bare identifier words.
+    let mut cur = String::new();
+    let flush = |cur: &mut String, out: &mut Vec<String>| {
+        if cur.len() >= MIN_TOKEN_LEN && !out.iter().any(|t| t == cur) {
+            out.push(cur.clone());
+        }
+        cur.clear();
+    };
+    for ch in user_message.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            cur.push(ch);
+        } else {
+            flush(&mut cur, &mut out);
+        }
+    }
+    flush(&mut cur, &mut out);
+
+    // Explicit `{{anchor}}` tokens (may be shorter than MIN_TOKEN_LEN; the user
+    // typed them deliberately).
+    for span in wylde_shared::anchor_tokenizer::parse_anchors(user_message) {
+        if !out.contains(&span.identifier) {
+            out.push(span.identifier);
+        }
+    }
+
+    out.truncate(MAX_LOOKUP_TOKENS);
+    out
+}
+
+/// Resolve anchors for every candidate token concurrently. Returns the deduped
+/// anchor blocks (the never-drop vocabulary block) plus the symbol ids their
+/// code-symbol targets reference (which become symbol-context lookups too).
+async fn gather_anchors<S: WorkspaceSource + Sync>(
+    source: &S,
+    ws: &str,
+    tokens: &[String],
+) -> (Vec<AnchorBlock>, Vec<String>) {
+    let results =
+        futures::future::join_all(tokens.iter().map(|t| source.find_anchors(ws, t))).await;
+
+    let mut blocks: Vec<AnchorBlock> = Vec::new();
+    let mut symbol_ids: Vec<String> = Vec::new();
+    for anchors in results.into_iter().flatten().flatten() {
+        // Dedupe by identifier across tokens.
+        if blocks.iter().any(|b| b.identifier == anchors.identifier) {
+            continue;
+        }
+        if let Some(sym) = anchors.target.symbol_id() {
+            symbol_ids.push(sym.to_owned());
+        }
+        blocks.push(AnchorBlock {
+            identifier: anchors.identifier.clone(),
+            text: render_anchor(&anchors),
+        });
+    }
+    (blocks, symbol_ids)
+}
+
+/// Run `symbols.find` for every token concurrently and keep only the
+/// **unambiguous** ones (exactly one match). Ambiguous tokens are skipped —
+/// Phase-4 composer disambiguation resolves those.
+async fn gather_unambiguous_symbols<S: WorkspaceSource + Sync>(
+    source: &S,
+    ws: &str,
+    tokens: &[String],
+) -> Vec<String> {
+    let results =
+        futures::future::join_all(tokens.iter().map(|t| source.find_symbols(ws, t))).await;
+
+    results
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|ids| ids.len() == 1)
+        .filter_map(|mut ids| ids.pop())
+        .collect()
+}
+
+/// Fetch each symbol's 1-hop structural context concurrently and render it into
+/// a [`SymbolContextBlock`]. Unreachable / empty lookups are simply omitted.
+async fn gather_symbol_contexts<S: WorkspaceSource + Sync>(
+    source: &S,
+    ws: &str,
+    symbol_ids: &[String],
+) -> Vec<SymbolContextBlock> {
+    let results =
+        futures::future::join_all(symbol_ids.iter().map(|id| source.symbol_context(ws, id))).await;
+
+    results
+        .into_iter()
+        .zip(symbol_ids.iter())
+        .filter_map(|(res, id)| res.ok().map(|v| block_from_symbol_context(id, &v)))
+        .collect()
+}
+
+// ── rendering raw replies into context blocks ─────────────────────────────
+
+/// Render one anchor's vocabulary line: ``{{identifier}} — <description>``,
+/// noting its code target when present.
+fn render_anchor(a: &Anchor) -> String {
+    let mut line = format!("{{{{{}}}}} — {}", a.identifier, a.description.trim());
+    if let Some(sym) = a.target.symbol_id() {
+        line.push_str(&format!(" (code symbol `{sym}`)"));
+    }
+    line
+}
+
+/// Turn a raw `SymbolContext` reply into a [`SymbolContextBlock`]: the focal
+/// header + body, then one neighbour line per caller / callee / type / sibling,
+/// each carrying its hop distance for OI-8 deeper-hop eviction.
+fn block_from_symbol_context(symbol_id: &str, v: &Value) -> SymbolContextBlock {
+    let sym = v.get("symbol");
+    let name = sym
+        .and_then(|s| s.get("name"))
+        .and_then(Value::as_str)
+        .unwrap_or(symbol_id);
+    let file = sym
+        .and_then(|s| s.get("file"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let line = sym
+        .and_then(|s| s.get("line"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let body = sym
+        .and_then(|s| s.get("body"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim_end();
+
+    let mut focal = if line > 0 {
+        format!("Symbol `{name}` — {file}:{line}")
+    } else if file.is_empty() {
+        format!("Symbol `{name}`")
+    } else {
+        format!("Symbol `{name}` — {file}")
+    };
+    if !body.is_empty() {
+        focal.push('\n');
+        focal.push_str(body);
+    }
+
+    let mut neighbors = Vec::new();
+    collect_neighbors(v, "callers", "called by", &mut neighbors);
+    collect_neighbors(v, "callees", "calls", &mut neighbors);
+    collect_neighbors(v, "types_used", "uses type", &mut neighbors);
+    collect_neighbors(v, "siblings", "sibling", &mut neighbors);
+
+    SymbolContextBlock {
+        symbol_id: symbol_id.to_owned(),
+        focal,
+        neighbors,
+    }
+}
+
+/// Append a rendered neighbour line for each entry under `key`, labelled with
+/// `verb` and tagged with the entry's `hop_distance` (default 1).
+fn collect_neighbors(v: &Value, key: &str, verb: &str, out: &mut Vec<NeighborLine>) {
+    let Some(arr) = v.get(key).and_then(Value::as_array) else {
+        return;
+    };
+    for e in arr {
+        let Some(name) = e.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let hop = e.get("hop_distance").and_then(Value::as_u64).unwrap_or(1) as u32;
+        let file = e.get("file").and_then(Value::as_str).unwrap_or("");
+        let text = if file.is_empty() {
+            format!("  {verb} `{name}`")
+        } else {
+            format!("  {verb} `{name}` ({file})")
+        };
+        out.push(NeighborLine { hop, text });
+    }
+}
+
+/// Drop later duplicates, preserving first-seen order.
+fn dedupe_preserving_order(v: &mut Vec<String>) {
+    let mut seen: Vec<String> = Vec::new();
+    v.retain(|s| {
+        if seen.iter().any(|x| x == s) {
+            false
+        } else {
+            seen.push(s.clone());
+            true
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use wylde_shared::anchor::{AnchorKind, AnchorScope, AnchorTarget};
+
+    // ── candidate tokenization ──────────────────────────────────────────
+
+    #[test]
+    fn tokenizes_bare_words_and_anchors_deduped() {
+        let toks = candidate_tokens("explain set_active and {{the_pipe}} vs ab set_active");
+        // `ab` (len 2) dropped; `set_active` deduped; anchor `the_pipe` kept.
+        assert!(toks.contains(&"set_active".to_owned()));
+        assert!(toks.contains(&"the_pipe".to_owned()));
+        assert!(toks.contains(&"explain".to_owned()));
+        assert!(!toks.contains(&"ab".to_owned()));
+        assert_eq!(
+            toks.iter().filter(|t| *t == "set_active").count(),
+            1,
+            "deduped"
+        );
+    }
+
+    #[test]
+    fn token_cap_is_enforced() {
+        let many: String = (0..50).map(|i| format!("word{i:03} ")).collect();
+        assert_eq!(candidate_tokens(&many).len(), MAX_LOOKUP_TOKENS);
+    }
+
+    // ── a mock workspace source ─────────────────────────────────────────
+
+    #[derive(Default)]
+    struct MockSource {
+        prompt: Option<String>,
+        prompt_unavailable: bool,
+        /// token → anchors
+        anchors: HashMap<String, Vec<Anchor>>,
+        /// token → matched symbol ids (len drives ambiguity)
+        symbols: HashMap<String, Vec<String>>,
+        /// symbol_id → raw SymbolContext JSON
+        contexts: HashMap<String, Value>,
+        /// when set, every symbol_context call reports Unavailable
+        contexts_unavailable: bool,
+    }
+
+    impl WorkspaceSource for MockSource {
+        async fn gather_prompt(&self, _ws: &str, _m: &str) -> SourceResult<Option<String>> {
+            if self.prompt_unavailable {
+                Err(SourceStatus::Unavailable)
+            } else {
+                Ok(self.prompt.clone())
+            }
+        }
+        async fn find_anchors(&self, _ws: &str, token: &str) -> SourceResult<Vec<Anchor>> {
+            Ok(self.anchors.get(token).cloned().unwrap_or_default())
+        }
+        async fn find_symbols(&self, _ws: &str, token: &str) -> SourceResult<Vec<String>> {
+            Ok(self.symbols.get(token).cloned().unwrap_or_default())
+        }
+        async fn symbol_context(&self, _ws: &str, symbol_id: &str) -> SourceResult<Value> {
+            if self.contexts_unavailable {
+                return Err(SourceStatus::Unavailable);
+            }
+            self.contexts
+                .get(symbol_id)
+                .cloned()
+                .ok_or(SourceStatus::Empty)
+        }
+    }
+
+    fn ctx_json(name: &str, body: &str, callees: &[(&str, u32)]) -> Value {
+        json!({
+            "symbol": {"id": name, "name": name, "kind": "Function",
+                       "file": format!("src/{name}.rs"), "line": 10, "body": body},
+            "callers": [],
+            "callees": callees.iter().map(|(n, h)| json!({
+                "id": n, "name": n, "kind": "Function",
+                "file": format!("src/{n}.rs"), "hop_distance": h, "rel_type": "CALLS"
+            })).collect::<Vec<_>>(),
+            "types_used": [],
+            "siblings": [],
+            "hops_traversed": 1,
+            "took_ms": 1
+        })
+    }
+
+    // ── symbol detection ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn unambiguous_symbol_is_queued_and_injected() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut src = MockSource::default();
+        src.symbols.insert("foo".into(), vec!["foo".into()]); // single match → unambiguous
+        src.contexts.insert(
+            "foo".into(),
+            ctx_json("foo", "fn foo() { bar() }", &[("bar", 1)]),
+        );
+
+        let out = gather_with(&src, Some("ws"), "please explain foo", "conv-x").await;
+        assert!(
+            out.system_slots.contains("Code graph context"),
+            "slots: {}",
+            out.system_slots
+        );
+        assert!(out.system_slots.contains("Symbol `foo`"));
+        assert!(out.system_slots.contains("fn foo()"));
+        assert!(out.system_slots.contains("calls `bar`"));
+        assert!(!out.degraded);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_symbol_is_skipped() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut src = MockSource::default();
+        // 3 matches (capped to 2 by find limit) → ambiguous → skipped.
+        src.symbols
+            .insert("set_active".into(), vec!["a".into(), "b".into()]);
+
+        let out = gather_with(&src, Some("ws"), "what does set_active do", "conv-x").await;
+        assert!(
+            !out.system_slots.contains("Code graph context"),
+            "ambiguous token must add no symbol context: {}",
+            out.system_slots
+        );
+    }
+
+    #[tokio::test]
+    async fn anchor_target_pulls_symbol_context() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut src = MockSource::default();
+        let anchor = Anchor::new(
+            "the_fn",
+            AnchorKind::CodeSymbol,
+            AnchorTarget::CodeSymbol {
+                symbol_id: "run_it".into(),
+            },
+            AnchorScope::Workspace {
+                workspace_id: "ws".into(),
+            },
+            "the entry point",
+        );
+        src.anchors.insert("the_fn".into(), vec![anchor]);
+        src.contexts
+            .insert("run_it".into(), ctx_json("run_it", "fn run_it() {}", &[]));
+
+        let out = gather_with(&src, Some("ws"), "look at {{the_fn}}", "c").await;
+        // The anchor shows in the vocabulary block...
+        assert!(out.system_slots.contains("{{the_fn}}"));
+        // ...and its code target pulled a symbol context.
+        assert!(out.system_slots.contains("Symbol `run_it`"));
+    }
+
+    // ── graceful degradation ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn symbol_context_unavailable_degrades_to_empty_block() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut src = MockSource::default();
+        src.symbols.insert("foo".into(), vec!["foo".into()]);
+        src.contexts_unavailable = true; // symbol_context Broken
+
+        let out = gather_with(&src, Some("ws"), "explain foo", "c").await;
+        // No symbol context block, but the gather still produced (empty) slots
+        // and did not panic. The prompt block (gather_prompt) was reachable, so
+        // a partial-failure does NOT flag degraded.
+        assert!(!out.system_slots.contains("Code graph context"));
+        assert!(!out.degraded);
+    }
+
+    #[tokio::test]
+    async fn full_workspace_down_keeps_profile_and_flags_degraded() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        // Seed a profile so the in-process slot is non-empty.
+        crate::user_profile::store::with_store(|s| {
+            s.profile.name = Some("Aaron".into());
+        })
+        .unwrap();
+
+        let src = MockSource {
+            prompt_unavailable: true,
+            contexts_unavailable: true,
+            ..MockSource::default()
+        };
+
+        let out = gather_with(&src, Some("ws"), "explain foo", "c").await;
+        assert!(out.degraded, "an unreachable workspace prompt must degrade");
+        assert!(
+            out.system_slots.contains("Aaron"),
+            "the in-process profile survives a full workspace outage: {}",
+            out.system_slots
+        );
+        assert!(!out.system_slots.contains("Code graph context"));
+    }
+
+    // ── A/B: hook adds the symbol context vs a plain turn ───────────────
+
+    #[tokio::test]
+    async fn ab_hook_on_vs_off() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut src = MockSource::default();
+        src.symbols.insert("foo".into(), vec!["foo".into()]);
+        src.contexts
+            .insert("foo".into(), ctx_json("foo", "fn foo() {}", &[]));
+
+        // ON: active workspace → symbol context present.
+        let on = gather_with(&src, Some("ws"), "explain foo", "c").await;
+        assert!(on.system_slots.contains("Symbol `foo`"));
+
+        // OFF: no workspace → no symbol context (and an empty profile → empty
+        // slots, byte-identical to a plain turn).
+        let off = gather_with(&src, None, "explain foo", "c").await;
+        assert!(!off.system_slots.contains("Symbol `foo`"));
+        assert!(off.system_slots.is_empty());
+    }
+
+    // ── performance: full gather flow under 2s ──────────────────────────
+
+    #[tokio::test]
+    async fn full_gather_flow_under_2s() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut src = MockSource {
+            prompt: Some("Persona: helpful.\nNote: be concise.".into()),
+            ..MockSource::default()
+        };
+        // 10 unambiguous symbols, 5 with contexts (cap).
+        for i in 0..10 {
+            let name = format!("sym{i:02}");
+            src.symbols.insert(name.clone(), vec![name.clone()]);
+            src.contexts
+                .insert(name.clone(), ctx_json(&name, "fn body() {}", &[("dep", 1)]));
+        }
+        let prompt = "explain sym00 sym01 sym02 sym03 sym04 sym05 sym06 sym07 sym08 sym09";
+
+        let start = std::time::Instant::now();
+        let out = gather_with(&src, Some("ws"), prompt, "c").await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "gather took {elapsed:?}"
+        );
+        // Capped at MAX_SYMBOL_CONTEXTS focal symbols.
+        assert_eq!(
+            out.system_slots.matches("Symbol `").count(),
+            MAX_SYMBOL_CONTEXTS
+        );
+    }
+
+    // ── reply parsing ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_symbol_ids_reads_entry_id_in_order() {
+        let v = json!({"matches": [
+            {"entry": {"id": "a", "name": "a"}, "score": 1.0},
+            {"entry": {"id": "b", "name": "b"}, "score": 0.5},
+        ]});
+        assert_eq!(parse_symbol_ids(&v), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn block_from_symbol_context_renders_focal_and_neighbors() {
+        let v = ctx_json("foo", "fn foo() {}", &[("bar", 1), ("deep", 2)]);
+        let block = block_from_symbol_context("foo", &v);
+        assert_eq!(block.symbol_id, "foo");
+        assert!(block.focal.contains("Symbol `foo` — src/foo.rs:10"));
+        assert!(block.focal.contains("fn foo()"));
+        assert_eq!(block.neighbors.len(), 2);
+        assert!(block.neighbors.iter().any(|n| n.hop == 2));
+    }
+}

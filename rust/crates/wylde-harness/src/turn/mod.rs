@@ -43,7 +43,10 @@
 //!   `not_implemented`).
 
 pub mod actions;
+pub mod context_gather;
 pub mod prompt;
+pub mod prompt_assembly;
 pub mod salvage;
+pub mod token_budget;
 pub mod tool_round;
 pub mod workspace_context;
