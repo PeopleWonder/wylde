@@ -241,6 +241,41 @@ impl WorkspacesClient {
         self.call_verb("workspaces.symbols.find", payload, 1).await
     }
 
+    // ── Slice G-data — symbol context read API ──────────────────────────
+
+    /// `workspaces.symbol_context` — one symbol's structural context (body +
+    /// callers + callees + types used + file siblings), read live from Neo4j.
+    ///
+    /// `hops` (default 1) walks the call graph that many steps; it is also
+    /// what sets this call's timeout — the per-hop budget `200ms + 300ms × N`
+    /// (OI-1) — so the client passes it straight through to [`call_verb`].
+    /// `include_body` (default true) loads the focal's source body.
+    ///
+    /// Returns the raw `SymbolContext` reply payload (the typed model lives in
+    /// `wylde_workspaces::graph::neighborhood`; this crate stays decoupled
+    /// from it, like the other wrappers). A `not_found` code means the symbol
+    /// isn't in the workspace; `bolt_*` codes feed the consumer's fallback.
+    pub async fn symbol_context(
+        &self,
+        workspace_id: &str,
+        symbol_id: &str,
+        hops: Option<u32>,
+        include_body: bool,
+    ) -> Result<Value, WorkspacesClientError> {
+        let hops = hops.unwrap_or(1).max(1);
+        self.call_verb(
+            "workspaces.symbol_context",
+            serde_json::json!({
+                "workspace_id": workspace_id,
+                "symbol_id": symbol_id,
+                "hops": hops,
+                "include_body": include_body,
+            }),
+            hops,
+        )
+        .await
+    }
+
     // ── Slice 0d — chat-turn prompt context ─────────────────────────────
 
     /// `workspaces.gather_prompt` — the rendered system-prompt slot block

@@ -255,6 +255,15 @@ impl BoltClient {
         }
     }
 
+    /// Acquire (or open) the pooled [`Graph`] for a sibling read module in
+    /// `graph/` — Slice G-data's neighbourhood walk
+    /// ([`super::neighborhood::LiveSource`]) issues its own multi-step Cypher
+    /// against the shared pool rather than re-opening a connection per query.
+    /// Crate-internal; the public read surface stays the typed verbs.
+    pub(crate) async fn graph_handle(&self) -> std::result::Result<&Graph, IpcError> {
+        self.graph().await
+    }
+
     /// `delete_file_nodes` (Slice I — file watcher) — drop the graph
     /// footprint of a single file (or, for a deleted directory, its whole
     /// subtree) within `workspace`: DETACH DELETE every Chunk whose `path`

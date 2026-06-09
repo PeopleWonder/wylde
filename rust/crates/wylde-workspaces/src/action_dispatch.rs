@@ -45,6 +45,9 @@ pub const GRAPH: &str = "workspaces.graph";
 // ── Symbol index read API (Slice F-data — Phase 1) ───────────────────────
 pub const SYMBOLS_FIND: &str = "workspaces.symbols.find";
 
+// ── Symbol context read API (Slice G-data — Phase 1) ─────────────────────
+pub const SYMBOL_CONTEXT: &str = "workspaces.symbol_context";
+
 // ── Workspace notes tier (Slice 0c) ──────────────────────────────────────
 pub const NOTES_LIST: &str = "workspaces.notes.list";
 pub const NOTES_ADD: &str = "workspaces.notes.add";
@@ -80,6 +83,8 @@ pub const ALL_ACTIONS: &[&str] = &[
     GRAPH,
     // Slice F-data — symbol index read API
     SYMBOLS_FIND,
+    // Slice G-data — symbol context read API
+    SYMBOL_CONTEXT,
     // Slice 0c — notes
     NOTES_LIST,
     NOTES_ADD,
@@ -206,6 +211,20 @@ pub fn install() {
          score}]}. Served from the active workspace's in-memory index \
          (microsecond exact / <50ms fuzzy); on-demand build fallback when the \
          index isn't warm. limit defaults to 20.",
+        META_MODULE,
+    );
+
+    // ── Slice G-data — symbol context read API ───────────────────────────
+    register_action_with_meta(
+        SYMBOL_CONTEXT,
+        |p: Value| async move { crate::graph::neighborhood::handle_symbol_context(p).await },
+        "Structural context for one symbol: body + callers + callees + types \
+         used + file siblings, read live from Neo4j. Payload: {workspace_id, \
+         symbol_id, hops?=1, include_body?=true}. Reply: SymbolContext \
+         {symbol, callers, callees, types_used, siblings, hops_traversed, \
+         took_ms}. Read-only; idempotent. `hops` walks the call graph \
+         (per-hop time budget 200ms+300ms×N); not_found when the symbol isn't \
+         in the workspace; bolt_* codes when the backend is unreachable.",
         META_MODULE,
     );
 
@@ -367,6 +386,26 @@ mod tests {
         let reply = dispatch_action(json!({"action": PING, "payload": null})).await;
         assert!(reply.ok);
         assert_eq!(reply.data["service"], "wylde-workspaces");
+        reset_for_tests();
+    }
+
+    #[tokio::test]
+    async fn install_registers_symbol_context_and_validates_payload() {
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+        // The Slice G-data verb is registered and dispatchable.
+        assert!(list_actions().contains(&SYMBOL_CONTEXT.to_string()));
+
+        // A blank symbol_id is rejected before any Bolt connection — proves
+        // the verb is wired through real dispatch without needing Neo4j.
+        let reply = dispatch_action(json!({
+            "action": SYMBOL_CONTEXT,
+            "payload": { "workspace_id": "ws", "symbol_id": "  " }
+        }))
+        .await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "bad_request");
         reset_for_tests();
     }
 

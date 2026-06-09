@@ -140,6 +140,20 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::idempotent_read(),
         cache_ttl: Some(Duration::from_secs(60)),
     },
+    // ── Slice G-data — symbol_context (Plan v2 §7 / Appendix A · OI-1) ────
+    // Time-per-hop timeout `200ms + 300ms×N` (§7.2, the only PerHop verb);
+    // the client resolves the budget from the request's `hops` at call time.
+    // An idempotent read → exp-backoff ≤4 (§7.3 lists `symbol_context` by
+    // name). NO cache (§7.6 / Appendix A leave its TTL blank — symbol context
+    // must reflect the live graph after a file edit). NB: this follows the
+    // canonical §7/Appendix-A policy, NOT the slice brief's "NoRetry · 30s
+    // cache" — same spec-wins reconciliation Slice B applied; see the report.
+    VerbDef {
+        name: "workspaces.symbol_context",
+        timeout: TimeoutPolicy::per_hop(),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
     // ── Slice 0c — workspace notes tier (Build Order Appendix A) ─────────
     VerbDef {
         name: "workspaces.notes.list",
@@ -245,6 +259,18 @@ mod tests {
     #[test]
     fn unknown_verb_is_none() {
         assert!(lookup("workspaces.not_yet").is_none());
+    }
+
+    #[test]
+    fn symbol_context_is_per_hop_idempotent_uncached() {
+        let d = lookup("workspaces.symbol_context").expect("symbol_context defined");
+        // Per-hop timeout (OI-1), resolving to the §2.5 budgets.
+        assert_eq!(d.timeout, TimeoutPolicy::per_hop());
+        assert_eq!(d.timeout.budget(1), Duration::from_millis(500));
+        assert_eq!(d.timeout.budget(3), Duration::from_millis(1100));
+        // Idempotent read → exp-backoff with >1 attempt; no read-through cache.
+        assert!(d.retry.max_attempts() > 1, "idempotent read retries");
+        assert!(d.cache_ttl.is_none(), "symbol_context is not cached (§7.6)");
     }
 
     #[test]
