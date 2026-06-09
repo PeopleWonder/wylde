@@ -56,6 +56,10 @@ pub async fn handle_set_active(payload: Value) -> Reply {
             // workspace's watcher and start one for this folder so its graph
             // stays fresh from now on. No-op until the live service arms it.
             crate::watcher::on_active_changed();
+            // Slice F-data — (re)build the active workspace's symbol index in
+            // the background so `symbols.find` is warm. Same MRU model: one
+            // workspace's index in memory at a time. No-op until armed.
+            crate::graph::symbol_index::on_active_changed();
             Reply::ok(json!({
                 "active_id": state.active_id,
                 "mru": state.mru,
@@ -113,6 +117,9 @@ pub async fn handle_delete(payload: Value) -> Reply {
         // Re-evaluate the watcher: if the deleted workspace was active, the
         // registry cleared the active pointer, so this stops the watch.
         crate::watcher::on_active_changed();
+        // Slice F-data — same re-evaluation for the symbol index: a deleted
+        // active workspace clears the pointer, so this drops its index.
+        crate::graph::symbol_index::on_active_changed();
         // Slice I — also clean up the workspace's Neo4j footprint (the Slice A
         // report flagged that `delete` left graph nodes behind). Fire-and-
         // forget: a Bolt connect can take seconds when the graph is down, and

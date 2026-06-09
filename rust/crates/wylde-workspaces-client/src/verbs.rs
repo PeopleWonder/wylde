@@ -125,6 +125,21 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::idempotent_read(),
         cache_ttl: Some(Duration::from_secs(5)),
     },
+    // ── Slice F-data — symbol index read API (Plan v2 §7 / Appendix A) ───
+    // `symbols.find (cached)` → Fast · 500ms (§7.2 lists it under Fast); an
+    // idempotent read (§7.3 → exp-backoff ≤4); 60s cache TTL (§7.6) — the
+    // composer's per-keystroke highlighting (Slice F-visual) re-queries the
+    // same name repeatedly, and symbols change only on ingest/watcher deltas,
+    // so a 60s read-through cache (target <20ms, §2.5) is safe. NB: this
+    // follows the canonical Plan v2 §7 / Appendix A policy (Fast · 60s), NOT
+    // the F-data task brief's "Medium · 2s" — see the slice report for the
+    // reconciliation (same brief-vs-spec call Slice B made for `graph`).
+    VerbDef {
+        name: "workspaces.symbols.find",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: Some(Duration::from_secs(60)),
+    },
     // ── Slice 0c — workspace notes tier (Build Order Appendix A) ─────────
     VerbDef {
         name: "workspaces.notes.list",

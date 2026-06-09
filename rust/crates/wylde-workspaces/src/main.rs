@@ -87,6 +87,12 @@ async fn main() -> Result<()> {
     // won't auto-refresh until the next activate/reindex).
     wylde_workspaces::watcher::on_boot();
 
+    // Slice F-data — arm the symbol-index lifecycle, subscribe to watcher
+    // deltas, and build the index for the active workspace (if any) so
+    // `symbols.find` is warm from boot. Background + fail-soft (the verb has an
+    // on-demand build fallback if the index isn't ready).
+    wylde_workspaces::graph::symbol_index::on_boot();
+
     let pipe = wylde_workspaces::ipc::pipe_path(&cfg.service_name);
     tracing::info!("wylde-workspaces: actions registered; opening pipe at {pipe}");
 

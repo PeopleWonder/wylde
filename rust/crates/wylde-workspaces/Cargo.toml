@@ -40,6 +40,11 @@ neo4rs = "0.8"
 # drive our OWN debouncer (watcher/debouncer.rs) over the raw events rather
 # than pull in a debouncer crate, so the coalescing window is one knob we own.
 notify = "6"
+# High-quality fuzzy matcher (Helix's engine) for `workspaces.symbols.find`
+# (Slice F-data). Purpose-built for interactive, per-keystroke symbol matching;
+# reuses memchr + unicode-segmentation already in the tree, so it adds only
+# itself. Easily clears the <50ms / 5k-symbol fuzzy budget (Plan v2 §2.5).
+nucleo-matcher = "0.3"
 
 [dev-dependencies]
 # The integration round-trip tests drive the service through the shared
