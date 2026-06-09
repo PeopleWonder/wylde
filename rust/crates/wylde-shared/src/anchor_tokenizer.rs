@@ -151,6 +151,43 @@ pub fn normalize_token(token: &str) -> Option<String> {
     }
 }
 
+/// Collapse a string's whitespace for stable comparison: trim the ends and
+/// replace every run of ASCII whitespace with a single space. The single
+/// source of truth for how an **alias** (which may contain spaces) is
+/// normalised on both the write side ([`crate::anchor::validate_aliases`]) and
+/// the lookup side ([`normalize_lookup_token`]), so a stored alias `"set
+/// active"` matches a typed `"set   active"`.
+pub fn collapse_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Normalize a **lookup** token for `find_by_token` resolution: strip an
+/// optional surrounding `{{ }}`, trim, and collapse internal whitespace
+/// ([`collapse_whitespace`]).
+///
+/// Unlike [`normalize_token`], this deliberately **permits spaces** so a
+/// human-friendly anchor *alias* (`"set active"`) resolves the same way a
+/// canonical identifier (`"set_active_graph_view"`) does — the alias lookup
+/// layer (Slice N-data-aliases) compares the result against both an anchor's
+/// `identifier` and its `aliases`. Returns `None` only when the token is empty
+/// after trimming. (The `{{identifier}}` *tokenizer* grammar is unchanged:
+/// `parse_anchors` still only spans alphanumeric-+-underscore tokens; this is
+/// the resolver layer the brief refers to, accepting whatever a caller passes
+/// to the verb.)
+pub fn normalize_lookup_token(token: &str) -> Option<String> {
+    let t = token.trim();
+    let inner = t
+        .strip_prefix("{{")
+        .and_then(|s| s.strip_suffix("}}"))
+        .unwrap_or(t);
+    let collapsed = collapse_whitespace(inner);
+    if collapsed.is_empty() {
+        None
+    } else {
+        Some(collapsed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +282,37 @@ mod tests {
         assert_eq!(normalize_token("{{a_b}}").as_deref(), Some("a_b"));
         assert_eq!(normalize_token("{{bad name}}"), None);
         assert_eq!(normalize_token(""), None);
+    }
+
+    #[test]
+    fn collapse_whitespace_trims_and_collapses_runs() {
+        assert_eq!(collapse_whitespace("  set   active  "), "set active");
+        assert_eq!(collapse_whitespace("set\tactive\nview"), "set active view");
+        assert_eq!(collapse_whitespace("solo"), "solo");
+        assert_eq!(collapse_whitespace("   "), "");
+    }
+
+    #[test]
+    fn normalize_lookup_token_permits_spaces_and_strips_braces() {
+        // Spaces are allowed (alias lookup) — unlike `normalize_token`.
+        assert_eq!(
+            normalize_lookup_token("{{set active}}").as_deref(),
+            Some("set active")
+        );
+        assert_eq!(
+            normalize_lookup_token("  set   active  ").as_deref(),
+            Some("set active")
+        );
+        // A plain identifier still resolves to itself.
+        assert_eq!(
+            normalize_lookup_token("set_active").as_deref(),
+            Some("set_active")
+        );
+        // Empty / whitespace-only → None (the verb returns bad_request).
+        assert_eq!(normalize_lookup_token(""), None);
+        assert_eq!(normalize_lookup_token("{{   }}"), None);
+        // `normalize_token` would have rejected the spaced form outright.
+        assert_eq!(normalize_token("{{set active}}"), None);
     }
 
     #[test]

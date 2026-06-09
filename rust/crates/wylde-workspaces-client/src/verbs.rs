@@ -290,6 +290,17 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::NoRetry,
         cache_ttl: None,
     },
+    // ── Slice N-data-aliases — alias-driven promotion entry point ─────────
+    // A small read+validate+audit call that returns the promotion payload, so
+    // Fast (500ms). Promotion is non-idempotent and always user-confirmed
+    // (Appendix A's promotion note: "no retry") → NoRetry. No cache (a write
+    // intent; must reflect live state).
+    VerbDef {
+        name: "workspaces.anchors.promote_via_alias",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
 ];
 
 /// Look up the policy for `verb`, or `None` if the client doesn't know it.
@@ -356,6 +367,12 @@ mod tests {
 
         let propose = lookup("workspaces.anchors.propose").expect("propose");
         assert_eq!(propose.retry.max_attempts(), 1, "non-idempotent");
+
+        // Slice N-data-aliases: promote_via_alias is Fast · NoRetry · uncached.
+        let promote = lookup("workspaces.anchors.promote_via_alias").expect("promote_via_alias");
+        assert_eq!(promote.timeout, TimeoutPolicy::fast());
+        assert_eq!(promote.retry.max_attempts(), 1, "non-idempotent promotion");
+        assert!(promote.cache_ttl.is_none());
     }
 
     #[test]

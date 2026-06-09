@@ -17,8 +17,8 @@ use wylde_shared::ipc::{IpcError, Reply};
 
 use super::anchor::{workspace_anchor, Anchor};
 use super::reflection::{self, ReflectionBudget};
-use super::store::{self, AnchorPatch, CreateOutcome};
-use super::tokenizer::{is_valid_identifier, normalize_token};
+use super::store::{self, AnchorPatch, CreateOutcome, UpdateOutcome};
+use super::tokenizer::{is_valid_identifier, normalize_lookup_token};
 
 fn require_str(payload: &Value, key: &str) -> Option<String> {
     payload
@@ -73,6 +73,21 @@ fn apply_optional_fields(anchor: &mut Anchor, payload: &Value) {
             .map(str::to_owned)
             .collect();
     }
+    if let Some(aliases) = parse_aliases(payload) {
+        anchor.aliases = aliases;
+    }
+}
+
+/// Extract the raw `aliases` string array from a payload (un-normalised — the
+/// store's [`validate_aliases`](super::anchor::validate_aliases) does the
+/// normalisation + collision checks). `None` when the field is absent.
+fn parse_aliases(payload: &Value) -> Option<Vec<String>> {
+    payload.get("aliases").and_then(Value::as_array).map(|arr| {
+        arr.iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect()
+    })
 }
 
 /// Build the create/propose anchor from a payload, validating the identifier.
@@ -133,11 +148,12 @@ pub async fn handle_create(payload: Value) -> Reply {
         Ok(CreateOutcome::AlreadyExists(existing)) => Reply::err(IpcError {
             code: "already_exists".into(),
             message: format!(
-                "anchor {:?} already exists in this workspace",
+                "token {:?} already exists in this workspace (as an identifier or alias)",
                 existing.identifier
             ),
             details: Some(already_exists_global_details(&existing)),
         }),
+        Ok(CreateOutcome::AliasRejected(e)) => Reply::err(e.into_ipc()),
         Err(e) => Reply::err_msg("io_error", format!("write anchors.json: {e}")),
     }
 }
@@ -166,6 +182,7 @@ pub async fn handle_update(payload: Value) -> Reply {
             .and_then(Value::as_str)
             .map(str::to_owned),
         target,
+        aliases: parse_aliases(&payload),
         related_to: payload
             .get("related_to")
             .and_then(Value::as_array)
@@ -192,8 +209,11 @@ pub async fn handle_update(payload: Value) -> Reply {
     };
 
     match store::update(&ws, &identifier, patch) {
-        Ok(Some(a)) => Reply::ok(a.to_value()),
-        Ok(None) => Reply::err_msg("not_found", format!("anchor {identifier:?} not found")),
+        Ok(UpdateOutcome::Updated(a)) => Reply::ok(a.to_value()),
+        Ok(UpdateOutcome::NotFound) => {
+            Reply::err_msg("not_found", format!("anchor {identifier:?} not found"))
+        }
+        Ok(UpdateOutcome::AliasRejected(e)) => Reply::err(e.into_ipc()),
         Err(e) => Reply::err_msg("io_error", format!("write anchors.json: {e}")),
     }
 }
@@ -212,8 +232,11 @@ pub async fn handle_delete(payload: Value) -> Reply {
     }
 }
 
-/// `workspaces.anchors.find_by_token` — resolve `{{token}}` → anchors. Accepts
-/// either `{{name}}` or bare `name`.
+/// `workspaces.anchors.find_by_token` — resolve `{{token}}` → anchors, matching
+/// an anchor's canonical `identifier` **or** any of its human-friendly
+/// `aliases`. Accepts `{{name}}` or bare `name`, and — unlike an identifier —
+/// the token may contain spaces (so a multi-word alias like `set active`
+/// resolves). The canonical anchor is returned regardless of which alias hit.
 pub async fn handle_find_by_token(payload: Value) -> Reply {
     let Some(ws) = require_str(&payload, "workspace_id") else {
         return Reply::err_msg("bad_request", "workspace_id is required");
@@ -221,8 +244,8 @@ pub async fn handle_find_by_token(payload: Value) -> Reply {
     let Some(raw) = require_str(&payload, "token") else {
         return Reply::err_msg("bad_request", "token is required");
     };
-    let Some(token) = normalize_token(&raw) else {
-        return Reply::err_msg("bad_request", "token is not a valid identifier");
+    let Some(token) = normalize_lookup_token(&raw) else {
+        return Reply::err_msg("bad_request", "token is empty");
     };
     let anchors = store::find_by_token(&ws, &token);
     anchors_reply(&ws, &[("token", json!(token))], anchors)
@@ -294,6 +317,59 @@ pub async fn handle_propose(payload: Value) -> Reply {
             "reason": reason.as_str(),
         })),
     }
+}
+
+/// `workspaces.anchors.promote_via_alias` — the documented entry point for
+/// promoting an anchor to global *because the user clicked promote on one of
+/// its aliases* (Slice N-data-aliases). Promotion semantics: **the whole anchor
+/// promotes, carrying all its aliases** — a global alias on a still-workspace
+/// anchor would be incoherent, so "make this alias work everywhere" means the
+/// underlying concept goes global.
+///
+/// Architecturally, promotion lands in the harness `global_anchors` store
+/// (a separate process), so this workspace-side verb cannot itself write the
+/// global record. Its job is to (1) validate that `alias` really resolves to
+/// the named anchor, (2) record the alias-driven promotion intent in the audit
+/// log, and (3) return the full anchor record — the *promotion payload*, with
+/// every alias — for the consumer to hand to the global
+/// `anchors.promote_via_alias` landing point. Payload: `{workspace_id,
+/// anchor_id, alias}`. Reply: `{anchor, via_alias, promote: true}`.
+pub async fn handle_promote_via_alias(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(anchor_id) = require_str(&payload, "anchor_id") else {
+        return Reply::err_msg("bad_request", "anchor_id is required");
+    };
+    let Some(alias_raw) = require_str(&payload, "alias") else {
+        return Reply::err_msg("bad_request", "alias is required");
+    };
+    let alias = normalize_lookup_token(&alias_raw).unwrap_or_default();
+
+    let Some(anchor) = store::get(&ws, &anchor_id) else {
+        return Reply::err_msg("not_found", format!("anchor {anchor_id:?} not found"));
+    };
+    // The alias must actually belong to this anchor — that's what makes this
+    // "via alias". (The canonical identifier itself is accepted too: promoting
+    // by the canonical name through this entry point is harmless.)
+    if !anchor.matches_token(&alias) {
+        return Reply::err_msg(
+            "bad_request",
+            format!("alias {alias:?} does not resolve to anchor {anchor_id:?}"),
+        );
+    }
+    // Audit the user-intent (Plan v2 §4.4 promotion is always user-confirmed).
+    tracing::info!(
+        anchor = %anchor.identifier,
+        via_alias = %alias,
+        workspace = %ws,
+        "anchors.promote_via_alias: whole-anchor promotion requested via alias"
+    );
+    Reply::ok(json!({
+        "anchor": anchor.to_value(),
+        "via_alias": alias,
+        "promote": true,
+    }))
 }
 
 #[cfg(test)]
@@ -454,5 +530,109 @@ mod tests {
         let _env = TestEnv::new();
         let r = handle_list(json!({})).await;
         assert_eq!(r.error.unwrap().code, "bad_request");
+    }
+
+    // ── Slice N-data-aliases ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn create_with_aliases_then_find_via_alias_returns_canonical() {
+        let _env = TestEnv::new();
+        let ws = "ws-alias-api-0000";
+        let created = handle_create(json!({
+            "workspace_id": ws, "identifier": "set_active_graph_view", "kind": "concept",
+            "target": { "type": "concept", "text": "switch view" },
+            "description": "the view switch",
+            "aliases": ["  set   active ", "graph view"],
+        }))
+        .await;
+        assert!(created.ok, "{:?}", created.error);
+        // Normalised aliases on the stored record.
+        assert_eq!(created.data["aliases"][0], "set active");
+        assert_eq!(created.data["aliases"][1], "graph view");
+
+        // Lookup via a spaced, braced alias → the canonical anchor.
+        let found =
+            handle_find_by_token(json!({ "workspace_id": ws, "token": "{{set active}}" })).await;
+        assert!(found.ok, "{:?}", found.error);
+        assert_eq!(found.data["count"], 1);
+        assert_eq!(found.data["token"], "set active");
+        assert_eq!(
+            found.data["anchors"][0]["identifier"],
+            "set_active_graph_view",
+            "aliases never returned as the match name — canonical only"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_with_colliding_alias_returns_alias_collision() {
+        let _env = TestEnv::new();
+        let ws = "ws-alias-coll-api";
+        handle_create(create_payload(ws, "existing")).await;
+        let dup = handle_create(json!({
+            "workspace_id": ws, "identifier": "newcomer",
+            "target": { "type": "concept", "text": "t" },
+            "aliases": ["existing"],
+        }))
+        .await;
+        assert!(!dup.ok);
+        let err = dup.error.unwrap();
+        assert_eq!(err.code, "alias_collision");
+        let d = err.details.expect("collision details");
+        assert_eq!(d["conflicting_alias"], "existing");
+        assert_eq!(d["owned_by"], "existing");
+    }
+
+    #[tokio::test]
+    async fn update_patches_aliases() {
+        let _env = TestEnv::new();
+        let ws = "ws-alias-upd-api";
+        handle_create(create_payload(ws, "thing")).await;
+        let upd = handle_update(json!({
+            "workspace_id": ws, "identifier": "thing",
+            "aliases": ["nick name", "nick name"], // dupes collapse
+        }))
+        .await;
+        assert!(upd.ok, "{:?}", upd.error);
+        assert_eq!(upd.data["aliases"].as_array().unwrap().len(), 1);
+        assert_eq!(upd.data["aliases"][0], "nick name");
+    }
+
+    #[tokio::test]
+    async fn promote_via_alias_validates_and_returns_payload() {
+        let _env = TestEnv::new();
+        let ws = "ws-promote-api-0";
+        handle_create(json!({
+            "workspace_id": ws, "identifier": "the_pipe_protocol", "kind": "concept",
+            "target": { "type": "concept", "text": "how services talk" },
+            "description": "msgpack IPC",
+            "aliases": ["the pipe"],
+        }))
+        .await;
+
+        // A real alias → returns the full anchor (all aliases) as the payload.
+        let ok = handle_promote_via_alias(json!({
+            "workspace_id": ws, "anchor_id": "the_pipe_protocol", "alias": "{{the pipe}}",
+        }))
+        .await;
+        assert!(ok.ok, "{:?}", ok.error);
+        assert_eq!(ok.data["promote"], true);
+        assert_eq!(ok.data["via_alias"], "the pipe");
+        assert_eq!(ok.data["anchor"]["identifier"], "the_pipe_protocol");
+        assert_eq!(ok.data["anchor"]["aliases"][0], "the pipe");
+
+        // An alias that doesn't belong → bad_request.
+        let bad = handle_promote_via_alias(json!({
+            "workspace_id": ws, "anchor_id": "the_pipe_protocol", "alias": "not mine",
+        }))
+        .await;
+        assert!(!bad.ok);
+        assert_eq!(bad.error.unwrap().code, "bad_request");
+
+        // Unknown anchor → not_found.
+        let missing = handle_promote_via_alias(json!({
+            "workspace_id": ws, "anchor_id": "ghost", "alias": "x",
+        }))
+        .await;
+        assert_eq!(missing.error.unwrap().code, "not_found");
     }
 }

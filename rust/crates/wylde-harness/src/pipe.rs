@@ -184,6 +184,10 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "anchors.find_by_token",
     "anchors.find_by_target",
     "anchors.list_under",
+    // anchors.promote_via_alias — the global promotion landing point for an
+    // alias-driven promotion (Slice N-data-aliases). Same shape as
+    // anchors.create; the whole anchor (all aliases) lands globally.
+    "anchors.promote_via_alias",
 ];
 
 /// Register every pipe action against `api` on the process-wide IPC
@@ -1003,7 +1007,7 @@ where
     install_global_anchor_actions();
 }
 
-/// Register the seven in-process `anchors.*` (global-scope) verbs. Split out so
+/// Register the eight in-process `anchors.*` (global-scope) verbs. Split out so
 /// `install_all_against` stays readable; called at the end of it.
 fn install_global_anchor_actions() {
     use crate::global_anchors::api as ga;
@@ -1059,6 +1063,16 @@ fn install_global_anchor_actions() {
         |p: Value| async move { ga::handle_list_under(p).await },
         "GLOBAL anchors under a taxonomy parent (OI-19). Payload: {parent_id}. \
          Reply: {scope, parent_id, anchors, count}.",
+        HANDLER_MODULE_GLOBAL_ANCHORS,
+    );
+    register_action_with_meta(
+        "anchors.promote_via_alias",
+        |p: Value| async move { ga::handle_promote_via_alias(p).await },
+        "Land an alias-driven promotion in the GLOBAL store (Slice \
+         N-data-aliases). Same shape as anchors.create — the WHOLE anchor (all \
+         aliases) promotes — with the user-intent audit-logged. Payload: \
+         {identifier, kind?, target, description?, aliases?, via_alias?, ...}. \
+         Reply: the global Anchor, or already_exists_global on collision.",
         HANDLER_MODULE_GLOBAL_ANCHORS,
     );
 }

@@ -75,6 +75,7 @@ pub const ANCHORS_FIND_BY_TOKEN: &str = "workspaces.anchors.find_by_token";
 pub const ANCHORS_FIND_BY_TARGET: &str = "workspaces.anchors.find_by_target";
 pub const ANCHORS_LIST_UNDER: &str = "workspaces.anchors.list_under";
 pub const ANCHORS_PROPOSE: &str = "workspaces.anchors.propose";
+pub const ANCHORS_PROMOTE_VIA_ALIAS: &str = "workspaces.anchors.promote_via_alias";
 
 /// Every action this service registers. Grows one slice at a time.
 pub const ALL_ACTIONS: &[&str] = &[
@@ -119,6 +120,7 @@ pub const ALL_ACTIONS: &[&str] = &[
     ANCHORS_FIND_BY_TARGET,
     ANCHORS_LIST_UNDER,
     ANCHORS_PROPOSE,
+    ANCHORS_PROMOTE_VIA_ALIAS,
 ];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -403,6 +405,17 @@ pub fn install() {
          counters. Payload: {workspace_id, identifier, target, kind?, \
          description?, confidence?, rationale?, proposals_so_far?, \
          last_proposal_at?}. Reply: {candidate} or {candidate: null, reason}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        ANCHORS_PROMOTE_VIA_ALIAS,
+        |p: Value| async move { crate::anchors::api::handle_promote_via_alias(p).await },
+        "Promote an anchor to global because the user acted on one of its \
+         aliases — the WHOLE anchor (all aliases) promotes. Validates the alias \
+         belongs to the anchor + audit-logs the intent, then returns the \
+         promotion payload for the caller to land via the global \
+         anchors.promote_via_alias. Payload: {workspace_id, anchor_id, alias}. \
+         Reply: {anchor, via_alias, promote: true}.",
         META_MODULE,
     );
 

@@ -8,8 +8,8 @@
 //! workspace-scope constructor.
 
 pub use wylde_shared::anchor::{
-    already_exists_global_details, epoch_now, Anchor, AnchorKind, AnchorScope, AnchorTarget,
-    SymbolId,
+    already_exists_global_details, epoch_now, validate_aliases, AliasError, Anchor, AnchorKind,
+    AnchorScope, AnchorTarget, SymbolId,
 };
 
 /// Build a workspace-scoped anchor — stamps `scope = Workspace(workspace_id)`

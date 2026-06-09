@@ -555,6 +555,29 @@ impl WorkspacesClient {
             .await
     }
 
+    /// `workspaces.anchors.promote_via_alias` — request whole-anchor promotion
+    /// because the user acted on `alias` (Slice N-data-aliases). Returns the
+    /// promotion payload `{anchor, via_alias, promote}` for the caller to land
+    /// via the global `anchors.promote_via_alias`. Fast · NoRetry (promotion is
+    /// non-idempotent, always user-confirmed).
+    pub async fn anchors_promote_via_alias(
+        &self,
+        workspace_id: &str,
+        anchor_id: &str,
+        alias: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.anchors.promote_via_alias",
+            serde_json::json!({
+                "workspace_id": workspace_id,
+                "anchor_id": anchor_id,
+                "alias": alias,
+            }),
+            1,
+        )
+        .await
+    }
+
     /// Drive one verb call through the full resilience pipeline: cache →
     /// breaker → timed transport attempt(s) with retry → breaker bookkeeping.
     ///
