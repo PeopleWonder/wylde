@@ -42,6 +42,9 @@ pub const GATHER_PROMPT: &str = "workspaces.gather_prompt";
 // ── Code graph read API (Slice B — Phase 1) ──────────────────────────────
 pub const GRAPH: &str = "workspaces.graph";
 
+// ── Symbol index read API (Slice F-data — Phase 1) ───────────────────────
+pub const SYMBOLS_FIND: &str = "workspaces.symbols.find";
+
 // ── Workspace notes tier (Slice 0c) ──────────────────────────────────────
 pub const NOTES_LIST: &str = "workspaces.notes.list";
 pub const NOTES_ADD: &str = "workspaces.notes.add";
@@ -75,6 +78,8 @@ pub const ALL_ACTIONS: &[&str] = &[
     GATHER_PROMPT,
     // Slice B — code graph read API
     GRAPH,
+    // Slice F-data — symbol index read API
+    SYMBOLS_FIND,
     // Slice 0c — notes
     NOTES_LIST,
     NOTES_ADD,
@@ -192,6 +197,18 @@ pub fn install() {
         META_MODULE,
     );
 
+    // ── Slice F-data — symbol index read API ─────────────────────────────
+    register_action_with_meta(
+        SYMBOLS_FIND,
+        |p: Value| async move { crate::graph::symbol_index::handle_symbols_find(p).await },
+        "Resolve a name to workspace symbols (exact-first, fuzzy-fill). \
+         Payload: {workspace_id, query, limit?}. Reply: {query, matches:[{entry, \
+         score}]}. Served from the active workspace's in-memory index \
+         (microsecond exact / <50ms fuzzy); on-demand build fallback when the \
+         index isn't warm. limit defaults to 20.",
+        META_MODULE,
+    );
+
     // ── Slice 0c — workspace notes tier ──────────────────────────────────
     register_action_with_meta(
         NOTES_LIST,
@@ -304,6 +321,7 @@ pub fn handle_ping() -> Reply {
 /// ends its background loop); idempotent if none is running.
 pub fn stop() {
     crate::watcher::stop();
+    crate::graph::symbol_index::stop();
 }
 
 /// Test-only: unregister every action and reset the install flag so a test

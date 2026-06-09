@@ -20,12 +20,19 @@ pub mod api;
 pub mod projection;
 pub mod query;
 
+// ── Slice F-data (Phase 1) — in-memory symbol index + `symbols.find` ──────
+// Built FROM the Slice B read path (`fetch_workspace_graph` → `projection`);
+// adds nothing to the write/read query surface above. Self-contained in
+// `symbol_index` (data structure + verb + lifecycle).
+pub mod symbol_index;
+
 use serde::{Deserialize, Serialize};
 
 pub use bolt::{BoltClient, BoltConfig, DEFAULT_BOLT_URL};
 pub use projection::{
     Cluster, Edge, Node, NodeKind, NodeStyle, Position, RelType, WorkspaceGraph,
 };
+pub use symbol_index::{SymbolEntry, SymbolIndex, SymbolMatch, SymbolsFindResponse};
 pub use schema::{
     relation_type_is_valid, NODE_CHUNK, NODE_ENTITY, REL_CALLS, REL_CONFIGURES, REL_EXPOSES,
     REL_IMPORTS, REL_INHERITS, REL_MENTIONED_IN,

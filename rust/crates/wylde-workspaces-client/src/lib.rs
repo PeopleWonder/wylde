@@ -214,6 +214,33 @@ impl WorkspacesClient {
         .await
     }
 
+    // ── Slice F-data — symbol index read API ────────────────────────────
+
+    /// `workspaces.symbols.find` — resolve `query` to symbols in
+    /// `workspace_id` (exact-first, then fuzzy), capped at `limit`
+    /// (service default: 20). Returns the raw reply `{query, matches}`; the
+    /// typed `SymbolMatch` model lives in `wylde_workspaces::graph`, keeping
+    /// this crate decoupled from it (as with `graph`).
+    ///
+    /// Served from a 60s read-through cache (Plan v2 §7.6) so the composer's
+    /// per-keystroke highlighting (Slice F-visual) re-queries cheaply; a
+    /// repeated `(workspace_id, query, limit)` within the TTL skips the pipe.
+    pub async fn symbols_find(
+        &self,
+        workspace_id: &str,
+        query: &str,
+        limit: Option<u64>,
+    ) -> Result<Value, WorkspacesClientError> {
+        let mut payload = serde_json::json!({
+            "workspace_id": workspace_id,
+            "query": query,
+        });
+        if let Some(l) = limit {
+            payload["limit"] = serde_json::Value::from(l);
+        }
+        self.call_verb("workspaces.symbols.find", payload, 1).await
+    }
+
     // ── Slice 0d — chat-turn prompt context ─────────────────────────────
 
     /// `workspaces.gather_prompt` — the rendered system-prompt slot block
