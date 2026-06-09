@@ -34,6 +34,13 @@ pub enum WorkspacesError {
     #[error("serde error: {0}")]
     Serde(String),
 
+    /// A graph backend (Neo4j/Bolt) failure surfaced from the read path
+    /// (Slice B). Carries the underlying wire `code` (e.g. `bolt_connect`,
+    /// `bolt_query`) so the client/GUI classifier sees the same string the
+    /// write surface emits rather than a flattened `internal`.
+    #[error("graph backend ({code}): {message}")]
+    Backend { code: String, message: String },
+
     /// Anything not yet given a first-class variant. Keeps the enum stable
     /// while submodules are scaffolded; replaced with specific variants as
     /// each slice lands.
@@ -51,13 +58,29 @@ impl WorkspacesError {
             WorkspacesError::BadRequest(_) => "bad_request",
             WorkspacesError::Io(_) => "io",
             WorkspacesError::Serde(_) => "serde",
+            WorkspacesError::Backend { .. } => "graph_backend",
             WorkspacesError::Other(_) => "internal",
         }
     }
 
-    /// Render as a shared-IPC structured error.
+    /// Wrap a graph-backend [`IpcError`] (from the Bolt read client),
+    /// preserving its wire `code`.
+    pub fn backend(e: IpcError) -> Self {
+        WorkspacesError::Backend {
+            code: e.code,
+            message: e.message,
+        }
+    }
+
+    /// Render as a shared-IPC structured error. [`Backend`](Self::Backend)
+    /// preserves the underlying wire code; everything else uses [`code`](Self::code).
     pub fn to_ipc(&self) -> IpcError {
-        IpcError::new(self.code(), self.to_string())
+        match self {
+            WorkspacesError::Backend { code, message } => {
+                IpcError::new(code.clone(), message.clone())
+            }
+            _ => IpcError::new(self.code(), self.to_string()),
+        }
     }
 
     /// Render as an `ok=false` [`Reply`] ready to hand back to the pipe

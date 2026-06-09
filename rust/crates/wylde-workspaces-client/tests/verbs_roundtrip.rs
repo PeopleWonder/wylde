@@ -36,6 +36,9 @@ fn slice_0b_verbs_have_expected_policies() {
         ("workspaces.set_persona", TimeoutPolicy::Fixed(FAST), true, None),
         ("workspaces.rag_query", TimeoutPolicy::Fixed(SLOW), true, None),
         ("workspaces.reindex", TimeoutPolicy::Fixed(SLOW), false, None),
+        // ── Slice B — graph (Plan v2 §7 / Build Order Appendix A) ───────
+        // Medium · idempotent read (≤4) · 5s cache TTL.
+        ("workspaces.graph", TimeoutPolicy::Fixed(MEDIUM), true, Some(5)),
         // ── Slice 0c — notes (Build Order Appendix A) ──────────────────
         ("workspaces.notes.list", TimeoutPolicy::Fixed(MEDIUM), true, None),
         ("workspaces.notes.add", TimeoutPolicy::Fixed(MEDIUM), true, None),
@@ -215,4 +218,60 @@ async fn slice_0c_wrappers_send_correct_action_and_payload() {
     ] {
         ipc::unregister_action(v);
     }
+}
+
+// ── 3. Slice B — graph wrapper round-trip + 5s cache ──────────────────────
+
+#[tokio::test]
+async fn slice_b_graph_wrapper_roundtrips_and_is_cached() {
+    let service = unique_service_name();
+    let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+
+    // A minimal WorkspaceGraph-shaped reply (the real shape is asserted in
+    // the service's projection unit tests; here we only exercise the client).
+    let graph_reply = json!({
+        "nodes": [{
+            "id": "alpha", "kind": "Function", "name": "alpha",
+            "file": "src/a.rs", "line": 0,
+            "position": {"x": 0.0, "y": 0.0, "z": 0.0}, "style": {}
+        }],
+        "edges": [{"src": "alpha", "dst": "beta", "rel_type": "CALLS", "weight": 1.0}],
+        "clusters": []
+    });
+    register_recording("workspaces.graph", &calls, graph_reply);
+
+    let server = Arc::new(ipc::PipeServer::new(&service));
+    let server_clone = Arc::clone(&server);
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("server runtime");
+        let _ = rt.block_on(server_clone.accept_loop());
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let client = WorkspacesClient::for_service(&service);
+
+    // First call round-trips and parses the canned reply.
+    let g = client.graph("w-1").await.unwrap();
+    assert_eq!(g["nodes"][0]["id"], "alpha");
+    assert_eq!(g["edges"][0]["rel_type"], "CALLS");
+
+    // The wrapper sends the documented payload.
+    let recorded = calls.lock().unwrap().clone();
+    assert_eq!(recorded[0].1, json!({"workspace_id": "w-1"}));
+
+    // A second call within the 5s TTL is served from cache — the mock server
+    // is hit exactly once for `workspaces.graph`.
+    let _ = client.graph("w-1").await.unwrap();
+    let hits = calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(v, _)| v == "workspaces.graph")
+        .count();
+    assert_eq!(hits, 1, "graph should be served from the 5s cache on the 2nd call");
+
+    ipc::unregister_action("workspaces.graph");
 }

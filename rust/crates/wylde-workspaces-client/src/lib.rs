@@ -195,6 +195,25 @@ impl WorkspacesClient {
         .await
     }
 
+    // ── Slice B — code graph read API ───────────────────────────────────
+
+    /// `workspaces.graph` — the workspace's code graph (`{nodes, edges,
+    /// clusters}`), read live from Neo4j.
+    ///
+    /// Returns the raw reply payload (the typed `WorkspaceGraph` model lives
+    /// in `wylde_workspaces::graph` / the GUI graph panel; this crate stays
+    /// decoupled from it, matching the other wrappers). Results are served
+    /// from a 5s read-through cache; an unreachable backend surfaces the
+    /// underlying `bolt_*` error for the consumer's graph-tab fallback.
+    pub async fn graph(&self, workspace_id: &str) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.graph",
+            serde_json::json!({ "workspace_id": workspace_id }),
+            1,
+        )
+        .await
+    }
+
     // ── Slice 0d — chat-turn prompt context ─────────────────────────────
 
     /// `workspaces.gather_prompt` — the rendered system-prompt slot block
