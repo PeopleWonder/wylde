@@ -67,6 +67,13 @@ wylde-updater = { path = "../../rust/crates/wylde-updater" }
 tokio       = { version = "1", features = ["io-util", "net", "time", "sync", "macros", "rt-multi-thread"] }
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"
+# YAML parser for the locked Visual Style v1 style guide (Thought Bubble
+# System Phase 2.5). The Workspaces graph panel embeds the canonical YAML
+# at compile time (`include_str!`) and deserialises it into the `Theme`
+# struct (Slice C-scaffold). serde_yaml 0.9 is the de-facto standard; it is
+# archived upstream but stable, and the embedded asset is the only input it
+# ever parses so the deprecation carries no maintenance risk here.
+serde_yaml  = "0.9"
 rmp-serde   = "1"
 uuid        = { version = "1", features = ["v4"] }
 async-trait = "0.1"

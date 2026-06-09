@@ -22,7 +22,16 @@
 //! The Svelte original stays the source of truth during the alpha; we
 //! don't touch it.  Cutover deletes `src-tauri/` + `src/` together.
 
+//! ## Tabs (Thought Bubble System, Phase 3)
+//!
+//! The panel now hosts a minimal tab system ([`tabs`]): the original
+//! Registry plus a new Graph tab (Slice C-scaffold) that mounts the visual
+//! code-graph view ([`graph::GraphView`]). Vocabulary / Conversations /
+//! Settings tabs are wired by their own later slices.
+
+pub mod graph;
 pub mod ipc;
+pub mod tabs;
 pub mod workspaces_panel;
 
 pub use workspaces_panel::WorkspacesPanel;

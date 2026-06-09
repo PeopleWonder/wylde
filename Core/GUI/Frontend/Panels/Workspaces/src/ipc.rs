@@ -53,10 +53,7 @@ impl WorkspaceSummary {
                 .get("last_activated_at")
                 .and_then(|x| x.as_str())
                 .map(|s| s.to_owned()),
-            indexing: v
-                .get("indexing")
-                .and_then(|x| x.as_bool())
-                .unwrap_or(false),
+            indexing: v.get("indexing").and_then(|x| x.as_bool()).unwrap_or(false),
             persona: v
                 .get("persona")
                 .and_then(|x| x.as_str())
