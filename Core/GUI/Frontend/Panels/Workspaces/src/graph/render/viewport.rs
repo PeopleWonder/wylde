@@ -76,6 +76,24 @@ impl Viewport {
         )
     }
 
+    /// Inverse of [`model_to_screen`](Self::model_to_screen): window pixel →
+    /// model space (`z` recovered as 0). Used to translate a drag cursor into
+    /// the model position the physics worker should pin a node to.
+    pub fn screen_to_model(&self, sx: f32, sy: f32) -> Position {
+        let cx = self.origin_x + self.width * 0.5;
+        let cy = self.origin_y + self.height * 0.5;
+        let zoom = if self.camera.zoom.abs() < f32::EPSILON {
+            1.0
+        } else {
+            self.camera.zoom
+        };
+        Position {
+            x: (sx - cx - self.camera.pan_x) / zoom,
+            y: (sy - cy - self.camera.pan_y) / zoom,
+            z: 0.0,
+        }
+    }
+
     /// Pick the zoom that fits a model bounding box into the canvas with a
     /// margin, clamped. Used on first load so the whole graph is visible.
     /// `(min_x, min_y, max_x, max_y)`.
@@ -158,6 +176,21 @@ mod tests {
         assert_eq!(c.zoom, MAX_ZOOM);
         c.zoom_by(0.0001);
         assert_eq!(c.zoom, MIN_ZOOM);
+    }
+
+    #[test]
+    fn screen_to_model_inverts_model_to_screen() {
+        let mut v = vp(1.7);
+        v.camera.pan_by(23.0, -11.0);
+        let p = Position {
+            x: 42.0,
+            y: -8.0,
+            z: 0.0,
+        };
+        let (sx, sy) = v.model_to_screen(p);
+        let back = v.screen_to_model(sx, sy);
+        assert!((back.x - p.x).abs() < 1e-3 && (back.y - p.y).abs() < 1e-3);
+        assert_eq!(back.z, 0.0);
     }
 
     #[test]
