@@ -433,6 +433,35 @@ impl WorkspacesClient {
         .await
     }
 
+    /// `workspaces.conversations.refresh_summary` — persist an LLM summary +
+    /// embedding the harness computed for a workspace conversation (Slice E
+    /// parity). The service folds the derived fields into the stored doc so the
+    /// scoped semantic search can rank it by cosine, like standalone convos.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn conversations_refresh_summary(
+        &self,
+        workspace_id: &str,
+        conversation_id: &str,
+        summary: &str,
+        topic_tags: &[String],
+        embedding: &[f32],
+        summary_msg_count: u64,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.conversations.refresh_summary",
+            serde_json::json!({
+                "workspace_id": workspace_id,
+                "conversation_id": conversation_id,
+                "summary": summary,
+                "topic_tags": topic_tags,
+                "embedding": embedding.iter().map(|x| *x as f64).collect::<Vec<f64>>(),
+                "summary_msg_count": summary_msg_count,
+            }),
+            1,
+        )
+        .await
+    }
+
     // ── Slice I — file watcher control ──────────────────────────────────
 
     /// `workspaces.watcher.status` — the file-watcher observability snapshot

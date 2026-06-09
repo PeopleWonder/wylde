@@ -102,3 +102,4 @@ wylde-treesitter = { path = "../wylde-treesitter" }
 # (workspace-scoped node/edge counts + sample edges). Same driver the
 # `rust` memgraph branch uses; here it's for read-back verification only.
 neo4rs = "0.8"
+serial_test = { workspace = true }

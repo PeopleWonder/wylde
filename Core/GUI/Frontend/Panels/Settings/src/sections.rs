@@ -1119,7 +1119,11 @@ pub fn error_banner(message: &str) -> gpui::Div {
 /// online-search toggle, plus a "Reset privacy warnings" affordance that
 /// re-arms the first-time modal. Placed next to Updates (the other
 /// outside-connection feature) at the top of the page.
-pub fn privacy_section(privacy: crate::ipc::PrivacyPrefs, cx: &mut Cx) -> gpui::Div {
+pub fn privacy_section(
+    privacy: crate::ipc::PrivacyPrefs,
+    encryption_at_rest: bool,
+    cx: &mut Cx,
+) -> gpui::Div {
     card()
         .child(section_title(
             "Privacy & Network",
@@ -1136,6 +1140,22 @@ pub fn privacy_section(privacy: crate::ipc::PrivacyPrefs, cx: &mut Cx) -> gpui::
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _ev, _window, cx| this.toggle_hf_search(cx)),
+            ),
+        )
+        .child(
+            // OI-14: encryption at rest. On by default, local-only (no
+            // network) — lives here as the user-facing data-protection control.
+            toggle_row(
+                "settings-encryption-at-rest",
+                "Encrypt local data at rest",
+                "Encrypt saved conversations, the user profile, the anchor vocabulary, \
+                 and workspace data on disk with your Windows account key (DPAPI). On by \
+                 default; turn off only if you already use full-disk encryption.",
+                encryption_at_rest,
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _window, cx| this.toggle_encryption_at_rest(cx)),
             ),
         )
         .child(

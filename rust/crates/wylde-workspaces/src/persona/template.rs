@@ -5,8 +5,6 @@
 //! hand-edit it. It supersedes the inline `persona` string the retired
 //! verb-driven store carried (design doc migration §8).
 
-use crate::common::ensure_dir;
-
 /// A rendered persona ready to fold into the system prompt.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PersonaOverride {
@@ -28,22 +26,19 @@ pub fn persona_path(workspace_id: &str) -> std::path::PathBuf {
 }
 
 /// Load the persona override for a workspace. Returns an empty override
-/// when the file is absent or unreadable.
+/// when the file is absent or unreadable. Decrypts at rest (OI-14).
 pub fn load(workspace_id: &str) -> PersonaOverride {
-    let text = std::fs::read_to_string(persona_path(workspace_id)).unwrap_or_default();
+    let text =
+        wylde_shared::encryption::read_to_string_at_rest(&persona_path(workspace_id))
+            .unwrap_or_default();
     PersonaOverride { text }
 }
 
-/// Persist persona text for a workspace (writes `persona.md` atomically,
-/// creating the bundle dir if needed).
+/// Persist persona text for a workspace — encrypt-at-rest (OI-14) + atomic
+/// write of `persona.md`, creating the bundle dir if needed.
 pub fn save(workspace_id: &str, text: &str) -> std::io::Result<()> {
-    let dir = super::super::registry::persistence::workspace_dir(workspace_id);
-    ensure_dir(&dir)?;
-    let path = dir.join("persona.md");
-    let tmp = path.with_extension("md.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    let path = super::super::registry::persistence::workspace_dir(workspace_id).join("persona.md");
+    wylde_shared::encryption::write_at_rest(&path, text.as_bytes())
 }
 
 #[cfg(test)]

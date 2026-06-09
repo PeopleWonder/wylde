@@ -25,9 +25,7 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use wylde_shared::secure_file::harden_perms;
-
-use crate::memory::common::{data_dir, ensure_dir};
+use crate::memory::common::data_dir;
 use crate::user_profile::profile::{ProfileProposal, RejectedRecord, UserProfile};
 
 use serde::{Deserialize, Serialize};
@@ -56,19 +54,12 @@ pub fn path() -> PathBuf {
     data_dir().join("user_profile.json")
 }
 
-/// Whether encryption-at-rest is requested (OI-14). Default **on**
-/// (`WYLDE_ENCRYPTION_AT_REST=0`/`false` opts out). Today this only
-/// drives a one-time log breadcrumb — the DPAPI wrapping itself is a
-/// follow-up (see the module docs); the bytes on disk are plain JSON
-/// regardless until that helper lands.
+/// Whether encryption-at-rest is enabled (OI-14). Default **on**. Now backed
+/// by the shared [`wylde_shared::encryption`] engine (DPAPI on Windows) — the
+/// profile's reads/writes route through it, so a personal-facts file is
+/// ciphertext on disk, not just owner-only plaintext.
 pub fn encrypt_at_rest_enabled() -> bool {
-    match std::env::var("WYLDE_ENCRYPTION_AT_REST") {
-        Ok(v) => !matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "0" | "false" | "off"
-        ),
-        Err(_) => true,
-    }
+    wylde_shared::encryption::is_encryption_enabled()
 }
 
 /// Read the store, returning [`ProfileStore::default`] when the file is
@@ -82,7 +73,7 @@ pub fn read() -> ProfileStore {
 
 fn read_locked() -> ProfileStore {
     let path = path();
-    let Ok(raw) = std::fs::read_to_string(&path) else {
+    let Ok(raw) = wylde_shared::encryption::read_to_string_at_rest(&path) else {
         return ProfileStore::default();
     };
     serde_json::from_str(&raw).unwrap_or_default()
@@ -102,27 +93,12 @@ where
     Ok(out)
 }
 
-/// Persist `store`. Atomic temp-write + rename, then owner-only perms.
+/// Persist `store`. Encrypt-at-rest (OI-14) + atomic temp-write + rename +
+/// owner-only perms, all via the shared engine.
 fn write_locked(store: &ProfileStore) -> std::io::Result<()> {
-    if encrypt_at_rest_enabled() {
-        // One-shot breadcrumb so the gap is visible in logs until the
-        // DPAPI helper lands. Not load-bearing.
-        tracing::trace!(
-            "user_profile: encryption-at-rest requested but not yet \
-             implemented (OI-14 follow-up); writing owner-only plaintext"
-        );
-    }
-    let path = path();
-    if let Some(parent) = path.parent() {
-        ensure_dir(parent)?;
-    }
     let body = serde_json::to_string_pretty(store).expect("ProfileStore serialises to JSON");
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body.as_bytes())?;
-    std::fs::rename(&tmp, &path)?;
-    // The profile can carry personal facts — owner-only on disk.
-    let _ = harden_perms(&path);
-    Ok(())
+    // The profile carries personal facts — encrypted + owner-only on disk.
+    wylde_shared::encryption::write_at_rest(&path(), body.as_bytes())
 }
 
 #[cfg(test)]

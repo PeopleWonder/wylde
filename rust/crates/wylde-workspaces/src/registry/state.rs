@@ -18,8 +18,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::common::ensure_dir;
-
 /// MRU window the InferenceBar dropdown shows, and the hard cap on how
 /// many workspaces the registry retains. Static (Q2): if this ever needs
 /// to change it's a one-line edit.
@@ -81,23 +79,18 @@ pub fn index_path() -> std::path::PathBuf {
 }
 
 /// Read the persisted state (active pointer + MRU). Folds any read error
-/// to [`WorkspaceState::default`].
+/// to [`WorkspaceState::default`]. Decrypts at rest (OI-14).
 pub fn load() -> WorkspaceState {
-    let Ok(raw) = std::fs::read_to_string(index_path()) else {
+    let Ok(raw) = wylde_shared::encryption::read_to_string_at_rest(&index_path()) else {
         return WorkspaceState::default();
     };
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
-/// Persist `state` (best-effort, atomic temp + rename).
+/// Persist `state` (encrypt-at-rest, OI-14; best-effort, atomic temp + rename).
 pub fn save(state: &WorkspaceState) -> std::io::Result<()> {
-    let dir = super::persistence::workspaces_dir();
-    ensure_dir(&dir)?;
-    let path = index_path();
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(state).unwrap())?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    let body = serde_json::to_string_pretty(state).unwrap();
+    wylde_shared::encryption::write_at_rest(&index_path(), body.as_bytes())
 }
 
 #[cfg(test)]

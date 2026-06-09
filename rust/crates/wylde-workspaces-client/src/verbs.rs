@@ -214,6 +214,16 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::NoRetry,
         cache_ttl: None,
     },
+    // Slice E summary parity: the harness pushes a computed summary+embedding.
+    // Fast (a small write — no graph/Ollama work service-side), NoRetry (a
+    // non-idempotent fold; the next cadence re-summarises if it's lost), no
+    // cache. Brief: Fast/NoRetry/write.
+    VerbDef {
+        name: "workspaces.conversations.refresh_summary",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
     // ── Slice I — file watcher control (Fast lifecycle ops) ──────────────
     // status/pause/resume are cheap in-process control calls on the service.
     // Fast (500ms), a single retry (the spec's `retry: 1` — the loop won't
@@ -373,6 +383,17 @@ mod tests {
         assert_eq!(promote.timeout, TimeoutPolicy::fast());
         assert_eq!(promote.retry.max_attempts(), 1, "non-idempotent promotion");
         assert!(promote.cache_ttl.is_none());
+    }
+
+    #[test]
+    fn refresh_summary_is_fast_noretry_uncached() {
+        // Slice E parity (Phase 2 polish): a small service-side write of a
+        // harness-computed summary+embedding. Fast · NoRetry · no cache.
+        let d = lookup("workspaces.conversations.refresh_summary")
+            .expect("refresh_summary defined");
+        assert_eq!(d.timeout, TimeoutPolicy::fast());
+        assert_eq!(d.retry.max_attempts(), 1, "non-idempotent fold = no retry");
+        assert!(d.cache_ttl.is_none());
     }
 
     #[test]

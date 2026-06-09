@@ -123,7 +123,7 @@ fn read_doc(conv_id: &str) -> Result<Map<String, Value>, ConversationNotFound> {
             "conversation '{conv_id}' not found"
         )));
     }
-    let raw = std::fs::read_to_string(&path).map_err(|e| {
+    let raw = wylde_shared::encryption::read_to_string_at_rest(&path).map_err(|e| {
         ConversationNotFound(format!("conversation '{conv_id}' is unreadable: {e}"))
     })?;
     match serde_json::from_str::<Value>(&raw) {
@@ -157,16 +157,10 @@ fn now_secs() -> i64 {
 /// Atomically write a conversation document (temp + rename), preserving
 /// every field the caller hands in. Used by [`set_workspace`].
 fn write_doc(conv_id: &str, doc: &Map<String, Value>) -> std::io::Result<()> {
-    let path = path_for(conv_id);
-    if let Some(parent) = path.parent() {
-        ensure_dir(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
     let body = serde_json::to_string_pretty(&Value::Object(doc.clone()))
         .unwrap_or_else(|_| "{}".to_owned());
-    std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
+    // Encrypt-at-rest (OI-14) + atomic temp-write + rename + owner-only.
+    wylde_shared::encryption::write_at_rest(&path_for(conv_id), body.as_bytes())
 }
 
 /// Re-assign a conversation's `workspace_id` (Q4 — mutable binding).
@@ -221,7 +215,7 @@ pub fn read_all_conversations() -> Vec<Value> {
         if !path.is_file() {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
+        let Ok(raw) = wylde_shared::encryption::read_to_string_at_rest(&path) else {
             continue;
         };
         let Ok(Value::Object(doc)) = serde_json::from_str::<Value>(&raw) else {
@@ -297,7 +291,7 @@ pub fn list_conversations() -> Vec<Value> {
         if !path.is_file() {
             continue;
         }
-        let Ok(raw) = std::fs::read_to_string(&path) else {
+        let Ok(raw) = wylde_shared::encryption::read_to_string_at_rest(&path) else {
             continue;
         };
         let Ok(Value::Object(doc)) = serde_json::from_str::<Value>(&raw) else {

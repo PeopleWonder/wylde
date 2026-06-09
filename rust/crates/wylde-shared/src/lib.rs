@@ -5,6 +5,7 @@
 
 pub mod anchor;
 pub mod anchor_tokenizer;
+pub mod encryption;
 pub mod ipc;
 pub mod logging;
 pub mod manifest;

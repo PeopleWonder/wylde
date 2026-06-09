@@ -88,44 +88,27 @@ pub fn impl_for() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
+    use serial_test::serial;
 
-    /// Process-wide lock serialising the three `impl_for` tests below.
-    ///
-    /// All three mutate the single process-global
-    /// `WYLDE_HARNESS_MEMORY_IMPL` env var. Per-test snapshot+restore is
-    /// *not* enough under cargo's default parallel runner: env vars are
-    /// shared across the whole process, so one test's `remove_var` /
-    /// `set_var` can clobber another between *its* set and *its* assert.
-    /// That race made `impl_for_honours_python_rollback` flaky — green in
-    /// isolation, intermittently red in the full suite (e.g. the defaults
-    /// test removing the var after the rollback test set it to `python`
-    /// but before it asserted). Holding this mutex for the duration of
-    /// each test means only one runs at a time, so the snapshot/restore
-    /// is observed atomically.
-    ///
-    /// Local `Mutex` rather than the `serial_test` crate to match the
-    /// crate's existing idiom (`tooling::consent::serial_test_guard`) and
-    /// avoid a new dependency for three tests.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    /// RAII guard: holds [`ENV_LOCK`] (serialising env-mutating tests),
-    /// snapshots `WYLDE_HARNESS_MEMORY_IMPL` on construction, and restores
-    /// it on drop — including on a panicking failed assertion, so a
+    /// RAII guard: snapshots `WYLDE_HARNESS_MEMORY_IMPL` on construction and
+    /// restores it on drop — including on a panicking failed assertion, so a
     /// failure can't leak the var into the next test.
+    ///
+    /// Mutual exclusion is provided by `#[serial(env)]` on each test below:
+    /// all three mutate the single process-global `WYLDE_HARNESS_MEMORY_IMPL`,
+    /// so per-test snapshot+restore alone isn't enough under cargo's parallel
+    /// runner — one test's `set_var`/`remove_var` can clobber another between
+    /// its set and its assert. The `env` serial group serialises every test
+    /// that mutates the process environment crate-wide (replaces the former
+    /// bespoke `Mutex` so future env-mutating tests coordinate too).
     struct EnvGuard {
-        _lock: MutexGuard<'static, ()>,
         prev: Option<String>,
     }
 
     impl EnvGuard {
         fn acquire() -> Self {
-            // Recover from a poisoned lock (a prior test panicked while
-            // holding it) instead of cascade-failing — the env is
-            // restored on drop regardless.
-            let lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let prev = std::env::var("WYLDE_HARNESS_MEMORY_IMPL").ok(); // wylde-check: discard-result-ok
-            Self { _lock: lock, prev }
+            Self { prev }
         }
     }
 
@@ -139,6 +122,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn impl_for_defaults_to_rust_when_env_unset() {
         let _env = EnvGuard::acquire();
         std::env::remove_var("WYLDE_HARNESS_MEMORY_IMPL");
@@ -146,6 +130,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn impl_for_clamps_unknown_values_to_rust() {
         let _env = EnvGuard::acquire();
         std::env::set_var("WYLDE_HARNESS_MEMORY_IMPL", "javascript");
@@ -153,6 +138,7 @@ mod tests {
     }
 
     #[test]
+    #[serial(env)]
     fn impl_for_honours_python_rollback() {
         let _env = EnvGuard::acquire();
         std::env::set_var("WYLDE_HARNESS_MEMORY_IMPL", "python");

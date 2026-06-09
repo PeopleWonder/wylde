@@ -438,14 +438,16 @@ pub fn mark_orphan_dead(service: &str) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use serial_test::serial;
     use tempfile::TempDir;
-    use tokio::sync::Mutex as AsyncMutex;
 
-    // WYLDE_ROOT is process-global, so tests that set it must run serially.
-    // Use an async-aware mutex so the guard can be held across .await without
-    // tripping the `await_holding_lock` clippy lint.
-    static ENV_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
-
+    // These tests mutate two process-global resources: `WYLDE_ROOT` (via
+    // `set_root`) AND the manifest writer-registry / pre-write-phase statics.
+    // The `manifest` serial group serialises them against EACH OTHER *and*
+    // against the cross-module `logging::idempotent` test (which calls
+    // `attest_phase` → the same statics) — that cross-module contention is
+    // what flaked `mark_orphan_dead_works`, and a per-module mutex couldn't
+    // cover it. `serial_test` is the crate-wide lock that can.
     fn set_root(tmp: &TempDir) {
         std::env::set_var("WYLDE_ROOT", tmp.path());
     }
@@ -461,8 +463,8 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(manifest)]
     async fn write_and_read_roundtrip() {
-        let _g = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         set_root(&tmp);
 
@@ -492,8 +494,8 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(manifest)]
     async fn preserves_started_at_on_rewrite() {
-        let _g = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         set_root(&tmp);
 
@@ -531,8 +533,8 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(manifest)]
     async fn heartbeat_updates_heartbeat_field() {
-        let _g = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         set_root(&tmp);
 
@@ -561,8 +563,8 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(manifest)]
     async fn mark_stopped_changes_state() {
-        let _g = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         set_root(&tmp);
 
@@ -583,8 +585,8 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(manifest)]
     async fn update_contributes_replaces_block() {
-        let _g = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         set_root(&tmp);
 
@@ -605,8 +607,8 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(manifest)]
     async fn mark_orphan_dead_works() {
-        let _g = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         set_root(&tmp);
 
@@ -632,8 +634,8 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(manifest)]
     async fn mark_orphan_dead_missing_is_ok() {
-        let _g = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         set_root(&tmp);
 
@@ -645,8 +647,8 @@ mod tests {
     /// every static field (everything except `pid`, `started_at`, and
     /// `heartbeat`).
     #[tokio::test]
+    #[serial(manifest)]
     async fn parity_with_python_fixture() {
-        let _g = ENV_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         set_root(&tmp);
 

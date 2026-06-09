@@ -22,7 +22,6 @@
 use std::path::PathBuf;
 
 use wylde_shared::anchor::{validate_aliases, AliasError, Anchor, AnchorScope, AnchorTarget};
-use wylde_shared::secure_file::harden_perms;
 
 use crate::memory::common::data_dir;
 
@@ -51,25 +50,28 @@ pub enum UpdateOutcome {
     AliasRejected(AliasError),
 }
 
+/// Outcome of a [`replace`]: the stored record, no such identifier, or an
+/// invalid alias set on the replacement.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReplaceOutcome {
+    Replaced(Anchor),
+    NotFound,
+    AliasRejected(AliasError),
+}
+
 /// Load every global anchor. Fail-soft: empty on a missing/torn file.
 pub fn load() -> Vec<Anchor> {
-    let Ok(raw) = std::fs::read_to_string(global_anchors_path()) else {
+    let Ok(raw) = wylde_shared::encryption::read_to_string_at_rest(&global_anchors_path()) else {
         return Vec::new();
     };
     serde_json::from_str(&raw).unwrap_or_default()
 }
 
-/// Atomically replace `global_anchors.json`, then harden it to owner-only.
+/// Encrypt-at-rest (OI-14) + atomically replace `global_anchors.json`, then
+/// harden it to owner-only — all via the shared engine.
 pub fn save(anchors: &[Anchor]) -> std::io::Result<()> {
-    let path = global_anchors_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(anchors).unwrap())?;
-    std::fs::rename(&tmp, &path)?;
-    let _ = harden_perms(&path); // fail-soft; never breaks the write
-    Ok(())
+    let body = serde_json::to_string_pretty(anchors).unwrap();
+    wylde_shared::encryption::write_at_rest(&global_anchors_path(), body.as_bytes())
 }
 
 /// Create a global anchor. The stored record's scope is forced to `Global`. A
@@ -92,17 +94,30 @@ pub fn create(mut anchor: Anchor) -> std::io::Result<CreateOutcome> {
 
 /// Replace the definition of an existing global anchor (used by the collision
 /// dialog's "Replace the global definition" branch, which requires explicit
-/// user confirmation upstream). Forces `scope = Global`. Returns the stored
-/// record, or `None` if the identifier isn't present.
-pub fn replace(mut anchor: Anchor) -> std::io::Result<Option<Anchor>> {
+/// user confirmation upstream). Forces `scope = Global`.
+///
+/// Validates the replacement's alias set against the *other* global anchors
+/// before mutating — the same guard [`create`] applies — so a replacement that
+/// would shadow another anchor's `identifier` or `alias` returns
+/// [`ReplaceOutcome::AliasRejected`] and nothing is written. (Identifier
+/// collision is structurally N/A here: `replace` targets the record that
+/// already owns this `identifier`, and `validate_aliases` rejects any alias
+/// that shadows another anchor's identifier, so the alias check subsumes the
+/// alias-vs-identifier collision the create path guards.) An unknown identifier
+/// returns [`ReplaceOutcome::NotFound`].
+pub fn replace(mut anchor: Anchor) -> std::io::Result<ReplaceOutcome> {
     let mut all = load();
     let Some(idx) = all.iter().position(|a| a.identifier == anchor.identifier) else {
-        return Ok(None);
+        return Ok(ReplaceOutcome::NotFound);
     };
+    match validate_aliases(&anchor.identifier, &anchor.aliases, &all) {
+        Ok(normalized) => anchor.aliases = normalized,
+        Err(e) => return Ok(ReplaceOutcome::AliasRejected(e)),
+    }
     anchor.scope = AnchorScope::Global;
     all[idx] = anchor.clone();
     save(&all)?;
-    Ok(Some(anchor))
+    Ok(ReplaceOutcome::Replaced(anchor))
 }
 
 /// Fields a caller may patch on an existing global anchor (mirrors the
@@ -308,11 +323,59 @@ mod tests {
         create(global_concept("r")).unwrap();
         let mut updated = global_concept("r");
         updated.description = "replaced".into();
-        let out = replace(updated).unwrap().expect("found");
+        let out = match replace(updated).unwrap() {
+            ReplaceOutcome::Replaced(a) => a,
+            other => panic!("expected Replaced, got {other:?}"),
+        };
         assert_eq!(out.description, "replaced");
         assert_eq!(load()[0].description, "replaced");
-        // Replacing an absent id is None.
-        assert!(replace(global_concept("ghost")).unwrap().is_none());
+        // Replacing an absent id is NotFound.
+        assert!(matches!(
+            replace(global_concept("ghost")).unwrap(),
+            ReplaceOutcome::NotFound
+        ));
+    }
+
+    #[test]
+    fn replace_rejects_conflicting_alias() {
+        let _e = Env::new();
+        // Two distinct global anchors exist.
+        create(global_concept("first")).unwrap();
+        create(global_concept("second")).unwrap();
+        // Replacing "second" with an alias that shadows "first"'s identifier is
+        // rejected with the structured collision error — same guard as create.
+        let mut clash = global_concept("second");
+        clash.aliases = vec!["first".into()];
+        match replace(clash).unwrap() {
+            ReplaceOutcome::AliasRejected(AliasError::Collision { owned_by, .. }) => {
+                assert_eq!(owned_by, "first")
+            }
+            other => panic!("expected AliasRejected, got {other:?}"),
+        }
+        // Nothing was written — "second" keeps its original (empty) alias set.
+        let stored = find_by_token("second");
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].aliases.is_empty());
+    }
+
+    #[test]
+    fn replace_keeps_own_aliases() {
+        // A replacement may retain/normalise its own aliases (the record being
+        // replaced is skipped by the self-collision guard).
+        let _e = Env::new();
+        let mut orig = global_concept("widget");
+        orig.aliases = vec!["the widget".into()];
+        create(orig).unwrap();
+        let mut updated = global_concept("widget");
+        updated.aliases = vec!["  the   widget ".into()]; // same alias, messy ws
+        updated.description = "v2".into();
+        match replace(updated).unwrap() {
+            ReplaceOutcome::Replaced(a) => {
+                assert_eq!(a.description, "v2");
+                assert_eq!(a.aliases, vec!["the widget"], "normalised, not rejected");
+            }
+            other => panic!("expected Replaced, got {other:?}"),
+        }
     }
 
     #[test]
