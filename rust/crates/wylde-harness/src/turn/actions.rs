@@ -186,6 +186,16 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     handle.mark_done();
     state::remove_turn(&turn_id);
 
+    // Post-turn reflection (Thought Bubble System Slice D). Scan the just
+    // -finished exchange for a candidate user_profile update and surface
+    // it (spam-controlled, user-accept) into the pending queue. Best
+    // -effort and infallible from here — a refusal or write error is
+    // swallowed inside the hook, so reflection can never affect the
+    // turn reply. Only runs on a naturally-completed turn (not an abort).
+    if completed_naturally {
+        crate::user_profile::reflection::reflect_after_turn(&conversation_id, &user_message);
+    }
+
     // Surface the graceful-degradation notice when the workspaces service
     // was requested but unreachable (scope v2 §7.5).
     let final_text = workspace_context::apply_degraded_notice(final_text, ws_prompt.degraded);

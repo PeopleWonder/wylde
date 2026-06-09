@@ -660,6 +660,135 @@ pub fn write_privacy_prefs(prefs: PrivacyPrefs) -> Result<(), String> {
     wylde_gui_pipe::privacy_prefs::persist(prefs)
 }
 
+// ── User profile (Thought Bubble System Slice D) ─────────────────────
+//
+// The "Profile / Rules" section reads/edits the harness-owned user
+// profile and resolves its pending LLM proposals over the in-process
+// `user_profile.*` verbs (harness pipe).
+
+/// View-side mirror of the harness `UserProfile`. The three free-text
+/// fields the section edits are flattened to `String` (empty = unset);
+/// preferences + recurring topics render read-only.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UserProfile {
+    pub name: String,
+    pub style: String,
+    pub free_text_rules: String,
+    /// `(key, value)` preference pairs, shown read-only.
+    pub preferences: Vec<(String, String)>,
+    pub recurring_topics: Vec<String>,
+}
+
+impl UserProfile {
+    pub fn from_value(v: &Value) -> Self {
+        let preferences = v
+            .get("preferences")
+            .and_then(|x| x.as_object())
+            .map(|o| {
+                o.iter()
+                    .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_owned())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let recurring_topics = v
+            .get("recurring_topics")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+            .unwrap_or_default();
+        Self {
+            name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            style: v.get("style").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            free_text_rules: v
+                .get("free_text_rules")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            preferences,
+            recurring_topics,
+        }
+    }
+}
+
+/// One pending LLM-proposed profile update, for the accept/edit/reject UI.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProfileProposal {
+    pub id: String,
+    pub field: String,
+    pub proposed: String,
+    pub current: Option<String>,
+    pub rationale: String,
+    pub confidence: f64,
+}
+
+impl ProfileProposal {
+    fn from_value(v: &Value) -> Option<Self> {
+        let id = v.get("id").and_then(|x| x.as_str())?.to_owned();
+        Some(Self {
+            id,
+            field: v.get("field").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            proposed: v.get("proposed").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            current: v.get("current").and_then(|x| x.as_str()).map(str::to_owned),
+            rationale: v.get("rationale").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            confidence: v.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.0),
+        })
+    }
+
+    /// `true` when the field is one the section's text inputs can pre-fill
+    /// on "Edit" (name / style / free_text_rules).
+    pub fn is_text_field(&self) -> bool {
+        matches!(self.field.as_str(), "name" | "style" | "free_text_rules")
+    }
+}
+
+/// Build the `/__action__` envelope for a `user_profile.*` verb. Split
+/// out as a pure function so the verb name + payload wiring is unit
+/// -testable without a live harness pipe.
+pub(crate) fn profile_request(action: &str, payload: Value) -> Value {
+    json!({ "action": action, "payload": payload })
+}
+
+async fn user_profile_call(action: &str, payload: Value) -> Result<Value, String> {
+    wylde_gui_pipe::call("wylde-harness", "POST", "/__action__", Some(profile_request(action, payload)))
+        .await
+}
+
+/// Read the current user profile (`user_profile.get`).
+pub async fn read_user_profile() -> Result<UserProfile, String> {
+    let v = user_profile_call("user_profile.get", json!({})).await?;
+    Ok(UserProfile::from_value(&v))
+}
+
+/// List pending profile proposals (`user_profile.list_proposals`).
+pub async fn list_profile_proposals() -> Result<Vec<ProfileProposal>, String> {
+    let v = user_profile_call("user_profile.list_proposals", json!({})).await?;
+    let proposals = v
+        .get("proposals")
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(ProfileProposal::from_value).collect())
+        .unwrap_or_default();
+    Ok(proposals)
+}
+
+/// Apply a user edit to one field (`user_profile.update`). `field` is the
+/// profile key; an empty `value` clears name/style and blanks the rules.
+pub async fn update_profile_field(field: &str, value: String) -> Result<UserProfile, String> {
+    let v = user_profile_call("user_profile.update", json!({ field: value })).await?;
+    Ok(UserProfile::from_value(&v))
+}
+
+/// Accept a pending proposal (`user_profile.accept`). Returns the updated
+/// profile.
+pub async fn accept_profile_proposal(id: &str) -> Result<UserProfile, String> {
+    let v = user_profile_call("user_profile.accept", json!({ "proposal_id": id })).await?;
+    Ok(UserProfile::from_value(&v))
+}
+
+/// Reject a pending proposal (`user_profile.reject`).
+pub async fn reject_profile_proposal(id: &str) -> Result<(), String> {
+    user_profile_call("user_profile.reject", json!({ "proposal_id": id })).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -831,5 +960,70 @@ mod tests {
         assert!(o.min_p.is_none());
         assert!(o.num_ctx.is_none());
         assert!(o.keep_alive.is_none());
+    }
+
+    // ── User profile (Slice D) ───────────────────────────────────────
+
+    #[test]
+    fn user_profile_parses_all_fields() {
+        let p = UserProfile::from_value(&json!({
+            "name": "Aaron",
+            "style": "terse",
+            "free_text_rules": "Show diffs.",
+            "preferences": {"tone": "dry"},
+            "recurring_topics": ["rust", "gpui"]
+        }));
+        assert_eq!(p.name, "Aaron");
+        assert_eq!(p.style, "terse");
+        assert_eq!(p.free_text_rules, "Show diffs.");
+        assert_eq!(p.preferences, vec![("tone".to_owned(), "dry".to_owned())]);
+        assert_eq!(p.recurring_topics, vec!["rust", "gpui"]);
+    }
+
+    #[test]
+    fn user_profile_missing_fields_default_empty() {
+        let p = UserProfile::from_value(&json!({}));
+        assert_eq!(p, UserProfile::default());
+    }
+
+    #[test]
+    fn proposal_parses_and_classifies_text_field() {
+        let p = ProfileProposal::from_value(&json!({
+            "id": "abc", "field": "style", "proposed": "terse",
+            "current": "verbose", "rationale": "you keep asking", "confidence": 0.9
+        }))
+        .unwrap();
+        assert_eq!(p.id, "abc");
+        assert_eq!(p.proposed, "terse");
+        assert_eq!(p.current.as_deref(), Some("verbose"));
+        assert!(p.is_text_field());
+
+        // A preference field isn't one the inputs pre-fill.
+        let pref = ProfileProposal::from_value(&json!({
+            "id": "x", "field": "preference:tone", "proposed": "dry", "confidence": 0.8
+        }))
+        .unwrap();
+        assert!(!pref.is_text_field());
+
+        // No id → not a proposal.
+        assert!(ProfileProposal::from_value(&json!({"field": "name"})).is_none());
+    }
+
+    #[test]
+    fn profile_request_wires_verb_and_payload() {
+        // The accept/reject wrappers send the proposal id under the
+        // `user_profile.{accept,reject}` verbs.
+        let acc = profile_request("user_profile.accept", json!({"proposal_id": "p1"}));
+        assert_eq!(acc["action"], "user_profile.accept");
+        assert_eq!(acc["payload"]["proposal_id"], "p1");
+
+        let rej = profile_request("user_profile.reject", json!({"proposal_id": "p2"}));
+        assert_eq!(rej["action"], "user_profile.reject");
+        assert_eq!(rej["payload"]["proposal_id"], "p2");
+
+        // update sends the field patch directly.
+        let upd = profile_request("user_profile.update", json!({"name": "Aaron"}));
+        assert_eq!(upd["action"], "user_profile.update");
+        assert_eq!(upd["payload"]["name"], "Aaron");
     }
 }

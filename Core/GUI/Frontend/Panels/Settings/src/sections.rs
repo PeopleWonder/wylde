@@ -1301,6 +1301,240 @@ fn modal_button(id: impl Into<ElementId>, label: &str, primary: bool) -> Statefu
     b
 }
 
+// ── Profile / Rules section (Thought Bubble System Slice D) ──────────
+
+/// A small action button used by the proposal rows. `primary` styles it
+/// as the accept affordance; the others are neutral-bordered.
+fn profile_button(id: impl Into<ElementId>, label: &str, primary: bool) -> Stateful<gpui::Div> {
+    let mut b = div()
+        .id(id.into())
+        .cursor_pointer()
+        .rounded(px(4.0))
+        .border_1()
+        .px_2()
+        .py(px(2.0))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::MICRO))
+        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+        .text_color(rgb(pack(TEXT_PRIMARY)))
+        .child(SharedString::from(label.to_owned()));
+    if primary {
+        b = b.bg(rgb(pack(BRAND))).border_color(rgb(pack(BORDER_EMPHASIS)));
+    } else {
+        b = b
+            .bg(rgb(pack(SURFACE_900)))
+            .border_color(rgb(pack(BORDER_DEFAULT)));
+    }
+    b
+}
+
+/// One editable profile field: label over its text input.
+fn profile_field_row(label: &str, input: &gpui::Entity<wylde_gpui_input::TextInput>) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(label.to_owned())),
+        )
+        .child(input.clone())
+}
+
+/// Read-only chip row for preferences / recurring topics — the bits the
+/// section surfaces but doesn't structurally edit in v1 (the free-text
+/// rules are the primary editable lever).
+fn profile_readonly_block(title: &str, lines: &[String]) -> gpui::Div {
+    let mut c = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(title.to_owned())),
+        );
+    for line in lines {
+        c = c.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(SharedString::from(line.clone())),
+        );
+    }
+    c
+}
+
+/// One pending proposal card: the field + a current→proposed diff +
+/// rationale + confidence, with Accept / Edit / Reject buttons.
+fn proposal_card(p: &crate::ipc::ProfileProposal, cx: &mut Cx) -> gpui::Div {
+    let current = p.current.clone().unwrap_or_else(|| "(unset)".to_owned());
+    let diff = format!("{}: {} → {}", p.field, current, p.proposed);
+    let meta = format!(
+        "{}  ·  confidence {:.0}%",
+        if p.rationale.is_empty() { "Proposed update" } else { p.rationale.as_str() },
+        (p.confidence * 100.0).round()
+    );
+
+    let id_accept = p.id.clone();
+    let id_reject = p.id.clone();
+    let proposal_for_edit = p.clone();
+
+    let mut buttons = div()
+        .flex()
+        .flex_row()
+        .gap_2()
+        .items_center()
+        .child(
+            profile_button(
+                ElementId::Name(format!("profile-prop-accept::{}", p.id).into()),
+                "Accept",
+                true,
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _ev, _window, cx| {
+                    this.accept_profile_proposal(id_accept.clone(), cx)
+                }),
+            ),
+        );
+    // "Edit" pre-fills the matching field input with the proposed value
+    // and accepts the proposal, so the user lands with it in the editor
+    // ready to tweak. Only meaningful for the text fields the section
+    // edits; for others it behaves like Accept.
+    if proposal_for_edit.is_text_field() {
+        buttons = buttons.child(
+            profile_button(
+                ElementId::Name(format!("profile-prop-edit::{}", p.id).into()),
+                "Edit",
+                false,
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _ev, _window, cx| {
+                    this.edit_profile_proposal(proposal_for_edit.clone(), cx)
+                }),
+            ),
+        );
+    }
+    buttons = buttons.child(
+        profile_button(
+            ElementId::Name(format!("profile-prop-reject::{}", p.id).into()),
+            "Reject",
+            false,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _ev, _window, cx| {
+                this.reject_profile_proposal(id_reject.clone(), cx)
+            }),
+        ),
+    );
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_DEFAULT)))
+        .bg(rgb(pack(SURFACE_900)))
+        .p_2()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_PRIMARY)))
+                .child(SharedString::from(diff)),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(meta)),
+        )
+        .child(buttons)
+}
+
+/// The "Profile / Rules" section (Build Order §3 / Plan v2 §6 Slice D):
+/// the editable user profile + the pending LLM proposal queue.
+///
+/// `name_input` / `style_input` / `rules_input` are the panel's three
+/// profile `TextInput` entities (synced by the panel); an empty `None`
+/// (inputs not yet minted in a headless test) renders the header only.
+pub fn profile_rules_section(
+    name_input: Option<&gpui::Entity<wylde_gpui_input::TextInput>>,
+    style_input: Option<&gpui::Entity<wylde_gpui_input::TextInput>>,
+    rules_input: Option<&gpui::Entity<wylde_gpui_input::TextInput>>,
+    profile: &crate::ipc::UserProfile,
+    proposals: &[crate::ipc::ProfileProposal],
+    cx: &mut Cx,
+) -> gpui::Div {
+    let mut c = card().child(section_title(
+        "Profile / Rules",
+        "Who you are and how you want the assistant to behave. Rules are followed verbatim. \
+         The assistant may propose updates below — you accept, edit, or reject each.",
+    ));
+
+    if let Some(input) = name_input {
+        c = c.child(profile_field_row("Name", input));
+    }
+    if let Some(input) = style_input {
+        c = c.child(profile_field_row("Style (one line)", input));
+    }
+    if let Some(input) = rules_input {
+        c = c.child(profile_field_row("Rules (free text — followed verbatim)", input));
+    }
+
+    if !profile.preferences.is_empty() {
+        let lines: Vec<String> = profile
+            .preferences
+            .iter()
+            .map(|(k, v)| format!("{k}: {v}"))
+            .collect();
+        c = c.child(profile_readonly_block("Preferences", &lines));
+    }
+    if !profile.recurring_topics.is_empty() {
+        c = c.child(profile_readonly_block(
+            "Recurring topics",
+            &[profile.recurring_topics.join(", ")],
+        ));
+    }
+
+    // Pending proposals.
+    if proposals.is_empty() {
+        c = c.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(
+                    "No pending proposals — the assistant will suggest updates as it learns.",
+                )),
+        );
+    } else {
+        c = c.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                .child(SharedString::from(format!("Proposed updates ({})", proposals.len()))),
+        );
+        for p in proposals {
+            c = c.child(proposal_card(p, cx));
+        }
+    }
+    c
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

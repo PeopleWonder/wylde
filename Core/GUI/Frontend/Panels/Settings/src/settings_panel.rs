@@ -25,24 +25,32 @@ use wylde_theme::colors::{SURFACE_900, TEXT_PRIMARY, TEXT_SECONDARY};
 use wylde_theme::typography::{size, FAMILY_INTER};
 
 use crate::ipc::{
-    check_for_update, clear_ollama_override, clear_tool_decision, download_and_install,
-    get_autostart_enabled, list_consent, list_input_devices, read_effective_model,
-    read_model_defaults, read_ollama_overrides, read_privacy_prefs, read_update_prefs,
-    read_voice_settings, reset_consent, set_autostart_enabled, set_no_auth, set_ollama_override,
-    set_tool_decision, test_mic, write_privacy_prefs, write_update_prefs, write_voice_settings,
-    ConsentSnapshot, OllamaSettings, PrivacyPrefs, UpdateCheck, UpdatePrefs, VoiceDevices,
-    VoiceSettings, VoiceTest,
+    accept_profile_proposal, check_for_update, clear_ollama_override, clear_tool_decision,
+    download_and_install, get_autostart_enabled, list_consent, list_input_devices,
+    list_profile_proposals, read_effective_model, read_model_defaults, read_ollama_overrides,
+    read_privacy_prefs, read_update_prefs, read_user_profile, read_voice_settings,
+    reject_profile_proposal, reset_consent, set_autostart_enabled, set_no_auth, set_ollama_override,
+    set_tool_decision, test_mic, update_profile_field, write_privacy_prefs, write_update_prefs,
+    write_voice_settings, ConsentSnapshot, OllamaSettings, PrivacyPrefs, UpdateCheck, UpdatePrefs,
+    VoiceDevices, VoiceSettings, VoiceTest,
 };
 use crate::hotkey::{resolve_capture, CaptureOutcome};
 use crate::sections::{
     consent_section, error_banner, hf_privacy_modal, ollama_field_string, ollama_loading_card,
-    ollama_section, pack, privacy_section, startup_section, updates_section, voice_section,
-    FieldKind, OLLAMA_FIELDS,
+    ollama_section, pack, privacy_section, profile_rules_section, startup_section, updates_section,
+    voice_section, FieldKind, OLLAMA_FIELDS,
 };
 
 /// Debounce window before a typed Ollama-field edit is persisted, so a
 /// burst of keystrokes collapses into a single `settings.ollama.*` write.
 const OLLAMA_WRITE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Debounce window before a typed Profile/Rules edit is persisted via
+/// `user_profile.update`, collapsing a keystroke burst into one write.
+const PROFILE_WRITE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Profile field indices (parallel to [`SettingsPanel::profile_debounce_gen`]).
+const PROFILE_FIELDS: [&str; 3] = ["name", "style", "free_text_rules"];
 
 /// Render state of the Ollama inference section (scope §5). State 4 (live
 /// re-query on a model change) is not a variant — it's this same machine
@@ -192,6 +200,24 @@ pub struct SettingsPanel {
     /// Last write-side failure (pipe error from a toggle).  Surfaced as
     /// a banner; cleared on the next successful write.
     pub error: Option<String>,
+
+    // ── Profile / Rules (Thought Bubble System Slice D) ──────────────
+    /// Last-read user profile (read-only blocks + the source for the
+    /// initial input values).
+    pub user_profile: crate::ipc::UserProfile,
+    /// Pending LLM-proposed profile updates.
+    pub profile_proposals: Vec<crate::ipc::ProfileProposal>,
+    /// Editable inputs for name / style / free_text_rules. `None` until
+    /// minted in [`Self::view`] (headless test construction leaves them
+    /// unset, so the section renders its header only).
+    pub profile_name_input: Option<Entity<TextInput>>,
+    pub profile_style_input: Option<Entity<TextInput>>,
+    pub profile_rules_input: Option<Entity<TextInput>>,
+    /// Change subscriptions for the three profile inputs, kept alive here.
+    pub profile_input_subs: Vec<Subscription>,
+    /// Per-field debounce generation (name, style, rules) — bumped on
+    /// each keystroke; a pending write fires only if still current.
+    pub profile_debounce_gen: [u64; 3],
 }
 
 impl SettingsPanel {
@@ -221,6 +247,13 @@ impl SettingsPanel {
             hf_modal_open: false,
             hf_dont_show_again: true,
             error: None,
+            user_profile: crate::ipc::UserProfile::default(),
+            profile_proposals: Vec::new(),
+            profile_name_input: None,
+            profile_style_input: None,
+            profile_rules_input: None,
+            profile_input_subs: Vec::new(),
+            profile_debounce_gen: [0; 3],
         }
     }
 
@@ -247,6 +280,9 @@ impl SettingsPanel {
             // Mint the Ollama field inputs + their change subscriptions
             // once, before the first refresh syncs values onto them.
             panel.init_ollama_inputs(cx);
+            // Mint the Profile/Rules inputs + their change subscriptions
+            // before the first refresh syncs values onto them.
+            panel.init_profile_inputs(cx);
             Self::spawn_refresh(cx);
             // Follow cross-panel model changes (Chat pick / Models star)
             // so the Ollama section re-queries live (State 4).
@@ -334,6 +370,235 @@ impl SettingsPanel {
             }
         })
         .detach();
+
+        // Profile / Rules — the user profile + its pending proposals
+        // (Slice D). Best-effort; a failure leaves the section on
+        // defaults (empty profile, no proposals).
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            if let Ok(profile) = read_user_profile().await {
+                let _ = this.update(app_cx, |panel, cx| {
+                    panel.user_profile = profile;
+                    panel.sync_profile_inputs(cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+        Self::refresh_profile_proposals(cx);
+    }
+
+    // ── Profile / Rules section (Slice D) ────────────────────────────
+
+    /// Mint the three profile inputs (name + style single-line, rules
+    /// multi-line) and subscribe each to its `Changed` event (→ debounced
+    /// persist). Called once from [`Self::view`].
+    pub fn init_profile_inputs(&mut self, cx: &mut Context<Self>) {
+        let mut subs = Vec::with_capacity(3);
+
+        let name = cx.new(|c| {
+            TextInput::single_line(c)
+                .with_submit_mode(wylde_gpui_input::SubmitMode::Never)
+                .with_element_key("profile-name")
+                .with_placeholder("What should I call you?")
+        });
+        subs.push(cx.subscribe(&name, move |this, _i, ev, cx| {
+            if let InputEvent::Changed(text) = ev {
+                this.on_profile_field_changed(0, text.clone(), cx);
+            }
+        }));
+
+        let style = cx.new(|c| {
+            TextInput::single_line(c)
+                .with_submit_mode(wylde_gpui_input::SubmitMode::Never)
+                .with_element_key("profile-style")
+                .with_placeholder("e.g. direct answers, no hedging")
+        });
+        subs.push(cx.subscribe(&style, move |this, _i, ev, cx| {
+            if let InputEvent::Changed(text) = ev {
+                this.on_profile_field_changed(1, text.clone(), cx);
+            }
+        }));
+
+        let rules = cx.new(|c| {
+            TextInput::multi_line(c)
+                .with_submit_mode(wylde_gpui_input::SubmitMode::Never)
+                .with_element_key("profile-rules")
+                .with_placeholder("Standing rules the assistant follows verbatim…")
+        });
+        subs.push(cx.subscribe(&rules, move |this, _i, ev, cx| {
+            if let InputEvent::Changed(text) = ev {
+                this.on_profile_field_changed(2, text.clone(), cx);
+            }
+        }));
+
+        self.profile_name_input = Some(name);
+        self.profile_style_input = Some(style);
+        self.profile_rules_input = Some(rules);
+        self.profile_input_subs = subs;
+    }
+
+    /// Repaint the three profile inputs from `self.user_profile` using the
+    /// *silent* setter, so a programmatic resync (load / accept) doesn't
+    /// feed the change handler and loop a write back.
+    fn sync_profile_inputs(&mut self, cx: &mut Context<Self>) {
+        if let Some(input) = self.profile_name_input.clone() {
+            let v = self.user_profile.name.clone();
+            input.update(cx, |inp, cx| inp.set_text_silent(v, cx));
+        }
+        if let Some(input) = self.profile_style_input.clone() {
+            let v = self.user_profile.style.clone();
+            input.update(cx, |inp, cx| inp.set_text_silent(v, cx));
+        }
+        if let Some(input) = self.profile_rules_input.clone() {
+            let v = self.user_profile.free_text_rules.clone();
+            input.update(cx, |inp, cx| inp.set_text_silent(v, cx));
+        }
+    }
+
+    /// A profile field's text changed — debounce, then persist the field
+    /// via `user_profile.update`. `idx` selects [`PROFILE_FIELDS`].
+    fn on_profile_field_changed(&mut self, idx: usize, text: String, cx: &mut Context<Self>) {
+        let Some(field) = PROFILE_FIELDS.get(idx).copied() else {
+            return;
+        };
+        // Bump the generation so an earlier pending write for this field
+        // aborts when it wakes.
+        if let Some(g) = self.profile_debounce_gen.get_mut(idx) {
+            *g += 1;
+        }
+        let gen = self.profile_debounce_gen[idx];
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            app_cx
+                .background_executor()
+                .timer(PROFILE_WRITE_DEBOUNCE)
+                .await;
+            // Superseded by a newer keystroke? Then that one owns the write.
+            let current = this
+                .update(app_cx, |panel, _| panel.profile_debounce_gen.get(idx).copied())
+                .ok()
+                .flatten();
+            if current != Some(gen) {
+                return;
+            }
+            let outcome = update_profile_field(field, text).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                match outcome {
+                    Ok(profile) => {
+                        // Update the model (drives the read-only blocks);
+                        // do NOT resync the inputs — that would reset the
+                        // caret mid-type.
+                        panel.user_profile = profile;
+                        panel.error = None;
+                    }
+                    Err(e) => panel.error = Some(format!("profile: {e}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Pull the pending proposal queue into the panel.
+    pub fn refresh_profile_proposals(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            if let Ok(proposals) = list_profile_proposals().await {
+                let _ = this.update(app_cx, |panel, cx| {
+                    panel.profile_proposals = proposals;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Accept a pending proposal — apply it, resync the inputs to show the
+    /// new value, and refresh the queue.
+    pub fn accept_profile_proposal(&mut self, id: String, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = accept_profile_proposal(&id).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                match outcome {
+                    Ok(profile) => {
+                        panel.user_profile = profile;
+                        panel.sync_profile_inputs(cx);
+                        panel.error = None;
+                    }
+                    Err(e) => panel.error = Some(format!("profile: {e}")),
+                }
+                cx.notify();
+            });
+            Self::refresh_profile_proposals_async(&this, app_cx).await;
+        })
+        .detach();
+    }
+
+    /// "Edit" a proposal — accept it (so it leaves the queue and its value
+    /// lands in the profile) and drop the proposed text into the field
+    /// input so the user can immediately tweak it. Only the text fields
+    /// reach this (the section gates the Edit button on `is_text_field`).
+    pub fn edit_profile_proposal(
+        &mut self,
+        proposal: crate::ipc::ProfileProposal,
+        cx: &mut Context<Self>,
+    ) {
+        let id = proposal.id.clone();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = accept_profile_proposal(&id).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                match outcome {
+                    Ok(profile) => {
+                        panel.user_profile = profile;
+                        // Land the proposed value in the matching input,
+                        // editable (set_text, not silent — but the value
+                        // already equals what was persisted, so the
+                        // resulting write is a harmless idempotent repeat).
+                        let target = match proposal.field.as_str() {
+                            "name" => panel.profile_name_input.clone(),
+                            "style" => panel.profile_style_input.clone(),
+                            "free_text_rules" => panel.profile_rules_input.clone(),
+                            _ => None,
+                        };
+                        if let Some(input) = target {
+                            let v = proposal.proposed.clone();
+                            input.update(cx, |inp, cx| inp.set_text_silent(v, cx));
+                        }
+                        panel.error = None;
+                    }
+                    Err(e) => panel.error = Some(format!("profile: {e}")),
+                }
+                cx.notify();
+            });
+            Self::refresh_profile_proposals_async(&this, app_cx).await;
+        })
+        .detach();
+    }
+
+    /// Reject a pending proposal — drop it (recording the OI-11
+    /// suppression) and refresh the queue.
+    pub fn reject_profile_proposal(&mut self, id: String, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            if let Err(e) = reject_profile_proposal(&id).await {
+                let _ = this.update(app_cx, |panel, cx| {
+                    panel.error = Some(format!("profile: {e}"));
+                    cx.notify();
+                });
+            }
+            Self::refresh_profile_proposals_async(&this, app_cx).await;
+        })
+        .detach();
+    }
+
+    /// Shared tail: re-read the proposal queue from within an async task.
+    async fn refresh_profile_proposals_async(
+        this: &gpui::WeakEntity<Self>,
+        app_cx: &mut AsyncApp,
+    ) {
+        if let Ok(proposals) = list_profile_proposals().await {
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.profile_proposals = proposals;
+                cx.notify();
+            });
+        }
     }
 
     // ── Ollama inference section (per-model defaults + overrides) ─────
@@ -1186,7 +1451,15 @@ impl Render for SettingsPanel {
                         self.hotkey_note.as_deref(),
                         cx,
                     ))
-                    .child(consent_section(&self.consent, cx)),
+                    .child(consent_section(&self.consent, cx))
+                    .child(profile_rules_section(
+                        self.profile_name_input.as_ref(),
+                        self.profile_style_input.as_ref(),
+                        self.profile_rules_input.as_ref(),
+                        &self.user_profile,
+                        &self.profile_proposals,
+                        cx,
+                    )),
             );
 
         // The first-time privacy modal floats above the scroll content via
@@ -1331,6 +1604,30 @@ mod tests {
         // Privacy & Network: local-file read/write (no pipe).
         let _ = crate::ipc::read_privacy_prefs;
         let _ = crate::ipc::write_privacy_prefs;
+        // Profile / Rules (Slice D): user_profile.* verbs + the section.
+        let _ = crate::ipc::read_user_profile;
+        let _ = crate::ipc::list_profile_proposals;
+        let _ = crate::ipc::update_profile_field;
+        let _ = crate::ipc::accept_profile_proposal;
+        let _ = crate::ipc::reject_profile_proposal;
+        let _ = crate::sections::profile_rules_section;
+    }
+
+    /// The proposal-resolution handlers exist with the expected
+    /// signatures — a build-time witness that the Accept / Edit / Reject
+    /// buttons wire to real panel methods (which in turn call the
+    /// `user_profile.{accept,reject}` verbs).
+    #[test]
+    fn profile_proposal_handlers_are_wired() {
+        let _accept: fn(&mut SettingsPanel, String, &mut Context<SettingsPanel>) =
+            SettingsPanel::accept_profile_proposal;
+        let _reject: fn(&mut SettingsPanel, String, &mut Context<SettingsPanel>) =
+            SettingsPanel::reject_profile_proposal;
+        let _edit: fn(
+            &mut SettingsPanel,
+            crate::ipc::ProfileProposal,
+            &mut Context<SettingsPanel>,
+        ) = SettingsPanel::edit_profile_proposal;
     }
 
     /// The HuggingFace toggle decision is a pure function of the current

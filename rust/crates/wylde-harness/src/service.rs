@@ -129,6 +129,13 @@ mod tests {
             "consent.clear",
             "consent.set_no_auth",
             "consent.reset",
+            // user_profile.* — Thought Bubble System Slice D
+            "user_profile.get",
+            "user_profile.update",
+            "user_profile.propose",
+            "user_profile.accept",
+            "user_profile.reject",
+            "user_profile.list_proposals",
         ] {
             assert!(unary.contains(&n.to_string()), "missing unary {n}");
         }
