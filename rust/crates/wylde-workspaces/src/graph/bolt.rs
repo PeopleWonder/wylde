@@ -254,6 +254,70 @@ impl BoltClient {
             )),
         }
     }
+
+    /// `delete_file_nodes` (Slice I — file watcher) — drop the graph
+    /// footprint of a single file (or, for a deleted directory, its whole
+    /// subtree) within `workspace`: DETACH DELETE every Chunk whose `path`
+    /// equals `path` or sits under it, then optionally prune now-orphaned
+    /// Entity nodes (reusing `delete_workspace`'s prune step).
+    ///
+    /// `prune_orphans` is the watcher's modify-vs-delete switch:
+    ///   * **delete / rename-away** → `true`: an entity only this file
+    ///     mentioned should disappear (the spec's "`foo` node should be gone").
+    ///   * **modify (delete-then-reupsert)** → `false`: the stale Chunk nodes
+    ///     are cleared so a changed mtime (→ changed chunk id) can't orphan
+    ///     them, but the full-graph orphan scan is skipped — the very entities
+    ///     are about to be re-MERGE'd by the upsert, and skipping it keeps the
+    ///     per-file delta cheap (no global `MATCH (e:Entity)` sweep).
+    ///
+    /// Returns `{ok, workspace, path, chunks_deleted, orphan_entities_deleted}`.
+    pub async fn delete_file_nodes(&self, workspace: &str, path: &str, prune_orphans: bool) -> Reply {
+        let ws = workspace.trim().to_owned();
+        let path = path.trim().to_owned();
+        if ws.is_empty() {
+            return Reply::err_msg("bad_request", "'workspace' required");
+        }
+        if path.is_empty() {
+            return Reply::err_msg("bad_request", "'path' required");
+        }
+        // Subtree prefix: any chunk under `<path><sep>` belongs to a deleted
+        // directory's descendants. For a plain file this matches nothing extra.
+        let prefix = format!("{path}{}", std::path::MAIN_SEPARATOR);
+        let timeout = self.config.connect_timeout;
+        let fut = async {
+            let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
+            let chunks_deleted = run_single_count(
+                graph,
+                cypher::DELETE_FILE_CHUNKS,
+                vec![
+                    ("ws".to_owned(), BoltType::from(ws.clone())),
+                    ("path".to_owned(), BoltType::from(path.clone())),
+                    ("prefix".to_owned(), BoltType::from(prefix.clone())),
+                ],
+            )
+            .await?;
+            let orphans = if prune_orphans {
+                run_single_count(graph, cypher::DELETE_ORPHAN_ENTITIES, vec![]).await?
+            } else {
+                0
+            };
+            Ok::<_, (String, String)>(json!({
+                "ok": true,
+                "workspace": ws,
+                "path": path,
+                "chunks_deleted": chunks_deleted,
+                "orphan_entities_deleted": orphans,
+            }))
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(v)) => Reply::ok(v),
+            Ok(Err((code, message))) => Reply::err_msg(code, message),
+            Err(_) => Reply::err_msg(
+                error_codes::QUERY,
+                format!("delete_file_nodes timed out after {timeout:?}"),
+            ),
+        }
+    }
 }
 
 /// Run [`query::NODES_FOR_WORKSPACE`] and decode each row into a [`NodeRow`].

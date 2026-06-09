@@ -6,7 +6,7 @@
 //! basis so the indexer never blocks on a multi-MB blob or feeds a
 //! non-text file to the embedder.
 
-use std::path::Path;
+use std::path::{Component, Path};
 
 /// Soft-cap text-file size at 1 MB. Bigger files are logged-and-skipped
 /// rather than crashing the embedder with a multi-MB chunk.
@@ -105,52 +105,61 @@ fn walk_dir(dir: &Path, out: &mut Vec<Chunk>) {
             }
             walk_dir(&path, out);
         } else if file_type.is_file() {
-            chunk_file(&path, out);
+            out.extend(chunk_file(&path));
         }
     }
 }
 
-fn chunk_file(path: &Path, out: &mut Vec<Chunk>) {
+/// Chunk one on-disk file, applying the same suffix / size / binary / empty
+/// skips the full walk does. Returns the file's chunks, or an empty vec when
+/// the file is filtered out or unreadable. This is the single-file entry point
+/// the watcher's delta path drives (Slice I); the full walk recurses into it.
+///
+/// The caller is responsible for the path-level prune (skip-dirs / hidden /
+/// suffix) via [`is_indexable_path`] — this function still re-checks the suffix
+/// and content so a direct call is self-contained.
+pub fn chunk_one_file(path: &str) -> Vec<Chunk> {
+    chunk_file(Path::new(path))
+}
+
+fn chunk_file(path: &Path) -> Vec<Chunk> {
+    let mut out = Vec::new();
     if let Some(suffix) = path.extension().and_then(|s| s.to_str()) {
         if SKIP_SUFFIXES.contains(&suffix.to_ascii_lowercase().as_str()) {
-            return;
+            return out;
         }
     }
     let meta = match path.metadata() {
         Ok(m) => m,
-        Err(_) => return,
+        Err(_) => return out,
     };
     let size = meta.len();
     if size == 0 {
-        return;
+        return out;
     }
     if size > MAX_INDEXABLE_BYTES {
         tracing::debug!("workspaces.rag: skip oversized {path:?} ({size} bytes)");
-        return;
+        return out;
     }
     let raw = match std::fs::read(path) {
         Ok(r) => r,
         Err(e) => {
             tracing::debug!("workspaces.rag: skip unreadable {path:?}: {e}");
-            return;
+            return out;
         }
     };
     // Binary sniff — a NUL byte in the first 1 KB is a strong signal of a
     // non-text file the embedder shouldn't see.
     if raw.iter().take(1024).any(|b| *b == 0) {
-        return;
+        return out;
     }
     let text = String::from_utf8_lossy(&raw);
     if text.trim().is_empty() {
-        return;
+        return out;
     }
     let mtime = mtime_secs(&meta);
     // Absolute, canonicalised path so delta lookups match across walks.
-    let abs = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf())
-        .to_string_lossy()
-        .into_owned();
+    let abs = canonical_path(path);
     for (chunk_idx, (content, start_line, end_line)) in chunk_text(&text).into_iter().enumerate() {
         out.push(Chunk {
             path: abs.clone(),
@@ -161,6 +170,60 @@ fn chunk_file(path: &Path, out: &mut Vec<Chunk>) {
             end_line,
         });
     }
+    out
+}
+
+/// The canonical, absolute string form a chunk's `path` is stored under, so
+/// the watcher's delta lookups (graph delete-by-path, vector drop-by-path)
+/// match what the walk wrote. Tolerant of a missing file — on a delete the
+/// file is already gone, so it canonicalises the parent dir and re-joins the
+/// name (the parent is normally still present), giving the same string the
+/// walk produced for that file while it existed. On Windows this carries the
+/// `\\?\` extended-length prefix; both producers use this one helper, so they
+/// agree.
+pub fn canonical_path(path: &Path) -> String {
+    if let Ok(c) = path.canonicalize() {
+        return c.to_string_lossy().into_owned();
+    }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
+        if let Ok(cp) = parent.canonicalize() {
+            return cp.join(name).to_string_lossy().into_owned();
+        }
+    }
+    path.to_string_lossy().into_owned()
+}
+
+/// Path-only pre-filter the watcher applies before any IO: would the full
+/// walk have indexed a file at `path` under `root`? Rejects anything whose
+/// ancestry (relative to `root`) contains a hidden component (dotfile/dir) or
+/// a [`SKIP_DIR_NAMES`] member, or whose suffix is in [`SKIP_SUFFIXES`].
+///
+/// This mirrors the walk's pruning exactly (the spec's "respect the ingest
+/// walker's filter") so a `target/`, `.git/`, `node_modules/`, hidden, or
+/// binary-suffixed path never triggers a delta. Content-level skips (binary
+/// sniff, oversize, empty) are left to [`chunk_one_file`], which the delta
+/// path calls next.
+pub fn is_indexable_path(root: &str, path: &str) -> bool {
+    let root = Path::new(root);
+    let p = Path::new(path);
+    let rel = p.strip_prefix(root).unwrap_or(p);
+    for comp in rel.components() {
+        if let Component::Normal(os) = comp {
+            let name = os.to_string_lossy();
+            if name.starts_with('.') {
+                return false;
+            }
+            if SKIP_DIR_NAMES.contains(&name.as_ref()) {
+                return false;
+            }
+        }
+    }
+    if let Some(suffix) = p.extension().and_then(|s| s.to_str()) {
+        if SKIP_SUFFIXES.contains(&suffix.to_ascii_lowercase().as_str()) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Source-file mtime as epoch seconds (`f64`). Falls back to `0.0` if the
@@ -274,5 +337,70 @@ mod tests {
     #[test]
     fn walk_of_missing_folder_is_empty() {
         assert!(walk_and_chunk("/no/such/folder/xyz-123").is_empty());
+    }
+
+    // ── Slice I — watcher filter + single-file chunker ──────────────────
+
+    #[test]
+    fn is_indexable_path_accepts_normal_source() {
+        assert!(is_indexable_path("/proj", "/proj/src/main.rs"));
+        assert!(is_indexable_path("/proj", "/proj/docs/readme.md"));
+    }
+
+    #[test]
+    fn is_indexable_path_rejects_skip_dirs_and_hidden_anywhere() {
+        // A skip-dir anywhere in the ancestry under root.
+        assert!(!is_indexable_path("/proj", "/proj/target/debug/foo.rs"));
+        assert!(!is_indexable_path("/proj", "/proj/node_modules/dep/x.js"));
+        assert!(!is_indexable_path("/proj", "/proj/.git/config"));
+        // A hidden file or hidden dir component.
+        assert!(!is_indexable_path("/proj", "/proj/.env"));
+        assert!(!is_indexable_path("/proj", "/proj/.vscode/settings.json"));
+        assert!(!is_indexable_path("/proj", "/proj/src/.secret.rs"));
+    }
+
+    #[test]
+    fn is_indexable_path_rejects_binary_suffixes() {
+        assert!(!is_indexable_path("/proj", "/proj/assets/logo.png"));
+        assert!(!is_indexable_path("/proj", "/proj/bin/tool.exe"));
+        assert!(!is_indexable_path("/proj", "/proj/lib/native.dll"));
+    }
+
+    #[test]
+    fn chunk_one_file_skips_binary_and_empty_returns_chunks_for_text() {
+        let td = tempdir().unwrap();
+        let root = td.path();
+        let good = root.join("good.rs");
+        std::fs::write(&good, "fn foo() -> i32 { 42 }\n").unwrap();
+        let binary = root.join("blob.bin");
+        std::fs::write(&binary, [0u8, 1, 2, 3, 0, 9]).unwrap();
+        let empty = root.join("empty.md");
+        std::fs::write(&empty, "").unwrap();
+
+        let chunks = chunk_one_file(&good.to_string_lossy());
+        assert_eq!(chunks.len(), 1, "text file yields one chunk");
+        assert!(chunks[0].content.contains("foo"));
+
+        // Binary suffix is skipped by suffix; a NUL-bearing non-suffixed file
+        // is skipped by the content sniff.
+        assert!(chunk_one_file(&binary.to_string_lossy()).is_empty());
+        let nul = root.join("weird.txt");
+        std::fs::write(&nul, [b'a', 0u8, b'b']).unwrap();
+        assert!(chunk_one_file(&nul.to_string_lossy()).is_empty());
+        assert!(chunk_one_file(&empty.to_string_lossy()).is_empty());
+    }
+
+    #[test]
+    fn canonical_path_is_stable_across_existing_and_deleted() {
+        let td = tempdir().unwrap();
+        let f = td.path().join("file.rs");
+        std::fs::write(&f, "x").unwrap();
+        let while_present = canonical_path(&f);
+        std::fs::remove_file(&f).unwrap();
+        let after_delete = canonical_path(&f);
+        // The lenient (parent + name) form after deletion matches the form
+        // produced while the file existed — so a delete's graph/vector lookup
+        // hits the same key the walk stored.
+        assert_eq!(while_present, after_delete);
     }
 }

@@ -28,6 +28,7 @@
 //! through `crate::embeddings`, i.e. the `ollama.embed` pipe verb
 //! / `nomic-embed-text`. One backend, one call site — no second embedder.
 
+pub mod delta;
 pub mod graph_writer;
 pub mod search;
 pub mod store;

@@ -81,6 +81,12 @@ async fn main() -> Result<()> {
         tracing::warn!("wylde-workspaces: action contract write failed: {e}");
     }
 
+    // Slice I — arm + start the file watcher for the active workspace (if any)
+    // so its code graph stays fresh from boot. Non-fatal: a notify/setup
+    // failure is logged inside and the service still serves (the graph just
+    // won't auto-refresh until the next activate/reindex).
+    wylde_workspaces::watcher::on_boot();
+
     let pipe = wylde_workspaces::ipc::pipe_path(&cfg.service_name);
     tracing::info!("wylde-workspaces: actions registered; opening pipe at {pipe}");
 

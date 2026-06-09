@@ -185,6 +185,28 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::NoRetry,
         cache_ttl: None,
     },
+    // ── Slice I — file watcher control (Fast lifecycle ops) ──────────────
+    // status/pause/resume are cheap in-process control calls on the service.
+    // Fast (500ms), a single retry (the spec's `retry: 1` — the loop won't
+    // wedge on these), no cache (status must read live; pause/resume mutate).
+    VerbDef {
+        name: "workspaces.watcher.status",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_write(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.watcher.pause",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_write(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.watcher.resume",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_write(),
+        cache_ttl: None,
+    },
 ];
 
 /// Look up the policy for `verb`, or `None` if the client doesn't know it.

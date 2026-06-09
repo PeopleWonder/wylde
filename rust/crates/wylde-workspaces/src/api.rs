@@ -52,6 +52,10 @@ pub async fn handle_set_active(payload: Value) -> Reply {
             // in the background (mirrors the retired Python `activate` →
             // `_index_delta`); a never-indexed workspace gets a full pass.
             indexer::spawn_background_index(id.clone());
+            // Slice I — follow the active pointer: tear down the previous
+            // workspace's watcher and start one for this folder so its graph
+            // stays fresh from now on. No-op until the live service arms it.
+            crate::watcher::on_active_changed();
             Reply::ok(json!({
                 "active_id": state.active_id,
                 "mru": state.mru,
@@ -105,6 +109,27 @@ pub async fn handle_delete(payload: Value) -> Reply {
         return Reply::err_msg("bad_request", "workspace_id is required");
     };
     let ok = registry::delete(&id);
+    if ok {
+        // Re-evaluate the watcher: if the deleted workspace was active, the
+        // registry cleared the active pointer, so this stops the watch.
+        crate::watcher::on_active_changed();
+        // Slice I — also clean up the workspace's Neo4j footprint (the Slice A
+        // report flagged that `delete` left graph nodes behind). Fire-and-
+        // forget: a Bolt connect can take seconds when the graph is down, and
+        // `workspaces.delete` is a Fast/Medium verb — it must NOT block on the
+        // graph. The registry delete already succeeded; the graph prune is
+        // best-effort cleanup that can't fail the response.
+        let ws = id.clone();
+        tokio::spawn(async move {
+            let cleanup = crate::graph::BoltClient::new().delete_workspace(&ws).await;
+            if !cleanup.ok {
+                tracing::warn!(
+                    "workspaces.delete: graph cleanup degraded for {ws}: {:?}",
+                    cleanup.error
+                );
+            }
+        });
+    }
     Reply::ok(json!({ "ok": ok, "workspace_id": id }))
 }
 
@@ -207,6 +232,28 @@ pub async fn handle_gather_prompt(payload: Value) -> Reply {
         "memory_snippets": ctx.memory_snippets,
         "rag_snippets": ctx.rag_snippets,
     }))
+}
+
+/// `workspaces.watcher.status` — file-watcher observability snapshot. No
+/// payload. Returns `{active_workspace, files_watched, last_event_at, paused}`.
+pub async fn handle_watcher_status(_payload: Value) -> Reply {
+    Reply::ok(crate::watcher::status().to_value())
+}
+
+/// `workspaces.watcher.pause` — pause the active workspace's watcher (e.g.
+/// before a big checkout, so the user isn't flooded with delta-upserts). No
+/// payload. Idempotent: a no-op (with `active_workspace: null`) when nothing
+/// is watched.
+pub async fn handle_watcher_pause(_payload: Value) -> Reply {
+    let active = crate::watcher::pause();
+    Reply::ok(json!({ "ok": true, "paused": true, "active_workspace": active }))
+}
+
+/// `workspaces.watcher.resume` — resume the watcher and re-walk the workspace
+/// to catch up on edits missed while paused. No payload.
+pub async fn handle_watcher_resume(_payload: Value) -> Reply {
+    let active = crate::watcher::resume();
+    Reply::ok(json!({ "ok": true, "paused": false, "active_workspace": active }))
 }
 
 #[cfg(test)]

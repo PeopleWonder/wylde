@@ -55,6 +55,11 @@ pub const CONVERSATIONS_LIST: &str = "workspaces.conversations.list";
 pub const CONVERSATIONS_GET: &str = "workspaces.conversations.get";
 pub const CONVERSATIONS_DELETE: &str = "workspaces.conversations.delete";
 
+// ── File watcher control (Slice I) ───────────────────────────────────────
+pub const WATCHER_STATUS: &str = "workspaces.watcher.status";
+pub const WATCHER_PAUSE: &str = "workspaces.watcher.pause";
+pub const WATCHER_RESUME: &str = "workspaces.watcher.resume";
+
 /// Every action this service registers. Grows one slice at a time.
 pub const ALL_ACTIONS: &[&str] = &[
     PING,
@@ -81,6 +86,10 @@ pub const ALL_ACTIONS: &[&str] = &[
     CONVERSATIONS_LIST,
     CONVERSATIONS_GET,
     CONVERSATIONS_DELETE,
+    // Slice I — file watcher control
+    WATCHER_STATUS,
+    WATCHER_PAUSE,
+    WATCHER_RESUME,
 ];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -251,6 +260,30 @@ pub fn install() {
         META_MODULE,
     );
 
+    // ── Slice I — file watcher control ───────────────────────────────────
+    register_action_with_meta(
+        WATCHER_STATUS,
+        |p: Value| async move { api::handle_watcher_status(p).await },
+        "File-watcher status for observability. No payload. Reply: \
+         {active_workspace, files_watched, last_event_at, paused}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        WATCHER_PAUSE,
+        |p: Value| async move { api::handle_watcher_pause(p).await },
+        "Pause the active workspace's file watcher (e.g. before a big \
+         checkout). No payload. Reply: {ok, paused: true, active_workspace}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        WATCHER_RESUME,
+        |p: Value| async move { api::handle_watcher_resume(p).await },
+        "Resume the file watcher and re-walk the workspace to catch up on \
+         edits missed while paused. No payload. Reply: {ok, paused: false, \
+         active_workspace}.",
+        META_MODULE,
+    );
+
     tracing::info!(
         "wylde-workspaces: registered {} action(s)",
         ALL_ACTIONS.len()
@@ -267,9 +300,11 @@ pub fn handle_ping() -> Reply {
     }))
 }
 
-/// Signal stop. No background workers in Slice 0a, so this is a no-op kept
-/// symmetric with the other services' `stop()`.
-pub fn stop() {}
+/// Signal stop. Tears down the Slice I file watcher (drops its OS handle +
+/// ends its background loop); idempotent if none is running.
+pub fn stop() {
+    crate::watcher::stop();
+}
 
 /// Test-only: unregister every action and reset the install flag so a test
 /// can re-`install()` on the shared (process-wide) registry cleanly.
