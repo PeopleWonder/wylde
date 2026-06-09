@@ -18,6 +18,11 @@
 use serde_json::{json, Value};
 
 pub const SVC_HARNESS: &str = "wylde-harness";
+/// Workspace verbs moved to the dedicated `wylde-workspaces` service
+/// (Thought Bubble System Slice 0d); the harness pipe no longer answers
+/// `workspaces.*`. A down service surfaces as a `pipe_unavailable` error
+/// the caller degrades on.
+pub const SVC_WORKSPACES: &str = "wylde-workspaces";
 
 /// `chat.start_turn` reply — the turn handle the caller follows up on
 /// via `chat.stream_turn`.
@@ -356,7 +361,7 @@ pub async fn set_active_model(model: Option<&str>) -> Result<(), String> {
 /// site but the harness caps at the static MRU-5 window.
 pub async fn recent_workspaces(_limit: u32) -> Result<Vec<WorkspaceSummary>, String> {
     let v = wylde_gui_pipe::call(
-        SVC_HARNESS,
+        SVC_WORKSPACES,
         "POST",
         "/__action__",
         Some(json!({
@@ -376,7 +381,7 @@ pub async fn recent_workspaces(_limit: u32) -> Result<Vec<WorkspaceSummary>, Str
 /// `rag.workspaces.activate`; creation auto-promotes to the MRU head.
 pub async fn activate_workspace(path: &str) -> Result<WorkspaceSummary, String> {
     let v = wylde_gui_pipe::call(
-        SVC_HARNESS,
+        SVC_WORKSPACES,
         "POST",
         "/__action__",
         Some(json!({
@@ -395,7 +400,7 @@ pub async fn activate_workspace(path: &str) -> Result<WorkspaceSummary, String> 
 /// dropdown so the active pointer + MRU order persist on the harness.
 pub async fn set_active_workspace(workspace_id: &str) -> Result<(), String> {
     wylde_gui_pipe::call(
-        SVC_HARNESS,
+        SVC_WORKSPACES,
         "POST",
         "/__action__",
         Some(json!({

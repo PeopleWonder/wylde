@@ -101,6 +101,18 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::NoRetry,
         cache_ttl: None,
     },
+    // ── Slice 0d — chat-turn prompt context ─────────────────────────────
+    // Best-effort per-turn enrichment for the chat driver. Medium budget
+    // (persona read + notes search [internally ≤1.2s] + a RAG embed) and
+    // NoRetry: it's on the chat hot path, so a slow/unreachable service
+    // must degrade to base context fast rather than stack retry budgets
+    // onto every turn. Fail-fast → the driver's graceful-degrade notice.
+    VerbDef {
+        name: "workspaces.gather_prompt",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
     // ── Slice 0c — workspace notes tier (Build Order Appendix A) ─────────
     VerbDef {
         name: "workspaces.notes.list",

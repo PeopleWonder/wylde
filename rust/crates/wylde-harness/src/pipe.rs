@@ -73,8 +73,6 @@ const HANDLER_MODULE_SETTINGS: &str =
 const HANDLER_MODULE_RAG: &str = "wylde_harness::api::DefaultHarnessApi (rag.*)";
 const HANDLER_MODULE_LONG_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.long_term.*)";
-const HANDLER_MODULE_WORKSPACES: &str =
-    "wylde_harness::api::DefaultHarnessApi (workspaces.*)";
 const HANDLER_MODULE_SHORT_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.short_term.*)";
 const HANDLER_MODULE_CONVERSATIONS: &str =
@@ -122,26 +120,10 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.long_term.delete",
     "memory.long_term.history",
     "memory.long_term.search",
-    // workspaces.* — config-file-backed workspaces redesign (6 verbs)
-    "workspaces.set_active",
-    "workspaces.create",
-    "workspaces.update",
-    "workspaces.delete",
-    "workspaces.set_persona",
-    "workspaces.list_mru",
-    "workspaces.rag_query",
-    "workspaces.reindex",
-    // workspaces.notes.* — relocated notes tier (Slice 0c; compat-shim proxy)
-    "workspaces.notes.list",
-    "workspaces.notes.add",
-    "workspaces.notes.update",
-    "workspaces.notes.delete",
-    "workspaces.notes.search",
-    "workspaces.notes.propose",
-    // workspaces.conversations.* — workspace-scoped convos (Slice 0c; proxy)
-    "workspaces.conversations.list",
-    "workspaces.conversations.get",
-    "workspaces.conversations.delete",
+    // workspaces.* — RETIRED from the harness pipe (Thought Bubble System
+    // Slice 0d). All workspace verbs now live on the wylde-workspaces
+    // service pipe; consumers reach them via the wylde-workspaces-client
+    // crate. The harness no longer answers `workspaces.*` (→ no_action).
     // memory.short_term.* — conversation working memory (3 verbs)
     "memory.short_term.get",
     "memory.short_term.append",
@@ -592,228 +574,12 @@ where
         HANDLER_MODULE_LONG_TERM,
     );
 
-    // ── workspaces.* (config-file-backed redesign) ───────────────────
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.set_active",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_set_active(p).await }
-        },
-        "Set the active workspace + bump it to the MRU head. Payload \
-         {workspace_id}. Returns {active_id, mru}; not_found for an \
-         unknown id.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.create",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_create(p).await }
-        },
-        "Register a folder as a workspace (and activate it). Payload \
-         {folder, name?}. Returns the WorkspaceDefinition; bad_request \
-         if the folder doesn't exist.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.update",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_update(p).await }
-        },
-        "Rename / toggle features. Payload {workspace_id, name?, \
-         persona_enabled?, rag_enabled?}. Returns the updated \
-         WorkspaceDefinition; not_found for an unknown id.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.delete",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_delete(p).await }
-        },
-        "Remove a workspace + its <workspace_id>/ bundle dir. Payload \
-         {workspace_id}. Returns {ok, workspace_id}.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.set_persona",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_set_persona(p).await }
-        },
-        "Write persona.md for a workspace (and enable/disable the persona \
-         slot). Payload {workspace_id, text?}. Returns {ok, workspace_id}.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.list_mru",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_list_mru(p).await }
-        },
-        "MRU-5 workspace list + active id for the InferenceBar dropdown. \
-         No payload. Returns {workspaces: [WorkspaceDefinition, ...], \
-         active_id}.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.rag_query",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_rag_query(p).await }
-        },
-        "k-NN search over a workspace's file index. Payload {workspace_id, \
-         query, k?}. Returns {workspace_id, hits: [{file_path, line_range, \
-         content, score, chunk_idx}]}. Fail-soft: a missing index / empty \
-         workspace / unreachable embedder returns an empty hits list.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.reindex",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_reindex(p).await }
-        },
-        "Force a full reindex of a workspace's folder (the Reindex button). \
-         Payload {workspace_id}. Returns {ok, workspace_id, file_count, \
-         chunk_count, last_error}; not_found for an unknown id.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    // ── workspaces.notes.* (Slice 0c; compat-shim proxy → service) ───
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.notes.list",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_notes_list(p).await }
-        },
-        "Every note for a workspace (the workspace-tier memory). Payload \
-         {workspace_id}. Returns {workspace_id, notes, count}. Proxies the \
-         wylde-workspaces service, falling back in-process when it's down.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.notes.add",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_notes_add(p).await }
-        },
-        "Append a workspace note (embeds on write). Payload {workspace_id, \
-         text}. Returns the new note {id, text, created_at, last_used_at}.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.notes.update",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_notes_update(p).await }
-        },
-        "Edit a note's text (re-embeds). Payload {workspace_id, id, text}. \
-         Returns the updated note; not_found for an unknown id.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.notes.delete",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_notes_delete(p).await }
-        },
-        "Remove a note by id. Payload {workspace_id, id}. Returns {ok, id} — \
-         ok is false when the note was already absent.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.notes.search",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_notes_search(p).await }
-        },
-        "Recency+relevance ranked search over a workspace's notes. Payload \
-         {workspace_id, query, limit?}. Fail-soft to empty. Returns \
-         {workspace_id, notes, count}.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.notes.propose",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_notes_propose(p).await }
-        },
-        "Reflection candidate note (NOT persisted; user accepts via \
-         workspaces.notes.add). Payload {workspace_id, text}. Returns \
-         {candidate} or {candidate: null} for blank text.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    // ── workspaces.conversations.* (Slice 0c; compat-shim proxy) ─────
-    // Workspace-scoped conversations only. Standalone conversations
-    // (workspace_id == None) stay on the harness `conversations.*` verbs.
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.conversations.list",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_conversations_list(p).await }
-        },
-        "Metadata for one workspace's conversations, newest-first. Payload \
-         {workspace_id}. Returns {workspace_id, conversations, count}. \
-         Proxies the wylde-workspaces service with in-process fallback.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.conversations.get",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_conversations_get(p).await }
-        },
-        "Full workspace conversation document. Payload {workspace_id, id}. \
-         bad_request for a missing/invalid id, not_found when absent.",
-        HANDLER_MODULE_WORKSPACES,
-    );
-
-    let a = Arc::clone(&api);
-    register_action_with_meta(
-        "workspaces.conversations.delete",
-        move |p: Value| {
-            let a = Arc::clone(&a);
-            async move { a.workspaces_conversations_delete(p).await }
-        },
-        "Remove one workspace conversation. Payload {workspace_id, id}. \
-         Returns {ok, id}.",
-        HANDLER_MODULE_WORKSPACES,
-    );
+    // ── workspaces.* — RETIRED (Thought Bubble System Slice 0d) ──────
+    // The harness pipe no longer registers any `workspaces.*` verb. All
+    // workspace state lives in the wylde-workspaces service; consumers
+    // (the chat turn driver, the GUI panels) reach it over its pipe via
+    // the wylde-workspaces-client crate. A stray `workspaces.*` call to
+    // the harness pipe now returns `no_action`.
 
     // ── memory.short_term.* (conversation working memory) ────────────
 

@@ -40,10 +40,10 @@ pub mod settings;
 pub mod state;
 pub mod tooling;
 pub mod turn;
-/// Config-file-backed workspaces (redesign scaffold — see
-/// `docs/plans/workspaces-redesign-2026-06-04.md`). Distinct from the
-/// verb-driven [`memory::workspaces`], which it is slated to replace.
-pub mod workspaces;
+// Workspaces moved out of the harness entirely (Thought Bubble System
+// Slice 0d). All workspace-scoped state now lives in the `wylde-workspaces`
+// service; the harness reaches it as a pure client via the
+// `wylde-workspaces-client` crate (see `turn::workspace_context`).
 
 pub use api::{DefaultHarnessApi, HarnessApi};
 pub use service::{install, reset_for_tests, stop};

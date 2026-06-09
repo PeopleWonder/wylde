@@ -36,6 +36,9 @@ pub const LIST_MRU: &str = "workspaces.list_mru";
 pub const RAG_QUERY: &str = "workspaces.rag_query";
 pub const REINDEX: &str = "workspaces.reindex";
 
+// ── Chat-turn prompt context (Slice 0d — relocated from the harness) ─────
+pub const GATHER_PROMPT: &str = "workspaces.gather_prompt";
+
 // ── Workspace notes tier (Slice 0c) ──────────────────────────────────────
 pub const NOTES_LIST: &str = "workspaces.notes.list";
 pub const NOTES_ADD: &str = "workspaces.notes.add";
@@ -60,6 +63,8 @@ pub const ALL_ACTIONS: &[&str] = &[
     LIST_MRU,
     RAG_QUERY,
     REINDEX,
+    // Slice 0d — chat-turn prompt context
+    GATHER_PROMPT,
     // Slice 0c — notes
     NOTES_LIST,
     NOTES_ADD,
@@ -148,6 +153,17 @@ pub fn install() {
         |p: Value| async move { api::handle_reindex(p).await },
         "Force a synchronous full reindex of a workspace's folder. Payload: \
          {workspace_id}. Reply: {ok, file_count, chunk_count, last_error}.",
+        META_MODULE,
+    );
+
+    register_action_with_meta(
+        GATHER_PROMPT,
+        |p: Value| async move { api::handle_gather_prompt(p).await },
+        "Resolve a workspace's contribution to a chat turn's system prompt \
+         (persona + notes + RAG). Payload: {workspace_id, user_message?}. \
+         Reply: {workspace_id, slots, persona, memory_snippets, \
+         rag_snippets}. `slots` is the ready-to-append rendered block; \
+         empty for an unknown/blank workspace.",
         META_MODULE,
     );
 

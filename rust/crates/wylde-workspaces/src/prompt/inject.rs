@@ -1,19 +1,20 @@
-//! Gather a workspace's prompt inputs and inject them into the turn.
+//! Gather a workspace's prompt inputs and render them into slot text.
 //!
-//! This is the keystone of the redesign: a workspace is *config that
-//! shapes prompt building*, and [`gather`] is where the active
-//! workspace's persona + memory + RAG scope are resolved into a
-//! [`WorkspaceContext`], which [`render_slots`] formats into the block
-//! the turn driver appends to the system prompt.
+//! A workspace is *config that shapes prompt building*, and [`gather`] is
+//! where the active workspace's persona + notes + RAG scope are resolved
+//! into a [`WorkspaceContext`], which [`render_slots`] formats into the
+//! block the harness turn driver appends to its system prompt.
+//!
+//! Relocated from the harness's old `workspaces::prompt::inject` in Slice
+//! 0d (the in-process gather is now the `workspaces.gather_prompt` verb).
+//! The gather logic is the same; only the module paths changed
+//! (`crate::notes` / `crate::persona` / `crate::rag` / `crate::registry`)
+//! and the notes embed is now bounded for the hot-path verb budget.
 
-use super::super::memory::{query, WorkspaceMemoryQuery};
-// Slice 0b: registry / persona / rag relocated to the `wylde-workspaces`
-// crate. The prompt builder still gathers them in-process (read-only) via the
-// lib; Slice 0d repoints this to the service pipe. `memory` (above) stays
-// harness-owned until Slice 0c.
-use wylde_workspaces::persona;
-use wylde_workspaces::rag::{self, WorkspaceRagScope};
-use wylde_workspaces::registry;
+use crate::notes::{query, WorkspaceMemoryQuery};
+use crate::persona;
+use crate::rag::{self, WorkspaceRagScope};
+use crate::registry;
 
 /// Everything a workspace contributes to one chat turn's system prompt,
 /// resolved from the active workspace's config + stores.
@@ -22,7 +23,7 @@ pub struct WorkspaceContext {
     /// Persona override text (empty = none).
     pub persona: String,
 
-    /// Workspace-layer memory snippets, highest-scoring first.
+    /// Workspace-layer note snippets, highest-scoring first.
     pub memory_snippets: Vec<String>,
 
     /// RAG snippets scoped to the workspace folder.
@@ -42,7 +43,7 @@ impl WorkspaceContext {
 /// Resolve the full [`WorkspaceContext`] for `workspace_id` against the
 /// current turn's `user_message`.
 ///
-/// Loads the definition from [`registry`]; gathers persona / memory /
+/// Loads the definition from [`registry`]; gathers persona / notes /
 /// RAG per the `*_enabled` toggles; returns an empty context for an
 /// unknown (or empty) `workspace_id` so a plain chat turn is unaffected.
 pub async fn gather(workspace_id: &str, user_message: &str) -> WorkspaceContext {
@@ -65,7 +66,12 @@ pub async fn gather(workspace_id: &str, user_message: &str) -> WorkspaceContext 
             user_message: user_message.to_owned(),
             limit: WorkspaceMemoryQuery::DEFAULT_LIMIT,
         };
-        query::top_entries(&q)
+        // Bound the query embed: this gather is now an IPC hot-path verb
+        // (`workspaces.gather_prompt`, Medium 2s) on the chat turn, so a
+        // slow/down embedder must degrade notes ranking to recency-only
+        // within budget rather than time the whole gather out — same policy
+        // the `workspaces.notes.search` verb uses.
+        query::top_entries_bounded(&q, query::EMBED_WRITE_BUDGET)
             .await
             .into_iter()
             .map(|e| e.text)
@@ -84,10 +90,9 @@ pub async fn gather(workspace_id: &str, user_message: &str) -> WorkspaceContext 
     }
 }
 
-/// Render `ctx` into the system-prompt slot text appended after the base
-/// instruction + tool catalog produced by
-/// [`crate::turn::prompt::build_system_prompt`]. Returns an empty string
-/// when the context is empty (the caller then appends nothing).
+/// Render `ctx` into the system-prompt slot text the harness turn driver
+/// appends after its base instruction + tool catalog. Returns an empty
+/// string when the context is empty (the caller then appends nothing).
 pub fn render_slots(ctx: &WorkspaceContext) -> String {
     if ctx.is_empty() {
         return String::new();
@@ -126,7 +131,7 @@ pub fn render_slots(ctx: &WorkspaceContext) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspaces::test_support::TestEnv;
+    use crate::test_support::TestEnv;
 
     #[test]
     fn render_slots_empty_for_empty_context() {
@@ -178,7 +183,7 @@ mod tests {
         persona::save(&def.id, "Answer in haiku.").unwrap();
         let ctx = gather(&def.id, "hello").await;
         assert_eq!(ctx.persona, "Answer in haiku.");
-        // RAG disabled → no rag snippets; memory empty → none.
+        // RAG disabled → no rag snippets; notes empty → none.
         assert!(ctx.rag_snippets.is_empty());
     }
 }

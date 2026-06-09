@@ -195,6 +195,37 @@ impl WorkspacesClient {
         .await
     }
 
+    // ── Slice 0d — chat-turn prompt context ─────────────────────────────
+
+    /// `workspaces.gather_prompt` — the rendered system-prompt slot block
+    /// for `workspace_id` against `user_message` (persona + notes + RAG).
+    ///
+    /// Returns the ready-to-append `slots` string (empty when the workspace
+    /// contributes nothing or the id is unknown). The chat turn driver
+    /// calls this once per turn as best-effort enrichment; on a transport
+    /// failure / open breaker it degrades to base context (no slots).
+    pub async fn gather_prompt(
+        &self,
+        workspace_id: &str,
+        user_message: &str,
+    ) -> Result<String, WorkspacesClientError> {
+        let data = self
+            .call_verb(
+                "workspaces.gather_prompt",
+                serde_json::json!({
+                    "workspace_id": workspace_id,
+                    "user_message": user_message,
+                }),
+                1,
+            )
+            .await?;
+        Ok(data
+            .get("slots")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned())
+    }
+
     // ── Slice 0c — workspace notes tier ─────────────────────────────────
 
     /// `workspaces.notes.list` — every note for a workspace.

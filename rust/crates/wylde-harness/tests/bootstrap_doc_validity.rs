@@ -20,8 +20,11 @@
 //! ## What counts as "resolves"
 //!
 //! * Pipe verbs (`service.verb` shape): must appear in either
-//!   `wylde_harness::pipe::ALL_PIPE_ACTIONS` or the known broker
-//!   action whitelist (`vram.*`, `system.*`) maintained below.
+//!   `wylde_harness::pipe::ALL_PIPE_ACTIONS`, the known broker action
+//!   whitelist (`vram.*`, `system.*`) maintained below, or — since Thought
+//!   Bubble System Slice 0d moved the workspace surface off the harness
+//!   pipe onto the `wylde-workspaces` service — the workspaces client's
+//!   verb table (`wylde_workspaces_client::verbs`).
 //! * Tool ids (snake_case shape): must resolve in the global tool
 //!   registry via [`Registry::lookup`].
 
@@ -32,6 +35,7 @@ use std::path::PathBuf;
 
 use wylde_harness::pipe::ALL_PIPE_ACTIONS;
 use wylde_harness::tooling::registry::global;
+use wylde_workspaces_client::verbs as ws_verbs;
 
 /// Broker actions are not part of the harness pipe surface, so they
 /// don't appear in ALL_PIPE_ACTIONS. They live on the
@@ -132,10 +136,17 @@ fn every_id_in_bootstrap_appendix_resolves_somewhere() {
     for id in &ids {
         // Pipe action shape: contains a dot.
         if id.contains('.') {
-            if pipe_actions.contains(id.as_str()) || broker_actions.contains(id.as_str()) {
+            if pipe_actions.contains(id.as_str())
+                || broker_actions.contains(id.as_str())
+                // workspaces.* now lives on the wylde-workspaces service —
+                // resolve it against the shared client's verb table.
+                || ws_verbs::lookup(id).is_some()
+            {
                 continue;
             }
-            unresolved.push(format!("{id} (pipe-shape, not in pipe + broker action sets)"));
+            unresolved.push(format!(
+                "{id} (pipe-shape, not in harness pipe / broker / workspaces-client sets)"
+            ));
             continue;
         }
         // Tool-id shape: snake_case, no dots.

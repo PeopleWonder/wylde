@@ -99,15 +99,8 @@ mod tests {
             "memory.long_term.update",
             "memory.long_term.delete",
             "memory.long_term.history",
-            // workspaces.* — config-file-backed redesign
-            "workspaces.set_active",
-            "workspaces.create",
-            "workspaces.update",
-            "workspaces.delete",
-            "workspaces.set_persona",
-            "workspaces.list_mru",
-            "workspaces.rag_query",
-            "workspaces.reindex",
+            // workspaces.* retired from the harness pipe (Slice 0d) — now
+            // served by the wylde-workspaces service.
             // memory.short_term.* — conversation working memory
             "memory.short_term.get",
             "memory.short_term.append",
@@ -192,7 +185,6 @@ mod tests {
         assert!(!meta["tools.list"].streaming);
         assert!(!meta["tools.run"].streaming);
         assert!(!meta["memory.long_term.list"].streaming);
-        assert!(!meta["workspaces.list_mru"].streaming);
 
         reset_for_tests();
     }

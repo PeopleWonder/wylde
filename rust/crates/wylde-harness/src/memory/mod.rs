@@ -8,8 +8,9 @@
 //! sequence of slices that each ship a coherent subsurface:
 //!
 //! * **7.A** (RETIRED) — the verb-driven `workspaces` registry-only port
-//!   was superseded by the config-file-backed redesign in
-//!   [`crate::workspaces`]; its `slug_for` moved there.
+//!   was superseded by the config-file-backed redesign, which itself moved
+//!   out of the harness entirely into the `wylde-workspaces` service
+//!   (Thought Bubble System Slice 0d); its `slug_for` moved there.
 //! * **7.B** — workspace indexing: `activate` / `refresh` / `reindex` /
 //!   `status` / `search_files`. Requires either a LanceDB Rust client
 //!   or a temporary IPC bridge back to Python.
@@ -69,8 +70,9 @@ pub mod vector;
 
 // NOTE: the legacy verb-driven `workspaces` registry port
 // (`memory.workspaces.*`) was retired by the config-file-backed
-// workspaces redesign (`crate::workspaces`). Its `slug_for` moved to
-// `crate::workspaces::registry::slug`.
+// workspaces redesign, which moved out of the harness into the
+// `wylde-workspaces` service (Slice 0d). Its `slug_for` now lives at
+// `wylde_workspaces::registry::slug`.
 
 /// Read `WYLDE_HARNESS_MEMORY_IMPL` once per call. Default `rust`
 /// (post-2026-05-26 cutover); unknown values clamp to `rust`. Setting

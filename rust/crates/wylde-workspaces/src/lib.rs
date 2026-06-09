@@ -45,6 +45,7 @@ pub mod ipc;
 pub mod migration;
 pub mod notes;
 pub mod persona;
+pub mod prompt;
 pub mod rag;
 pub mod registry;
 

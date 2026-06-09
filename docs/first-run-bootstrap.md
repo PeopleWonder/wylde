@@ -220,9 +220,13 @@ that test.
 - `memory.long_term.list`, `memory.long_term.save`,
   `memory.long_term.update`, `memory.long_term.delete`,
   `memory.long_term.history`
+- `conversations.set_workspace`
+
+**Workspaces service actions** (call against `wylde-workspaces` — moved off
+the harness pipe in Thought Bubble System Slice 0d; reach them via the
+`wylde-workspaces-client` crate):
 - `workspaces.list_mru`, `workspaces.set_active`, `workspaces.create`,
   `workspaces.update`, `workspaces.set_persona`, `workspaces.delete`
-- `conversations.set_workspace`
 - `consent.list`, `consent.set`, `consent.respond`,
   `consent.clear`, `consent.set_no_auth`, `consent.reset`
 - `chat.run_turn`, `chat.start_turn`, `chat.cancel`,

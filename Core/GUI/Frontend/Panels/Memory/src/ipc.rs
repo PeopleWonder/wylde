@@ -8,6 +8,10 @@
 use serde_json::{json, Value};
 
 pub const SVC_HARNESS: &str = "wylde-harness";
+/// Workspace verbs moved to the dedicated `wylde-workspaces` service
+/// (Thought Bubble System Slice 0d); the harness pipe no longer answers
+/// `workspaces.*`.
+pub const SVC_WORKSPACES: &str = "wylde-workspaces";
 
 /// One curated long-term memory.  Mirrors `memory::long_term::records::LongTermMemory`
 /// from `wylde-harness`; we keep the shape inlined here so the panel
@@ -152,7 +156,7 @@ pub async fn search_long_term(query: &str, limit: u32) -> Result<Vec<LongTermRec
 /// compatibility but ignored.
 pub async fn recent_workspaces(_limit: u32) -> Result<Vec<WorkspaceSummary>, String> {
     let v = wylde_gui_pipe::call(
-        SVC_HARNESS,
+        SVC_WORKSPACES,
         "POST",
         "/__action__",
         Some(json!({
