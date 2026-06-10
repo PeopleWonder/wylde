@@ -32,8 +32,14 @@
 //!   * InferenceBar at the bottom: prompt textbox, send/stop button,
 //!     workspace MRU-5 dropdown, native folder picker, model picker.
 //!   * Inline consent cards subscribed to `consent.stream_pending`.
+//!   * **Symbol-aware composer** (Slice F, [`composer`]): debounced
+//!     recognition of symbol-shaped words + `{{anchor}}` refs against the
+//!     active workspace, per-word chips + the `?N`/`N ▸` context chip,
+//!     disambiguation, curate-before-send, and the Ctrl+P symbol palette.
 
 pub mod chat_panel;
+pub mod composer;
+mod composer_ui;
 pub mod ipc;
 pub mod markdown;
 

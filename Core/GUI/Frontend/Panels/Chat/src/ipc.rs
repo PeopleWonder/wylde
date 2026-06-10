@@ -175,10 +175,23 @@ impl PendingConsent {
 /// Mirror of `wylde_harness::events::TurnEvent`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TurnChunk {
-    Token { turn_id: String, text: String },
-    Thinking { turn_id: String, text: String },
-    TurnComplete { turn_id: String, final_message: String },
-    TurnAborted { turn_id: String, reason: String, error: Option<String> },
+    Token {
+        turn_id: String,
+        text: String,
+    },
+    Thinking {
+        turn_id: String,
+        text: String,
+    },
+    TurnComplete {
+        turn_id: String,
+        final_message: String,
+    },
+    TurnAborted {
+        turn_id: String,
+        reason: String,
+        error: Option<String>,
+    },
     /// Unknown event type — preserved as a noop so a new harness
     /// event variant doesn't surface as a parse failure.
     Unknown,
@@ -255,7 +268,10 @@ pub async fn start_turn_with_model(
     model: Option<&str>,
 ) -> Result<StartTurnReply, String> {
     let mut payload = serde_json::Map::new();
-    payload.insert("user_message".into(), Value::String(user_message.to_owned()));
+    payload.insert(
+        "user_message".into(),
+        Value::String(user_message.to_owned()),
+    );
     payload.insert(
         "conversation_id".into(),
         Value::String(conversation_id.to_owned()),
@@ -476,9 +492,22 @@ pub fn stream_consent_pending() -> Result<wylde_gui_pipe::PipeStream, String> {
 /// to the user.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolChunk {
-    Dispatched { turn_id: String, call_id: String, name: String },
-    Result { turn_id: String, call_id: String, name: String },
-    Error { turn_id: String, call_id: String, name: String, message: String },
+    Dispatched {
+        turn_id: String,
+        call_id: String,
+        name: String,
+    },
+    Result {
+        turn_id: String,
+        call_id: String,
+        name: String,
+    },
+    Error {
+        turn_id: String,
+        call_id: String,
+        name: String,
+        message: String,
+    },
     /// Memory-write side effect — used to surface a brief "remembered:
     /// …" pulse when the strip wants to acknowledge it.  Slice 5.1 just
     /// keeps the variant for future use; the strip ignores it.
@@ -508,8 +537,16 @@ impl ToolChunk {
             .unwrap_or_default()
             .to_owned();
         match t {
-            "tool_dispatched" => Self::Dispatched { turn_id, call_id, name },
-            "tool_result" => Self::Result { turn_id, call_id, name },
+            "tool_dispatched" => Self::Dispatched {
+                turn_id,
+                call_id,
+                name,
+            },
+            "tool_result" => Self::Result {
+                turn_id,
+                call_id,
+                name,
+            },
             "tool_error" => Self::Error {
                 turn_id,
                 call_id,
@@ -640,7 +677,11 @@ pub struct ConversationMeta {
 impl ConversationMeta {
     pub fn from_value(v: &Value) -> Self {
         Self {
-            id: v.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            id: v
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
             title: v
                 .get("title")
                 .and_then(Value::as_str)
@@ -654,7 +695,11 @@ impl ConversationMeta {
                 .get("working_memory_count")
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
-            model: v.get("model").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            model: v
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
         }
     }
 }
@@ -714,7 +759,10 @@ pub async fn fetch_conversation_messages(id: &str) -> Result<Vec<LoadedMessage>,
         .iter()
         .filter_map(|m| {
             let role = m.get("role").and_then(|x| x.as_str()).unwrap_or_default();
-            let content = m.get("content").and_then(|x| x.as_str()).unwrap_or_default();
+            let content = m
+                .get("content")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default();
             if content.is_empty() {
                 return None;
             }
@@ -770,7 +818,11 @@ pub async fn get_active_conversation() -> Result<Option<String>, String> {
     )
     .await?;
     let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default();
-    Ok(if id.is_empty() { None } else { Some(id.to_owned()) })
+    Ok(if id.is_empty() {
+        None
+    } else {
+        Some(id.to_owned())
+    })
 }
 
 /// `conversations.set_active` — persist the active-conversation selection

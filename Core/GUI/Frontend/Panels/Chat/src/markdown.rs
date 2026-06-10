@@ -280,10 +280,8 @@ pub fn parse_inlines(text: &str) -> Vec<Inline> {
                 let after = i + 1 + text_end + 1;
                 if after < chars.len() && chars[after] == '(' {
                     if let Some(url_end) = chars[after + 1..].iter().position(|&x| x == ')') {
-                        let link_text: String =
-                            chars[i + 1..i + 1 + text_end].iter().collect();
-                        let url: String =
-                            chars[after + 1..after + 1 + url_end].iter().collect();
+                        let link_text: String = chars[i + 1..i + 1 + text_end].iter().collect();
+                        let url: String = chars[after + 1..after + 1 + url_end].iter().collect();
                         flush(&mut buf, &mut out);
                         out.push(Inline::Link {
                             text: link_text,
