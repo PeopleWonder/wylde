@@ -307,15 +307,154 @@ pub async fn handle_propose(payload: Value) -> Reply {
     let now = super::anchor::epoch_now();
 
     match reflection::propose(anchor, confidence, rationale, budget, now) {
-        Ok(p) => Reply::ok(json!({
-            "candidate": p.anchor.to_value(),
-            "confidence": p.confidence,
-            "rationale": p.rationale,
-        })),
+        Ok(p) => {
+            // Slice N: a gated candidate now persists for review in the
+            // Vocabulary tab (user-accept-always — nothing here writes the
+            // anchor store). An OI-11 in-window rejection suppresses it.
+            let queued = super::proposals::queue_now(
+                &ws,
+                super::proposals::PendingProposal {
+                    anchor: p.anchor.clone(),
+                    confidence: p.confidence,
+                    rationale: p.rationale.clone(),
+                    proposed_at: now,
+                },
+            );
+            match queued {
+                Ok(super::proposals::QueueOutcome::Suppressed) => Reply::ok(json!({
+                    "candidate": Value::Null,
+                    "reason": "rejected_recently",
+                })),
+                Ok(outcome) => Reply::ok(json!({
+                    "candidate": p.anchor.to_value(),
+                    "confidence": p.confidence,
+                    "rationale": p.rationale,
+                    "queued": matches!(outcome, super::proposals::QueueOutcome::Queued),
+                })),
+                Err(e) => Reply::err_msg("io_error", format!("write proposals.json: {e}")),
+            }
+        }
         Err(reason) => Reply::ok(json!({
             "candidate": Value::Null,
             "reason": reason.as_str(),
         })),
+    }
+}
+
+/// `workspaces.anchors.list_proposals` — every pending LLM proposal for a
+/// workspace (Slice N review surface). Payload: `{workspace_id}`.
+pub async fn handle_list_proposals(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let file = super::proposals::load(&ws);
+    Reply::ok(json!({
+        "workspace_id": ws,
+        "proposals": file
+            .pending
+            .iter()
+            .map(|p| json!({
+                "anchor": p.anchor.to_value(),
+                "confidence": p.confidence,
+                "rationale": p.rationale,
+                "proposed_at": p.proposed_at,
+            }))
+            .collect::<Vec<_>>(),
+        "count": file.pending.len(),
+    }))
+}
+
+/// `workspaces.anchors.accept_proposal` — land a pending proposal in the
+/// anchor store. Payload: `{workspace_id, identifier, merge?}`. When the
+/// identifier already exists, plain accept returns `already_exists` with the
+/// current record (the OI-18 diff view's input) and the proposal stays
+/// pending; `merge: true` applies the proposal's description/target onto the
+/// existing record instead (the user's explicit merge choice).
+pub async fn handle_accept_proposal(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(identifier) = require_str(&payload, "identifier") else {
+        return Reply::err_msg("bad_request", "identifier is required");
+    };
+    let merge = payload
+        .get("merge")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let taken = match super::proposals::take(&ws, &identifier) {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return Reply::err_msg(
+                "not_found",
+                format!("no pending proposal '{identifier}' in '{ws}'"),
+            )
+        }
+        Err(e) => return Reply::err_msg("io_error", format!("write proposals.json: {e}")),
+    };
+
+    match store::create(&ws, taken.anchor.clone()) {
+        Ok(CreateOutcome::Created(a)) => {
+            Reply::ok(json!({ "accepted": "created", "anchor": a.to_value() }))
+        }
+        Ok(CreateOutcome::AlreadyExists(existing)) => {
+            if merge {
+                let patch = AnchorPatch {
+                    description: Some(taken.anchor.description.clone()),
+                    target: Some(taken.anchor.target.clone()),
+                    ..AnchorPatch::default()
+                };
+                match store::update(&ws, &identifier, patch) {
+                    Ok(UpdateOutcome::Updated(a)) => {
+                        Reply::ok(json!({ "accepted": "merged", "anchor": a.to_value() }))
+                    }
+                    Ok(_) => Reply::err_msg("not_found", "anchor vanished during merge"),
+                    Err(e) => Reply::err_msg("io_error", format!("write anchors.json: {e}")),
+                }
+            } else {
+                // Keep the proposal pending so the user can choose merge or
+                // reject from the diff view (OI-18: user decides).
+                let _ = super::proposals::queue_now(
+                    &ws,
+                    super::proposals::PendingProposal {
+                        anchor: taken.anchor.clone(),
+                        confidence: taken.confidence,
+                        rationale: taken.rationale.clone(),
+                        proposed_at: taken.proposed_at,
+                    },
+                );
+                Reply::err(IpcError {
+                    code: "already_exists".to_owned(),
+                    message: format!("'{identifier}' already exists in '{ws}'"),
+                    details: Some(json!({
+                        "existing": existing.to_value(),
+                        "proposal": taken.anchor.to_value(),
+                    })),
+                })
+            }
+        }
+        Ok(CreateOutcome::AliasRejected(e)) => Reply::err_msg("alias_collision", format!("{e:?}")),
+        Err(e) => Reply::err_msg("io_error", format!("write anchors.json: {e}")),
+    }
+}
+
+/// `workspaces.anchors.reject_proposal` — dismiss a pending proposal and
+/// record the OI-11 suppression (30 days default). Payload:
+/// `{workspace_id, identifier}`.
+pub async fn handle_reject_proposal(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(identifier) = require_str(&payload, "identifier") else {
+        return Reply::err_msg("bad_request", "identifier is required");
+    };
+    match super::proposals::reject(&ws, &identifier, super::anchor::epoch_now()) {
+        Ok(rejected) => Reply::ok(json!({
+            "ok": true,
+            "rejected": rejected,
+            "identifier": identifier,
+        })),
+        Err(e) => Reply::err_msg("io_error", format!("write proposals.json: {e}")),
     }
 }
 

@@ -31,7 +31,7 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::workspaces_panel::pack;
 use editor::PromotionDialog;
-use ipc::{AnchorScopeTag, AnchorView};
+use ipc::{AnchorScopeTag, AnchorView, ProposalView};
 use list_view::ScopeFilter;
 
 /// The Vocabulary tab view.
@@ -60,6 +60,10 @@ pub struct VocabularyTab {
     // OI-5 promotion dialog.
     promotion: PromotionDialog,
     rename_input: Entity<TextInput>,
+    // LLM proposal review (stage N-2).
+    proposals: Vec<ProposalView>,
+    /// OI-18 diff view: `(identifier, your current definition, LLM proposes)`.
+    diff: Option<(String, String, String)>,
 }
 
 impl VocabularyTab {
@@ -105,6 +109,8 @@ impl VocabularyTab {
             create_desc_input: field(cx, "vocab-new-desc", "what this concept means"),
             promotion: PromotionDialog::Idle,
             rename_input: field(cx, "vocab-rename", "renamed_identifier"),
+            proposals: Vec::new(),
+            diff: None,
         };
         Self::spawn_load(cx);
         tab
@@ -129,11 +135,17 @@ impl VocabularyTab {
                     Vec::new()
                 }
             };
+            // Pending LLM proposals ride the same load (best-effort).
+            let proposals = match &ws_id {
+                Some(id) => ipc::list_proposals(id).await.unwrap_or_default(),
+                None => Vec::new(),
+            };
             let _ = this.update(app_cx, |tab, cx| {
                 tab.loading = false;
                 tab.workspace_id = ws_id;
                 tab.ws_anchors = ws_anchors;
                 tab.global_anchors = global;
+                tab.proposals = proposals;
                 tab.error = error;
                 // Drop a selection that no longer resolves.
                 if let Some((scope, id)) = tab.selected.clone() {
@@ -339,6 +351,69 @@ impl VocabularyTab {
         .detach();
     }
 
+    /// Accept a pending proposal (stage N-2). A collision with an existing
+    /// anchor opens the OI-18 diff view instead of writing anything; `merge`
+    /// is the user's explicit choice from that view.
+    fn accept_proposal(&mut self, identifier: String, merge: bool, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspace_id.clone() else {
+            return;
+        };
+        let proposed_desc = self
+            .proposals
+            .iter()
+            .find(|p| p.anchor.identifier == identifier)
+            .map(|p| p.anchor.description.clone())
+            .unwrap_or_default();
+        let existing_desc = self
+            .find(AnchorScopeTag::Workspace, &identifier)
+            .map(|a| a.description.clone())
+            .unwrap_or_default();
+        self.diff = None;
+        cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
+            let outcome = ipc::accept_proposal(&ws, &identifier, merge).await;
+            let _ = this.update(app_cx, |tab, cx| {
+                match outcome {
+                    Ok(_) => {
+                        tab.status = Some(Ok(format!(
+                            "Accepted {{{{{identifier}}}}}{}",
+                            if merge { " (merged)" } else { "" }
+                        )));
+                    }
+                    Err(e) if ipc::is_accept_collision(&e) && !merge => {
+                        // OI-18: the user decides — show both definitions.
+                        tab.diff = Some((identifier.clone(), existing_desc, proposed_desc));
+                    }
+                    Err(e) => tab.status = Some(Err(format!("Accept failed: {e}"))),
+                }
+                Self::spawn_load(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Reject a pending proposal — OI-11 suppression (30 days default).
+    fn reject_proposal(&mut self, identifier: String, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspace_id.clone() else {
+            return;
+        };
+        self.diff = None;
+        cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
+            let outcome = ipc::reject_proposal(&ws, &identifier).await;
+            let _ = this.update(app_cx, |tab, cx| {
+                tab.status = Some(match outcome {
+                    Ok(_) => Ok(format!(
+                        "Rejected {{{{{identifier}}}}} — suppressed from re-proposal"
+                    )),
+                    Err(e) => Err(format!("Reject failed: {e}")),
+                });
+                Self::spawn_load(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     // ── element helpers (settings-tab idioms) ────────────────────────────
 
     fn heading(text: &str) -> gpui::Div {
@@ -518,6 +593,129 @@ impl Render for VocabularyTab {
                                 true,
                                 cx,
                                 |this, cx| this.create_anchor(cx),
+                            )),
+                    ),
+            );
+        }
+
+        // ── LLM proposals (stage N-2; user-accept-always, OI-18) ────────
+        if !self.proposals.is_empty() {
+            let mut section = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .rounded(px(6.0))
+                .bg(rgb(pack(SURFACE_800)))
+                .child(Self::heading(&format!(
+                    "LLM proposals ({})",
+                    self.proposals.len()
+                )))
+                .child(Self::hint(
+                    "Nothing lands without you. Rejecting suppresses re-proposal for 30 days."
+                        .to_owned(),
+                ));
+            for (i, p) in self.proposals.clone().into_iter().enumerate() {
+                let ident = p.anchor.identifier.clone();
+                let ident_accept = ident.clone();
+                let ident_reject = ident.clone();
+                section = section.child(
+                    div()
+                        .id(("vocab-proposal", i))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.0))
+                        .bg(rgb(pack(SURFACE_700)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(size::XS))
+                                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                                        .child(SharedString::from(format!(
+                                            "{{{{{ident}}}}} · confidence {:.2}",
+                                            p.confidence
+                                        ))),
+                                )
+                                .child(Self::hint(format!(
+                                    "{} — {}",
+                                    p.anchor.description, p.rationale
+                                ))),
+                        )
+                        .child(Self::button(
+                            ("vocab-proposal-accept", i),
+                            "Accept",
+                            true,
+                            cx,
+                            move |this, cx| this.accept_proposal(ident_accept.clone(), false, cx),
+                        ))
+                        .child(Self::button(
+                            ("vocab-proposal-reject", i),
+                            "Reject",
+                            false,
+                            cx,
+                            move |this, cx| this.reject_proposal(ident_reject.clone(), cx),
+                        )),
+                );
+            }
+            root = root.child(section);
+        }
+
+        // OI-18 diff view: an accept collided with an existing anchor —
+        // the user explicitly merges or rejects.
+        if let Some((identifier, existing, proposed)) = self.diff.clone() {
+            let ident_merge = identifier.clone();
+            let ident_reject = identifier.clone();
+            root = root.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded(px(6.0))
+                    .bg(rgb(pack(SURFACE_700)))
+                    .border_1()
+                    .border_color(rgb(pack(BORDER_SUBTLE)))
+                    .child(Self::heading(&format!(
+                        "{{{{{identifier}}}}} already exists — your edit wins unless you merge"
+                    )))
+                    .child(Self::hint(format!("Your current definition: {existing}")))
+                    .child(Self::hint(format!("LLM proposes: {proposed}")))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(Self::button(
+                                ("vocab-diff-merge", 0),
+                                "Merge (take the proposal)",
+                                true,
+                                cx,
+                                move |this, cx| this.accept_proposal(ident_merge.clone(), true, cx),
+                            ))
+                            .child(Self::button(
+                                ("vocab-diff-reject", 0),
+                                "Reject proposal",
+                                false,
+                                cx,
+                                move |this, cx| this.reject_proposal(ident_reject.clone(), cx),
+                            ))
+                            .child(Self::button(
+                                ("vocab-diff-dismiss", 0),
+                                "Decide later",
+                                false,
+                                cx,
+                                |this, cx| {
+                                    this.diff = None;
+                                    cx.notify();
+                                },
                             )),
                     ),
             );

@@ -234,6 +234,60 @@ pub fn is_global_collision(err: &str) -> bool {
     err.contains("already_exists_global")
 }
 
+// ── LLM proposal review (Slice N stage 2) ────────────────────────────────
+
+/// One pending proposal awaiting review.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ProposalView {
+    pub anchor: AnchorView,
+    pub confidence: f32,
+    pub rationale: String,
+    pub proposed_at: f64,
+}
+
+/// `workspaces.anchors.list_proposals` — the pending review queue.
+pub async fn list_proposals(ws: &str) -> Result<Vec<ProposalView>, String> {
+    let v = workspaces_call(
+        "workspaces.anchors.list_proposals",
+        json!({ "workspace_id": ws }),
+    )
+    .await?;
+    Ok(v.get("proposals")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| serde_json::from_value::<ProposalView>(p.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// `workspaces.anchors.accept_proposal`. A colliding identifier returns an
+/// `already_exists` error whose text carries the OI-18 diff inputs; pass
+/// `merge` after the user explicitly chooses to merge.
+pub async fn accept_proposal(ws: &str, identifier: &str, merge: bool) -> Result<Value, String> {
+    workspaces_call(
+        "workspaces.anchors.accept_proposal",
+        json!({ "workspace_id": ws, "identifier": identifier, "merge": merge }),
+    )
+    .await
+}
+
+/// `workspaces.anchors.reject_proposal` — dismiss + OI-11 30-day suppression.
+pub async fn reject_proposal(ws: &str, identifier: &str) -> Result<Value, String> {
+    workspaces_call(
+        "workspaces.anchors.reject_proposal",
+        json!({ "workspace_id": ws, "identifier": identifier }),
+    )
+    .await
+}
+
+/// Is `err` the accept-collision signal (the OI-18 diff case)?
+pub fn is_accept_collision(err: &str) -> bool {
+    err.contains("already_exists") && !is_global_collision(err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

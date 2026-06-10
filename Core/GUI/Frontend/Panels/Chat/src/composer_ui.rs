@@ -34,6 +34,9 @@ pub(crate) fn mount(
     if let Some(menu) = ignore_menu(panel, cx) {
         bar = bar.child(menu);
     }
+    if let Some(offer) = anchor_offer(panel, cx) {
+        bar = bar.child(offer);
+    }
     if let Some(popover) = curation_popover(panel, cx) {
         bar = bar.child(popover);
     }
@@ -231,7 +234,15 @@ fn disambiguation_dropdown(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Op
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this: &mut ChatPanel, _ev: &MouseDownEvent, _w, cx| {
-                        this.composer.resolve(idx, &id);
+                        if this.composer.resolve(idx, &id) {
+                            // Slice N: a fresh, anchorable pick with no
+                            // anchors yet → offer to mint one.
+                            let offer = this.composer.words.get(idx).is_some_and(|w| {
+                                w.anchor_count == 0
+                                    && crate::composer::is_anchorable_identifier(&w.token.text)
+                            });
+                            this.composer.anchor_offer = offer.then_some(idx);
+                        }
                         cx.notify();
                     }),
                 ),
@@ -243,11 +254,80 @@ fn disambiguation_dropdown(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Op
                 .text_size(px(size::MICRO))
                 .text_color(rgb(pack(TEXT_MUTED)))
                 .child(SharedString::from(
-                    "Anchor this? — vocabulary anchors land with Slice N",
+                    "Pick the right one — you can anchor it as vocabulary right after",
                 )),
         );
     }
     Some(card)
+}
+
+/// The post-pick "Anchor this?" offer (Slice N): one click mints a symbol
+/// anchor for the disambiguated word.
+fn anchor_offer(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Option<gpui::Div> {
+    let idx = panel.composer.anchor_offer?;
+    let word = panel.composer.words.get(idx)?;
+    let sym = word.effective_symbol()?;
+    let label = format!(
+        "Anchor this? Create {{{{{}}}}} → {} ({}:{})",
+        word.token.text, sym.name, sym.file, sym.line
+    );
+    Some(
+        panel_card().child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    div()
+                        .id("composer-anchor-create")
+                        .px_2()
+                        .py_0p5()
+                        .rounded(px(4.0))
+                        .bg(rgb(pack(SURFACE_700)))
+                        .cursor_pointer()
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                        .child(SharedString::from("Create anchor"))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(
+                                move |this: &mut ChatPanel, _ev: &MouseDownEvent, _w, cx| {
+                                    this.create_anchor_for_word(idx, cx);
+                                },
+                            ),
+                        ),
+                )
+                .child(
+                    div()
+                        .id("composer-anchor-dismiss")
+                        .px_2()
+                        .py_0p5()
+                        .rounded(px(4.0))
+                        .bg(rgb(pack(SURFACE_800)))
+                        .cursor_pointer()
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_MUTED)))
+                        .child(SharedString::from("Not now"))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(
+                                move |this: &mut ChatPanel, _ev: &MouseDownEvent, _w, cx| {
+                                    this.composer.anchor_offer = None;
+                                    cx.notify();
+                                },
+                            ),
+                        ),
+                ),
+        ),
+    )
 }
 
 /// The right-click ignore menu (Slice M, Plan §5.8): toggle the word's
