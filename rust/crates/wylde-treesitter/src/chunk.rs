@@ -134,9 +134,8 @@ pub fn chunk(
         }
     }
 
-    let source = std::fs::read_to_string(path).map_err(|e| {
-        IpcError::new("read_failed", format!("could not read {path:?}: {e}"))
-    })?;
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| IpcError::new("read_failed", format!("could not read {path:?}: {e}")))?;
 
     let grammar = resolve_grammar(path, language)?;
     let chunks = match grammar.and_then(|g| g.chunk_query.map(|q| (g, q))) {
@@ -175,9 +174,9 @@ fn ast_chunks(
             format!("could not load {} grammar: {e}", grammar.name),
         )
     })?;
-    let tree = parser.parse(source, None).ok_or_else(|| {
-        IpcError::new("parse_failed", "tree-sitter returned no tree")
-    })?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| IpcError::new("parse_failed", "tree-sitter returned no tree"))?;
     let root = tree.root_node();
 
     let query = Query::new(&lang, query_src).map_err(|e| {
@@ -284,7 +283,10 @@ fn ast_chunks(
 /// more than the count of newlines that precede it).
 fn line_at(source: &str, byte: usize) -> usize {
     let upto = byte.min(source.len());
-    1 + source.as_bytes()[..upto].iter().filter(|&&b| b == b'\n').count()
+    1 + source.as_bytes()[..upto]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count()
 }
 
 /// Push a chunk, sub-splitting into line-aligned byte windows if it exceeds
@@ -484,9 +486,7 @@ mod tests {
         let cs = chunks_of(&out);
         // The single def split into multiple shards, each <= a line over 64B.
         assert!(cs.len() > 1, "expected the giant def to be windowed");
-        assert!(cs
-            .iter()
-            .all(|c| c["kind"] == json!("function_definition")));
+        assert!(cs.iter().all(|c| c["kind"] == json!("function_definition")));
         // Shards are part-tagged.
         assert_eq!(cs[0]["symbol_name"], json!("big#part0"));
     }
@@ -624,7 +624,8 @@ mod tests {
 
     #[test]
     fn chunks_markdown_on_sections_with_heading_names() {
-        let src = "# Intro\n\nFirst paragraph.\n\n# Usage\n\nSecond paragraph.\n\n## Detail\n\nNested.\n";
+        let src =
+            "# Intro\n\nFirst paragraph.\n\n# Usage\n\nSecond paragraph.\n\n## Detail\n\nNested.\n";
         let f = temp_source(src, "md");
         let out = chunk(f.path().to_str().unwrap(), None, None).unwrap();
         assert_eq!(out["language"], "markdown");

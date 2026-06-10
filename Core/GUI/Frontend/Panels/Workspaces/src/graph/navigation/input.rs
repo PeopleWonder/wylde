@@ -64,6 +64,9 @@ impl GraphView {
                 self.cluster_menu = None;
                 self.profile_menu_open = false;
                 cx.notify();
+            } else if self.outline.is_some() {
+                // Then the outline card (Slice H)…
+                self.close_outline(cx);
             } else if self.navigator.is_scoped() {
                 self.apply_nav_action(NavAction::LeaveScope, cx);
             }
@@ -211,9 +214,23 @@ impl GraphView {
                         h.release(id);
                     }
                 } else {
-                    // A click (no movement) — record the selected node.
+                    // A click (no movement) — record the selected node, and
+                    // open its file's outline card (Slice H) when it has one.
+                    // Synthetic nodes (`cluster::`/`anchor::`) carry no file,
+                    // so they never trigger a fetch.
                     eprintln!("[workspaces.graph] clicked node {id}");
+                    let file = self
+                        .display_graph_layout()
+                        .0
+                        .nodes
+                        .iter()
+                        .find(|n| n.id == id)
+                        .map(|n| n.file.clone())
+                        .filter(|f| !f.is_empty());
                     self.last_clicked = Some(id);
+                    if let Some(file) = file {
+                        self.open_outline(file, cx);
+                    }
                     cx.notify();
                 }
             }

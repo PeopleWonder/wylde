@@ -29,6 +29,7 @@ pub mod ipc;
 pub mod layout;
 pub mod model;
 pub mod navigation;
+pub mod outline_view;
 mod paint;
 pub mod physics;
 pub mod render;
@@ -162,6 +163,9 @@ pub struct GraphView {
     /// Which graph layer is showing (Slice N): `V` cycles CodeGraph →
     /// Overlay → VocabularyGraph. Render-only — see `display_graph_layout`.
     view_mode: model::ViewMode,
+    /// The per-file outline side card (Slice H): opened by clicking a node
+    /// with a source file; fed by `treesitter.outline`.
+    outline: Option<outline_view::OutlineState>,
     /// The saved anchors, fetched alongside the graph and resolved against
     /// it (Slice N stage N-3). Empty until the first anchor load (or when
     /// both stores are unreachable — the overlay just draws nothing extra).
@@ -206,6 +210,7 @@ impl GraphView {
             drag: None,
             last_clicked: None,
             view_mode: model::ViewMode::default(),
+            outline: None,
             vocab_anchors: Vec::new(),
         }
     }
@@ -273,6 +278,8 @@ impl GraphView {
                         view.cluster_view.rebuild(&view.graph, view.camera.zoom);
                         view.cluster_menu = None;
                         view.profile_menu_open = false;
+                        // A reload may invalidate the outlined file (Slice H).
+                        view.outline = None;
                         // Deterministic layouts compute their final positions
                         // and leave the physics worker paused; force-directed
                         // warm-starts (depth-banded) and spins up the worker
@@ -548,6 +555,10 @@ impl Render for GraphView {
         // Profile quick-switcher dropdown (C-settings).
         if let Some(menu) = self.profile_menu_element(cx) {
             content = content.child(menu);
+        }
+        // Per-file outline side card (Slice H).
+        if let Some(card) = self.outline_element(cx) {
+            content = content.child(card);
         }
         content = content.child(self.overlay());
 

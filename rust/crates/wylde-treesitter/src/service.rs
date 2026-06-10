@@ -7,20 +7,24 @@
 //! for the Memgraph graph layer). Slice 4 widened the grammar set to Python,
 //! Rust, TypeScript, TSX, JavaScript, and Markdown (no new verbs — every verb
 //! above now answers for all six; TSX adds JSX-aware parsing + JSX component
-//! CALLS edges). The outline/highlight verbs remain future work.
+//! CALLS edges). TBS Slice H added the IDE verbs — `outline` (nested symbol
+//! tree) and `highlight` (syntax spans via the grammars' bundled queries) —
+//! completing the plan's six-verb API surface.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 use wylde_shared::ipc::{register_action_with_meta, unregister_action, IpcError, Reply};
 
-use crate::{chunk, entities, parser};
+use crate::{chunk, entities, highlight, outline, parser};
 
-const ALL_ACTIONS: [&str; 4] = [
+const ALL_ACTIONS: [&str; 6] = [
     "treesitter.languages",
     "treesitter.parse",
     "treesitter.chunk",
     "treesitter.extract_entities",
+    "treesitter.outline",
+    "treesitter.highlight",
 ];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -66,7 +70,69 @@ pub fn install() {
         "wylde_treesitter::entities",
     );
 
+    register_action_with_meta(
+        "treesitter.outline",
+        |payload: Value| async move { handle_outline(payload) },
+        "{path, language?} — nested symbol outline (Slice H). Reply: \
+         {tree:[{kind, name, line, end_line, children:[…]}]}. Definitions at \
+         every depth, nested by containment (methods under their class).",
+        "wylde_treesitter::outline",
+    );
+
+    register_action_with_meta(
+        "treesitter.highlight",
+        |payload: Value| async move { handle_highlight(payload) },
+        "{path, language?} — syntax-highlight spans (Slice H). Reply: \
+         {spans:[{start_byte, end_byte, scope}]}. Scopes are the grammar's \
+         bundled highlights.scm capture names; consumers map scope → colour.",
+        "wylde_treesitter::highlight",
+    );
+
     tracing::info!("wylde-treesitter: registered {} actions", ALL_ACTIONS.len());
+}
+
+/// `treesitter.outline` handler — validate then delegate to
+/// [`outline::outline`]. Shared by the pipe surface and the HTTP route.
+pub fn handle_outline(payload: Value) -> Reply {
+    let (path, language) = match path_and_language(&payload) {
+        Ok(pl) => pl,
+        Err(e) => return Reply::err(e),
+    };
+    match outline::outline(path, language) {
+        Ok(v) => Reply::ok(v),
+        Err(e) => Reply::err(e),
+    }
+}
+
+/// `treesitter.highlight` handler — validate then delegate to
+/// [`highlight::highlight`]. Shared by the pipe surface and the HTTP route.
+pub fn handle_highlight(payload: Value) -> Reply {
+    let (path, language) = match path_and_language(&payload) {
+        Ok(pl) => pl,
+        Err(e) => return Reply::err(e),
+    };
+    match highlight::highlight(path, language) {
+        Ok(v) => Reply::ok(v),
+        Err(e) => Reply::err(e),
+    }
+}
+
+/// The `{path, language?}` payload shape `outline`/`highlight` share.
+fn path_and_language(payload: &Value) -> Result<(&str, Option<&str>), IpcError> {
+    let path = match payload.get("path").and_then(Value::as_str) {
+        Some(p) if !p.trim().is_empty() => p,
+        _ => {
+            return Err(IpcError::new(
+                "invalid_request",
+                "payload.path is required (non-empty string)",
+            ))
+        }
+    };
+    let language = payload
+        .get("language")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty());
+    Ok((path, language))
 }
 
 /// `treesitter.chunk` handler — validate the payload then delegate to
@@ -231,10 +297,7 @@ mod tests {
         let _g = registry_guard().await;
         reset_for_tests();
         install();
-        let mut f = tempfile::Builder::new()
-            .suffix(".py")
-            .tempfile()
-            .unwrap();
+        let mut f = tempfile::Builder::new().suffix(".py").tempfile().unwrap();
         f.write_all(b"def a():\n    return 1\n").unwrap();
         f.flush().unwrap();
         let reply = dispatch_action(serde_json::json!({
@@ -254,10 +317,7 @@ mod tests {
         let _g = registry_guard().await;
         reset_for_tests();
         install();
-        let mut f = tempfile::Builder::new()
-            .suffix(".py")
-            .tempfile()
-            .unwrap();
+        let mut f = tempfile::Builder::new().suffix(".py").tempfile().unwrap();
         f.write_all(b"import os\n\ndef a():\n    b()\n").unwrap();
         f.flush().unwrap();
         let reply = dispatch_action(serde_json::json!({
@@ -265,7 +325,11 @@ mod tests {
             "payload": {"path": f.path().to_str().unwrap()},
         }))
         .await;
-        assert!(reply.ok, "extract_entities dispatch failed: {:?}", reply.error);
+        assert!(
+            reply.ok,
+            "extract_entities dispatch failed: {:?}",
+            reply.error
+        );
         assert_eq!(reply.data["functions"][0]["name"], "a");
         assert_eq!(reply.data["imports"][0]["module"], "os");
         assert_eq!(reply.data["calls"][0]["callee"], "b");
@@ -300,6 +364,63 @@ mod tests {
         .await;
         assert!(!reply.ok);
         assert_eq!(reply.error.unwrap().code, "invalid_request");
+        reset_for_tests();
+    }
+
+    #[tokio::test]
+    async fn outline_dispatch_returns_a_nested_tree() {
+        use std::io::Write;
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+        let mut f = tempfile::Builder::new().suffix(".py").tempfile().unwrap();
+        f.write_all(b"class C:\n    def m(self):\n        pass\n")
+            .unwrap();
+        f.flush().unwrap();
+        let reply = dispatch_action(serde_json::json!({
+            "action": "treesitter.outline",
+            "payload": {"path": f.path().to_str().unwrap()},
+        }))
+        .await;
+        assert!(reply.ok, "outline dispatch failed: {:?}", reply.error);
+        assert_eq!(reply.data["tree"][0]["name"], "C");
+        assert_eq!(reply.data["tree"][0]["children"][0]["name"], "m");
+        reset_for_tests();
+    }
+
+    #[tokio::test]
+    async fn highlight_dispatch_returns_scoped_spans() {
+        use std::io::Write;
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+        let mut f = tempfile::Builder::new().suffix(".py").tempfile().unwrap();
+        f.write_all(b"def a():\n    return \"x\"\n").unwrap();
+        f.flush().unwrap();
+        let reply = dispatch_action(serde_json::json!({
+            "action": "treesitter.highlight",
+            "payload": {"path": f.path().to_str().unwrap()},
+        }))
+        .await;
+        assert!(reply.ok, "highlight dispatch failed: {:?}", reply.error);
+        assert!(reply.data["span_count"].as_u64().unwrap() > 0);
+        reset_for_tests();
+    }
+
+    #[tokio::test]
+    async fn outline_and_highlight_missing_path_are_invalid_request() {
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+        for action in ["treesitter.outline", "treesitter.highlight"] {
+            let reply = dispatch_action(serde_json::json!({
+                "action": action,
+                "payload": {},
+            }))
+            .await;
+            assert!(!reply.ok, "{action}");
+            assert_eq!(reply.error.unwrap().code, "invalid_request", "{action}");
+        }
         reset_for_tests();
     }
 

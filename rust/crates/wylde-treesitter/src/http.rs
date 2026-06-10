@@ -17,6 +17,8 @@
 //!   * `GET  /languages`         — `{languages:[{name, grammar_sha, abi}]}`.
 //!   * `POST /chunk`             — `{path, language?, max_chunk_bytes?}` → chunk list.
 //!   * `POST /extract_entities`  — `{path, language?}` → functions/classes/imports/calls (the Memgraph graph feed).
+//!   * `POST /outline`           — `{path, language?}` → nested symbol tree (TBS Slice H).
+//!   * `POST /highlight`         — `{path, language?}` → syntax-highlight spans (TBS Slice H).
 
 use std::net::SocketAddr;
 
@@ -37,6 +39,8 @@ pub fn router() -> Router {
         .route("/languages", get(languages_route))
         .route("/chunk", post(chunk_route))
         .route("/extract_entities", post(extract_entities_route))
+        .route("/outline", post(outline_route))
+        .route("/highlight", post(highlight_route))
 }
 
 /// Bind `127.0.0.1:<port>` (loopback only — the chunk surface is never exposed
@@ -75,6 +79,16 @@ async fn extract_entities_route(body: Option<Json<Value>>) -> Response {
     reply_to_response(service::handle_extract_entities(payload))
 }
 
+async fn outline_route(body: Option<Json<Value>>) -> Response {
+    let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
+    reply_to_response(service::handle_outline(payload))
+}
+
+async fn highlight_route(body: Option<Json<Value>>) -> Response {
+    let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
+    reply_to_response(service::handle_highlight(payload))
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────
 
 /// Map an action [`Reply`] onto an axum response — the same envelope shape
@@ -94,7 +108,11 @@ fn reply_to_response(reply: Reply) -> Response {
         "service_unavailable" => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
-    (status, Json(json!({"error": err.message, "code": err.code}))).into_response()
+    (
+        status,
+        Json(json!({"error": err.message, "code": err.code})),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -141,10 +159,7 @@ mod tests {
 
     #[tokio::test]
     async fn chunk_route_chunks_a_python_file() {
-        let mut f = tempfile::Builder::new()
-            .suffix(".py")
-            .tempfile()
-            .unwrap();
+        let mut f = tempfile::Builder::new().suffix(".py").tempfile().unwrap();
         f.write_all(b"def a():\n    return 1\n").unwrap();
         f.flush().unwrap();
         let payload = json!({ "path": f.path().to_str().unwrap() });
@@ -165,10 +180,7 @@ mod tests {
 
     #[tokio::test]
     async fn extract_entities_route_returns_structure() {
-        let mut f = tempfile::Builder::new()
-            .suffix(".py")
-            .tempfile()
-            .unwrap();
+        let mut f = tempfile::Builder::new().suffix(".py").tempfile().unwrap();
         f.write_all(b"import os\n\nclass C(Base):\n    def m(self):\n        helper()\n")
             .unwrap();
         f.flush().unwrap();
@@ -190,7 +202,51 @@ mod tests {
         assert_eq!(v["imports"][0]["module"], "os");
         // The call inside the method is attributed to the method.
         let calls = v["calls"].as_array().unwrap();
-        assert!(calls.iter().any(|c| c["callee"] == "helper" && c["caller"] == "m"));
+        assert!(calls
+            .iter()
+            .any(|c| c["callee"] == "helper" && c["caller"] == "m"));
+    }
+
+    #[tokio::test]
+    async fn outline_route_returns_the_tree() {
+        let mut f = tempfile::Builder::new().suffix(".py").tempfile().unwrap();
+        f.write_all(b"class C:\n    def m(self):\n        pass\n")
+            .unwrap();
+        f.flush().unwrap();
+        let payload = json!({ "path": f.path().to_str().unwrap() });
+        let resp = router()
+            .oneshot(
+                Request::post("/outline")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["tree"][0]["name"], "C");
+        assert_eq!(v["tree"][0]["children"][0]["name"], "m");
+    }
+
+    #[tokio::test]
+    async fn highlight_route_returns_spans() {
+        let mut f = tempfile::Builder::new().suffix(".rs").tempfile().unwrap();
+        f.write_all(b"fn main() { let s = \"x\"; }\n").unwrap();
+        f.flush().unwrap();
+        let payload = json!({ "path": f.path().to_str().unwrap() });
+        let resp = router()
+            .oneshot(
+                Request::post("/highlight")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert!(v["span_count"].as_u64().unwrap() > 0);
     }
 
     #[tokio::test]
