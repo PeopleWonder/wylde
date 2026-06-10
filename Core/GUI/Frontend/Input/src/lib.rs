@@ -82,6 +82,17 @@ use element::LayoutInfo;
 /// paragraph would undo in one step (annoying).
 const UNDO_BURST_FORCE: usize = 200;
 
+/// The shared undo timeline's clock. Text snapshots (this crate) and any
+/// sibling op stacks (the chat panel's bubble ops) stamp from the SAME
+/// counter, so an external arbiter can interleave "undo the newest thing"
+/// across stacks by comparing stamps (Plan §5.9's unified Ctrl+Z).
+static UNDO_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Take the next position on the shared undo timeline.
+pub fn next_undo_seq() -> u64 {
+    UNDO_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 // ── Public configuration ─────────────────────────────────────────────
 
 /// When the input fires `InputEvent::Submit`.
@@ -170,6 +181,12 @@ pub struct TextInput {
     last_layout: Option<LayoutInfo>,
     /// A left-button drag-selection is in progress.
     dragging: bool,
+    /// Unified-undo mode (§5.9): this input does NOT handle Ctrl+Z /
+    /// Ctrl+Shift+Z / Ctrl+Y itself — the chords bubble to an ancestor
+    /// arbiter that interleaves text undo with sibling op stacks via
+    /// [`TextInput::undo`]/[`TextInput::redo`] and the seq peeks. Every
+    /// other input keeps self-contained text undo.
+    external_undo: bool,
 }
 
 impl TextInput {
@@ -191,6 +208,7 @@ impl TextInput {
             highlights: Vec::new(),
             last_layout: None,
             dragging: false,
+            external_undo: false,
         }
     }
 
@@ -212,10 +230,20 @@ impl TextInput {
             highlights: Vec::new(),
             last_layout: None,
             dragging: false,
+            external_undo: false,
         }
     }
 
     // ── Builder-style configuration ─────────────────────────────────
+
+    /// Opt into unified undo (§5.9): the input stops handling the undo /
+    /// redo chords itself and lets them bubble to an ancestor arbiter,
+    /// which drives text undo imperatively via [`Self::undo`]/[`Self::redo`]
+    /// after comparing [`Self::top_undo_seq`] against its sibling stacks.
+    pub fn with_external_undo(mut self) -> Self {
+        self.external_undo = true;
+        self
+    }
 
     pub fn with_placeholder(mut self, text: impl Into<SharedString>) -> Self {
         self.placeholder = text.into();
@@ -324,6 +352,55 @@ impl TextInput {
 
     pub fn emit_changed(&self, cx: &mut Context<Self>) {
         cx.emit(InputEvent::Changed(self.buffer.text().to_owned()));
+    }
+
+    // ── Unified undo (§5.9) — the arbiter-facing surface ───────────
+
+    /// Imperative text undo (the arbiter decided the newest op is ours).
+    /// Emits `Changed` like a keyboard undo would.
+    pub fn undo(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.buffer.undo() {
+            cx.emit(InputEvent::Changed(self.buffer.text().to_owned()));
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Imperative text redo.
+    pub fn redo(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.buffer.redo() {
+            cx.emit(InputEvent::Changed(self.buffer.text().to_owned()));
+            cx.notify();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Timeline stamp of the newest undoable text snapshot.
+    pub fn top_undo_seq(&self) -> Option<u64> {
+        self.buffer.top_undo_seq()
+    }
+
+    /// Timeline stamp of the newest redoable text snapshot.
+    pub fn top_redo_seq(&self) -> Option<u64> {
+        self.buffer.top_redo_seq()
+    }
+
+    /// Seal the current typing burst: the next insert opens a NEW undo
+    /// snapshot. The arbiter calls this when a sibling-stack op lands
+    /// mid-burst, so "hel‹bubble op›lo" undoes as lo → bubble → hel
+    /// instead of bubble → hello.
+    pub fn seal_undo_burst(&mut self) {
+        self.burst_inserts_since_snapshot = 0;
+    }
+
+    /// Unified linear history: a NEW op on a sibling stack invalidates
+    /// this input's redo branch too.
+    pub fn clear_redo(&mut self) {
+        self.buffer.clear_redo();
     }
 
     // ── Highlights (glyph-metrics slice) ───────────────────────────
@@ -550,6 +627,13 @@ impl TextInput {
                         }
                     }
                 }
+            }
+            // Unified-undo mode: the chords are NOT consumed here — they
+            // bubble to the ancestor arbiter (§5.9), which interleaves
+            // text undo with its sibling op stacks and calls back via
+            // `undo()`/`redo()`.
+            "z" | "y" if cmd_or_ctrl && self.external_undo => {
+                return;
             }
             "z" if cmd_or_ctrl && m.shift => {
                 // Cmd/Ctrl+Shift+Z — redo (matches gnome / windows; macOS

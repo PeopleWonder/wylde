@@ -17,6 +17,12 @@ pub struct UndoEntry<T> {
     /// Toast text fragment, e.g. `"Connection saved to workspace"`.
     pub label: String,
     pub action: T,
+    /// Position on a shared undo timeline (0 when the consumer doesn't
+    /// interleave). A unified arbiter (the chat panel's §5.9 Ctrl+Z)
+    /// stamps via [`UndoStack::push_seq`] and compares
+    /// [`UndoStack::top_seq`] against sibling stacks to undo strictly by
+    /// recency.
+    pub seq: u64,
 }
 
 /// A bounded undo/redo stack.
@@ -45,14 +51,36 @@ impl<T> UndoStack<T> {
     /// Record a fresh action. Clears the redo branch; drops the oldest entry
     /// past the depth cap.
     pub fn push(&mut self, label: impl Into<String>, action: T) {
+        self.push_seq(label, action, 0);
+    }
+
+    /// [`Self::push`] with a shared-timeline stamp (unified undo, §5.9).
+    pub fn push_seq(&mut self, label: impl Into<String>, action: T, seq: u64) {
         self.redo.clear();
         self.undo.push(UndoEntry {
             label: label.into(),
             action,
+            seq,
         });
         if self.undo.len() > self.depth {
             self.undo.remove(0);
         }
+    }
+
+    /// Timeline stamp of the newest undoable entry.
+    pub fn top_seq(&self) -> Option<u64> {
+        self.undo.last().map(|e| e.seq)
+    }
+
+    /// Timeline stamp of the newest redoable entry.
+    pub fn top_redo_seq(&self) -> Option<u64> {
+        self.redo.last().map(|e| e.seq)
+    }
+
+    /// Drop only the redo branch — the unified timeline's linear-history
+    /// rule when a NEW op lands on a sibling stack.
+    pub fn clear_redo(&mut self) {
+        self.redo.clear();
     }
 
     /// Ctrl+Z: pop the latest action (the caller applies its inverse, then
@@ -122,6 +150,26 @@ mod tests {
         assert!(!s.can_redo(), "linear history — redo branch dropped");
         assert_eq!(s.undo().unwrap().action, 3);
         assert_eq!(s.undo().unwrap().action, 1);
+    }
+
+    #[test]
+    fn seq_stamps_ride_the_timeline_and_survive_undo() {
+        let mut s: UndoStack<i32> = UndoStack::default();
+        s.push_seq("a", 1, 10);
+        s.push_seq("b", 2, 20);
+        assert_eq!(s.top_seq(), Some(20));
+        assert_eq!(s.top_redo_seq(), None);
+        // Undo moves the stamp to the redo branch unchanged.
+        s.undo();
+        assert_eq!(s.top_seq(), Some(10));
+        assert_eq!(s.top_redo_seq(), Some(20));
+        // clear_redo drops ONLY the redo branch (sibling-stack op landed).
+        s.clear_redo();
+        assert_eq!(s.top_redo_seq(), None);
+        assert_eq!(s.top_seq(), Some(10), "undo branch untouched");
+        // Plain push stamps 0 (non-interleaving consumers).
+        s.push("c", 3);
+        assert_eq!(s.top_seq(), Some(0));
     }
 
     #[test]
