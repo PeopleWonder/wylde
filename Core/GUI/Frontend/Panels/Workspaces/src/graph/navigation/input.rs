@@ -1,9 +1,12 @@
 //! Pointer + keyboard input handlers for the graph canvas.
 //!
-//! Moved verbatim out of `graph/mod.rs` (2026-06-09 pre-C-navigation
-//! cleanup); no behaviour change. C-navigation extends these handlers with
-//! zoom-toward-cursor, cluster enter/leave thresholds, breadcrumb clicks and
-//! exit-edge clicks (translated into `NavAction`s for the navigator).
+//! C-navigation: scroll zooms **toward the cursor** (the model point under
+//! the pointer stays put) and threshold crossings translate into
+//! [`NavAction`]s — entering a cluster when the zoom crosses its
+//! `zoom_threshold` under the cursor, leaving when it drops below the
+//! scope's hysteresis point. `Esc` leaves the scope; breadcrumb / exit-chip
+//! clicks are handled by their own elements (`breadcrumb.rs` /
+//! `graph/mod.rs::exit_label_chips`).
 
 use gpui::{
     Context, KeyDownEvent, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollDelta,
@@ -11,6 +14,7 @@ use gpui::{
 };
 
 use super::super::GraphView;
+use super::{camera, NavAction};
 
 /// In-flight drag state. A press that lands on a node drags that node (pins it
 /// in the physics worker); a press on empty space pans the camera.
@@ -31,11 +35,20 @@ const DRAG_THRESHOLD: f32 = 3.0;
 
 impl GraphView {
     /// `Ctrl+Shift+L` → cycle force → hierarchical → grid → force.
-    pub(crate) fn on_key(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    /// `Esc` → leave the space-map scope (when scoped).
+    pub(crate) fn on_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let ks = &ev.keystroke;
         if ks.key.as_str() == "l" && ks.modifiers.control && ks.modifiers.shift {
             let next = self.current_layout.next();
             self.set_layout(next, cx);
+        }
+        if ks.key.as_str() == "escape" && self.navigator.is_scoped() {
+            self.apply_nav_action(NavAction::LeaveScope, cx);
         }
     }
 
@@ -47,7 +60,35 @@ impl GraphView {
         if units.abs() < f32::EPSILON {
             return;
         }
-        self.camera.zoom_by(1.15f32.powf(units));
+        // A manual scroll takes the camera back from any in-flight tween.
+        self.camera_transition = None;
+        self.pending_enter = None;
+
+        let (sx, sy) = (f32::from(ev.position.x), f32::from(ev.position.y));
+        let vp = self.viewport(self.canvas);
+        let old_zoom = self.camera.zoom;
+        // Zoom anchored at the cursor: the model point under the pointer is
+        // invariant, so it's the same before and after the zoom.
+        let cursor_model = vp.screen_to_model(sx, sy);
+        camera::zoom_toward(
+            &mut self.camera,
+            self.navigator.config.zoom_step_factor.powf(units),
+            sx,
+            sy,
+            &vp,
+        );
+
+        // Threshold crossings enter/leave the space-map scope.
+        if let Some(action) = self.navigator.action_for_zoom(
+            old_zoom,
+            self.camera.zoom,
+            (cursor_model.x, cursor_model.y),
+            &self.graph,
+            &self.layout,
+        ) {
+            self.apply_nav_action(action, cx);
+        }
+
         // A zoom is a resume trigger + changes which nodes are visible — refresh
         // the worker's cull region.
         self.push_viewport();
