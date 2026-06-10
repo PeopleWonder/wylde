@@ -9,8 +9,13 @@
 //!
 //! [`Theme`]: crate::graph::render::Theme
 
-/// Tunables for the space-map navigation feel.
-#[derive(Clone, Copy, Debug, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+/// Tunables for the space-map navigation feel. Serializable so a settings
+/// profile (C-settings `graph_profiles.json`) snapshots it verbatim;
+/// `#[serde(default)]` keeps older profiles loading as knobs are added.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct NavConfig {
     /// Zoom multiplier per scroll unit (one wheel notch = one unit). The
     /// scaffold camera hardcoded 1.15; it now lives here.

@@ -34,6 +34,7 @@ use crate::ipc::{
     activate_workspace, delete_workspace, list_workspaces, reindex_workspace, set_active_workspace,
     WorkspaceSummary,
 };
+use crate::settings_tab::GraphSettingsTab;
 use crate::tabs::WorkspacesTab;
 
 /// Root Workspaces panel. Hosts a minimal tab system (Registry + Graph);
@@ -49,6 +50,9 @@ pub struct WorkspacesPanel {
     /// workspace's code graph). `None` only in unit-test construction, where
     /// no gpui context exists to create a child entity.
     pub graph: Option<Entity<GraphView>>,
+    /// The Settings tab's view (Slice C-settings: profile library + graph
+    /// knob editors). Same `None`-in-unit-tests caveat as `graph`.
+    pub settings: Option<Entity<GraphSettingsTab>>,
 }
 
 impl WorkspacesPanel {
@@ -60,6 +64,7 @@ impl WorkspacesPanel {
             loading: true,
             tab: WorkspacesTab::Registry,
             graph: None,
+            settings: None,
         }
     }
 
@@ -75,8 +80,11 @@ impl WorkspacesPanel {
                 GraphView::spawn_load(gcx);
                 view
             });
+            // The Settings tab edits the graph view's live knobs + profiles.
+            let settings = cx.new(|scx| GraphSettingsTab::new(graph.clone(), scx));
             let mut panel = Self::new();
             panel.graph = Some(graph);
+            panel.settings = Some(settings);
             Self::spawn_refresh(cx);
             panel
         })
@@ -234,6 +242,10 @@ impl Render for WorkspacesPanel {
             WorkspacesTab::Graph => match self.graph.clone() {
                 Some(view) => view.into_any_element(),
                 // No child entity (test-only construction) — render nothing.
+                None => div().into_any_element(),
+            },
+            WorkspacesTab::Settings => match self.settings.clone() {
+                Some(view) => view.into_any_element(),
                 None => div().into_any_element(),
             },
             // Registry is the default; any not-yet-wired tab also falls back

@@ -25,12 +25,15 @@
 //! ## Tabs (Thought Bubble System, Phase 3)
 //!
 //! The panel now hosts a minimal tab system ([`tabs`]): the original
-//! Registry plus a new Graph tab (Slice C-scaffold) that mounts the visual
-//! code-graph view ([`graph::GraphView`]). Vocabulary / Conversations /
-//! Settings tabs are wired by their own later slices.
+//! Registry, the Graph tab (Slice C-scaffold) mounting the visual code-graph
+//! view ([`graph::GraphView`]), and the Settings tab (Slice C-settings,
+//! [`settings_tab::GraphSettingsTab`]) with the profile library and graph
+//! knob editors. Vocabulary / Conversations tabs are wired by their own
+//! later slices.
 
 pub mod graph;
 pub mod ipc;
+pub mod settings_tab;
 pub mod tabs;
 pub mod workspaces_panel;
 
