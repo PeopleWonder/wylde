@@ -37,7 +37,10 @@ impl LinkStatus {
     pub fn from_value(v: &Value) -> Self {
         Self {
             enabled: v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false),
-            interface_up: v.get("interface_up").and_then(|x| x.as_bool()).unwrap_or(false),
+            interface_up: v
+                .get("interface_up")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
             listen_port: v.get("listen_port").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
             public_key: v
                 .get("public_key")
@@ -73,7 +76,11 @@ impl LinkConfig {
     pub fn from_value(v: &Value) -> Self {
         Self {
             enabled: v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false),
-            public_host: v.get("public_host").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            public_host: v
+                .get("public_host")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
             listen_port: v.get("listen_port").and_then(|x| x.as_u64()).unwrap_or(0) as u32,
             tunnel_addr: v
                 .get("tunnel_addr")
@@ -125,7 +132,11 @@ impl PeerRow {
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_owned(),
-            label: v.get("label").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            label: v
+                .get("label")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
             tunnel_ip: v
                 .get("tunnel_ip")
                 .and_then(|x| x.as_str())
@@ -178,7 +189,11 @@ pub struct ServiceRow {
 impl ServiceRow {
     pub fn from_value(v: &Value) -> Self {
         Self {
-            name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            name: v
+                .get("name")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
             description: v
                 .get("description")
                 .and_then(|x| x.as_str())

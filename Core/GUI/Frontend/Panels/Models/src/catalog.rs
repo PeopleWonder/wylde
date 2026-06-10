@@ -127,7 +127,10 @@ pub fn catalog() -> &'static [CatalogEntry] {
 }
 
 fn load_catalog() -> Vec<CatalogEntry> {
-    if let Some(over) = std::env::var(CATALOG_OVERRIDE_ENV).ok().filter(|s| !s.trim().is_empty()) {
+    if let Some(over) = std::env::var(CATALOG_OVERRIDE_ENV)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
         match load_override(&over) {
             Ok(entries) if !entries.is_empty() => return entries,
             Ok(_) => {
@@ -266,8 +269,20 @@ mod tests {
             entry("llama3.2:3b", "llama", "Llama 3.2 3B", "3B", &["general"]),
             entry("llama3.1:8b", "llama", "Llama 3.1 8B", "8B", &["general"]),
             entry("qwen2.5:7b", "qwen", "Qwen2.5 7B", "7B", &["general"]),
-            entry("qwen2.5-coder:7b", "qwen", "Qwen2.5 Coder 7B", "7B", &["code"]),
-            entry("nomic-embed-text", "nomic", "Nomic Embed Text", "137M", &["embedding"]),
+            entry(
+                "qwen2.5-coder:7b",
+                "qwen",
+                "Qwen2.5 Coder 7B",
+                "7B",
+                &["code"],
+            ),
+            entry(
+                "nomic-embed-text",
+                "nomic",
+                "Nomic Embed Text",
+                "137M",
+                &["embedding"],
+            ),
         ]
     }
 

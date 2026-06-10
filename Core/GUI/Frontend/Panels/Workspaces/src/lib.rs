@@ -35,6 +35,7 @@ pub mod graph;
 pub mod ipc;
 pub mod settings_tab;
 pub mod tabs;
+pub mod vocabulary;
 pub mod workspaces_panel;
 
 pub use workspaces_panel::WorkspacesPanel;

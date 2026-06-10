@@ -74,8 +74,16 @@ pub struct DeviceRow {
 impl DeviceRow {
     pub fn from_value(v: &Value) -> Self {
         Self {
-            device_id: v.get("device_id").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
-            name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            device_id: v
+                .get("device_id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            name: v
+                .get("name")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
             tier: v
                 .get("tier")
                 .and_then(|x| x.as_str())
@@ -83,7 +91,10 @@ impl DeviceRow {
                 .to_owned(),
             paired_at: v.get("paired_at").and_then(|x| x.as_f64()).unwrap_or(0.0),
             last_seen: v.get("last_seen").and_then(|x| x.as_f64()).unwrap_or(0.0),
-            is_active: v.get("is_active").and_then(|x| x.as_bool()).unwrap_or(false),
+            is_active: v
+                .get("is_active")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
         }
     }
 
@@ -151,11 +162,18 @@ pub enum PairingStatus {
 
 impl PairingStatus {
     pub fn from_value(v: &Value) -> Self {
-        let active = v.get("pairing_active").and_then(|x| x.as_bool()).unwrap_or(false);
+        let active = v
+            .get("pairing_active")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
         if !active {
             return Self::Inactive;
         }
-        let code = v.get("code").and_then(|x| x.as_str()).unwrap_or_default().to_owned();
+        let code = v
+            .get("code")
+            .and_then(|x| x.as_str())
+            .unwrap_or_default()
+            .to_owned();
         let expires_at = v.get("expires_at").and_then(|x| x.as_f64()).unwrap_or(0.0);
         if code.is_empty() || expires_at <= 0.0 {
             // Server says "active" but the payload is malformed — treat
@@ -190,7 +208,11 @@ pub async fn list_devices() -> Result<Vec<DeviceRow>, String> {
         return Ok(Vec::new());
     };
     let mut rows: Vec<DeviceRow> = arr.iter().map(DeviceRow::from_value).collect();
-    rows.sort_by(|a, b| b.paired_at.partial_cmp(&a.paired_at).unwrap_or(std::cmp::Ordering::Equal));
+    rows.sort_by(|a, b| {
+        b.paired_at
+            .partial_cmp(&a.paired_at)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     Ok(rows)
 }
 
@@ -201,7 +223,11 @@ pub async fn start_pairing() -> Result<PairingStatus, String> {
     let v = action("device_gate.start_pairing", json!({})).await?;
     // The reply shape is `{code, expires_at}` (no `pairing_active`
     // wrapper); synthesise the enum directly.
-    let code = v.get("code").and_then(|x| x.as_str()).unwrap_or_default().to_owned();
+    let code = v
+        .get("code")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_owned();
     let expires_at = v.get("expires_at").and_then(|x| x.as_f64()).unwrap_or(0.0);
     if code.is_empty() || expires_at <= 0.0 {
         return Err("malformed start_pairing reply".into());
@@ -213,7 +239,9 @@ pub async fn start_pairing() -> Result<PairingStatus, String> {
 /// whether the call actually cancelled anything.
 pub async fn cancel_pairing() -> Result<bool, String> {
     let v = action("device_gate.cancel_pairing", json!({})).await?;
-    Ok(v.get("cancelled").and_then(|x| x.as_bool()).unwrap_or(false))
+    Ok(v.get("cancelled")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false))
 }
 
 /// Poll the pairing window's live state.  Used while the pair card is
@@ -246,18 +274,18 @@ pub async fn rotate_token(device_id: &str) -> Result<String, String> {
         json!({ "device_id": device_id }),
     )
     .await?;
-    Ok(v.get("new_token").and_then(|x| x.as_str()).unwrap_or_default().to_owned())
+    Ok(v.get("new_token")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_owned())
 }
 
 /// Drop a device from the store.  The mobile will get a `revoked`
 /// event the next time its Gateway connection polls.
 pub async fn revoke(device_id: &str) -> Result<(), String> {
-    action(
-        "device_gate.revoke",
-        json!({ "device_id": device_id }),
-    )
-    .await
-    .map(|_| ())
+    action("device_gate.revoke", json!({ "device_id": device_id }))
+        .await
+        .map(|_| ())
 }
 
 /// Read the rolling per-device action log, newest-first.  Returns up to

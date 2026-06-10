@@ -171,8 +171,12 @@ pub fn read_at_rest(path: &Path) -> io::Result<Vec<u8>> {
 /// [`read_at_rest`] decoded as UTF-8.
 pub fn read_to_string_at_rest(path: &Path) -> io::Result<String> {
     let bytes = read_at_rest(path)?;
-    String::from_utf8(bytes)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("at-rest file not UTF-8: {e}")))
+    String::from_utf8(bytes).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("at-rest file not UTF-8: {e}"),
+        )
+    })
 }
 
 /// Encrypt (per [`encrypt_at_rest`]) and atomically write `data` to `path`,
@@ -186,10 +190,7 @@ pub fn write_at_rest(path: &Path, data: &[u8]) -> io::Result<()> {
     let payload = encrypt_at_rest(data);
     // Per-process unique temp name so concurrent writers to sibling files
     // (or a retried write) never share a temp path.
-    let fname = path
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or("store");
+    let fname = path.file_name().and_then(|f| f.to_str()).unwrap_or("store");
     let tmp = path.with_file_name(format!("{fname}.{}.tmp", std::process::id()));
     std::fs::write(&tmp, &payload)?;
     std::fs::rename(&tmp, path)?;
@@ -208,11 +209,11 @@ fn backend_available() -> bool {
 
 #[cfg(windows)]
 fn backend_protect(data: &[u8]) -> io::Result<Vec<u8>> {
+    use windows::core::PCWSTR;
     use windows::Win32::Foundation::{LocalFree, HLOCAL};
     use windows::Win32::Security::Cryptography::{
         CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB,
     };
-    use windows::core::PCWSTR;
 
     let in_blob = CRYPT_INTEGER_BLOB {
         cbData: data.len() as u32,
@@ -267,12 +268,16 @@ fn backend_unprotect(data: &[u8]) -> io::Result<Vec<u8>> {
 
 #[cfg(not(windows))]
 fn backend_protect(_data: &[u8]) -> io::Result<Vec<u8>> {
-    Err(io::Error::other("no at-rest encryption backend on this platform"))
+    Err(io::Error::other(
+        "no at-rest encryption backend on this platform",
+    ))
 }
 
 #[cfg(not(windows))]
 fn backend_unprotect(_data: &[u8]) -> io::Result<Vec<u8>> {
-    Err(io::Error::other("no at-rest encryption backend on this platform"))
+    Err(io::Error::other(
+        "no at-rest encryption backend on this platform",
+    ))
 }
 
 #[cfg(test)]
@@ -298,7 +303,12 @@ mod tests {
             let prev_flag = std::env::var_os("WYLDE_ENCRYPTION_AT_REST");
             std::env::set_var("WYLDE_DATA_DIR", td.path());
             std::env::remove_var("WYLDE_ENCRYPTION_AT_REST");
-            Self { _g: g, _td: td, prev_data, prev_flag }
+            Self {
+                _g: g,
+                _td: td,
+                prev_data,
+                prev_flag,
+            }
         }
     }
     impl Drop for Env {
@@ -405,7 +415,10 @@ mod tests {
         // Reading migrates it forward.
         let got = read_to_string_at_rest(&path).unwrap();
         assert_eq!(got, r#"{"legacy":true}"#);
-        assert!(is_encrypted(&std::fs::read(&path).unwrap()), "migrated to ciphertext");
+        assert!(
+            is_encrypted(&std::fs::read(&path).unwrap()),
+            "migrated to ciphertext"
+        );
         // Still readable after migration.
         assert_eq!(read_to_string_at_rest(&path).unwrap(), r#"{"legacy":true}"#);
     }

@@ -202,7 +202,9 @@ mod tests {
         let table = HttpRouteTable::new().route("GET", "/api/link/status", |_req| async {
             HttpResponse::ok(json!({ "enabled": true }))
         });
-        let h = table.lookup("GET", "/api/link/status").expect("route present");
+        let h = table
+            .lookup("GET", "/api/link/status")
+            .expect("route present");
         let resp = h(HttpRequest {
             method: "GET".into(),
             path: "/api/link/status".into(),
@@ -215,8 +217,8 @@ mod tests {
 
     #[test]
     fn verb_match_is_case_insensitive() {
-        let table = HttpRouteTable::new()
-            .route("get", "/x", |_| async { HttpResponse::ok(Value::Null) });
+        let table =
+            HttpRouteTable::new().route("get", "/x", |_| async { HttpResponse::ok(Value::Null) });
         assert!(table.lookup("GET", "/x").is_some());
         assert!(table.lookup("gEt", "/x").is_some());
         // Path stays case-sensitive.
@@ -225,8 +227,8 @@ mod tests {
 
     #[test]
     fn miss_returns_none() {
-        let table = HttpRouteTable::new()
-            .route("GET", "/a", |_| async { HttpResponse::ok(Value::Null) });
+        let table =
+            HttpRouteTable::new().route("GET", "/a", |_| async { HttpResponse::ok(Value::Null) });
         assert!(table.lookup("POST", "/a").is_none());
         assert!(table.lookup("GET", "/b").is_none());
         assert_eq!(table.len(), 1);

@@ -103,6 +103,8 @@ pub struct AnchorPatch {
     pub related_to: Option<Vec<String>>,
     pub parent_anchor: Option<Option<String>>,
     pub domain: Option<Option<String>>,
+    /// Archive / unarchive (OI-21 Recommended Cleanup, Slice N).
+    pub archived: Option<bool>,
 }
 
 /// Apply a patch to the anchor with `identifier`. Re-stamps `last_used_at`.
@@ -148,6 +150,9 @@ pub fn update(
         if let Some(dom) = patch.domain {
             a.domain = dom;
         }
+        if let Some(arch) = patch.archived {
+            a.archived = arch;
+        }
         a.last_used_at = super::anchor::epoch_now();
     }
     let updated = all[idx].clone();
@@ -179,7 +184,9 @@ pub fn delete(workspace_id: &str, identifier: &str) -> std::io::Result<bool> {
 pub fn find_by_token(workspace_id: &str, token: &str) -> Vec<Anchor> {
     load(workspace_id)
         .into_iter()
-        .filter(|a| a.matches_token(token))
+        // Archived anchors stop resolving (OI-21, Slice N) — they no longer
+        // feed composer recognition or chat context, but stay recoverable.
+        .filter(|a| !a.archived && a.matches_token(token))
         .collect()
 }
 

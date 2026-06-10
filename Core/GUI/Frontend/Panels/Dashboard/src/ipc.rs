@@ -138,7 +138,11 @@ impl HardwareCard {
             .get("memory_available_bytes")
             .and_then(|x| x.as_u64())
             .unwrap_or(0);
-        let gpus = v.get("gpus").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+        let gpus = v
+            .get("gpus")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
         let nvidia_count = gpus.len() as u32;
         let (nvidia_vram_bytes, nvidia_vram_used_bytes) = gpus
             .iter()
@@ -417,7 +421,11 @@ pub async fn read_recent_memories(limit: usize) -> Result<Vec<RecentMemory>, Str
     let Some(arr) = v.get("memories").and_then(|x| x.as_array()) else {
         return Ok(Vec::new());
     };
-    Ok(arr.iter().take(limit).map(RecentMemory::from_value).collect())
+    Ok(arr
+        .iter()
+        .take(limit)
+        .map(RecentMemory::from_value)
+        .collect())
 }
 
 #[cfg(test)]
@@ -498,7 +506,10 @@ mod tests {
 
     #[test]
     fn project_health_generic_ok_is_healthy() {
-        let h = project_health("wylde-harness", &json!({"name": "wylde-harness", "reply": {"pong": true}}));
+        let h = project_health(
+            "wylde-harness",
+            &json!({"name": "wylde-harness", "reply": {"pong": true}}),
+        );
         // Generic services have no `ok`/`healthy`/`status` at top level and
         // no upstream — the daemon answered, so healthy with no detail.
         assert_eq!(h, ServiceHealth::plain(HealthStatus::Healthy));

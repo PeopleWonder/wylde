@@ -82,7 +82,10 @@ impl QrMatrix {
         if row >= self.size || col >= self.size {
             return false;
         }
-        self.modules.get(row * self.size + col).copied().unwrap_or(false)
+        self.modules
+            .get(row * self.size + col)
+            .copied()
+            .unwrap_or(false)
     }
 }
 
@@ -123,10 +126,11 @@ pub fn render_matrix(matrix: &QrMatrix) -> gpui::Div {
             } else {
                 false
             };
-            let cell = div()
-                .w(px(MODULE_PX))
-                .h(px(MODULE_PX))
-                .bg(rgb(if dark { 0x00_00_00 } else { 0xff_ff_ff }));
+            let cell = div().w(px(MODULE_PX)).h(px(MODULE_PX)).bg(rgb(if dark {
+                0x00_00_00
+            } else {
+                0xff_ff_ff
+            }));
             row = row.child(cell);
         }
         grid = grid.child(row);

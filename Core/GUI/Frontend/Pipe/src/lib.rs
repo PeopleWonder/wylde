@@ -277,8 +277,8 @@ async fn call_inner(
     envelope.insert("data".into(), body.unwrap_or(Value::Null));
     envelope.insert("meta".into(), Value::Object(meta));
 
-    let payload = rmp_serde::to_vec_named(&Value::Object(envelope))
-        .map_err(|e| format!("encode: {}", e))?;
+    let payload =
+        rmp_serde::to_vec_named(&Value::Object(envelope)).map_err(|e| format!("encode: {}", e))?;
 
     let io_fut = async {
         let header = (payload.len() as u32).to_be_bytes();
@@ -317,15 +317,17 @@ async fn call_inner(
         )
     })??;
 
-    let reply: Value =
-        rmp_serde::from_slice(&body_bytes).map_err(|e| format!("decode: {}", e))?;
+    let reply: Value = rmp_serde::from_slice(&body_bytes).map_err(|e| format!("decode: {}", e))?;
 
     let ok = reply.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
     if ok {
         Ok(reply.get("data").cloned().unwrap_or(Value::Null))
     } else {
         let err = reply.get("error").cloned().unwrap_or(Value::Null);
-        let code = err.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let code = err
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let msg = err
             .get("message")
             .and_then(|v| v.as_str())
@@ -412,11 +414,7 @@ impl Drop for PipeStream {
 ///
 /// **Non-Windows**: the returned stream surfaces a single
 /// `pipe_unavailable` error and ends.  Mirrors the unary path.
-pub fn stream_call(
-    service: &str,
-    action: &str,
-    payload: Value,
-) -> Result<PipeStream, String> {
+pub fn stream_call(service: &str, action: &str, payload: Value) -> Result<PipeStream, String> {
     let handle = if let Ok(h) = tokio::runtime::Handle::try_current() {
         h
     } else if let Some(h) = TOKIO_HANDLE.get().cloned() {
@@ -532,9 +530,7 @@ async fn run_stream_inner(
         Ok::<_, std::io::Error>(())
     };
     if let Err(e) = timeout(RESPONSE_TIMEOUT, write_fut).await {
-        let _ = tx
-            .send(Err(format!("pipe_io: write request: {e}")))
-            .await;
+        let _ = tx.send(Err(format!("pipe_io: write request: {e}"))).await;
         return;
     }
 
@@ -575,10 +571,7 @@ async fn run_stream_inner(
 
         if !frame.ok {
             let err = frame.error;
-            let code = err
-                .as_ref()
-                .map(|e| e.code.as_str())
-                .unwrap_or("unknown");
+            let code = err.as_ref().map(|e| e.code.as_str()).unwrap_or("unknown");
             let msg = err
                 .as_ref()
                 .map(|e| e.message.as_str())
@@ -616,8 +609,7 @@ async fn run_stream_inner(
 
 #[cfg(target_os = "windows")]
 pub fn list_wylde_pipes() -> Result<Vec<String>, String> {
-    let entries = std::fs::read_dir(r"\\.\pipe\")
-        .map_err(|e| format!("read pipe dir: {}", e))?;
+    let entries = std::fs::read_dir(r"\\.\pipe\").map_err(|e| format!("read pipe dir: {}", e))?;
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -751,7 +743,10 @@ mod tests {
             .build()
             .expect("build rt");
         install_runtime(rt.handle().clone());
-        assert!(tokio_reachable(), "after install, the bridge must be reachable");
+        assert!(
+            tokio_reachable(),
+            "after install, the bridge must be reachable"
+        );
     }
 
     #[tokio::test]

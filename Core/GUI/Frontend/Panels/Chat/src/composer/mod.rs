@@ -154,6 +154,9 @@ pub struct ComposerState {
     pub generation: u64,
     /// Open disambiguation dropdown: index into `words`.
     pub disambiguating: Option<usize>,
+    /// "Anchor this?" offer after a disambiguation pick (Slice N): index
+    /// into `words`.
+    pub anchor_offer: Option<usize>,
     /// Open right-click ignore menu: index into `words` (Slice M).
     pub ignore_menu: Option<usize>,
     /// Curate-before-send popover open?
@@ -176,6 +179,7 @@ impl ComposerState {
     pub fn begin_scan(&mut self) -> u64 {
         self.generation += 1;
         self.disambiguating = None;
+        self.anchor_offer = None;
         self.ignore_menu = None;
         self.curating = false;
         self.generation
@@ -250,6 +254,12 @@ impl ComposerState {
     pub fn first_ambiguous(&self) -> Option<usize> {
         self.words.iter().position(WordRecognition::is_ambiguous)
     }
+}
+
+/// Can this word's text be an anchor `{{identifier}}`? (alphanumeric +
+/// underscore — `path::segments` and `dotted.names` can't.)
+pub fn is_anchorable_identifier(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// `Ctrl+P` symbol palette state: a query + its hits + keyboard selection.

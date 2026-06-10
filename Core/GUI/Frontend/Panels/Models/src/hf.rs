@@ -176,10 +176,7 @@ mod tests {
             to_pull_tag("bartowski/Qwen2.5-7B-Instruct-GGUF", "Q4_K_M"),
             "hf.co/bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M"
         );
-        assert_eq!(
-            to_pull_tag("owner/repo", "Q8_0"),
-            "hf.co/owner/repo:Q8_0"
-        );
+        assert_eq!(to_pull_tag("owner/repo", "Q8_0"), "hf.co/owner/repo:Q8_0");
     }
 
     #[test]

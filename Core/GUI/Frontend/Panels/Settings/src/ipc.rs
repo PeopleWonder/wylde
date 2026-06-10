@@ -66,10 +66,7 @@ pub async fn set_no_auth(enabled: bool) -> Result<ConsentSnapshot, String> {
 }
 
 /// Set a per-tool decision (`consent.set`).
-pub async fn set_tool_decision(
-    tool_id: &str,
-    decision: &str,
-) -> Result<ConsentSnapshot, String> {
+pub async fn set_tool_decision(tool_id: &str, decision: &str) -> Result<ConsentSnapshot, String> {
     let v = wylde_gui_pipe::call(
         "wylde-harness",
         "POST",
@@ -246,9 +243,7 @@ pub const AUTOSTART_APP_NAME: &str = "Wylde";
 /// disabled it" from "couldn't ask the OS" — the toggle's UI shows the
 /// latter as a side toast with the error message.
 pub fn get_autostart_enabled() -> Result<bool, String> {
-    autostart_handle()?
-        .is_enabled()
-        .map_err(|e| format!("{e}"))
+    autostart_handle()?.is_enabled().map_err(|e| format!("{e}"))
 }
 
 pub fn set_autostart_enabled(enabled: bool) -> Result<bool, String> {
@@ -563,10 +558,7 @@ pub struct VoiceDevices {
 /// List input devices for the mic picker.
 pub async fn list_input_devices() -> Result<VoiceDevices, String> {
     let v = voice_action("voice.list_input_devices", json!({})).await?;
-    let default = v
-        .get("default")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let default = v.get("default").and_then(Value::as_str).map(str::to_owned);
     let devices = v
         .get("devices")
         .and_then(Value::as_array)
@@ -693,11 +685,23 @@ impl UserProfile {
         let recurring_topics = v
             .get("recurring_topics")
             .and_then(|x| x.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_owned)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_owned))
+                    .collect()
+            })
             .unwrap_or_default();
         Self {
-            name: v.get("name").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
-            style: v.get("style").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            name: v
+                .get("name")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            style: v
+                .get("style")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
             free_text_rules: v
                 .get("free_text_rules")
                 .and_then(|x| x.as_str())
@@ -725,10 +729,22 @@ impl ProfileProposal {
         let id = v.get("id").and_then(|x| x.as_str())?.to_owned();
         Some(Self {
             id,
-            field: v.get("field").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
-            proposed: v.get("proposed").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            field: v
+                .get("field")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            proposed: v
+                .get("proposed")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
             current: v.get("current").and_then(|x| x.as_str()).map(str::to_owned),
-            rationale: v.get("rationale").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            rationale: v
+                .get("rationale")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
             confidence: v.get("confidence").and_then(|x| x.as_f64()).unwrap_or(0.0),
         })
     }
@@ -748,8 +764,13 @@ pub(crate) fn profile_request(action: &str, payload: Value) -> Value {
 }
 
 async fn user_profile_call(action: &str, payload: Value) -> Result<Value, String> {
-    wylde_gui_pipe::call("wylde-harness", "POST", "/__action__", Some(profile_request(action, payload)))
-        .await
+    wylde_gui_pipe::call(
+        "wylde-harness",
+        "POST",
+        "/__action__",
+        Some(profile_request(action, payload)),
+    )
+    .await
 }
 
 /// Read the current user profile (`user_profile.get`).

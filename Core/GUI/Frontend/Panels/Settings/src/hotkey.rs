@@ -189,7 +189,10 @@ mod tests {
     #[test]
     fn shift_renders_after_ctrl_alt() {
         // Order is always Ctrl, Alt, Shift, Win regardless of input order.
-        assert_eq!(format_chord(&ks("shift-ctrl-x").modifiers, "x"), "Ctrl+Shift+X");
+        assert_eq!(
+            format_chord(&ks("shift-ctrl-x").modifiers, "x"),
+            "Ctrl+Shift+X"
+        );
     }
 
     #[test]

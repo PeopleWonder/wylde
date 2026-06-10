@@ -221,11 +221,7 @@ pub async fn send_action(service: &str, action: &str, payload: serde_json::Value
 /// observed, the stream returns `None` on the next poll. Mid-stream
 /// errors (handler emits `Err`, peer disconnect, decode failure) end the
 /// stream the same way.
-pub fn send_action_stream(
-    service: &str,
-    action: &str,
-    payload: serde_json::Value,
-) -> IpcStream {
+pub fn send_action_stream(service: &str, action: &str, payload: serde_json::Value) -> IpcStream {
     let cfg = EnvConfig::load();
     let timeout = Duration::from_secs_f64(cfg.default_timeout);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<serde_json::Value, IpcError>>(16);
@@ -716,9 +712,7 @@ async fn run_stream_pipe(
         let body = match read_res {
             Ok(Ok(b)) => b,
             Ok(Err(e)) => {
-                let _ = tx
-                    .send(Err(IpcError::new("pipe_io", e.to_string())))
-                    .await;
+                let _ = tx.send(Err(IpcError::new("pipe_io", e.to_string()))).await;
                 return;
             }
             Err(e) => {

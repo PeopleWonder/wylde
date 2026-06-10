@@ -396,10 +396,8 @@ impl DevicesPanel {
                         // Update local view eagerly so the pill flips
                         // before the next poll.  The next list-devices
                         // refresh confirms the server's view.
-                        if let Some(row) = panel
-                            .devices
-                            .iter_mut()
-                            .find(|d| d.device_id == device_id)
+                        if let Some(row) =
+                            panel.devices.iter_mut().find(|d| d.device_id == device_id)
                         {
                             row.tier = tier.clone();
                         }
@@ -740,30 +738,26 @@ fn pairing_card_view(
                             .child(countdown),
                     )
                     .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .id(ElementId::Name("devices-pair-cancel".into()))
-                                    .px_3()
-                                    .py_2()
-                                    .rounded(px(4.0))
-                                    .border_1()
-                                    .border_color(rgb(pack(BORDER_DEFAULT)))
-                                    .cursor_pointer()
-                                    .font_family(FAMILY_INTER)
-                                    .text_size(px(size::SM))
-                                    .text_color(rgb(pack(TEXT_PRIMARY)))
-                                    .on_mouse_down(
-                                        gpui::MouseButton::Left,
-                                        cx.listener(|this: &mut DevicesPanel, _ev, _w, cx| {
-                                            this.cancel_pairing(cx);
-                                        }),
-                                    )
-                                    .child(SharedString::from("Cancel")),
-                            ),
+                        div().flex().flex_row().gap_2().child(
+                            div()
+                                .id(ElementId::Name("devices-pair-cancel".into()))
+                                .px_3()
+                                .py_2()
+                                .rounded(px(4.0))
+                                .border_1()
+                                .border_color(rgb(pack(BORDER_DEFAULT)))
+                                .cursor_pointer()
+                                .font_family(FAMILY_INTER)
+                                .text_size(px(size::SM))
+                                .text_color(rgb(pack(TEXT_PRIMARY)))
+                                .on_mouse_down(
+                                    gpui::MouseButton::Left,
+                                    cx.listener(|this: &mut DevicesPanel, _ev, _w, cx| {
+                                        this.cancel_pairing(cx);
+                                    }),
+                                )
+                                .child(SharedString::from("Cancel")),
+                        ),
                     ),
             ),
     )
@@ -784,11 +778,7 @@ fn pin_code_view(code: &str) -> gpui::Div {
         .child(SharedString::from(format_pin(code)))
 }
 
-fn device_row(
-    panel: &DevicesPanel,
-    d: &DeviceRow,
-    cx: &mut Context<DevicesPanel>,
-) -> gpui::Div {
+fn device_row(panel: &DevicesPanel, d: &DeviceRow, cx: &mut Context<DevicesPanel>) -> gpui::Div {
     let confirming_revoke = panel.confirm_revoke.as_deref() == Some(d.device_id.as_str());
     let escalating = panel
         .confirm_tier_escalation
@@ -931,7 +921,8 @@ fn tier_pill_row(d: &DeviceRow, cx: &mut Context<DevicesPanel>) -> gpui::Div {
         let is_current = d.tier == *tier;
         let tier_owned = (*tier).to_owned();
         let device_owned = d.device_id.clone();
-        let id: ElementId = ElementId::Name(format!("devices-tier::{}::{tier}", d.device_id).into());
+        let id: ElementId =
+            ElementId::Name(format!("devices-tier::{}::{tier}", d.device_id).into());
         let mut pill = div()
             .id(id)
             .px_3()
@@ -940,7 +931,11 @@ fn tier_pill_row(d: &DeviceRow, cx: &mut Context<DevicesPanel>) -> gpui::Div {
             .cursor_pointer()
             .font_family(FAMILY_INTER)
             .text_size(px(size::XS))
-            .text_color(rgb(pack(if is_current { BRAND_LIGHT } else { TEXT_SECONDARY })))
+            .text_color(rgb(pack(if is_current {
+                BRAND_LIGHT
+            } else {
+                TEXT_SECONDARY
+            })))
             .bg(rgb(pack(if is_current { BRAND_DIM } else { SURFACE_900 })))
             .on_mouse_down(
                 gpui::MouseButton::Left,
@@ -950,9 +945,7 @@ fn tier_pill_row(d: &DeviceRow, cx: &mut Context<DevicesPanel>) -> gpui::Div {
             )
             .child(SharedString::from(tier_label(tier)));
         if idx != last_idx {
-            pill = pill
-                .border_r_1()
-                .border_color(rgb(pack(BORDER_SUBTLE)));
+            pill = pill.border_r_1().border_color(rgb(pack(BORDER_SUBTLE)));
         }
         row = row.child(pill);
     }
@@ -981,10 +974,7 @@ fn revoke_confirm_strip(cx: &mut Context<DevicesPanel>) -> gpui::Div {
     )
 }
 
-fn rotated_token_strip(
-    token: &str,
-    cx: &mut Context<DevicesPanel>,
-) -> gpui::Div {
+fn rotated_token_strip(token: &str, cx: &mut Context<DevicesPanel>) -> gpui::Div {
     div()
         .border_t_1()
         .border_color(rgb(pack(BORDER_SUBTLE)))

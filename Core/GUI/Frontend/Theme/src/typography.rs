@@ -23,8 +23,8 @@ pub const FAMILY_INTER: &str = "Inter";
 /// keep this list aligned with the Svelte side's CSS for parity when
 /// debugging a "wrong font is rendering" report.
 pub const FALLBACK_FAMILIES: &[&str] = &[
-    "Segoe UI",        // Windows system sans
-    "SF Pro Text",     // macOS system sans
+    "Segoe UI",    // Windows system sans
+    "SF Pro Text", // macOS system sans
     "Helvetica Neue",
     "Arial",
     "sans-serif",
@@ -103,7 +103,12 @@ mod tests {
     /// Inter weight axis is 100..=900; named weights stay inside.
     #[test]
     fn weights_inside_inter_axis() {
-        for w in [weight::REGULAR, weight::MEDIUM, weight::SEMIBOLD, weight::BOLD] {
+        for w in [
+            weight::REGULAR,
+            weight::MEDIUM,
+            weight::SEMIBOLD,
+            weight::BOLD,
+        ] {
             assert!((100..=900).contains(&w), "{w} outside Inter weight axis");
         }
     }

@@ -8650,6 +8650,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "wylde-anchor-actions"
+version = "0.1.0-alpha.1"
+
+[[package]]
 name = "wylde-gpui-input"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -8883,6 +8887,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tokio",
+ "wylde-anchor-actions",
  "wylde-gpui-input",
  "wylde-gui-pipe",
  "wylde-theme",

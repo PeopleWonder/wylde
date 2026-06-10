@@ -1,0 +1,15 @@
+[package]
+name = "wylde-anchor-actions"
+description = "ONE source of anchor edit affordances (Thought Bubble System Plan v2 §6). Bubbles in chat, nodes in the graph view, and entries in the Vocabulary tab all edit the SAME anchor data — these pure state machines (exclude/ignore transitions, connection editing, approval gates, the per-conversation undo stack, the shared right-click menu definition) keep the three lenses interchangeable. gpui-free by design: every consumer renders these models with its own chrome."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Deliberately dependency-free: pure models only. Renderers and IPC live
+# in the consuming panels.

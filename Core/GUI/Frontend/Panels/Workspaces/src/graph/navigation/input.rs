@@ -36,6 +36,7 @@ const DRAG_THRESHOLD: f32 = 3.0;
 
 impl GraphView {
     /// `Ctrl+Shift+L` → cycle force → hierarchical → grid → force.
+    /// `V` → cycle the vocabulary layer (code → overlay → vocabulary).
     /// `Esc` → leave the space-map scope (when scoped).
     pub(crate) fn on_key(
         &mut self,
@@ -47,6 +48,15 @@ impl GraphView {
         if ks.key.as_str() == "l" && ks.modifiers.control && ks.modifiers.shift {
             let next = self.current_layout.next();
             self.set_layout(next, cx);
+        }
+        // `V` — cycle the vocabulary layer (Slice N: CodeGraph → Overlay →
+        // VocabularyGraph). Unmodified so it can't collide with the chords.
+        if ks.key.as_str() == "v"
+            && !ks.modifiers.control
+            && !ks.modifiers.shift
+            && !ks.modifiers.alt
+        {
+            self.cycle_view_mode(cx);
         }
         if ks.key.as_str() == "escape" {
             if self.cluster_menu.is_some() || self.profile_menu_open {

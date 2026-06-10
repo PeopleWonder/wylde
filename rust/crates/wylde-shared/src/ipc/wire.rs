@@ -359,7 +359,10 @@ mod tests {
     #[test]
     fn pipe_name_strips_wylde_prefix() {
         assert_eq!(pipe_name("vram-broker"), r"\\.\pipe\wylde-vram-broker");
-        assert_eq!(pipe_name("wylde-vram-broker"), r"\\.\pipe\wylde-vram-broker");
+        assert_eq!(
+            pipe_name("wylde-vram-broker"),
+            r"\\.\pipe\wylde-vram-broker"
+        );
     }
 
     #[test]

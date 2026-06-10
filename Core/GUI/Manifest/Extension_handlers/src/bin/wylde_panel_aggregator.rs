@@ -70,8 +70,8 @@ fn main() -> ExitCode {
             }
         },
     };
-    let output =
-        output.unwrap_or_else(|| root.join("Core/GUI/Manifest/Extension_handlers/src/generated.rs"));
+    let output = output
+        .unwrap_or_else(|| root.join("Core/GUI/Manifest/Extension_handlers/src/generated.rs"));
 
     let manifests = match discover_manifests(&root) {
         Ok(m) => m,
@@ -96,7 +96,10 @@ fn main() -> ExitCode {
 
     println!(
         "wrote {} panels to {}",
-        manifests.iter().map(|d| d.manifest.panels.len()).sum::<usize>(),
+        manifests
+            .iter()
+            .map(|d| d.manifest.panels.len())
+            .sum::<usize>(),
         normalise_for_log(&output),
     );
     ExitCode::SUCCESS
@@ -324,7 +327,10 @@ fn render_panel_block(
                 t = rust_str(&panel.title),
             ));
             out.push_str(&format!("                icon: {icon_lit},\n"));
-            out.push_str(&format!("                order: {order},\n", order = panel.order));
+            out.push_str(&format!(
+                "                order: {order},\n",
+                order = panel.order
+            ));
             out.push_str(&format!(
                 "                version: {v}.into(),\n",
                 v = rust_str(&panel.version),
@@ -359,7 +365,10 @@ fn render_panel_block(
                 t = rust_str(&panel.title),
             ));
             out.push_str(&format!("                icon: {icon_lit},\n"));
-            out.push_str(&format!("                order: {order},\n", order = panel.order));
+            out.push_str(&format!(
+                "                order: {order},\n",
+                order = panel.order
+            ));
             out.push_str(&format!(
                 "                version: {v}.into(),\n",
                 v = rust_str(&panel.version),
@@ -506,7 +515,10 @@ mod tests {
             manifests.len(),
             2,
             "two panel manifests should be discovered, got: {:?}",
-            manifests.iter().map(|m| &m.relative_path).collect::<Vec<_>>()
+            manifests
+                .iter()
+                .map(|m| &m.relative_path)
+                .collect::<Vec<_>>()
         );
 
         let rendered = render_generated(&manifests).expect("render");
@@ -516,7 +528,10 @@ mod tests {
             "settings factory must appear in rendered source",
         );
         assert!(rendered.contains("\"core\""), "core service must appear");
-        assert!(rendered.contains("\"photos\""), "photos service must appear");
+        assert!(
+            rendered.contains("\"photos\""),
+            "photos service must appear"
+        );
         assert!(
             rendered.contains("http://127.0.0.1:9300"),
             "iframe URL must appear",
@@ -563,7 +578,10 @@ mod tests {
             },
         };
         let rendered = render_generated(&[manifest]).unwrap();
-        assert!(!rendered.contains('\\'), "no backslashes in generated paths");
+        assert!(
+            !rendered.contains('\\'),
+            "no backslashes in generated paths"
+        );
         assert!(rendered.contains("Core/GUI/Frontend/Panels/Settings/manifest.json"));
     }
 

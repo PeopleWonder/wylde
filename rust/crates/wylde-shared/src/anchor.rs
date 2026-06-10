@@ -164,6 +164,13 @@ pub struct Anchor {
     /// promotion-prompt heuristic (Plan v2 §4.4).
     #[serde(default)]
     pub usage_count: u32,
+
+    /// Archived via the Recommended Cleanup surface (OI-21, Slice N).
+    /// Archived anchors stop resolving in `find_by_token`-style lookups (so
+    /// they no longer feed chat context) but stay in the store — recoverable
+    /// from the Vocabulary tab's Archived filter; never silently decayed.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 impl Anchor {
@@ -192,6 +199,7 @@ impl Anchor {
             created_at: now,
             last_used_at: now,
             usage_count: 0,
+            archived: false,
         }
     }
 
@@ -207,8 +215,7 @@ impl Anchor {
     /// stored aliases are normalised at write time, so a direct equality is
     /// correct.
     pub fn matches_token(&self, normalized_token: &str) -> bool {
-        self.identifier == normalized_token
-            || self.aliases.iter().any(|a| a == normalized_token)
+        self.identifier == normalized_token || self.aliases.iter().any(|a| a == normalized_token)
     }
 
     /// Record one use: bump `usage_count` and re-stamp `last_used_at`.
@@ -266,12 +273,12 @@ impl AliasError {
     pub fn message(&self) -> String {
         match self {
             AliasError::Empty => "alias must not be empty or whitespace-only".to_owned(),
-            AliasError::TooLong { alias } => format!(
-                "alias {alias:?} exceeds the {MAX_ALIAS_LEN}-character limit"
-            ),
-            AliasError::SelfCollision { alias } => format!(
-                "alias {alias:?} must not equal the anchor's own identifier"
-            ),
+            AliasError::TooLong { alias } => {
+                format!("alias {alias:?} exceeds the {MAX_ALIAS_LEN}-character limit")
+            }
+            AliasError::SelfCollision { alias } => {
+                format!("alias {alias:?} must not equal the anchor's own identifier")
+            }
             AliasError::Collision {
                 conflicting_alias,
                 owned_by,
@@ -471,7 +478,10 @@ mod tests {
         assert!(a.related_to.is_empty());
         assert!(a.parent_anchor.is_none());
         assert!(a.domain.is_none());
-        assert!(a.aliases.is_empty(), "aliases default to empty (backward compat)");
+        assert!(
+            a.aliases.is_empty(),
+            "aliases default to empty (backward compat)"
+        );
         assert_eq!(a.usage_count, 0);
     }
 
@@ -500,7 +510,11 @@ mod tests {
         // Whitespace collapses; an exact duplicate (after normalisation) drops.
         let norm = validate_aliases(
             "the_anchor",
-            &["  set   active ".into(), "set active".into(), "other".into()],
+            &[
+                "  set   active ".into(),
+                "set active".into(),
+                "other".into(),
+            ],
             &[],
         )
         .expect("valid");
@@ -541,7 +555,11 @@ mod tests {
 
         // Collision with another anchor's identifier.
         assert_eq!(
-            validate_aliases("mine", &["existing_anchor".into()], std::slice::from_ref(&other)),
+            validate_aliases(
+                "mine",
+                &["existing_anchor".into()],
+                std::slice::from_ref(&other)
+            ),
             Err(AliasError::Collision {
                 conflicting_alias: "existing_anchor".into(),
                 owned_by: "existing_anchor".into(),
@@ -549,7 +567,11 @@ mod tests {
         );
         // Collision with another anchor's alias (whitespace-normalised match).
         assert_eq!(
-            validate_aliases("mine", &["already   taken".into()], std::slice::from_ref(&other)),
+            validate_aliases(
+                "mine",
+                &["already   taken".into()],
+                std::slice::from_ref(&other)
+            ),
             Err(AliasError::Collision {
                 conflicting_alias: "already taken".into(),
                 owned_by: "existing_anchor".into(),

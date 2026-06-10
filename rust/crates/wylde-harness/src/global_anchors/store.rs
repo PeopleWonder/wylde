@@ -131,6 +131,8 @@ pub struct AnchorPatch {
     pub related_to: Option<Vec<String>>,
     pub parent_anchor: Option<Option<String>>,
     pub domain: Option<Option<String>>,
+    /// Archive / unarchive (OI-21 Recommended Cleanup, Slice N).
+    pub archived: Option<bool>,
 }
 
 /// Patch a global anchor by identifier. Re-stamps `last_used_at`. A patched
@@ -170,6 +172,9 @@ pub fn update(identifier: &str, patch: AnchorPatch) -> std::io::Result<UpdateOut
         if let Some(dom) = patch.domain {
             a.domain = dom;
         }
+        if let Some(arch) = patch.archived {
+            a.archived = arch;
+        }
         a.last_used_at = wylde_shared::anchor::epoch_now();
     }
     let updated = all[idx].clone();
@@ -199,7 +204,9 @@ pub fn delete(identifier: &str) -> std::io::Result<bool> {
 pub fn find_by_token(token: &str) -> Vec<Anchor> {
     load()
         .into_iter()
-        .filter(|a| a.matches_token(token))
+        // Archived anchors stop resolving (OI-21, Slice N) — recoverable
+        // from the Vocabulary tab, never silently decayed.
+        .filter(|a| !a.archived && a.matches_token(token))
         .collect()
 }
 

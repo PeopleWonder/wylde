@@ -34,6 +34,7 @@ pub mod physics;
 pub mod render;
 pub mod settings;
 mod transition_driver;
+pub mod vocabulary;
 
 // Integration + perf suite (Build Order §4 file tree → `graph/tests/`). A
 // `#[path]` module so it can live in the spec's `tests/` directory without
@@ -158,6 +159,13 @@ pub struct GraphView {
     /// Last node the user clicked — surfaced in the header (placeholder for the
     /// real click behaviour future slices add) and logged to stderr.
     last_clicked: Option<String>,
+    /// Which graph layer is showing (Slice N): `V` cycles CodeGraph →
+    /// Overlay → VocabularyGraph. Render-only — see `display_graph_layout`.
+    view_mode: model::ViewMode,
+    /// The saved anchors, fetched alongside the graph and resolved against
+    /// it (Slice N stage N-3). Empty until the first anchor load (or when
+    /// both stores are unreachable — the overlay just draws nothing extra).
+    vocab_anchors: Vec<vocabulary::projection::ResolvedAnchor>,
 }
 
 impl GraphView {
@@ -197,6 +205,8 @@ impl GraphView {
             canvas: CanvasRect::default(),
             drag: None,
             last_clicked: None,
+            view_mode: model::ViewMode::default(),
+            vocab_anchors: Vec::new(),
         }
     }
 
@@ -276,6 +286,11 @@ impl GraphView {
                         } else {
                             view.physics = None;
                         }
+                        // Fetch + resolve the vocabulary anchors against the
+                        // fresh graph (Slice N overlay). Stale resolutions
+                        // from the old graph are dropped immediately.
+                        view.vocab_anchors.clear();
+                        Self::spawn_anchor_load(cx);
                     }
                     Err(e) => {
                         view.error = Some(e);
@@ -377,13 +392,28 @@ impl GraphView {
     /// transform (C-cluster) when folds are active and the view is not
     /// scoped, else the real ones. Scoped views bypass clustering — the
     /// scope filter already isolates one cluster's members.
+    /// The vocabulary overlay (Slice N) applies after clustering, against
+    /// the *display* layout — an anchor whose symbol is folded away
+    /// gracefully falls back to the edge spiral, and its tether edge is
+    /// skipped by the renderer (missing endpoint).
     fn display_graph_layout(&self) -> (Rc<WorkspaceGraph>, Rc<Layout>) {
-        if !self.navigator.is_scoped() {
-            if let Some((g, l)) = self.cluster_view.apply(&self.graph, &self.layout) {
+        let (base_g, base_l) = if !self.navigator.is_scoped() {
+            match self.cluster_view.apply(&self.graph, &self.layout) {
+                Some((g, l)) => (Rc::new(g), Rc::new(l)),
+                None => (self.graph.clone(), self.layout.clone()),
+            }
+        } else {
+            (self.graph.clone(), self.layout.clone())
+        };
+        if self.view_mode != model::ViewMode::CodeGraph && !self.vocab_anchors.is_empty() {
+            let proj = vocabulary::projection::project(&self.vocab_anchors, &base_l);
+            if let Some((g, l)) =
+                vocabulary::overlay::apply(self.view_mode, &base_g, &base_l, &proj)
+            {
                 return (Rc::new(g), Rc::new(l));
             }
         }
-        (self.graph.clone(), self.layout.clone())
+        (base_g, base_l)
     }
 
     /// Expanded-in-place boundary rects (model space) for the current frame;
@@ -410,7 +440,7 @@ impl GraphView {
             graph: &graph,
             layout: &layout,
             theme,
-            mode: model::ViewMode::CodeGraph,
+            mode: self.view_mode,
             scope: members.as_deref(),
         };
         let mut vp = self.viewport(rect);
@@ -949,6 +979,7 @@ impl GraphView {
         let camera = self.camera;
         let dark = self.dark;
         let fitted = self.fitted;
+        let mode = self.view_mode;
         let members = self.navigator.members();
         let stub_segments = self.navigator.config.exit_stub_segments;
         let max_exit_labels = self.navigator.config.max_exit_labels;
@@ -990,7 +1021,7 @@ impl GraphView {
                     graph: &graph,
                     layout: &layout,
                     theme: &theme,
-                    mode: model::ViewMode::CodeGraph,
+                    mode,
                     scope: members.as_deref(),
                 };
                 let vp = Viewport {
@@ -1049,16 +1080,17 @@ impl GraphView {
             self.current_layout.label().to_owned()
         };
         let status = format!(
-            "Graph · {title} · {} nodes · {} edges · zoom {:.0}% · {layout}",
+            "Graph · {title} · {} nodes · {} edges · zoom {:.0}% · {layout} · view {}",
             self.graph.nodes.len(),
             self.graph.edges.len(),
-            self.camera.zoom * 100.0
+            self.camera.zoom * 100.0,
+            self.view_mode_label()
         );
         col = col.child(overlay_text(status, font_size::XS, weight::SEMIBOLD));
         let hint = if self.navigator.is_scoped() {
-            "Scroll — zoom · Esc — zoom out · Ctrl+Shift+L — cycle layout"
+            "Scroll — zoom · Esc — zoom out · Ctrl+Shift+L — cycle layout · V — vocabulary"
         } else {
-            "Scroll — zoom into clusters · Ctrl+Shift+L — cycle layout"
+            "Scroll — zoom into clusters · Ctrl+Shift+L — cycle layout · V — vocabulary"
         };
         col = col.child(overlay_text(
             hint.to_owned(),
@@ -1681,6 +1713,83 @@ mod tests {
         assert!(v.profile_names().iter().any(|n| n == DEFAULT_PROFILE));
         assert_eq!(v.active_profile_name(), DEFAULT_PROFILE);
         assert!(!v.profile_menu_open);
+    }
+
+    // ── Vocabulary overlay (Slice N stage N-3) ───────────────────────────
+
+    use vocabulary::projection::{anchor_node_id, resolve, AnchorSpec};
+
+    fn anchored_view() -> GraphView {
+        let mut v = view_with_graph(swap_graph()); // nodes a, b, c
+        let specs = vec![
+            AnchorSpec {
+                identifier: "tether_a".to_owned(),
+                target_symbol: Some("a".to_owned()),
+                related_to: vec!["idea".to_owned()],
+            },
+            AnchorSpec {
+                identifier: "idea".to_owned(),
+                target_symbol: None,
+                related_to: vec![],
+            },
+        ];
+        v.vocab_anchors = resolve(&specs, &v.graph);
+        v
+    }
+
+    #[test]
+    fn code_graph_mode_ignores_anchors() {
+        let v = anchored_view();
+        assert_eq!(v.view_mode, model::ViewMode::CodeGraph);
+        let (dg, _) = v.display_graph_layout();
+        assert_eq!(dg.nodes.len(), 3, "no anchor nodes in code mode");
+    }
+
+    #[test]
+    fn overlay_mode_appends_anchor_nodes_and_positions() {
+        let mut v = anchored_view();
+        v.view_mode = model::ViewMode::Overlay;
+        let (dg, dl) = v.display_graph_layout();
+        assert_eq!(dg.nodes.len(), 3 + 2, "code nodes + both anchors");
+        assert!(dg.nodes.iter().any(|n| n.id == anchor_node_id("tether_a")));
+        assert!(dg
+            .nodes
+            .iter()
+            .filter(|n| n.id.starts_with(vocabulary::projection::ANCHOR_NODE_PREFIX))
+            .all(|n| n.kind == model::NodeKind::Anchor));
+        assert!(dg.nodes.iter().all(|n| dl.get(&n.id).is_some()));
+        // The anchors render: spheres for every node incl. anchors.
+        let rect = CanvasRect {
+            ox: 0.0,
+            oy: 0.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        let out = v.render_output(rect, Camera::default()).unwrap();
+        assert_eq!(out.spheres.len(), 5);
+    }
+
+    #[test]
+    fn vocabulary_mode_draws_the_anchor_world_alone() {
+        let mut v = anchored_view();
+        v.view_mode = model::ViewMode::VocabularyGraph;
+        let (dg, _) = v.display_graph_layout();
+        assert_eq!(dg.nodes.len(), 2, "anchors only");
+        assert!(dg
+            .nodes
+            .iter()
+            .all(|n| n.id.starts_with(vocabulary::projection::ANCHOR_NODE_PREFIX)));
+        // Peer edge survives; the tether to code node "a" is dropped.
+        assert_eq!(dg.edges.len(), 1);
+        assert_eq!(dg.edges[0].rel_type, model::RelType::RelatedTo);
+    }
+
+    #[test]
+    fn empty_vocabulary_keeps_the_base_in_any_mode() {
+        let mut v = view_with_graph(swap_graph());
+        v.view_mode = model::ViewMode::Overlay;
+        let (dg, _) = v.display_graph_layout();
+        assert_eq!(dg.nodes.len(), 3, "nothing to project — base graph drawn");
     }
 
     #[test]

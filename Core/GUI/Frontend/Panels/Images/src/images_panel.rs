@@ -120,9 +120,7 @@ impl ImagesPanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let prompt_input = cx.new(|input_cx| {
             TextInput::multi_line(input_cx)
-                .with_placeholder(
-                    "Describe an image to generate  ·  Ctrl+Enter to submit",
-                )
+                .with_placeholder("Describe an image to generate  ·  Ctrl+Enter to submit")
                 .with_submit_mode(SubmitMode::ModEnterSubmits)
                 .with_min_height(56.0)
                 .with_max_height(140.0)
@@ -240,7 +238,8 @@ impl ImagesPanel {
         let mut to_fetch: Vec<String> = Vec::new();
         for entry in self.library.iter().take(self.thumbnail_quota) {
             if !self.thumbnails.contains_key(&entry.id) {
-                self.thumbnails.insert(entry.id.clone(), ThumbState::Pending);
+                self.thumbnails
+                    .insert(entry.id.clone(), ThumbState::Pending);
                 to_fetch.push(entry.id.clone());
             }
         }
@@ -253,16 +252,13 @@ impl ImagesPanel {
                         match result {
                             Ok(bytes) => {
                                 let format = format_for_mime(&bytes.mime);
-                                let image =
-                                    Arc::new(Image::from_bytes(format, bytes.bytes));
+                                let image = Arc::new(Image::from_bytes(format, bytes.bytes));
                                 panel
                                     .thumbnails
                                     .insert(id.clone(), ThumbState::Decoded(image));
                             }
                             Err(e) => {
-                                panel
-                                    .thumbnails
-                                    .insert(id.clone(), ThumbState::Failed(e));
+                                panel.thumbnails.insert(id.clone(), ThumbState::Failed(e));
                             }
                         }
                         cx.notify();
@@ -766,10 +762,7 @@ where
         .child(SharedString::from(label))
 }
 
-fn workspace_dropdown(
-    panel: &ImagesPanel,
-    cx: &mut Context<ImagesPanel>,
-) -> gpui::Div {
+fn workspace_dropdown(panel: &ImagesPanel, cx: &mut Context<ImagesPanel>) -> gpui::Div {
     let mut col = dropdown_shell();
     let live = panel.workspaces_in_library();
     col = col.child(dropdown_row(
@@ -787,23 +780,18 @@ fn workspace_dropdown(
     }
     for ws in live {
         let ws_for_select = ws.clone();
-        col = col.child(
-            dropdown_row(
-                ElementId::Name(format!("images-workspace-pick::{}", ws).into()),
-                SharedString::from(ws),
-                cx.listener(move |this: &mut ImagesPanel, _ev, _w, cx| {
-                    this.set_workspace_filter(Some(ws_for_select.clone()), cx);
-                }),
-            ),
-        );
+        col = col.child(dropdown_row(
+            ElementId::Name(format!("images-workspace-pick::{}", ws).into()),
+            SharedString::from(ws),
+            cx.listener(move |this: &mut ImagesPanel, _ev, _w, cx| {
+                this.set_workspace_filter(Some(ws_for_select.clone()), cx);
+            }),
+        ));
     }
     col
 }
 
-fn model_dropdown(
-    panel: &ImagesPanel,
-    cx: &mut Context<ImagesPanel>,
-) -> gpui::Div {
+fn model_dropdown(panel: &ImagesPanel, cx: &mut Context<ImagesPanel>) -> gpui::Div {
     let mut col = dropdown_shell();
     let library_models = panel.models_in_library();
     let mut all_models = panel
@@ -828,30 +816,24 @@ fn model_dropdown(
     for name in all_models {
         let name_for_select = name.clone();
         let name_for_pick = name.clone();
-        col = col.child(
-            dropdown_row(
-                ElementId::Name(format!("images-model-pick::{}", name).into()),
-                SharedString::from(name),
-                cx.listener(move |this: &mut ImagesPanel, _ev, _w, cx| {
-                    // Picker chooses both the active generation model
-                    // AND filters the gallery to that model.  Keeps the
-                    // surface area small without losing utility.
-                    this.set_model_filter(Some(name_for_select.clone()), cx);
-                    this.select_model(Some(name_for_pick.clone()), cx);
-                }),
-            ),
-        );
+        col = col.child(dropdown_row(
+            ElementId::Name(format!("images-model-pick::{}", name).into()),
+            SharedString::from(name),
+            cx.listener(move |this: &mut ImagesPanel, _ev, _w, cx| {
+                // Picker chooses both the active generation model
+                // AND filters the gallery to that model.  Keeps the
+                // surface area small without losing utility.
+                this.set_model_filter(Some(name_for_select.clone()), cx);
+                this.select_model(Some(name_for_pick.clone()), cx);
+            }),
+        ));
     }
     col
 }
 
 // ── Body split: gallery + metadata pane ──────────────────────────────
 
-fn body_split(
-    panel: &ImagesPanel,
-    now: f64,
-    cx: &mut Context<ImagesPanel>,
-) -> gpui::Div {
+fn body_split(panel: &ImagesPanel, now: f64, cx: &mut Context<ImagesPanel>) -> gpui::Div {
     let rows = panel.visible_rows(now);
     let total = rows.len();
     let gallery = gallery_grid(panel, &rows, cx);
@@ -919,12 +901,8 @@ fn thumbnail_tile(
             .h(px(132.0))
             .rounded(px(4.0))
             .into_any_element(),
-        Some(ThumbState::Failed(_)) => {
-            broken_thumb_inner("decode failed").into_any_element()
-        }
-        Some(ThumbState::Pending) | None => {
-            shimmer_inner().into_any_element()
-        }
+        Some(ThumbState::Failed(_)) => broken_thumb_inner("decode failed").into_any_element(),
+        Some(ThumbState::Pending) | None => shimmer_inner().into_any_element(),
     };
 
     div()
@@ -1056,10 +1034,7 @@ fn metadata_pane(
     if let (Some(w), Some(h)) = (entry.width(), entry.height()) {
         col = col.child(meta_line("Size", &format!("{w}×{h}")));
     }
-    col = col.child(meta_line(
-        "File size",
-        &humanize_bytes(entry.size_bytes),
-    ));
+    col = col.child(meta_line("File size", &humanize_bytes(entry.size_bytes)));
     col = col.child(meta_line("Created", &fmt_relative(entry.created_at)));
     col = col.child(meta_line("Source", entry.source()));
     if let Some(ws) = id_for_jump.clone() {
@@ -1179,48 +1154,34 @@ fn meta_line(label: &str, value: &str) -> gpui::Div {
         )
 }
 
-fn workspace_jump_row(
-    entry_id: &str,
-    ws: &str,
-    cx: &mut Context<ImagesPanel>,
-) -> gpui::Div {
-    let id: ElementId =
-        ElementId::Name(format!("images-ws-jump::{entry_id}::{ws}").into());
+fn workspace_jump_row(entry_id: &str, ws: &str, cx: &mut Context<ImagesPanel>) -> gpui::Div {
+    let id: ElementId = ElementId::Name(format!("images-ws-jump::{entry_id}::{ws}").into());
     let label = SharedString::from(format!("workspace · {ws}  ›  open"));
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap_2()
-        .child(
-            div()
-                .id(id)
-                .px_3()
-                .py_1()
-                .rounded(px(12.0))
-                .border_1()
-                .border_color(rgb(pack(BORDER_SUBTLE)))
-                .cursor_pointer()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::XS))
-                .text_color(rgb(pack(TEXT_SECONDARY)))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|_this: &mut ImagesPanel, _ev, _w, _cx| {
-                        let _ = wylde_gui_pipe::request_nav("core/workspaces");
-                    }),
-                )
-                .child(label),
-        )
+    div().flex().flex_row().items_center().gap_2().child(
+        div()
+            .id(id)
+            .px_3()
+            .py_1()
+            .rounded(px(12.0))
+            .border_1()
+            .border_color(rgb(pack(BORDER_SUBTLE)))
+            .cursor_pointer()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::XS))
+            .text_color(rgb(pack(TEXT_SECONDARY)))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|_this: &mut ImagesPanel, _ev, _w, _cx| {
+                    let _ = wylde_gui_pipe::request_nav("core/workspaces");
+                }),
+            )
+            .child(label),
+    )
 }
 
 // ── Shared widgets (mirrors RemoteAccess) ────────────────────────────
 
-fn pill_button<F>(
-    id: ElementId,
-    label: SharedString,
-    listener: F,
-) -> Stateful<gpui::Div>
+fn pill_button<F>(id: ElementId, label: SharedString, listener: F) -> Stateful<gpui::Div>
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
@@ -1436,8 +1397,7 @@ mod tests {
         assert_eq!(rows.len(), 3);
         let rows = filter_rows(&library, DateFilter::Month, Some("ws-1"), None, now);
         assert_eq!(rows.len(), 2);
-        let rows =
-            filter_rows(&library, DateFilter::Month, Some("ws-1"), Some("flux"), now);
+        let rows = filter_rows(&library, DateFilter::Month, Some("ws-1"), Some("flux"), now);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "c");
     }

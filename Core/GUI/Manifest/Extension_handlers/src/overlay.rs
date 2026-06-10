@@ -80,8 +80,10 @@ mod tests {
     #[test]
     fn union_orders_by_order_then_key() {
         let mut r = PanelRegistry::new();
-        r.register_internal(first_party("core", "settings", 95)).unwrap();
-        r.register_internal(first_party("core", "chat", 10)).unwrap();
+        r.register_internal(first_party("core", "settings", 95))
+            .unwrap();
+        r.register_internal(first_party("core", "chat", 10))
+            .unwrap();
         let exts = vec![
             ext("n8n", "editor", 50, "http://127.0.0.1:5678"),
             ext("photos", "main", 5, "http://localhost:9300"),
@@ -95,10 +97,10 @@ mod tests {
         assert_eq!(
             ordered,
             vec![
-                "ext:photos/main".to_string(),  // order  5
-                "core/chat".to_string(),         // order 10
-                "ext:n8n/editor".to_string(),    // order 50
-                "core/settings".to_string(),     // order 95
+                "ext:photos/main".to_string(), // order  5
+                "core/chat".to_string(),       // order 10
+                "ext:n8n/editor".to_string(),  // order 50
+                "core/settings".to_string(),   // order 95
             ]
         );
     }
@@ -118,7 +120,8 @@ mod tests {
     #[test]
     fn empty_extension_list_returns_registry_only() {
         let mut r = PanelRegistry::new();
-        r.register_internal(first_party("core", "settings", 95)).unwrap();
+        r.register_internal(first_party("core", "settings", 95))
+            .unwrap();
         let union = union_for_runtime(&r, &[]);
         assert_eq!(union["tabs"].as_array().unwrap().len(), 1);
     }

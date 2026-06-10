@@ -17,8 +17,8 @@ use gpui::{
     SharedString, Stateful,
 };
 use wylde_theme::colors::{
-    BORDER_DEFAULT, BORDER_EMPHASIS, BORDER_FOCUSED, BORDER_SUBTLE, BRAND, BRAND_LIGHT, SURFACE_800,
-    SURFACE_900, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+    BORDER_DEFAULT, BORDER_EMPHASIS, BORDER_FOCUSED, BORDER_SUBTLE, BRAND, BRAND_LIGHT,
+    SURFACE_800, SURFACE_900, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
@@ -205,11 +205,15 @@ pub fn updates_section(
             .items_center()
             .gap_3()
             .child(
-                action_button("settings-updates-check", check_button_label(check), checking)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _ev, _window, cx| this.check_now(cx)),
-                    ),
+                action_button(
+                    "settings-updates-check",
+                    check_button_label(check),
+                    checking,
+                )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _ev, _window, cx| this.check_now(cx)),
+                ),
             )
             .children(install_button(check, cx)),
     );
@@ -421,13 +425,12 @@ fn update_status_line(check: &UpdateCheck) -> Option<gpui::Div> {
         UpdateCheck::Idle => return None,
         UpdateCheck::Checking => ("Checking for updates…".into(), false),
         UpdateCheck::UpToDate => ("You're on the latest version.".into(), false),
-        UpdateCheck::Available(info) => {
-            (format!("Update available: v{} — review and install.", info.version), false)
-        }
+        UpdateCheck::Available(info) => (
+            format!("Update available: v{} — review and install.", info.version),
+            false,
+        ),
         UpdateCheck::Installing => ("Downloading and verifying update…".into(), false),
-        UpdateCheck::Installed => {
-            ("Update installed — restart Wylde to apply.".into(), false)
-        }
+        UpdateCheck::Installed => ("Update installed — restart Wylde to apply.".into(), false),
         UpdateCheck::Failed(msg) => (format!("Update failed: {msg}"), true),
     };
     if is_error {
@@ -465,7 +468,11 @@ pub(crate) fn humanize_last_checked(ts: u64) -> String {
 fn humanize_since(now_secs: u64, ts: u64) -> String {
     // A seconds-epoch won't reach 1e12 until the year 33658, so anything
     // at/over that threshold is a milliseconds value.
-    let ts_secs = if ts >= 1_000_000_000_000 { ts / 1000 } else { ts };
+    let ts_secs = if ts >= 1_000_000_000_000 {
+        ts / 1000
+    } else {
+        ts
+    };
     if ts_secs == 0 {
         return "never".into();
     }
@@ -554,15 +561,60 @@ pub struct OllamaField {
 /// The nine fields in render order. The fallback column is Ollama's
 /// documented Modelfile defaults per the scope doc.
 pub const OLLAMA_FIELDS: [OllamaField; 9] = [
-    OllamaField { key: "num_ctx", label: "Context window (num_ctx)", kind: FieldKind::Int, fallback: "4096" },
-    OllamaField { key: "num_predict", label: "Max output (num_predict)", kind: FieldKind::Int, fallback: "-1" },
-    OllamaField { key: "temperature", label: "Temperature", kind: FieldKind::Float, fallback: "0.8" },
-    OllamaField { key: "top_p", label: "Top-p", kind: FieldKind::Float, fallback: "0.9" },
-    OllamaField { key: "top_k", label: "Top-k", kind: FieldKind::Int, fallback: "40" },
-    OllamaField { key: "min_p", label: "Min-p", kind: FieldKind::Float, fallback: "0.0" },
-    OllamaField { key: "repeat_penalty", label: "Repeat penalty", kind: FieldKind::Float, fallback: "1.1" },
-    OllamaField { key: "seed", label: "Seed", kind: FieldKind::Int, fallback: "0" },
-    OllamaField { key: "keep_alive", label: "Keep alive", kind: FieldKind::Text, fallback: "5m" },
+    OllamaField {
+        key: "num_ctx",
+        label: "Context window (num_ctx)",
+        kind: FieldKind::Int,
+        fallback: "4096",
+    },
+    OllamaField {
+        key: "num_predict",
+        label: "Max output (num_predict)",
+        kind: FieldKind::Int,
+        fallback: "-1",
+    },
+    OllamaField {
+        key: "temperature",
+        label: "Temperature",
+        kind: FieldKind::Float,
+        fallback: "0.8",
+    },
+    OllamaField {
+        key: "top_p",
+        label: "Top-p",
+        kind: FieldKind::Float,
+        fallback: "0.9",
+    },
+    OllamaField {
+        key: "top_k",
+        label: "Top-k",
+        kind: FieldKind::Int,
+        fallback: "40",
+    },
+    OllamaField {
+        key: "min_p",
+        label: "Min-p",
+        kind: FieldKind::Float,
+        fallback: "0.0",
+    },
+    OllamaField {
+        key: "repeat_penalty",
+        label: "Repeat penalty",
+        kind: FieldKind::Float,
+        fallback: "1.1",
+    },
+    OllamaField {
+        key: "seed",
+        label: "Seed",
+        kind: FieldKind::Int,
+        fallback: "0",
+    },
+    OllamaField {
+        key: "keep_alive",
+        label: "Keep alive",
+        kind: FieldKind::Text,
+        fallback: "5m",
+    },
 ];
 
 /// Format an `OllamaSettings` field as a display string by key, or `None`
@@ -917,7 +969,10 @@ fn test_mic_line(test: &VoiceTest) -> Option<gpui::Div> {
         VoiceTest::Done(result) => {
             let level = (result.peak.clamp(0.0, 1.0) * 100.0).round() as u32;
             let line = if !result.transcript.is_empty() {
-                format!("Level {level}% — heard: \u{201c}{}\u{201d}", result.transcript)
+                format!(
+                    "Level {level}% — heard: \u{201c}{}\u{201d}",
+                    result.transcript
+                )
             } else if let Some(note) = &result.note {
                 format!("Level {level}% — {note}")
             } else {
@@ -1236,10 +1291,11 @@ pub fn hf_privacy_modal(dont_show_again: bool, cx: &mut Cx) -> gpui::Div {
                         .justify_end()
                         .gap_2()
                         .child(
-                            modal_button("settings-hf-modal-cancel", "Cancel", false).on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _ev, _window, cx| this.cancel_hf_modal(cx)),
-                            ),
+                            modal_button("settings-hf-modal-cancel", "Cancel", false)
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _ev, _window, cx| this.cancel_hf_modal(cx)),
+                                ),
                         )
                         .child(
                             modal_button("settings-hf-modal-enable", "Enable", true).on_mouse_down(
@@ -1312,7 +1368,9 @@ fn modal_button(id: impl Into<ElementId>, label: &str, primary: bool) -> Statefu
         .text_color(rgb(pack(TEXT_PRIMARY)))
         .child(SharedString::from(label.to_owned()));
     if primary {
-        b = b.bg(rgb(pack(BRAND))).border_color(rgb(pack(BORDER_EMPHASIS)));
+        b = b
+            .bg(rgb(pack(BRAND)))
+            .border_color(rgb(pack(BORDER_EMPHASIS)));
     } else {
         b = b
             .bg(rgb(pack(SURFACE_900)))
@@ -1339,7 +1397,9 @@ fn profile_button(id: impl Into<ElementId>, label: &str, primary: bool) -> State
         .text_color(rgb(pack(TEXT_PRIMARY)))
         .child(SharedString::from(label.to_owned()));
     if primary {
-        b = b.bg(rgb(pack(BRAND))).border_color(rgb(pack(BORDER_EMPHASIS)));
+        b = b
+            .bg(rgb(pack(BRAND)))
+            .border_color(rgb(pack(BORDER_EMPHASIS)));
     } else {
         b = b
             .bg(rgb(pack(SURFACE_900)))
@@ -1368,17 +1428,13 @@ fn profile_field_row(label: &str, input: &gpui::Entity<wylde_gpui_input::TextInp
 /// section surfaces but doesn't structurally edit in v1 (the free-text
 /// rules are the primary editable lever).
 fn profile_readonly_block(title: &str, lines: &[String]) -> gpui::Div {
-    let mut c = div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::MICRO))
-                .text_color(rgb(pack(TEXT_MUTED)))
-                .child(SharedString::from(title.to_owned())),
-        );
+    let mut c = div().flex().flex_col().gap_1().child(
+        div()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::MICRO))
+            .text_color(rgb(pack(TEXT_MUTED)))
+            .child(SharedString::from(title.to_owned())),
+    );
     for line in lines {
         c = c.child(
             div()
@@ -1398,7 +1454,11 @@ fn proposal_card(p: &crate::ipc::ProfileProposal, cx: &mut Cx) -> gpui::Div {
     let diff = format!("{}: {} → {}", p.field, current, p.proposed);
     let meta = format!(
         "{}  ·  confidence {:.0}%",
-        if p.rationale.is_empty() { "Proposed update" } else { p.rationale.as_str() },
+        if p.rationale.is_empty() {
+            "Proposed update"
+        } else {
+            p.rationale.as_str()
+        },
         (p.confidence * 100.0).round()
     );
 
@@ -1406,24 +1466,19 @@ fn proposal_card(p: &crate::ipc::ProfileProposal, cx: &mut Cx) -> gpui::Div {
     let id_reject = p.id.clone();
     let proposal_for_edit = p.clone();
 
-    let mut buttons = div()
-        .flex()
-        .flex_row()
-        .gap_2()
-        .items_center()
-        .child(
-            profile_button(
-                ElementId::Name(format!("profile-prop-accept::{}", p.id).into()),
-                "Accept",
-                true,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _ev, _window, cx| {
-                    this.accept_profile_proposal(id_accept.clone(), cx)
-                }),
-            ),
-        );
+    let mut buttons = div().flex().flex_row().gap_2().items_center().child(
+        profile_button(
+            ElementId::Name(format!("profile-prop-accept::{}", p.id).into()),
+            "Accept",
+            true,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _ev, _window, cx| {
+                this.accept_profile_proposal(id_accept.clone(), cx)
+            }),
+        ),
+    );
     // "Edit" pre-fills the matching field input with the proposed value
     // and accepts the proposal, so the user lands with it in the editor
     // ready to tweak. Only meaningful for the text fields the section
@@ -1510,7 +1565,10 @@ pub fn profile_rules_section(
         c = c.child(profile_field_row("Style (one line)", input));
     }
     if let Some(input) = rules_input {
-        c = c.child(profile_field_row("Rules (free text — followed verbatim)", input));
+        c = c.child(profile_field_row(
+            "Rules (free text — followed verbatim)",
+            input,
+        ));
     }
 
     if !profile.preferences.is_empty() {
@@ -1546,7 +1604,10 @@ pub fn profile_rules_section(
                 .text_size(px(size::XS))
                 .text_color(rgb(pack(TEXT_SECONDARY)))
                 .font_weight(FontWeight(weight::SEMIBOLD as f32))
-                .child(SharedString::from(format!("Proposed updates ({})", proposals.len()))),
+                .child(SharedString::from(format!(
+                    "Proposed updates ({})",
+                    proposals.len()
+                ))),
         );
         for p in proposals {
             c = c.child(proposal_card(p, cx));

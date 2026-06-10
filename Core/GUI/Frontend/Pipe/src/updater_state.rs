@@ -63,10 +63,7 @@ pub fn snapshot() -> StartupCheck {
 /// The Shell reads this each render to decide whether to badge the
 /// Settings row.
 pub fn update_available() -> bool {
-    matches!(
-        snapshot().outcome,
-        Some(Ok(UpdateStatus::Available(_)))
-    )
+    matches!(snapshot().outcome, Some(Ok(UpdateStatus::Available(_))))
 }
 
 /// The resolved [`UpdateInfo`] when the startup check found an update,
@@ -116,7 +113,11 @@ pub fn due_for_check(
             // normalise by magnitude (matches the Settings footer's
             // `humanize_since`). A seconds-epoch won't reach 1e12 until
             // the year 33658.
-            let ts_secs = if ts >= 1_000_000_000_000 { ts / 1000 } else { ts };
+            let ts_secs = if ts >= 1_000_000_000_000 {
+                ts / 1000
+            } else {
+                ts
+            };
             now_secs.saturating_sub(ts_secs) >= cadence_secs(frequency)
         }
     }
@@ -149,7 +150,10 @@ pub async fn run_startup_check(current_version: &str) -> bool {
             return false;
         }
     };
-    let enabled = prefs.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let enabled = prefs
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let auto_check = prefs
         .get("auto_check")
         .and_then(|v| v.as_bool())
@@ -240,13 +244,31 @@ mod tests {
         let now = 10_000_000u64;
         let day = 24 * 60 * 60;
         // Checked 12 hours ago on a daily cadence ⇒ not yet due.
-        assert!(!due_for_check(true, true, "daily", Some(now - day / 2), now));
+        assert!(!due_for_check(
+            true,
+            true,
+            "daily",
+            Some(now - day / 2),
+            now
+        ));
         // Checked just over a day ago ⇒ due.
         assert!(due_for_check(true, true, "daily", Some(now - day - 1), now));
         // Weekly cadence: a 2-day-old check is not due.
-        assert!(!due_for_check(true, true, "weekly", Some(now - 2 * day), now));
+        assert!(!due_for_check(
+            true,
+            true,
+            "weekly",
+            Some(now - 2 * day),
+            now
+        ));
         // ...but an 8-day-old one is.
-        assert!(due_for_check(true, true, "weekly", Some(now - 8 * day), now));
+        assert!(due_for_check(
+            true,
+            true,
+            "weekly",
+            Some(now - 8 * day),
+            now
+        ));
     }
 
     #[test]
@@ -303,7 +325,12 @@ mod tests {
         assert_eq!(snapshot().checked_at, Some(1_234));
         // Reset to UpToDate so we don't leak "available" into other tests
         // sharing this process-wide cell.
-        record(Ok(UpdateStatus::UpToDate { current: "9.9.9".into() }), 1_235);
+        record(
+            Ok(UpdateStatus::UpToDate {
+                current: "9.9.9".into(),
+            }),
+            1_235,
+        );
         assert!(!update_available());
         assert!(available_info().is_none());
     }

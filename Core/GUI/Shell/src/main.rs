@@ -65,8 +65,7 @@ fn main() {
     //    boxes the drain task `local`, so a bare `Receiver` is fine —
     //    no `Arc<Mutex<…>>` wrapper needed.  `None` when the tray
     //    failed to install; the window-close path still drains.
-    let tray_events: Option<std::sync::mpsc::Receiver<TrayEvent>> =
-        tray_handle.map(|h| h.events);
+    let tray_events: Option<std::sync::mpsc::Receiver<TrayEvent>> = tray_handle.map(|h| h.events);
 
     // 3) Spin up a tokio runtime for all pipe IO.  gpui owns the main
     //    event loop; its dispatcher threads have no current tokio

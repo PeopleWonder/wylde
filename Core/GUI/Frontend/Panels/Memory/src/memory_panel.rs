@@ -672,7 +672,11 @@ fn short_term_live(conversation_id: &str, entries: &[ShortTermEntry], loading: b
     let count_label = SharedString::from(format!(
         "{} {}",
         entries.len(),
-        if entries.len() == 1 { "entry" } else { "entries" },
+        if entries.len() == 1 {
+            "entry"
+        } else {
+            "entries"
+        },
     ));
 
     let mut card = div()

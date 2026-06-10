@@ -1427,17 +1427,67 @@ impl ChatPanel {
         if ks.key.as_str() == "escape" {
             let had_overlay = self.composer.palette.is_some()
                 || self.composer.disambiguating.is_some()
+                || self.composer.anchor_offer.is_some()
                 || self.composer.ignore_menu.is_some()
                 || self.composer.curating;
             if had_overlay {
                 self.composer.palette = None;
                 self.composer.disambiguating = None;
+                self.composer.anchor_offer = None;
                 self.composer.ignore_menu = None;
                 self.composer.curating = false;
                 self.focus_prompt(window, cx);
                 cx.notify();
             }
         }
+    }
+
+    /// Mint a symbol anchor for a disambiguated word (Slice N's
+    /// "Anchor this?" — the composer's anchor-creation entry point).
+    pub(crate) fn create_anchor_for_word(&mut self, word_idx: usize, cx: &mut Context<Self>) {
+        let Some(ws) = self.active_workspace_id.clone() else {
+            self.error = Some("No active workspace to anchor into".to_owned());
+            cx.notify();
+            return;
+        };
+        let Some(word) = self.composer.words.get(word_idx) else {
+            return;
+        };
+        let Some(sym) = word.effective_symbol() else {
+            return;
+        };
+        let identifier = word.token.text.clone();
+        let symbol_id = sym.id.clone();
+        let description = format!("Symbol {} ({}:{})", sym.name, sym.file, sym.line);
+        self.composer.anchor_offer = None;
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = composer::ipc_to_workspaces::create_symbol_anchor(
+                &ws,
+                &identifier,
+                &symbol_id,
+                &description,
+            )
+            .await;
+            let _ = this.update(app_cx, |panel, cx| {
+                match outcome {
+                    Ok(_) => {
+                        // The new anchor shows in the word's chip count
+                        // immediately; the next scan re-reads the store.
+                        if let Some(w) = panel
+                            .composer
+                            .words
+                            .iter_mut()
+                            .find(|w| w.token.text == identifier)
+                        {
+                            w.anchor_count += 1;
+                        }
+                    }
+                    Err(e) => panel.error = Some(format!("Anchor creation failed: {e}")),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Apply a right-click ignore-menu choice (Slice M): add/remove `token`

@@ -88,10 +88,7 @@ impl ExtensionPanel {
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_owned(),
-            icon: v
-                .get("icon")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_owned()),
+            icon: v.get("icon").and_then(|x| x.as_str()).map(|s| s.to_owned()),
             url: v
                 .get("url")
                 .and_then(|x| x.as_str())

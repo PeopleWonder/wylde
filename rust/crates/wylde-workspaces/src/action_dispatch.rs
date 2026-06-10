@@ -83,6 +83,11 @@ pub const IGNORE_LIST: &str = "workspaces.ignore.list";
 pub const IGNORE_ADD: &str = "workspaces.ignore.add";
 pub const IGNORE_REMOVE: &str = "workspaces.ignore.remove";
 
+// ── LLM anchor proposals — the review queue (Slice N) ────────────────────
+pub const ANCHORS_LIST_PROPOSALS: &str = "workspaces.anchors.list_proposals";
+pub const ANCHORS_ACCEPT_PROPOSAL: &str = "workspaces.anchors.accept_proposal";
+pub const ANCHORS_REJECT_PROPOSAL: &str = "workspaces.anchors.reject_proposal";
+
 /// Every action this service registers. Grows one slice at a time.
 pub const ALL_ACTIONS: &[&str] = &[
     PING,
@@ -131,6 +136,10 @@ pub const ALL_ACTIONS: &[&str] = &[
     IGNORE_LIST,
     IGNORE_ADD,
     IGNORE_REMOVE,
+    // Slice N — LLM anchor-proposal review queue
+    ANCHORS_LIST_PROPOSALS,
+    ANCHORS_ACCEPT_PROPOSAL,
+    ANCHORS_REJECT_PROPOSAL,
 ];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -463,6 +472,34 @@ pub fn install() {
         |p: Value| async move { crate::ignore::api::handle_remove(p).await },
         "Stop ignoring a token in one tier. Payload: {workspace_id, tier, \
          token, conversation_id?}. Reply: {ok, removed, workspace_id, token}.",
+        META_MODULE,
+    );
+
+    // ── Slice N — LLM anchor-proposal review queue ───────────────────────
+    register_action_with_meta(
+        ANCHORS_LIST_PROPOSALS,
+        |p: Value| async move { crate::anchors::api::handle_list_proposals(p).await },
+        "Pending LLM anchor proposals awaiting user review (user-accept-\
+         always, OI-18). Payload: {workspace_id}. Reply: {workspace_id, \
+         proposals: [{anchor, confidence, rationale, proposed_at}], count}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        ANCHORS_ACCEPT_PROPOSAL,
+        |p: Value| async move { crate::anchors::api::handle_accept_proposal(p).await },
+        "Land a pending proposal in the anchor store. Payload: {workspace_id, \
+         identifier, merge?}. Reply: {accepted: created|merged, anchor}. A \
+         colliding identifier returns already_exists with {existing, proposal} \
+         details (the OI-18 diff view) and keeps the proposal pending; \
+         merge:true applies the proposal onto the existing record instead.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        ANCHORS_REJECT_PROPOSAL,
+        |p: Value| async move { crate::anchors::api::handle_reject_proposal(p).await },
+        "Dismiss a pending proposal + record the OI-11 suppression (30 days \
+         default; WYLDE_ANCHOR_REJECTION_SUPPRESS_DAYS). Payload: \
+         {workspace_id, identifier}. Reply: {ok, rejected, identifier}.",
         META_MODULE,
     );
 

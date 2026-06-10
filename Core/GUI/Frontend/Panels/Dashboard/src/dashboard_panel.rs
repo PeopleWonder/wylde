@@ -112,10 +112,7 @@ impl DashboardPanel {
     /// One refresh cycle.  All four IPCs fire concurrently via
     /// `tokio::join!` so the user sees the strip / cards advance
     /// together rather than card-by-card.
-    pub async fn refresh_once(
-        this: gpui::WeakEntity<Self>,
-        app_cx: &mut AsyncApp,
-    ) {
+    pub async fn refresh_once(this: gpui::WeakEntity<Self>, app_cx: &mut AsyncApp) {
         // Bump the generation so a "Refresh" button click that lands
         // mid-sleep can compare against this.  Used for the visible
         // "Updated Xs ago" pill.
@@ -308,15 +305,8 @@ fn section_title(label: &str) -> gpui::Div {
         .child(SharedString::from(label.to_ascii_uppercase()))
 }
 
-fn service_health_strip(
-    panel: &DashboardPanel,
-    cx: &mut Context<DashboardPanel>,
-) -> gpui::Div {
-    let mut row = div()
-        .flex()
-        .flex_row()
-        .flex_wrap()
-        .gap_2();
+fn service_health_strip(panel: &DashboardPanel, cx: &mut Context<DashboardPanel>) -> gpui::Div {
+    let mut row = div().flex().flex_row().flex_wrap().gap_2();
     for (name, health) in &panel.service_health {
         row = row.child(service_chip(name, health, cx));
     }
@@ -421,9 +411,7 @@ fn hardware_card(panel: &DashboardPanel) -> gpui::Div {
     }
     let mut col = div().flex().flex_col().gap_2();
     if panel.hardware.is_unknown() && panel.hardware_ever_read {
-        col = col.child(stale_label(
-            "Broker offline — showing last known snapshot.",
-        ));
+        col = col.child(stale_label("Broker offline — showing last known snapshot."));
     }
 
     let cpu_line = SharedString::from(format!(
@@ -473,10 +461,7 @@ fn hardware_card(panel: &DashboardPanel) -> gpui::Div {
     card_shell(col)
 }
 
-fn active_model_card(
-    panel: &DashboardPanel,
-    cx: &mut Context<DashboardPanel>,
-) -> gpui::Div {
+fn active_model_card(panel: &DashboardPanel, cx: &mut Context<DashboardPanel>) -> gpui::Div {
     if !panel.initial_load_done {
         return placeholder_card("Probing Ollama…");
     }
@@ -523,10 +508,7 @@ fn active_model_card(
     )
 }
 
-fn recent_activity_card(
-    panel: &DashboardPanel,
-    cx: &mut Context<DashboardPanel>,
-) -> gpui::Div {
+fn recent_activity_card(panel: &DashboardPanel, cx: &mut Context<DashboardPanel>) -> gpui::Div {
     if !panel.initial_load_done {
         return placeholder_card("Loading recent activity…");
     }
@@ -544,10 +526,7 @@ fn recent_activity_card(
     card_shell(col)
 }
 
-fn recent_row(
-    r: &RecentMemory,
-    cx: &mut Context<DashboardPanel>,
-) -> Stateful<gpui::Div> {
+fn recent_row(r: &RecentMemory, cx: &mut Context<DashboardPanel>) -> Stateful<gpui::Div> {
     let preview = SharedString::from(preview_body(&r.body));
     let meta = SharedString::from(format!(
         "★ {} · {} · {}",
@@ -625,7 +604,9 @@ fn placeholder_card_clickable(
     cx: &mut Context<DashboardPanel>,
 ) -> gpui::Div {
     let body = div()
-        .id(ElementId::Name(format!("dashboard-empty::{nav_key}").into()))
+        .id(ElementId::Name(
+            format!("dashboard-empty::{nav_key}").into(),
+        ))
         .cursor_pointer()
         .font_family(FAMILY_INTER)
         .text_size(px(size::XS))
@@ -797,10 +778,7 @@ mod tests {
         // Just-instantiated `Instant` reports 0 elapsed — we accept
         // either "just now" or "1s ago" depending on test timing.
         let l = refreshed_label(Some(Instant::now()));
-        assert!(
-            l == "Updated just now" || l == "Updated 1s ago",
-            "got {l}",
-        );
+        assert!(l == "Updated just now" || l == "Updated 1s ago", "got {l}",);
     }
 
     #[test]

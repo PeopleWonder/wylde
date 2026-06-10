@@ -38,6 +38,7 @@ pub mod anchor;
 pub mod api;
 pub mod disambiguation;
 pub mod promotion;
+pub mod proposals;
 pub mod reflection;
 pub mod store;
 pub mod tokenizer;

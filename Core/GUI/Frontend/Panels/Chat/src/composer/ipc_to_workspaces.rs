@@ -173,6 +173,28 @@ pub async fn set_ignored(
     }
 }
 
+/// Create a **symbol** anchor from the composer's "Anchor this?" flow
+/// (Slice N): the word becomes a `{{identifier}}` pointing at the picked
+/// symbol. The service rejects collisions (`already_exists`).
+pub async fn create_symbol_anchor(
+    workspace_id: &str,
+    identifier: &str,
+    symbol_id: &str,
+    description: &str,
+) -> Result<Value, String> {
+    workspaces_call(
+        "workspaces.anchors.create",
+        json!({
+            "workspace_id": workspace_id,
+            "identifier": identifier,
+            "kind": "symbol",
+            "target": { "type": "code_symbol", "symbol_id": symbol_id },
+            "description": description,
+        }),
+    )
+    .await
+}
+
 /// One `matches[i]` entry (`{ entry: {...}, score }`) → [`SymbolCandidate`].
 fn candidate_from(m: &Value) -> Option<SymbolCandidate> {
     let entry = m.get("entry")?;

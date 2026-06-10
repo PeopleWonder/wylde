@@ -23,10 +23,7 @@ use crate::registry::PanelRegistry;
 /// extension-panel list — the Shell passes a closure that calls
 /// `extensions.list_panels` through the pipe; tests pass a closure
 /// that returns a fixed `Vec` for deterministic assertions.
-pub async fn list_tabs<F, Fut>(
-    registry: &PanelRegistry,
-    extensions_lookup: F,
-) -> serde_json::Value
+pub async fn list_tabs<F, Fut>(registry: &PanelRegistry, extensions_lookup: F) -> serde_json::Value
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Vec<ExtensionPanel>>,

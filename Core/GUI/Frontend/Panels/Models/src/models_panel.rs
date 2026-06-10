@@ -337,9 +337,7 @@ impl ModelsPanel {
                 // recv; stash it back after to keep `cancel_pull`'s
                 // drop-to-cancel path live.
                 let next = match this.update(app_cx, |panel, _| {
-                    panel.active_pull
-                        .as_mut()
-                        .and_then(|p| p.stream.take())
+                    panel.active_pull.as_mut().and_then(|p| p.stream.take())
                 }) {
                     Ok(Some(mut s)) => {
                         let frame = s.recv().await;
@@ -385,9 +383,8 @@ impl ModelsPanel {
                         // Stream ended without a success frame.
                         let _ = this.update(app_cx, |panel, cx| {
                             if panel.active_pull.is_some() {
-                                panel.error = Some(format!(
-                                    "pull '{name}': stream ended unexpectedly",
-                                ));
+                                panel.error =
+                                    Some(format!("pull '{name}': stream ended unexpectedly",));
                             }
                             panel.active_pull = None;
                             cx.notify();
@@ -480,10 +477,7 @@ impl ModelsPanel {
         let Some(sel) = self.hf_selected.clone() else {
             return;
         };
-        let idx = hf::QUANTS
-            .iter()
-            .position(|&q| q == sel.quant)
-            .unwrap_or(0);
+        let idx = hf::QUANTS.iter().position(|&q| q == sel.quant).unwrap_or(0);
         let next = hf::QUANTS[(idx + 1) % hf::QUANTS.len()].to_owned();
         let tag = hf::to_pull_tag(&sel.repo_id, &next);
         self.hf_selected = Some(HfSelection {
@@ -760,11 +754,7 @@ fn pull_section(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> gpui::Div
 /// `CATALOG_SUGGESTION_LIMIT` fuzzy matches, each selectable; if the
 /// typed query isn't itself an exact catalog tag, a trailing "Pull
 /// anyway" row covers uncatalogued / brand-new tags.
-fn catalog_dropdown(
-    query: &str,
-    hf_enabled: bool,
-    cx: &mut Context<ModelsPanel>,
-) -> gpui::Div {
+fn catalog_dropdown(query: &str, hf_enabled: bool, cx: &mut Context<ModelsPanel>) -> gpui::Div {
     let matches = catalog::fuzzy_search(query, CATALOG_SUGGESTION_LIMIT);
 
     let mut list = div()
@@ -1472,10 +1462,7 @@ fn recommendations_strip(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> 
         .child(row)
 }
 
-fn recommendation_chip(
-    rec: Recommendation,
-    cx: &mut Context<ModelsPanel>,
-) -> Stateful<gpui::Div> {
+fn recommendation_chip(rec: Recommendation, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let name_for_click = rec.name.clone();
     let id: ElementId = ElementId::Name(format!("models-rec::{}", rec.name).into());
     div()
@@ -1882,10 +1869,7 @@ pub(crate) fn searchable_text(m: &InstalledModel) -> String {
 /// matches every qwen tag, the typo "lama" still hits "llama3.2" (l-a-m-a
 /// is a subsequence), and a fragment like "32b" narrows to the 32b tags —
 /// all ranked rather than an unordered substring set.
-pub(crate) fn fuzzy_rank<'a>(
-    models: &'a [InstalledModel],
-    query: &str,
-) -> Vec<&'a InstalledModel> {
+pub(crate) fn fuzzy_rank<'a>(models: &'a [InstalledModel], query: &str) -> Vec<&'a InstalledModel> {
     let trimmed = query.trim();
     if trimmed.is_empty() {
         return models.iter().collect();
@@ -2058,8 +2042,14 @@ mod tests {
             model("qwen3:32b", "qwen3", "32B", "Q4_K_M"),
         ];
         // Empty and whitespace-only both short-circuit to "show all".
-        assert_eq!(names(&fuzzy_rank(&models, "")), names(&models.iter().collect::<Vec<_>>()));
-        assert_eq!(names(&fuzzy_rank(&models, "   ")), names(&models.iter().collect::<Vec<_>>()));
+        assert_eq!(
+            names(&fuzzy_rank(&models, "")),
+            names(&models.iter().collect::<Vec<_>>())
+        );
+        assert_eq!(
+            names(&fuzzy_rank(&models, "   ")),
+            names(&models.iter().collect::<Vec<_>>())
+        );
     }
 
     #[test]
@@ -2070,7 +2060,10 @@ mod tests {
             model("qwen3:32b", "qwen3", "32B", "Q4_K_M"),
         ];
         let got = names(&fuzzy_rank(&models, "qwen"));
-        assert!(got.iter().all(|n| n.contains("qwen")), "only qwen tags: {got:?}");
+        assert!(
+            got.iter().all(|n| n.contains("qwen")),
+            "only qwen tags: {got:?}"
+        );
         assert_eq!(got.len(), 2);
     }
 
@@ -2107,7 +2100,10 @@ mod tests {
             model("qwen2.5:7b", "qwen2.5", "7B", "Q4_K_M"),
         ];
         let got = names(&fuzzy_rank(&models, "qwen"));
-        assert_eq!(got, vec!["qwen2.5:7b".to_owned(), "zzz-qwen-custom".to_owned()]);
+        assert_eq!(
+            got,
+            vec!["qwen2.5:7b".to_owned(), "zzz-qwen-custom".to_owned()]
+        );
     }
 
     #[test]
@@ -2130,7 +2126,10 @@ mod tests {
 
     #[test]
     fn shorten_cpu_strips_frequency_suffix() {
-        assert_eq!(shorten_cpu("Intel Core i7-9750H @ 2.60GHz"), "Intel Core i7-9750H");
+        assert_eq!(
+            shorten_cpu("Intel Core i7-9750H @ 2.60GHz"),
+            "Intel Core i7-9750H"
+        );
         assert_eq!(shorten_cpu("  AMD Ryzen 9 7900X "), "AMD Ryzen 9 7900X");
     }
 

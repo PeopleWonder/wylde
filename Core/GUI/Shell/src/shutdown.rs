@@ -239,9 +239,7 @@ mod tests {
         let failure = shutdown_with_fallback(
             || {
                 pipe_log.lock().unwrap().push("graceful");
-                async {
-                    Err("pipe_unavailable: service 'wylde-lifecycle' is not running".into())
-                }
+                async { Err("pipe_unavailable: service 'wylde-lifecycle' is not running".into()) }
             },
             || async { true },
             move |_| kill_log.lock().unwrap().push("kill"),
