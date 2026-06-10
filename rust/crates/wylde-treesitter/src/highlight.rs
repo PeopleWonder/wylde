@@ -61,6 +61,11 @@ fn query_sources(grammar: &Grammar) -> (String, &'static str) {
             tree_sitter_typescript::LOCALS_QUERY,
         ),
         "markdown" => (tree_sitter_md::HIGHLIGHT_QUERY_BLOCK.to_string(), ""),
+        // Slice K — config + shell grammars, each with its bundled query.
+        "json" => (tree_sitter_json::HIGHLIGHTS_QUERY.to_string(), ""),
+        "toml" => (tree_sitter_toml_ng::HIGHLIGHTS_QUERY.to_string(), ""),
+        "yaml" => (tree_sitter_yaml::HIGHLIGHTS_QUERY.to_string(), ""),
+        "bash" => (tree_sitter_bash::HIGHLIGHT_QUERY.to_string(), ""),
         // A grammar row without a case here is a registry/dispatch bug, not
         // caller input — surface it as unsupported so it's observable.
         _ => (String::new(), ""),
@@ -307,6 +312,20 @@ mod tests {
         assert!(!scopes.is_empty(), "markdown produced no spans");
         assert_span_shape(&out, src.len());
         assert_eq!(out["language"], "markdown");
+    }
+
+    #[test]
+    fn slice_k_grammars_highlight_with_their_bundled_queries() {
+        for (src, ext) in [
+            ("{\"key\": \"value\", \"n\": 42}\n", "json"),
+            ("[server]\nport = 8080\nname = \"x\"\n", "toml"),
+            ("top:\n  nested: value\n", "yaml"),
+            ("greet() {\n  echo \"hi\"\n}\n", "sh"),
+        ] {
+            let (scopes, out) = scopes_of(src, ext);
+            assert!(!scopes.is_empty(), "{ext} produced no spans");
+            assert_span_shape(&out, src.len());
+        }
     }
 
     #[test]

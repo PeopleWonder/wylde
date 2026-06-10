@@ -623,6 +623,51 @@ mod tests {
     }
 
     #[test]
+    fn chunks_toml_on_table_boundaries() {
+        let src = "title = \"root\"\n\n[server]\nport = 8080\n\n[[bin]]\nname = \"a\"\n";
+        let f = temp_source(src, "toml");
+        let out = chunk(f.path().to_str().unwrap(), None, None).unwrap();
+        assert_eq!(out["language"], "toml");
+        assert_eq!(out["ast_aware"], true);
+        let cs = chunks_of(&out);
+        // Root pair → module filler; [server] table + [[bin]] array element.
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("server")));
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("bin")));
+        assert!(cs.iter().any(|c| c["kind"] == json!("module")));
+        assert_contiguous(&out, src);
+    }
+
+    #[test]
+    fn chunks_yaml_per_document_and_bash_per_function() {
+        let src = "---\nname: first\n---\nname: second\n";
+        let f = temp_source(src, "yaml");
+        let out = chunk(f.path().to_str().unwrap(), None, None).unwrap();
+        assert_eq!(out["language"], "yaml");
+        assert_eq!(out["ast_aware"], true);
+        assert!(chunks_of(&out).len() >= 2, "multi-doc YAML splits per doc");
+        assert_contiguous(&out, src);
+
+        let src = "set -e\n\ngreet() {\n  echo hi\n}\n\nfarewell() {\n  echo bye\n}\n";
+        let f = temp_source(src, "sh");
+        let out = chunk(f.path().to_str().unwrap(), None, None).unwrap();
+        assert_eq!(out["language"], "bash");
+        let cs = chunks_of(&out);
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("greet")));
+        assert!(cs.iter().any(|c| c["symbol_name"] == json!("farewell")));
+        assert_contiguous(&out, src);
+    }
+
+    #[test]
+    fn chunks_json_as_one_windowable_document() {
+        let src = "{\n  \"a\": 1,\n  \"b\": {\"c\": 2}\n}\n";
+        let f = temp_source(src, "json");
+        let out = chunk(f.path().to_str().unwrap(), None, None).unwrap();
+        assert_eq!(out["language"], "json");
+        assert_eq!(out["ast_aware"], true);
+        assert_contiguous(&out, src);
+    }
+
+    #[test]
     fn chunks_markdown_on_sections_with_heading_names() {
         let src =
             "# Intro\n\nFirst paragraph.\n\n# Usage\n\nSecond paragraph.\n\n## Detail\n\nNested.\n";
