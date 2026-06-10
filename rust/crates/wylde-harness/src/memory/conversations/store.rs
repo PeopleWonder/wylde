@@ -157,12 +157,38 @@ fn now_secs() -> i64 {
 }
 
 /// Atomically write a conversation document (temp + rename), preserving
-/// every field the caller hands in. Used by [`set_workspace`].
+/// every field the caller hands in. Used by [`set_workspace`] and
+/// [`save_conversation`].
 fn write_doc(conv_id: &str, doc: &Map<String, Value>) -> std::io::Result<()> {
     let body = serde_json::to_string_pretty(&Value::Object(doc.clone()))
         .unwrap_or_else(|_| "{}".to_owned());
     // Encrypt-at-rest (OI-14) + atomic temp-write + rename + owner-only.
     wylde_shared::encryption::write_at_rest(&path_for(conv_id), body.as_bytes())
+}
+
+/// Whether a conversation document exists for `conv_id` (false for unsafe
+/// ids too — nothing can exist at an invalid path). Slice J import's
+/// collision check.
+pub fn conversation_exists(conv_id: &str) -> bool {
+    validate_id(conv_id).is_ok() && path_for(conv_id).exists()
+}
+
+/// Persist a full conversation document verbatim — the document's own
+/// (validated) `id` decides the filename, mirroring the service store's
+/// `save_conversation`. Slice J import's landing point.
+pub fn save_conversation(doc: &Map<String, Value>) -> std::io::Result<()> {
+    let conv_id = doc
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "conversation document missing a usable `id`",
+            )
+        })?;
+    validate_id(conv_id).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.0))?;
+    write_doc(conv_id, doc)
 }
 
 /// Re-assign a conversation's `workspace_id` (Q4 — mutable binding).

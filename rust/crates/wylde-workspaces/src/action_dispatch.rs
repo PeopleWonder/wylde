@@ -61,6 +61,10 @@ pub const CONVERSATIONS_LIST: &str = "workspaces.conversations.list";
 pub const CONVERSATIONS_GET: &str = "workspaces.conversations.get";
 pub const CONVERSATIONS_DELETE: &str = "workspaces.conversations.delete";
 pub const CONVERSATIONS_REFRESH_SUMMARY: &str = "workspaces.conversations.refresh_summary";
+// Slice J escape hatch — `chat.*` names per Plan v2 Appendix A (the
+// conversations api owns chat.{export,import} on THIS service's pipe).
+pub const CHAT_EXPORT: &str = "chat.export";
+pub const CHAT_IMPORT: &str = "chat.import";
 
 // ── File watcher control (Slice I) ───────────────────────────────────────
 pub const WATCHER_STATUS: &str = "workspaces.watcher.status";
@@ -140,6 +144,9 @@ pub const ALL_ACTIONS: &[&str] = &[
     ANCHORS_LIST_PROPOSALS,
     ANCHORS_ACCEPT_PROPOSAL,
     ANCHORS_REJECT_PROPOSAL,
+    // Slice J — conversation export / import (the escape hatch)
+    CHAT_EXPORT,
+    CHAT_IMPORT,
 ];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -342,6 +349,24 @@ pub fn install() {
          (Slice E parity; harness generates, service stores). Payload: \
          {workspace_id, conversation_id, summary, embedding, topic_tags?, \
          summary_msg_count?}. Reply: {ok, id}. not_found when absent.",
+        META_MODULE,
+    );
+
+    // ── Slice J — conversation export / import (the escape hatch) ────────
+    register_action_with_meta(
+        CHAT_EXPORT,
+        |p: Value| async move { crate::conversations::api::handle_export(p).await },
+        "Export one workspace conversation as a portable plaintext envelope \
+         (wylde-conversation-export v1). Payload: {workspace_id, \
+         conversation_id}. Reply: {export, id}. The caller persists the file.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CHAT_IMPORT,
+        |p: Value| async move { crate::conversations::api::handle_import(p).await },
+        "Import a portable conversation envelope into a workspace. Payload: \
+         {workspace_id, export, overwrite?}. Reply: {imported, workspace_id}. \
+         already_exists on an id collision unless overwrite:true.",
         META_MODULE,
     );
 

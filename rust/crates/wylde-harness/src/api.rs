@@ -86,6 +86,12 @@ pub trait HarnessApi: Send + Sync {
     async fn chat_list_recent(&self, payload: Value) -> Reply;
     async fn chat_get_conversation(&self, payload: Value) -> Reply;
 
+    // ── chat.* export / import (2 verbs; TBS Slice J) ────────────────
+    // The escape hatch: standalone served in-process, workspace forwarded
+    // to the workspaces service. Dispatch lives in `chat::exchange`.
+    async fn chat_export(&self, payload: Value) -> Reply;
+    async fn chat_import(&self, payload: Value) -> Reply;
+
     // ── tools.* (2 verbs) ────────────────────────────────────────────
     async fn tools_list(&self, payload: Value) -> Reply;
     async fn tools_run(&self, payload: Value) -> Reply;
@@ -230,6 +236,16 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn chat_get_conversation(&self, payload: Value) -> Reply {
         chat_search::handle_get_conversation(payload).await
+    }
+
+    // ── chat.* export / import (Slice J) ─────────────────────────────
+
+    async fn chat_export(&self, payload: Value) -> Reply {
+        crate::chat::exchange::handle_export(payload).await
+    }
+
+    async fn chat_import(&self, payload: Value) -> Reply {
+        crate::chat::exchange::handle_import(payload).await
     }
 
     // ── tools.* ──────────────────────────────────────────────────────

@@ -149,6 +149,54 @@ pub async fn handle_refresh_summary(payload: Value) -> Reply {
     }
 }
 
+/// `chat.export` (TBS Slice J) — one workspace conversation as a portable
+/// envelope. Payload `{ workspace_id, conversation_id }` (or `id`). The
+/// caller persists the envelope (the GUI offers a save dialog); the verb
+/// only builds it.
+pub async fn handle_export(payload: Value) -> Reply {
+    let Some(ws) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(id) =
+        require_string(&payload, "conversation_id").or_else(|| require_string(&payload, "id"))
+    else {
+        return Reply::err_msg("bad_request", "conversation_id is required");
+    };
+    match super::export::export(&ws, &id) {
+        Ok(envelope) => Reply::ok(json!({ "export": envelope, "id": id })),
+        Err(ReadError::InvalidId(e)) => Reply::err_msg("bad_request", e.0),
+        Err(ReadError::NotFound(e)) => Reply::err_msg("not_found", e.0),
+    }
+}
+
+/// `chat.import` (TBS Slice J) — land a portable envelope in a workspace.
+/// Payload `{ workspace_id, export, overwrite? }`. An id collision is
+/// `already_exists` (details carry the id) unless `overwrite: true` —
+/// nothing is silently replaced.
+pub async fn handle_import(payload: Value) -> Reply {
+    use super::import::ImportError;
+    let Some(ws) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(envelope) = payload.get("export") else {
+        return Reply::err_msg("bad_request", "export (the envelope object) is required");
+    };
+    let overwrite = payload
+        .get("overwrite")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match super::import::import(&ws, envelope, overwrite) {
+        Ok(id) => Reply::ok(json!({ "imported": id, "workspace_id": ws })),
+        Err(ImportError::Format(e)) => Reply::err_msg("bad_request", e.message()),
+        Err(ImportError::InvalidId(m)) => Reply::err_msg("bad_request", m),
+        Err(ImportError::AlreadyExists(id)) => Reply::err_msg(
+            "already_exists",
+            format!("conversation '{id}' already exists in workspace '{ws}' — pass overwrite:true to replace it"),
+        ),
+        Err(ImportError::Io(m)) => Reply::err_msg("write_failed", m),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +205,51 @@ mod tests {
     fn seed(ws: &str, doc: Value) {
         let map = doc.as_object().unwrap().clone();
         store::save_conversation(ws, &map).unwrap();
+    }
+
+    #[tokio::test]
+    async fn export_import_verbs_round_trip_and_guard_collisions() {
+        let _env = TestEnv::new();
+        let ws = "ws-j-verbs-000000";
+        seed(
+            ws,
+            json!({"id": "c1", "title": "Verbatim", "workspace_id": ws,
+                   "messages": [{"role": "user", "content": "x"}]}),
+        );
+
+        let exported = handle_export(json!({ "workspace_id": ws, "conversation_id": "c1" })).await;
+        assert!(exported.ok, "{:?}", exported.error);
+        let envelope = exported.data["export"].clone();
+        assert_eq!(envelope["format"], "wylde-conversation-export");
+
+        // Same id, no overwrite → already_exists.
+        let refused = handle_import(json!({ "workspace_id": ws, "export": envelope })).await;
+        assert_eq!(refused.error.unwrap().code, "already_exists");
+
+        // Into another workspace → lands, destination owns it.
+        let landed =
+            handle_import(json!({ "workspace_id": "ws-j-dst-000000", "export": envelope })).await;
+        assert!(landed.ok, "{:?}", landed.error);
+        assert_eq!(landed.data["imported"], "c1");
+        let got = handle_get(json!({ "workspace_id": "ws-j-dst-000000", "id": "c1" })).await;
+        assert_eq!(got.data["title"], "Verbatim");
+        assert_eq!(got.data["workspace_id"], "ws-j-dst-000000");
+    }
+
+    #[tokio::test]
+    async fn export_import_validate_inputs() {
+        let _env = TestEnv::new();
+        let r = handle_export(json!({ "conversation_id": "c1" })).await;
+        assert_eq!(r.error.unwrap().code, "bad_request");
+        let r = handle_export(json!({ "workspace_id": "ws" })).await;
+        assert_eq!(r.error.unwrap().code, "bad_request");
+        let r = handle_export(json!({ "workspace_id": "ws", "conversation_id": "ghost" })).await;
+        assert_eq!(r.error.unwrap().code, "not_found");
+
+        let r = handle_import(json!({ "workspace_id": "ws" })).await;
+        assert_eq!(r.error.unwrap().code, "bad_request");
+        let r = handle_import(json!({ "workspace_id": "ws", "export": {"format": "junk"} })).await;
+        assert_eq!(r.error.unwrap().code, "bad_request");
     }
 
     #[tokio::test]

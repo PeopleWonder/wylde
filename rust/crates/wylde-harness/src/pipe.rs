@@ -111,6 +111,10 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "chat.search_history",
     "chat.list_recent",
     "chat.get_conversation",
+    // chat.* — conversation export/import (TBS Slice J). Standalone served
+    // in-process; a payload workspace_id forwards to the workspaces service.
+    "chat.export",
+    "chat.import",
     // tools.* — direct invocation + catalog (2 verbs)
     "tools.list",
     "tools.run",
@@ -378,6 +382,41 @@ where
          conversation in another workspace is not_found (the boundary \
          holds for point reads too). Payload {id, workspace_scope?, \
          active_workspace_id?}. Returns the full conversation document.",
+        HANDLER_MODULE_CHAT,
+    );
+
+    // ── chat.* export / import (Thought Bubble System Slice J) ────────
+    // The escape hatch: standalone conversations served in-process from
+    // the flat store; a payload `workspace_id` forwards to the
+    // wylde-workspaces chat.export/chat.import verbs (Appendix A owners).
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "chat.export",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.chat_export(p).await }
+        },
+        "Export one conversation as a portable plaintext envelope \
+         (wylde-conversation-export v1). Payload {conversation_id, \
+         workspace_id?} — workspace_id present forwards to the workspaces \
+         service, absent reads the standalone flat store. Reply: \
+         {export, id}. The caller persists the file.",
+        HANDLER_MODULE_CHAT,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "chat.import",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.chat_import(p).await }
+        },
+        "Import a portable conversation envelope. Payload {export, \
+         workspace_id?, overwrite?} — workspace_id targets that workspace \
+         via the service, absent lands it in the standalone store. \
+         already_exists on an id collision unless overwrite:true. Reply: \
+         {imported, workspace_id}.",
         HANDLER_MODULE_CHAT,
     );
 

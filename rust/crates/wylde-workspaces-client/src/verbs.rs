@@ -335,6 +335,22 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::NoRetry,
         cache_ttl: None,
     },
+    // ── Slice J — conversation export / import (Appendix A) ──────────────
+    // `chat.export` / `chat.import` are Slow · 10s, non-idempotent (no
+    // retry), no cache — verbatim from the Appendix A rows. The chat.* names
+    // live on the workspaces pipe (the conversations api owns them).
+    VerbDef {
+        name: "chat.export",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::SLOW),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "chat.import",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::SLOW),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
 ];
 
 /// Look up the policy for `verb`, or `None` if the client doesn't know it.
@@ -438,6 +454,17 @@ mod tests {
         assert_eq!(d.timeout, TimeoutPolicy::fast());
         assert_eq!(d.retry.max_attempts(), 1, "non-idempotent fold = no retry");
         assert!(d.cache_ttl.is_none());
+    }
+
+    #[test]
+    fn export_import_are_slow_noretry_uncached() {
+        // Slice J, verbatim Appendix A: Slow · 10s · non-idempotent · no cache.
+        for verb in ["chat.export", "chat.import"] {
+            let d = lookup(verb).expect(verb);
+            assert_eq!(d.timeout, TimeoutPolicy::slow(), "{verb}");
+            assert_eq!(d.retry.max_attempts(), 1, "{verb} = no retry");
+            assert!(d.cache_ttl.is_none(), "{verb}");
+        }
     }
 
     #[test]
