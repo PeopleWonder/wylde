@@ -25,16 +25,15 @@
 //! transport-code fallback treats as "revert to in-process Python." A
 //! partial port can't brick chat. The deferred punchlist:
 //!
-//! * `memory.reflect` — `reflection` not in Rust (the `long_term` scope
-//!   IS ported — `memory::long_term::reflection` — the verb waits on the
-//!   conversation/workspace scopes).
 //! * `rag.workspaces.*` (10 verbs) — overlaps `memory.workspaces.*`;
 //!   namespace reconciliation + indexer port pending.
 //!
 //! (`prompts.*` left this list in the full-Rust cutover — the five verbs
 //! are served by [`crate::prompts`] now. `memory.workspace.*` followed in
 //! the same cutover, slice R2a — the six verbs are served by
-//! [`crate::memory::workspace`] now.)
+//! [`crate::memory::workspace`] now. `memory.reflect` left in slice R2b —
+//! all three scopes are served by [`crate::memory::reflection`], which
+//! also wires a real in-process chat path the Python verb never had.)
 //!
 //! (`models.transcribe` / `models.synthesize` were retired at the voice
 //! cutover and deleted in the Bucket-A IPC cleanup — STT/TTS run
@@ -57,9 +56,10 @@
 //! `delete` + the net-new `get_active` / `set_active` selection-persistence
 //! pair) are registered here, and the Python `_conversations.py` handlers
 //! became thin forwarders too. The remaining Python conversation surface
-//! (`memory.reflect`, plus `save_conversation` itself) still shares the
-//! same JSON files, so both the short-term merge-save and the Slice B
-//! read/list/delete path preserve every sibling field.
+//! (`save_conversation` itself, on the chat-turn path) still shares the
+//! same JSON files, so the short-term merge-save, the Slice B
+//! read/list/delete path, and the R2b reflection rewrite all preserve
+//! every sibling field.
 
 use std::sync::Arc;
 
@@ -81,6 +81,7 @@ const HANDLER_MODULE_LONG_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.long_term.*)";
 const HANDLER_MODULE_WORKSPACE_MEMORY: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.workspace.*)";
+const HANDLER_MODULE_REFLECT: &str = "wylde_harness::api::DefaultHarnessApi (memory.reflect)";
 const HANDLER_MODULE_SHORT_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.short_term.*)";
 const HANDLER_MODULE_CONVERSATIONS: &str =
@@ -160,6 +161,9 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.workspace.update",
     "memory.workspace.delete",
     "memory.workspace.curate",
+    // memory.reflect — consolidation cycles, all scopes (full-Rust
+    // cutover slice R2b)
+    "memory.reflect",
     // workspaces.* — RETIRED from the harness pipe (Thought Bubble System
     // Slice 0d). All workspace verbs now live on the wylde-workspaces
     // service pipe; consumers reach them via the wylde-workspaces-client
@@ -872,6 +876,26 @@ where
          the wire; the scheduler runs real passes in-process). Payload \
          {workspace_id}.",
         HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    // ── memory.reflect (full-Rust cutover slice R2b) ─────────────────
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.reflect",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_reflect(p).await }
+        },
+        "Run one memory-consolidation cycle. Payload {scope} where scope \
+         is \"long_term\" | \"workspace:<id>\" | \"conversation:<id>\". \
+         Returns the ReflectionResult dict (scope, inputs_considered, \
+         reflection_id, reflection_body, superseded_ids, skipped, \
+         skip_reason). Runs a real LLM cycle in-process when a chat model \
+         is resolvable; otherwise replies skipped with \"no chat_fn \
+         supplied\" (Python parity). The background scheduler drives the \
+         same cycles on idle/daily cadences.",
+        HANDLER_MODULE_REFLECT,
     );
 
     // ── workspaces.* — RETIRED (Thought Bubble System Slice 0d) ──────

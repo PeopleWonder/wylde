@@ -304,6 +304,32 @@ pub fn update(
     Some(replacement)
 }
 
+/// Surgically point `old_id`'s `superseded_by` at `new_id` WITHOUT
+/// writing a replacement record — the supersession hook curation and
+/// reflection use once they already hold the successor (Python
+/// `_curate._link_supersession` / `reflection._link_supersession_ws`).
+/// `new_id` may be a real record id (merge) or a `tombstone:` marker
+/// (soft delete). Returns `true` when the record was found and the
+/// write landed.
+pub fn link_supersession(workspace_id: &str, old_id: &str, new_id: &str) -> bool {
+    let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut records = load_all(workspace_id);
+    let Some(rec) = records.iter_mut().find(|r| r.id == old_id) else {
+        return false;
+    };
+    rec.superseded_by = new_id.to_owned();
+    match save_all(workspace_id, &records) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(
+                "workspace_memory: save_all failed during link_supersession: {}",
+                e
+            );
+            false
+        }
+    }
+}
+
 /// Permanently remove a record AND every record whose `superseded_by`
 /// names it (its audit predecessors). Returns `true` if anything was
 /// deleted.
@@ -562,6 +588,20 @@ mod tests {
         assert!(delete("ws1", &v2.id));
         assert!(get("ws1", &v1.id).is_none(), "predecessor swept up");
         assert!(get("ws1", &v2.id).is_none());
+    }
+
+    #[test]
+    fn link_supersession_sets_pointer_without_new_record() {
+        let _env = TestEnv::new();
+        let r = save_new("ws1", "victim", "", Some(5.0), vec![]).unwrap();
+        assert!(link_supersession("ws1", &r.id, "tombstone:deadbeefdeadbeef"));
+        let stored = get("ws1", &r.id).unwrap();
+        assert_eq!(stored.superseded_by, "tombstone:deadbeefdeadbeef");
+        // No replacement record was minted; default list hides it.
+        assert_eq!(list_records("ws1", true).len(), 1);
+        assert!(list_records("ws1", false).is_empty());
+        // Unknown ids report false.
+        assert!(!link_supersession("ws1", "no-such", "x"));
     }
 
     #[test]

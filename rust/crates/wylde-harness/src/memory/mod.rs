@@ -22,8 +22,9 @@
 //!   gate, cache. Wires the `rag.*` deferred tools as Active.
 //! * **7.E** — Memgraph: graph_retrieval + memgraph clients. Wires
 //!   `meta.graph_query`.
-//! * **7.F** — `scheduler.py` (was flagged as orphan in the language
-//!   partition plan; rolled into Phase 7).
+//! * **7.F** — `scheduler.py` — landed in the full-Rust cutover
+//!   (slice R2b) as [`scheduler`], together with the [`reflection`]
+//!   scope dispatcher serving the `memory.reflect` pipe verb.
 //!
 //! Each slice keeps the Python implementation alive; the
 //! strangler-fig env var [`impl_for`] selects which side serves the
@@ -65,6 +66,8 @@ pub mod embeddings;
 pub mod long_term;
 pub mod memgraph;
 pub mod rag;
+pub mod reflection;
+pub mod scheduler;
 pub mod short_term;
 pub mod vector;
 pub mod workspace;

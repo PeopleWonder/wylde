@@ -15,9 +15,11 @@
 //!
 //! `conversation.py` owns a broader surface — `list_conversations`,
 //! `save_conversation`, `delete_conversation`, `set_workspace`, … — that
-//! backs the `conversations.*` pipe verbs and the `memory.reflect`
-//! consolidation cycle. Those stay on Python for now (deferred slices).
-//! This module ports ONLY the three `memory.short_term.*` verbs
+//! backs the `conversations.*` pipe verbs (ported in
+//! [`crate::memory::conversations`]) and the `memory.reflect`
+//! consolidation cycle (ported in [`crate::memory::reflection`],
+//! which drives [`replace_working_memory`] below for its supersession
+//! rewrite). This module ports the three `memory.short_term.*` verbs
 //! (`get` / `append` / `clear`), so it implements just enough of the
 //! conversation-document read/merge/write path to mutate `working_memory`
 //! WITHOUT clobbering the sibling fields (`messages`, `title`,
@@ -39,9 +41,8 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
-use wylde_shared::secure_file::harden_perms;
 
-use crate::memory::common::{conversations_dir, ensure_dir};
+use crate::memory::common::conversations_dir;
 
 /// Serialises in-process working-memory reads/writes. Cross-process
 /// torn-write protection still comes from the atomic temp + rename.
@@ -97,16 +98,20 @@ fn now_secs() -> i64 {
 /// * `Ok(None)` — the file doesn't exist (caller decides stub-vs-empty).
 /// * `Err(..)` — the id is invalid.
 ///
-/// A torn / non-object file is treated as `None` (matches Python's
-/// `ConversationNotFound`-on-unreadable, which `get`/`clear` swallow as
-/// "no conversation").
+/// Reads through the at-rest encryption layer (OI-14): conversation
+/// documents are written encrypted by [`crate::memory::conversations`]
+/// and by [`merge_save`] below, and pre-encryption plaintext files stay
+/// readable (and lazily migrate) via the same helper. A torn /
+/// non-object / undecryptable file is treated as `None` (matches
+/// Python's `ConversationNotFound`-on-unreadable, which `get`/`clear`
+/// swallow as "no conversation").
 fn read_doc(conv_id: &str) -> Result<Option<Map<String, Value>>, InvalidConversationId> {
     validate_id(conv_id)?;
     let path = path_for(conv_id);
     if !path.exists() {
         return Ok(None);
     }
-    let raw = match std::fs::read_to_string(&path) {
+    let raw = match wylde_shared::encryption::read_to_string_at_rest(&path) {
         Ok(s) => s,
         Err(_) => return Ok(None),
     };
@@ -186,21 +191,17 @@ fn merge_save(
         doc.insert("model".into(), Value::String(model.to_owned()));
     }
 
-    let path = path_for(conv_id);
-    if let Some(parent) = path.parent() {
-        ensure_dir(parent)?;
-    }
-    // Atomic write: dump to a sibling temp then rename, so a crash
-    // mid-write can't leave a half-truncated conversation file. Mirrors
-    // `save_conversation`'s `with_suffix(".json.tmp")` + `os.replace`.
-    let tmp = path.with_extension("json.tmp");
     let body = serde_json::to_string_pretty(&Value::Object(doc))
         .expect("conversation doc serialises to JSON");
-    std::fs::write(&tmp, body.as_bytes())?;
-    std::fs::rename(&tmp, &path)?;
-    // Conversation history can carry sensitive content — owner-only.
-    let _ = harden_perms(&path);
-    Ok(())
+    // One write path for every conversation document: `write_at_rest`
+    // encrypts (OI-14), writes atomically (temp + rename), and hardens
+    // the file owner-only — the same call `conversations::store::
+    // write_doc` routes through. (Run-005 fix: writing plaintext here
+    // while the conversations store encrypts let a lazy-migration read
+    // flip the file to ciphertext mid-flow, after which this module's
+    // plain reads saw an unreadable doc and minted a stub over live
+    // data — caught by the R2b conversation-reflection tests.)
+    wylde_shared::encryption::write_at_rest(&path_for(conv_id), body.as_bytes())
 }
 
 /// Working-memory entries for `conv_id`, or `[]` when the conversation
@@ -257,6 +258,20 @@ pub fn append_working_memory(
 
     merge_save(conv_id, existing, working.clone()).map_err(AppendError::Io)?;
     Ok(working)
+}
+
+/// Replace the entire working-memory list, preserving every sibling
+/// field and bumping `updated_at`. This is the supersession-rewrite
+/// path conversation-scope reflection uses — the Rust analogue of
+/// Python `reflection.py` calling
+/// `save_conversation(..., working_memory=updated)`. A missing
+/// conversation is an upsert-to-stub, same as the append path (the
+/// reflection caller never hits that branch — it only rewrites lists
+/// it just read).
+pub fn replace_working_memory(conv_id: &str, working: Vec<Value>) -> Result<(), AppendError> {
+    let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let existing = read_doc(conv_id).map_err(AppendError::InvalidId)?;
+    merge_save(conv_id, existing, working).map_err(AppendError::Io)
 }
 
 /// Drop the short-term entries. Returns `true` iff something was
@@ -414,7 +429,8 @@ mod tests {
         // Re-read the raw file: working_memory landed, siblings intact,
         // system message stripped, created_at preserved.
         let raw: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            serde_json::from_str(&wylde_shared::encryption::read_to_string_at_rest(&path).unwrap())
+                .unwrap();
         assert_eq!(raw["title"], "My Chat");
         assert_eq!(raw["created_at"], 1000);
         assert_eq!(raw["model"], "qwen2.5");
@@ -428,12 +444,45 @@ mod tests {
     }
 
     #[test]
+    fn replace_working_memory_swaps_list_and_preserves_siblings() {
+        let _env = TestEnv::new();
+        let cid = "replace_1";
+        append_working_memory(cid, json!({"kind": "tool", "at": 1, "data": {}})).unwrap();
+        append_working_memory(cid, json!({"kind": "decision", "at": 2, "data": "x"})).unwrap();
+
+        let mut entries = get_working_memory(cid).unwrap();
+        entries[0]
+            .as_object_mut()
+            .unwrap()
+            .insert("superseded_by".into(), json!("ref-1"));
+        replace_working_memory(cid, entries.clone()).unwrap();
+
+        let after = get_working_memory(cid).unwrap();
+        assert_eq!(after.len(), 2);
+        assert_eq!(after[0]["superseded_by"], "ref-1");
+        assert!(after[1].get("superseded_by").is_none());
+        // Sibling fields intact.
+        let raw: Value =
+            serde_json::from_str(
+            &wylde_shared::encryption::read_to_string_at_rest(&path_for(cid)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(raw["id"], cid);
+        assert_eq!(raw["title"], "Untitled");
+        // Invalid ids still rejected.
+        assert!(replace_working_memory("bad/id", vec![]).is_err());
+    }
+
+    #[test]
     fn append_mints_stub_for_unknown_conversation() {
         let _env = TestEnv::new();
         let cid = "stub_1";
         append_working_memory(cid, json!({"kind": "tool", "data": {}})).unwrap();
         let raw: Value =
-            serde_json::from_str(&std::fs::read_to_string(path_for(cid)).unwrap()).unwrap();
+            serde_json::from_str(
+            &wylde_shared::encryption::read_to_string_at_rest(&path_for(cid)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(raw["id"], cid);
         assert_eq!(raw["title"], "Untitled");
         assert_eq!(raw["workspace_id"], "");

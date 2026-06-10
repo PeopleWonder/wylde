@@ -115,8 +115,8 @@ async fn unregistered_verb_returns_no_action_for_strangler_fallback() {
     for verb in [
         // memory.workspace.* are registered as of the full-Rust cutover
         // (slice R2a) — they no longer fall through to the strangler,
-        // so they're not listed here.
-        "memory.reflect",
+        // so they're not listed here. memory.reflect followed in slice
+        // R2b (all scopes served by crate::memory::reflection).
         // conversations.* are registered as of Memory Slice B — they no
         // longer fall through to the strangler, so they're not listed here.
         // prompts.* are registered as of the full-Rust cutover

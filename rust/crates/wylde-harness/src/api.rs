@@ -142,6 +142,9 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_workspace_delete(&self, payload: Value) -> Reply;
     async fn memory_workspace_curate(&self, payload: Value) -> Reply;
 
+    // ── memory.reflect (1 verb; full-Rust cutover R2b) ───────────────
+    async fn memory_reflect(&self, payload: Value) -> Reply;
+
     // ── workspaces.* — RETIRED from the harness (Slice 0d) ───────────
     // All workspace verbs moved to the wylde-workspaces service; the
     // harness is a pure client. No HarnessApi methods remain.
@@ -522,6 +525,14 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn memory_workspace_curate(&self, payload: Value) -> Reply {
         workspace_memory_actions::handle_curate(payload).await
+    }
+
+    // ── memory.reflect ───────────────────────────────────────────────
+    // Pass-through — scope dispatch + the production chat wiring live
+    // in memory::reflection (full-Rust cutover slice R2b).
+
+    async fn memory_reflect(&self, payload: Value) -> Reply {
+        crate::memory::reflection::handle_reflect(payload).await
     }
 
     // ── workspaces.* — RETIRED from the harness (Slice 0d) ───────────
