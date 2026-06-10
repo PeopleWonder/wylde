@@ -40,10 +40,13 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use serde_json::json;
 use tokio::process::{Child, Command};
+use wylde_shared::manifest::{HeartbeatHandle, ManifestWriter};
 
 use crate::state::{
     forget_spawn, is_service_alive, manifest_pid, nospawn_enabled, nospawn_record, nospawn_take,
@@ -528,14 +531,85 @@ async fn start_strangler(def: &StranglerService) -> Result<()> {
 }
 
 // ── Memgraph ──────────────────────────────────────────────────────────
+//
+// Full-Rust cutover (2026-06-09): the Python wrapper (`Core.Memgraph.run`)
+// was retired and the daemon now spawns + supervises the bundled Neo4j
+// JVM directly. The wrapper existed for Python-daemon reasons — its own
+// signal handler and `sys.path` isolation — that don't apply to a tokio
+// child; `kill_on_drop` preserves the "JVM dies with its supervisor"
+// guarantee. The legacy pipe surface was already gone (2026-05-26
+// direct-Bolt cutover): the harness reads/writes the graph over Bolt
+// (neo4rs), so the only job here is JVM lifecycle.
+//
+// The `wylde-memgraph` manifest + heartbeat are written FROM the daemon
+// so the dashboard tile and the orphan sweep keep observing the same
+// service identity (Core-constituent semantics; the registry filters it
+// from the peer-services list as before).
 
-/// Boot Memgraph as a subprocess of the Lifecycle daemon.
+/// The daemon-held manifest writer + heartbeat for the supervised JVM.
+/// `Some` while Memgraph is up; dropped (heartbeat cancelled) on stop.
+static MEMGRAPH_MANIFEST: Mutex<Option<(ManifestWriter, HeartbeatHandle)>> = Mutex::new(None);
+
+/// `CREATE_NO_WINDOW` from `winbase.h` — keeps the `cmd /c neo4j.bat`
+/// console window from flashing up (mirrors the Python wrapper).
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn memgraph_neo4j_dir() -> PathBuf {
+    wylde_root()
+        .join("Core")
+        .join("Memgraph")
+        .join("vendor")
+        .join("neo4j")
+}
+
+fn memgraph_jdk_dir() -> PathBuf {
+    wylde_root()
+        .join("Core")
+        .join("Memgraph")
+        .join("vendor")
+        .join("jdk")
+}
+
+fn memgraph_bolt_port() -> u16 {
+    std::env::var("GRAPH_BOLT_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7687)
+}
+
+/// One cheap TCP probe of the Bolt port (mirrors `_bolt_ready`).
+fn memgraph_bolt_ready(port: u16) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok()
+}
+
+/// JAVA_HOME / NEO4J_HOME / NEO4J_CONF / PATH for the Neo4j launcher,
+/// identical to the Python wrapper's env overlay.
+fn memgraph_apply_env(cmd: &mut Command) {
+    let jdk = memgraph_jdk_dir();
+    let neo4j = memgraph_neo4j_dir();
+    let mut paths = vec![jdk.join("bin")];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    let path = std::env::join_paths(paths)
+        .unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default());
+    cmd.env("JAVA_HOME", &jdk)
+        .env("NEO4J_HOME", &neo4j)
+        .env("NEO4J_CONF", neo4j.join("conf"))
+        .env("PATH", path);
+}
+
+/// Boot the bundled Neo4j JVM under the daemon.
 ///
-/// Memgraph stays Python-only: `Core/Memgraph/run.py` spawns a Neo4j
-/// JVM child, manipulates `sys.path`, and installs its own signal
-/// handler. Pulling that into the daemon process would mix signal
-/// handlers and pollute namespaces, so we spawn it as a subprocess
-/// (same as the Python daemon does).
+/// Skips the spawn when Bolt is already answering (external instance —
+/// same as the Python wrapper) and when the vendor launcher is missing
+/// (vendor download incomplete; warn and leave the service down).
+/// Readiness is observed by a background task so `start_all` isn't
+/// blocked for the up-to-120s JVM boot; the harness retries its Bolt
+/// connection lazily on first request either way.
 pub async fn start_memgraph() -> Result<()> {
     if is_service_alive(service_name::MEMGRAPH) {
         let pid = manifest_pid(service_name::MEMGRAPH)
@@ -549,31 +623,193 @@ pub async fn start_memgraph() -> Result<()> {
         return Ok(());
     }
     if nospawn_enabled() {
-        nospawn_record(service_name::MEMGRAPH, ImplLang::Python.as_str());
+        nospawn_record(service_name::MEMGRAPH, ImplLang::Rust.as_str());
         tracing::info!("memgraph: NO-SPAWN — would-have-spawned recorded; no child forked");
         return Ok(());
     }
-    let child = match spawn_python_module("Core.Memgraph.run", service_name::MEMGRAPH) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("daemon: memgraph spawn failed: {:#}", e);
-            return Err(e);
-        }
+
+    let port = memgraph_bolt_port();
+    let bat = memgraph_neo4j_dir().join("bin").join("neo4j.bat");
+
+    let spawned = if memgraph_bolt_ready(port) {
+        tracing::info!(
+            "memgraph: Neo4j already up on bolt://127.0.0.1:{port} (external instance), \
+             skipping spawn"
+        );
+        false
+    } else if !bat.exists() {
+        tracing::warn!(
+            "memgraph: Neo4j launcher not found at {} — vendor download incomplete? \
+             Memgraph will not start.",
+            bat.display()
+        );
+        return Ok(());
+    } else {
+        // Append-mode JVM log, same location the Python wrapper used.
+        let logs_dir = wylde_root().join("Core").join("Memgraph").join("logs");
+        std::fs::create_dir_all(&logs_dir)
+            .with_context(|| format!("create {}", logs_dir.display()))?;
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs_dir.join("neo4j.log"))
+            .with_context(|| "open neo4j.log")?;
+        let log_err = log.try_clone().with_context(|| "clone neo4j.log handle")?;
+
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/c")
+            .arg(&bat)
+            .arg("console")
+            .current_dir(memgraph_neo4j_dir())
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(log_err));
+        memgraph_apply_env(&mut cmd);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        apply_kill_on_drop(&mut cmd);
+
+        let child = cmd
+            .spawn()
+            .with_context(|| "spawn cmd /c neo4j.bat console for wylde-memgraph")?;
+        let pid = child.id().unwrap_or(0);
+        tracing::info!(
+            "memgraph: spawned Neo4j launcher (pid={pid}) — boot may take up to 120s"
+        );
+        record_spawn(service_name::MEMGRAPH, pid, ImplLang::Rust.as_str());
+        set_service_proc(service_name::MEMGRAPH, child);
+        true
     };
-    let pid = child.id().unwrap_or(0);
-    tracing::info!(
-        "memgraph: spawned (pid={}) — Neo4j boot may take up to 120s",
-        pid
-    );
-    record_spawn(service_name::MEMGRAPH, pid, ImplLang::Python.as_str());
-    set_service_proc(service_name::MEMGRAPH, child);
+
+    // Manifest + heartbeat (previously written by the Python wrapper).
+    match ManifestWriter::write(
+        service_name::MEMGRAPH,
+        Some(port),
+        "core",
+        "Graph data layer (bundled Neo4j via Bolt). Constituent pipe of Core — \
+         the registry filters this entry out of the peer services list because \
+         Core's rollup manifest covers it.",
+        json!({
+            "dashboard": { "label": "Memgraph", "icon": "database", "color": "blue" },
+        }),
+        Some("rust:wylde-lifecycle (in-daemon Neo4j supervisor)"),
+    ) {
+        Ok(writer) => {
+            let hb = writer.start_heartbeat(Duration::from_secs(10));
+            *MEMGRAPH_MANIFEST.lock().unwrap_or_else(|p| p.into_inner()) = Some((writer, hb));
+        }
+        Err(e) => tracing::warn!("memgraph: manifest write failed: {e:#}"),
+    }
+
+    // Background readiness probe (1s → ×1.5, capped 5s; budget
+    // GRAPH_READY_WAIT_S, default 120) — observational only.
+    if spawned {
+        let wait_s: u64 = std::env::var("GRAPH_READY_WAIT_S")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120);
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
+            let mut interval = Duration::from_secs(1);
+            while tokio::time::Instant::now() < deadline {
+                if memgraph_bolt_ready(port) {
+                    tracing::info!("memgraph: Neo4j ready on bolt://127.0.0.1:{port}");
+                    return;
+                }
+                tokio::time::sleep(interval).await;
+                interval = interval.mul_f32(1.5).min(Duration::from_secs(5));
+            }
+            tracing::warn!(
+                "memgraph: Neo4j did not come up within {wait_s}s — supervisor stays up; \
+                 the harness retries its Bolt connection lazily on first request"
+            );
+        });
+    }
     Ok(())
 }
 
+/// Stop the supervised Neo4j JVM.
+///
+/// Graceful first — `neo4j.bat stop` pings the running instance over its
+/// admin protocol, flushes the WAL, and releases store locks (20s
+/// budget) — then a `taskkill /T /F` tree-kill backstop so a runaway
+/// `java.exe` is never left behind. Mirrors the Python wrapper's
+/// `_stop_neo4j` two-phase teardown.
 pub async fn stop_memgraph() -> Result<()> {
-    // Memgraph holds Neo4j; give it a longer grace window than the
-    // others (15s, mirroring _services.py).
-    stop_service(service_name::MEMGRAPH, Duration::from_secs(15)).await
+    forget_spawn(service_name::MEMGRAPH);
+    if nospawn_enabled() {
+        nospawn_take(service_name::MEMGRAPH);
+        *MEMGRAPH_MANIFEST.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        return Ok(());
+    }
+    let child = take_service_proc(service_name::MEMGRAPH);
+
+    if child.is_some() {
+        let bat = memgraph_neo4j_dir().join("bin").join("neo4j.bat");
+        if bat.exists() {
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/c")
+                .arg(&bat)
+                .arg("stop")
+                .current_dir(memgraph_neo4j_dir())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            memgraph_apply_env(&mut cmd);
+            #[cfg(windows)]
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+            match cmd.spawn() {
+                Ok(mut stopper) => {
+                    if tokio::time::timeout(Duration::from_secs(20), stopper.wait())
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!("memgraph: neo4j.bat stop timed out after 20s");
+                    }
+                }
+                Err(e) => tracing::warn!("memgraph: neo4j.bat stop spawn failed: {e}"),
+            }
+        }
+    }
+
+    if let Some(mut child) = child {
+        if child.try_wait().ok().flatten().is_none() {
+            let pid = child.id().unwrap_or(0);
+            tracing::info!("memgraph: tree-killing Neo4j launcher (pid={pid})");
+            #[cfg(windows)]
+            {
+                let _ = Command::new("taskkill") // wylde-check: discard-result-ok
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await;
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = child.kill().await; // wylde-check: discard-result-ok
+            }
+            if tokio::time::timeout(Duration::from_secs(5), child.wait())
+                .await
+                .is_err()
+            {
+                tracing::warn!("memgraph: Neo4j did not exit cleanly within 5s");
+            }
+        }
+    }
+
+    if let Some((writer, hb)) = MEMGRAPH_MANIFEST
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+    {
+        drop(hb); // cancel the heartbeat before flipping state
+        if let Err(e) = writer.mark_stopped() {
+            tracing::warn!("memgraph: mark_stopped failed: {e:#}");
+        }
+    }
+    Ok(())
 }
 
 // ── Voice ─────────────────────────────────────────────────────────────
