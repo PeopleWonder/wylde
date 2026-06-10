@@ -81,10 +81,13 @@ pub mod transport;
 
 pub use bolt::{BoltClient, BoltConfig, DEFAULT_BOLT_URL, DRIVER_ERROR_TTL};
 pub use client::{Client, EntityPair, TraverseRequest};
-pub use graph_retrieval::{expand_by_graph, ExpandOptions, GraphHit, DEFAULT_HOPS, DEFAULT_MAX_EXTRA};
+pub use graph_retrieval::{
+    expand_by_graph, ExpandOptions, GraphHit, DEFAULT_HOPS, DEFAULT_MAX_EXTRA,
+};
 pub use schema::{
     relation_type_is_valid, BUCKET_CALLS_IMPORTS, BUCKET_CONFIGURES_EXPOSES, NODE_CHUNK,
-    NODE_ENTITY, REL_CALLS, REL_CONFIGURES, REL_EXPOSES, REL_IMPORTS, REL_INHERITS, REL_MENTIONED_IN,
+    NODE_ENTITY, REL_CALLS, REL_CONFIGURES, REL_EXPOSES, REL_IMPORTS, REL_INHERITS,
+    REL_MENTIONED_IN,
 };
 pub use transport::MemgraphTraversal;
 

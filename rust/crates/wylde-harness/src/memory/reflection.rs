@@ -212,11 +212,7 @@ async fn reflect_conversation(
             Ok(r) => r.id,
             Err(e) => {
                 tracing::warn!("reflection: workspace save failed: {e}");
-                return ReflectionResult::skipped(
-                    scope,
-                    inputs.len(),
-                    format!("save failed: {e}"),
-                );
+                return ReflectionResult::skipped(scope, inputs.len(), format!("save failed: {e}"));
             }
         }
     } else {
@@ -230,11 +226,7 @@ async fn reflect_conversation(
             Ok(r) => r.id,
             Err(e) => {
                 tracing::warn!("reflection: long_term save failed: {e}");
-                return ReflectionResult::skipped(
-                    scope,
-                    inputs.len(),
-                    format!("save failed: {e}"),
-                );
+                return ReflectionResult::skipped(scope, inputs.len(), format!("save failed: {e}"));
             }
         }
     };
@@ -375,9 +367,7 @@ fn supersede_working_memory(conversation_id: &str, consumed: &[Value], reflectio
         })
         .collect();
     if let Err(e) = short_term_store::replace_working_memory(conversation_id, updated) {
-        tracing::warn!(
-            "reflection: working-memory rewrite failed for {conversation_id}: {e:?}"
-        );
+        tracing::warn!("reflection: working-memory rewrite failed for {conversation_id}: {e:?}");
     }
 }
 
@@ -644,7 +634,10 @@ mod tests {
         assert!(r.skipped);
         assert_eq!(r.inputs_considered, 2);
         assert!(r.skip_reason.contains("need 3 inputs, have 2"));
-        assert!(chat.calls.lock().unwrap().is_empty(), "no LLM call below the gate");
+        assert!(
+            chat.calls.lock().unwrap().is_empty(),
+            "no LLM call below the gate"
+        );
     }
 
     #[tokio::test]
@@ -690,7 +683,10 @@ mod tests {
         let wm = short_term_store::get_working_memory("conv3").unwrap();
         assert_eq!(wm.len(), 3);
         for e in &wm {
-            assert_eq!(e.get("superseded_by").and_then(Value::as_str), Some(new_id.as_str()));
+            assert_eq!(
+                e.get("superseded_by").and_then(Value::as_str),
+                Some(new_id.as_str())
+            );
         }
 
         // A second pass sees zero live inputs and skips.
@@ -718,9 +714,9 @@ mod tests {
         assert!(long_term::list_records(true).is_empty());
         // Working memory still superseded.
         let wm = short_term_store::get_working_memory("conv4").unwrap();
-        assert!(wm.iter().all(|e| {
-            e.get("superseded_by").and_then(Value::as_str) == Some(new_id.as_str())
-        }));
+        assert!(wm
+            .iter()
+            .all(|e| { e.get("superseded_by").and_then(Value::as_str) == Some(new_id.as_str()) }));
     }
 
     #[tokio::test]
@@ -741,7 +737,10 @@ mod tests {
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[0]["content"], REFLECTION_SYSTEM_PROMPT);
         let user = messages[1]["content"].as_str().unwrap();
-        assert!(user.contains("1. (decision) decided thing 0"), "got: {user}");
+        assert!(
+            user.contains("1. (decision) decided thing 0"),
+            "got: {user}"
+        );
         assert!(user.contains("3. (decision) decided thing 2"));
     }
 

@@ -382,7 +382,10 @@ mod tests {
     fn supported_ops_filters_and_orders() {
         let def = dummy_def();
         // List comes before Delete in ResourceOp::all() order.
-        assert_eq!(def.supported_ops(), vec![ResourceOp::List, ResourceOp::Delete]);
+        assert_eq!(
+            def.supported_ops(),
+            vec![ResourceOp::List, ResourceOp::Delete]
+        );
     }
 
     #[test]

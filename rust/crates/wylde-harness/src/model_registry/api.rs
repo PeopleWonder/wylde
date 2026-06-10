@@ -365,11 +365,7 @@ mod tests {
     #[test]
     fn ollama_probe_marks_existing_hf_model_loaded() {
         let sb = Sandbox::new();
-        make_hf_model(
-            &sb.hub(),
-            "models--meta-llama--Llama-3.1-8B-Instruct",
-            b"a",
-        );
+        make_hf_model(&sb.hub(), "models--meta-llama--Llama-3.1-8B-Instruct", b"a");
         let probe = FakeProbe(vec!["meta-llama/Llama-3.1-8B-Instruct".to_owned()]);
         let out = list_models(None, &probe, Some(Vec::new()));
         assert_eq!(out.len(), 1);
@@ -456,7 +452,12 @@ mod tests {
     #[test]
     fn list_models_includes_wakeword_bundles() {
         let sb = Sandbox::new();
-        write_wakeword_bundle(&sb.wakeword_root(), "openWakeWord", "hey-jarvis", "hey_jarvis.onnx");
+        write_wakeword_bundle(
+            &sb.wakeword_root(),
+            "openWakeWord",
+            "hey-jarvis",
+            "hey_jarvis.onnx",
+        );
         let out = list_models(Some(Kind::Wakeword), &NullProbe, Some(Vec::new()));
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, "openWakeWord/hey-jarvis");

@@ -142,7 +142,9 @@ fn read_doc(conv_id: &str) -> Result<Map<String, Value>, ConversationNotFound> {
 /// missing / malformed file.
 pub fn read_conversation(conv_id: &str) -> Result<Value, ReadError> {
     validate_id(conv_id).map_err(ReadError::InvalidId)?;
-    read_doc(conv_id).map(Value::Object).map_err(ReadError::NotFound)
+    read_doc(conv_id)
+        .map(Value::Object)
+        .map_err(ReadError::NotFound)
 }
 
 /// Epoch seconds as `i64`, matching the `created_at` / `updated_at`
@@ -326,7 +328,10 @@ pub fn list_conversations() -> Vec<Value> {
         let model = doc.get("model").and_then(Value::as_str).unwrap_or("");
         // Additive (Q4): the switcher restores the workspace selection
         // from this. Existing readers ignore the unknown key.
-        let workspace_id = doc.get("workspace_id").and_then(Value::as_str).unwrap_or("");
+        let workspace_id = doc
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         metas.push(json!({
             "id": cid,
             "title": title,
@@ -410,7 +415,10 @@ mod tests {
     fn new_ids_are_unique() {
         let a = new_conversation_id();
         let b = new_conversation_id();
-        assert_ne!(a, b, "random suffix should disambiguate same-microsecond ids");
+        assert_ne!(
+            a, b,
+            "random suffix should disambiguate same-microsecond ids"
+        );
     }
 
     #[test]
@@ -466,7 +474,10 @@ mod tests {
     #[test]
     fn list_skips_unreadable_and_non_object_and_idless() {
         let _env = TestEnv::new();
-        seed_conversation("good", json!({"id": "good", "updated_at": 5, "messages": []}));
+        seed_conversation(
+            "good",
+            json!({"id": "good", "updated_at": 5, "messages": []}),
+        );
         // Non-object JSON.
         let dir = conversations_dir();
         std::fs::write(dir.join("array.json"), "[1,2,3]").unwrap();
@@ -520,7 +531,10 @@ mod tests {
     fn delete_removes_file_and_reports_truthfully() {
         let _env = TestEnv::new();
         seed_conversation("del1", json!({"id": "del1", "messages": []}));
-        assert!(delete_conversation("del1").unwrap(), "first delete removes it");
+        assert!(
+            delete_conversation("del1").unwrap(),
+            "first delete removes it"
+        );
         assert!(read_conversation("del1").is_err(), "gone after delete");
         assert!(
             !delete_conversation("del1").unwrap(),

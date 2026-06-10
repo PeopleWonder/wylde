@@ -513,8 +513,24 @@ fn focal_body<R: Fn(&str) -> Option<String>>(
 /// carrying one of these *and* the symbol name as a whole word is treated as
 /// the definition site.
 const DEF_KEYWORDS: &[&str] = &[
-    "fn", "def", "class", "struct", "trait", "enum", "impl", "type", "const", "static", "func",
-    "function", "interface", "module", "mod", "let", "var", "pub",
+    "fn",
+    "def",
+    "class",
+    "struct",
+    "trait",
+    "enum",
+    "impl",
+    "type",
+    "const",
+    "static",
+    "func",
+    "function",
+    "interface",
+    "module",
+    "mod",
+    "let",
+    "var",
+    "pub",
 ];
 
 /// Find the 1-based line where `name` is defined, by a simple, language-
@@ -679,29 +695,27 @@ impl<'a> LiveSource<'a> {
         let q = cypher_query(cypher)
             .param("frontier", frontier.to_vec())
             .param("ws", ws.to_owned());
-        let fut = async {
-            let mut rows = self
-                .graph
-                .execute(q)
-                .await
-                .map_err(|e| SourceError::new("bolt_query", format!("neighborhood: {e}")))?;
-            let mut out = Vec::new();
-            while let Some(row) = rows
-                .next()
-                .await
-                .map_err(|e| SourceError::new("bolt_decode", format!("neighborhood decode: {e}")))?
-            {
-                let name: String = row.get("name").unwrap_or_default();
-                if name.is_empty() {
-                    continue;
+        let fut =
+            async {
+                let mut rows =
+                    self.graph.execute(q).await.map_err(|e| {
+                        SourceError::new("bolt_query", format!("neighborhood: {e}"))
+                    })?;
+                let mut out = Vec::new();
+                while let Some(row) = rows.next().await.map_err(|e| {
+                    SourceError::new("bolt_decode", format!("neighborhood decode: {e}"))
+                })? {
+                    let name: String = row.get("name").unwrap_or_default();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    out.push(NeighborRow {
+                        name,
+                        file: row.get("file").unwrap_or_default(),
+                    });
                 }
-                out.push(NeighborRow {
-                    name,
-                    file: row.get("file").unwrap_or_default(),
-                });
-            }
-            Ok::<_, SourceError>(out)
-        };
+                Ok::<_, SourceError>(out)
+            };
         self.bounded(fut, "neighbors").await
     }
 
@@ -740,7 +754,10 @@ impl NeighborhoodSource for LiveSource<'_> {
                     Ok(Some(row)) => row.get("file").unwrap_or_default(),
                     Ok(None) => String::new(),
                     Err(e) => {
-                        return Err(SourceError::new("bolt_decode", format!("focal decode: {e}")))
+                        return Err(SourceError::new(
+                            "bolt_decode",
+                            format!("focal decode: {e}"),
+                        ))
                     }
                 };
                 Ok::<_, SourceError>(if file.is_empty() { None } else { Some(file) })
@@ -778,34 +795,33 @@ impl NeighborhoodSource for LiveSource<'_> {
             .param("name", name.to_owned())
             .param("ws", workspace.to_owned());
         async move {
-            let fut = async {
-                let mut rows = self
-                    .graph
-                    .execute(q)
-                    .await
-                    .map_err(|e| SourceError::new("bolt_query", format!("types: {e}")))?;
-                let mut out = Vec::new();
-                while let Some(row) = rows
-                    .next()
-                    .await
-                    .map_err(|e| SourceError::new("bolt_decode", format!("types decode: {e}")))?
-                {
-                    let name: String = row.get("name").unwrap_or_default();
-                    let rel_raw: String = row.get("rel").unwrap_or_default();
-                    let Some(rel) = RelType::from_wire(&rel_raw) else {
-                        continue;
-                    };
-                    if name.is_empty() {
-                        continue;
+            let fut =
+                async {
+                    let mut rows = self
+                        .graph
+                        .execute(q)
+                        .await
+                        .map_err(|e| SourceError::new("bolt_query", format!("types: {e}")))?;
+                    let mut out = Vec::new();
+                    while let Some(row) = rows.next().await.map_err(|e| {
+                        SourceError::new("bolt_decode", format!("types decode: {e}"))
+                    })? {
+                        let name: String = row.get("name").unwrap_or_default();
+                        let rel_raw: String = row.get("rel").unwrap_or_default();
+                        let Some(rel) = RelType::from_wire(&rel_raw) else {
+                            continue;
+                        };
+                        if name.is_empty() {
+                            continue;
+                        }
+                        out.push(TypeRow {
+                            name,
+                            file: row.get("file").unwrap_or_default(),
+                            rel,
+                        });
                     }
-                    out.push(TypeRow {
-                        name,
-                        file: row.get("file").unwrap_or_default(),
-                        rel,
-                    });
-                }
-                Ok::<_, SourceError>(out)
-            };
+                    Ok::<_, SourceError>(out)
+                };
             self.bounded(fut, "types").await
         }
     }
@@ -819,29 +835,27 @@ impl NeighborhoodSource for LiveSource<'_> {
             .param("name", name.to_owned())
             .param("ws", workspace.to_owned());
         async move {
-            let fut = async {
-                let mut rows = self
-                    .graph
-                    .execute(q)
-                    .await
-                    .map_err(|e| SourceError::new("bolt_query", format!("siblings: {e}")))?;
-                let mut out = Vec::new();
-                while let Some(row) = rows
-                    .next()
-                    .await
-                    .map_err(|e| SourceError::new("bolt_decode", format!("siblings decode: {e}")))?
-                {
-                    let name: String = row.get("name").unwrap_or_default();
-                    if name.is_empty() {
-                        continue;
+            let fut =
+                async {
+                    let mut rows =
+                        self.graph.execute(q).await.map_err(|e| {
+                            SourceError::new("bolt_query", format!("siblings: {e}"))
+                        })?;
+                    let mut out = Vec::new();
+                    while let Some(row) = rows.next().await.map_err(|e| {
+                        SourceError::new("bolt_decode", format!("siblings decode: {e}"))
+                    })? {
+                        let name: String = row.get("name").unwrap_or_default();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        out.push(NeighborRow {
+                            name,
+                            file: row.get("file").unwrap_or_default(),
+                        });
                     }
-                    out.push(NeighborRow {
-                        name,
-                        file: row.get("file").unwrap_or_default(),
-                    });
-                }
-                Ok::<_, SourceError>(out)
-            };
+                    Ok::<_, SourceError>(out)
+                };
             self.bounded(fut, "siblings").await
         }
     }
@@ -895,7 +909,10 @@ pub async fn handle_symbol_context(payload: Value) -> Reply {
         .and_then(Value::as_str)
         .or_else(|| payload.get("symbol").and_then(Value::as_str))
         .unwrap_or("");
-    let hops = payload.get("hops").and_then(Value::as_u64).map(|h| h as u32);
+    let hops = payload
+        .get("hops")
+        .and_then(Value::as_u64)
+        .map(|h| h as u32);
     let include_body = payload
         .get("include_body")
         .and_then(Value::as_bool)
@@ -1046,7 +1063,11 @@ fn beta() {}
 
     #[test]
     fn project_siblings_dedups_sorts_and_labels() {
-        let rows = vec![nrow("zeta", "x.rs"), nrow("alpha", "x.rs"), nrow("zeta", "x.rs")];
+        let rows = vec![
+            nrow("zeta", "x.rs"),
+            nrow("alpha", "x.rs"),
+            nrow("zeta", "x.rs"),
+        ];
         let out = project_siblings(rows);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].name, "alpha");
@@ -1057,7 +1078,10 @@ fn beta() {}
     #[test]
     fn focal_kind_priority_matches_slice_b() {
         assert_eq!(
-            focal_kind(&[trow("m", "", RelType::Imports), trow("B", "", RelType::Inherits)]),
+            focal_kind(&[
+                trow("m", "", RelType::Imports),
+                trow("B", "", RelType::Inherits)
+            ]),
             NodeKind::Module,
             "import endpoint wins"
         );
@@ -1129,7 +1153,8 @@ fn beta() {}
             &self,
             _ws: &str,
             frontier: &[String],
-        ) -> impl std::future::Future<Output = Result<Vec<NeighborRow>, SourceError>> + Send {
+        ) -> impl std::future::Future<Output = Result<Vec<NeighborRow>, SourceError>> + Send
+        {
             // Reverse adjacency: who calls any frontier name.
             let mut out: Vec<NeighborRow> = Vec::new();
             for (caller, callees) in &self.calls {
@@ -1144,7 +1169,8 @@ fn beta() {}
             &self,
             _ws: &str,
             frontier: &[String],
-        ) -> impl std::future::Future<Output = Result<Vec<NeighborRow>, SourceError>> + Send {
+        ) -> impl std::future::Future<Output = Result<Vec<NeighborRow>, SourceError>> + Send
+        {
             let mut out: Vec<NeighborRow> = Vec::new();
             for f in frontier {
                 for callee in self.calls.get(f).into_iter().flatten() {
@@ -1167,7 +1193,8 @@ fn beta() {}
             &self,
             _ws: &str,
             name: &str,
-        ) -> impl std::future::Future<Output = Result<Vec<NeighborRow>, SourceError>> + Send {
+        ) -> impl std::future::Future<Output = Result<Vec<NeighborRow>, SourceError>> + Send
+        {
             let s = self.siblings.get(name).cloned().unwrap_or_default();
             async move { Ok(s) }
         }
@@ -1183,7 +1210,9 @@ fn beta() {}
         calls.insert("callee1".into(), vec!["callee2".into()]);
 
         let mut files: HashMap<String, String> = HashMap::new();
-        for n in ["focal", "caller1", "caller2", "callee1", "callee2", "callee3"] {
+        for n in [
+            "focal", "caller1", "caller2", "callee1", "callee2", "callee3",
+        ] {
             files.insert(n.into(), format!("C:/ws/src/{n}.rs"));
         }
 
@@ -1199,7 +1228,10 @@ fn beta() {}
         let mut siblings: HashMap<String, Vec<NeighborRow>> = HashMap::new();
         siblings.insert(
             "focal".into(),
-            vec![nrow("neighbor_a", "C:/ws/src/focal.rs"), nrow("neighbor_b", "C:/ws/src/focal.rs")],
+            vec![
+                nrow("neighbor_a", "C:/ws/src/focal.rs"),
+                nrow("neighbor_b", "C:/ws/src/focal.rs"),
+            ],
         );
 
         MockSource {
@@ -1244,7 +1276,9 @@ fn beta() {}
             .unwrap()
             .unwrap();
 
-        let at = |v: &[RelatedSymbol], name: &str| v.iter().find(|r| r.name == name).map(|r| r.hop_distance);
+        let at = |v: &[RelatedSymbol], name: &str| {
+            v.iter().find(|r| r.name == name).map(|r| r.hop_distance)
+        };
         // callees: callee1/callee3 @1, callee2 @2 (via callee1). Dry at 3.
         assert_eq!(at(&ctx.callees, "callee1"), Some(1));
         assert_eq!(at(&ctx.callees, "callee3"), Some(1));
@@ -1340,8 +1374,14 @@ fn beta() {}
 
         // 10 direct + 50 indirect callees reachable within 3 hops.
         assert_eq!(ctx.callees.len(), 60);
-        assert_eq!(ctx.callees.iter().filter(|r| r.hop_distance == 1).count(), 10);
-        assert_eq!(ctx.callees.iter().filter(|r| r.hop_distance == 2).count(), 50);
+        assert_eq!(
+            ctx.callees.iter().filter(|r| r.hop_distance == 1).count(),
+            10
+        );
+        assert_eq!(
+            ctx.callees.iter().filter(|r| r.hop_distance == 2).count(),
+            50
+        );
         // 3 caller hops reachable within the budget.
         assert_eq!(ctx.callers.len(), 3);
         assert_eq!(ctx.hops_traversed, 3);
@@ -1362,6 +1402,9 @@ fn beta() {}
             .unwrap()
             .unwrap();
         assert_eq!(ctx.symbol.line, 1);
-        assert_eq!(ctx.symbol.body.as_deref(), Some("fn focal() {\n    work();\n}"));
+        assert_eq!(
+            ctx.symbol.body.as_deref(),
+            Some("fn focal() {\n    work();\n}")
+        );
     }
 }

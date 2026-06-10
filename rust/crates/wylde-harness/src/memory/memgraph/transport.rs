@@ -93,7 +93,13 @@ impl MemgraphTraversal for Client {
         Client::stats(self).await
     }
 
-    async fn upsert_edge(&self, source: &str, label: &str, target: &str, weight_delta: f64) -> Reply {
+    async fn upsert_edge(
+        &self,
+        source: &str,
+        label: &str,
+        target: &str,
+        weight_delta: f64,
+    ) -> Reply {
         Client::upsert_edge(self, source, label, target, weight_delta).await
     }
 }
@@ -111,7 +117,13 @@ impl MemgraphTraversal for BoltClient {
         BoltClient::stats(self).await
     }
 
-    async fn upsert_edge(&self, source: &str, label: &str, target: &str, weight_delta: f64) -> Reply {
+    async fn upsert_edge(
+        &self,
+        source: &str,
+        label: &str,
+        target: &str,
+        weight_delta: f64,
+    ) -> Reply {
         BoltClient::upsert_edge(self, source, label, target, weight_delta).await
     }
 }

@@ -82,7 +82,11 @@ pub async fn handle_set_overrides(payload: Value) -> Reply {
         return Reply::err_msg("bad_request", "model is required");
     };
     let profile = profile_of(&payload);
-    let Some(key) = payload.get("key").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+    let Some(key) = payload
+        .get("key")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    else {
         return Reply::err_msg("bad_request", "key is required");
     };
     // `value` may be any JSON scalar (number / string). Absent value is a
@@ -106,7 +110,11 @@ pub async fn handle_clear_override(payload: Value) -> Reply {
         return Reply::err_msg("bad_request", "model is required");
     };
     let profile = profile_of(&payload);
-    let Some(key) = payload.get("key").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+    let Some(key) = payload
+        .get("key")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    else {
         return Reply::err_msg("bad_request", "key is required");
     };
     let overrides = ollama_overrides::clear_override(&profile, &model, key);
@@ -173,7 +181,10 @@ mod tests {
     async fn get_overrides_requires_model() {
         let r = handle_get_overrides(json!({})).await;
         assert!(!r.ok);
-        assert_eq!(r.error.as_ref().map(|e| e.code.as_str()), Some("bad_request"));
+        assert_eq!(
+            r.error.as_ref().map(|e| e.code.as_str()),
+            Some("bad_request")
+        );
     }
 
     #[tokio::test]
@@ -203,13 +214,19 @@ mod tests {
         // Toggle off persists.
         let set = handle_encryption_set(json!({ "enabled": false })).await;
         assert_eq!(set.data["enabled"], false);
-        assert_eq!(handle_encryption_get(json!({})).await.data["enabled"], false);
+        assert_eq!(
+            handle_encryption_get(json!({})).await.data["enabled"],
+            false
+        );
         // Back on.
         handle_encryption_set(json!({ "enabled": true })).await;
         assert_eq!(handle_encryption_get(json!({})).await.data["enabled"], true);
         // Missing field → bad_request.
         let bad = handle_encryption_set(json!({})).await;
-        assert_eq!(bad.error.as_ref().map(|e| e.code.as_str()), Some("bad_request"));
+        assert_eq!(
+            bad.error.as_ref().map(|e| e.code.as_str()),
+            Some("bad_request")
+        );
 
         std::env::remove_var("WYLDE_DATA_DIR");
     }

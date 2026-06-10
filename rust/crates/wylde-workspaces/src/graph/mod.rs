@@ -36,14 +36,12 @@ use serde::{Deserialize, Serialize};
 
 pub use bolt::{BoltClient, BoltConfig, DEFAULT_BOLT_URL};
 pub use neighborhood::{ContextRel, RelatedSymbol, Symbol, SymbolContext};
-pub use projection::{
-    Cluster, Edge, Node, NodeKind, NodeStyle, Position, RelType, WorkspaceGraph,
-};
-pub use symbol_index::{SymbolEntry, SymbolIndex, SymbolMatch, SymbolsFindResponse};
+pub use projection::{Cluster, Edge, Node, NodeKind, NodeStyle, Position, RelType, WorkspaceGraph};
 pub use schema::{
     relation_type_is_valid, NODE_CHUNK, NODE_ENTITY, REL_CALLS, REL_CONFIGURES, REL_EXPOSES,
     REL_IMPORTS, REL_INHERITS, REL_MENTIONED_IN,
 };
+pub use symbol_index::{SymbolEntry, SymbolIndex, SymbolMatch, SymbolsFindResponse};
 
 /// One typed Entity→Entity edge endpoint pair for a `relate` write.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

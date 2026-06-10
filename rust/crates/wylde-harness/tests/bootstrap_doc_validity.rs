@@ -64,8 +64,8 @@ fn bootstrap_doc_path() -> PathBuf {
 
 fn read_appendix() -> String {
     let path = bootstrap_doc_path();
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     // The appendix is everything after the "Tool / action reference"
     // heading.
     let heading_idx = text

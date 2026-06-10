@@ -192,7 +192,10 @@ fn build_declarations() -> (HashMap<String, Kind>, HashMap<String, Vec<String>>)
                     overrides.entry(model_id.clone()).or_insert(kind);
                 }
             }
-            required_by.entry(model_id).or_default().push(service.clone());
+            required_by
+                .entry(model_id)
+                .or_default()
+                .push(service.clone());
         }
     }
     (overrides, required_by)
@@ -201,9 +204,7 @@ fn build_declarations() -> (HashMap<String, Kind>, HashMap<String, Vec<String>>)
 /// Return cached `(overrides, required_by)` from all service manifests.
 /// Cached on the manifests' `(path, mtime, size)` signature, same
 /// template as the HF scanner. `force=true` rebuilds.
-pub fn load_declarations(
-    force: bool,
-) -> (HashMap<String, Kind>, HashMap<String, Vec<String>>) {
+pub fn load_declarations(force: bool) -> (HashMap<String, Kind>, HashMap<String, Vec<String>>) {
     let paths = candidate_manifests();
     let sig = scan_signature(&paths);
     let mut guard = match CACHE.lock() {
@@ -281,9 +282,7 @@ mod tests {
         std::fs::create_dir_all(at.parent().unwrap()).unwrap();
         let arr: Vec<_> = models
             .iter()
-            .map(|(id, kind)| {
-                serde_json::json!({"id": id, "kind": kind, "required": true})
-            })
+            .map(|(id, kind)| serde_json::json!({"id": id, "kind": kind, "required": true}))
             .collect();
         let m = serde_json::json!({
             "name": service,

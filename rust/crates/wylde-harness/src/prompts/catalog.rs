@@ -68,12 +68,19 @@ pub fn entry_for(prompt_id: &str) -> Option<&'static PromptEntry> {
 /// The catalog default text for `prompt_id` (empty string for unknown ids,
 /// mirroring the Python `default_for`).
 pub fn default_for(prompt_id: &str) -> &'static str {
-    entry_for(prompt_id).map(|e| e.default.as_str()).unwrap_or("")
+    entry_for(prompt_id)
+        .map(|e| e.default.as_str())
+        .unwrap_or("")
 }
 
 /// Every catalog id, in catalog order.
 pub fn all_ids() -> Vec<&'static str> {
-    catalog().file.catalog.iter().map(|e| e.id.as_str()).collect()
+    catalog()
+        .file
+        .catalog
+        .iter()
+        .map(|e| e.id.as_str())
+        .collect()
 }
 
 /// The groups as the wire-shape JSON array (`[{id,label,blurb}]`).

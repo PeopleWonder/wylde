@@ -221,7 +221,10 @@ mod tests {
         let _ = register_turn(id.clone(), "c1".into());
 
         assert!(cancel_turn(&id), "first cancel returns true");
-        assert!(!cancel_turn(&id), "second cancel is a no-op (already cancelled)");
+        assert!(
+            !cancel_turn(&id),
+            "second cancel is a no-op (already cancelled)"
+        );
 
         let handle = get_turn(&id).expect("still in registry");
         assert!(handle.is_cancelled());

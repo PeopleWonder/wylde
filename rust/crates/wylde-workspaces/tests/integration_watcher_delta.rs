@@ -98,10 +98,15 @@ async fn await_delta(
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        assert!(!remaining.is_zero(), "no {action} delta for {file_suffix} within budget");
+        assert!(
+            !remaining.is_zero(),
+            "no {action} delta for {file_suffix} within budget"
+        );
         match tokio::time::timeout(remaining, rx.recv()).await {
-            Ok(Ok(ev)) if ev.action == action && ev.path.ends_with(file_suffix) => return ev.took_ms,
-            Ok(Ok(_)) => continue, // some other delta — keep waiting
+            Ok(Ok(ev)) if ev.action == action && ev.path.ends_with(file_suffix) => {
+                return ev.took_ms
+            }
+            Ok(Ok(_)) => continue,  // some other delta — keep waiting
             Ok(Err(_)) => continue, // lagged/closed — keep trying until deadline
             Err(_) => panic!("no {action} delta for {file_suffix} within budget"),
         }
@@ -152,7 +157,10 @@ async fn watcher_create_modify_delete_round_trip_within_budget() {
     budget_samples.push(took);
     eprintln!("[watcher-it] modify delta took {took:.1}ms");
     let calls = poll_until(|| calls_count(&g, &ws, "foo", "bar"), |n| n > 0).await;
-    assert!(calls > 0, "expected CALLS foo→bar after modify (got {calls})");
+    assert!(
+        calls > 0,
+        "expected CALLS foo→bar after modify (got {calls})"
+    );
 
     // ── 3. DELETE: foo (this workspace) is gone ─────────────────────────────
     std::fs::remove_file(&file).unwrap();
@@ -160,7 +168,10 @@ async fn watcher_create_modify_delete_round_trip_within_budget() {
     budget_samples.push(took);
     eprintln!("[watcher-it] delete delta took {took:.1}ms");
     let foo_after = poll_until(|| entity_count(&g, &ws, "foo"), |n| n == 0).await;
-    assert_eq!(foo_after, 0, "expected foo gone after delete (got {foo_after})");
+    assert_eq!(
+        foo_after, 0,
+        "expected foo gone after delete (got {foo_after})"
+    );
 
     // ── Budget: every watcher-to-graph delta within 500ms ───────────────────
     let p_max = budget_samples.iter().cloned().fold(0.0_f64, f64::max);

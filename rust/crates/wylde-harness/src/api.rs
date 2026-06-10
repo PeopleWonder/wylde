@@ -480,10 +480,7 @@ impl HarnessApi for DefaultHarnessApi {
         let Some(query) = require_string(&payload, "query") else {
             return Reply::err_msg("bad_request", "query is required");
         };
-        let limit = payload
-            .get("limit")
-            .and_then(Value::as_u64)
-            .unwrap_or(5) as usize;
+        let limit = payload.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
         let decay = payload.get("decay_days").and_then(Value::as_f64);
         match long_term::text_search(&query, limit, decay).await {
             Ok(hits) => Reply::ok(json!({
@@ -1031,7 +1028,10 @@ mod tests {
             rows.iter().any(|r| r["resource_type"] == "memory"),
             "describe should surface the memory resource through the full pipeline",
         );
-        assert_eq!(reply.data["data"]["count"].as_u64().unwrap(), rows.len() as u64);
+        assert_eq!(
+            reply.data["data"]["count"].as_u64().unwrap(),
+            rows.len() as u64
+        );
         crate::tooling::consent::set_bypass_for_tests(false);
     }
 
@@ -1206,11 +1206,11 @@ mod tests {
     async fn long_term_delete_removes_existing_record() {
         let _env = TestEnv::new();
         let api = DefaultHarnessApi;
-        let saved = api.memory_long_term_save(json!({"body": "to delete"})).await;
-        let id = saved.data["id"].as_str().unwrap().to_owned();
-        let del = api
-            .memory_long_term_delete(json!({"id": id.clone()}))
+        let saved = api
+            .memory_long_term_save(json!({"body": "to delete"}))
             .await;
+        let id = saved.data["id"].as_str().unwrap().to_owned();
+        let del = api.memory_long_term_delete(json!({"id": id.clone()})).await;
         assert_eq!(del.data["ok"], true);
         assert_eq!(del.data["id"], id);
 
@@ -1265,10 +1265,7 @@ mod tests {
         assert!(reply.ok);
         let chain = reply.data["chain"].as_array().unwrap();
         assert_eq!(chain.len(), 2);
-        let bodies: Vec<&str> = chain
-            .iter()
-            .map(|v| v["body"].as_str().unwrap())
-            .collect();
+        let bodies: Vec<&str> = chain.iter().map(|v| v["body"].as_str().unwrap()).collect();
         assert_eq!(bodies, vec!["v1", "v2"]);
     }
 
@@ -1377,9 +1374,7 @@ mod tests {
         consent_test_scope(|| async {
             let api = DefaultHarnessApi;
             let _ = api
-                .consent_respond(
-                    json!({"tool_id": "fs.read_file", "decision": "denied"}),
-                )
+                .consent_respond(json!({"tool_id": "fs.read_file", "decision": "denied"}))
                 .await;
             let listed = api.consent_list(Value::Null).await;
             assert_eq!(listed.data["tools"]["fs.read_file"], "denied");
@@ -1546,9 +1541,7 @@ mod tests {
     /// Drain a single pending event from the receiver. Skips any
     /// initial-snapshot frames whose ids don't match `id`.
     async fn next_chunk(
-        rx: &mut tokio::sync::mpsc::Receiver<
-            Result<Value, wylde_shared::ipc::IpcError>,
-        >,
+        rx: &mut tokio::sync::mpsc::Receiver<Result<Value, wylde_shared::ipc::IpcError>>,
     ) -> Value {
         let frame = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
             .await

@@ -28,9 +28,8 @@ pub fn persona_path(workspace_id: &str) -> std::path::PathBuf {
 /// Load the persona override for a workspace. Returns an empty override
 /// when the file is absent or unreadable. Decrypts at rest (OI-14).
 pub fn load(workspace_id: &str) -> PersonaOverride {
-    let text =
-        wylde_shared::encryption::read_to_string_at_rest(&persona_path(workspace_id))
-            .unwrap_or_default();
+    let text = wylde_shared::encryption::read_to_string_at_rest(&persona_path(workspace_id))
+        .unwrap_or_default();
     PersonaOverride { text }
 }
 

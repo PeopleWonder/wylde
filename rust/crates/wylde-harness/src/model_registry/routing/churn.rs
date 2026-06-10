@@ -8,9 +8,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::model_registry::routing::profiles::{
-    get_profile, read_profiles, write_profiles,
-};
+use crate::model_registry::routing::profiles::{get_profile, read_profiles, write_profiles};
 use crate::model_registry::routing::slots::select_model;
 use crate::model_registry::routing::{
     load_json, pending_swaps_file, save_json, swaps_file, FALLBACK_DAYS, INCUMBENT_BONUS,
@@ -38,7 +36,9 @@ pub(crate) fn queue_swap_prompt(
 ) {
     let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut swaps = load_pending_swaps();
-    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.f").to_string();
+    let now = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.f")
+        .to_string();
     swaps.insert(
         capability.to_owned(),
         json!({
@@ -68,11 +68,7 @@ fn round1(v: f64) -> f64 {
 
 // ── Swap eligibility & promotion ──────────────────────────────────────
 
-fn can_promote(
-    candidate: &Value,
-    incumbent: &Value,
-    capability: &str,
-) -> Result<(), String> {
+fn can_promote(candidate: &Value, incumbent: &Value, capability: &str) -> Result<(), String> {
     let runs = candidate
         .get("benchmark_runs")
         .and_then(Value::as_u64)
@@ -100,9 +96,7 @@ fn can_promote(
     }
     let recent_count = count_recent_swaps(capability);
     if recent_count >= MAX_SWAP_PER_WEEK {
-        return Err(format!(
-            "Swap limit reached for {capability:?} this week"
-        ));
+        return Err(format!("Swap limit reached for {capability:?} this week"));
     }
     Ok(())
 }
@@ -167,7 +161,9 @@ pub fn promote_model(name: &str, capability: &str, force: bool) -> Value {
             incumbent_name = Some(incumb);
         }
     }
-    let now_iso = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.f").to_string();
+    let now_iso = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.f")
+        .to_string();
     let fallback_until = (chrono::Utc::now() + chrono::Duration::days(FALLBACK_DAYS))
         .format("%Y-%m-%dT%H:%M:%S%.f")
         .to_string();
@@ -197,10 +193,7 @@ pub fn promote_model(name: &str, capability: &str, force: bool) -> Value {
         profiles
             .entry(name.to_owned())
             .or_insert_with(|| candidate.clone());
-        if let Some(map) = profiles
-            .get_mut(name)
-            .and_then(Value::as_object_mut)
-        {
+        if let Some(map) = profiles.get_mut(name).and_then(Value::as_object_mut) {
             map.insert("status".to_owned(), Value::String("active".to_owned()));
             let existing_first = map
                 .get("first_active_at")
@@ -265,12 +258,12 @@ pub fn promote_model(name: &str, capability: &str, force: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_registry::routing::profiles::{
-        test_support::TestEnv, upsert_profile,
-    };
+    use crate::model_registry::routing::profiles::{test_support::TestEnv, upsert_profile};
 
     fn now_iso() -> String {
-        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.f").to_string()
+        chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.f")
+            .to_string()
     }
 
     #[test]
@@ -292,13 +285,11 @@ mod tests {
         let p = get_profile("newcomer").unwrap();
         assert_eq!(p["status"], "active");
         assert!(p["first_active_at"].is_string());
-        assert!(
-            p["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|c| c.as_str() == Some("code"))
-        );
+        assert!(p["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c.as_str() == Some("code")));
     }
 
     #[test]

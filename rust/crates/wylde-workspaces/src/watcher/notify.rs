@@ -77,30 +77,40 @@ pub fn translate(event: &Event) -> Vec<RawChange> {
 }
 
 fn upsert_all(paths: &[PathBuf]) -> Vec<RawChange> {
-    paths.iter().map(|p| (p.clone(), ChangeKind::Upsert)).collect()
+    paths
+        .iter()
+        .map(|p| (p.clone(), ChangeKind::Upsert))
+        .collect()
 }
 
 fn remove_all(paths: &[PathBuf]) -> Vec<RawChange> {
-    paths.iter().map(|p| (p.clone(), ChangeKind::Remove)).collect()
+    paths
+        .iter()
+        .map(|p| (p.clone(), ChangeKind::Remove))
+        .collect()
 }
 
 /// Build a recursive watcher over `folder`, forwarding every translated raw
 /// change into `tx`. The returned watcher must be kept alive — dropping it
 /// stops the OS-level watch. The notify callback runs on notify's own thread;
 /// an unbounded tokio sender is safe to use from there.
-pub fn build_watcher(folder: &str, tx: UnboundedSender<RawChange>) -> ::notify::Result<RecommendedWatcher> {
-    let mut watcher = ::notify::recommended_watcher(move |res: ::notify::Result<Event>| match res {
-        Ok(event) => {
-            for change in translate(&event) {
-                // A closed receiver means the watch is being torn down; stop
-                // forwarding (the watcher itself is about to be dropped).
-                if tx.send(change).is_err() {
-                    break;
+pub fn build_watcher(
+    folder: &str,
+    tx: UnboundedSender<RawChange>,
+) -> ::notify::Result<RecommendedWatcher> {
+    let mut watcher =
+        ::notify::recommended_watcher(move |res: ::notify::Result<Event>| match res {
+            Ok(event) => {
+                for change in translate(&event) {
+                    // A closed receiver means the watch is being torn down; stop
+                    // forwarding (the watcher itself is about to be dropped).
+                    if tx.send(change).is_err() {
+                        break;
+                    }
                 }
             }
-        }
-        Err(e) => tracing::debug!("workspaces.watcher: notify error: {e}"),
-    })?;
+            Err(e) => tracing::debug!("workspaces.watcher: notify error: {e}"),
+        })?;
     watcher.watch(Path::new(folder), RecursiveMode::Recursive)?;
     Ok(watcher)
 }

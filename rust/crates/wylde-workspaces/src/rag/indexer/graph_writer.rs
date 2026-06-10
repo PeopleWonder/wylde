@@ -241,7 +241,9 @@ where
 
     let up = sink.upsert(mem_chunks).await;
     if !up.ok {
-        outcome.error.get_or_insert_with(|| reply_err(&up, "upsert"));
+        outcome
+            .error
+            .get_or_insert_with(|| reply_err(&up, "upsert"));
         return outcome;
     }
 
@@ -277,11 +279,7 @@ struct FilePayloads {
 /// Attach a file's structural entities to its chunks by line range and
 /// build the typed-edge pairs. Pure — the unit-tested heart of the port,
 /// mirroring the retired N8N "Build Graph + Attach Entities" node.
-fn build_file_payloads(
-    workspace_id: &str,
-    reply: &Value,
-    file_chunks: &[&Chunk],
-) -> FilePayloads {
+fn build_file_payloads(workspace_id: &str, reply: &Value, file_chunks: &[&Chunk]) -> FilePayloads {
     let module = reply.get("module").and_then(Value::as_str).unwrap_or("");
     let language = reply.get("language").and_then(Value::as_str).unwrap_or("");
     let line_entities = flatten_line_entities(reply);
@@ -712,7 +710,11 @@ mod tests {
             ok: true,
         };
         let out = ingest_graph("ws-1", &chunks, &extractor, &sink).await;
-        assert!(out.error.as_deref().unwrap().contains("sidecar unavailable"));
+        assert!(out
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("sidecar unavailable"));
         assert_eq!(out.chunk_nodes, 0);
         assert!(sink.rec.lock().unwrap().upserts.is_empty(), "no sink calls");
     }
@@ -789,9 +791,18 @@ mod tests {
                 .collect()
         };
         let calls = edges("CALLS");
-        assert!(calls.contains(&("alpha".into(), "beta".into())), "{calls:?}");
-        assert!(calls.contains(&("hello".into(), "wave".into())), "{calls:?}");
-        assert!(calls.contains(&("gamma".into(), "alpha".into())), "{calls:?}");
+        assert!(
+            calls.contains(&("alpha".into(), "beta".into())),
+            "{calls:?}"
+        );
+        assert!(
+            calls.contains(&("hello".into(), "wave".into())),
+            "{calls:?}"
+        );
+        assert!(
+            calls.contains(&("gamma".into(), "alpha".into())),
+            "{calls:?}"
+        );
 
         let imports = edges("IMPORTS");
         // The Rust import strategy records the module *path prefix*:

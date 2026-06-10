@@ -152,7 +152,11 @@ mod tests {
     async fn dispatch(req: ResourceRequest) -> Value {
         let r = reg();
         let def = r.lookup("diff").expect("diff registered");
-        let handler = def.operations.get(&ResourceOp::Execute).expect("execute registered").clone();
+        let handler = def
+            .operations
+            .get(&ResourceOp::Execute)
+            .expect("execute registered")
+            .clone();
         let ctx = ToolContext::for_op("diff", ResourceOp::Execute, None);
         handler.call(req, cfg(), ctx).await.unwrap()
     }

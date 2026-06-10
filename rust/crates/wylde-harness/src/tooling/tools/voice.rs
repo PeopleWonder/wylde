@@ -60,10 +60,25 @@ pub fn register(reg: &mut Registry) {
          (phonemised in Rust via misaki-rs G2P) or an explicit `phonemes` \
          IPA string (takes precedence).",
         vec![
-            param("text", "string", false, "English text to speak (G2P'd to phonemes)."),
-            param("phonemes", "string", false, "Explicit IPA phoneme string (overrides text)."),
+            param(
+                "text",
+                "string",
+                false,
+                "English text to speak (G2P'd to phonemes).",
+            ),
+            param(
+                "phonemes",
+                "string",
+                false,
+                "Explicit IPA phoneme string (overrides text).",
+            ),
             param_default("voice", "string", "Kokoro voice name", json!("af_heart")),
-            param_default("speed", "number", "Playback rate multiplier [0.5, 2.0]", json!(1.0)),
+            param_default(
+                "speed",
+                "number",
+                "Playback rate multiplier [0.5, 2.0]",
+                json!(1.0),
+            ),
         ],
         false,
         |args, _| async move { run_synthesize(args).await },
@@ -93,10 +108,25 @@ pub fn register(reg: &mut Registry) {
          `phonemes`). Aggregator bridge — collects synthesize_start + \
          audio_chunks + synthesize_complete into one reply.",
         vec![
-            param("text", "string", false, "English text to speak (G2P'd to phonemes)."),
-            param("phonemes", "string", false, "Explicit IPA phoneme string (overrides text)."),
+            param(
+                "text",
+                "string",
+                false,
+                "English text to speak (G2P'd to phonemes).",
+            ),
+            param(
+                "phonemes",
+                "string",
+                false,
+                "Explicit IPA phoneme string (overrides text).",
+            ),
             param_default("voice", "string", "Kokoro voice name", json!("af_heart")),
-            param_default("speed", "number", "Playback rate multiplier [0.5, 2.0]", json!(1.0)),
+            param_default(
+                "speed",
+                "number",
+                "Playback rate multiplier [0.5, 2.0]",
+                json!(1.0),
+            ),
         ],
         false,
         |args, _| async move { run_synthesize_stream(args).await },
@@ -178,7 +208,11 @@ pub fn register(reg: &mut Registry) {
 // ── Handlers ─────────────────────────────────────────────────────────
 
 /// Forward a unary call to wylde-voice and return the envelope.
-async fn forward_unary(action: &'static str, payload: Value, op: &'static str) -> Result<Value, IpcError> {
+async fn forward_unary(
+    action: &'static str,
+    payload: Value,
+    op: &'static str,
+) -> Result<Value, IpcError> {
     let reply = wylde_shared::ipc::send_action(VOICE_SERVICE, action, payload).await;
     Ok(envelope_from_reply(&reply, op))
 }
@@ -372,10 +406,8 @@ mod tests {
 
     #[test]
     fn envelope_from_failed_reply_returns_error_status() {
-        let reply = wylde_shared::ipc::Reply::err(IpcError::new(
-            "pipe_connect",
-            "wylde-voice not running",
-        ));
+        let reply =
+            wylde_shared::ipc::Reply::err(IpcError::new("pipe_connect", "wylde-voice not running"));
         let env = envelope_from_reply(&reply, "mic.start");
         assert_eq!(env["status"], "error");
         let msg = env["error"].as_str().unwrap();

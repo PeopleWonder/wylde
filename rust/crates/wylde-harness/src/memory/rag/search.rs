@@ -133,8 +133,13 @@ pub async fn search_with_graph(
 ) -> Result<HybridResult, SearchError> {
     let vector_hits = search(store, query_vector, tier, vector_k)?;
     let candidate_values: Vec<Value> = vector_hits.iter().map(Hit::to_value).collect();
-    let graph_hits: Vec<GraphHit> = expand_by_graph(client, candidate_values.clone(), graph_opts).await;
-    let ranked = merge::merge_and_rank(&vector_hits, &graph_hits, vector_k.max(graph_hits.len()).min(50));
+    let graph_hits: Vec<GraphHit> =
+        expand_by_graph(client, candidate_values.clone(), graph_opts).await;
+    let ranked = merge::merge_and_rank(
+        &vector_hits,
+        &graph_hits,
+        vector_k.max(graph_hits.len()).min(50),
+    );
     Ok(HybridResult {
         vector_hits,
         graph_hits,
@@ -184,14 +189,7 @@ mod tests {
         )
         .unwrap();
         s.insert(
-            TierRecord::new(
-                "ep-b",
-                "ran tests last Tuesday",
-                "episodic",
-                0.5,
-                "",
-                "",
-            ),
+            TierRecord::new("ep-b", "ran tests last Tuesday", "episodic", 0.5, "", ""),
             Some(vec![0.0, 1.0, 0.0, 0.0]),
         )
         .unwrap();
@@ -213,7 +211,11 @@ mod tests {
     #[test]
     fn search_returns_top_k_sorted_by_similarity() {
         let env = TestEnv::new();
-        let store = seeded_store(&std::env::var_os("WYLDE_DATA_DIR").map(std::path::PathBuf::from).unwrap());
+        let store = seeded_store(
+            &std::env::var_os("WYLDE_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap(),
+        );
         let hits = search(&store, vec![1.0, 0.0, 0.0, 0.0], None, 3).unwrap();
         assert_eq!(hits[0].id, "core-a");
         assert_eq!(hits[1].id, "sem-c");
@@ -224,7 +226,11 @@ mod tests {
     #[test]
     fn search_filters_by_tier() {
         let _env = TestEnv::new();
-        let store = seeded_store(&std::env::var_os("WYLDE_DATA_DIR").map(std::path::PathBuf::from).unwrap());
+        let store = seeded_store(
+            &std::env::var_os("WYLDE_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap(),
+        );
         let hits = search(&store, vec![1.0, 0.0, 0.0, 0.0], Some("semantic"), 5).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "sem-c");
@@ -233,7 +239,11 @@ mod tests {
     #[test]
     fn search_unknown_tier_returns_error() {
         let _env = TestEnv::new();
-        let store = seeded_store(&std::env::var_os("WYLDE_DATA_DIR").map(std::path::PathBuf::from).unwrap());
+        let store = seeded_store(
+            &std::env::var_os("WYLDE_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap(),
+        );
         let err = search(&store, vec![1.0, 0.0, 0.0, 0.0], Some("garbage"), 5).unwrap_err();
         match err {
             SearchError::UnknownTier(s) => assert_eq!(s, "garbage"),
@@ -244,7 +254,11 @@ mod tests {
     #[test]
     fn search_logged_writes_miss_log_row() {
         let _env = TestEnv::new();
-        let store = seeded_store(&std::env::var_os("WYLDE_DATA_DIR").map(std::path::PathBuf::from).unwrap());
+        let store = seeded_store(
+            &std::env::var_os("WYLDE_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap(),
+        );
         // Query a direction that misses every seed (perpendicular).
         let _ = search_logged(
             &store,
@@ -279,15 +293,17 @@ mod tests {
         .unwrap();
         let misses_after = miss_log::list_misses(None, 100);
         assert!(misses_after.len() > misses.len());
-        assert!(misses_after
-            .iter()
-            .any(|r| r["query"] == "really no hits"));
+        assert!(misses_after.iter().any(|r| r["query"] == "really no hits"));
     }
 
     #[tokio::test]
     async fn search_with_graph_combines_vector_and_graph_hits() {
         let _env = TestEnv::new();
-        let store = seeded_store(&std::env::var_os("WYLDE_DATA_DIR").map(std::path::PathBuf::from).unwrap());
+        let store = seeded_store(
+            &std::env::var_os("WYLDE_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap(),
+        );
         // Mock memgraph returns one graph-only neighbour.
         let (client, _handle) = mock::new_with_static_ok(json!({
             "chunks": [{"id": "graph-1", "hops": 1, "via_entities": ["core-a"]}]
@@ -321,7 +337,11 @@ mod tests {
     #[tokio::test]
     async fn search_with_graph_keeps_vector_when_graph_empty() {
         let _env = TestEnv::new();
-        let store = seeded_store(&std::env::var_os("WYLDE_DATA_DIR").map(std::path::PathBuf::from).unwrap());
+        let store = seeded_store(
+            &std::env::var_os("WYLDE_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap(),
+        );
         let (client, _) = mock::new_with_static_ok(json!({"chunks": []}));
         let res = search_with_graph(
             &store,

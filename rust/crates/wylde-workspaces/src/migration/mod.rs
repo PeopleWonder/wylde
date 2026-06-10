@@ -229,18 +229,27 @@ mod tests {
     #[test]
     fn is_idempotent_via_marker() {
         let _env = TestEnv::new();
-        seed_flat("a", json!({"id": "a", "workspace_id": "w1", "messages": []}));
+        seed_flat(
+            "a",
+            json!({"id": "a", "workspace_id": "w1", "messages": []}),
+        );
         let first = run_pending();
         assert_eq!(first.moved, 1);
         assert!(marker_path().exists());
 
         // A new workspace conversation lands flat AFTER the marker — the
         // second pass must NOT touch it (marker short-circuits).
-        seed_flat("b", json!({"id": "b", "workspace_id": "w1", "messages": []}));
+        seed_flat(
+            "b",
+            json!({"id": "b", "workspace_id": "w1", "messages": []}),
+        );
         let second = run_pending();
         assert!(second.skipped, "second pass skipped via marker");
         assert_eq!(second.moved, 0);
-        assert!(flat_conversations_dir().join("b.json").exists(), "untouched after marker");
+        assert!(
+            flat_conversations_dir().join("b.json").exists(),
+            "untouched after marker"
+        );
     }
 
     #[test]
@@ -250,7 +259,10 @@ mod tests {
         assert!(!report.skipped);
         assert_eq!(report.scanned, 0);
         assert_eq!(report.moved, 0);
-        assert!(marker_path().exists(), "marker written even on empty install");
+        assert!(
+            marker_path().exists(),
+            "marker written even on empty install"
+        );
     }
 
     #[test]

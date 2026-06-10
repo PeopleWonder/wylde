@@ -53,8 +53,18 @@ pub fn register(reg: &mut Registry) {
          values the other verb tools accept — the legal values are not \
          in the always-on prompt.",
         vec![
-            param("resource_type", "string", false, "Resource to describe; omit for the full list"),
-            param_default("compact", "boolean", "Compact rows only (default true)", json!(true)),
+            param(
+                "resource_type",
+                "string",
+                false,
+                "Resource to describe; omit for the full list",
+            ),
+            param_default(
+                "compact",
+                "boolean",
+                "Compact rows only (default true)",
+                json!(true),
+            ),
         ],
         false,
         |args, _cfg| async move { run_describe(args) },
@@ -69,8 +79,18 @@ pub fn register(reg: &mut Registry) {
          optional filter object, limit, cursor. Use wylde_describe to see \
          a resource's filter fields.",
         vec![
-            param("resource_type", "string", true, "Resource type, e.g. 'memory', 'file'"),
-            param("filter", "object", false, "Filter predicate (resource-specific)"),
+            param(
+                "resource_type",
+                "string",
+                true,
+                "Resource type, e.g. 'memory', 'file'",
+            ),
+            param(
+                "filter",
+                "object",
+                false,
+                "Filter predicate (resource-specific)",
+            ),
             param("limit", "number", false, "Max rows"),
             param("cursor", "string", false, "Pagination cursor"),
         ],
@@ -100,7 +120,12 @@ pub fn register(reg: &mut Registry) {
          resource). Args: resource_type (required; '*' for all), query, \
          optional filter, limit.",
         vec![
-            param("resource_type", "string", true, "Resource type, or '*' for all searchable"),
+            param(
+                "resource_type",
+                "string",
+                true,
+                "Resource type, or '*' for all searchable",
+            ),
             param("query", "string", false, "Free-text query"),
             param("filter", "object", false, "Filter predicate"),
             param("limit", "number", false, "Max results"),
@@ -118,7 +143,12 @@ pub fn register(reg: &mut Registry) {
          (required), body object.",
         vec![
             param("resource_type", "string", true, "Resource type"),
-            param("body", "object", false, "Creation payload (resource-specific)"),
+            param(
+                "body",
+                "object",
+                false,
+                "Creation payload (resource-specific)",
+            ),
         ],
         true,
         |args, cfg| async move { run_verb(ResourceOp::Create, true, args, cfg).await },
@@ -163,7 +193,12 @@ pub fn register(reg: &mut Registry) {
          (required), optional params object.",
         vec![
             param("resource_type", "string", true, "Resource type"),
-            param("action", "string", false, "Sub-action selector, e.g. 'preload'"),
+            param(
+                "action",
+                "string",
+                false,
+                "Sub-action selector, e.g. 'preload'",
+            ),
             param("params", "object", false, "Action parameters"),
         ],
         true,
@@ -264,9 +299,7 @@ async fn run_search(args: Value, cfg: &'static Config) -> Result<Value, IpcError
                     let ctx = ToolContext::for_op(t, ResourceOp::Search, None);
                     match handler.call(req, cfg, ctx).await {
                         Ok(v) => results.push(json!({"resource_type": t, "result": v})),
-                        Err(e) => {
-                            results.push(json!({"resource_type": t, "error": e.message}))
-                        }
+                        Err(e) => results.push(json!({"resource_type": t, "error": e.message})),
                     }
                 }
             }
@@ -393,7 +426,10 @@ mod tests {
             .iter()
             .map(|r| r["resource_type"].as_str().unwrap())
             .collect();
-        assert!(types.contains(&"memory"), "describe should list memory; got {types:?}");
+        assert!(
+            types.contains(&"memory"),
+            "describe should list memory; got {types:?}"
+        );
         assert_eq!(out["count"].as_u64().unwrap(), types.len() as u64);
     }
 
@@ -415,9 +451,14 @@ mod tests {
 
     #[tokio::test]
     async fn list_unknown_resource_returns_not_found() {
-        let out = run_verb(ResourceOp::List, false, json!({"resource_type": "nope"}), cfg())
-            .await
-            .unwrap();
+        let out = run_verb(
+            ResourceOp::List,
+            false,
+            json!({"resource_type": "nope"}),
+            cfg(),
+        )
+        .await
+        .unwrap();
         assert_eq!(out["status"], "not_found");
         assert_eq!(out["op"], "list");
     }
@@ -442,8 +483,16 @@ mod tests {
         for verb_mode in [false, true] {
             let prompt = crate::turn::prompt::build_system_prompt(&catalog, verb_mode);
             let tools = crate::turn::prompt::build_tools_field(&catalog, verb_mode);
-            for id in ["wylde_describe", "wylde_list", "wylde_search", "wylde_delete"] {
-                assert!(prompt.contains(id), "system prompt should advertise {id} (verb_mode={verb_mode})");
+            for id in [
+                "wylde_describe",
+                "wylde_list",
+                "wylde_search",
+                "wylde_delete",
+            ] {
+                assert!(
+                    prompt.contains(id),
+                    "system prompt should advertise {id} (verb_mode={verb_mode})"
+                );
                 assert!(
                     tools.iter().any(|t| t["function"]["name"] == id),
                     "native tools field should advertise {id} (verb_mode={verb_mode})"
@@ -470,10 +519,21 @@ mod tests {
         // voice device triggers only). The former 11 "awaiting-migration"
         // tools (ollama×4, time×2, diff×1, voice transcribe/synthesize×4)
         // are now resource-backed and retired. See docs/wylde-phase6-cutover.md.
-        assert_eq!(after.len(), 12, "verb-mode catalog size changed: {:?}",
-            after.iter().filter_map(|t| t["function"]["name"].as_str()).collect::<Vec<_>>());
-        assert!(before.len() > after.len(), "cutover must shrink the catalog: before={} after={}",
-            before.len(), after.len());
+        assert_eq!(
+            after.len(),
+            12,
+            "verb-mode catalog size changed: {:?}",
+            after
+                .iter()
+                .filter_map(|t| t["function"]["name"].as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            before.len() > after.len(),
+            "cutover must shrink the catalog: before={} after={}",
+            before.len(),
+            after.len()
+        );
 
         // Every advertised tool is either a verb or a known survivor —
         // no resource-backed named tool leaked through.
@@ -481,18 +541,40 @@ mod tests {
             .iter()
             .filter_map(|t| t["function"]["name"].as_str().map(str::to_owned))
             .collect();
-        for retired in ["memory.search", "rag.ask", "meta.graph_query", "fs.read_file",
-                        "search.code_search", "meta.tool_search",
-                        // newly retired in 4b:
-                        "ollama.list_loaded_models", "ollama.evict_model",
-                        "time.now", "time.format", "diff.show_diff",
-                        "voice.transcribe", "voice.synthesize_stream"] {
-            assert!(!names.contains(&retired.to_owned()), "{retired} should be retired: {names:?}");
+        for retired in [
+            "memory.search",
+            "rag.ask",
+            "meta.graph_query",
+            "fs.read_file",
+            "search.code_search",
+            "meta.tool_search",
+            // newly retired in 4b:
+            "ollama.list_loaded_models",
+            "ollama.evict_model",
+            "time.now",
+            "time.format",
+            "diff.show_diff",
+            "voice.transcribe",
+            "voice.synthesize_stream",
+        ] {
+            assert!(
+                !names.contains(&retired.to_owned()),
+                "{retired} should be retired: {names:?}"
+            );
         }
         // Only the verbs and the 4 imperative voice device tools survive.
-        for survivor in ["wylde_search", "wylde_execute", "voice.mic.start",
-                         "voice.mic.stop", "voice.wakeword.start", "voice.wakeword.stop"] {
-            assert!(names.contains(&survivor.to_owned()), "{survivor} should survive: {names:?}");
+        for survivor in [
+            "wylde_search",
+            "wylde_execute",
+            "voice.mic.start",
+            "voice.mic.stop",
+            "voice.wakeword.start",
+            "voice.wakeword.stop",
+        ] {
+            assert!(
+                names.contains(&survivor.to_owned()),
+                "{survivor} should survive: {names:?}"
+            );
         }
     }
 
@@ -506,31 +588,31 @@ mod tests {
         let filter = ToolsetFilter::all();
         // (resource_type, op that the retired named tool maps to)
         let pairs = [
-            ("memory", ResourceOp::Search),     // memory.search
-            ("memory", ResourceOp::Create),     // memory.long_term.save
-            ("memory", ResourceOp::Update),     // memory.update
-            ("memory", ResourceOp::Delete),     // memory.delete
-            ("fs_file", ResourceOp::Get),       // fs.read_file
-            ("fs_file", ResourceOp::Update),    // fs.edit_file / fs.write_file
-            ("fs_file", ResourceOp::Search),    // search.code_search
-            ("fs_dir", ResourceOp::Search),     // search.code_search_files
-            ("rag_chunk", ResourceOp::Search),  // rag.ask
-            ("rag_chunk", ResourceOp::Delete),  // rag.prune
-            ("rag", ResourceOp::Execute),       // rag.index / rag.reindex
-            ("rag_feedback", ResourceOp::Create), // rag.feedback
-            ("rag_miss", ResourceOp::List),     // rag.misses
+            ("memory", ResourceOp::Search),        // memory.search
+            ("memory", ResourceOp::Create),        // memory.long_term.save
+            ("memory", ResourceOp::Update),        // memory.update
+            ("memory", ResourceOp::Delete),        // memory.delete
+            ("fs_file", ResourceOp::Get),          // fs.read_file
+            ("fs_file", ResourceOp::Update),       // fs.edit_file / fs.write_file
+            ("fs_file", ResourceOp::Search),       // search.code_search
+            ("fs_dir", ResourceOp::Search),        // search.code_search_files
+            ("rag_chunk", ResourceOp::Search),     // rag.ask
+            ("rag_chunk", ResourceOp::Delete),     // rag.prune
+            ("rag", ResourceOp::Execute),          // rag.index / rag.reindex
+            ("rag_feedback", ResourceOp::Create),  // rag.feedback
+            ("rag_miss", ResourceOp::List),        // rag.misses
             ("rag_chunk_usage", ResourceOp::List), // rag.chunk_usage
-            ("rag_graph_stats", ResourceOp::Get), // rag.graph_stats
-            ("graph", ResourceOp::Search),      // meta.graph_query
+            ("rag_graph_stats", ResourceOp::Get),  // rag.graph_stats
+            ("graph", ResourceOp::Search),         // meta.graph_query
             // ── Slice 4b clusters ──
-            ("model", ResourceOp::List),        // ollama.list_loaded_models
-            ("model", ResourceOp::Create),      // ollama.preload_model
-            ("model", ResourceOp::Delete),      // ollama.evict_model
-            ("model", ResourceOp::Execute),     // ollama.auto_evict_lru
-            ("time", ResourceOp::Get),          // time.now
-            ("time", ResourceOp::Execute),      // time.format
-            ("diff", ResourceOp::Execute),      // diff.show_diff
-            ("voice", ResourceOp::Execute),     // voice.transcribe / synthesize (+stream)
+            ("model", ResourceOp::List),    // ollama.list_loaded_models
+            ("model", ResourceOp::Create),  // ollama.preload_model
+            ("model", ResourceOp::Delete),  // ollama.evict_model
+            ("model", ResourceOp::Execute), // ollama.auto_evict_lru
+            ("time", ResourceOp::Get),      // time.now
+            ("time", ResourceOp::Execute),  // time.format
+            ("diff", ResourceOp::Execute),  // diff.show_diff
+            ("voice", ResourceOp::Execute), // voice.transcribe / synthesize (+stream)
         ];
         for (rt, op) in pairs {
             let def = reg
@@ -564,6 +646,9 @@ mod tests {
             .iter()
             .map(|t| t.as_str().unwrap())
             .collect();
-        assert!(searched.contains(&"memory"), "fan-out should include memory; got {searched:?}");
+        assert!(
+            searched.contains(&"memory"),
+            "fan-out should include memory; got {searched:?}"
+        );
     }
 }

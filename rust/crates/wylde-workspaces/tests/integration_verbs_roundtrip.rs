@@ -27,7 +27,11 @@ fn unique_service_name() -> String {
 
 /// Spawn the service on `service_name`, with its data dir pointed at
 /// `data_dir`. Returns the child so the caller can shut it down.
-fn spawn_service(service_name: &str, data_dir: &std::path::Path, wylde_root: &std::path::Path) -> Child {
+fn spawn_service(
+    service_name: &str,
+    data_dir: &std::path::Path,
+    wylde_root: &std::path::Path,
+) -> Child {
     let bin = env!("CARGO_BIN_EXE_wylde-workspaces");
     Command::new(bin)
         .env("WYLDE_WORKSPACES_PIPE_NAME", service_name)
@@ -85,7 +89,9 @@ async fn all_relocated_verbs_round_trip_over_the_new_pipe() {
     let proj_b = tempfile::tempdir().expect("proj b");
 
     let mut child = spawn_service(&service_name, data_dir.path(), wylde_root.path());
-    let client = WorkspacesClient::new(std::path::PathBuf::from(format!(r"\\.\pipe\{service_name}")));
+    let client = WorkspacesClient::new(std::path::PathBuf::from(format!(
+        r"\\.\pipe\{service_name}"
+    )));
     await_ready(&client, &mut child).await;
 
     // ── create A → registered + active ──────────────────────────────────
@@ -126,11 +132,17 @@ async fn all_relocated_verbs_round_trip_over_the_new_pipe() {
     assert_eq!(upd["rag_enabled"], false);
 
     // ── set_persona A → enables persona ─────────────────────────────────
-    let sp = client.set_persona(&a_id, "Answer tersely.").await.expect("set_persona");
+    let sp = client
+        .set_persona(&a_id, "Answer tersely.")
+        .await
+        .expect("set_persona");
     assert_eq!(sp["ok"], true);
 
     // ── rag_query A → fail-soft empty hits (no index) ───────────────────
-    let rq = client.rag_query(&a_id, "anything", Some(3)).await.expect("rag_query");
+    let rq = client
+        .rag_query(&a_id, "anything", Some(3))
+        .await
+        .expect("rag_query");
     assert_eq!(rq["hits"], serde_json::json!([]));
 
     // ── reindex A → empty folder → ok, zero files ───────────────────────
@@ -145,7 +157,9 @@ async fn all_relocated_verbs_round_trip_over_the_new_pipe() {
     // Read back with a FRESH client: the first `client` cached `list_mru`
     // (30s read-through TTL per the verb table), so its view is intentionally
     // stale right after a mutation. A new client has an empty cache.
-    let fresh = WorkspacesClient::new(std::path::PathBuf::from(format!(r"\\.\pipe\{service_name}")));
+    let fresh = WorkspacesClient::new(std::path::PathBuf::from(format!(
+        r"\\.\pipe\{service_name}"
+    )));
     let after = fresh.list_mru().await.expect("list_mru after delete");
     let remaining: Vec<&str> = after["workspaces"]
         .as_array()
@@ -157,7 +171,10 @@ async fn all_relocated_verbs_round_trip_over_the_new_pipe() {
 
     // ── deleted A is truly gone: set_active(A) → not_found over the pipe ─
     match fresh.set_active(&a_id).await {
-        Err(e) => assert_eq!(e.code, "not_found", "deleted A should be not_found, got {e:?}"),
+        Err(e) => assert_eq!(
+            e.code, "not_found",
+            "deleted A should be not_found, got {e:?}"
+        ),
         Ok(v) => panic!("expected not_found for deleted A, got ok: {v}"),
     }
 
@@ -180,8 +197,9 @@ async fn slice_0c_notes_and_conversations_round_trip() {
     let proj = tempfile::tempdir().expect("proj");
 
     let mut child = spawn_service(&service_name, data_dir.path(), wylde_root.path());
-    let client =
-        WorkspacesClient::new(std::path::PathBuf::from(format!(r"\\.\pipe\{service_name}")));
+    let client = WorkspacesClient::new(std::path::PathBuf::from(format!(
+        r"\\.\pipe\{service_name}"
+    )));
     await_ready(&client, &mut child).await;
 
     // Register a workspace to scope the notes / conversations to.
@@ -193,7 +211,10 @@ async fn slice_0c_notes_and_conversations_round_trip() {
 
     // ── notes: add → list → update → delete (embedder is absent in the ──
     //    test env, so notes persist with an empty embedding — non-fatal). ─
-    let added = client.notes_add(&ws_id, "uses tokio").await.expect("notes.add");
+    let added = client
+        .notes_add(&ws_id, "uses tokio")
+        .await
+        .expect("notes.add");
     let note_id = added["id"].as_str().expect("note id").to_owned();
     assert_eq!(added["text"], "uses tokio");
 
@@ -220,7 +241,10 @@ async fn slice_0c_notes_and_conversations_round_trip() {
     assert_eq!(searched["count"], 1, "the one note ranks by recency");
 
     // propose returns a non-persisted candidate.
-    let proposed = client.notes_propose(&ws_id, "prefers Rust").await.expect("propose");
+    let proposed = client
+        .notes_propose(&ws_id, "prefers Rust")
+        .await
+        .expect("propose");
     assert_eq!(proposed["candidate"]["text"], "prefers Rust");
     assert_eq!(
         client.notes_list(&ws_id).await.unwrap()["count"],
@@ -228,7 +252,10 @@ async fn slice_0c_notes_and_conversations_round_trip() {
         "propose did not persist"
     );
 
-    let deleted = client.notes_delete(&ws_id, &note_id).await.expect("notes.delete");
+    let deleted = client
+        .notes_delete(&ws_id, &note_id)
+        .await
+        .expect("notes.delete");
     assert_eq!(deleted["ok"], true);
     assert_eq!(client.notes_list(&ws_id).await.unwrap()["count"], 0);
 
@@ -255,7 +282,10 @@ async fn slice_0c_notes_and_conversations_round_trip() {
     assert_eq!(convs["count"], 1);
     assert_eq!(convs["conversations"][0]["id"], "c1");
 
-    let got = client.conversations_get(&ws_id, "c1").await.expect("conv.get");
+    let got = client
+        .conversations_get(&ws_id, "c1")
+        .await
+        .expect("conv.get");
     assert_eq!(got["title"], "WS chat");
 
     // not_found surfaces over the pipe.
@@ -278,12 +308,18 @@ async fn slice_0c_notes_and_conversations_round_trip() {
         )
         .await
         .expect("conv.refresh_summary");
-    let summarised = client.conversations_get(&ws_id, "c1").await.expect("conv.get");
+    let summarised = client
+        .conversations_get(&ws_id, "c1")
+        .await
+        .expect("conv.get");
     assert_eq!(summarised["auto_summary"], "Greeting exchange.");
     assert_eq!(summarised["embedding"].as_array().unwrap().len(), 3);
     assert_eq!(summarised["updated_at"], 5, "re-summary must not reorder");
 
-    let del = client.conversations_delete(&ws_id, "c1").await.expect("conv.delete");
+    let del = client
+        .conversations_delete(&ws_id, "c1")
+        .await
+        .expect("conv.delete");
     assert_eq!(del["ok"], true);
     assert_eq!(client.conversations_list(&ws_id).await.unwrap()["count"], 0);
 

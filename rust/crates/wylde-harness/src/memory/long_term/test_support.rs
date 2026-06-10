@@ -44,7 +44,6 @@ impl TestEnv {
             prior,
         }
     }
-
 }
 
 impl Drop for TestEnv {

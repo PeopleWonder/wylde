@@ -203,7 +203,9 @@ mod tests {
                     assert_eq!(*phase, "11", "{id} should be tagged phase 11");
                 }
                 crate::tooling::registry::HandlerKind::Active(_) => {
-                    panic!("{id} should be Deferred — streaming subscriptions are not model-callable");
+                    panic!(
+                        "{id} should be Deferred — streaming subscriptions are not model-callable"
+                    );
                 }
             }
         }

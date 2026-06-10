@@ -158,7 +158,10 @@ mod tests {
 
     #[test]
     fn split_mcp_name_separates_extension_and_tool() {
-        assert_eq!(split_mcp_name("webcrawler.scrape"), ("webcrawler", "scrape"));
+        assert_eq!(
+            split_mcp_name("webcrawler.scrape"),
+            ("webcrawler", "scrape")
+        );
     }
 
     #[test]

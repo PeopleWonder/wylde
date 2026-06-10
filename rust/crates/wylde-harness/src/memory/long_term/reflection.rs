@@ -32,11 +32,11 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::entries::json_path;
 use super::{
     delete as long_term_delete, list_records as long_term_list, save as long_term_save,
     update as long_term_update, LongTermMemory,
 };
-use super::entries::json_path;
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
 
@@ -435,7 +435,9 @@ mod tests {
 
         let selected = select_inputs_long_term(DEFAULT_WINDOW_DAYS);
         assert_eq!(selected.len(), 3);
-        assert!(selected.iter().all(|r| !r.tags.iter().any(|t| t == REFLECTION_TAG)));
+        assert!(selected
+            .iter()
+            .all(|r| !r.tags.iter().any(|t| t == REFLECTION_TAG)));
     }
 
     #[tokio::test]
@@ -516,10 +518,7 @@ mod tests {
             },
         ];
         let block = format_inputs(&inputs);
-        assert_eq!(
-            block,
-            "1. (importance 5) alpha\n2. (importance 8) beta",
-        );
+        assert_eq!(block, "1. (importance 5) alpha\n2. (importance 8) beta",);
     }
 
     #[tokio::test]

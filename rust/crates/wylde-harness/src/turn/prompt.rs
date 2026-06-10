@@ -212,10 +212,7 @@ fn render_arg_schema(parameters: Option<&Value>) -> String {
             continue;
         }
         let ptype = p.get("type").and_then(Value::as_str).unwrap_or("any");
-        let required = p
-            .get("required")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let required = p.get("required").and_then(Value::as_bool).unwrap_or(false);
         let opt_marker = if required { "" } else { "?" };
         parts.push(format!("{pname}{opt_marker}: {ptype}"));
     }
@@ -422,7 +419,10 @@ mod tests {
         let t = &tools[0];
         assert_eq!(t["type"], "function");
         assert_eq!(t["function"]["name"], "fs.read_file");
-        assert_eq!(t["function"]["description"], "Read the text contents of a file.");
+        assert_eq!(
+            t["function"]["description"],
+            "Read the text contents of a file."
+        );
     }
 
     #[test]
@@ -508,7 +508,10 @@ mod tests {
         let prompt = build_system_prompt(&mixed_catalog(), true);
         // verb tool + the imperative survivor are advertised
         assert!(prompt.contains("wylde_search"), "verb missing: {prompt}");
-        assert!(prompt.contains("voice.mic.start"), "imperative survivor missing");
+        assert!(
+            prompt.contains("voice.mic.start"),
+            "imperative survivor missing"
+        );
         // resource-backed named tools are retired from advertising —
         // including time.now, now backed by the `time` resource (4b).
         assert!(
@@ -522,13 +525,19 @@ mod tests {
         // deferred stays excluded as always
         assert!(!prompt.contains("visual.screenshot"));
         // verb-mode guidance is present
-        assert!(prompt.contains("wylde_describe first"), "describe hint missing");
+        assert!(
+            prompt.contains("wylde_describe first"),
+            "describe hint missing"
+        );
     }
 
     #[test]
     fn legacy_mode_still_advertises_resource_backed_tools() {
         let prompt = build_system_prompt(&mixed_catalog(), false);
-        assert!(prompt.contains("memory.search"), "legacy mode must keep named tools");
+        assert!(
+            prompt.contains("memory.search"),
+            "legacy mode must keep named tools"
+        );
         assert!(prompt.contains("wylde_search"));
         // No verb-mode guidance in legacy mode.
         assert!(!prompt.contains("wylde_describe first"));
@@ -550,8 +559,18 @@ mod tests {
             .collect();
         assert!(names.contains(&"wylde_search"));
         assert!(names.contains(&"voice.mic.start"));
-        assert!(!names.contains(&"memory.search"), "retired tool leaked: {names:?}");
-        assert!(!names.contains(&"time.now"), "time.now retired in 4b: {names:?}");
-        assert_eq!(names.len(), 2, "exactly verb + 1 imperative survivor: {names:?}");
+        assert!(
+            !names.contains(&"memory.search"),
+            "retired tool leaked: {names:?}"
+        );
+        assert!(
+            !names.contains(&"time.now"),
+            "time.now retired in 4b: {names:?}"
+        );
+        assert_eq!(
+            names.len(),
+            2,
+            "exactly verb + 1 imperative survivor: {names:?}"
+        );
     }
 }

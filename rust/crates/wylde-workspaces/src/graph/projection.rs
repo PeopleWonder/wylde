@@ -199,7 +199,9 @@ pub fn project(rows: GraphRows) -> WorkspaceGraph {
             continue;
         }
         // First mention wins (rows are already `min`-deterministic).
-        files.entry(n.name.clone()).or_insert_with(|| n.file.clone());
+        files
+            .entry(n.name.clone())
+            .or_insert_with(|| n.file.clone());
     }
     let mut names: BTreeSet<String> = files.keys().cloned().collect();
     for e in &edges {
@@ -447,7 +449,7 @@ mod tests {
             nodes: vec![node_row("a", "x.rs", "rust")],
             edges: vec![
                 edge_row("a", "b", "CALLS"),
-                edge_row("a", "b", "CALLS"), // duplicate
+                edge_row("a", "b", "CALLS"),        // duplicate
                 edge_row("a", "c", "MENTIONED_IN"), // not in vocabulary
                 edge_row("", "d", "CALLS"),         // empty endpoint
             ],

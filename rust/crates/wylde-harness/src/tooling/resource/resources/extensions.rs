@@ -108,19 +108,27 @@ pub struct ExtActionSpec {
     pub destructive: bool,
 }
 
-fn default_scope() -> String { "global".to_string() }
-fn default_tier() -> String { "read".to_string() }
+fn default_scope() -> String {
+    "global".to_string()
+}
+fn default_tier() -> String {
+    "read".to_string()
+}
 
 // ── Pull + (un)register ──────────────────────────────────────────────
 
 /// Pull declarations from the bridge. `only` filters to one extension
 /// (used on a per-extension lifecycle event); `None` pulls all.
-pub async fn pull_specs(cfg: &Config, only: Option<&str>) -> Result<Vec<ExtResourceSpec>, IpcError> {
+pub async fn pull_specs(
+    cfg: &Config,
+    only: Option<&str>,
+) -> Result<Vec<ExtResourceSpec>, IpcError> {
     let payload = match only {
         Some(name) => json!({ "extension": name }),
         None => json!({}),
     };
-    let data = ipc::call_action(&cfg.extension_bridge_service, "ext.resources.list", payload).await?;
+    let data =
+        ipc::call_action(&cfg.extension_bridge_service, "ext.resources.list", payload).await?;
     let arr = data
         .get("resources")
         .and_then(Value::as_array)
@@ -390,7 +398,8 @@ async fn sync_loop(cfg: &'static Config) {
     }
 
     loop {
-        let mut stream = ipc::send_action_stream(&cfg.extension_bridge_service, "ext.events", json!({}));
+        let mut stream =
+            ipc::send_action_stream(&cfg.extension_bridge_service, "ext.events", json!({}));
         while let Some(item) = stream.next().await {
             match item {
                 Ok(frame) => react_to_event(reg, cfg, &frame).await,
@@ -524,7 +533,10 @@ mod tests {
         let d = def.describe();
         assert_eq!(d["resource_type"], "ext:Webcrawler:url");
         let actions = d["operations"]["execute"]["actions"].as_array().unwrap();
-        let names: Vec<&str> = actions.iter().map(|a| a["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = actions
+            .iter()
+            .map(|a| a["name"].as_str().unwrap())
+            .collect();
         assert_eq!(names, vec!["fetch", "scrape", "extract"]);
     }
 

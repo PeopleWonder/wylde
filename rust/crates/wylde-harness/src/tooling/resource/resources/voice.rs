@@ -171,7 +171,11 @@ mod tests {
     async fn dispatch(req: ResourceRequest) -> Value {
         let r = reg();
         let def = r.lookup("voice").expect("voice registered");
-        let handler = def.operations.get(&ResourceOp::Execute).expect("execute registered").clone();
+        let handler = def
+            .operations
+            .get(&ResourceOp::Execute)
+            .expect("execute registered")
+            .clone();
         let ctx = ToolContext::for_op("voice", ResourceOp::Execute, None);
         handler.call(req, cfg(), ctx).await.unwrap()
     }
@@ -193,7 +197,10 @@ mod tests {
     fn describe_enumerates_two_actions() {
         let v = describe_voice();
         let actions = v["operations"]["execute"]["actions"].as_array().unwrap();
-        let names: Vec<&str> = actions.iter().map(|a| a["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = actions
+            .iter()
+            .map(|a| a["name"].as_str().unwrap())
+            .collect();
         assert_eq!(names, vec!["transcribe", "synthesize"]);
     }
 

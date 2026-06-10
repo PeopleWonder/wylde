@@ -80,7 +80,9 @@ pub async fn handle_create(payload: Value) -> Reply {
     match std::fs::metadata(&folder) {
         Ok(m) if m.is_dir() => {}
         Ok(_) => return Reply::err_msg("bad_request", format!("not a directory: {folder:?}")),
-        Err(_) => return Reply::err_msg("bad_request", format!("folder does not exist: {folder:?}")),
+        Err(_) => {
+            return Reply::err_msg("bad_request", format!("folder does not exist: {folder:?}"))
+        }
     }
     let name = payload.get("name").and_then(Value::as_str);
     let def = registry::create(&folder, name);

@@ -180,7 +180,10 @@ mod tests {
         assert!((recency_score(now, now) - 1.0).abs() < 1e-9);
         let older = recency_score(now - 30.0 * SECONDS_PER_DAY, now);
         // One decay horizon → ~1/e.
-        assert!((older - std::f64::consts::E.recip()).abs() < 1e-6, "got {older}");
+        assert!(
+            (older - std::f64::consts::E.recip()).abs() < 1e-6,
+            "got {older}"
+        );
         // Future timestamps clamp to 1.0 (age floored at 0).
         assert!((recency_score(now + 100.0, now) - 1.0).abs() < 1e-9);
     }
@@ -213,6 +216,9 @@ mod tests {
         // irrelevant one under α = 0.4 / 0.6.
         let old_relevant = blended_score(0.2, 0.95, ALPHA_RECENCY);
         let recent_irrelevant = blended_score(1.0, 0.05, ALPHA_RECENCY);
-        assert!(old_relevant > recent_irrelevant, "{old_relevant} vs {recent_irrelevant}");
+        assert!(
+            old_relevant > recent_irrelevant,
+            "{old_relevant} vs {recent_irrelevant}"
+        );
     }
 }

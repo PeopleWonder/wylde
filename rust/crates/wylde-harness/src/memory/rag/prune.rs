@@ -49,11 +49,7 @@ pub fn preview(
     if filters.is_empty() {
         return Err(PruneError::NoFilter);
     }
-    let candidates = store.list_rows(
-        filters.memory_type.as_deref(),
-        filters.score_lt,
-        max_delete,
-    );
+    let candidates = store.list_rows(filters.memory_type.as_deref(), filters.score_lt, max_delete);
     Ok(candidates
         .into_iter()
         .filter(|r| match filters.before_ts {

@@ -246,9 +246,7 @@ pub fn set_override(prompt_id: &str, text: Option<&str>) -> Result<Store, StoreE
     let mut store = read_store();
     let clears = match text {
         None => true,
-        Some(t) => {
-            t.trim().is_empty() || t.trim() == catalog::default_for(prompt_id).trim()
-        }
+        Some(t) => t.trim().is_empty() || t.trim() == catalog::default_for(prompt_id).trim(),
     };
     if clears {
         store.overrides.remove(prompt_id);

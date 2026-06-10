@@ -114,7 +114,9 @@ fn file_get(
     async move {
         match path {
             Some(p) => tools_fs::run_read_file(json!({ "path": p })).await,
-            None => Ok(missing("wylde_get(\"fs_file\", …) requires 'resource_id' (the path)")),
+            None => Ok(missing(
+                "wylde_get(\"fs_file\", …) requires 'resource_id' (the path)",
+            )),
         }
     }
 }
@@ -181,7 +183,9 @@ fn file_delete(
     async move {
         match path {
             Some(p) => tools_fs::run_delete_file(json!({ "path": p })).await,
-            None => Ok(missing("wylde_delete(\"fs_file\", …) requires 'resource_id' (the path)")),
+            None => Ok(missing(
+                "wylde_delete(\"fs_file\", …) requires 'resource_id' (the path)",
+            )),
         }
     }
 }
@@ -270,7 +274,8 @@ fn dir_delete(
 ) -> impl std::future::Future<Output = Result<Value, IpcError>> {
     let path = target_path(&req);
     // `recursive` may travel in either body or filter.
-    let recursive = bool_field(&req.body, "recursive").or_else(|| bool_field(&req.filter, "recursive"));
+    let recursive =
+        bool_field(&req.body, "recursive").or_else(|| bool_field(&req.filter, "recursive"));
     async move {
         match path {
             Some(p) => {
@@ -281,7 +286,9 @@ fn dir_delete(
                 }
                 tools_fs::run_remove_dir(Value::Object(args)).await
             }
-            None => Ok(missing("wylde_delete(\"fs_dir\", …) requires 'resource_id' (the path)")),
+            None => Ok(missing(
+                "wylde_delete(\"fs_dir\", …) requires 'resource_id' (the path)",
+            )),
         }
     }
 }
@@ -343,7 +350,9 @@ fn dir_path(req: &ResourceRequest) -> String {
 /// The path a `get`/`update`/`delete` targets: `resource_id`, else
 /// `body.path`. Returns `None` when neither is present.
 fn target_path(req: &ResourceRequest) -> Option<String> {
-    req.resource_id.clone().or_else(|| str_field(&req.body, "path"))
+    req.resource_id
+        .clone()
+        .or_else(|| str_field(&req.body, "path"))
 }
 
 /// Keep only listing entries of `want_type` (`"file"` / `"dir"`),
@@ -813,7 +822,10 @@ mod tests {
         .await;
         assert_eq!(out["status"], "success");
         assert_eq!(out["replacements"], 2);
-        assert_eq!(tokio_fs::read_to_string(&path).await.unwrap(), "qux bar qux");
+        assert_eq!(
+            tokio_fs::read_to_string(&path).await.unwrap(),
+            "qux bar qux"
+        );
     }
 
     #[tokio::test]
@@ -921,7 +933,9 @@ mod tests {
         )
         .await;
         assert_eq!(deleted["status"], "success");
-        assert!(!tokio_fs::try_exists(dir.path().join("nested")).await.unwrap());
+        assert!(!tokio_fs::try_exists(dir.path().join("nested"))
+            .await
+            .unwrap());
     }
 
     #[tokio::test]

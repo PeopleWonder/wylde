@@ -350,16 +350,10 @@ mod tests {
         let td = TempDir::new().unwrap();
         let mut s = new_store(&td);
         // Two near-identical embeddings; only one matches the tier filter.
-        s.insert(
-            rec("ep", "episodic", 0.5),
-            Some(vec![1.0, 0.0, 0.0, 0.0]),
-        )
-        .unwrap();
-        s.insert(
-            rec("co", "core", 0.5),
-            Some(vec![0.9, 0.1, 0.0, 0.0]),
-        )
-        .unwrap();
+        s.insert(rec("ep", "episodic", 0.5), Some(vec![1.0, 0.0, 0.0, 0.0]))
+            .unwrap();
+        s.insert(rec("co", "core", 0.5), Some(vec![0.9, 0.1, 0.0, 0.0]))
+            .unwrap();
 
         let hits = s
             .search_vectors(vec![1.0, 0.0, 0.0, 0.0], Some("core"), 5)
@@ -387,9 +381,7 @@ mod tests {
         let removed = s.delete_rows(&["a".to_owned()]);
         assert_eq!(removed, 1);
         assert_eq!(s.count_rows(), 1);
-        let hits = s
-            .search_vectors(vec![1.0, 0.0, 0.0, 0.0], None, 5)
-            .unwrap();
+        let hits = s.search_vectors(vec![1.0, 0.0, 0.0, 0.0], None, 5).unwrap();
         // Vector mirror cleaned up too — "a" no longer surfaces.
         assert!(hits.iter().all(|h| h.record.id != "a"));
     }

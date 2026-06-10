@@ -24,8 +24,18 @@ pub fn register(reg: &mut Registry) {
             param("b_path", "string", false, "Path to file B"),
             param("a", "string", false, "Content A (alt to a_path)"),
             param("b", "string", false, "Content B (alt to b_path)"),
-            param_default("a_label", "string", "Label for A in the diff header", json!("a")),
-            param_default("b_label", "string", "Label for B in the diff header", json!("b")),
+            param_default(
+                "a_label",
+                "string",
+                "Label for A in the diff header",
+                json!("a"),
+            ),
+            param_default(
+                "b_label",
+                "string",
+                "Label for B in the diff header",
+                json!("b"),
+            ),
             param_default("context", "number", "Lines of context", json!(3)),
         ],
         false,
@@ -46,8 +56,14 @@ pub fn register(reg: &mut Registry) {
 }
 
 pub(crate) async fn run_show_diff(args: Value) -> Result<Value, IpcError> {
-    let a_path = args.get("a_path").and_then(Value::as_str).map(str::to_owned);
-    let b_path = args.get("b_path").and_then(Value::as_str).map(str::to_owned);
+    let a_path = args
+        .get("a_path")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let b_path = args
+        .get("b_path")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let a = args.get("a").and_then(Value::as_str).map(str::to_owned);
     let b = args.get("b").and_then(Value::as_str).map(str::to_owned);
 
@@ -299,7 +315,10 @@ mod tests {
         let mut reg = Registry::empty();
         register(&mut reg);
         let show = reg.lookup("show_diff").unwrap();
-        assert!(matches!(show.kind, crate::tooling::registry::HandlerKind::Active(_)));
+        assert!(matches!(
+            show.kind,
+            crate::tooling::registry::HandlerKind::Active(_)
+        ));
         let apply = reg.lookup("apply_patch").unwrap();
         assert!(matches!(
             apply.kind,

@@ -38,7 +38,11 @@ impl TestEnv {
     /// A synthetic, **absolute**, per-test-unique workspace path under this
     /// env's tempdir. Keeps `slug_for` deterministic regardless of cwd.
     pub fn ws_path(&self, name: &str) -> String {
-        self._tempdir.path().join(name).to_string_lossy().into_owned()
+        self._tempdir
+            .path()
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
     }
 }
 

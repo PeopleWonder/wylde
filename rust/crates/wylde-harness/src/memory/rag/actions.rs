@@ -366,10 +366,7 @@ pub async fn run_rag_index(args: Value) -> Result<Value, IpcError> {
         .unwrap_or("default")
         .to_owned();
     let paths = parse_string_array(args.get("paths"));
-    let force = args
-        .get("force")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
 
     let mut options = std::collections::HashMap::new();
     options.insert("force".to_owned(), json!(force));
@@ -455,7 +452,11 @@ pub async fn run_rag_prune(args: Value) -> Result<Value, IpcError> {
 
     if !confirm {
         match super::prune::preview(&store, &filters, max_delete) {
-            Ok(ids) => Ok(super::prune::dry_run_envelope(ids.len(), &filters, max_delete)),
+            Ok(ids) => Ok(super::prune::dry_run_envelope(
+                ids.len(),
+                &filters,
+                max_delete,
+            )),
             Err(PruneError::NoFilter) => Ok(json!({
                 "status": "error",
                 "error": "at least one filter required: before_ts, memory_type, or score_lt",
@@ -788,7 +789,9 @@ mod tests {
     async fn add_episodic_requires_content() {
         let _env = TestEnv::new();
         force_embed_dim_4();
-        let v = run_rag_add_episodic(json!({"url": "http://x"})).await.unwrap();
+        let v = run_rag_add_episodic(json!({"url": "http://x"}))
+            .await
+            .unwrap();
         assert_eq!(v["status"], "error");
     }
 
@@ -796,7 +799,9 @@ mod tests {
     async fn add_episodic_rejects_blank_content() {
         let _env = TestEnv::new();
         force_embed_dim_4();
-        let v = run_rag_add_episodic(json!({"content": "   "})).await.unwrap();
+        let v = run_rag_add_episodic(json!({"content": "   "}))
+            .await
+            .unwrap();
         assert_eq!(v["status"], "error");
     }
 
@@ -952,7 +957,9 @@ mod tests {
         let _env = TestEnv::new();
         std::env::set_var("WYLDE_N8N_BASE_URL", "http://127.0.0.1:1");
         std::env::set_var("WYLDE_N8N_INGEST_TIMEOUT_S", "1");
-        let v = run_rag_reindex(json!({"workspace_id": "ws-99"})).await.unwrap();
+        let v = run_rag_reindex(json!({"workspace_id": "ws-99"}))
+            .await
+            .unwrap();
         assert_eq!(v["status"], "deferred");
         assert_eq!(v["workspace_id"], "ws-99");
         std::env::remove_var("WYLDE_N8N_BASE_URL");
@@ -1057,9 +1064,7 @@ mod tests {
         miss_log::record_chunk_use("c1");
         miss_log::record_chunk_use("c1");
         miss_log::record_chunk_use("c2");
-        let v = run_rag_chunk_usage(json!({"limit": 100}))
-            .await
-            .unwrap();
+        let v = run_rag_chunk_usage(json!({"limit": 100})).await.unwrap();
         assert_eq!(v["status"], "ok");
         assert_eq!(v["count"], 2);
         // First row is the highest-count chunk.
@@ -1110,9 +1115,15 @@ mod tests {
     async fn record_terminal_outcome_returns_trace_envelope() {
         let _env = TestEnv::new();
         let (client, _) = mock::new_with_static_ok(json!({"updated": true}));
-        let trace =
-            record_terminal_outcome(&client, "q", "ok", &["foo".into()], &["chunk-1".into()], "qid")
-                .await;
+        let trace = record_terminal_outcome(
+            &client,
+            "q",
+            "ok",
+            &["foo".into()],
+            &["chunk-1".into()],
+            "qid",
+        )
+        .await;
         assert_eq!(trace["graph_ok"], true);
         assert_eq!(trace["graph_edges"], 1);
     }

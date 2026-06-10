@@ -158,9 +158,7 @@ fn build_entry(vendor: &str, name: &str, bundle_path: &Path) -> Option<ModelEntr
 }
 
 fn bundle_has_base_files(bundle: &Path) -> bool {
-    BUNDLE_BASE_FILES
-        .iter()
-        .all(|f| bundle.join(f).is_file())
+    BUNDLE_BASE_FILES.iter().all(|f| bundle.join(f).is_file())
 }
 
 fn bundle_has_classifier(bundle: &Path) -> bool {

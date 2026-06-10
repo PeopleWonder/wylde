@@ -26,9 +26,7 @@ use serde_json::{json, Value};
 
 use crate::config::Config;
 use crate::dispatch::{self, Route};
-use crate::events::{
-    MemoryWriteScope, MemoryWriteSource, ToolErrorReason, ToolEvent,
-};
+use crate::events::{MemoryWriteScope, MemoryWriteSource, ToolErrorReason, ToolEvent};
 use crate::state::TurnHandle;
 use crate::tooling::registry::Registry;
 use crate::turn::salvage::{call_hash, RecoveredCall};
@@ -77,11 +75,7 @@ struct GateBlock {
     error: String,
 }
 
-fn check_tier_gate(
-    device_tier: &str,
-    tool_name: &str,
-    registry: &Registry,
-) -> Option<GateBlock> {
+fn check_tier_gate(device_tier: &str, tool_name: &str, registry: &Registry) -> Option<GateBlock> {
     let tier = if device_tier.is_empty() {
         DEFAULT_TIER
     } else {
@@ -280,26 +274,32 @@ pub async fn run_one_tool(
             &block.error,
             Some(block.reason),
         ));
-        return tool_message(&call.id, &call.name, &format!("[tier_blocked] {}", block.error));
+        return tool_message(
+            &call.id,
+            &call.name,
+            &format!("[tier_blocked] {}", block.error),
+        );
     }
 
     let started = Instant::now();
-    let (result, reason): (Result<Value, wylde_shared::ipc::IpcError>, Option<ToolErrorReason>) =
-        match dispatch::route(cfg, &call.name) {
-            Route::McpExtension => (
-                dispatch::call_mcp_extension(cfg, &call.name, call.args.clone()).await,
-                None,
-            ),
-            Route::Internal => {
-                let outcome =
-                    dispatch::call_internal(cfg, registry, &call.name, device_tier, call.args.clone())
-                        .await;
-                match outcome.result {
-                    Ok(v) => (Ok(v), None),
-                    Err(e) => (Err(e.error), e.reason),
-                }
+    let (result, reason): (
+        Result<Value, wylde_shared::ipc::IpcError>,
+        Option<ToolErrorReason>,
+    ) = match dispatch::route(cfg, &call.name) {
+        Route::McpExtension => (
+            dispatch::call_mcp_extension(cfg, &call.name, call.args.clone()).await,
+            None,
+        ),
+        Route::Internal => {
+            let outcome =
+                dispatch::call_internal(cfg, registry, &call.name, device_tier, call.args.clone())
+                    .await;
+            match outcome.result {
+                Ok(v) => (Ok(v), None),
+                Err(e) => (Err(e.error), e.reason),
             }
-        };
+        }
+    };
     let elapsed_ms = duration_ms(started);
 
     match result {
@@ -332,11 +332,7 @@ pub async fn run_one_tool(
                 })
                 .await;
             state.summaries.push(ToolSummary::err(
-                &call.id,
-                &call.name,
-                elapsed_ms,
-                &msg,
-                reason,
+                &call.id, &call.name, elapsed_ms, &msg, reason,
             ));
             tool_message(&call.id, &call.name, &format!("[error] {msg}"))
         }
@@ -345,10 +341,7 @@ pub async fn run_one_tool(
 
 fn duration_ms(started: Instant) -> u64 {
     let elapsed = started.elapsed();
-    elapsed
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
+    elapsed.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 fn tool_message(call_id: &str, name: &str, content: &str) -> Value {
@@ -372,11 +365,7 @@ fn stringify_output(v: &Value) -> String {
 /// If `call.name` is a memory-write tool and `output` carries a
 /// `memory: {id, body, importance}` record, emit a structured
 /// `MemoryWritten` event so the GUI can render auto-writes distinctly.
-async fn maybe_emit_memory_written(
-    handle: &Arc<TurnHandle>,
-    call: &ToolCall,
-    output: &Value,
-) {
+async fn maybe_emit_memory_written(handle: &Arc<TurnHandle>, call: &ToolCall, output: &Value) {
     if !MEMORY_WRITE_TOOL_IDS.iter().any(|id| *id == call.name) {
         return;
     }
@@ -397,9 +386,7 @@ async fn maybe_emit_memory_written(
         .unwrap_or("")
         .to_string();
     let body = truncate_preview(&body, 200);
-    let importance = record
-        .get("importance")
-        .and_then(Value::as_f64);
+    let importance = record.get("importance").and_then(Value::as_f64);
     let scope = match call.name.as_str() {
         "memory_workspace_save" => MemoryWriteScope::Workspace,
         "memory_update" => {
@@ -607,10 +594,7 @@ mod tests {
             args: json!({}),
         };
         let msg = run_one_tool(cfg, &handle, &mut state, TIER_READ_ONLY, &reg, &call).await;
-        assert!(msg["content"]
-            .as_str()
-            .unwrap()
-            .contains("[tier_blocked]"));
+        assert!(msg["content"].as_str().unwrap().contains("[tier_blocked]"));
 
         let evs = handle.tool_events.lock().await;
         assert!(matches!(evs[0], ToolEvent::ToolDispatched { .. }));
@@ -639,10 +623,7 @@ mod tests {
             args: json!({"path": "foo", "content": "x"}),
         };
         let msg = run_one_tool(cfg, &handle, &mut state, TIER_TOOL_USE, &reg, &call).await;
-        assert!(msg["content"]
-            .as_str()
-            .unwrap()
-            .contains("[tier_blocked]"));
+        assert!(msg["content"].as_str().unwrap().contains("[tier_blocked]"));
         assert_eq!(state.summaries.len(), 1);
         assert_eq!(state.summaries[0].0["ok"], false);
         crate::state::remove_turn(&id);
@@ -665,8 +646,7 @@ mod tests {
             name: "memory.workspace.save".into(),
             args: json!({"body": "x"}),
         };
-        let msg =
-            run_one_tool(cfg, &handle, &mut state, TIER_DESTRUCTIVE, &reg, &call).await;
+        let msg = run_one_tool(cfg, &handle, &mut state, TIER_DESTRUCTIVE, &reg, &call).await;
         assert!(msg["content"]
             .as_str()
             .unwrap()
@@ -686,7 +666,13 @@ mod tests {
 
     #[test]
     fn tool_summary_err_carries_reason_when_present() {
-        let s = ToolSummary::err("c1", "fs.read", 0, "boom", Some(ToolErrorReason::TierReadOnly));
+        let s = ToolSummary::err(
+            "c1",
+            "fs.read",
+            0,
+            "boom",
+            Some(ToolErrorReason::TierReadOnly),
+        );
         assert_eq!(s.0["ok"], false);
         assert_eq!(s.0["error"], "boom");
         assert_eq!(s.0["reason"], "tier_read_only");

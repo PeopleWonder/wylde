@@ -146,8 +146,8 @@ pub(crate) mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test_support::TestEnv;
+    use super::*;
 
     #[test]
     fn list_returns_empty_when_no_file() {
@@ -169,10 +169,7 @@ mod tests {
     fn upsert_merges_into_existing_profile() {
         let _env = TestEnv::new();
         upsert_profile("a", json!({}));
-        let p = upsert_profile(
-            "a",
-            json!({"status": "active", "size_gb": 3.5}),
-        );
+        let p = upsert_profile("a", json!({"status": "active", "size_gb": 3.5}));
         assert_eq!(p["status"], "active");
         assert_eq!(p["size_gb"], 3.5);
         // Original defaults still present.

@@ -130,8 +130,7 @@ fn save_chunks(doc: &BTreeMap<String, ChunkUsageEntry>) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         ensure_dir(parent)?;
     }
-    let bytes =
-        serde_json::to_vec_pretty(doc).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let bytes = serde_json::to_vec_pretty(doc).map_err(|e| std::io::Error::other(e.to_string()))?;
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp_path = PathBuf::from(tmp);
@@ -407,8 +406,7 @@ mod tests {
 
     #[test]
     fn new_id_is_unique_across_calls() {
-        let ids: std::collections::HashSet<_> =
-            (0..32).map(|_| new_id()).collect();
+        let ids: std::collections::HashSet<_> = (0..32).map(|_| new_id()).collect();
         assert_eq!(ids.len(), 32);
     }
 }
