@@ -19,6 +19,7 @@
 //! decoration API. Recognition is *display-side only* either way: the turn
 //! driver (Slice G) re-resolves symbols server-side at send time.
 
+pub mod bubbles;
 pub mod context_chip;
 pub mod curation;
 pub mod disambiguator;

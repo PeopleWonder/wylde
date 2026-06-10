@@ -32,8 +32,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, Entity,
-    FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, Render, SharedString, Stateful,
-    Subscription, Window,
+    FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseDownEvent, Render,
+    SharedString, Stateful, Subscription, Window,
 };
 use wylde_gpui_input::{InputEvent, SubmitMode, TextInput};
 use wylde_theme::colors::{
@@ -205,6 +205,12 @@ pub struct ChatPanel {
     _input_sub: Subscription,
     /// Symbol-aware composer recognition state (Slice F).
     pub composer: ComposerState,
+    /// The floating Thought-Bubble layer (Plan §5.2–5.5).
+    pub bubbles: composer::bubbles::BubbleLayer,
+    /// The bubble strip's window-absolute origin, captured by its tether
+    /// canvas at paint (the graph panel's CanvasRect pattern) — bubble divs
+    /// and tether endpoints position from it.
+    pub bubble_strip_origin: (f32, f32, f32),
     /// The Ctrl+P symbol palette's query field (rendered only while the
     /// palette is open).
     pub palette_input: Entity<TextInput>,
@@ -293,6 +299,8 @@ impl ChatPanel {
             prompt_input,
             _input_sub: input_sub,
             composer: ComposerState::default(),
+            bubbles: composer::bubbles::BubbleLayer::default(),
+            bubble_strip_origin: (0.0, 0.0, 0.0),
             palette_input,
             _palette_sub: palette_sub,
         }
@@ -476,6 +484,8 @@ impl ChatPanel {
             // below reconcile against the harness.
             self.messages.clear();
             self.working_memory.clear();
+            // Bubble pins are per-conversation (§5.4) — a switch resets all.
+            self.bubbles.on_conversation_changed();
         }
         self.show_conversations = false;
         self.confirm_delete = None;
@@ -1412,6 +1422,7 @@ impl ChatPanel {
             }
             let _ = this.update(app_cx, |p, cx| {
                 if p.composer.install(generation, words, degraded) {
+                    p.bubbles.on_words_changed(p.composer.words.len());
                     p.sync_prompt_highlights(cx);
                     cx.notify();
                 }
@@ -1524,17 +1535,130 @@ impl ChatPanel {
                 || self.composer.disambiguating.is_some()
                 || self.composer.anchor_offer.is_some()
                 || self.composer.ignore_menu.is_some()
-                || self.composer.curating;
+                || self.composer.curating
+                || self.bubbles.is_open();
             if had_overlay {
                 self.composer.palette = None;
                 self.composer.disambiguating = None;
                 self.composer.anchor_offer = None;
                 self.composer.ignore_menu = None;
                 self.composer.curating = false;
+                // §5.4: Esc collapses the bubble set back to compact.
+                self.bubbles.collapse();
                 self.focus_prompt(window, cx);
                 cx.notify();
             }
         }
+    }
+
+    // ── The Thought-Bubble layer (Plan §5.2–5.5) ─────────────────────
+
+    /// Open (or swap to / collapse) a word's bubble set (§5.2, OI-17) and
+    /// fetch its anchors. Spawned from a chip click or a click on the
+    /// highlighted word itself.
+    pub(crate) fn open_word_bubbles(&mut self, word_idx: usize, cx: &mut Context<Self>) {
+        if !self.bubbles.open(word_idx) {
+            cx.notify(); // collapsed
+            return;
+        }
+        let Some(word) = self.composer.words.get(word_idx).cloned() else {
+            self.bubbles.collapse();
+            cx.notify();
+            return;
+        };
+        cx.notify();
+        let ws = self.active_workspace_id.clone().unwrap_or_default();
+        let token = word.token.text.clone();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            // Anchors are best-effort: a down service still yields the
+            // symbol bubble (OI-1).
+            let anchors = if word.anchor_count > 0 && !ws.is_empty() {
+                composer::ipc_to_workspaces::anchors_for_token(&ws, &token)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let _ = this.update(app_cx, |panel, cx| {
+                if panel.bubbles.word_idx != Some(word_idx) {
+                    return; // swapped/collapsed while fetching
+                }
+                panel.bubbles.bubbles = composer::bubbles::bubbles_for(&word, &anchors);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Expand one bubble's card (§5.4) and pull its drill-in context when
+    /// it's a code symbol.
+    pub(crate) fn expand_bubble(&mut self, bubble_ix: usize, cx: &mut Context<Self>) {
+        if !self.bubbles.toggle_expanded(bubble_ix) {
+            cx.notify();
+            return;
+        }
+        cx.notify();
+        let Some(composer::bubbles::BubbleKind::Symbol { id, .. }) =
+            self.bubbles.bubbles.get(bubble_ix).map(|b| b.kind.clone())
+        else {
+            return; // anchor bubbles show their description; no fetch
+        };
+        let Some(ws) = self.active_workspace_id.clone() else {
+            return;
+        };
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let reply = composer::ipc_to_workspaces::symbol_context(&ws, &id).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                if panel.bubbles.expanded != Some(bubble_ix) {
+                    return;
+                }
+                if let Ok(v) = reply {
+                    panel.bubbles.context = Some(composer::bubbles::CardContext::from_reply(&v));
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Route one shared-menu action (Plan §6 — `wylde_anchor_actions`'
+    /// first menu renderer) onto the composer's existing handlers.
+    pub(crate) fn apply_bubble_menu_action(
+        &mut self,
+        action: wylde_anchor_actions::MenuAction,
+        cx: &mut Context<Self>,
+    ) {
+        use wylde_anchor_actions::MenuAction;
+        let Some(word_idx) = self.bubbles.word_idx else {
+            return;
+        };
+        let target_label = self.bubbles.menu_target_label();
+        self.bubbles.menu = None;
+        match action {
+            MenuAction::ToggleExclude { .. } => {
+                self.composer.toggle_excluded(word_idx);
+                self.sync_prompt_highlights(cx);
+            }
+            MenuAction::TogglePin { .. } => {
+                if let Some(label) =
+                    target_label.or_else(|| self.bubbles.bubbles.first().map(|b| b.label.clone()))
+                {
+                    self.bubbles.toggle_pin(&label);
+                }
+            }
+            MenuAction::ToggleIgnore { tier, .. } => {
+                let tag = match tier {
+                    wylde_anchor_actions::IgnoreTier::Conversation => IgnoreTierTag::Conversation,
+                    wylde_anchor_actions::IgnoreTier::Workspace => IgnoreTierTag::Workspace,
+                    wylde_anchor_actions::IgnoreTier::Global => IgnoreTierTag::Global,
+                };
+                self.toggle_ignore_tier(word_idx, tag, cx);
+            }
+            // Rows the composer can't route yet are filtered at render
+            // (cross-panel routing / drawing mode — see the slice report).
+            _ => {}
+        }
+        cx.notify();
     }
 
     /// Mint a symbol anchor for a disambiguated word (Slice N's
@@ -2575,12 +2699,35 @@ fn prompt_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
         send_button(panel.prompt_input.clone(), cx)
     };
 
+    // §5.2: left-clicking a highlighted word in the input spawns its
+    // bubble set. The wrapper listener fires alongside the input's own
+    // caret positioning (the input doesn't stop propagation); a click on
+    // plain prose maps to no recognized word and does nothing extra.
+    let input_for_click = panel.prompt_input.clone();
     div()
         .flex()
         .flex_row()
         .gap_2()
         .items_end()
-        .child(div().flex_1().child(panel.prompt_input.clone()))
+        .child(
+            div()
+                .flex_1()
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this: &mut ChatPanel, ev: &MouseDownEvent, _w, cx| {
+                        let Some(ix) = input_for_click.read(cx).index_at_point(ev.position) else {
+                            return;
+                        };
+                        let hit = this.composer.words.iter().position(|w| {
+                            w.is_recognized() && w.token.start <= ix && ix < w.token.end
+                        });
+                        if let Some(word_idx) = hit {
+                            this.open_word_bubbles(word_idx, cx);
+                        }
+                    }),
+                )
+                .child(panel.prompt_input.clone()),
+        )
         .child(button)
 }
 
