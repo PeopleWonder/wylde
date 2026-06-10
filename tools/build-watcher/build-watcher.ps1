@@ -1,14 +1,13 @@
-# build-watcher.ps1 — self-hosted build/test loop for agent sessions.
+﻿# build-watcher.ps1 - self-hosted build/test loop for agent sessions.
 #
 # Sits in a poll loop watching outputs\build-requests\*.request. Each
-# request file lists one TARGET per line (fixed menu below — the watcher
+# request file lists one TARGET per line (fixed menu below - the watcher
 # NEVER executes arbitrary commands from request files). Output + exit
 # codes land in outputs\build-results\<id>.result.txt, which the agent
 # reads back through the shared folder.
 #
-# Start via start-build-watcher.bat (or:
-#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\build-watcher\build-watcher.ps1
-# ). Leave the window open; Ctrl+C stops it. No admin / UAC required.
+# Start via start-build-watcher.bat. Leave the window open; Ctrl+C stops
+# it. No admin / UAC required.
 #
 # Targets:
 #   backend                 cargo test  (whole rust/ workspace)
@@ -65,14 +64,15 @@ function Invoke-Target([string]$target, [string]$outFile) {
             return
         }
     }
-    Add-Content $outFile "=== cargo $($cargoArgs -join ' ') ==="
-    Write-Log "running: cargo $($cargoArgs -join ' ')"
+    $argLine = $cargoArgs -join ' '
+    Add-Content $outFile "=== cargo $argLine ==="
+    Write-Log "running: cargo $argLine"
     & cargo @cargoArgs 2>&1 | Out-File -FilePath $outFile -Append -Encoding utf8
     Add-Content $outFile "=== exit: $LASTEXITCODE ==="
     Write-Log "finished (exit=$LASTEXITCODE)"
 }
 
-Write-Log "build-watcher up — root=$root poll=${PollSeconds}s"
+Write-Log "build-watcher up - root=$root poll=${PollSeconds}s"
 Write-Log "watching $reqDir"
 
 while ($true) {
@@ -81,15 +81,16 @@ while ($true) {
         Sort-Object Name
     foreach ($req in $requests) {
         $id = [IO.Path]::GetFileNameWithoutExtension($req.Name)
-        $outFile = Join-Path $resDir "$id.result.txt"
-        Write-Log "processing $($req.Name)"
-        Set-Content -Path $outFile -Value "=== build-watcher run '$id' @ $(Get-Date -Format o) ==="
+        $outFile = Join-Path $resDir ($id + '.result.txt')
+        Write-Log ("processing " + $req.Name)
+        $stamp = Get-Date -Format o
+        Set-Content -Path $outFile -Value ("=== build-watcher run " + $id + " @ " + $stamp + " ===")
         foreach ($line in (Get-Content $req.FullName)) {
             Invoke-Target $line $outFile
         }
         Add-Content $outFile '=== done ==='
         Remove-Item $req.FullName -Force
-        Write-Log "done -> $outFile"
+        Write-Log ("done -> " + $outFile)
     }
     Start-Sleep -Seconds $PollSeconds
 }
