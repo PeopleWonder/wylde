@@ -60,6 +60,51 @@ pub async fn count_anchors(workspace_id: &str, token: &str) -> Result<usize, Str
         .unwrap_or(0))
 }
 
+/// `workspaces.anchors.find_by_token` → the matching anchors as
+/// `(identifier, description)` pairs — the bubble layer's spawn data
+/// (Plan §5.2: a word's bubbles are its anchors).
+pub async fn anchors_for_token(
+    workspace_id: &str,
+    token: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let v = workspaces_call(
+        "workspaces.anchors.find_by_token",
+        json!({ "workspace_id": workspace_id, "token": token }),
+    )
+    .await?;
+    Ok(v.get("anchors")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| {
+                    let id = a.get("identifier").and_then(Value::as_str)?;
+                    let desc = a
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    Some((id.to_owned(), desc.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
+/// `workspaces.symbol_context` for a bubble's expanded card (Plan §5.3
+/// drill-in): 1-hop callers/callees/types + body + the Slice L blame.
+pub async fn symbol_context(workspace_id: &str, symbol_id: &str) -> Result<Value, String> {
+    workspaces_call(
+        "workspaces.symbol_context",
+        json!({
+            "workspace_id": workspace_id,
+            "symbol_id": symbol_id,
+            "hops": 1,
+            "include_body": true,
+            "include_blame": true,
+        }),
+    )
+    .await
+}
+
 /// Resolve one scanned token to its recognition state. Identifier tokens hit
 /// the symbol index AND the anchor store (a word can be both); `{{anchor}}`
 /// tokens hit the anchor store only (spaces make them non-symbols).

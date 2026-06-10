@@ -25,6 +25,11 @@ wylde-gui-pipe = { path = "../../Pipe" }
 # this is opt-in; Chat happens to be the first adopter.
 wylde-gpui-input = { path = "../../Input" }
 
+# Shared anchor edit semantics (Plan v2 §6) — the bubble layer renders
+# `anchor_menu` (its first menu consumer) and routes the actions onto the
+# composer's existing exclude/ignore/pin handlers.
+wylde-anchor-actions = { path = "../shared/anchor_actions" }
+
 # gpui — every panel imports the same set: div builders, Render, etc.
 gpui.workspace = true
 
