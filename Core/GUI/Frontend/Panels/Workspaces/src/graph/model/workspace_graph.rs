@@ -83,6 +83,10 @@ impl WorkspaceGraph {
         self.nodes.iter().find(|n| n.id == id)
     }
 
+    pub fn cluster_by_id(&self, id: &str) -> Option<&Cluster> {
+        self.clusters.iter().find(|c| c.id == id)
+    }
+
     /// Deterministic placeholder layout (see module docs). Nodes are sorted
     /// by id so the same graph always lays out the same way, then placed on a
     /// sunflower spiral centred on the model origin. **Not** force-directed;

@@ -306,9 +306,104 @@ impl PanelBackground {
     }
 }
 
+/// `graph_panel.breadcrumb_bar` (C-navigation) — the scope-trail strip across
+/// the top of the graph canvas. Defaults equal the locked Visual Style v1
+/// values so an older asset (or a load failure) still renders to spec.
+#[derive(Clone, Debug, Deserialize)]
+pub struct BreadcrumbBarStyle {
+    #[serde(default = "white")]
+    pub background_light: String,
+    #[serde(default = "default_crumb_bg_dark")]
+    pub background_dark: String,
+    #[serde(default = "default_crumb_text_light")]
+    pub text_light: String,
+    #[serde(default = "default_crumb_text_dark")]
+    pub text_dark: String,
+    #[serde(default = "default_separator_glyph")]
+    pub separator_glyph: String,
+    #[serde(default = "default_crumb_height")]
+    pub height_px: f32,
+    #[serde(default = "default_crumb_font")]
+    pub font_size_px: f32,
+}
+
+impl Default for BreadcrumbBarStyle {
+    fn default() -> Self {
+        // The locked spec values — used only when the YAML omits the section.
+        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults")
+    }
+}
+
+impl BreadcrumbBarStyle {
+    pub fn background(&self, dark: bool) -> Color {
+        Color::parse_or_fallback(if dark {
+            &self.background_dark
+        } else {
+            &self.background_light
+        })
+    }
+
+    pub fn text(&self, dark: bool) -> Color {
+        Color::parse_or_fallback(if dark {
+            &self.text_dark
+        } else {
+            &self.text_light
+        })
+    }
+}
+
+/// `graph_panel.exit_edges` (C-navigation) — how edges that leave the scoped
+/// cluster fade out at the boundary, and the destination-label chip styling.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ExitEdgeStyle {
+    #[serde(default = "default_fade_distance")]
+    pub fade_distance_px: f32,
+    #[serde(default = "default_exit_label_bg_light")]
+    pub label_background_light: String,
+    #[serde(default = "default_exit_label_bg_dark")]
+    pub label_background_dark: String,
+    #[serde(default = "default_exit_label_text_light")]
+    pub label_text_light: String,
+    #[serde(default = "default_exit_label_text_dark")]
+    pub label_text_dark: String,
+    #[serde(default = "default_exit_label_font")]
+    pub label_font_size_px: f32,
+}
+
+impl Default for ExitEdgeStyle {
+    fn default() -> Self {
+        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults")
+    }
+}
+
+impl ExitEdgeStyle {
+    pub fn label_background(&self, dark: bool) -> Color {
+        Color::parse_or_fallback(if dark {
+            &self.label_background_dark
+        } else {
+            &self.label_background_light
+        })
+    }
+
+    pub fn label_text(&self, dark: bool) -> Color {
+        Color::parse_or_fallback(if dark {
+            &self.label_text_dark
+        } else {
+            &self.label_text_light
+        })
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct GraphPanelStyle {
     pub background: PanelBackground,
+    /// Breadcrumb bar styling (C-navigation). `default` so pre-C-navigation
+    /// assets still parse; the defaults equal the locked spec.
+    #[serde(default)]
+    pub breadcrumb_bar: BreadcrumbBarStyle,
+    /// Exit-edge fade + label styling (C-navigation).
+    #[serde(default)]
+    pub exit_edges: ExitEdgeStyle,
 }
 
 /// One `animations.*` entry — a duration + cubic-bézier easing. Only the
@@ -404,6 +499,42 @@ fn fnv1a(s: &str) -> u32 {
 // ── serde defaults (only used when the YAML omits a field) ──────────────
 fn white() -> String {
     "#FFFFFF".to_owned()
+}
+fn default_crumb_bg_dark() -> String {
+    "#141B24".to_owned()
+}
+fn default_crumb_text_light() -> String {
+    "#2D3748".to_owned()
+}
+fn default_crumb_text_dark() -> String {
+    "#E2E8F0".to_owned()
+}
+fn default_separator_glyph() -> String {
+    "›".to_owned()
+}
+fn default_crumb_height() -> f32 {
+    36.0
+}
+fn default_crumb_font() -> f32 {
+    12.0
+}
+fn default_fade_distance() -> f32 {
+    40.0
+}
+fn default_exit_label_bg_light() -> String {
+    "#EDF2F7".to_owned()
+}
+fn default_exit_label_bg_dark() -> String {
+    "#1A202C".to_owned()
+}
+fn default_exit_label_text_light() -> String {
+    "#4A5568".to_owned()
+}
+fn default_exit_label_text_dark() -> String {
+    "#E2E8F0".to_owned()
+}
+fn default_exit_label_font() -> f32 {
+    11.0
 }
 fn default_base_modifier() -> f32 {
     0.65
@@ -511,6 +642,56 @@ mod tests {
             t.graph_panel.background.secondary(true),
             t.graph_panel.background.primary(true)
         );
+    }
+
+    #[test]
+    fn breadcrumb_bar_matches_locked_spec() {
+        let t = Theme::load_v1().unwrap();
+        let bb = &t.graph_panel.breadcrumb_bar;
+        assert_eq!(bb.height_px, 36.0);
+        assert_eq!(bb.font_size_px, 12.0);
+        assert_eq!(bb.separator_glyph, "›");
+        // #141B24 dark background, #E2E8F0 dark text.
+        let bg = bb.background(true);
+        assert!((bg.r - 0x14 as f32 / 255.0).abs() < 1e-3);
+        let fg = bb.text(true);
+        assert!((fg.r - 0xE2 as f32 / 255.0).abs() < 1e-3);
+        assert_ne!(bb.background(true), bb.background(false));
+    }
+
+    #[test]
+    fn exit_edges_match_locked_spec() {
+        let t = Theme::load_v1().unwrap();
+        let xe = &t.graph_panel.exit_edges;
+        assert_eq!(xe.fade_distance_px, 40.0);
+        assert_eq!(xe.label_font_size_px, 11.0);
+        // #1A202C dark chip, #E2E8F0 dark label text.
+        let bg = xe.label_background(true);
+        assert!((bg.r - 0x1A as f32 / 255.0).abs() < 1e-3);
+        assert_ne!(xe.label_text(true), xe.label_text(false));
+    }
+
+    #[test]
+    fn nav_section_defaults_equal_locked_spec_when_yaml_omits_them() {
+        // Pre-C-navigation asset compatibility: an empty mapping yields the
+        // locked values, so a stale asset still renders to spec.
+        let bb = BreadcrumbBarStyle::default();
+        assert_eq!(bb.height_px, 36.0);
+        assert_eq!(bb.separator_glyph, "›");
+        let xe = ExitEdgeStyle::default();
+        assert_eq!(xe.fade_distance_px, 40.0);
+        assert_eq!(xe.label_font_size_px, 11.0);
+    }
+
+    #[test]
+    fn zoom_animations_match_locked_spec() {
+        let t = Theme::load_v1().unwrap();
+        let zin = t.animation("graph_zoom_into_cluster").expect("locked anim");
+        assert_eq!(zin.duration_ms, 400.0);
+        assert_eq!(zin.easing, [0.645, 0.045, 0.355, 1.0]);
+        let zout = t.animation("graph_zoom_out").expect("locked anim");
+        assert_eq!(zout.duration_ms, 380.0);
+        assert_eq!(zout.easing, [0.645, 0.045, 0.355, 1.0]);
     }
 
     #[test]

@@ -44,9 +44,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    canvas, div, prelude::*, App, AppContext, AsyncApp, Bounds, Context, ElementId, FocusHandle,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Render, ScrollWheelEvent, Window,
+    canvas, div, prelude::*, px, App, AppContext, AsyncApp, Bounds, Context, ElementId,
+    FocusHandle, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Render, ScrollWheelEvent, SharedString, Window,
 };
 use wylde_theme::typography::{size as font_size, weight};
 
@@ -54,6 +54,8 @@ use ipc::{GraphFetchError, GraphLoad};
 use layout::{ForceDirected, LayoutKind};
 use model::{Layout, WorkspaceGraph};
 use navigation::input::Drag;
+use navigation::transition::ActiveCameraTween;
+use navigation::{append_exit_stubs, compute_exit_edges, NavAction, Navigator};
 use paint::{overlay_text, paint_graph, to_rgba};
 use physics::{ActiveRegion, PhysicsConfig, PhysicsHandle, PositionFrame};
 use render::render_2d::Renderer2d;
@@ -95,6 +97,15 @@ pub struct GraphView {
     /// While set, the physics subscription ignores worker frames (the animation
     /// owns positions).
     transition: Option<ActiveTransition>,
+    /// Space-map scope state (C-navigation): which cluster the user is inside,
+    /// the way back out, and the navigation knobs.
+    navigator: Navigator,
+    /// In-flight camera tween (zoom-into-cluster / zoom-out). Camera-only —
+    /// node positions and the physics worker are untouched while it runs.
+    camera_transition: Option<ActiveCameraTween>,
+    /// Exit-edge jump second phase: the cluster to enter once the in-flight
+    /// zoom-out tween lands.
+    pending_enter: Option<String>,
     /// Focus handle so the canvas can receive `Ctrl+Shift+L`. Created lazily in
     /// `render` (no gpui context at `new()` / in unit tests).
     focus: Option<FocusHandle>,
@@ -129,6 +140,9 @@ impl GraphView {
             current_layout: LayoutKind::default(),
             layout_cache: HashMap::new(),
             transition: None,
+            navigator: Navigator::default(),
+            camera_transition: None,
+            pending_enter: None,
             focus: None,
             camera: Camera::default(),
             fitted: false,
@@ -167,8 +181,12 @@ impl GraphView {
                         view.error = None;
                         view.workspace_id = workspace_id;
                         view.graph = Rc::new(graph);
-                        // A reload cancels any in-flight swap from the old graph.
+                        // A reload cancels any in-flight swap from the old graph
+                        // and drops the space-map scope (the clusters may be gone).
                         view.transition = None;
+                        view.navigator.reset();
+                        view.camera_transition = None;
+                        view.pending_enter = None;
                         // Apply the per-workspace remembered layout (default:
                         // force-directed). Deterministic layouts compute their
                         // final positions and leave the physics worker paused;
@@ -290,15 +308,36 @@ impl GraphView {
         if self.graph.nodes.is_empty() {
             return None;
         }
+        let members = self.navigator.members();
         let scene = Scene {
             graph: &self.graph,
             layout: &self.layout,
             theme,
             mode: model::ViewMode::CodeGraph,
+            scope: members.as_deref(),
         };
         let mut vp = self.viewport(rect);
         vp.camera = camera;
-        Some(Renderer2d::new().frame(&scene, &vp))
+        let mut out = Renderer2d::new().frame(&scene, &vp);
+        // Scoped: edges that leave the cluster fade out as exit stubs.
+        if let Some(m) = members.as_deref() {
+            let xe = compute_exit_edges(
+                &self.graph,
+                &self.layout,
+                m,
+                &vp,
+                theme.graph_panel.exit_edges.fade_distance_px,
+                self.navigator.config.max_exit_labels,
+            );
+            append_exit_stubs(
+                &mut out,
+                &xe.stubs,
+                theme,
+                self.dark,
+                self.navigator.config.exit_stub_segments,
+            );
+        }
+        Some(out)
     }
 }
 
@@ -327,12 +366,16 @@ impl Render for GraphView {
         // `Ctrl+Shift+L`. Clicking the canvas focuses it.
         let focus = self.focus.get_or_insert_with(|| cx.focus_handle()).clone();
 
-        let root_id: ElementId = ElementId::Name("workspaces-graph-canvas".into());
-        let mut root = div()
-            .id(root_id)
+        // The interactive graph area (canvas + overlay + exit chips). The
+        // breadcrumb bar sits above it in normal flow, so mouse handlers live
+        // here rather than on the root.
+        let content_id: ElementId = ElementId::Name("workspaces-graph-canvas".into());
+        let mut content = div()
+            .id(content_id)
             .track_focus(&focus)
-            .size_full()
             .relative()
+            .flex_1()
+            .w_full()
             .overflow_hidden()
             .bg(bg)
             .on_scroll_wheel(
@@ -359,10 +402,76 @@ impl Render for GraphView {
 
         // The graph canvas (only when the theme is good and we have nodes).
         if self.theme.is_some() && !self.graph.nodes.is_empty() {
-            root = root.child(self.canvas_element(cx));
+            content = content.child(self.canvas_element(cx));
         }
 
-        root.child(self.overlay())
+        // Exit-edge destination chips (scoped space-map only, C-navigation).
+        content = self.exit_label_chips(content, cx);
+        content = content.child(self.overlay());
+
+        // Root: breadcrumb bar (Theme `graph_panel.breadcrumb_bar`) over the
+        // graph area.
+        let root_id: ElementId = ElementId::Name("workspaces-graph-root".into());
+        let mut root = div().id(root_id).size_full().flex().flex_col().bg(bg);
+        if let Some(theme) = self.theme.clone() {
+            if !self.graph.nodes.is_empty() {
+                root = root.child(self.breadcrumb_bar(&theme, cx));
+            }
+        }
+        root.child(content)
+    }
+}
+
+impl GraphView {
+    /// Append the scoped frame's exit-edge destination chips to `content` as
+    /// absolutely-positioned, clickable elements (Theme
+    /// `graph_panel.exit_edges` label styling). A chip with a known
+    /// destination cluster jumps there (zoom-out → re-zoom-in); a chip for an
+    /// unclustered destination is inert context.
+    fn exit_label_chips(
+        &self,
+        mut content: gpui::Stateful<gpui::Div>,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let (Some(theme), Some(members)) = (self.theme.as_ref(), self.navigator.members()) else {
+            return content;
+        };
+        if self.canvas.w <= 0.0 {
+            return content; // no painted canvas to anchor chips to yet
+        }
+        let xe = compute_exit_edges(
+            &self.graph,
+            &self.layout,
+            &members,
+            &self.viewport(self.canvas),
+            theme.graph_panel.exit_edges.fade_distance_px,
+            self.navigator.config.max_exit_labels,
+        );
+        let chip_bg = to_rgba(theme.graph_panel.exit_edges.label_background(self.dark));
+        let chip_fg = to_rgba(theme.graph_panel.exit_edges.label_text(self.dark));
+        let font = theme.graph_panel.exit_edges.label_font_size_px;
+        for (i, label) in xe.labels.into_iter().enumerate() {
+            let mut chip = div()
+                .id(("graph-exit-label", i))
+                .absolute()
+                .left(px(label.x - self.canvas.ox))
+                .top(px(label.y - self.canvas.oy))
+                .px_1()
+                .bg(chip_bg)
+                .text_size(px(font))
+                .text_color(chip_fg)
+                .child(SharedString::from(label.text.clone()));
+            if let Some(target) = label.target_cluster {
+                chip = chip.cursor_pointer().on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| {
+                        this.apply_nav_action(NavAction::JumpToCluster(target.clone()), cx);
+                    }),
+                );
+            }
+            content = content.child(chip);
+        }
+        content
     }
 }
 
@@ -378,6 +487,9 @@ impl GraphView {
         let camera = self.camera;
         let dark = self.dark;
         let fitted = self.fitted;
+        let members = self.navigator.members();
+        let stub_segments = self.navigator.config.exit_stub_segments;
+        let max_exit_labels = self.navigator.config.max_exit_labels;
 
         canvas(
             move |bounds: Bounds<Pixels>, _window, app: &mut App| -> Option<RenderOutput> {
@@ -412,6 +524,7 @@ impl GraphView {
                     layout: &layout,
                     theme: &theme,
                     mode: model::ViewMode::CodeGraph,
+                    scope: members.as_deref(),
                 };
                 let vp = Viewport {
                     origin_x: rect.ox,
@@ -421,7 +534,20 @@ impl GraphView {
                     camera: cam,
                     dark,
                 };
-                Some(Renderer2d::new().frame(&scene, &vp))
+                let mut out = Renderer2d::new().frame(&scene, &vp);
+                // Scoped: append the exit-edge fade stubs (C-navigation).
+                if let Some(m) = members.as_deref() {
+                    let xe = compute_exit_edges(
+                        &graph,
+                        &layout,
+                        m,
+                        &vp,
+                        theme.graph_panel.exit_edges.fade_distance_px,
+                        max_exit_labels,
+                    );
+                    append_exit_stubs(&mut out, &xe.stubs, &theme, dark, stub_segments);
+                }
+                Some(out)
             },
             move |_bounds, output: Option<RenderOutput>, window, _app| {
                 if let Some(out) = output {
@@ -460,8 +586,13 @@ impl GraphView {
             self.camera.zoom * 100.0
         );
         col = col.child(overlay_text(status, font_size::XS, weight::SEMIBOLD));
+        let hint = if self.navigator.is_scoped() {
+            "Scroll — zoom · Esc — zoom out · Ctrl+Shift+L — cycle layout"
+        } else {
+            "Scroll — zoom into clusters · Ctrl+Shift+L — cycle layout"
+        };
         col = col.child(overlay_text(
-            "Ctrl+Shift+L — cycle layout".to_owned(),
+            hint.to_owned(),
             font_size::MICRO,
             weight::REGULAR,
         ));
@@ -767,5 +898,169 @@ mod tests {
             "layout choice cached for the active workspace"
         );
     }
-}
 
+    // ── Space-map navigation (Slice C-navigation) ────────────────────────
+
+    use model::Cluster;
+    use navigation::transition::CameraStep;
+
+    /// Two clusters: alpha = {a, b}, beta = {c}; a→c crosses between them.
+    fn nav_graph() -> WorkspaceGraph {
+        WorkspaceGraph {
+            nodes: vec![
+                node("a", "ws/alpha/a.rs"),
+                node("b", "ws/alpha/b.rs"),
+                node("c", "ws/beta/c.rs"),
+            ],
+            edges: vec![
+                Edge {
+                    src: "a".to_owned(),
+                    dst: "b".to_owned(),
+                    rel_type: RelType::Calls,
+                    weight: 1.0,
+                },
+                Edge {
+                    src: "a".to_owned(),
+                    dst: "c".to_owned(),
+                    rel_type: RelType::Calls,
+                    weight: 1.0,
+                },
+            ],
+            clusters: vec![
+                Cluster {
+                    id: "ws/alpha".to_owned(),
+                    member_ids: vec!["a".to_owned(), "b".to_owned()],
+                    parent_breadcrumb: vec!["ws".to_owned()],
+                    zoom_threshold: 1.0,
+                },
+                Cluster {
+                    id: "ws/beta".to_owned(),
+                    member_ids: vec!["c".to_owned()],
+                    parent_breadcrumb: vec!["ws".to_owned()],
+                    zoom_threshold: 1.0,
+                },
+            ],
+        }
+    }
+
+    fn nav_view() -> GraphView {
+        let mut v = view_with_graph(nav_graph());
+        v.canvas = CanvasRect {
+            ox: 0.0,
+            oy: 0.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        v
+    }
+
+    #[test]
+    fn enter_cluster_arms_tween_and_scopes() {
+        let mut v = nav_view();
+        let base = Instant::now();
+        v.enter_cluster_by_id("ws/alpha", base);
+
+        assert!(v.navigator.is_scoped());
+        assert!(v.camera_transition.is_some(), "zoom-in tween armed");
+        let m = v.navigator.members().unwrap();
+        assert!(m.contains("a") && m.contains("b") && !m.contains("c"));
+
+        // Completing the tween lands the camera on the cluster-fit target.
+        let step = v.advance_camera_tween(base + Duration::from_millis(450));
+        assert!(matches!(step, CameraStep::Completed));
+        assert!(v.camera_transition.is_none());
+        let bounds =
+            navigation::camera::members_bounds(&["a".to_owned(), "b".to_owned()], &v.layout, 0.0)
+                .unwrap();
+        let expect = navigation::camera::camera_to_fit(
+            bounds,
+            800.0,
+            600.0,
+            v.navigator.config.cluster_fit_margin,
+        );
+        assert_eq!(v.camera, expect);
+    }
+
+    #[test]
+    fn leave_scope_tweens_back_to_saved_camera() {
+        let mut v = nav_view();
+        let base = Instant::now();
+        let saved = Camera {
+            pan_x: 12.0,
+            pan_y: 5.0,
+            zoom: 0.9,
+        };
+        v.camera = saved;
+        v.enter_cluster_by_id("ws/alpha", base);
+        let _ = v.advance_camera_tween(base + Duration::from_millis(450));
+
+        v.leave_scope(base + Duration::from_millis(500));
+        assert!(!v.navigator.is_scoped());
+        let step = v.advance_camera_tween(base + Duration::from_millis(950));
+        assert!(matches!(step, CameraStep::Completed));
+        assert_eq!(v.camera, saved, "zoom-out restores the pre-enter camera");
+    }
+
+    #[test]
+    fn exit_edge_jump_chains_leave_then_enter() {
+        let mut v = nav_view();
+        let base = Instant::now();
+        v.enter_cluster_by_id("ws/alpha", base);
+        let _ = v.advance_camera_tween(base + Duration::from_millis(450));
+
+        // The exit-chip click path: queue the target, leave.
+        v.pending_enter = Some("ws/beta".to_owned());
+        v.leave_scope(base + Duration::from_millis(500));
+
+        // Phase 1 completes → the pending enter arms phase 2 (still Running).
+        let step = v.advance_camera_tween(base + Duration::from_millis(950));
+        assert!(matches!(step, CameraStep::Running), "chained zoom-in armed");
+        assert!(v.pending_enter.is_none());
+        assert_eq!(
+            v.navigator.scope().map(|s| s.cluster_id.as_str()),
+            Some("ws/beta")
+        );
+
+        // Phase 2 completes on the beta fit.
+        let step = v.advance_camera_tween(base + Duration::from_millis(1400));
+        assert!(matches!(step, CameraStep::Completed));
+        assert!(v.camera_transition.is_none());
+    }
+
+    #[test]
+    fn scoped_render_output_filters_and_appends_exit_stubs() {
+        let mut v = nav_view();
+        let base = Instant::now();
+        let rect = v.canvas;
+        let full = v.render_output(rect, v.camera).unwrap();
+        assert_eq!(full.spheres.len(), 3);
+
+        v.enter_cluster_by_id("ws/alpha", base);
+        let _ = v.advance_camera_tween(base + Duration::from_millis(450));
+        let scoped = v.render_output(rect, v.camera).unwrap();
+        assert_eq!(scoped.spheres.len(), 2, "only alpha members draw");
+        // a→b internal (1 solid) + a→c exit stub (fade segments).
+        assert_eq!(
+            scoped.edges.len(),
+            1 + v.navigator.config.exit_stub_segments,
+            "internal edge + faded exit stub"
+        );
+        // The hidden node is no longer hit-testable.
+        let c_pos = v.layout.get("c").unwrap();
+        let vp = v.viewport(rect);
+        let (cx_, cy_) = vp.model_to_screen(c_pos);
+        assert_ne!(scoped.hit_test(cx_, cy_), Some("c"));
+    }
+
+    #[test]
+    fn graph_reload_resets_scope() {
+        let mut v = nav_view();
+        v.enter_cluster_by_id("ws/alpha", Instant::now());
+        assert!(v.navigator.is_scoped());
+        // Reload path resets navigation (mirrors spawn_load's Ok branch).
+        v.navigator.reset();
+        v.camera_transition = None;
+        v.pending_enter = None;
+        assert!(!v.navigator.is_scoped() && v.navigator.members().is_none());
+    }
+}

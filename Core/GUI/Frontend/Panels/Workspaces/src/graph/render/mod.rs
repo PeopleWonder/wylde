@@ -28,6 +28,12 @@ pub struct Scene<'a> {
     pub layout: &'a Layout,
     pub theme: &'a Theme,
     pub mode: ViewMode,
+    /// When the space-map is scoped into a cluster (C-navigation), the member
+    /// ids to render. `None` → the whole graph. Edges with exactly one
+    /// endpoint in scope are *not* drawn here — they become exit-edge fade
+    /// stubs (computed by `navigation::compute_exit_edges`, appended by the
+    /// view) so the boundary treatment stays a navigation concern.
+    pub scope: Option<&'a std::collections::HashSet<String>>,
 }
 
 /// The pluggable rendering seam. v1: [`render_2d::Renderer2d`]; v2: a

@@ -60,9 +60,17 @@ impl Renderer for Renderer2d {
         let degrees = degree_map(scene);
         let max_degree = degrees.values().copied().max().unwrap_or(0);
 
+        // Scope filter (C-navigation): when scoped into a cluster, only the
+        // member nodes + fully-internal edges draw; boundary-crossing edges
+        // become exit stubs appended by the view (see `Scene::scope`).
+        let in_scope = |id: &str| scene.scope.is_none_or(|m| m.contains(id));
+
         // ── Edges first, so spheres draw on top ─────────────────────────
         let mut edges: Vec<EdgeDraw> = Vec::new();
         for e in &scene.graph.edges {
+            if !in_scope(&e.src) || !in_scope(&e.dst) {
+                continue;
+            }
             let (Some(a), Some(b)) = (scene.layout.get(&e.src), scene.layout.get(&e.dst)) else {
                 continue; // an endpoint we have no position for — skip.
             };
@@ -98,6 +106,9 @@ impl Renderer for Renderer2d {
 
         let mut spheres: Vec<SphereDraw> = Vec::with_capacity(scene.graph.nodes.len());
         for node in &scene.graph.nodes {
+            if !in_scope(&node.id) {
+                continue;
+            }
             let Some(pos) = scene.layout.get(&node.id) else {
                 continue;
             };
@@ -338,6 +349,7 @@ mod tests {
             layout: &layout,
             theme: &theme,
             mode: ViewMode::CodeGraph,
+            scope: None,
         };
         let out = Renderer2d::new().frame(&scene, &viewport());
         assert_eq!(out.spheres.len(), 4, "one sphere per node");
@@ -356,6 +368,7 @@ mod tests {
             layout: &layout,
             theme: &theme,
             mode: ViewMode::CodeGraph,
+            scope: None,
         };
         let out = Renderer2d::new().frame(&scene, &viewport());
         for s in &out.spheres {
@@ -378,6 +391,7 @@ mod tests {
             layout: &layout,
             theme: &theme,
             mode: ViewMode::CodeGraph,
+            scope: None,
         };
         let out = Renderer2d::new().frame(&scene, &viewport());
         let r = |id: &str| out.spheres.iter().find(|s| s.id == id).unwrap().radius;
@@ -406,6 +420,7 @@ mod tests {
             layout: &layout,
             theme: &theme,
             mode: ViewMode::CodeGraph,
+            scope: None,
         };
         let out = Renderer2d::new().frame(&scene, &viewport());
         assert!(
@@ -413,6 +428,31 @@ mod tests {
             "dashed edge segments into pieces, got {}",
             out.edges.len()
         );
+    }
+
+    #[test]
+    fn scoped_frame_draws_members_and_internal_edges_only() {
+        // Scope = {hub, leaf1}: leaf2/Mod spheres drop; hub→leaf1 stays;
+        // hub→leaf2 and hub→Mod cross the boundary so the renderer skips
+        // them (they become exit stubs via navigation::compute_exit_edges).
+        let g = sample();
+        let layout = g.scaffold_layout();
+        let theme = Theme::load_v1().unwrap();
+        let members: std::collections::HashSet<String> =
+            ["hub", "leaf1"].iter().map(|s| (*s).to_owned()).collect();
+        let scene = Scene {
+            graph: &g,
+            layout: &layout,
+            theme: &theme,
+            mode: ViewMode::CodeGraph,
+            scope: Some(&members),
+        };
+        let out = Renderer2d::new().frame(&scene, &viewport());
+        let ids: Vec<&str> = out.spheres.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"hub") && ids.contains(&"leaf1"));
+        // Only the internal CALLS edge survives (solid → exactly 1 segment).
+        assert_eq!(out.edges.len(), 1, "boundary edges skipped");
     }
 
     #[test]
@@ -430,6 +470,7 @@ mod tests {
             layout: &layout,
             theme: &theme,
             mode: ViewMode::CodeGraph,
+            scope: None,
         };
         let out = Renderer2d::new().frame(&scene, &viewport());
         assert!(out.edges.is_empty(), "edge to unplaced node dropped");
@@ -455,6 +496,7 @@ mod tests {
             layout: &layout,
             theme: &theme,
             mode: ViewMode::CodeGraph,
+            scope: None,
         };
         let out = Renderer2d::new().frame(&scene, &viewport());
         let core = |id: &str| out.spheres.iter().find(|s| s.id == id).unwrap().layers[1].color;
