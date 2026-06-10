@@ -312,28 +312,19 @@ uv run python -m Core.harness.dev.wylde_check
 (rule 17), startup sequence (rule 18), shutdown handler (rule 19), action
 contract present (rule 9 from the GUI side once a GUI consumer lands).
 
-### Strangler-fig (when porting from Python)
+### Strangler-fig (historical)
 
-If your service replaces a Python predecessor, follow the strangler-fig
-pattern documented in `wylde-repo-organization.md` §8:
+The strangler-fig migration pattern carried every service from Python to
+Rust between 2026-05 and 2026-06; the full-Rust cutover (R6, 2026-06-10)
+deleted the last Python trees, so there is nothing left to strangle. The
+pattern is kept in `wylde-repo-organization.md` §8 for the record —
+byte-shape parity tests (`rust/tests/parity/`), env-var-gated defaults,
+soak, then delete. The Phase 5.D parity gate catching a salvage-parser
+edge case the unit tests missed is the cautionary tale worth remembering.
 
-1. Ship the Rust port with its env-var default still `python`. The Rust
-   handlers are registered (reachable through the in-process catalog) but
-   canonical traffic still flows through the Python pipe.
-2. Write byte-shape parity tests under `rust/tests/parity/tests/<area>.rs`.
-   Gate behind `--features parity`.
-3. Once parity is green, flip the env-var default to `rust`.
-4. Soak for 14 days. Watch the daemon logs for the Python-fallback path
-   firing.
-5. Delete the Python tree.
-
-Each step is a separate slice. Don't skip steps even if you're "sure" parity
-holds — the Phase 5.D parity gate caught a salvage-parser edge case that
-the unit tests had missed.
-
-For net-new services (no Python predecessor), skip the env-var indirection
-entirely — go straight to `rust:wylde-<name>` in the entry_point. The
-`WYLDE_<SERVICE>_IMPL` indirection is only useful when there's a fallback.
+New services are net-new Rust: go straight to `rust:wylde-<name>` in the
+entry_point. The `WYLDE_<SERVICE>_IMPL` env vars are still parsed for
+shape consistency, but `=python` only logs a warning.
 
 ## Gotchas
 

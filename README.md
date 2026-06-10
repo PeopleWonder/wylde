@@ -12,11 +12,11 @@ your phone — with no third-party cloud in the request path.
 
 ## What it is
 
-- **Rust-first.** The services, the desktop GUI, and the chat-turn engine are
-  native Rust. Python remains only where it is the pragmatic choice — chiefly
-  supervising the bundled Neo4j graph database and the heavyweight ML training
-  stack — and as a rollback path behind per-service `WYLDE_<SERVICE>_IMPL`
-  flags.
+- **All Rust.** The services, the desktop GUI, and the chat-turn engine are
+  native Rust — the full-Rust cutover (2026-06-10) deleted the last Python
+  runtime services and their rollback paths. The only Python left in-tree is
+  the `wylde_check` lint tool (`Core/harness/dev/`) and the stdlib N8N
+  extension tool stubs; nothing at runtime needs an interpreter.
 - **Native desktop GUI.** The app is `wylde-gui`, a GPU-rendered
   [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui) (Rust)
   desktop application under `Core/GUI/`. There is no web stack, no embedded
@@ -44,7 +44,7 @@ speak those pipes directly; the Gateway is the only HTTP trust boundary.
 | **voice**            | `\\.\pipe\wylde-voice`      | Audio I/O + the capture→STT→chat→TTS loop, cpal mic, openWakeWord. Rust (`wylde-voice`). |
 | **vram-broker**      | `\\.\pipe\vram-broker`      | Lease-based VRAM arbitration so models cooperate on a single GPU, with DRAM spillover. Rust (`wylde-vram-broker`). |
 | **ollama**           | `\\.\pipe\wylde-ollama`     | Wraps the local Ollama HTTP API behind the lease primitive. Rust (`wylde-ollama`). |
-| **memgraph**         | `\\.\pipe\wylde-memgraph`   | Knowledge-graph store. The harness talks to Neo4j over **direct Bolt** (`bolt://127.0.0.1:7687`); Python here only supervises the bundled Neo4j JVM. |
+| **memgraph**         | `\\.\pipe\wylde-memgraph`   | Knowledge-graph store. The harness talks to Neo4j over **direct Bolt** (`bolt://127.0.0.1:7687`); the lifecycle daemon supervises the bundled Neo4j JVM directly. |
 | **device-gate**      | `\\.\pipe\wylde-device-gate`| Per-device bearer tokens + permission tiers (`read_only` / `tool_use` / `destructive_tool_access`) for paired mobile devices. Rust (`wylde-device-gate`). |
 | **extension-bridge** | `\\.\pipe\wylde-extension-bridge` | Hosts browser extensions and the MCP tool surface; routes per-extension manifests. Rust (`wylde-extension-bridge`). |
 | **vpn**              | `\\.\pipe\wylde-vpn`        | WyldeLink mesh: WireGuard wrapper + mDNS discovery + phone pairing. Opt-in (default-off). |
@@ -66,9 +66,8 @@ WebView child window.
 | ---- | -------- |
 | `rust/`        | The backend Cargo workspace — every Rust service crate (`wylde-harness`, `wylde-gateway`, `wylde-lifecycle`, `wylde-voice`, `wylde-vram-broker`, `wylde-ollama`, `wylde-device-gate`, `wylde-extension-bridge`, `wylde-vpn`) plus `wylde-shared`. |
 | `Core/GUI/`    | The native gpui desktop app (separate workspace). Ships `wylde-gui`. |
-| `Core/`        | Python services kept for supervision/rollback (`Lifecycle/`, `Memgraph/`, `harness/`, …) and shared Python helpers. |
-| `Gateway/` *(removed)* | The legacy Python Gateway — deleted; the active Gateway is `wylde-gateway`. |
-| `Voice/`, `VPN/`, `Trainer/`, `device_gate/`, `N8N/`, `Extensions/` | Per-area Python sources and assets (rollback impls, ML wrappers, extension handlers, workflow templates). |
+| `Core/`        | Non-service assets beside the GUI workspace: `Core/Memgraph/vendor/` (bundled Neo4j), `Core/harness/dev/` (the `wylde_check` lint tool + tests — the only Python left), service `manifest.json` files. The Python runtime services that used to live here (`Lifecycle/`, `harness/`, `shared/`, the Memgraph wrapper) were deleted in the full-Rust cutover (R6, 2026-06-10). |
+| `N8N/`, `Extensions/` | Extension manifests, workflow templates, and stdlib tool stubs. |
 | `docs/`        | Architecture, design, extension, and migration docs (see `docs/wylde-repo-organization.md` for the index). |
 
 ## Building and running
@@ -99,9 +98,8 @@ time from **Settings → Apps**.
 
 - **Rust** (stable toolchain) for the services and the GUI.
 - **[Ollama](https://ollama.com)** running locally for chat (`127.0.0.1:11434`).
-- **Python via [uv](https://docs.astral.sh/uv/)** for the Python-supervised
-  pieces (bundled Neo4j supervision) and for running the Python test
-  suites / rollback impls.
+- **Python via [uv](https://docs.astral.sh/uv/)** — optional, dev-only: the
+  `wylde_check` lint suite is the only thing that needs an interpreter.
 - **Neo4j + JDK runtime.** Not shipped in the repo (~280 MB, above GitHub's
   file-size limit). Run `tools\install-neo4j.ps1` once to download pinned,
   checksum-verified versions into `Core/Memgraph/vendor/` — see
@@ -135,47 +133,20 @@ cargo build --release --manifest-path Core/GUI/Cargo.toml
 # produces Core/GUI/target/release/wylde-gui.exe (the entry_point in Core/GUI/manifest.json)
 ```
 
-### Python pieces (uv)
+### Python (dev-only, optional)
 
-Dependencies are managed by [uv](https://docs.astral.sh/uv/). Install it once:
-
-```powershell
-# Windows
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-```bash
-# Unix
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-Then from the repo root:
-
-```powershell
-uv venv                  # creates .venv pinned to Python 3.11 (see .python-version)
-uv sync --all-extras     # installs every dependency group
-```
-
-`uv sync` is reproducible — it installs the exact versions pinned in `uv.lock`.
-The lockfile is committed; `.venv/` is gitignored. Install just what you need
-with e.g. `uv sync --extra voice --extra vpn`.
-
-| Extra              | Covers                                                |
-| ------------------ | ----------------------------------------------------- |
-| `resource-monitor` | Flask + GPU/container probes (psutil, pynvml, docker) |
-| `memgraph`         | Neo4j driver                                          |
-| `vpn`              | Flask + QR code pairing + zeroconf mDNS               |
-| `voice`            | faster-whisper STT, kokoro-onnx TTS, sounddevice      |
-| `trainer`          | torch, transformers, vision-language models (heavy)   |
-| `harness`          | lancedb, sentence-transformers, pyautogui, playwright |
-| `dev`              | pytest, ruff, mypy                                    |
+The runtime needs no interpreter. The one Python tool left is `wylde_check`
+(`Core/harness/dev/` — the repo's 48-rule lint suite); to hack on it, install
+[uv](https://docs.astral.sh/uv/) and run `uv venv && uv sync --extra dev`
+(pytest, ruff, mypy — there are no runtime dependencies, and the old
+service extras went with their Python packages in the full-Rust cutover).
 
 ### Tests
 
 ```powershell
 cargo test --manifest-path rust/Cargo.toml          # backend Rust
 cargo test --manifest-path Core/GUI/Cargo.toml      # GUI
-uv run pytest Core "device_gate" Voice VPN Trainer N8N   # Python suites / rollback impls
+uv run pytest Core N8N                              # wylde_check lint-tool suite
 ```
 
 ## Security model

@@ -4,7 +4,7 @@ Audience: future-you, or a contributor coming in cold. This is every place a req
 
 > **State markers:** **[live]** = wired and reachable, **[planned]** = future, **[uncertain]** = code present but not verified end-to-end. The earlier **[delete]** items (dead orchestrator routes, fletch-web shim, retired services router) have been executed — they're gone now. Last refresh: 2026-05-10 post-execution.
 >
-> **Implementation note (current):** the route *surface* and pipe *contracts* below are still accurate, but the canonical Gateway is now the Rust crate `wylde-gateway` (Axum, HTTP on `127.0.0.1:8005` + the `\\.\pipe\wylde-gateway` pipe), a superset of the routes documented here; the legacy Python `Gateway/` package has been removed. Lifecycle, voice, and the vram-broker likewise default to their Rust implementations. The `Gateway/app.py:140`-style `file:line` citations below point at the historical Python implementation and are retained for contract reference — read them as "this contract", not "this file still exists".
+> **Implementation note (current):** the route *surface* and pipe *contracts* below are still accurate, but the canonical Gateway is now the Rust crate `wylde-gateway` (Axum, HTTP on `127.0.0.1:8005` + the `\\.\pipe\wylde-gateway` pipe), a superset of the routes documented here; the legacy Python `Gateway/` package has been removed. Lifecycle, voice, and the vram-broker likewise default to their Rust implementations. The `Gateway/app.py:140`-style `file:line` citations below point at the historical Python implementation and are retained for contract reference — read them as "this contract", not "this file still exists". **Full-Rust cutover (R6, 2026-06-10):** the remaining Python runtime (`Core/Lifecycle/`, `Core/harness/` runtime, `Core/shared/`, the Memgraph wrapper) was deleted too; every pipe below is served by a Rust crate, and ALL remaining Python `file:line` citations in this document are historical contract references.
 
 ## Architecture in one sentence
 
@@ -512,7 +512,7 @@ VPN was hoisted out of device_gate during Phase 12 — it's now a peer top-level
 
 ## 4. Tool catalog — the harness tool-call surface
 
-Filesystem-as-registry under `Core/harness/tooling/tools/<group>/<tool_id>/`. Each tool dir has `manifest.json` + a Python module of the same name. The registry walks the tree and returns a flat list. Smoke-test count: **48 baseline tools**, growing to 51 when Webcrawler is enabled.
+Compiled-in registry (`wylde_harness::tooling::registry`) — each Rust tool module registers its entries at init; descriptions and parameter schemas were carried verbatim from the historical Python manifests (the filesystem-as-registry tree under `Core/harness/tooling/` was deleted in the full-Rust cutover). Smoke-test count: **48 baseline tools**, growing to 51 when Webcrawler is enabled.
 
 | Group | Tool IDs |
 |---|---|
@@ -778,12 +778,12 @@ the iframe-panel mechanism.
 
 ## What's reachable today on a clean boot
 
-If `Core/Lifecycle/daemon.py` runs against the live tree on a Python env with `fastapi`, `uvicorn`, `pywin32`, `msgpack` installed:
+With the Rust daemon (`wylde-lifecycle.exe`, spawned by `launch_wylde.ps1` — the Python daemon and its env-var fallback were deleted in the full-Rust cutover):
 
 - `\\.\pipe\wylde-lifecycle` — **up** (`service.list/.health/.start/.stop/.wake/.shutdown_all`)
 - `\\.\pipe\wylde-harness` — **up** (chat.* + tools.* + models.* — 9 actions); started in-process by the daemon's Phase 2b
-- `\\.\pipe\wylde-memgraph` — **up** (Phase 2c — daemon spawns `Core/Memgraph/run.py` as a subprocess; Neo4j Bolt on `127.0.0.1:7687` reachable after ~10–60s warmup)
-- Gateway HTTP — **up** if entry_point spawns (the launcher's `PYTHONPATH` overlay now prepends parent-of-Wylde for `Wylde.Gateway.run`-style entry points); when up, `\\.\pipe\wylde-gateway` is also up via lifespan
+- `\\.\pipe\wylde-memgraph` — **up** (the daemon supervises the bundled Neo4j JVM directly since R3; Bolt on `127.0.0.1:7687` reachable after ~10–60s warmup)
+- Gateway HTTP — **up** (`wylde-gateway`, spawned by the daemon); `\\.\pipe\wylde-gateway` comes up with it
 - All other pipes — **dead or uncertain**
 - Chat turns — **work end-to-end via the harness pipe** with a real Ollama backend that supports tool calls. The gpui Chat panel's transcript consumes `chat.stream_turn`; its tool-activity strip consumes `chat.stream_tools`.
 - `POST /api/chat` (Gateway) — still a naked Ollama proxy. Mobile path will repoint to the harness once mobile-side streaming lands.
