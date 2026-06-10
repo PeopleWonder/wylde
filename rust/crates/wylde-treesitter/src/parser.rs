@@ -56,6 +56,13 @@ pub struct Grammar {
     /// the query says *what* to capture, the spec says *how* to read it. A
     /// chunk-only grammar (Markdown) leaves both `None`.
     pub entity_spec: Option<&'static crate::entities::EntitySpec>,
+
+    /// Tree-sitter query (`.scm` source) that captures outline items at every
+    /// depth — `@item` per definition node, `@name` for its identifier. Used
+    /// by [`crate::outline`] (Slice H), which nests the flat captures into a
+    /// tree by byte containment. `None` → `treesitter.outline` rejects with
+    /// `unsupported_language` (no useful outline without an AST).
+    pub outline_query: Option<&'static str>,
 }
 
 /// Every grammar this build links. Slice 4: Python, Rust, TypeScript, TSX,
@@ -77,6 +84,7 @@ pub static REGISTRY: &[Grammar] = &[
         chunk_query: Some(include_str!("queries/python/chunks.scm")),
         entity_query: Some(include_str!("queries/python/entities.scm")),
         entity_spec: Some(&crate::entities::PYTHON_SPEC),
+        outline_query: Some(include_str!("queries/python/outline.scm")),
     },
     Grammar {
         name: "rust",
@@ -86,6 +94,7 @@ pub static REGISTRY: &[Grammar] = &[
         chunk_query: Some(include_str!("queries/rust/chunks.scm")),
         entity_query: Some(include_str!("queries/rust/entities.scm")),
         entity_spec: Some(&crate::entities::RUST_SPEC),
+        outline_query: Some(include_str!("queries/rust/outline.scm")),
     },
     Grammar {
         name: "typescript",
@@ -95,6 +104,7 @@ pub static REGISTRY: &[Grammar] = &[
         chunk_query: Some(include_str!("queries/typescript/chunks.scm")),
         entity_query: Some(include_str!("queries/typescript/entities.scm")),
         entity_spec: Some(&crate::entities::TS_SPEC),
+        outline_query: Some(include_str!("queries/typescript/outline.scm")),
     },
     Grammar {
         name: "tsx",
@@ -108,6 +118,7 @@ pub static REGISTRY: &[Grammar] = &[
         // TSX node kinds/fields are identical to TS (it's TS + JSX), so the TS
         // spec reads its entities verbatim; the TSX `.scm` adds the JSX captures.
         entity_spec: Some(&crate::entities::TS_SPEC),
+        outline_query: Some(include_str!("queries/tsx/outline.scm")),
     },
     Grammar {
         name: "javascript",
@@ -118,6 +129,7 @@ pub static REGISTRY: &[Grammar] = &[
         chunk_query: Some(include_str!("queries/javascript/chunks.scm")),
         entity_query: Some(include_str!("queries/javascript/entities.scm")),
         entity_spec: Some(&crate::entities::JS_SPEC),
+        outline_query: Some(include_str!("queries/javascript/outline.scm")),
     },
     Grammar {
         name: "markdown",
@@ -127,9 +139,11 @@ pub static REGISTRY: &[Grammar] = &[
         language: || tree_sitter_md::LANGUAGE.into(),
         extensions: &["md", "markdown"],
         chunk_query: Some(include_str!("queries/markdown/chunks.scm")),
-        // Markdown has no functions/classes/imports/calls — chunk-only.
+        // Markdown has no functions/classes/imports/calls — chunk-only for
+        // entities, but it DOES outline (the heading hierarchy).
         entity_query: None,
         entity_spec: None,
+        outline_query: Some(include_str!("queries/markdown/outline.scm")),
     },
 ];
 
@@ -266,7 +280,14 @@ mod tests {
         let names: Vec<&str> = REGISTRY.iter().map(|g| g.name).collect();
         assert_eq!(
             names,
-            vec!["python", "rust", "typescript", "tsx", "javascript", "markdown"]
+            vec![
+                "python",
+                "rust",
+                "typescript",
+                "tsx",
+                "javascript",
+                "markdown"
+            ]
         );
     }
 

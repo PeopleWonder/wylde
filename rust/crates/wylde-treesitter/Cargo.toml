@@ -41,6 +41,10 @@ thiserror.workspace = true
 tree-sitter = "0.25"
 tree-sitter-python = "0.25"
 tree-sitter-rust = "0.24"
+# Drives the `treesitter.highlight` verb (TBS Slice H) over each grammar
+# crate's bundled highlights.scm — the plan's named dependency for it. Same
+# 0.25 family as the runtime so there's one tree-sitter copy in the build.
+tree-sitter-highlight = "0.25"
 tree-sitter-javascript = "0.23"
 tree-sitter-typescript = "0.23"
 # Markdown's block grammar (MDeiml/tree-sitter-markdown, published as

@@ -182,7 +182,11 @@ pub static TS_SPEC: EntitySpec = EntitySpec {
     ],
     body_field: "body",
     class_name_fields: &["name"],
-    method_kinds: &["method_definition", "method_signature", "abstract_method_signature"],
+    method_kinds: &[
+        "method_definition",
+        "method_signature",
+        "abstract_method_signature",
+    ],
     method_wrapper_kinds: &[],
     bases: BasesStrategy::JsHeritage,
     imports: ImportStrategy::EsModule,
@@ -215,9 +219,8 @@ pub fn extract_entities(path: &str, language: Option<&str>) -> Result<Value, Ipc
         }
     }
 
-    let source = std::fs::read_to_string(path).map_err(|e| {
-        IpcError::new("read_failed", format!("could not read {path:?}: {e}"))
-    })?;
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| IpcError::new("read_failed", format!("could not read {path:?}: {e}")))?;
 
     // Entities need an AST: unlike `chunk` (which byte-windows an unknown
     // language) there's nothing meaningful to extract without a grammar, so an
@@ -283,18 +286,38 @@ pub fn entity_names(reply: &Value) -> Vec<String> {
     if let Some(cs) = reply.get("classes").and_then(Value::as_array) {
         for c in cs {
             push(c.get("name").and_then(Value::as_str));
-            for m in c.get("methods").and_then(Value::as_array).into_iter().flatten() {
+            for m in c
+                .get("methods")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 push(m.as_str());
             }
-            for b in c.get("bases").and_then(Value::as_array).into_iter().flatten() {
+            for b in c
+                .get("bases")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
                 push(b.as_str());
             }
         }
     }
-    for i in reply.get("imports").and_then(Value::as_array).into_iter().flatten() {
+    for i in reply
+        .get("imports")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         push(i.get("module").and_then(Value::as_str));
     }
-    for c in reply.get("calls").and_then(Value::as_array).into_iter().flatten() {
+    for c in reply
+        .get("calls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         push(c.get("callee").and_then(Value::as_str));
     }
     out
@@ -354,10 +377,7 @@ struct Entities {
 /// Resolve which grammar to use: explicit `language` wins; otherwise infer from
 /// the path extension. Unlike `chunk`, an unknown language is rejected (no
 /// AST → nothing to extract).
-fn resolve_grammar(
-    path: &str,
-    language: Option<&str>,
-) -> Result<&'static Grammar, IpcError> {
+fn resolve_grammar(path: &str, language: Option<&str>) -> Result<&'static Grammar, IpcError> {
     match language {
         Some(lang) if !lang.trim().is_empty() => parser::resolve(lang).ok_or_else(|| {
             let known: Vec<&str> = parser::REGISTRY.iter().map(|g| g.name).collect();
@@ -406,9 +426,9 @@ fn walk(
             format!("could not load {} grammar: {e}", grammar.name),
         )
     })?;
-    let tree = parser.parse(source, None).ok_or_else(|| {
-        IpcError::new("parse_failed", "tree-sitter returned no tree")
-    })?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| IpcError::new("parse_failed", "tree-sitter returned no tree"))?;
     let root = tree.root_node();
 
     let query = Query::new(&lang, query_src).map_err(|e| {
@@ -439,7 +459,10 @@ fn walk(
                 // calls are still attributed to them as a caller).
                 if enclosing_def(node, spec).is_none() {
                     if let Some(name) = field_text(node, spec.name_field, src) {
-                        out.functions.push(NamedLine { name, line: line_of(node) });
+                        out.functions.push(NamedLine {
+                            name,
+                            line: line_of(node),
+                        });
                     }
                 }
             } else if idx == class_idx {
@@ -452,7 +475,11 @@ fn walk(
                 if let Some(callee) = callee_name(node, src) {
                     let caller = enclosing_function_name(node, src, spec)
                         .unwrap_or_else(|| module.to_string());
-                    out.calls.push(Call { caller, callee, line: line_of(node) });
+                    out.calls.push(Call {
+                        caller,
+                        callee,
+                        line: line_of(node),
+                    });
                 }
             } else if idx == jsx_call_idx {
                 // A JSX tag name node (`<Foo/>` / `<Foo>…`). React convention:
@@ -461,7 +488,11 @@ fn walk(
                 if let Some(callee) = jsx_component_name(node, src) {
                     let caller = enclosing_function_name(node, src, spec)
                         .unwrap_or_else(|| module.to_string());
-                    out.calls.push(Call { caller, callee, line: line_of(node) });
+                    out.calls.push(Call {
+                        caller,
+                        callee,
+                        line: line_of(node),
+                    });
                 }
             }
         }
@@ -579,7 +610,12 @@ fn class_info(node: Node, src: &[u8], spec: &EntitySpec) -> ClassInfo {
         }
     }
 
-    ClassInfo { name, line, methods, bases }
+    ClassInfo {
+        name,
+        line,
+        methods,
+        bases,
+    }
 }
 
 /// Name a `@class` node: try each of `spec.class_name_fields` in order (Rust
@@ -738,7 +774,10 @@ fn collect_imports(node: Node, src: &[u8], spec: &EntitySpec, out: &mut Vec<Name
             if let Some(s) = field_text(node, "source", src) {
                 let m = s.trim_matches(|c| c == '"' || c == '\'' || c == '`');
                 if !m.is_empty() {
-                    out.push(NamedLine { name: m.to_string(), line });
+                    out.push(NamedLine {
+                        name: m.to_string(),
+                        line,
+                    });
                 }
             }
         }
@@ -755,8 +794,11 @@ fn callee_name(call: Node, src: &[u8]) -> Option<String> {
     let f = call.child_by_field_name("function")?;
     match f.kind() {
         // A bare literal/index/paren callee has no name-level target.
-        "subscript_expression" | "index_expression" | "parenthesized_expression"
-        | "call_expression" | "call" => None,
+        "subscript_expression"
+        | "index_expression"
+        | "parenthesized_expression"
+        | "call_expression"
+        | "call" => None,
         _ => final_identifier(f, src),
     }
 }
@@ -829,9 +871,19 @@ mod tests {
         let w = &classes[0];
         assert_eq!(w["name"], "Widget");
         assert_eq!(w["line"], 1);
-        let methods: Vec<&str> = w["methods"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
+        let methods: Vec<&str> = w["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m.as_str().unwrap())
+            .collect();
         assert_eq!(methods, vec!["__init__", "render"]);
-        let bases: Vec<&str> = w["bases"].as_array().unwrap().iter().map(|b| b.as_str().unwrap()).collect();
+        let bases: Vec<&str> = w["bases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_str().unwrap())
+            .collect();
         assert_eq!(bases, vec!["Base", "mixins.Loud"]);
         // Methods must NOT leak into top-level functions.
         assert!(v["functions"].as_array().unwrap().is_empty());
@@ -841,7 +893,12 @@ mod tests {
     fn extracts_imports_both_forms() {
         let src = "import os\nimport os.path as p\nimport sys, json\nfrom collections import OrderedDict\nfrom . import sibling\n";
         let v = extract(src);
-        let imports: Vec<&str> = v["imports"].as_array().unwrap().iter().map(|i| i["module"].as_str().unwrap()).collect();
+        let imports: Vec<&str> = v["imports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["module"].as_str().unwrap())
+            .collect();
         assert!(imports.contains(&"os"));
         assert!(imports.contains(&"os.path")); // aliased → real module name
         assert!(imports.contains(&"sys"));
@@ -861,7 +918,10 @@ mod tests {
         let getcwd = calls.iter().find(|c| c["callee"] == "getcwd").unwrap();
         assert_eq!(getcwd["caller"], "worker");
         // A module-level call is attributed to the module identity (file stem).
-        let top = calls.iter().find(|c| c["callee"] == "top_level_call").unwrap();
+        let top = calls
+            .iter()
+            .find(|c| c["callee"] == "top_level_call")
+            .unwrap();
         assert_eq!(top["caller"], v["module"]);
     }
 
@@ -900,9 +960,18 @@ mod tests {
     #[test]
     fn counts_match_arrays() {
         let v = extract("import os\n\ndef a():\n    pass\n\nclass B:\n    pass\n");
-        assert_eq!(v["counts"]["functions"], v["functions"].as_array().unwrap().len());
-        assert_eq!(v["counts"]["classes"], v["classes"].as_array().unwrap().len());
-        assert_eq!(v["counts"]["imports"], v["imports"].as_array().unwrap().len());
+        assert_eq!(
+            v["counts"]["functions"],
+            v["functions"].as_array().unwrap().len()
+        );
+        assert_eq!(
+            v["counts"]["classes"],
+            v["classes"].as_array().unwrap().len()
+        );
+        assert_eq!(
+            v["counts"]["imports"],
+            v["imports"].as_array().unwrap().len()
+        );
     }
 
     #[test]
@@ -958,9 +1027,19 @@ mod tests {
             .iter()
             .find(|c| c["name"] == "Widget" && !c["methods"].as_array().unwrap().is_empty())
             .expect("impl Widget with methods");
-        let methods: Vec<&str> = widget_impl["methods"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
+        let methods: Vec<&str> = widget_impl["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m.as_str().unwrap())
+            .collect();
         assert_eq!(methods, vec!["render"]);
-        let bases: Vec<&str> = widget_impl["bases"].as_array().unwrap().iter().map(|b| b.as_str().unwrap()).collect();
+        let bases: Vec<&str> = widget_impl["bases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_str().unwrap())
+            .collect();
         assert_eq!(bases, vec!["Render"]);
 
         // `use std::collections::HashMap;` → module path `std::collections`.
@@ -990,17 +1069,33 @@ mod tests {
         let classes = v["classes"].as_array().unwrap();
         assert_eq!(classes[0]["name"], "View");
         assert_eq!(names_of(&v, "classes", "name"), vec!["View"]);
-        let methods: Vec<&str> = classes[0]["methods"].as_array().unwrap().iter().map(|m| m.as_str().unwrap()).collect();
+        let methods: Vec<&str> = classes[0]["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m.as_str().unwrap())
+            .collect();
         assert_eq!(methods, vec!["render"]);
-        let bases: Vec<&str> = classes[0]["bases"].as_array().unwrap().iter().map(|b| b.as_str().unwrap()).collect();
+        let bases: Vec<&str> = classes[0]["bases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_str().unwrap())
+            .collect();
         assert_eq!(bases, vec!["Base"]);
 
         // ES import source string, quotes stripped.
         assert_eq!(names_of(&v, "imports", "module"), vec!["./dom.js"]);
 
         let calls = v["calls"].as_array().unwrap();
-        assert_eq!(calls.iter().find(|c| c["callee"] == "mount").unwrap()["caller"], "boot");
-        assert_eq!(calls.iter().find(|c| c["callee"] == "draw").unwrap()["caller"], "render");
+        assert_eq!(
+            calls.iter().find(|c| c["callee"] == "mount").unwrap()["caller"],
+            "boot"
+        );
+        assert_eq!(
+            calls.iter().find(|c| c["callee"] == "draw").unwrap()["caller"],
+            "render"
+        );
     }
 
     // ── TypeScript ───────────────────────────────────────────────────────────
@@ -1018,20 +1113,40 @@ mod tests {
 
         let classes = v["classes"].as_array().unwrap();
         // Interface Shape carries its method signature.
-        let shape = classes.iter().find(|c| c["name"] == "Shape").expect("interface Shape");
+        let shape = classes
+            .iter()
+            .find(|c| c["name"] == "Shape")
+            .expect("interface Shape");
         assert_eq!(shape["methods"].as_array().unwrap()[0], "area");
         // Circle extends Base + implements Shape → both are bases.
-        let circle = classes.iter().find(|c| c["name"] == "Circle").expect("class Circle");
-        let bases: Vec<&str> = circle["bases"].as_array().unwrap().iter().map(|b| b.as_str().unwrap()).collect();
+        let circle = classes
+            .iter()
+            .find(|c| c["name"] == "Circle")
+            .expect("class Circle");
+        let bases: Vec<&str> = circle["bases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_str().unwrap())
+            .collect();
         assert!(bases.contains(&"Base"), "extends base missing: {bases:?}");
-        assert!(bases.contains(&"Shape"), "implements base missing: {bases:?}");
+        assert!(
+            bases.contains(&"Shape"),
+            "implements base missing: {bases:?}"
+        );
         assert_eq!(circle["methods"].as_array().unwrap()[0], "area");
 
         assert_eq!(names_of(&v, "imports", "module"), vec!["./opts"]);
 
         let calls = v["calls"].as_array().unwrap();
-        assert_eq!(calls.iter().find(|c| c["callee"] == "build").unwrap()["caller"], "make");
-        assert_eq!(calls.iter().find(|c| c["callee"] == "compute").unwrap()["caller"], "area");
+        assert_eq!(
+            calls.iter().find(|c| c["callee"] == "build").unwrap()["caller"],
+            "make"
+        );
+        assert_eq!(
+            calls.iter().find(|c| c["callee"] == "compute").unwrap()["caller"],
+            "area"
+        );
     }
 
     // ── TSX (TypeScript + JSX) ────────────────────────────────────────────────
@@ -1050,8 +1165,16 @@ mod tests {
 
         // The class component carries its method + `extends` base.
         let classes = v["classes"].as_array().unwrap();
-        let panel = classes.iter().find(|c| c["name"] == "Panel").expect("class Panel");
-        let bases: Vec<&str> = panel["bases"].as_array().unwrap().iter().map(|b| b.as_str().unwrap()).collect();
+        let panel = classes
+            .iter()
+            .find(|c| c["name"] == "Panel")
+            .expect("class Panel");
+        let bases: Vec<&str> = panel["bases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b.as_str().unwrap())
+            .collect();
         assert_eq!(bases, vec!["Component"]);
         assert_eq!(panel["methods"].as_array().unwrap()[0], "render");
 
@@ -1066,9 +1189,13 @@ mod tests {
             .find(|c| c["callee"] == "Child" && c["caller"] == "App")
             .expect("Child rendered by App");
         assert!(child_in_app["line"].as_u64().unwrap() >= 1);
-        assert!(calls.iter().any(|c| c["callee"] == "Child" && c["caller"] == "render"));
+        assert!(calls
+            .iter()
+            .any(|c| c["callee"] == "Child" && c["caller"] == "render"));
         // No host element leaked in as a call.
-        assert!(calls.iter().all(|c| c["callee"] != "div" && c["callee"] != "span"));
+        assert!(calls
+            .iter()
+            .all(|c| c["callee"] != "div" && c["callee"] != "span"));
     }
 
     #[test]
