@@ -327,6 +327,31 @@ mod tests {
     }
 
     #[test]
+    fn slice_k_grammars_outline_their_structure() {
+        // JSON: keys nest by object containment.
+        let f = temp_source("{\"server\": {\"port\": 1}, \"name\": \"x\"}\n", "json");
+        let out = outline(f.path().to_str().unwrap(), None).unwrap();
+        assert_eq!(names_at(&out["tree"]), vec!["server", "name"]);
+        assert_eq!(names_at(&out["tree"][0]["children"]), vec!["port"]);
+
+        // TOML: tables + array-of-table elements, header-named.
+        let f = temp_source("[server]\nport = 1\n\n[[bin]]\nname = \"a\"\n", "toml");
+        let out = outline(f.path().to_str().unwrap(), None).unwrap();
+        assert_eq!(names_at(&out["tree"]), vec!["server", "bin"]);
+
+        // YAML: mapping keys nest.
+        let f = temp_source("top:\n  inner: 1\nother: 2\n", "yaml");
+        let out = outline(f.path().to_str().unwrap(), None).unwrap();
+        assert_eq!(names_at(&out["tree"]), vec!["top", "other"]);
+        assert_eq!(names_at(&out["tree"][0]["children"]), vec!["inner"]);
+
+        // Bash: function definitions.
+        let f = temp_source("greet() {\n  echo hi\n}\n", "sh");
+        let out = outline(f.path().to_str().unwrap(), None).unwrap();
+        assert_eq!(names_at(&out["tree"]), vec!["greet"]);
+    }
+
+    #[test]
     fn nested_defs_nest_arbitrarily_deep() {
         let src = "class Outer:\n    class Inner:\n        def deep(self):\n            pass\n";
         let f = temp_source(src, "py");

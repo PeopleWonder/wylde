@@ -145,6 +145,49 @@ pub static REGISTRY: &[Grammar] = &[
         entity_spec: None,
         outline_query: Some(include_str!("queries/markdown/outline.scm")),
     },
+    // ── Slice K — the plan's remaining recommended set (config + shell). ──
+    // All four are entity-less (no functions/classes/imports to extract —
+    // the markdown precedent); they chunk, outline, and highlight.
+    Grammar {
+        name: "json",
+        grammar_sha: "tree-sitter-json@0.24",
+        language: || tree_sitter_json::LANGUAGE.into(),
+        extensions: &["json"],
+        chunk_query: Some(include_str!("queries/json/chunks.scm")),
+        entity_query: None,
+        entity_spec: None,
+        outline_query: Some(include_str!("queries/json/outline.scm")),
+    },
+    Grammar {
+        name: "toml",
+        grammar_sha: "tree-sitter-toml-ng@0.7",
+        language: || tree_sitter_toml_ng::LANGUAGE.into(),
+        extensions: &["toml"],
+        chunk_query: Some(include_str!("queries/toml/chunks.scm")),
+        entity_query: None,
+        entity_spec: None,
+        outline_query: Some(include_str!("queries/toml/outline.scm")),
+    },
+    Grammar {
+        name: "yaml",
+        grammar_sha: "tree-sitter-yaml@0.7",
+        language: || tree_sitter_yaml::LANGUAGE.into(),
+        extensions: &["yaml", "yml"],
+        chunk_query: Some(include_str!("queries/yaml/chunks.scm")),
+        entity_query: None,
+        entity_spec: None,
+        outline_query: Some(include_str!("queries/yaml/outline.scm")),
+    },
+    Grammar {
+        name: "bash",
+        grammar_sha: "tree-sitter-bash@0.25",
+        language: || tree_sitter_bash::LANGUAGE.into(),
+        extensions: &["sh", "bash"],
+        chunk_query: Some(include_str!("queries/bash/chunks.scm")),
+        entity_query: None,
+        entity_spec: None,
+        outline_query: Some(include_str!("queries/bash/outline.scm")),
+    },
 ];
 
 /// Infer a grammar from a file path's extension (case-insensitive). `None`
@@ -276,7 +319,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_lists_the_slice4_grammars() {
+    fn registry_lists_every_linked_grammar() {
         let names: Vec<&str> = REGISTRY.iter().map(|g| g.name).collect();
         assert_eq!(
             names,
@@ -286,7 +329,12 @@ mod tests {
                 "typescript",
                 "tsx",
                 "javascript",
-                "markdown"
+                "markdown",
+                // Slice K — the plan's remaining recommended set.
+                "json",
+                "toml",
+                "yaml",
+                "bash"
             ]
         );
     }
@@ -316,6 +364,13 @@ mod tests {
         // `.tsx` resolves to the dedicated TSX grammar (TypeScript + JSX).
         assert_eq!(resolve_by_path("Component.tsx").unwrap().name, "tsx");
         assert_eq!(resolve_by_path("App.TSX").unwrap().name, "tsx");
+        // Slice K — config + shell extensions.
+        assert_eq!(resolve_by_path("package.json").unwrap().name, "json");
+        assert_eq!(resolve_by_path("Cargo.toml").unwrap().name, "toml");
+        assert_eq!(resolve_by_path("deploy.yaml").unwrap().name, "yaml");
+        assert_eq!(resolve_by_path("ci.yml").unwrap().name, "yaml");
+        assert_eq!(resolve_by_path("setup.sh").unwrap().name, "bash");
+        assert_eq!(resolve_by_path("profile.bash").unwrap().name, "bash");
         assert!(resolve_by_path("no_extension").is_none());
     }
 
@@ -341,7 +396,7 @@ mod tests {
     fn languages_reports_every_grammar_with_abi() {
         let v = languages();
         let arr = v["languages"].as_array().unwrap();
-        assert_eq!(arr.len(), 6);
+        assert_eq!(arr.len(), 10);
         assert_eq!(arr[0]["name"], "python");
         assert_eq!(arr[0]["grammar_sha"], "tree-sitter-python@0.25");
         // Every grammar reports a positive ABI the runtime accepted.
@@ -387,6 +442,22 @@ mod tests {
         assert_eq!(out["language"], "tsx");
         assert_eq!(out["has_error"], false);
         assert_eq!(out["root"]["kind"], "program");
+    }
+
+    #[test]
+    fn parse_links_the_slice_k_grammars() {
+        // One parse per new grammar proves the FFI link + ABI compatibility.
+        for (src, lang, root) in [
+            ("{\"a\": 1}\n", "json", "document"),
+            ("[server]\nport = 1\n", "toml", "document"),
+            ("a: 1\nb:\n  c: 2\n", "yaml", "stream"),
+            ("greet() {\n  echo hi\n}\n", "bash", "program"),
+        ] {
+            let out = parse(src, lang).unwrap();
+            assert_eq!(out["language"], lang);
+            assert_eq!(out["has_error"], false, "{lang} parse errored");
+            assert_eq!(out["root"]["kind"], root, "{lang} root kind");
+        }
     }
 
     #[test]

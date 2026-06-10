@@ -51,6 +51,14 @@ tree-sitter-typescript = "0.23"
 # `tree-sitter-md`). The companion inline grammar is unused — chunking/outline
 # work off the block tree's `section`/heading structure.
 tree-sitter-md = "0.3"
+# TBS Slice K — the plan's remaining recommended set (config + shell). All
+# entity-less (markdown precedent): they chunk, outline, and highlight. The
+# maintained TOML grammar is published as `tree-sitter-toml-ng` (the original
+# `tree-sitter-toml` crate is unmaintained).
+tree-sitter-json = "0.24"
+tree-sitter-toml-ng = "0.7"
+tree-sitter-yaml = "0.7"
+tree-sitter-bash = "0.25"
 
 # tree-sitter's `QueryCursor::matches` returns a `StreamingIterator` (the
 # trait is NOT re-exported by `tree-sitter`); the chunk verb's query walk

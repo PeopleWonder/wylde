@@ -19,7 +19,8 @@
 //!
 //! A loopback HTTP listener ([`http`]) serves the same handlers so N8N's HTTP
 //! Request node can call the file-based verbs directly (it can't open a named
-//! pipe). Grammars: Python, Rust, TypeScript, TSX, JavaScript, Markdown.
+//! pipe). Grammars: Python, Rust, TypeScript, TSX, JavaScript, Markdown, and
+//! (TBS Slice K) JSON, TOML, YAML, Bash — the plan's full recommended set.
 //!
 //! Public entry points:
 //!   * [`service::install`]        — register the action surface. Idempotent.
