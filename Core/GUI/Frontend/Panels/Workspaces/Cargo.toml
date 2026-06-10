@@ -23,6 +23,11 @@ wylde-gui-pipe = { path = "../../Pipe" }
 # gpui — every panel imports the same set: div builders, Render, etc.
 gpui.workspace = true
 
+# Shared text-input widget — backs the Settings tab's profile-name and
+# graph-knob fields (Slice C-settings); same component the Settings panel
+# uses for the Profile/Rules section.
+wylde-gpui-input = { path = "../../Input" }
+
 # Native folder picker.  Replaces the Tauri dialog plugin the Svelte
 # alpha uses; declared once at the workspace root.
 rfd.workspace = true

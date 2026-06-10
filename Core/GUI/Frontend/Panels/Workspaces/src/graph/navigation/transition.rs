@@ -29,6 +29,11 @@ pub const EASE_IN_OUT_CUBIC: CubicBezier = CubicBezier::new(0.645, 0.045, 0.355,
 pub const ZOOM_IN_FALLBACK_MS: f32 = 400.0;
 pub const ZOOM_OUT_FALLBACK_MS: f32 = 380.0;
 
+/// The locked `graph_profile_switch` spec (C-settings: switching settings
+/// profiles → camera tween) — degrade fallbacks only.
+pub const PROFILE_SWITCH_FALLBACK_MS: f32 = 500.0;
+pub const PROFILE_SWITCH_FALLBACK_EASING: CubicBezier = CubicBezier::new(0.25, 1.0, 0.5, 1.0);
+
 /// A pure camera tween from one [`Camera`] to another. Pan interpolates
 /// linearly; zoom interpolates **geometrically** (log-space) so a 4× zoom
 /// move feels constant-rate rather than slow-then-explosive — the standard
@@ -155,16 +160,16 @@ impl GraphView {
     /// Duration + easing for a theme animation `key`, with the locked-spec
     /// fallback when the theme failed to load or lacks the key.
     fn camera_anim(&self, key: &str) -> (f32, CubicBezier) {
-        let fallback_ms = if key == "graph_zoom_out" {
-            ZOOM_OUT_FALLBACK_MS
-        } else {
-            ZOOM_IN_FALLBACK_MS
+        let fallback = match key {
+            "graph_zoom_out" => (ZOOM_OUT_FALLBACK_MS, EASE_IN_OUT_CUBIC),
+            "graph_profile_switch" => (PROFILE_SWITCH_FALLBACK_MS, PROFILE_SWITCH_FALLBACK_EASING),
+            _ => (ZOOM_IN_FALLBACK_MS, EASE_IN_OUT_CUBIC),
         };
         self.theme
             .as_ref()
             .and_then(|t| t.animation(key))
             .map(|a| (a.duration_ms, CubicBezier::from_array(a.easing)))
-            .unwrap_or((fallback_ms, EASE_IN_OUT_CUBIC))
+            .unwrap_or(fallback)
     }
 }
 

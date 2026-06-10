@@ -8,9 +8,14 @@
 //!
 //! [`Theme`]: crate::graph::render::Theme
 
+use serde::{Deserialize, Serialize};
+
 /// Tunables for threshold-driven auto-clustering (the flat-view fallback for
-/// huge graphs, OQ6) and expand-in-place.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// huge graphs, OQ6) and expand-in-place. Serializable so a settings profile
+/// (C-settings `graph_profiles.json`) snapshots it verbatim;
+/// `#[serde(default)]` keeps older profiles loading as knobs are added.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ClusterConfig {
     /// Auto-clustering arms only when the graph has more nodes than this —
     /// small graphs always render flat (folding 40 nodes into 8 spheres

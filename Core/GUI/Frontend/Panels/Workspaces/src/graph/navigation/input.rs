@@ -49,9 +49,10 @@ impl GraphView {
             self.set_layout(next, cx);
         }
         if ks.key.as_str() == "escape" {
-            if self.cluster_menu.is_some() {
-                // Esc closes an open cluster menu before it leaves a scope.
+            if self.cluster_menu.is_some() || self.profile_menu_open {
+                // Esc closes open menus before it leaves a scope.
                 self.cluster_menu = None;
+                self.profile_menu_open = false;
                 cx.notify();
             } else if self.navigator.is_scoped() {
                 self.apply_nav_action(NavAction::LeaveScope, cx);
@@ -138,9 +139,10 @@ impl GraphView {
     }
 
     pub(crate) fn on_down(&mut self, ev: &MouseDownEvent, cx: &mut Context<Self>) {
-        // A left press anywhere dismisses an open cluster menu (the menu
-        // item's own handler stops propagation before this runs).
-        if self.cluster_menu.take().is_some() {
+        // A left press anywhere dismisses open menus (their items' own
+        // handlers stop propagation before this runs).
+        if self.cluster_menu.take().is_some() || self.profile_menu_open {
+            self.profile_menu_open = false;
             cx.notify();
         }
         let (sx, sy) = (f32::from(ev.position.x), f32::from(ev.position.y));

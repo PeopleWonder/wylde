@@ -32,6 +32,7 @@ pub mod navigation;
 mod paint;
 pub mod physics;
 pub mod render;
+pub mod settings;
 mod transition_driver;
 
 // Integration + perf suite (Build Order §4 file tree → `graph/tests/`). A
@@ -65,6 +66,7 @@ use paint::{overlay_text, paint_graph, to_rgba};
 use physics::{ActiveRegion, PhysicsConfig, PhysicsHandle, PositionFrame};
 use render::render_2d::Renderer2d;
 use render::{Camera, RenderOutput, Renderer, Scene, Theme, Viewport};
+use settings::{persistence, GraphProfile, ProfileLibrary, DEFAULT_PROFILE};
 use transition_driver::ActiveTransition;
 
 /// The canvas rectangle (window-absolute px) captured at paint time so mouse
@@ -127,6 +129,18 @@ pub struct GraphView {
     cluster_view: ClusterView,
     /// Open right-click menu (Expand / Collapse Cluster), if any.
     cluster_menu: Option<ClusterMenu>,
+    /// The global profile library + per-workspace bookmarks (C-settings),
+    /// loaded from `<data_dir>/graph_profiles.json` at mount.
+    profiles: ProfileLibrary,
+    /// Where the library persists. Resolved once at mount; tests point it at
+    /// a temp file so profile operations never touch the real data dir.
+    profiles_path: std::path::PathBuf,
+    /// Last persistence/parse error, surfaced in the Settings tab.
+    profiles_error: Option<String>,
+    /// Name of the profile currently applied.
+    active_profile: String,
+    /// Whether the breadcrumb-bar quick-switcher dropdown is open.
+    profile_menu_open: bool,
     /// Focus handle so the canvas can receive `Ctrl+Shift+L`. Created lazily in
     /// `render` (no gpui context at `new()` / in unit tests).
     focus: Option<FocusHandle>,
@@ -152,6 +166,8 @@ impl GraphView {
             Ok(t) => (Some(Rc::new(t)), None),
             Err(e) => (None, Some(e)),
         };
+        let profiles_path = persistence::profiles_path();
+        let (profiles, profiles_error) = persistence::load_from(&profiles_path);
         Self {
             theme,
             theme_error,
@@ -166,6 +182,11 @@ impl GraphView {
             pending_enter: None,
             cluster_view: ClusterView::default(),
             cluster_menu: None,
+            profiles,
+            profiles_path,
+            profiles_error,
+            active_profile: DEFAULT_PROFILE.to_owned(),
+            profile_menu_open: false,
             focus: None,
             camera: Camera::default(),
             fitted: false,
@@ -210,21 +231,42 @@ impl GraphView {
                         view.navigator.reset();
                         view.camera_transition = None;
                         view.pending_enter = None;
-                        // Re-run the one-time cluster assignment + auto-fold
-                        // selection; the snap to the post-fit zoom happens at
-                        // the first paint (see canvas_element).
-                        view.cluster_view.rebuild(&view.graph, view.camera.zoom);
-                        view.cluster_menu = None;
-                        // Apply the per-workspace remembered layout (default:
-                        // force-directed). Deterministic layouts compute their
-                        // final positions and leave the physics worker paused;
-                        // force-directed warm-starts (depth-banded) and spins up
-                        // the worker to refine off-thread.
-                        let kind = view
+                        // C-settings: the workspace's bookmarked profile
+                        // applies first (knobs + layout); the session
+                        // layout_cache only fills in when no bookmark exists.
+                        let pointer_profile = view
                             .workspace_id
                             .as_ref()
-                            .and_then(|id| view.layout_cache.get(id).copied())
-                            .unwrap_or_default();
+                            .and_then(|ws| view.profiles.pointer(ws))
+                            .map(str::to_owned)
+                            .and_then(|name| view.profiles.get(&name).cloned());
+                        let kind = match &pointer_profile {
+                            Some(p) => {
+                                view.active_profile = p.name.clone();
+                                view.dark = p.theme.dark;
+                                view.navigator.config = p.interaction.navigation;
+                                view.cluster_view.config = p.graph.cluster;
+                                p.graph.layout_kind()
+                            }
+                            None => {
+                                view.active_profile = DEFAULT_PROFILE.to_owned();
+                                view.workspace_id
+                                    .as_ref()
+                                    .and_then(|id| view.layout_cache.get(id).copied())
+                                    .unwrap_or_default()
+                            }
+                        };
+                        // Re-run the one-time cluster assignment + auto-fold
+                        // selection (under the profile's knobs); the snap to
+                        // the post-fit zoom happens at the first paint (see
+                        // canvas_element).
+                        view.cluster_view.rebuild(&view.graph, view.camera.zoom);
+                        view.cluster_menu = None;
+                        view.profile_menu_open = false;
+                        // Deterministic layouts compute their final positions
+                        // and leave the physics worker paused; force-directed
+                        // warm-starts (depth-banded) and spins up the worker
+                        // to refine off-thread.
                         view.current_layout = kind;
                         view.layout = Rc::new(kind.compute_positions(view.graph.as_ref()));
                         // Re-fit the camera to the freshly loaded graph.
@@ -473,6 +515,10 @@ impl Render for GraphView {
         if let Some(menu) = self.cluster_menu_element(cx) {
             content = content.child(menu);
         }
+        // Profile quick-switcher dropdown (C-settings).
+        if let Some(menu) = self.profile_menu_element(cx) {
+            content = content.child(menu);
+        }
         content = content.child(self.overlay());
 
         // Root: breadcrumb bar (Theme `graph_panel.breadcrumb_bar`) over the
@@ -538,6 +584,207 @@ impl GraphView {
             content = content.child(chip);
         }
         content
+    }
+
+    // ── Settings profiles (Slice C-settings) ────────────────────────────
+
+    /// Apply a named profile: re-point every knob struct, swap the layout
+    /// (animated) when it differs, run the Theme `graph_profile_switch`
+    /// camera tween into the re-fitted view, bookmark it for the active
+    /// workspace, and persist. `false` when no such profile exists.
+    pub(crate) fn apply_profile(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
+        let Some(p) = self.profiles.get(name).cloned() else {
+            return false;
+        };
+        self.active_profile = p.name.clone();
+        self.profile_menu_open = false;
+        self.dark = p.theme.dark;
+        self.navigator.config = p.interaction.navigation;
+        self.cluster_view.config = p.graph.cluster;
+        // Re-select auto-folds under the new clustering knobs.
+        let graph = self.graph.clone();
+        self.cluster_view.rebuild(&graph, self.camera.zoom);
+
+        let kind = p.graph.layout_kind();
+        if kind != self.current_layout {
+            self.set_layout(kind, cx);
+        }
+
+        // 500 ms camera tween into the new view (whole-graph re-fit).
+        if self.canvas.w > 0.0 && !self.navigator.is_scoped() {
+            if let Some(bb) = self.graph.model_bounds(&self.layout) {
+                let target = navigation::camera::camera_to_fit(
+                    bb,
+                    self.canvas.w,
+                    self.canvas.h,
+                    0.85, // the first-load fit margin (Viewport::fit_zoom)
+                );
+                self.begin_camera_tween(target, "graph_profile_switch", Instant::now());
+                self.spawn_camera_driver(cx);
+            }
+        }
+
+        if let Some(ws) = self.workspace_id.clone() {
+            self.profiles.set_pointer(&ws, name);
+        }
+        self.persist_profiles();
+        cx.notify();
+        true
+    }
+
+    /// Snapshot the live knobs as a (new or replaced) named profile, make it
+    /// active, bookmark it, and persist. Errors on blank names.
+    pub(crate) fn save_current_profile(&mut self, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        let profile = GraphProfile::capture(
+            name,
+            self.current_layout,
+            self.cluster_view.config,
+            self.navigator.config,
+            self.dark,
+        );
+        if !self.profiles.upsert(profile) {
+            return Err("profile name cannot be empty".to_owned());
+        }
+        self.active_profile = name.to_owned();
+        if let Some(ws) = self.workspace_id.clone() {
+            self.profiles.set_pointer(&ws, name);
+        }
+        self.persist_profiles();
+        match &self.profiles_error {
+            Some(e) => Err(e.clone()),
+            None => Ok(()),
+        }
+    }
+
+    /// Delete a profile (the default is permanent). If it was active, fall
+    /// back to the default profile's knobs.
+    pub(crate) fn delete_profile(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
+        if !self.profiles.remove(name) {
+            return false;
+        }
+        if self.active_profile == name {
+            self.apply_profile(DEFAULT_PROFILE, cx);
+        } else {
+            self.persist_profiles();
+            cx.notify();
+        }
+        true
+    }
+
+    /// Write the library to `<data_dir>/graph_profiles.json`; failures are
+    /// stashed for the Settings tab (the panel keeps working in-memory).
+    fn persist_profiles(&mut self) {
+        self.profiles_error = persistence::save_to(&self.profiles_path, &self.profiles).err();
+    }
+
+    // ── Settings-tab accessors / knob setters (C-settings) ──────────────
+
+    pub(crate) fn profile_names(&self) -> Vec<String> {
+        self.profiles
+            .names()
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    pub(crate) fn active_profile_name(&self) -> &str {
+        &self.active_profile
+    }
+
+    pub(crate) fn profiles_error(&self) -> Option<&str> {
+        self.profiles_error.as_deref()
+    }
+
+    pub(crate) fn nav_config(&self) -> navigation::NavConfig {
+        self.navigator.config
+    }
+
+    pub(crate) fn cluster_config(&self) -> cluster::ClusterConfig {
+        self.cluster_view.config
+    }
+
+    pub(crate) fn dark_mode(&self) -> bool {
+        self.dark
+    }
+
+    pub(crate) fn current_layout_kind(&self) -> LayoutKind {
+        self.current_layout
+    }
+
+    /// Live-update the navigation knobs (Settings tab "Apply").
+    pub(crate) fn set_nav_config(&mut self, c: navigation::NavConfig, cx: &mut Context<Self>) {
+        self.navigator.config = c;
+        cx.notify();
+    }
+
+    /// Live-update the clustering knobs: re-select auto-folds and re-sync.
+    pub(crate) fn set_cluster_config(&mut self, c: cluster::ClusterConfig, cx: &mut Context<Self>) {
+        self.cluster_view.config = c;
+        let graph = self.graph.clone();
+        self.cluster_view.rebuild(&graph, self.camera.zoom);
+        self.sync_clusters(cx);
+        cx.notify();
+    }
+
+    pub(crate) fn set_dark_mode(&mut self, dark: bool, cx: &mut Context<Self>) {
+        self.dark = dark;
+        cx.notify();
+    }
+
+    /// Switch layout from the Settings tab (same animated swap as
+    /// `Ctrl+Shift+L`).
+    pub(crate) fn choose_layout(&mut self, kind: LayoutKind, cx: &mut Context<Self>) {
+        self.set_layout(kind, cx);
+    }
+
+    /// The breadcrumb-bar quick-switcher dropdown (Theme
+    /// `ui_chrome.context_menu`): one row per profile; click applies with the
+    /// `graph_profile_switch` tween.
+    fn profile_menu_element(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
+        if !self.profile_menu_open {
+            return None;
+        }
+        let theme = self.theme.as_ref()?;
+        let m = &theme.ui_chrome.context_menu;
+        let mut menu = div()
+            .id("graph-profile-menu")
+            .absolute()
+            .top_1()
+            .right_2()
+            .bg(to_rgba(m.background(self.dark)))
+            .rounded(px(m.border_radius_px))
+            .overflow_hidden()
+            .text_size(px(m.font_size_px))
+            .text_color(to_rgba(theme.graph_panel.breadcrumb_bar.text(self.dark)))
+            .flex()
+            .flex_col();
+        for (i, name) in self.profile_names().into_iter().enumerate() {
+            let marker = if name == self.active_profile {
+                "● "
+            } else {
+                "  "
+            };
+            let target = name.clone();
+            menu = menu.child(
+                div()
+                    .id(("graph-profile-menu-item", i))
+                    .h(px(m.item_height_px))
+                    .px(px(m.item_padding_px))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| {
+                            cx.stop_propagation();
+                            this.apply_profile(&target, cx);
+                        }),
+                    )
+                    .child(SharedString::from(format!("{marker}{name}"))),
+            );
+        }
+        Some(menu)
     }
 
     // ── Clustering (Slice C-cluster) ─────────────────────────────────────
@@ -1385,6 +1632,55 @@ mod tests {
         let out = v.render_output(v.canvas, v.camera).unwrap();
         assert_eq!(out.outlines.len(), 1);
         assert!(out.outlines[0].w > 0.0 && out.outlines[0].h > 0.0);
+    }
+
+    // ── Settings profiles (Slice C-settings) ─────────────────────────────
+
+    #[test]
+    fn save_current_profile_captures_bookmarks_and_persists() {
+        let dir = std::env::temp_dir()
+            .join("wylde-graphview-profile-tests")
+            .join(format!("save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let mut v = nav_view(); // workspace_id = "demo"
+        v.profiles_path = dir.join("graph_profiles.json");
+        v.navigator.config.zoom_step_factor = 1.3;
+        v.current_layout = LayoutKind::Hierarchical;
+        v.dark = false;
+
+        v.save_current_profile("Focus").expect("saves clean");
+        assert_eq!(v.active_profile, "Focus");
+        let p = v.profiles.get("Focus").unwrap();
+        assert_eq!(p.graph.layout_kind(), LayoutKind::Hierarchical);
+        assert!((p.interaction.navigation.zoom_step_factor - 1.3).abs() < 1e-6);
+        assert!(!p.theme.dark);
+        assert_eq!(
+            v.profiles.pointer("demo"),
+            Some("Focus"),
+            "active workspace bookmarked"
+        );
+
+        // The library round-trips off disk, default profile intact.
+        let (lib, err) = settings::persistence::load_from(&v.profiles_path);
+        assert!(err.is_none());
+        assert!(lib.get("Focus").is_some());
+        assert!(lib.get(DEFAULT_PROFILE).is_some());
+        assert_eq!(lib.pointer("demo"), Some("Focus"));
+
+        // Blank names are rejected and change nothing.
+        assert!(v.save_current_profile("   ").is_err());
+        assert_eq!(v.active_profile, "Focus");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_view_always_offers_the_default_profile() {
+        let v = GraphView::new();
+        assert!(v.profile_names().iter().any(|n| n == DEFAULT_PROFILE));
+        assert_eq!(v.active_profile_name(), DEFAULT_PROFILE);
+        assert!(!v.profile_menu_open);
     }
 
     #[test]

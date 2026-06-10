@@ -142,6 +142,28 @@ impl GraphView {
             }
             bar = bar.child(el);
         }
+
+        // Profile quick-switcher (C-settings): right-aligned button showing
+        // the active profile; click toggles the dropdown rendered over the
+        // graph area (`GraphView::profile_menu_element`).
+        bar = bar.child(div().flex_1());
+        bar = bar.child(
+            div()
+                .id("graph-profile-switcher")
+                .cursor_pointer()
+                .child(SharedString::from(format!(
+                    "{} ▾",
+                    self.active_profile_name()
+                )))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _ev: &MouseDownEvent, _w: &mut Window, cx| {
+                        cx.stop_propagation();
+                        this.profile_menu_open = !this.profile_menu_open;
+                        cx.notify();
+                    }),
+                ),
+        );
         bar
     }
 }
