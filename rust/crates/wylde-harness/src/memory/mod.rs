@@ -67,6 +67,7 @@ pub mod memgraph;
 pub mod rag;
 pub mod short_term;
 pub mod vector;
+pub mod workspace;
 
 // NOTE: the legacy verb-driven `workspaces` registry port
 // (`memory.workspaces.*`) was retired by the config-file-backed

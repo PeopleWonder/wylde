@@ -113,7 +113,9 @@ async fn unregistered_verb_returns_no_action_for_strangler_fallback() {
     // `no_action` so the Python strangler's transport-code fallback
     // reverts to in-process Python instead of bricking the call.
     for verb in [
-        "memory.workspace.list",
+        // memory.workspace.* are registered as of the full-Rust cutover
+        // (slice R2a) — they no longer fall through to the strangler,
+        // so they're not listed here.
         "memory.reflect",
         // conversations.* are registered as of Memory Slice B — they no
         // longer fall through to the strangler, so they're not listed here.

@@ -25,7 +25,6 @@
 //! transport-code fallback treats as "revert to in-process Python." A
 //! partial port can't brick chat. The deferred punchlist:
 //!
-//! * `memory.workspace.*` (6 verbs) — `workspace_memory` not in Rust.
 //! * `memory.reflect` — `reflection` not in Rust (the `long_term` scope
 //!   IS ported — `memory::long_term::reflection` — the verb waits on the
 //!   conversation/workspace scopes).
@@ -33,7 +32,9 @@
 //!   namespace reconciliation + indexer port pending.
 //!
 //! (`prompts.*` left this list in the full-Rust cutover — the five verbs
-//! are served by [`crate::prompts`] now.)
+//! are served by [`crate::prompts`] now. `memory.workspace.*` followed in
+//! the same cutover, slice R2a — the six verbs are served by
+//! [`crate::memory::workspace`] now.)
 //!
 //! (`models.transcribe` / `models.synthesize` were retired at the voice
 //! cutover and deleted in the Bucket-A IPC cleanup — STT/TTS run
@@ -78,6 +79,8 @@ const HANDLER_MODULE_PROMPTS: &str = "wylde_harness::api::DefaultHarnessApi (pro
 const HANDLER_MODULE_RAG: &str = "wylde_harness::api::DefaultHarnessApi (rag.*)";
 const HANDLER_MODULE_LONG_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.long_term.*)";
+const HANDLER_MODULE_WORKSPACE_MEMORY: &str =
+    "wylde_harness::api::DefaultHarnessApi (memory.workspace.*)";
 const HANDLER_MODULE_SHORT_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.short_term.*)";
 const HANDLER_MODULE_CONVERSATIONS: &str =
@@ -149,6 +152,14 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.long_term.delete",
     "memory.long_term.history",
     "memory.long_term.search",
+    // memory.workspace.* — workspace-scoped durable memory tier
+    // (6 verbs; full-Rust cutover slice R2a)
+    "memory.workspace.list",
+    "memory.workspace.search",
+    "memory.workspace.save",
+    "memory.workspace.update",
+    "memory.workspace.delete",
+    "memory.workspace.curate",
     // workspaces.* — RETIRED from the harness pipe (Thought Bubble System
     // Slice 0d). All workspace verbs now live on the wylde-workspaces
     // service pipe; consumers reach them via the wylde-workspaces-client
@@ -777,6 +788,90 @@ where
          recency decay. Superseded records are filtered out. Returns \
          {results: [SearchHit...]}.",
         HANDLER_MODULE_LONG_TERM,
+    );
+
+    // ── memory.workspace.* (full-Rust cutover slice R2a) ─────────────
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.list",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_list(p).await }
+        },
+        "Return every workspace-scoped record, importance-desc then \
+         recency-desc. Payload {workspace_id, include_superseded?}. \
+         Returns {memories: [...], count, workspace_id}.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.search",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_search(p).await }
+        },
+        "Token-overlap + importance + recency-decay search over a \
+         workspace's memories (superseded records filtered out). \
+         Payload {workspace_id, query, k?|limit?} — hit count clamps \
+         to 1..=50, default 5. Returns {hits: [...]}.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.save",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_save(p).await }
+        },
+        "Persist a new workspace-scoped memory. Payload {workspace_id, \
+         body, source?, importance?, entities?}. Entity edges mirror \
+         into the graph best-effort (never block the save). Returns \
+         the new record as JSON.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.update",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_update(p).await }
+        },
+        "Revise a workspace memory (writes a new record and marks the \
+         old one superseded — both stay on disk for audit walks). \
+         Payload {workspace_id, id, body?, importance?, entities?}. \
+         Returns the replacement record.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.delete",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_delete(p).await }
+        },
+        "Permanently remove a workspace memory (and any records \
+         superseded by it). Payload {workspace_id, id}. Returns \
+         {ok, workspace_id, id}.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.curate",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_curate(p).await }
+        },
+        "Trigger LLM-driven curation for a workspace. Always returns \
+         the skipped CurationResult shape (chat functions don't cross \
+         the wire; the scheduler runs real passes in-process). Payload \
+         {workspace_id}.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
     );
 
     // ── workspaces.* — RETIRED (Thought Bubble System Slice 0d) ──────

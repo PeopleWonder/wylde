@@ -52,6 +52,7 @@ use crate::memory::conversations::actions as conversations_actions;
 use crate::memory::long_term::{self, LongTermMemory, SaveError};
 use crate::memory::rag::actions as rag_actions;
 use crate::memory::short_term::actions as short_term_actions;
+use crate::memory::workspace::actions as workspace_memory_actions;
 use crate::model_registry::actions as model_actions;
 use crate::settings::actions as settings_actions;
 use crate::tooling::consent::{self, Decision};
@@ -132,6 +133,14 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_long_term_delete(&self, payload: Value) -> Reply;
     async fn memory_long_term_history(&self, payload: Value) -> Reply;
     async fn memory_long_term_search(&self, payload: Value) -> Reply;
+
+    // ── memory.workspace.* (6 verbs; full-Rust cutover R2a) ──────────
+    async fn memory_workspace_list(&self, payload: Value) -> Reply;
+    async fn memory_workspace_search(&self, payload: Value) -> Reply;
+    async fn memory_workspace_save(&self, payload: Value) -> Reply;
+    async fn memory_workspace_update(&self, payload: Value) -> Reply;
+    async fn memory_workspace_delete(&self, payload: Value) -> Reply;
+    async fn memory_workspace_curate(&self, payload: Value) -> Reply;
 
     // ── workspaces.* — RETIRED from the harness (Slice 0d) ───────────
     // All workspace verbs moved to the wylde-workspaces service; the
@@ -485,6 +494,34 @@ impl HarnessApi for DefaultHarnessApi {
                 Reply::err_msg("embed_failed", e.to_string())
             }
         }
+    }
+
+    // ── memory.workspace.* ─────────────────────────────────────────
+    // Pass-throughs — JSON shaping lives in memory::workspace::actions
+    // (full-Rust cutover slice R2a).
+
+    async fn memory_workspace_list(&self, payload: Value) -> Reply {
+        workspace_memory_actions::handle_list(payload).await
+    }
+
+    async fn memory_workspace_search(&self, payload: Value) -> Reply {
+        workspace_memory_actions::handle_search(payload).await
+    }
+
+    async fn memory_workspace_save(&self, payload: Value) -> Reply {
+        workspace_memory_actions::handle_save(payload).await
+    }
+
+    async fn memory_workspace_update(&self, payload: Value) -> Reply {
+        workspace_memory_actions::handle_update(payload).await
+    }
+
+    async fn memory_workspace_delete(&self, payload: Value) -> Reply {
+        workspace_memory_actions::handle_delete(payload).await
+    }
+
+    async fn memory_workspace_curate(&self, payload: Value) -> Reply {
+        workspace_memory_actions::handle_curate(payload).await
     }
 
     // ── workspaces.* — RETIRED from the harness (Slice 0d) ───────────
