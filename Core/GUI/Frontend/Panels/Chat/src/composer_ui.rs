@@ -119,6 +119,7 @@ fn chip_strip(
                             this.composer.curating = false;
                         } else {
                             this.composer.toggle_excluded(i);
+                            this.sync_prompt_highlights(cx);
                         }
                         cx.notify();
                     }),
@@ -242,6 +243,8 @@ fn disambiguation_dropdown(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Op
                                     && crate::composer::is_anchorable_identifier(&w.token.text)
                             });
                             this.composer.anchor_offer = offer.then_some(idx);
+                            // Ambiguous → recognized: restyle the underline.
+                            this.sync_prompt_highlights(cx);
                         }
                         cx.notify();
                     }),
@@ -431,6 +434,7 @@ fn curation_popover(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Option<gp
                     MouseButton::Left,
                     cx.listener(move |this: &mut ChatPanel, _ev: &MouseDownEvent, _w, cx| {
                         this.composer.toggle_excluded(word_idx);
+                        this.sync_prompt_highlights(cx);
                         cx.notify();
                     }),
                 ),
