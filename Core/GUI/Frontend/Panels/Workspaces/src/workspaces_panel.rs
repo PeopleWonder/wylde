@@ -36,6 +36,7 @@ use crate::ipc::{
 };
 use crate::settings_tab::GraphSettingsTab;
 use crate::tabs::WorkspacesTab;
+use crate::vocabulary::VocabularyTab;
 
 /// Root Workspaces panel. Hosts a minimal tab system (Registry + Graph);
 /// the active tab's body is rendered below a tab bar.
@@ -53,6 +54,9 @@ pub struct WorkspacesPanel {
     /// The Settings tab's view (Slice C-settings: profile library + graph
     /// knob editors). Same `None`-in-unit-tests caveat as `graph`.
     pub settings: Option<Entity<GraphSettingsTab>>,
+    /// The Vocabulary tab's view (Slice N: the anchor system UI). Same
+    /// `None`-in-unit-tests caveat.
+    pub vocabulary: Option<Entity<VocabularyTab>>,
 }
 
 impl WorkspacesPanel {
@@ -65,6 +69,7 @@ impl WorkspacesPanel {
             tab: WorkspacesTab::Registry,
             graph: None,
             settings: None,
+            vocabulary: None,
         }
     }
 
@@ -82,9 +87,12 @@ impl WorkspacesPanel {
             });
             // The Settings tab edits the graph view's live knobs + profiles.
             let settings = cx.new(|scx| GraphSettingsTab::new(graph.clone(), scx));
+            // The Vocabulary tab loads the anchor stores eagerly too.
+            let vocabulary = cx.new(VocabularyTab::new);
             let mut panel = Self::new();
             panel.graph = Some(graph);
             panel.settings = Some(settings);
+            panel.vocabulary = Some(vocabulary);
             Self::spawn_refresh(cx);
             panel
         })
@@ -245,6 +253,10 @@ impl Render for WorkspacesPanel {
                 None => div().into_any_element(),
             },
             WorkspacesTab::Settings => match self.settings.clone() {
+                Some(view) => view.into_any_element(),
+                None => div().into_any_element(),
+            },
+            WorkspacesTab::Vocabulary => match self.vocabulary.clone() {
                 Some(view) => view.into_any_element(),
                 None => div().into_any_element(),
             },

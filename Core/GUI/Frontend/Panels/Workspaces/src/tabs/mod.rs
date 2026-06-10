@@ -41,10 +41,12 @@ impl WorkspacesTab {
     /// Tabs that have a body wired today, in display order. Later slices add
     /// their tab here when they ship its view. Graph sits right after Registry
     /// (before Conversations in the canonical ordering), per the brief;
-    /// Settings (Slice C-settings) closes the row.
+    /// Vocabulary landed with Slice N; Settings (Slice C-settings) closes the
+    /// row.
     pub const WIRED: &'static [WorkspacesTab] = &[
         WorkspacesTab::Registry,
         WorkspacesTab::Graph,
+        WorkspacesTab::Vocabulary,
         WorkspacesTab::Settings,
     ];
 }
@@ -65,6 +67,7 @@ mod tests {
             &[
                 WorkspacesTab::Registry,
                 WorkspacesTab::Graph,
+                WorkspacesTab::Vocabulary,
                 WorkspacesTab::Settings
             ]
         );
