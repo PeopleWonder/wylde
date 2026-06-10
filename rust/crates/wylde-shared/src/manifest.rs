@@ -33,7 +33,6 @@ use tokio::sync::oneshot;
 const MANIFEST_VERSION: &str = "1.0.0";
 const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%SZ";
 
-
 /// Phases that fired BEFORE a `ManifestWriter::write` call.  Seeded into
 /// each manifest's `startup_sequence` field when written.  Mirrors the
 /// Python `_PHASES_FIRED_PRE_WRITE` buffer.
@@ -41,7 +40,6 @@ fn pre_write_phases() -> &'static Mutex<Vec<String>> {
     static BUF: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
     BUF.get_or_init(|| Mutex::new(Vec::new()))
 }
-
 
 /// Maps `service` to its in-memory `ManifestData` so freestanding helpers
 /// (`mark_serve_loop_entered`, `attest_phase` after the manifest exists)
@@ -51,7 +49,6 @@ fn writer_registry() -> &'static Mutex<HashMap<String, Arc<Mutex<ManifestData>>>
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-
 /// Record that a named startup phase has fired this process.  Idempotent
 /// on adjacent duplicates.  Called by `configure_logging` and friends so
 /// the runtime self-attests the four-phase Wylde startup convention.
@@ -60,16 +57,16 @@ fn writer_registry() -> &'static Mutex<HashMap<String, Arc<Mutex<ManifestData>>>
 /// seeded into the manifest on first write.  Phases fired AFTER write
 /// land in any cached manifests directly and are atomic-written.
 pub fn attest_phase(phase: &str) {
-    let mut buf = pre_write_phases().lock().expect("pre_write_phases poisoned");
+    let mut buf = pre_write_phases()
+        .lock()
+        .expect("pre_write_phases poisoned");
     if buf.last().map(String::as_str) != Some(phase) {
         buf.push(phase.to_owned());
     }
     drop(buf);
     // Also push into every active writer's manifest (one binary = one
     // service typically, but the registry handles the general case).
-    let reg = writer_registry()
-        .lock()
-        .expect("writer_registry poisoned");
+    let reg = writer_registry().lock().expect("writer_registry poisoned");
     let entries: Vec<(String, Arc<Mutex<ManifestData>>)> =
         reg.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     drop(reg);
@@ -85,7 +82,6 @@ pub fn attest_phase(phase: &str) {
     }
 }
 
-
 fn persist_phase(service: &str, cached: &Arc<Mutex<ManifestData>>, phase: &str) -> Result<()> {
     let snapshot = {
         let mut guard = cached
@@ -99,14 +95,11 @@ fn persist_phase(service: &str, cached: &Arc<Mutex<ManifestData>>, phase: &str) 
     atomic_write(&manifest_path(service), &snapshot)
 }
 
-
 /// Attest that the service has entered its serve loop.  Called by
 /// `crate::ipc::serve` at the top of the accept loop.  Best-effort:
 /// errors are logged, never raised.
 pub fn mark_serve_loop_entered(service: &str) {
-    let reg = writer_registry()
-        .lock()
-        .expect("writer_registry poisoned");
+    let reg = writer_registry().lock().expect("writer_registry poisoned");
     let cached = reg.get(service).cloned();
     drop(reg);
     let phase = "serve_loop";
@@ -219,7 +212,6 @@ pub struct ManifestWriter {
     path: PathBuf,
     cached: Arc<Mutex<ManifestData>>,
 }
-
 
 impl Drop for ManifestWriter {
     fn drop(&mut self) {

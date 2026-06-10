@@ -171,7 +171,11 @@ mod tests {
     fn skips_malformed_json_and_unnamed_entries() {
         let tmp = tempdir().unwrap();
         std::fs::write(tmp.path().join("broken.json"), "not json").unwrap();
-        std::fs::write(tmp.path().join("nameless.json"), r#"{"status": {"pid": 9}}"#).unwrap();
+        std::fs::write(
+            tmp.path().join("nameless.json"),
+            r#"{"status": {"pid": 9}}"#,
+        )
+        .unwrap();
         std::fs::write(
             tmp.path().join("good.json"),
             r#"{"service": "good", "status": {"pid": 1}}"#,

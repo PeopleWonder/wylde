@@ -62,9 +62,9 @@ fn harden_windows(path: &Path) {
         GetNamedSecurityInfoW, SetNamedSecurityInfoW, SE_FILE_OBJECT,
     };
     use windows::Win32::Security::{
-        AddAccessAllowedAce, GetLengthSid, InitializeAcl, ACCESS_ALLOWED_ACE, ACL,
-        ACL_REVISION, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+        AddAccessAllowedAce, GetLengthSid, InitializeAcl, ACCESS_ALLOWED_ACE, ACL, ACL_REVISION,
+        DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+        PSECURITY_DESCRIPTOR, PSID,
     };
     use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
 
@@ -98,9 +98,8 @@ fn harden_windows(path: &Path) {
             //    nobody else. The buffer is u32-backed so the ACL lands
             //    DWORD-aligned, as the Win32 API requires.
             let sid_len = GetLengthSid(owner_sid) as usize;
-            let acl_len = size_of::<ACL>() + size_of::<ACCESS_ALLOWED_ACE>()
-                - size_of::<u32>()
-                + sid_len;
+            let acl_len =
+                size_of::<ACL>() + size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>() + sid_len;
             let mut acl_buf: Vec<u32> = vec![0; acl_len.div_ceil(size_of::<u32>())];
             let acl = acl_buf.as_mut_ptr().cast::<ACL>();
             let built = InitializeAcl(acl, acl_len as u32, ACL_REVISION).and_then(|()| {
@@ -165,7 +164,10 @@ mod tests {
         let target = tmp.path().join("state.json");
         std::fs::write(&target, "x").expect("write");
         harden_perms(&target).expect("harden");
-        let mode = std::fs::metadata(&target).expect("stat").permissions().mode();
+        let mode = std::fs::metadata(&target)
+            .expect("stat")
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
 
@@ -179,11 +181,9 @@ mod tests {
         use std::os::windows::ffi::OsStrExt;
         use windows::core::PCWSTR;
         use windows::Win32::Foundation::{LocalFree, HLOCAL};
-        use windows::Win32::Security::Authorization::{
-            GetNamedSecurityInfoW, SE_FILE_OBJECT,
-        };
+        use windows::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
         use windows::Win32::Security::{
-            GetAclInformation, AclSizeInformation, ACL, ACL_SIZE_INFORMATION,
+            AclSizeInformation, GetAclInformation, ACL, ACL_SIZE_INFORMATION,
             DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
         };
 

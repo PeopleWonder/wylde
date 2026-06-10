@@ -197,6 +197,8 @@ pub async fn handle_update(payload: Value) -> Reply {
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned)
         }),
+        // Archive / unarchive (OI-21 Recommended Cleanup, Slice N).
+        archived: payload.get("archived").and_then(Value::as_bool),
     };
     match store::update(&identifier, patch) {
         Ok(UpdateOutcome::Updated(a)) => Reply::ok(a.to_value()),

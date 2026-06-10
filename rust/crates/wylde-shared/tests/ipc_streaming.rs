@@ -21,7 +21,12 @@ fn shorten_heartbeat() {
     std::env::set_var("WYLDE_IPC_STREAM_HEARTBEAT_SECS", "1");
 }
 
-async fn boot_server(svc: &str) -> (Arc<ipc::PipeServer>, tokio::task::JoinHandle<anyhow::Result<()>>) {
+async fn boot_server(
+    svc: &str,
+) -> (
+    Arc<ipc::PipeServer>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
     let server = Arc::new(ipc::PipeServer::new(svc));
     let server_clone = Arc::clone(&server);
     let task = tokio::spawn(async move { server_clone.accept_loop().await });
@@ -138,8 +143,7 @@ async fn drop_cancels_server_handler() {
                 started_h.store(true, Ordering::SeqCst);
                 // Emit chunks every 100ms; observe sender.closed() in
                 // parallel to detect cancellation promptly.
-                let mut tick =
-                    tokio::time::interval(Duration::from_millis(100));
+                let mut tick = tokio::time::interval(Duration::from_millis(100));
                 loop {
                     tokio::select! {
                         _ = tick.tick() => {
@@ -162,8 +166,7 @@ async fn drop_cancels_server_handler() {
     let (server, task) = boot_server(&service).await;
 
     {
-        let mut stream =
-            ipc::send_action_stream(&service, &action, serde_json::Value::Null);
+        let mut stream = ipc::send_action_stream(&service, &action, serde_json::Value::Null);
         // Pull a couple of chunks so we know the handler is running.
         let _ = stream.next().await.expect("first chunk").expect("ok");
         let _ = stream.next().await.expect("second chunk").expect("ok");
@@ -212,14 +215,12 @@ async fn unary_send_action_still_works_alongside_streaming() {
     let (server, task) = boot_server(&service).await;
 
     // Unary path: untouched semantics.
-    let reply =
-        ipc::send_action(&service, &unary, serde_json::json!({"x": 42})).await;
+    let reply = ipc::send_action(&service, &unary, serde_json::json!({"x": 42})).await;
     assert!(reply.ok, "unary call failed: {:?}", reply.error);
     assert_eq!(reply.data["x"], 42);
 
     // Streaming path on the same server.
-    let mut stream =
-        ipc::send_action_stream(&service, &streaming, serde_json::Value::Null);
+    let mut stream = ipc::send_action_stream(&service, &streaming, serde_json::Value::Null);
     let mut got = Vec::new();
     while let Some(item) = stream.next().await {
         got.push(item.expect("chunk ok"));
@@ -227,8 +228,7 @@ async fn unary_send_action_still_works_alongside_streaming() {
     assert_eq!(got.len(), 3);
 
     // And unary still works after the streaming round-trip too.
-    let reply2 =
-        ipc::send_action(&service, &unary, serde_json::json!({"y": 7})).await;
+    let reply2 = ipc::send_action(&service, &unary, serde_json::json!({"y": 7})).await;
     assert!(reply2.ok);
     assert_eq!(reply2.data["y"], 7);
 
@@ -260,8 +260,7 @@ async fn mid_stream_error_is_surfaced_without_hang() {
 
     let (server, task) = boot_server(&service).await;
 
-    let mut stream =
-        ipc::send_action_stream(&service, &action, serde_json::Value::Null);
+    let mut stream = ipc::send_action_stream(&service, &action, serde_json::Value::Null);
 
     let chunk0 = stream.next().await.expect("c0").expect("ok");
     assert_eq!(chunk0["i"], 0);
@@ -284,4 +283,3 @@ async fn mid_stream_error_is_surfaced_without_hang() {
     server.stop();
     let _ = tokio::time::timeout(Duration::from_secs(2), task).await;
 }
-

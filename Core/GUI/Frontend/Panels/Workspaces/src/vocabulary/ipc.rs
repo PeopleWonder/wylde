@@ -32,6 +32,9 @@ pub struct AnchorView {
     pub created_at: f64,
     pub last_used_at: f64,
     pub usage_count: u32,
+    /// Archived via Recommended Cleanup (OI-21) — excluded from lookups,
+    /// recoverable from the Archived filter.
+    pub archived: bool,
 }
 
 impl AnchorView {
@@ -59,7 +62,7 @@ impl AnchorView {
 }
 
 /// Which store a row lives in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AnchorScopeTag {
     Workspace,
     Global,
@@ -286,6 +289,50 @@ pub async fn reject_proposal(ws: &str, identifier: &str) -> Result<Value, String
 /// Is `err` the accept-collision signal (the OI-18 diff case)?
 pub fn is_accept_collision(err: &str) -> bool {
     err.contains("already_exists") && !is_global_collision(err)
+}
+
+// ── Recommended Cleanup + stale-mark (Slice N stage 4) ───────────────────
+
+/// Archive / unarchive (OI-21). Archiving = "stop resolving, keep the
+/// record"; unarchive with `false` — which is also the cleanup section's
+/// **Keep** action (the update re-stamps `last_used_at`, so a kept anchor
+/// leaves the unused-too-long list).
+pub async fn set_archived(
+    scope: AnchorScopeTag,
+    ws: &str,
+    identifier: &str,
+    archived: bool,
+) -> Result<Value, String> {
+    let mut payload = json!({ "identifier": identifier, "archived": archived });
+    match scope {
+        AnchorScopeTag::Workspace => {
+            payload["workspace_id"] = json!(ws);
+            workspaces_call("workspaces.anchors.update", payload).await
+        }
+        AnchorScopeTag::Global => harness_call("anchors.update", payload).await,
+    }
+}
+
+/// Does `symbol_id` still resolve in the workspace's symbol index? Feeds
+/// the silent stale badge (Slice N stale-mark: an anchor whose code-symbol
+/// target vanished — e.g. after a git checkout — gets a badge + filter,
+/// never an auto-disable or a prompt).
+pub async fn symbol_exists(ws: &str, symbol_id: &str) -> Result<bool, String> {
+    let v = workspaces_call(
+        "workspaces.symbols.find",
+        json!({ "workspace_id": ws, "query": symbol_id, "limit": 2 }),
+    )
+    .await?;
+    Ok(v.get("matches")
+        .and_then(Value::as_array)
+        .is_some_and(|arr| {
+            arr.iter().any(|m| {
+                m.get("entry")
+                    .and_then(|e| e.get("id"))
+                    .and_then(Value::as_str)
+                    == Some(symbol_id)
+            })
+        }))
 }
 
 #[cfg(test)]

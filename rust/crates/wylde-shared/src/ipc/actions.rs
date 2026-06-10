@@ -141,12 +141,8 @@ where
 
 /// Like [`register_streaming_action`] but with contract metadata, parallel
 /// to [`register_action_with_meta`].
-pub fn register_streaming_action_with_meta<F, Fut>(
-    name: &str,
-    handler: F,
-    doc: &str,
-    module: &str,
-) where
+pub fn register_streaming_action_with_meta<F, Fut>(name: &str, handler: F, doc: &str, module: &str)
+where
     F: Fn(serde_json::Value, StreamSender) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {

@@ -29,10 +29,23 @@ use wylde_theme::colors::{
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
+use std::collections::HashSet;
+
 use crate::workspaces_panel::pack;
 use editor::PromotionDialog;
 use ipc::{AnchorScopeTag, AnchorView, ProposalView};
-use list_view::ScopeFilter;
+use list_view::{ScopeFilter, ViewFilter};
+
+/// Cap on per-load stale checks (one `symbols.find` each — a huge
+/// vocabulary shouldn't stall the tab; the rest re-check on later loads).
+const MAX_STALE_CHECKS: usize = 30;
+
+fn epoch_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
+}
 
 /// The Vocabulary tab view.
 pub struct VocabularyTab {
@@ -64,6 +77,10 @@ pub struct VocabularyTab {
     proposals: Vec<ProposalView>,
     /// OI-18 diff view: `(identifier, your current definition, LLM proposes)`.
     diff: Option<(String, String, String)>,
+    // Cleanup / stale / archived views (stage N-4).
+    view_filter: ViewFilter,
+    /// Anchors whose code-symbol target no longer resolves (silent badge).
+    stale: HashSet<(AnchorScopeTag, String)>,
 }
 
 impl VocabularyTab {
@@ -111,6 +128,8 @@ impl VocabularyTab {
             rename_input: field(cx, "vocab-rename", "renamed_identifier"),
             proposals: Vec::new(),
             diff: None,
+            view_filter: ViewFilter::Active,
+            stale: HashSet::new(),
         };
         Self::spawn_load(cx);
         tab
@@ -140,12 +159,28 @@ impl VocabularyTab {
                 Some(id) => ipc::list_proposals(id).await.unwrap_or_default(),
                 None => Vec::new(),
             };
+            // Stale-mark (stage N-4): which workspace symbol-anchors still
+            // resolve? Best-effort + capped; a lookup failure ≠ stale.
+            let mut stale: HashSet<(AnchorScopeTag, String)> = HashSet::new();
+            if let Some(id) = &ws_id {
+                for a in ws_anchors
+                    .iter()
+                    .filter(|a| a.target_symbol().is_some())
+                    .take(MAX_STALE_CHECKS)
+                {
+                    let sym = a.target_symbol().unwrap_or_default();
+                    if let Ok(false) = ipc::symbol_exists(id, sym).await {
+                        stale.insert((AnchorScopeTag::Workspace, a.identifier.clone()));
+                    }
+                }
+            }
             let _ = this.update(app_cx, |tab, cx| {
                 tab.loading = false;
                 tab.workspace_id = ws_id;
                 tab.ws_anchors = ws_anchors;
                 tab.global_anchors = global;
                 tab.proposals = proposals;
+                tab.stale = stale;
                 tab.error = error;
                 // Drop a selection that no longer resolves.
                 if let Some((scope, id)) = tab.selected.clone() {
@@ -392,6 +427,34 @@ impl VocabularyTab {
         .detach();
     }
 
+    /// Archive / unarchive an anchor (OI-21). `archived: false` doubles as
+    /// the cleanup section's **Keep** (the update re-stamps `last_used_at`,
+    /// so a kept anchor leaves the unused-too-long list).
+    fn set_archived(
+        &mut self,
+        scope: AnchorScopeTag,
+        identifier: String,
+        archived: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = self.workspace_id.clone().unwrap_or_default();
+        cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
+            let outcome = ipc::set_archived(scope, &ws, &identifier, archived).await;
+            let _ = this.update(app_cx, |tab, cx| {
+                tab.status = Some(match outcome {
+                    Ok(_) if archived => Ok(format!(
+                        "Archived {{{{{identifier}}}}} — recoverable from the Archived view"
+                    )),
+                    Ok(_) => Ok(format!("Kept {{{{{identifier}}}}} (recency refreshed)")),
+                    Err(e) => Err(format!("Archive update failed: {e}")),
+                });
+                Self::spawn_load(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Reject a pending proposal — OI-11 suppression (30 days default).
     fn reject_proposal(&mut self, identifier: String, cx: &mut Context<Self>) {
         let Some(ws) = self.workspace_id.clone() else {
@@ -454,7 +517,12 @@ impl VocabularyTab {
             .child(SharedString::from(label.to_owned()))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| on_click(this, cx)),
+                cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| {
+                    // Buttons never bubble (a row-embedded action must not
+                    // also fire the row's own click).
+                    cx.stop_propagation();
+                    on_click(this, cx)
+                }),
             )
     }
 
@@ -476,7 +544,10 @@ impl Render for VocabularyTab {
             &self.ws_anchors,
             &self.global_anchors,
             self.scope_filter,
+            self.view_filter,
             &query,
+            epoch_now(),
+            &self.stale,
         );
 
         let mut root = div()
@@ -521,6 +592,20 @@ impl Render for VocabularyTab {
                     cx,
                     move |this, cx| {
                         this.scope_filter = next_filter;
+                        cx.notify();
+                    },
+                ))
+                .child(Self::button(
+                    ("vocab-view", 0),
+                    self.view_filter.label(),
+                    self.view_filter != ViewFilter::Active,
+                    cx,
+                    move |this, cx| {
+                        let i = ViewFilter::CYCLE
+                            .iter()
+                            .position(|f| *f == this.view_filter)
+                            .unwrap_or(0);
+                        this.view_filter = ViewFilter::CYCLE[(i + 1) % ViewFilter::CYCLE.len()];
                         cx.notify();
                     },
                 ))
@@ -754,30 +839,74 @@ impl Render for VocabularyTab {
             if !a.aliases.is_empty() {
                 line.push_str(&format!(" · {} alias(es)", a.aliases.len()));
             }
-            list = list.child(
-                div()
-                    .id(("vocab-row", i))
-                    .flex()
-                    .flex_col()
-                    .px_2()
-                    .py_1()
-                    .rounded(px(4.0))
-                    .bg(rgb(pack(bg)))
-                    .cursor_pointer()
-                    .child(
+            if row.stale {
+                // Silent badge (Slice N stale-mark): never auto-disabled,
+                // never a prompt.
+                line.push_str(" · ⚠ stale target");
+            }
+            let mut row_el = div()
+                .id(("vocab-row", i))
+                .flex()
+                .flex_col()
+                .px_2()
+                .py_1()
+                .rounded(px(4.0))
+                .bg(rgb(pack(bg)))
+                .cursor_pointer()
+                .child(
+                    div()
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                        .child(SharedString::from(line)),
+                )
+                .child(Self::hint(a.description.clone()))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| {
+                        this.select(scope, &ident, cx);
+                    }),
+                );
+            // Per-view row actions (OI-21): Cleanup offers archive/keep,
+            // Archived offers recovery.
+            match self.view_filter {
+                ViewFilter::Cleanup => {
+                    let id_a = a.identifier.clone();
+                    let id_k = a.identifier.clone();
+                    row_el = row_el.child(
                         div()
-                            .text_size(px(size::XS))
-                            .text_color(rgb(pack(TEXT_PRIMARY)))
-                            .child(SharedString::from(line)),
-                    )
-                    .child(Self::hint(a.description.clone()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| {
-                            this.select(scope, &ident, cx);
-                        }),
-                    ),
-            );
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .pt_1()
+                            .child(Self::button(
+                                ("vocab-cleanup-archive", i),
+                                "Archive",
+                                false,
+                                cx,
+                                move |this, cx| this.set_archived(scope, id_a.clone(), true, cx),
+                            ))
+                            .child(Self::button(
+                                ("vocab-cleanup-keep", i),
+                                "Keep",
+                                false,
+                                cx,
+                                move |this, cx| this.set_archived(scope, id_k.clone(), false, cx),
+                            )),
+                    );
+                }
+                ViewFilter::Archived => {
+                    let id_u = a.identifier.clone();
+                    row_el = row_el.child(div().flex().flex_row().pt_1().child(Self::button(
+                        ("vocab-unarchive", i),
+                        "Unarchive",
+                        true,
+                        cx,
+                        move |this, cx| this.set_archived(scope, id_u.clone(), false, cx),
+                    )));
+                }
+                _ => {}
+            }
+            list = list.child(row_el);
         }
         root = root.child(list);
 

@@ -41,8 +41,7 @@ async fn idle_timeout_fires_when_no_heartbeat_and_no_chunks() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let start = Instant::now();
-    let mut stream =
-        ipc::send_action_stream(&service, &action, serde_json::Value::Null);
+    let mut stream = ipc::send_action_stream(&service, &action, serde_json::Value::Null);
     let item = stream
         .next()
         .await
