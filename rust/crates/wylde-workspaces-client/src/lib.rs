@@ -250,6 +250,9 @@ impl WorkspacesClient {
     /// what sets this call's timeout — the per-hop budget `200ms + 300ms × N`
     /// (OI-1) — so the client passes it straight through to [`call_verb`].
     /// `include_body` (default true) loads the focal's source body.
+    /// `include_blame` (Slice L) folds recent git blame for the focal's body
+    /// lines into the reply (tracked files only; fail-soft) — latency-aware
+    /// callers on the chat hot path pass `false` to skip the git subprocess.
     ///
     /// Returns the raw `SymbolContext` reply payload (the typed model lives in
     /// `wylde_workspaces::graph::neighborhood`; this crate stays decoupled
@@ -261,6 +264,7 @@ impl WorkspacesClient {
         symbol_id: &str,
         hops: Option<u32>,
         include_body: bool,
+        include_blame: bool,
     ) -> Result<Value, WorkspacesClientError> {
         let hops = hops.unwrap_or(1).max(1);
         self.call_verb(
@@ -270,6 +274,7 @@ impl WorkspacesClient {
                 "symbol_id": symbol_id,
                 "hops": hops,
                 "include_body": include_body,
+                "include_blame": include_blame,
             }),
             hops,
         )

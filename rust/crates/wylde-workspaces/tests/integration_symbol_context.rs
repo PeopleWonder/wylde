@@ -124,7 +124,7 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
 
     // ── 1-hop read through the verb code path ───────────────────────────
     let t1 = Instant::now();
-    let ctx = neighborhood::symbol_context(&ws, &n("focal"), Some(1), true)
+    let ctx = neighborhood::symbol_context(&ws, &n("focal"), Some(1), true, true)
         .await
         .expect("symbol_context read")
         .expect("focal resolves");
@@ -204,7 +204,7 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
     assert!(ctx.siblings.iter().all(|r| r.name != n("focal")));
 
     // ── 2-hop: the indirect callee `deep` appears at hop_distance 2 ──────
-    let ctx2 = neighborhood::symbol_context(&ws, &n("focal"), Some(2), false)
+    let ctx2 = neighborhood::symbol_context(&ws, &n("focal"), Some(2), false, false)
         .await
         .expect("2-hop read")
         .expect("focal resolves");
@@ -219,7 +219,7 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
 
     // ── 3-hop perf budget (OI-1: 200 + 300*3 = 1100ms) ──────────────────
     let t3 = Instant::now();
-    let _ = neighborhood::symbol_context(&ws, &n("focal"), Some(3), true)
+    let _ = neighborhood::symbol_context(&ws, &n("focal"), Some(3), true, false)
         .await
         .expect("3-hop read")
         .expect("focal resolves");
@@ -233,7 +233,7 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
     );
 
     // Unknown symbol → not found (Ok(None)).
-    let missing = neighborhood::symbol_context(&ws, &n("ghost"), Some(1), true)
+    let missing = neighborhood::symbol_context(&ws, &n("ghost"), Some(1), true, true)
         .await
         .expect("read ok");
     assert!(missing.is_none(), "ghost symbol ⇒ not found");
@@ -241,7 +241,7 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
     // ── cleanup ─────────────────────────────────────────────────────────
     let del = client.delete_workspace(&ws).await;
     assert!(del.ok, "cleanup delete_workspace failed: {:?}", del.error);
-    let after = neighborhood::symbol_context(&ws, &n("focal"), Some(1), false)
+    let after = neighborhood::symbol_context(&ws, &n("focal"), Some(1), false, false)
         .await
         .expect("post-cleanup read");
     assert!(after.is_none(), "focal gone after cleanup");

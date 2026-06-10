@@ -273,9 +273,13 @@ impl WorkspaceSource for LiveSource {
     }
 
     async fn symbol_context(&self, ws: &str, symbol_id: &str) -> SourceResult<Value> {
+        // include_blame: false (Slice L) — the gather block doesn't render
+        // blame, and the per-turn hot path shouldn't pay a git subprocess
+        // per symbol for unrendered enrichment. Flip when the prompt block
+        // starts using recency.
         match self
             .client
-            .symbol_context(ws, symbol_id, Some(1), true)
+            .symbol_context(ws, symbol_id, Some(1), true, false)
             .await
         {
             Ok(v) => Ok(v),
