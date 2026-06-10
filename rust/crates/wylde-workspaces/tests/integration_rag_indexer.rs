@@ -26,9 +26,9 @@ use std::time::{Duration, SystemTime};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
+use wylde_shared::ipc;
 use wylde_workspaces::rag::indexer::{self, search};
 use wylde_workspaces::registry;
-use wylde_shared::ipc;
 
 /// Tiny fixed vocabulary — each dimension is the case-insensitive
 /// occurrence count of one keyword. Distinct enough that each fake file
@@ -236,7 +236,11 @@ async fn live_index_and_query_round_trip() {
 
     let def = registry::create(&folder.path().to_string_lossy(), None);
     let outcome = indexer::reindex_full(&def).await;
-    assert!(outcome.error.is_none(), "live index failed: {:?}", outcome.error);
+    assert!(
+        outcome.error.is_none(),
+        "live index failed: {:?}",
+        outcome.error
+    );
 
     let hits = search::query(&def.id, "how are workspace files embedded?", 2).await;
     assert!(!hits.is_empty());

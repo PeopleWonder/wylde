@@ -139,11 +139,10 @@ pub async fn handle_list(payload: Value) -> Reply {
 
     // `list_models` is synchronous and the live Ollama probe blocks on an
     // IPC round-trip; keep it off the async worker.
-    let entries = tokio::task::spawn_blocking(move || {
-        list_models(kind, &live_ollama_probe(), None)
-    })
-    .await
-    .unwrap_or_default();
+    let entries =
+        tokio::task::spawn_blocking(move || list_models(kind, &live_ollama_probe(), None))
+            .await
+            .unwrap_or_default();
 
     Reply::ok(list_payload(&entries, &kind_label))
 }
@@ -188,10 +187,9 @@ pub async fn handle_show<O: OllamaActions + ?Sized>(payload: Value, ollama: &O) 
     if code == "model_not_found" {
         return Reply::err_msg("not_found", format!("model {name:?} not found"));
     }
-    reply
-        .error
-        .map(Reply::err)
-        .unwrap_or_else(|| Reply::err_msg("unavailable", format!("ollama.show failed for {name:?}")))
+    reply.error.map(Reply::err).unwrap_or_else(|| {
+        Reply::err_msg("unavailable", format!("ollama.show failed for {name:?}"))
+    })
 }
 
 /// `models.delete` — uninstall a model via `/api/delete` and drop its

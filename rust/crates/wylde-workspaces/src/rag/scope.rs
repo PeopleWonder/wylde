@@ -122,8 +122,14 @@ mod tests {
 
     #[test]
     fn relativize_strips_folder_prefix_cross_platform() {
-        assert_eq!(relativize("/home/x/proj", "/home/x/proj/docs/a.md"), "docs/a.md");
-        assert_eq!(relativize(r"C:\proj", r"C:\proj\src\main.rs"), "src/main.rs");
+        assert_eq!(
+            relativize("/home/x/proj", "/home/x/proj/docs/a.md"),
+            "docs/a.md"
+        );
+        assert_eq!(
+            relativize(r"C:\proj", r"C:\proj\src\main.rs"),
+            "src/main.rs"
+        );
         // Not under the folder → unchanged (normalised separators).
         assert_eq!(relativize("/home/x/proj", "/other/a.md"), "/other/a.md");
     }

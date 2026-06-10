@@ -159,7 +159,13 @@ async fn call_sidecar(
 ) -> Result<Value, IpcError> {
     // Guard: path is required by both sidecar verbs. Reject before the IPC
     // hop so a missing path is a clean local error, not a pipe round-trip.
-    if payload.get("path").and_then(Value::as_str).map(str::trim).unwrap_or("").is_empty() {
+    if payload
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
         return Ok(json!({
             "status": "error",
             "resource_type": resource_type,
@@ -290,7 +296,10 @@ mod tests {
             assert_eq!(def.supported_ops(), vec![ResourceOp::List], "{rt} ops");
             assert!(!def.is_destructive(ResourceOp::List), "{rt} destructive");
             // No search op — semantic search is not a sidecar capability.
-            assert!(!def.supports(ResourceOp::Search), "{rt} must not expose search");
+            assert!(
+                !def.supports(ResourceOp::Search),
+                "{rt} must not expose search"
+            );
         }
     }
 

@@ -275,8 +275,7 @@ async fn alias_lookup_and_promotion_over_the_pipe() {
     assert_eq!(by_alias["count"], 1);
     assert_eq!(by_alias["token"], "set active");
     assert_eq!(
-        by_alias["anchors"][0]["identifier"],
-        "set_active_graph_view",
+        by_alias["anchors"][0]["identifier"], "set_active_graph_view",
         "canonical identifier returned, not the alias"
     );
 

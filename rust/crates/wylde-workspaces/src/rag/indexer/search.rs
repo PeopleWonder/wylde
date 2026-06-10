@@ -109,9 +109,9 @@ mod tests {
     fn rank_orders_by_cosine_and_truncates_to_k() {
         let query = vec![1.0_f32, 0.0, 0.0];
         let chunks = vec![
-            chunk("/far.md", vec![0.0, 1.0, 0.0], "far"),   // orthogonal → 0
+            chunk("/far.md", vec![0.0, 1.0, 0.0], "far"), // orthogonal → 0
             chunk("/near.md", vec![0.9, 0.1, 0.0], "near"), // close → high
-            chunk("/mid.md", vec![0.6, 0.6, 0.0], "mid"),   // middling
+            chunk("/mid.md", vec![0.6, 0.6, 0.0], "mid"), // middling
         ];
         let hits = rank(&query, chunks, 2);
         assert_eq!(hits.len(), 2, "truncated to k");

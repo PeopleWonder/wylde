@@ -189,15 +189,7 @@ mod tests {
     async fn ok_outcome_with_no_entities_skips_writes() {
         let _env = TestEnv::new();
         let (client, handle) = mock::new_with_static_ok(json!({"updated": true}));
-        let trace = record_outcome(
-            &client,
-            "q",
-            "ok",
-            &[],
-            &["chunk-1".into()],
-            "q1",
-        )
-        .await;
+        let trace = record_outcome(&client, "q", "ok", &[], &["chunk-1".into()], "q1").await;
         assert_eq!(trace.graph_edges, 0);
         assert!(!trace.graph_ok);
         assert!(handle.calls().is_empty());
@@ -207,15 +199,7 @@ mod tests {
     async fn ok_outcome_with_no_chunks_skips_writes() {
         let _env = TestEnv::new();
         let (client, handle) = mock::new_with_static_ok(json!({"updated": true}));
-        let trace = record_outcome(
-            &client,
-            "q",
-            "ok",
-            &["foo".into()],
-            &[],
-            "q1",
-        )
-        .await;
+        let trace = record_outcome(&client, "q", "ok", &["foo".into()], &[], "q1").await;
         assert_eq!(trace.graph_edges, 0);
         assert!(handle.calls().is_empty());
     }
@@ -257,15 +241,8 @@ mod tests {
     async fn miss_outcome_with_no_entities_only_records_marker() {
         let _env = TestEnv::new();
         let (client, handle) = mock::new_with_static_ok(json!({"updated": true}));
-        let trace = record_outcome(
-            &client,
-            "q",
-            "insufficient_context",
-            &[],
-            &[],
-            "q-no-ent",
-        )
-        .await;
+        let trace =
+            record_outcome(&client, "q", "insufficient_context", &[], &[], "q-no-ent").await;
         assert!(trace.miss_recorded);
         assert_eq!(trace.graph_edges, 0);
         assert!(handle.calls().is_empty());

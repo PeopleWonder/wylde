@@ -76,9 +76,17 @@ mod tests {
     #[test]
     fn upsert_entities_mentions_required_fields() {
         for needle in [
-            "$batch", "Chunk", "Entity", "MENTIONED_IN", "row.id", "row.workspace",
+            "$batch",
+            "Chunk",
+            "Entity",
+            "MENTIONED_IN",
+            "row.id",
+            "row.workspace",
         ] {
-            assert!(UPSERT_ENTITIES.contains(needle), "UPSERT_ENTITIES missing {needle}");
+            assert!(
+                UPSERT_ENTITIES.contains(needle),
+                "UPSERT_ENTITIES missing {needle}"
+            );
         }
     }
 

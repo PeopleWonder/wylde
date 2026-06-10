@@ -514,9 +514,15 @@ mod tests {
         client.multihop(vec!["a".into()], 2, 30).await;
         let payload = &handle.calls()[0].payload;
         assert!(payload.get("entities").is_some(), "field must be entities");
-        assert!(payload.get("expand_hops").is_some(), "field must be expand_hops");
+        assert!(
+            payload.get("expand_hops").is_some(),
+            "field must be expand_hops"
+        );
         assert!(payload.get("start").is_none(), "must not send `start`");
-        assert!(payload.get("max_hops").is_none(), "must not send `max_hops`");
+        assert!(
+            payload.get("max_hops").is_none(),
+            "must not send `max_hops`"
+        );
         assert_eq!(payload["entities"][0], "a");
         assert_eq!(payload["expand_hops"], 2);
         assert_eq!(payload["limit"], 30);
@@ -528,10 +534,7 @@ mod tests {
         client
             .relate(
                 schema::REL_CALLS,
-                vec![
-                    EntityPair::new("foo", "bar"),
-                    EntityPair::new("baz", "qux"),
-                ],
+                vec![EntityPair::new("foo", "bar"), EntityPair::new("baz", "qux")],
             )
             .await;
         let payload = &handle.calls()[0].payload;

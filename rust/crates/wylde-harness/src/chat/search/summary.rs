@@ -359,7 +359,9 @@ pub async fn refresh_standalone(conv_id: &str) -> Result<Value, SummaryError> {
     let count = message_count(&doc);
     let input = summary_input_text(&doc);
     if input.trim().is_empty() {
-        return Err(SummaryError::Llm("conversation has no text to summarise".to_owned()));
+        return Err(SummaryError::Llm(
+            "conversation has no text to summarise".to_owned(),
+        ));
     }
 
     let (summary, tags) = generate_summary(&input).await?;
@@ -400,7 +402,9 @@ pub async fn refresh_workspace(workspace_id: &str, conv_id: &str) -> Result<Valu
     let count = message_count(&doc);
     let input = summary_input_text(&doc);
     if input.trim().is_empty() {
-        return Err(SummaryError::Llm("conversation has no text to summarise".to_owned()));
+        return Err(SummaryError::Llm(
+            "conversation has no text to summarise".to_owned(),
+        ));
     }
 
     let (summary, tags) = generate_summary(&input).await?;
@@ -607,6 +611,9 @@ mod tests {
         assert_eq!(doc["updated_at"], 10);
         // The freshly written fields satisfy the display + needs_regen logic.
         assert_eq!(display_summary(&doc), "a précis");
-        assert!(!needs_regen(&doc), "5 msgs summarised at count 5 → no regen");
+        assert!(
+            !needs_regen(&doc),
+            "5 msgs summarised at count 5 → no regen"
+        );
     }
 }

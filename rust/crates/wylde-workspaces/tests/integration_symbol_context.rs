@@ -117,7 +117,10 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
     let inherits = vec![EntityPair::new(n("focal"), n("Base"))];
     assert!(client.relate("CALLS", calls).await.ok, "seed CALLS");
     assert!(client.relate("IMPORTS", imports).await.ok, "seed IMPORTS");
-    assert!(client.relate("INHERITS", inherits).await.ok, "seed INHERITS");
+    assert!(
+        client.relate("INHERITS", inherits).await.ok,
+        "seed INHERITS"
+    );
 
     // ── 1-hop read through the verb code path ───────────────────────────
     let t1 = Instant::now();
@@ -141,11 +144,18 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
 
     // Focal identity + body.
     assert_eq!(ctx.symbol.id, n("focal"));
-    assert_eq!(ctx.symbol.kind, NodeKind::Module, "import endpoint → Module");
+    assert_eq!(
+        ctx.symbol.kind,
+        NodeKind::Module,
+        "import endpoint → Module"
+    );
     assert!(ctx.symbol.file.to_string_lossy().ends_with("focal.rs"));
     assert_eq!(ctx.symbol.line, 3, "fn defined on line 3");
     let body = ctx.symbol.body.as_deref().expect("body loaded");
-    assert!(body.starts_with(&format!("fn {}()", n("focal"))), "body: {body}");
+    assert!(
+        body.starts_with(&format!("fn {}()", n("focal"))),
+        "body: {body}"
+    );
     assert!(body.contains(&n("callee1")), "body has callee1: {body}");
     assert!(!body.contains(&n("sibling")), "body stops at blank line");
 
@@ -165,10 +175,18 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
     assert_eq!(ctx.hops_traversed, 1, "1-hop request → 1 traversed");
 
     // types_used: INHERITS Base (Class) + IMPORTS std_io (Module).
-    let base = ctx.types_used.iter().find(|r| r.name == n("Base")).expect("Base");
+    let base = ctx
+        .types_used
+        .iter()
+        .find(|r| r.name == n("Base"))
+        .expect("Base");
     assert_eq!(base.rel_type, ContextRel::Inherits);
     assert_eq!(base.kind, NodeKind::Class);
-    let io = ctx.types_used.iter().find(|r| r.name == n("std_io")).expect("std_io");
+    let io = ctx
+        .types_used
+        .iter()
+        .find(|r| r.name == n("std_io"))
+        .expect("std_io");
     assert_eq!(io.rel_type, ContextRel::Imports);
     assert_eq!(io.kind, NodeKind::Module);
 
@@ -178,7 +196,10 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
         "sibling surfaces: {:?}",
         ctx.siblings.iter().map(|r| &r.name).collect::<Vec<_>>()
     );
-    assert!(ctx.siblings.iter().all(|r| r.rel_type == ContextRel::SiblingOf));
+    assert!(ctx
+        .siblings
+        .iter()
+        .all(|r| r.rel_type == ContextRel::SiblingOf));
     // The focal must never be its own sibling/caller/callee.
     assert!(ctx.siblings.iter().all(|r| r.name != n("focal")));
 
@@ -187,7 +208,11 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
         .await
         .expect("2-hop read")
         .expect("focal resolves");
-    let deep = ctx2.callees.iter().find(|r| r.name == n("deep")).expect("deep at 2 hops");
+    let deep = ctx2
+        .callees
+        .iter()
+        .find(|r| r.name == n("deep"))
+        .expect("deep at 2 hops");
     assert_eq!(deep.hop_distance, 2, "callee1→deep is 2 hops from focal");
     assert_eq!(ctx2.hops_traversed, 2);
     assert!(ctx2.symbol.body.is_none(), "include_body=false ⇒ no body");
@@ -202,7 +227,10 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
     eprintln!("[symbol_context] perf: 1-hop={one_hop_ms}ms 3-hop={three_hop_ms}ms");
 
     assert!(one_hop_ms < 500, "1-hop budget: {one_hop_ms}ms < 500ms");
-    assert!(three_hop_ms < 1100, "3-hop budget: {three_hop_ms}ms < 1100ms");
+    assert!(
+        three_hop_ms < 1100,
+        "3-hop budget: {three_hop_ms}ms < 1100ms"
+    );
 
     // Unknown symbol → not found (Ok(None)).
     let missing = neighborhood::symbol_context(&ws, &n("ghost"), Some(1), true)

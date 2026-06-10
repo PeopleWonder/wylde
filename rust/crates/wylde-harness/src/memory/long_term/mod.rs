@@ -48,7 +48,5 @@ pub use entries::{
     SearchHit,
 };
 pub use records::LongTermMemory;
-pub use scoring::{
-    combined_score, heuristic_importance, normalize_importance, DEFAULT_DECAY_DAYS,
-};
+pub use scoring::{combined_score, heuristic_importance, normalize_importance, DEFAULT_DECAY_DAYS};
 pub use text_search::{text_search, TextSearchError};

@@ -316,11 +316,17 @@ impl MemoryScheduler {
     async fn tick_conversations(&mut self, now: f64) -> usize {
         let mut fired = 0;
         for meta in conversations_store::list_conversations() {
-            let Some(cid) = meta.get("id").and_then(Value::as_str).filter(|s| !s.is_empty())
+            let Some(cid) = meta
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
             else {
                 continue;
             };
-            let updated_at = meta.get("updated_at").and_then(Value::as_f64).unwrap_or(0.0);
+            let updated_at = meta
+                .get("updated_at")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
             let last = self
                 .state
                 .conversation_reflected_at
@@ -561,7 +567,13 @@ mod tests {
         // at 0.0, so `now - 0 >= 86400` — same first-boot behaviour as
         // Python with a fresh state file).
         let counts = s.tick().await;
-        assert_eq!(counts, TickCounts { conversation: 1, long_term: 1 });
+        assert_eq!(
+            counts,
+            TickCounts {
+                conversation: 1,
+                long_term: 1
+            }
+        );
         assert_eq!(
             *fired.lock().unwrap(),
             vec!["conversation:conv-idle".to_owned(), "long_term".to_owned()]
@@ -591,7 +603,10 @@ mod tests {
         seed_conversation("conv-busy", (base + 120.0) as i64);
         *clock_cell.lock().unwrap() = base + 1000.0;
         let counts = s.tick().await;
-        assert_eq!(counts.conversation, 1, "re-fires after fresh activity + idle");
+        assert_eq!(
+            counts.conversation, 1,
+            "re-fires after fresh activity + idle"
+        );
         assert_eq!(
             fired.lock().unwrap().last().unwrap(),
             "conversation:conv-busy"

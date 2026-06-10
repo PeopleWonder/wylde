@@ -245,10 +245,7 @@ pub(crate) async fn run_edit_file(args: Value) -> Result<Value, IpcError> {
             "error": "'old_text' is required",
         }));
     };
-    let new_text = args
-        .get("new_text")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let new_text = args.get("new_text").and_then(Value::as_str).unwrap_or("");
     let path = PathBuf::from(&path_str);
     if !tokio_fs::try_exists(&path).await.unwrap_or(false) {
         return Ok(json!({
@@ -493,17 +490,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(v["truncated"], true);
-        assert_eq!(
-            v["content"].as_str().unwrap().len(),
-            CONTENT_CAP
-        );
+        assert_eq!(v["content"].as_str().unwrap().len(), CONTENT_CAP);
     }
 
     #[tokio::test]
     async fn list_files_lists_directory_contents_sorted() {
         let dir = tempdir().unwrap();
-        tokio_fs::write(dir.path().join("b.txt"), "b").await.unwrap();
-        tokio_fs::write(dir.path().join("a.txt"), "aa").await.unwrap();
+        tokio_fs::write(dir.path().join("b.txt"), "b")
+            .await
+            .unwrap();
+        tokio_fs::write(dir.path().join("a.txt"), "aa")
+            .await
+            .unwrap();
         tokio_fs::create_dir(dir.path().join("sub")).await.unwrap();
         let v = run_list_files(json!({"path": dir.path().display().to_string()}))
             .await
@@ -535,10 +533,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(v["status"], "error");
-        assert!(v["error"]
-            .as_str()
-            .unwrap()
-            .contains("not a directory"));
+        assert!(v["error"].as_str().unwrap().contains("not a directory"));
     }
 
     #[tokio::test]
@@ -734,9 +729,10 @@ mod tests {
     #[tokio::test]
     async fn remove_dir_not_found_and_not_a_dir() {
         let dir = tempdir().unwrap();
-        let missing = run_remove_dir(json!({"path": dir.path().join("ghost").display().to_string()}))
-            .await
-            .unwrap();
+        let missing =
+            run_remove_dir(json!({"path": dir.path().join("ghost").display().to_string()}))
+                .await
+                .unwrap();
         assert_eq!(missing["code"], "not_found");
         let file = dir.path().join("a.txt");
         tokio_fs::write(&file, "x").await.unwrap();
@@ -744,6 +740,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(notdir["status"], "error");
-        assert!(notdir["error"].as_str().unwrap().contains("not a directory"));
+        assert!(notdir["error"]
+            .as_str()
+            .unwrap()
+            .contains("not a directory"));
     }
 }

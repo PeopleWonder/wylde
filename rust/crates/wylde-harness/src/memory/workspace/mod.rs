@@ -243,7 +243,15 @@ async fn ask_curator(
     let lines: Vec<String> = batch
         .iter()
         .enumerate()
-        .map(|(i, m)| format!("{}. (importance {}, id {}) {}", i + 1, m.importance, m.id, m.body))
+        .map(|(i, m)| {
+            format!(
+                "{}. (importance {}, id {}) {}",
+                i + 1,
+                m.importance,
+                m.id,
+                m.body
+            )
+        })
         .collect();
     let messages = vec![
         json!({"role": "system", "content": CURATION_SYSTEM_PROMPT}),
@@ -385,7 +393,9 @@ fn index_to_record<'a>(
         Value::String(s) => s.trim().parse().ok()?,
         _ => return None,
     };
-    usize::try_from(i.checked_sub(1)?).ok().and_then(|i| batch.get(i))
+    usize::try_from(i.checked_sub(1)?)
+        .ok()
+        .and_then(|i| batch.get(i))
 }
 
 /// `verdict.get("verdict") or verdict.get("action") or "keep"` — the
@@ -478,7 +488,10 @@ mod tests {
         let r = curate_with_chat("ws_empty", Some(&chat)).await;
         assert!(r.skipped);
         assert_eq!(r.skip_reason, "no records to curate");
-        assert!(chat.calls.lock().unwrap().is_empty(), "no LLM call without records");
+        assert!(
+            chat.calls.lock().unwrap().is_empty(),
+            "no LLM call without records"
+        );
     }
 
     #[test]
@@ -526,8 +539,14 @@ mod tests {
         // Distinct importances pin the list order: r1, r2, r3.
         let r1 = save_new("wsc", "alpha fact", "t", Some(9.0), vec!["e1".into()]).unwrap();
         let r2 = save_new("wsc", "beta fact", "t", Some(8.0), vec!["e2".into()]).unwrap();
-        let r3 = save_new("wsc", "gamma fact", "t", Some(7.0), vec!["e1".into(), "e3".into()])
-            .unwrap();
+        let r3 = save_new(
+            "wsc",
+            "gamma fact",
+            "t",
+            Some(7.0),
+            vec!["e1".into(), "e3".into()],
+        )
+        .unwrap();
 
         let chat = FixedChat::new(
             "{\"index\": 2, \"verdict\": \"keep\"}\n\
@@ -558,7 +577,10 @@ mod tests {
         let merged_rec = get("wsc", &new_id).expect("merge record present");
         assert_eq!(merged_rec.body, "alpha+gamma merged");
         assert_eq!(merged_rec.importance, 9, "max of merged inputs");
-        assert_eq!(merged_rec.entities, vec!["e1".to_string(), "e3".to_string()]);
+        assert_eq!(
+            merged_rec.entities,
+            vec!["e1".to_string(), "e3".to_string()]
+        );
         assert_eq!(
             merged_rec.source,
             format!("curation:merge from {},{}", r1.id, r3.id)
@@ -571,7 +593,10 @@ mod tests {
         assert!(get("wsc", &r2.id).unwrap().superseded_by.is_empty());
 
         // Default list now shows the keeper + the merge record only.
-        let live: Vec<String> = list_records("wsc", false).into_iter().map(|r| r.id).collect();
+        let live: Vec<String> = list_records("wsc", false)
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
         assert_eq!(live.len(), 2);
         assert!(live.contains(&r2.id) && live.contains(&new_id));
         // History view still has everything.
@@ -614,9 +639,7 @@ mod tests {
         let _env = TestEnv::new();
         let r1 = save_new("wsk", "a", "t", Some(6.0), vec![]).unwrap();
         let r2 = save_new("wsk", "b", "t", Some(5.0), vec![]).unwrap();
-        let chat = FixedChat::new(
-            "{\"index\": 1}\n{\"index\": 2, \"action\": \"keep\"}",
-        );
+        let chat = FixedChat::new("{\"index\": 1}\n{\"index\": 2, \"action\": \"keep\"}");
         let result = curate_with_chat("wsk", Some(&chat)).await;
         assert_eq!(result.kept, vec![r1.id, r2.id]);
     }
@@ -632,7 +655,11 @@ mod tests {
         let result = curate_with_options("wsbatch", Some(&chat), None, 1).await;
         assert_eq!(result.inputs_considered, 3);
         assert_eq!(result.kept.len(), 3);
-        assert_eq!(chat.calls.lock().unwrap().len(), 3, "one LLM turn per batch");
+        assert_eq!(
+            chat.calls.lock().unwrap().len(),
+            3,
+            "one LLM turn per batch"
+        );
     }
 
     #[tokio::test]

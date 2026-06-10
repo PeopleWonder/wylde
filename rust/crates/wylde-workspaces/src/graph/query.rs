@@ -84,7 +84,12 @@ mod tests {
 
     #[test]
     fn node_query_is_workspace_scoped_via_mentioned_in() {
-        for needle in ["Chunk {workspace: $ws}", "MENTIONED_IN", "Entity", "e.name AS name"] {
+        for needle in [
+            "Chunk {workspace: $ws}",
+            "MENTIONED_IN",
+            "Entity",
+            "e.name AS name",
+        ] {
             assert!(
                 NODES_FOR_WORKSPACE.contains(needle),
                 "node query missing {needle}"

@@ -24,9 +24,9 @@ static TOKEN_RE: Lazy<Regex> =
 static STOPWORDS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     let mut s = HashSet::new();
     for w in [
-        "the", "a", "an", "is", "are", "to", "for", "of", "in", "on", "at",
-        "and", "or", "with", "tool", "find", "i", "need", "want", "that",
-        "does", "do", "can", "use", "uses", "using", "this", "any",
+        "the", "a", "an", "is", "are", "to", "for", "of", "in", "on", "at", "and", "or", "with",
+        "tool", "find", "i", "need", "want", "that", "does", "do", "can", "use", "uses", "using",
+        "this", "any",
     ] {
         s.insert(w);
     }
@@ -44,7 +44,12 @@ pub fn register(reg: &mut Registry) {
         vec![
             param("query", "string", true, "Free-form description"),
             param_default("limit", "number", "Max results", json!(5)),
-            param("group", "string", false, "Optional group filter (e.g. 'fs', 'memory')"),
+            param(
+                "group",
+                "string",
+                false,
+                "Optional group filter (e.g. 'fs', 'memory')",
+            ),
         ],
         false,
         |args, _| async move { run_tool_search(args).await },
@@ -63,14 +68,49 @@ pub fn register(reg: &mut Registry) {
          passed via `entities`) and returns chunks ranked by graph \
          proximity.",
         vec![
-            param("q", "string", false, "Natural-language query — identifiers are extracted as entity seeds"),
-            param("entities", "array", false, "Explicit entity-name list; skips identifier extraction"),
-            param("query_vector", "array", false, "Precomputed embedding — enables the hybrid vector+graph path"),
-            param_default("max_hops", "number", "Graph expansion depth (1..4)", json!(1)),
+            param(
+                "q",
+                "string",
+                false,
+                "Natural-language query — identifiers are extracted as entity seeds",
+            ),
+            param(
+                "entities",
+                "array",
+                false,
+                "Explicit entity-name list; skips identifier extraction",
+            ),
+            param(
+                "query_vector",
+                "array",
+                false,
+                "Precomputed embedding — enables the hybrid vector+graph path",
+            ),
+            param_default(
+                "max_hops",
+                "number",
+                "Graph expansion depth (1..4)",
+                json!(1),
+            ),
             param_default("limit", "number", "Max chunks returned (1..50)", json!(10)),
-            param_default("vector_k", "number", "Vector hits to seed expansion with (1..20)", json!(5)),
-            param("tier", "string", false, "Restrict vector search to one tier (core/episodic/semantic/procedural)"),
-            param("workspace_id", "string", false, "Filter chunks to this workspace"),
+            param_default(
+                "vector_k",
+                "number",
+                "Vector hits to seed expansion with (1..20)",
+                json!(5),
+            ),
+            param(
+                "tier",
+                "string",
+                false,
+                "Restrict vector search to one tier (core/episodic/semantic/procedural)",
+            ),
+            param(
+                "workspace_id",
+                "string",
+                false,
+                "Filter chunks to this workspace",
+            ),
         ],
         false,
         |args, _| async move {
@@ -118,7 +158,13 @@ async fn run_tool_search(args: Value) -> Result<Value, IpcError> {
                 continue;
             }
         }
-        let score = score_match(&entry.id, &entry.name, &entry.description, &entry.group, &query);
+        let score = score_match(
+            &entry.id,
+            &entry.name,
+            &entry.description,
+            &entry.group,
+            &query,
+        );
         if score <= 0.0 {
             continue;
         }
@@ -164,10 +210,7 @@ fn score_match(id: &str, name: &str, description: &str, group: &str, query: &str
     if q_tokens.is_empty() {
         return 0.0;
     }
-    let blob = format!(
-        "{id} {name} {description} {group}"
-    )
-    .to_lowercase();
+    let blob = format!("{id} {name} {description} {group}").to_lowercase();
     let name_tokens: HashSet<String> = TOKEN_RE
         .find_iter(&blob)
         .map(|m| m.as_str().to_lowercase())
@@ -175,7 +218,10 @@ fn score_match(id: &str, name: &str, description: &str, group: &str, query: &str
     let overlap: HashSet<&String> = q_tokens.intersection(&name_tokens).collect();
     let id_lc = id.to_lowercase();
     if overlap.is_empty() {
-        let sub = q_tokens.iter().filter(|q| blob.contains(q.as_str())).count();
+        let sub = q_tokens
+            .iter()
+            .filter(|q| blob.contains(q.as_str()))
+            .count();
         return round3(0.3 * sub as f64 / q_tokens.len().max(1) as f64);
     }
     let mut score = overlap.len() as f64 / q_tokens.len().max(1) as f64;
@@ -219,12 +265,18 @@ mod tests {
         // substring branch which scores 0.3 per matched token.
         let s = score_match("foo_bar_baz", "x.x", "", "", "bar");
         assert!(s > 0.0, "should score > 0; got {s}");
-        assert!(s <= 0.3 + f64::EPSILON, "substring branch caps at 0.3; got {s}");
+        assert!(
+            s <= 0.3 + f64::EPSILON,
+            "substring branch caps at 0.3; got {s}"
+        );
 
         // When a clean token overlap exists AND the id contains the
         // query token as substring, the +0.25 boost fires.
         let s2 = score_match("read_file", "fs.read_file", "read a file", "fs", "read");
-        assert!(s2 >= 1.0 - f64::EPSILON, "expected >= 1.0 with overlap + id substring; got {s2}");
+        assert!(
+            s2 >= 1.0 - f64::EPSILON,
+            "expected >= 1.0 with overlap + id substring; got {s2}"
+        );
     }
 
     #[tokio::test]
@@ -237,7 +289,9 @@ mod tests {
     async fn tool_search_returns_canonical_entries_from_global() {
         // Force the global registry to materialise.
         let _ = crate::tooling::registry::global();
-        let v = run_tool_search(json!({"query": "read file"})).await.unwrap();
+        let v = run_tool_search(json!({"query": "read file"}))
+            .await
+            .unwrap();
         assert_eq!(v["status"], "success");
         let results = v["results"].as_array().unwrap();
         // read_file should be in the top-3 results.

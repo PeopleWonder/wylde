@@ -42,7 +42,7 @@ use wylde_theme::colors::{
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
-use crate::composer::{self, ComposerState, WordRecognition};
+use crate::composer::{self, ComposerState, IgnoreTierTag, WordRecognition};
 use crate::ipc::{
     activate_workspace, cancel_turn, clear_working_memory, delete_conversation, eject_model,
     fetch_conversation_messages, fetch_working_memory, get_active_conversation, list_conversations,
@@ -728,6 +728,8 @@ impl ChatPanel {
         let conversation_id = self.conversation_id.clone();
         let workspace_id = self.active_workspace_id.clone();
         let model = self.active_model.clone();
+        // The composer's per-message ✕/↺ choices ride the send (Slices F+M).
+        let (excluded_tokens, reactivated_tokens) = self.composer.send_overrides();
 
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let start = start_turn_with_model(
@@ -735,6 +737,8 @@ impl ChatPanel {
                 &conversation_id,
                 workspace_id.as_deref(),
                 model.as_deref(),
+                &excluded_tokens,
+                &reactivated_tokens,
             )
             .await;
             let (turn_id, reply_conversation_id) = match start {
@@ -1267,6 +1271,7 @@ impl ChatPanel {
     pub(crate) fn schedule_composer_scan(&mut self, text: String, cx: &mut Context<Self>) {
         let generation = self.composer.begin_scan();
         let tokens = composer::tokenizer::scan(&text);
+        let conversation_id = self.conversation_id.clone();
         let Some(ws) = self.active_workspace_id.clone() else {
             // No workspace → nothing to recognize against.
             let _ = self.composer.install(generation, Vec::new(), false);
@@ -1301,6 +1306,14 @@ impl ChatPanel {
                         degraded = true;
                         words.push(WordRecognition::new(fallback));
                     }
+                }
+            }
+            // Mark words covered by a durable ignore tier (Slice M) so they
+            // render default-deselected with the ↺ affordance.
+            let tiers = composer::ipc_to_workspaces::ignore_tiers(&ws, &conversation_id).await;
+            for w in &mut words {
+                if let Some(tags) = tiers.get(&w.token.text) {
+                    w.ignored_tiers = tags.clone();
                 }
             }
             let _ = this.update(app_cx, |p, cx| {
@@ -1414,15 +1427,69 @@ impl ChatPanel {
         if ks.key.as_str() == "escape" {
             let had_overlay = self.composer.palette.is_some()
                 || self.composer.disambiguating.is_some()
+                || self.composer.ignore_menu.is_some()
                 || self.composer.curating;
             if had_overlay {
                 self.composer.palette = None;
                 self.composer.disambiguating = None;
+                self.composer.ignore_menu = None;
                 self.composer.curating = false;
                 self.focus_prompt(window, cx);
                 cx.notify();
             }
         }
+    }
+
+    /// Apply a right-click ignore-menu choice (Slice M): add/remove `token`
+    /// in one durable tier, then patch the word's local tier tags so the
+    /// chip re-renders without a rescan. The mutation is fire-and-confirm —
+    /// a failed pipe write leaves the local state untouched.
+    pub(crate) fn toggle_ignore_tier(
+        &mut self,
+        word_idx: usize,
+        tier: IgnoreTierTag,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(w) = self.composer.words.get(word_idx) else {
+            return;
+        };
+        let token = w.token.text.clone();
+        let currently = w.ignored_tiers.contains(&tier);
+        let ws = self.active_workspace_id.clone().unwrap_or_default();
+        let conv = self.conversation_id.clone();
+        self.composer.ignore_menu = None;
+        cx.notify();
+
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome =
+                composer::ipc_to_workspaces::set_ignored(&ws, &conv, tier, &token, !currently)
+                    .await;
+            let _ = this.update(app_cx, |panel, cx| {
+                match outcome {
+                    Ok(()) => {
+                        if let Some(w) = panel
+                            .composer
+                            .words
+                            .iter_mut()
+                            .find(|w| w.token.text == token)
+                        {
+                            if currently {
+                                w.ignored_tiers.retain(|t| *t != tier);
+                            } else {
+                                w.ignored_tiers.push(tier);
+                                // A fresh ignore starts deselected (§5.8).
+                                w.reactivated = false;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        panel.error = Some(format!("Ignore update failed: {e}"));
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 }
 

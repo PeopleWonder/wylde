@@ -136,8 +136,7 @@ pub fn save_conversation(workspace_id: &str, doc: &Map<String, Value>) -> std::i
                 "conversation document missing a usable `id`",
             )
         })?;
-    validate_id(conv_id)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.0))?;
+    validate_id(conv_id).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.0))?;
     let path = path_for(workspace_id, conv_id);
     let body = serde_json::to_string_pretty(&Value::Object(doc.clone()))
         .unwrap_or_else(|_| "{}".to_owned());
@@ -233,7 +232,10 @@ pub fn list_conversations(workspace_id: &str) -> Vec<Value> {
             .filter(|s| !s.is_empty())
             .unwrap_or("Untitled");
         let model = doc.get("model").and_then(Value::as_str).unwrap_or("");
-        let ws = doc.get("workspace_id").and_then(Value::as_str).unwrap_or("");
+        let ws = doc
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         metas.push(serde_json::json!({
             "id": cid,
             "title": title,
@@ -260,7 +262,9 @@ mod tests {
     use serde_json::json;
 
     fn seed(ws: &str, cid: &str, doc: Value) {
-        let Value::Object(map) = doc else { panic!("doc must be object") };
+        let Value::Object(map) = doc else {
+            panic!("doc must be object")
+        };
         save_conversation(ws, &map).unwrap();
         // Sanity: filename matches the doc id.
         assert!(path_for(ws, cid).exists());
@@ -310,9 +314,21 @@ mod tests {
         let _env = TestEnv::new();
         let ws_a = "ws-a-000000";
         let ws_b = "ws-b-000000";
-        seed(ws_a, "old", json!({"id": "old", "updated_at": 100, "messages": [], "workspace_id": ws_a}));
-        seed(ws_a, "new", json!({"id": "new", "updated_at": 300, "messages": [{"role":"user","content":"x"}], "workspace_id": ws_a}));
-        seed(ws_b, "other", json!({"id": "other", "updated_at": 200, "messages": [], "workspace_id": ws_b}));
+        seed(
+            ws_a,
+            "old",
+            json!({"id": "old", "updated_at": 100, "messages": [], "workspace_id": ws_a}),
+        );
+        seed(
+            ws_a,
+            "new",
+            json!({"id": "new", "updated_at": 300, "messages": [{"role":"user","content":"x"}], "workspace_id": ws_a}),
+        );
+        seed(
+            ws_b,
+            "other",
+            json!({"id": "other", "updated_at": 200, "messages": [], "workspace_id": ws_b}),
+        );
 
         let a = list_conversations(ws_a);
         assert_eq!(a.len(), 2, "only ws_a's conversations");
@@ -334,7 +350,11 @@ mod tests {
     fn delete_removes_and_reports_truthfully() {
         let _env = TestEnv::new();
         let ws = "ws-conv-del-000000";
-        seed(ws, "d1", json!({"id": "d1", "messages": [], "workspace_id": ws}));
+        seed(
+            ws,
+            "d1",
+            json!({"id": "d1", "messages": [], "workspace_id": ws}),
+        );
         assert!(delete_conversation(ws, "d1").unwrap());
         assert!(read_conversation(ws, "d1").is_err());
         assert!(!delete_conversation(ws, "d1").unwrap());

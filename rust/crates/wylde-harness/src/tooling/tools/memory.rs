@@ -90,7 +90,12 @@ pub fn register(reg: &mut Registry) {
          out; results are ranked by similarity boosted by importance + \
          recency decay.",
         vec![
-            param_default("query", "string", "Text query (embedded via wylde-ollama)", json!(null)),
+            param_default(
+                "query",
+                "string",
+                "Text query (embedded via wylde-ollama)",
+                json!(null),
+            ),
             param_default(
                 "query_vector",
                 "array",
@@ -98,10 +103,20 @@ pub fn register(reg: &mut Registry) {
                 json!(null),
             ),
             param_default("limit", "number", "Max hits to return", json!(5)),
-            param_default("decay_days", "number", "Recency decay constant", json!(30.0)),
+            param_default(
+                "decay_days",
+                "number",
+                "Recency decay constant",
+                json!(30.0),
+            ),
             // Kept for shape parity with the deferred catalog entry that
             // existed before this slice — currently advisory only.
-            param_default("scope", "string", "Scope (must be 'long_term')", json!("long_term")),
+            param_default(
+                "scope",
+                "string",
+                "Scope (must be 'long_term')",
+                json!("long_term"),
+            ),
         ],
         false,
         |args, _| async move { run_search(args).await },
@@ -181,10 +196,7 @@ pub(crate) async fn run_delete(args: Value) -> Result<Value, IpcError> {
 }
 
 pub(crate) async fn run_search(args: Value) -> Result<Value, IpcError> {
-    let limit = args
-        .get("limit")
-        .and_then(Value::as_u64)
-        .unwrap_or(5) as usize;
+    let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(5) as usize;
     let decay = args.get("decay_days").and_then(Value::as_f64);
 
     // Precomputed-vector path takes precedence when both are present —

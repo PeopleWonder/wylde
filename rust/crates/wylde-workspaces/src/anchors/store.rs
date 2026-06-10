@@ -20,7 +20,6 @@
 
 use std::path::PathBuf;
 
-
 use super::anchor::{validate_aliases, AliasError, Anchor, AnchorScope, AnchorTarget};
 use crate::registry::persistence::workspace_dir;
 

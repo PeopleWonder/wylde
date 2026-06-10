@@ -52,8 +52,7 @@ static COMPILED: Lazy<Vec<(Regex, Kind)>> = Lazy::new(|| {
         .iter()
         .map(|(pat, kind)| {
             // case-insensitive — matches Python's re.IGNORECASE.
-            let re = Regex::new(&format!("(?i){pat}"))
-                .expect("model_registry pattern compiles");
+            let re = Regex::new(&format!("(?i){pat}")).expect("model_registry pattern compiles");
             (re, *kind)
         })
         .collect()
@@ -100,10 +99,7 @@ mod tests {
     #[test]
     fn piper_kokoro_are_tts() {
         assert_eq!(infer_kind("rhasspy/piper-voices"), Kind::Tts);
-        assert_eq!(
-            infer_kind("onnx-community/Kokoro-82M-v1.0-ONNX"),
-            Kind::Tts
-        );
+        assert_eq!(infer_kind("onnx-community/Kokoro-82M-v1.0-ONNX"), Kind::Tts);
         assert_eq!(infer_kind("microsoft/speecht5_tts"), Kind::Tts);
     }
 
@@ -139,10 +135,7 @@ mod tests {
 
     #[test]
     fn openwakeword_is_wakeword() {
-        assert_eq!(
-            infer_kind("openWakeWord/hey-jarvis"),
-            Kind::Wakeword,
-        );
+        assert_eq!(infer_kind("openWakeWord/hey-jarvis"), Kind::Wakeword,);
         assert_eq!(infer_kind("acme/my-wake-word-model"), Kind::Wakeword);
         assert_eq!(infer_kind("acme/wakeword-trained"), Kind::Wakeword);
     }

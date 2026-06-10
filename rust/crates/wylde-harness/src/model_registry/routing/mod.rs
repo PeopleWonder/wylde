@@ -93,8 +93,7 @@ pub(super) fn save_json(path: &std::path::Path, data: &Value) -> std::io::Result
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let serialised = serde_json::to_string_pretty(data)
-        .unwrap_or_else(|_| "{}".to_owned());
+    let serialised = serde_json::to_string_pretty(data).unwrap_or_else(|_| "{}".to_owned());
     std::fs::write(path, serialised)
 }
 

@@ -266,11 +266,18 @@ async fn run_loop<D: DeltaDispatcher>(
         }
     }
 
-    tracing::debug!("workspaces.watcher: loop exited ({})", dispatcher.workspace_id());
+    tracing::debug!(
+        "workspaces.watcher: loop exited ({})",
+        dispatcher.workspace_id()
+    );
 }
 
 /// Log + broadcast one settled delta (skips a filtered no-op).
-fn finish_delta<D: DeltaDispatcher>(dispatcher: &D, outcome: &delta::DeltaOutcome, started: Instant) {
+fn finish_delta<D: DeltaDispatcher>(
+    dispatcher: &D,
+    outcome: &delta::DeltaOutcome,
+    started: Instant,
+) {
     if outcome.action == "skip" {
         return;
     }
@@ -379,7 +386,11 @@ pub fn on_active_changed() {
                 && Path::new(&def.folder).is_dir() =>
         {
             // Already watching this exact workspace? Leave it running.
-            if active().lock().map(|g| g.as_ref().map(|a| a.workspace_id.clone())).ok().flatten()
+            if active()
+                .lock()
+                .map(|g| g.as_ref().map(|a| a.workspace_id.clone()))
+                .ok()
+                .flatten()
                 == Some(def.id.clone())
             {
                 return;
@@ -514,7 +525,11 @@ mod tests {
             let path = path.to_string_lossy().into_owned();
             async move {
                 delta::DeltaOutcome {
-                    action: if kind == ChangeKind::Upsert { "upsert" } else { "remove" },
+                    action: if kind == ChangeKind::Upsert {
+                        "upsert"
+                    } else {
+                        "remove"
+                    },
                     path,
                     ..Default::default()
                 }
@@ -540,7 +555,13 @@ mod tests {
         let (ctrl_tx, ctrl_rx) = unbounded_channel();
         let status = Arc::new(Mutex::new(WatcherStatus::default()));
         let mock = MockDispatcher::new();
-        tokio::spawn(run_loop(ev_rx, ctrl_rx, mock.clone(), status.clone(), window));
+        tokio::spawn(run_loop(
+            ev_rx,
+            ctrl_rx,
+            mock.clone(),
+            status.clone(),
+            window,
+        ));
         (ev_tx, ctrl_tx, status, mock)
     }
 
@@ -562,9 +583,12 @@ mod tests {
     #[tokio::test]
     async fn multiple_files_batch_and_status_updates() {
         let (ev, _ctrl, status, mock) = spawn_loop(Duration::from_millis(60));
-        ev.send((PathBuf::from("/a.rs"), ChangeKind::Upsert)).unwrap();
-        ev.send((PathBuf::from("/b.rs"), ChangeKind::Upsert)).unwrap();
-        ev.send((PathBuf::from("/c.rs"), ChangeKind::Remove)).unwrap();
+        ev.send((PathBuf::from("/a.rs"), ChangeKind::Upsert))
+            .unwrap();
+        ev.send((PathBuf::from("/b.rs"), ChangeKind::Upsert))
+            .unwrap();
+        ev.send((PathBuf::from("/c.rs"), ChangeKind::Remove))
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(160)).await;
         let got = mock.dispatched.lock().unwrap().clone();
         assert_eq!(got.len(), 3, "all three dispatched: {got:?}");
@@ -580,7 +604,8 @@ mod tests {
         // Pause, then edit: the event must NOT dispatch.
         ctrl.send(Control::Pause).unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
-        ev.send((PathBuf::from("/x.rs"), ChangeKind::Upsert)).unwrap();
+        ev.send((PathBuf::from("/x.rs"), ChangeKind::Upsert))
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(120)).await;
         assert!(
             mock.dispatched.lock().unwrap().is_empty(),
@@ -591,7 +616,11 @@ mod tests {
         // Resume → one catch_up re-walk; status clears paused.
         ctrl.send(Control::Resume).unwrap();
         tokio::time::sleep(Duration::from_millis(40)).await;
-        assert_eq!(*mock.catch_ups.lock().unwrap(), 1, "resume triggers catch_up");
+        assert_eq!(
+            *mock.catch_ups.lock().unwrap(),
+            1,
+            "resume triggers catch_up"
+        );
         assert!(!status.lock().unwrap().paused);
     }
 
@@ -611,7 +640,8 @@ mod tests {
     async fn delta_event_is_broadcast_on_dispatch() {
         let mut rx = subscribe();
         let (ev, _ctrl, _status, _mock) = spawn_loop(Duration::from_millis(50));
-        ev.send((PathBuf::from("/evt.rs"), ChangeKind::Upsert)).unwrap();
+        ev.send((PathBuf::from("/evt.rs"), ChangeKind::Upsert))
+            .unwrap();
         // The completion event arrives after the debounce window.
         let got = tokio::time::timeout(Duration::from_millis(300), rx.recv())
             .await
@@ -634,7 +664,10 @@ mod tests {
     fn debounce_window_default_is_500ms() {
         // Only assert the default when the env knob is unset.
         if std::env::var_os("WYLDE_WORKSPACES_WATCH_DEBOUNCE_MS").is_none() {
-            assert_eq!(debounce_window(), Duration::from_millis(DEFAULT_DEBOUNCE_MS));
+            assert_eq!(
+                debounce_window(),
+                Duration::from_millis(DEFAULT_DEBOUNCE_MS)
+            );
         }
     }
 }

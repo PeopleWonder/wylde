@@ -168,8 +168,8 @@ impl ConsentStore {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
         }
-        let text = serde_json::to_string_pretty(&inner.file)
-            .map_err(|e| format!("serialize: {e}"))?;
+        let text =
+            serde_json::to_string_pretty(&inner.file).map_err(|e| format!("serialize: {e}"))?;
         // Atomic-rename: write to a sibling temp, then rename onto the
         // canonical path. Mirrors the pattern in `wylde_shared::manifest::atomic_write`
         // — keeps a partial write from leaving a half-truncated consent
@@ -308,7 +308,10 @@ pub fn store_set_path_for_tests_helper(store: &ConsentStore, path: PathBuf) {
 
 /// Default consent-file path resolution: `<wylde_root>/data/preferences/consent.json`.
 pub fn default_path(wylde_root: &Path) -> PathBuf {
-    wylde_root.join("data").join("preferences").join("consent.json")
+    wylde_root
+        .join("data")
+        .join("preferences")
+        .join("consent.json")
 }
 
 /// True when the WYLDE_HARNESS_CONSENT_BYPASS env override is set to a
@@ -494,7 +497,12 @@ pub(crate) fn clear_pending() {
 /// gate. Kept short — the Wylde user's spec is "plain language, what's about to
 /// happen, decision buttons." The destructive flag is mentioned because
 /// it materially changes the user's risk calculus.
-pub fn format_prompt(tool_id: &str, tool_name: &str, description: &str, destructive: bool) -> String {
+pub fn format_prompt(
+    tool_id: &str,
+    tool_name: &str,
+    description: &str,
+    destructive: bool,
+) -> String {
     let danger = if destructive {
         " [destructive — may modify or delete data]"
     } else {
@@ -804,6 +812,9 @@ mod tests {
         let path = td.path().join("consent.json");
         store().set_path_for_tests(path.clone());
         store().set("foo", Decision::Approved).unwrap();
-        assert!(path.exists(), "store should have persisted to override path");
+        assert!(
+            path.exists(),
+            "store should have persisted to override path"
+        );
     }
 }

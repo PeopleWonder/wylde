@@ -146,9 +146,9 @@ pub fn parse_embed_response(
     let target = embed_dim();
     let mut out: Vec<Vec<f32>> = Vec::with_capacity(arr.len());
     for (idx, item) in arr.iter().enumerate() {
-        let vec_arr = item.as_array().ok_or_else(|| {
-            EmbedError::InvalidResponse(format!("entry {idx} is not an array"))
-        })?;
+        let vec_arr = item
+            .as_array()
+            .ok_or_else(|| EmbedError::InvalidResponse(format!("entry {idx} is not an array")))?;
         if vec_arr.len() != native {
             return Err(EmbedError::InvalidResponse(format!(
                 "native dim mismatch: expected {native}d from model {:?}, got {}d",
@@ -159,9 +159,7 @@ pub fn parse_embed_response(
         let mut floats: Vec<f32> = Vec::with_capacity(vec_arr.len());
         for (vi, x) in vec_arr.iter().enumerate() {
             let f = x.as_f64().ok_or_else(|| {
-                EmbedError::InvalidResponse(format!(
-                    "entry {idx}[{vi}] is not a number"
-                ))
+                EmbedError::InvalidResponse(format!("entry {idx}[{vi}] is not a number"))
             })?;
             floats.push(f as f32);
         }

@@ -119,16 +119,8 @@ async fn parity_01_health() {
 
     assert!(pipe.ok, "pipe health must return ok=true");
     assert!(bolt.ok, "bolt health must return ok=true");
-    assert_eq!(
-        inner_ok(&pipe),
-        Some(true),
-        "pipe data.ok must be true"
-    );
-    assert_eq!(
-        inner_ok(&bolt),
-        Some(true),
-        "bolt data.ok must be true"
-    );
+    assert_eq!(inner_ok(&pipe), Some(true), "pipe data.ok must be true");
+    assert_eq!(inner_ok(&bolt), Some(true), "bolt data.ok must be true");
 }
 
 // ── 2. ensure_schema ──────────────────────────────────────────────────
@@ -311,8 +303,20 @@ async fn parity_06_traverse() {
     // structural: chunks have the same keys
     for chunks in [&pipe.data["chunks"], &bolt.data["chunks"]] {
         for c in chunks.as_array().unwrap_or(&vec![]) {
-            for key in ["id", "path", "symbol", "language", "graph_rank", "graph_score", "graph_depth", "graph_bucket"] {
-                assert!(c.get(key).is_some(), "traverse chunk missing key {key}: {c}");
+            for key in [
+                "id",
+                "path",
+                "symbol",
+                "language",
+                "graph_rank",
+                "graph_score",
+                "graph_depth",
+                "graph_bucket",
+            ] {
+                assert!(
+                    c.get(key).is_some(),
+                    "traverse chunk missing key {key}: {c}"
+                );
             }
         }
     }

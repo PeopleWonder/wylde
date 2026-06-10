@@ -22,7 +22,11 @@ pub const CAPABILITY_SLOTS: &[&str] = &["code", "reasoning", "extraction", "crea
 /// * `budget_mode` — `"compact"` triggers a size penalty (divides score
 ///   by `max(size_gb / 7, 1)`); any other value is treated as `"normal"`.
 pub fn select_model(capability: &str, budget_mode: &str) -> Option<String> {
-    let capability = if capability.is_empty() { "chat" } else { capability };
+    let capability = if capability.is_empty() {
+        "chat"
+    } else {
+        capability
+    };
     let profiles = read_profiles();
     // Active models with the requested capability declared.
     let mut candidates: Vec<&Value> = profiles
@@ -42,17 +46,12 @@ pub fn select_model(capability: &str, budget_mode: &str) -> Option<String> {
     if candidates.is_empty() {
         return None;
     }
-    let best = candidates
-        .iter()
-        .copied()
-        .max_by(|a, b| {
-            score_for(a, capability, budget_mode)
-                .partial_cmp(&score_for(b, capability, budget_mode))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })?;
-    best.get("name")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+    let best = candidates.iter().copied().max_by(|a, b| {
+        score_for(a, capability, budget_mode)
+            .partial_cmp(&score_for(b, capability, budget_mode))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })?;
+    best.get("name").and_then(Value::as_str).map(str::to_owned)
 }
 
 fn profile_has_capability(p: &Value, capability: &str) -> bool {
@@ -200,21 +199,17 @@ mod tests {
         );
         // Big: 0.9 / max(70/7, 1) = 0.09
         // Small: 0.5 / max(7/7, 1) = 0.5
-        assert_eq!(
-            select_model("chat", "compact"),
-            Some("small".to_owned())
-        );
+        assert_eq!(select_model("chat", "compact"), Some("small".to_owned()));
         // Normal mode: big wins.
-        assert_eq!(
-            select_model("chat", "normal"),
-            Some("big".to_owned())
-        );
+        assert_eq!(select_model("chat", "normal"), Some("big".to_owned()));
     }
 
     #[test]
     fn incumbent_bonus_kicks_in_after_30_days() {
         let _env = TestEnv::new();
-        let old_ts = (chrono::Utc::now() - chrono::Duration::days(60)).format("%Y-%m-%dT%H:%M:%S").to_string();
+        let old_ts = (chrono::Utc::now() - chrono::Duration::days(60))
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
         upsert_profile(
             "incumbent",
             json!({
@@ -233,10 +228,7 @@ mod tests {
             }),
         );
         // Incumbent's effective score: 0.5 * 1.05 = 0.525 — beats 0.52.
-        assert_eq!(
-            select_model("chat", "normal"),
-            Some("incumbent".to_owned())
-        );
+        assert_eq!(select_model("chat", "normal"), Some("incumbent".to_owned()));
     }
 
     #[test]

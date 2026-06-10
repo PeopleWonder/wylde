@@ -557,8 +557,7 @@ mod tests {
         assert_eq!(found.data["count"], 1);
         assert_eq!(found.data["token"], "set active");
         assert_eq!(
-            found.data["anchors"][0]["identifier"],
-            "set_active_graph_view",
+            found.data["anchors"][0]["identifier"], "set_active_graph_view",
             "aliases never returned as the match name — canonical only"
         );
     }

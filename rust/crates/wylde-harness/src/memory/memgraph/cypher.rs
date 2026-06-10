@@ -213,7 +213,12 @@ mod tests {
         // Touchpoints the upsert handler binds via $batch — if any of
         // these go missing the route silently no-ops on that property.
         for needle in [
-            "$batch", "Chunk", "Entity", "MENTIONED_IN", "row.id", "row.workspace",
+            "$batch",
+            "Chunk",
+            "Entity",
+            "MENTIONED_IN",
+            "row.id",
+            "row.workspace",
         ] {
             assert!(
                 UPSERT_ENTITIES.contains(needle),

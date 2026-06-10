@@ -311,6 +311,30 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::NoRetry,
         cache_ttl: None,
     },
+    // ── Slice M — symbol ignore list (Appendix A) ─────────────────────────
+    // All three are Fast · 500ms; `list` is an idempotent read (exp-backoff
+    // ≤4), `add` an idempotent write (the store treats re-adds as a no-write
+    // success → 1 retry is safe), `remove` non-idempotent → NoRetry. No
+    // caches — the composer re-reads on conversation/workspace switches and
+    // the lists must reflect a just-clicked Ignore immediately.
+    VerbDef {
+        name: "workspaces.ignore.list",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.ignore.add",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_write(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.ignore.remove",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
 ];
 
 /// Look up the policy for `verb`, or `None` if the client doesn't know it.
@@ -346,6 +370,26 @@ mod tests {
         // Idempotent read → exp-backoff with >1 attempt; no read-through cache.
         assert!(d.retry.max_attempts() > 1, "idempotent read retries");
         assert!(d.cache_ttl.is_none(), "symbol_context is not cached (§7.6)");
+    }
+
+    #[test]
+    fn ignore_verbs_match_appendix_a() {
+        // Slice M: Fast · 500ms across the board; list = idempotent read,
+        // add = idempotent write (1 retry), remove = no retry. No caches.
+        let list = lookup("workspaces.ignore.list").expect("list");
+        assert_eq!(list.timeout, TimeoutPolicy::fast());
+        assert!(list.retry.max_attempts() > 1, "idempotent read");
+        assert!(list.cache_ttl.is_none());
+
+        let add = lookup("workspaces.ignore.add").expect("add");
+        assert_eq!(add.timeout, TimeoutPolicy::fast());
+        assert_eq!(add.retry.max_attempts(), 2, "idempotent write = 1 retry");
+        assert!(add.cache_ttl.is_none());
+
+        let remove = lookup("workspaces.ignore.remove").expect("remove");
+        assert_eq!(remove.timeout, TimeoutPolicy::fast());
+        assert_eq!(remove.retry.max_attempts(), 1, "non-idempotent = no retry");
+        assert!(remove.cache_ttl.is_none());
     }
 
     #[test]
@@ -389,8 +433,8 @@ mod tests {
     fn refresh_summary_is_fast_noretry_uncached() {
         // Slice E parity (Phase 2 polish): a small service-side write of a
         // harness-computed summary+embedding. Fast · NoRetry · no cache.
-        let d = lookup("workspaces.conversations.refresh_summary")
-            .expect("refresh_summary defined");
+        let d =
+            lookup("workspaces.conversations.refresh_summary").expect("refresh_summary defined");
         assert_eq!(d.timeout, TimeoutPolicy::fast());
         assert_eq!(d.retry.max_attempts(), 1, "non-idempotent fold = no retry");
         assert!(d.cache_ttl.is_none());

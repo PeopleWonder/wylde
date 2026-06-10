@@ -70,7 +70,11 @@ async fn health_returns_ok_against_live_neo4j() {
 async fn ensure_schema_returns_ok() {
     let client = BoltClient::new();
     let reply = client.ensure_schema().await;
-    assert!(reply.ok, "ensure_schema must return ok; got {:?}", reply.error);
+    assert!(
+        reply.ok,
+        "ensure_schema must return ok; got {:?}",
+        reply.error
+    );
 }
 
 #[tokio::test]
@@ -265,7 +269,8 @@ async fn multihop_returns_chunks_for_known_entities() {
         .filter_map(|c| c.get("id").and_then(|v| v.as_str()))
         .collect();
     assert!(
-        ids.iter().any(|id| id.ends_with("-mh1") || id.ends_with("-mh2")),
+        ids.iter()
+            .any(|id| id.ends_with("-mh1") || id.ends_with("-mh2")),
         "multihop must return seeded chunks; got {ids:?}"
     );
 
@@ -328,9 +333,7 @@ async fn upsert_edge_succeeds_on_valid_label() {
 async fn upsert_edge_rejects_invalid_label() {
     let client = BoltClient::new();
     // Spaces and punctuation aren't valid Cypher rel types.
-    let r = client
-        .upsert_edge("src", "BAD LABEL!", "tgt", 1.0)
-        .await;
+    let r = client.upsert_edge("src", "BAD LABEL!", "tgt", 1.0).await;
     assert!(!r.ok, "upsert_edge must reject invalid label");
     assert_eq!(r.error.expect("err envelope").code, "bad_request");
 }

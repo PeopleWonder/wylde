@@ -174,7 +174,10 @@ mod tests {
     fn supports_get_and_execute_only() {
         let r = reg();
         let def = r.lookup("time").unwrap();
-        assert_eq!(def.supported_ops(), vec![ResourceOp::Get, ResourceOp::Execute]);
+        assert_eq!(
+            def.supported_ops(),
+            vec![ResourceOp::Get, ResourceOp::Execute]
+        );
     }
 
     #[test]
@@ -220,7 +223,10 @@ mod tests {
     async fn execute_unknown_action_errors_cleanly() {
         let out = dispatch(
             ResourceOp::Execute,
-            ResourceRequest { action: Some("nope".into()), ..Default::default() },
+            ResourceRequest {
+                action: Some("nope".into()),
+                ..Default::default()
+            },
         )
         .await;
         assert_eq!(out["status"], "error");

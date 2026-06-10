@@ -31,7 +31,11 @@ async fn registry_guard() -> MutexGuard<'static, ()> {
 /// Spin up a fresh per-test `wylde-harness` pipe with all pipe verbs
 /// registered. Returns the service name + a handle that stops the
 /// server on drop.
-async fn spin_up_pipe() -> (String, Arc<ipc::PipeServer>, tokio::task::JoinHandle<anyhow::Result<()>>) {
+async fn spin_up_pipe() -> (
+    String,
+    Arc<ipc::PipeServer>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let service = format!("wylde-harness-pipe-test-{suffix}");
     // Re-register the full pipe surface — actions are global, so this
@@ -385,18 +389,17 @@ async fn models_list_and_show_run_on_rust_handler_over_live_pipe() {
     // models.list — registry view, deterministic shape, no Ollama needed.
     let listed = ipc::send_action(&service, "models.list", json!({})).await;
     assert!(listed.ok, "models.list reply not ok: {listed:?}");
-    assert!(listed.data["models"].is_array(), "models.list missing models[]");
+    assert!(
+        listed.data["models"].is_array(),
+        "models.list missing models[]"
+    );
     assert!(listed.data["count"].is_u64(), "models.list missing count");
     assert_eq!(listed.data["kind"], "all");
 
     // models.show — proves the Rust handler ran (reached the Ollama call),
     // rather than the disabled stub or an unregistered verb.
     let shown = ipc::send_action(&service, "models.show", json!({"name": "qwen3:0.6b"})).await;
-    let code = shown
-        .error
-        .as_ref()
-        .map(|e| e.code.as_str())
-        .unwrap_or("");
+    let code = shown.error.as_ref().map(|e| e.code.as_str()).unwrap_or("");
     assert_ne!(
         code, "not_implemented",
         "models.show returned the gated-off stub — the gate didn't route to Rust: {shown:?}"

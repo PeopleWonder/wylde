@@ -89,8 +89,14 @@ async fn graph_verb_returns_expected_shape_from_live_neo4j() {
     // Greet is the only endpoint never mentioned in a chunk → external node.
     let inherits = vec![EntityPair::new(n("Robot"), n("Greet"))];
     assert!(client.relate("CALLS", calls).await.ok, "seed CALLS failed");
-    assert!(client.relate("IMPORTS", imports).await.ok, "seed IMPORTS failed");
-    assert!(client.relate("INHERITS", inherits).await.ok, "seed INHERITS failed");
+    assert!(
+        client.relate("IMPORTS", imports).await.ok,
+        "seed IMPORTS failed"
+    );
+    assert!(
+        client.relate("INHERITS", inherits).await.ok,
+        "seed INHERITS failed"
+    );
 
     // ── read it back through the verb's code path ──────────────────────
     let g = api::graph(&ws).await.expect("graph read");
@@ -109,7 +115,11 @@ async fn graph_verb_returns_expected_shape_from_live_neo4j() {
 
     // 11 mentioned entities + 1 external (Greet).
     assert_eq!(g.nodes.len(), 12, "node count");
-    assert_eq!(g.edges.len(), 6, "edge count (3 CALLS + 2 IMPORTS + 1 INHERITS)");
+    assert_eq!(
+        g.edges.len(),
+        6,
+        "edge count (3 CALLS + 2 IMPORTS + 1 INHERITS)"
+    );
 
     let by_rel = |r: RelType| g.edges.iter().filter(|e| e.rel_type == r).count();
     assert_eq!(by_rel(RelType::Calls), 3, "CALLS");
@@ -125,18 +135,37 @@ async fn graph_verb_returns_expected_shape_from_live_neo4j() {
     assert!(has(n("alpha"), n("beta"), RelType::Calls), "alpha→beta");
     assert!(has(n("gamma"), n("alpha"), RelType::Calls), "gamma→alpha");
     assert!(has(n("hello"), n("wave"), RelType::Calls), "hello→wave");
-    assert!(has(n("Robot"), n("Greet"), RelType::Inherits), "Robot→Greet");
+    assert!(
+        has(n("Robot"), n("Greet"), RelType::Inherits),
+        "Robot→Greet"
+    );
 
     let kind_of = |name: &str| g.nodes.iter().find(|nd| nd.id == name).map(|nd| nd.kind);
-    assert_eq!(kind_of(&n("a")), Some(NodeKind::Module), "import src → Module");
+    assert_eq!(
+        kind_of(&n("a")),
+        Some(NodeKind::Module),
+        "import src → Module"
+    );
     assert_eq!(
         kind_of(&n("std_collections")),
         Some(NodeKind::Module),
         "import tgt → Module"
     );
-    assert_eq!(kind_of(&n("Robot")), Some(NodeKind::Class), "inherit → Class");
-    assert_eq!(kind_of(&n("Greet")), Some(NodeKind::Class), "inherit tgt → Class");
-    assert_eq!(kind_of(&n("alpha")), Some(NodeKind::Function), "call → Function");
+    assert_eq!(
+        kind_of(&n("Robot")),
+        Some(NodeKind::Class),
+        "inherit → Class"
+    );
+    assert_eq!(
+        kind_of(&n("Greet")),
+        Some(NodeKind::Class),
+        "inherit tgt → Class"
+    );
+    assert_eq!(
+        kind_of(&n("alpha")),
+        Some(NodeKind::Function),
+        "call → Function"
+    );
 
     // The external base has no source file; the mentioned ones do.
     let greet = g.nodes.iter().find(|nd| nd.id == n("Greet")).unwrap();
@@ -149,7 +178,10 @@ async fn graph_verb_returns_expected_shape_from_live_neo4j() {
     assert_eq!(g.clusters.len(), 1, "one cluster (the src dir)");
     let c = &g.clusters[0];
     assert_eq!(c.member_ids.len(), 11, "all mentioned nodes clustered");
-    assert!(!c.member_ids.contains(&n("Greet")), "external node unclustered");
+    assert!(
+        !c.member_ids.contains(&n("Greet")),
+        "external node unclustered"
+    );
     assert!(
         c.parent_breadcrumb.ends_with(&["src".to_owned()]),
         "breadcrumb ends with src: {:?}",

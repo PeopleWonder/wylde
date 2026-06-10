@@ -353,8 +353,7 @@ pub fn extract_tool_calls_from_content(
             Err(_) => continue,
         };
         let Value::Object(m) = &obj else { continue };
-        let looks_like_call =
-            m.contains_key("name") || m.contains_key("function") || m.len() == 1;
+        let looks_like_call = m.contains_key("name") || m.contains_key("function") || m.len() == 1;
         if !looks_like_call {
             continue;
         }
@@ -542,8 +541,7 @@ mod tests {
     #[test]
     fn extract_does_not_falsepositive_on_prose_json() {
         let map = alias(&[("git_status", "git_status")]);
-        let text =
-            r#"The forecast is {"weather": "sunny", "temp": 72}. Nothing else to report."#;
+        let text = r#"The forecast is {"weather": "sunny", "temp": 72}. Nothing else to report."#;
         let r = extract_tool_calls_from_content(text, &map);
         // No `"name"` substring → never even parsed; stays in cleaned.
         assert_eq!(r.cleaned_text, text.trim());

@@ -83,8 +83,16 @@ fn register_rag_chunk(reg: &mut ResourceRegistry) {
         scope: Scope::Global,
         identifier_fields: &["id", "memory_id"],
         filter_fields: &[
-            "query_vector", "limit", "tier", "workspace", "workspace_id",
-            "before_ts", "memory_type", "score_lt", "confirm", "max_delete",
+            "query_vector",
+            "limit",
+            "tier",
+            "workspace",
+            "workspace_id",
+            "before_ts",
+            "memory_type",
+            "score_lt",
+            "confirm",
+            "max_delete",
         ],
         operations,
         // create writes a chunk; delete prunes. search reads only.
@@ -338,7 +346,15 @@ fn register_graph(reg: &mut ResourceRegistry) {
                       graph proximity.",
         scope: Scope::Global,
         identifier_fields: &[],
-        filter_fields: &["entities", "query_vector", "max_hops", "vector_k", "tier", "workspace_id", "limit"],
+        filter_fields: &[
+            "entities",
+            "query_vector",
+            "max_hops",
+            "vector_k",
+            "tier",
+            "workspace_id",
+            "limit",
+        ],
         operations,
         destructive_ops: &[],
         describe: describe_value(describe_graph),
@@ -647,8 +663,13 @@ mod tests {
     fn registers_seven_rag_resources() {
         let r = reg();
         for rt in [
-            "rag_chunk", "rag", "rag_feedback", "rag_miss",
-            "rag_chunk_usage", "rag_graph_stats", "graph",
+            "rag_chunk",
+            "rag",
+            "rag_feedback",
+            "rag_miss",
+            "rag_chunk_usage",
+            "rag_graph_stats",
+            "graph",
         ] {
             assert!(r.lookup(rt).is_some(), "missing resource {rt}");
         }
@@ -701,7 +722,10 @@ mod tests {
     fn describe_rag_index_enumerates_actions() {
         let v = describe_rag_index();
         let actions = v["operations"]["execute"]["actions"].as_array().unwrap();
-        let names: Vec<&str> = actions.iter().map(|a| a["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = actions
+            .iter()
+            .map(|a| a["name"].as_str().unwrap())
+            .collect();
         assert_eq!(names, vec!["index", "reindex"]);
     }
 
@@ -742,7 +766,10 @@ mod tests {
         let out = dispatch(
             "rag",
             ResourceOp::Execute,
-            ResourceRequest { action: Some("bogus".into()), ..Default::default() },
+            ResourceRequest {
+                action: Some("bogus".into()),
+                ..Default::default()
+            },
         )
         .await;
         assert_eq!(out["status"], "error");
@@ -758,7 +785,12 @@ mod tests {
 
     #[tokio::test]
     async fn rag_feedback_missing_query_id_errors_cleanly() {
-        let out = dispatch("rag_feedback", ResourceOp::Create, ResourceRequest::default()).await;
+        let out = dispatch(
+            "rag_feedback",
+            ResourceOp::Create,
+            ResourceRequest::default(),
+        )
+        .await;
         assert_eq!(out["status"], "error");
         assert!(out["error"].as_str().unwrap().contains("query_id"));
     }
@@ -780,7 +812,10 @@ mod tests {
         .await;
         // Either ok (recorded) or an error that is NOT "query_id required".
         if out["status"] == "error" {
-            assert!(!out["error"].as_str().unwrap().contains("'query_id' is required"));
+            assert!(!out["error"]
+                .as_str()
+                .unwrap()
+                .contains("'query_id' is required"));
         }
     }
 }

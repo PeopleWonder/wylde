@@ -95,8 +95,8 @@ pub async fn handle_refresh_summary(payload: Value) -> Reply {
     };
     // Accept `conversation_id` (the verb's documented name) or `id` (the shape
     // the sibling get/delete verbs use) so either caller resolves.
-    let Some(id) = require_string(&payload, "conversation_id")
-        .or_else(|| require_string(&payload, "id"))
+    let Some(id) =
+        require_string(&payload, "conversation_id").or_else(|| require_string(&payload, "id"))
     else {
         return Reply::err_msg("bad_request", "conversation_id is required");
     };
@@ -114,7 +114,10 @@ pub async fn handle_refresh_summary(payload: Value) -> Reply {
     if embedding.is_empty() {
         return Reply::err_msg("bad_request", "embedding must be non-empty");
     }
-    if !embedding.iter().all(|v| v.as_f64().is_some_and(f64::is_finite)) {
+    if !embedding
+        .iter()
+        .all(|v| v.as_f64().is_some_and(f64::is_finite))
+    {
         return Reply::err_msg("bad_request", "embedding must contain only finite numbers");
     }
 
@@ -160,7 +163,10 @@ mod tests {
     async fn list_get_delete_round_trip() {
         let _env = TestEnv::new();
         let ws = "ws-conv-api-000000";
-        seed(ws, json!({"id": "c1", "title": "Hi", "updated_at": 5, "messages": [], "workspace_id": ws}));
+        seed(
+            ws,
+            json!({"id": "c1", "title": "Hi", "updated_at": 5, "messages": [], "workspace_id": ws}),
+        );
 
         let listed = handle_list(json!({ "workspace_id": ws })).await;
         assert!(listed.ok);
@@ -199,8 +205,11 @@ mod tests {
     async fn refresh_summary_persists_and_is_searchable() {
         let _env = TestEnv::new();
         let ws = "ws-refresh-000000";
-        seed(ws, json!({"id": "c1", "title": "T", "updated_at": 9, "workspace_id": ws,
-                        "messages": [{"role": "user", "content": "how do anchors work"}]}));
+        seed(
+            ws,
+            json!({"id": "c1", "title": "T", "updated_at": 9, "workspace_id": ws,
+                        "messages": [{"role": "user", "content": "how do anchors work"}]}),
+        );
 
         let r = handle_refresh_summary(json!({
             "workspace_id": ws,

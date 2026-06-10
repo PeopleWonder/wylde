@@ -421,7 +421,10 @@ mod tests {
         let found = handle_find_by_token(json!({ "token": "{{graph view}}" })).await;
         assert!(found.ok);
         assert_eq!(found.data["count"], 1);
-        assert_eq!(found.data["anchors"][0]["identifier"], "set_active_graph_view");
+        assert_eq!(
+            found.data["anchors"][0]["identifier"],
+            "set_active_graph_view"
+        );
     }
 
     #[tokio::test]

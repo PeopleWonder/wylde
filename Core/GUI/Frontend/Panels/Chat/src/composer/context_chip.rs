@@ -20,9 +20,9 @@ pub enum ChipState {
 }
 
 impl ChipState {
-    /// Derive the chip from the current recognition set. Excluded items
-    /// still count as "resolved" words (they're curated, not ambiguous) but
-    /// don't count toward the ready-item total.
+    /// Derive the chip from the current recognition set. Excluded and
+    /// ignore-deselected items still count as "resolved" words (curated, not
+    /// ambiguous) but don't count toward the ready-item total.
     pub fn derive(words: &[WordRecognition]) -> ChipState {
         if words.is_empty() {
             return ChipState::Hidden;
@@ -31,10 +31,7 @@ impl ChipState {
         if ambiguous > 0 {
             return ChipState::Unresolved { ambiguous };
         }
-        let items = words
-            .iter()
-            .filter(|w| w.is_recognized() && !w.excluded)
-            .count();
+        let items = words.iter().filter(|w| w.is_included()).count();
         if items == 0 {
             return ChipState::Hidden;
         }

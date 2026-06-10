@@ -81,9 +81,7 @@ async fn main() -> Result<()> {
         tracing::warn!("wylde-harness: action contract write failed: {e}");
     }
 
-    tracing::info!(
-        "wylde-harness: actions registered; opening pipe at \\\\.\\pipe\\wylde-harness"
-    );
+    tracing::info!("wylde-harness: actions registered; opening pipe at \\\\.\\pipe\\wylde-harness");
 
     let serve_fut = ipc::serve(SERVICE_NAME, None);
     tokio::select! {

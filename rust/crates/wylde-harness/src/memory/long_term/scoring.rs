@@ -51,11 +51,7 @@ pub fn heuristic_importance(body: &str, entity_count: usize) -> i32 {
 /// Accepts anything that parses as a float; falls back to
 /// [`heuristic_importance`] on `None`, NaN, or non-numeric input.
 /// Mirrors Python's `normalize_importance`.
-pub fn normalize_importance(
-    raw: Option<f64>,
-    body: &str,
-    entity_count: usize,
-) -> i32 {
+pub fn normalize_importance(raw: Option<f64>, body: &str, entity_count: usize) -> i32 {
     match raw {
         Some(n) if !n.is_nan() => (n.round() as i32).clamp(1, 10),
         _ => heuristic_importance(body, entity_count),

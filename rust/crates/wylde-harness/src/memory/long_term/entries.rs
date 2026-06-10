@@ -179,9 +179,11 @@ pub fn list_records(include_superseded: bool) -> Vec<LongTermMemory> {
         records.retain(|r| r.superseded_by.is_empty());
     }
     records.sort_by(|a, b| {
-        b.importance
-            .cmp(&a.importance)
-            .then_with(|| b.last_used_at.partial_cmp(&a.last_used_at).unwrap_or(std::cmp::Ordering::Equal))
+        b.importance.cmp(&a.importance).then_with(|| {
+            b.last_used_at
+                .partial_cmp(&a.last_used_at)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
     records
 }
@@ -266,7 +268,9 @@ pub fn update(
             Some(_) => normalize_importance(importance, &new_body, 0),
             None => original.importance,
         };
-        let new_source = source.map(str::to_owned).unwrap_or_else(|| original.source.clone());
+        let new_source = source
+            .map(str::to_owned)
+            .unwrap_or_else(|| original.source.clone());
 
         let now = now_secs();
         let replacement = LongTermMemory {
@@ -334,10 +338,8 @@ pub fn delete(record_id: &str) -> bool {
 pub fn history(record_id: &str) -> Vec<LongTermMemory> {
     let _g = STORE_LOCK.lock().unwrap();
     let records = load_all();
-    let by_id: std::collections::HashMap<String, LongTermMemory> = records
-        .iter()
-        .map(|r| (r.id.clone(), r.clone()))
-        .collect();
+    let by_id: std::collections::HashMap<String, LongTermMemory> =
+        records.iter().map(|r| (r.id.clone(), r.clone())).collect();
     if !by_id.contains_key(record_id) {
         return Vec::new();
     }
@@ -446,15 +448,15 @@ pub fn search(query_vector: Vec<f32>, limit: usize, decay_days: Option<f64>) -> 
         let _g = STORE_LOCK.lock().unwrap();
         load_all()
     };
-    let by_id: std::collections::HashMap<String, LongTermMemory> = records
-        .into_iter()
-        .map(|r| (r.id.clone(), r))
-        .collect();
+    let by_id: std::collections::HashMap<String, LongTermMemory> =
+        records.into_iter().map(|r| (r.id.clone(), r)).collect();
 
     let decay = decay_days.unwrap_or(DEFAULT_DECAY_DAYS);
     let mut out: Vec<SearchHit> = Vec::new();
     for h in hits {
-        let Some(rec) = by_id.get(&h.id) else { continue };
+        let Some(rec) = by_id.get(&h.id) else {
+            continue;
+        };
         if !rec.superseded_by.is_empty() {
             continue;
         }
@@ -477,7 +479,11 @@ pub fn search(query_vector: Vec<f32>, limit: usize, decay_days: Option<f64>) -> 
             score,
         });
     }
-    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out.truncate(limit);
     out
 }
@@ -509,8 +515,14 @@ mod tests {
     fn save_persists_and_returns_record_with_id_and_timestamps() {
         let _env = TestEnv::new();
         set_embed_dim_3();
-        let r = save("hello world", "ui", Some(7.0), vec!["alpha".into()], Some(vec3(1.0, 0.0, 0.0)))
-            .unwrap();
+        let r = save(
+            "hello world",
+            "ui",
+            Some(7.0),
+            vec!["alpha".into()],
+            Some(vec3(1.0, 0.0, 0.0)),
+        )
+        .unwrap();
         assert!(!r.id.is_empty());
         assert_eq!(r.body, "hello world");
         assert_eq!(r.source, "ui");
@@ -766,7 +778,10 @@ mod tests {
         save("rust write", "rs", Some(5.0), vec![], None).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert!(parsed.get("memories").is_some(), "top-level must be {{\"memories\": [...]}}");
+        assert!(
+            parsed.get("memories").is_some(),
+            "top-level must be {{\"memories\": [...]}}"
+        );
         let arr = parsed["memories"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
     }

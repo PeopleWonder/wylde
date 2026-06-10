@@ -306,12 +306,7 @@ fn alias_keys_for(entry: &ToolEntry) -> Vec<String> {
 
 /// Build a JSON parameter descriptor — small helper used by every
 /// tool's `register` fn so the schema literals stay readable.
-pub fn param(
-    name: &str,
-    typ: &str,
-    required: bool,
-    description: &str,
-) -> Value {
+pub fn param(name: &str, typ: &str, required: bool, description: &str) -> Value {
     json!({
         "name": name,
         "type": typ,
@@ -321,12 +316,7 @@ pub fn param(
 }
 
 /// Build a parameter descriptor with a default value.
-pub fn param_default(
-    name: &str,
-    typ: &str,
-    description: &str,
-    default: Value,
-) -> Value {
+pub fn param_default(name: &str, typ: &str, description: &str, default: Value) -> Value {
     json!({
         "name": name,
         "type": typ,

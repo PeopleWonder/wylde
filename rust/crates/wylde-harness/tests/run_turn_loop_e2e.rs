@@ -73,9 +73,10 @@ async fn harness() -> &'static Harness {
         std::env::set_var("WYLDE_HARNESS_OLLAMA_SERVICE", &service);
 
         let counter = Arc::new(AtomicU32::new(0));
-        let program: Arc<AsyncMutex<ReplyProgram>> = Arc::new(AsyncMutex::new(Box::new(
-            |_n: u32| Reply::Content("default".into()),
-        )));
+        let program: Arc<AsyncMutex<ReplyProgram>> =
+            Arc::new(AsyncMutex::new(Box::new(|_n: u32| {
+                Reply::Content("default".into())
+            })));
 
         let counter_for_handler = Arc::clone(&counter);
         let program_for_handler = Arc::clone(&program);
@@ -152,9 +153,7 @@ async fn run_turn_returns_natural_completion_for_no_tool_calls() {
     assert_eq!(reply.data["final_message"], "all done");
     assert_eq!(reply.data["aborted"], false);
     assert_eq!(reply.data["abort_reason"], Value::Null);
-    let summary = reply.data["tool_calls_summary"]
-        .as_array()
-        .expect("array");
+    let summary = reply.data["tool_calls_summary"].as_array().expect("array");
     assert!(summary.is_empty(), "no tool calls → empty summary");
     assert_eq!(
         h.counter.load(Ordering::SeqCst),
@@ -189,9 +188,7 @@ async fn run_turn_emits_unrecognised_tool_error_when_alias_missing() {
     // Salvage scrubbed the tool-call JSON; nothing else to render.
     assert_eq!(reply.data["final_message"], "");
     assert_eq!(reply.data["aborted"], false);
-    let summary = reply.data["tool_calls_summary"]
-        .as_array()
-        .expect("array");
+    let summary = reply.data["tool_calls_summary"].as_array().expect("array");
     assert!(
         summary.is_empty(),
         "unrecognised salvage call must not produce a summary row, got {summary:?}"
@@ -230,9 +227,7 @@ async fn run_turn_dispatches_internal_tool_through_registry_then_completes() {
     assert!(reply.ok, "expected ok reply, got {reply:?}");
     assert_eq!(reply.data["final_message"], "done with the time");
     assert_eq!(reply.data["aborted"], false);
-    let summary = reply.data["tool_calls_summary"]
-        .as_array()
-        .expect("array");
+    let summary = reply.data["tool_calls_summary"].as_array().expect("array");
     assert_eq!(summary.len(), 1, "exactly one tool call recorded");
     assert_eq!(summary[0]["ok"], true, "internal tool succeeded");
     // Salvage normalises to the canonical registry id via the alias map.

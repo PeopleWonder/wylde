@@ -550,7 +550,9 @@ mod tests {
 
     #[tokio::test]
     async fn expand_caps_at_max_extra() {
-        let chunks: Vec<Value> = (0..50).map(|i| json!({"id": format!("n{i}"), "hops": 1})).collect();
+        let chunks: Vec<Value> = (0..50)
+            .map(|i| json!({"id": format!("n{i}"), "hops": 1}))
+            .collect();
         let (client, _) = mock::new_with_static_ok(json!({"chunks": chunks}));
         let cands = vec![json!({"id": "c1", "entities": ["foo"]})];
         let out = expand_by_graph(&client, cands, opts_with(1, 7)).await;
@@ -587,7 +589,9 @@ mod tests {
     async fn expand_runs_entity_seed_traverse_independently() {
         let (client, handle) = mock::new_with_responder(|call| {
             if call.method == "/multihop" {
-                Reply::ok(json!({"chunks": [{"id": "from-mh", "hops": 1, "via_entities": ["cand_ent"]}]}))
+                Reply::ok(
+                    json!({"chunks": [{"id": "from-mh", "hops": 1, "via_entities": ["cand_ent"]}]}),
+                )
             } else if call.method == "/traverse" {
                 Reply::ok(json!({"chunks": [{"id": "from-seed"}]}))
             } else {

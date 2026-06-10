@@ -19,7 +19,9 @@ use serde_json::{json, Value};
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
 use wylde_harness::config::Config;
 use wylde_harness::tooling::resource::resources::extensions;
-use wylde_harness::tooling::resource::{ResourceOp, ResourceRequest, ResourceRegistry, ToolContext};
+use wylde_harness::tooling::resource::{
+    ResourceOp, ResourceRegistry, ResourceRequest, ToolContext,
+};
 use wylde_shared::ipc;
 
 async fn registry_guard() -> MutexGuard<'static, ()> {
@@ -99,7 +101,9 @@ async fn wylde_execute_reaches_webcrawler_through_the_overlay() {
     assert_eq!(registered, vec!["ext:Webcrawler:url".to_string()]);
 
     // Resolve the execute handler and drive a fetch through it.
-    let def = reg.lookup("ext:Webcrawler:url").expect("resource registered");
+    let def = reg
+        .lookup("ext:Webcrawler:url")
+        .expect("resource registered");
     let handler = def
         .operations
         .get(&ResourceOp::Execute)
@@ -112,7 +116,10 @@ async fn wylde_execute_reaches_webcrawler_through_the_overlay() {
         ..Default::default()
     };
     let ctx = ToolContext::for_op("ext:Webcrawler:url", ResourceOp::Execute, None);
-    let result = handler.call(req, cfg, ctx).await.expect("dispatch succeeds");
+    let result = handler
+        .call(req, cfg, ctx)
+        .await
+        .expect("dispatch succeeds");
 
     // The mock's reply flows back verbatim.
     assert_eq!(result["status"], "ok");
@@ -120,7 +127,11 @@ async fn wylde_execute_reaches_webcrawler_through_the_overlay() {
 
     // The OpHandler issued the Phase-4 ext.tools.call contract: the `fetch`
     // action mapped to the `fetch` MCP tool, params forwarded as arguments.
-    let captured = seen.lock().unwrap().clone().expect("ext.tools.call invoked");
+    let captured = seen
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("ext.tools.call invoked");
     assert_eq!(captured["extension"], "Webcrawler");
     assert_eq!(captured["tool"], "fetch");
     assert_eq!(captured["arguments"]["url"], "https://example.com");
@@ -170,9 +181,17 @@ async fn unknown_action_returns_clean_envelope_without_calling_bridge() {
     let out = handler.call(req, cfg, ctx).await.unwrap();
 
     assert_eq!(out["status"], "error");
-    let known: Vec<&str> = out["known_actions"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    let known: Vec<&str> = out["known_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
     assert!(known.contains(&"fetch"));
-    assert!(!*called.lock().unwrap(), "bridge must not be called for an unknown action");
+    assert!(
+        !*called.lock().unwrap(),
+        "bridge must not be called for an unknown action"
+    );
 
     ipc::unregister_action("ext.tools.call");
 }

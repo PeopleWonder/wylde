@@ -99,22 +99,14 @@ fn load_all(workspace_id: &str) -> Vec<WorkspaceMemory> {
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!(
-                "workspace_memory: {} JSON unreadable: {}",
-                workspace_id,
-                e
-            );
+            tracing::warn!("workspace_memory: {} JSON unreadable: {}", workspace_id, e);
             return Vec::new();
         }
     };
     let v: Value = match serde_json::from_str(&raw) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(
-                "workspace_memory: {} JSON unreadable: {}",
-                workspace_id,
-                e
-            );
+            tracing::warn!("workspace_memory: {} JSON unreadable: {}", workspace_id, e);
             return Vec::new();
         }
     };
@@ -472,10 +464,19 @@ mod tests {
     #[test]
     fn save_new_persists_and_fills_id_and_timestamps() {
         let _env = TestEnv::new();
-        let r = save_new("ws1", "  hello world  ", "chat", Some(7.0), vec!["e1".into()])
-            .unwrap();
+        let r = save_new(
+            "ws1",
+            "  hello world  ",
+            "chat",
+            Some(7.0),
+            vec!["e1".into()],
+        )
+        .unwrap();
         assert_eq!(r.id.len(), 16);
-        assert!(r.id.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(r
+            .id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         assert_eq!(r.body, "hello world"); // stored trimmed
         assert_eq!(r.workspace_id, "ws1");
         assert_eq!(r.source, "chat");
@@ -594,7 +595,11 @@ mod tests {
     fn link_supersession_sets_pointer_without_new_record() {
         let _env = TestEnv::new();
         let r = save_new("ws1", "victim", "", Some(5.0), vec![]).unwrap();
-        assert!(link_supersession("ws1", &r.id, "tombstone:deadbeefdeadbeef"));
+        assert!(link_supersession(
+            "ws1",
+            &r.id,
+            "tombstone:deadbeefdeadbeef"
+        ));
         let stored = get("ws1", &r.id).unwrap();
         assert_eq!(stored.superseded_by, "tombstone:deadbeefdeadbeef");
         // No replacement record was minted; default list hides it.
@@ -727,7 +732,14 @@ mod tests {
     fn search_truncates_to_limit() {
         let _env = TestEnv::new();
         for i in 0..5 {
-            save_new("ws1", &format!("common token row{i}"), "", Some(5.0), vec![]).unwrap();
+            save_new(
+                "ws1",
+                &format!("common token row{i}"),
+                "",
+                Some(5.0),
+                vec![],
+            )
+            .unwrap();
         }
         assert_eq!(search_records("ws1", "common", 2, None).len(), 2);
     }

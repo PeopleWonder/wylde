@@ -220,7 +220,10 @@ mod tests {
         // chunk), leaving the siblings a.rs + c.rs untouched.
         let dir = format!("{base}{}sub", std::path::MAIN_SEPARATOR);
         vector_remove(&ws, &dir).unwrap();
-        let left: Vec<String> = store::load_chunks(&ws).into_iter().map(|c| c.path).collect();
+        let left: Vec<String> = store::load_chunks(&ws)
+            .into_iter()
+            .map(|c| c.path)
+            .collect();
         assert!(left.contains(&f), "sibling file survives");
         assert!(left.contains(&other), "sibling file survives");
         assert!(!left.iter().any(|p| p == &sub), "subtree file removed");
@@ -234,7 +237,10 @@ mod tests {
         let b = "/proj/b.rs".to_owned();
         store::save_chunks(&ws, &[idx_chunk(&a), idx_chunk(&b)]).unwrap();
         vector_remove(&ws, &a).unwrap();
-        let left: Vec<String> = store::load_chunks(&ws).into_iter().map(|c| c.path).collect();
+        let left: Vec<String> = store::load_chunks(&ws)
+            .into_iter()
+            .map(|c| c.path)
+            .collect();
         assert_eq!(left, vec![b]);
     }
 

@@ -163,10 +163,7 @@ impl BoltClient {
                     .build()
                     .map_err(|e| IpcError::new(error_codes::CONFIG, format!("config: {e}")))?;
                 Graph::connect(cfg).await.map_err(|e| {
-                    IpcError::new(
-                        error_codes::CONNECT,
-                        format!("{}: {}", self.config.uri, e),
-                    )
+                    IpcError::new(error_codes::CONNECT, format!("{}: {}", self.config.uri, e))
                 })
             })
             .await
@@ -191,7 +188,10 @@ impl BoltClient {
             match result.next().await {
                 Ok(Some(_)) => Ok(true),
                 Ok(None) => Ok(false),
-                Err(e) => Err((error_codes::DECODE.to_owned(), format!("health decode: {e}"))),
+                Err(e) => Err((
+                    error_codes::DECODE.to_owned(),
+                    format!("health decode: {e}"),
+                )),
             }
         };
         match tokio::time::timeout(timeout, fut).await {
@@ -334,7 +334,11 @@ impl BoltClient {
         }
         let workspace_default = chunks
             .iter()
-            .find_map(|c| c.get("workspace").and_then(Value::as_str).map(str::to_owned))
+            .find_map(|c| {
+                c.get("workspace")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "default".to_owned());
 
@@ -415,12 +419,15 @@ impl BoltClient {
                         .param("names", BoltType::List(strings_to_boltlist(&entities))),
                 )
                 .await
-                .map_err(|e| (error_codes::QUERY.to_owned(), format!("multihop expand: {e}")))?;
+                .map_err(|e| {
+                    (
+                        error_codes::QUERY.to_owned(),
+                        format!("multihop expand: {e}"),
+                    )
+                })?;
 
             let mut expanded: Vec<String> = match rows.next().await {
-                Ok(Some(row)) => row
-                    .get::<Vec<String>>("names")
-                    .unwrap_or_default(),
+                Ok(Some(row)) => row.get::<Vec<String>>("names").unwrap_or_default(),
                 Ok(None) => Vec::new(),
                 Err(e) => {
                     return Err((
@@ -454,7 +461,12 @@ impl BoltClient {
                         .param("limit", BoltType::from(limit as i64)),
                 )
                 .await
-                .map_err(|e| (error_codes::QUERY.to_owned(), format!("multihop chunks: {e}")))?;
+                .map_err(|e| {
+                    (
+                        error_codes::QUERY.to_owned(),
+                        format!("multihop chunks: {e}"),
+                    )
+                })?;
 
             let mut result: Vec<Value> = Vec::new();
             let mut rank = 0i64;
@@ -523,7 +535,10 @@ impl BoltClient {
                 if src.is_empty() || tgt.is_empty() || src == tgt {
                     None
                 } else {
-                    Some(EntityEdge { source: src, target: tgt })
+                    Some(EntityEdge {
+                        source: src,
+                        target: tgt,
+                    })
                 }
             })
             .collect();
@@ -574,7 +589,10 @@ impl BoltClient {
                 if src.is_empty() || tgt.is_empty() {
                     None
                 } else {
-                    Some(EntityEdge { source: src, target: tgt })
+                    Some(EntityEdge {
+                        source: src,
+                        target: tgt,
+                    })
                 }
             })
             .collect();
@@ -680,11 +698,7 @@ impl BoltClient {
         F: for<'a> FnOnce(
             &'a Graph,
         ) -> std::pin::Pin<
-            Box<
-                dyn std::future::Future<Output = Result<(), (String, String)>>
-                    + Send
-                    + 'a,
-            >,
+            Box<dyn std::future::Future<Output = Result<(), (String, String)>> + Send + 'a>,
         >,
     {
         let timeout = self.config.connect_timeout;
@@ -729,17 +743,16 @@ struct EntityEdge {
 fn coerce_upsert_batch(
     chunks: &[Value],
     workspace_default: &str,
-) -> (Vec<UpsertRow>, std::collections::BTreeMap<String, Vec<EntityEdge>>) {
+) -> (
+    Vec<UpsertRow>,
+    std::collections::BTreeMap<String, Vec<EntityEdge>>,
+) {
     use std::collections::BTreeMap;
 
     let mut batch: Vec<UpsertRow> = Vec::with_capacity(chunks.len());
     let mut typed: BTreeMap<String, Vec<EntityEdge>> = BTreeMap::new();
     for c in chunks {
-        let id = c
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
+        let id = c.get("id").and_then(Value::as_str).unwrap_or("").to_owned();
         if id.is_empty() {
             // Same as Python's missing-id row: it would KeyError on
             // c["id"]. We drop the row instead of crashing.
@@ -807,10 +820,10 @@ fn coerce_upsert_batch(
                 {
                     continue;
                 }
-                typed
-                    .entry(rt)
-                    .or_default()
-                    .push(EntityEdge { source: src, target: tgt });
+                typed.entry(rt).or_default().push(EntityEdge {
+                    source: src,
+                    target: tgt,
+                });
             }
         }
     }
@@ -883,8 +896,8 @@ async fn traverse_impl(
         // depth==0 with a high max_hops still issues the query — the
         // Cypher quantifier `*0..0` matches the seed itself only.
         let _ = depth; // currently unused after Cypher build, kept for clarity
-        let mut q = neo4rs::query(&cypher_text)
-            .param("names", BoltType::List(strings_to_boltlist(&names)));
+        let mut q =
+            neo4rs::query(&cypher_text).param("names", BoltType::List(strings_to_boltlist(&names)));
         if let Some(ws) = workspace {
             q = q.param("ws", BoltType::from(ws.to_owned()));
         }
@@ -907,7 +920,10 @@ async fn traverse_impl(
             let symbol: String = row.get("symbol").unwrap_or_default();
             let language: String = row.get("language").unwrap_or_default();
             let best_depth: i64 = row.get("best_depth").unwrap_or(0);
-            let seeds: f64 = row.get::<i64>("seeds_touching").map(|n| n as f64).unwrap_or(0.0);
+            let seeds: f64 = row
+                .get::<i64>("seeds_touching")
+                .map(|n| n as f64)
+                .unwrap_or(0.0);
             let typed_depth = best_depth.max(0) as u32;
             let decay = (-decay_alpha * typed_depth as f64).exp();
             let score = seeds * decay;
@@ -922,7 +938,10 @@ async fn traverse_impl(
                 "bucket": bucket_name,
                 "graph_score": score,
             });
-            let cur = merged.get(&id).and_then(|v| v.get("graph_score")).and_then(Value::as_f64);
+            let cur = merged
+                .get(&id)
+                .and_then(|v| v.get("graph_score"))
+                .and_then(Value::as_f64);
             if cur.map(|s| score > s).unwrap_or(true) {
                 merged.insert(id, entry);
             }
@@ -992,7 +1011,10 @@ fn bucket_depths(req: &super::client::TraverseRequest) -> (u32, u32) {
             }
         }
     }
-    (depth_calls.min(max_hops).min(4), depth_cfg.min(max_hops).min(4))
+    (
+        depth_calls.min(max_hops).min(4),
+        depth_cfg.min(max_hops).min(4),
+    )
 }
 
 /// `run_single_count` — common Cypher pattern: run a write that
@@ -1145,8 +1167,8 @@ mod tests {
     fn coerce_drops_rows_with_empty_id() {
         let chunks = vec![
             json!({"id": "c1", "entities": ["foo"]}),
-            json!({"id": "", "entities": ["bar"]}),    // dropped
-            json!({"entities": ["baz"]}),               // dropped (no id)
+            json!({"id": "", "entities": ["bar"]}), // dropped
+            json!({"entities": ["baz"]}),           // dropped (no id)
             json!({"id": "c4"}),
         ];
         let (batch, _) = coerce_upsert_batch(&chunks, "default");
@@ -1159,7 +1181,7 @@ mod tests {
         let chunks = vec![
             json!({"id": "c1"}),
             json!({"id": "c2", "workspace": "ws-explicit"}),
-            json!({"id": "c3", "workspace": ""}),  // empty -> route default
+            json!({"id": "c3", "workspace": ""}), // empty -> route default
         ];
         let (batch, _) = coerce_upsert_batch(&chunks, "route-default");
         assert_eq!(batch[0].workspace, "route-default");
@@ -1215,11 +1237,7 @@ mod tests {
             limit: 10,
             workspace: None,
             decay_alpha: None,
-            rel_depths: depths.map(|d| {
-                d.into_iter()
-                    .map(|(k, v)| (k.to_owned(), v))
-                    .collect()
-            }),
+            rel_depths: depths.map(|d| d.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()),
         }
     }
 
@@ -1231,13 +1249,19 @@ mod tests {
 
     #[test]
     fn bucket_depths_clamp_against_max_hops() {
-        let req = req_with(1, Some(vec![("calls_imports", 3), ("configures_exposes", 3)]));
+        let req = req_with(
+            1,
+            Some(vec![("calls_imports", 3), ("configures_exposes", 3)]),
+        );
         assert_eq!(bucket_depths(&req), (1, 1));
     }
 
     #[test]
     fn bucket_depths_clamp_against_hard_ceiling_of_four() {
-        let req = req_with(10, Some(vec![("calls_imports", 99), ("configures_exposes", 99)]));
+        let req = req_with(
+            10,
+            Some(vec![("calls_imports", 99), ("configures_exposes", 99)]),
+        );
         assert_eq!(bucket_depths(&req), (4, 4));
     }
 

@@ -102,9 +102,16 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     // context, fold in the user profile + short-term memory + workspace prompt
     // block, apply the OI-8 token budget, and render the named slots. When the
     // workspaces service is down the gather degrades to base context and flags
-    // the turn so the response carries a one-line notice.
-    let gathered =
-        context_gather::gather(workspace_id.as_deref(), &user_message, &conversation_id).await;
+    // the turn so the response carries a one-line notice. The composer's
+    // per-message ✕/↺ choices (Slices F + M) arrive as token overrides.
+    let overrides = context_gather::TokenOverrides::from_payload(&payload);
+    let gathered = context_gather::gather(
+        workspace_id.as_deref(),
+        &user_message,
+        &conversation_id,
+        &overrides,
+    )
+    .await;
     let mut messages = initial_messages(&user_message, &gathered.system_slots);
     let tools = tools_payload();
     let mut round_state = ToolRoundState::new();
@@ -339,6 +346,7 @@ pub async fn handle_start_turn(payload: Value) -> Reply {
     let drive_model = model.clone();
     let drive_user_message = user_message.clone();
     let drive_tier = normalised_tier.to_owned();
+    let drive_overrides = context_gather::TokenOverrides::from_payload(&payload);
 
     tokio::spawn(async move {
         drive_streaming_turn(
@@ -350,6 +358,7 @@ pub async fn handle_start_turn(payload: Value) -> Reply {
             drive_model,
             drive_tier,
             workspace_id,
+            drive_overrides,
         )
         .await;
     });
@@ -469,7 +478,8 @@ async fn stream_events(handle: Arc<TurnHandle>, sender: StreamSender, source: So
 /// the next round. Bails out at [`tool_round::MAX_TOOL_LOOPS`] or
 /// when there are no more tool calls.
 #[allow(clippy::too_many_arguments)] // turn-driver fan-out; grouping into a
-// struct would only move the noise. Slice G added `conversation_id`.
+                                     // struct would only move the noise. Slice G added `conversation_id`; Slice M
+                                     // added the composer's per-message token overrides.
 async fn drive_streaming_turn(
     cfg: &'static Config,
     handle: Arc<TurnHandle>,
@@ -479,10 +489,16 @@ async fn drive_streaming_turn(
     model: String,
     device_tier: String,
     workspace_id: Option<String>,
+    overrides: context_gather::TokenOverrides,
 ) {
     // Gather the turn's context (Slice G) — see `handle_run_turn` for the flow.
-    let gathered =
-        context_gather::gather(workspace_id.as_deref(), &user_message, &conversation_id).await;
+    let gathered = context_gather::gather(
+        workspace_id.as_deref(),
+        &user_message,
+        &conversation_id,
+        &overrides,
+    )
+    .await;
     let mut messages = initial_messages(&user_message, &gathered.system_slots);
     let tools = tools_payload();
     let mut round_state = ToolRoundState::new();
@@ -777,12 +793,12 @@ fn native_tool_calls(tool_calls: &[Value], alias_map: &HashMap<String, String>) 
             Some(s) if !s.is_empty() => s,
             _ => continue,
         };
-        let raw_args = func
-            .get("arguments")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
+        let raw_args = func.get("arguments").cloned().unwrap_or_else(|| json!({}));
         let args = coerce_native_args(raw_args);
-        let canonical = alias_map.get(name).cloned().unwrap_or_else(|| name.to_owned());
+        let canonical = alias_map
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| name.to_owned());
         let id = tc
             .get("id")
             .and_then(Value::as_str)

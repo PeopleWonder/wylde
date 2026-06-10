@@ -239,7 +239,10 @@ mod tests {
 
     #[test]
     fn error_codes_are_stable() {
-        assert_eq!(ChatSearchError::BadRequest("x".into()).code(), "bad_request");
+        assert_eq!(
+            ChatSearchError::BadRequest("x".into()).code(),
+            "bad_request"
+        );
         assert_eq!(ChatSearchError::NotFound("x".into()).code(), "not_found");
     }
 }

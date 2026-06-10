@@ -21,8 +21,8 @@ use serde_json::{json, Value};
 use wylde_shared::ipc::Reply;
 
 use super::entry::{self, WorkspaceMemoryEntry};
-use super::{query, reflection};
 use super::query::WorkspaceMemoryQuery;
+use super::{query, reflection};
 
 fn require_string(payload: &Value, key: &str) -> Option<String> {
     payload
@@ -171,7 +171,8 @@ mod tests {
         assert_eq!(listed.data["notes"][0]["id"], id);
 
         // update
-        let upd = handle_update(json!({ "workspace_id": ws, "id": id, "text": "uses cargo" })).await;
+        let upd =
+            handle_update(json!({ "workspace_id": ws, "id": id, "text": "uses cargo" })).await;
         assert!(upd.ok);
         assert_eq!(upd.data["text"], "uses cargo");
         let updated_id_persists = handle_list(json!({ "workspace_id": ws })).await;

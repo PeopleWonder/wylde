@@ -279,7 +279,10 @@ mod tests {
         let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _td = isolated();
         assert_eq!(get_active_model(), None);
-        assert_eq!(set_active_model(Some("qwen3:0.6b")), Some("qwen3:0.6b".to_owned()));
+        assert_eq!(
+            set_active_model(Some("qwen3:0.6b")),
+            Some("qwen3:0.6b".to_owned())
+        );
         // Drop the cache to prove it persisted to disk.
         reset_for_tests();
         assert_eq!(get_active_model(), Some("qwen3:0.6b".to_owned()));

@@ -43,7 +43,12 @@ pub fn register(reg: &mut Registry) {
         "Load a model into VRAM without generating tokens. The model \
          stays resident for `keep_alive` (default 24h).",
         vec![
-            param("model", "string", true, "Ollama model tag (e.g. 'qwen2.5:7b')"),
+            param(
+                "model",
+                "string",
+                true,
+                "Ollama model tag (e.g. 'qwen2.5:7b')",
+            ),
             param_default(
                 "keep_alive",
                 "string",
@@ -93,12 +98,8 @@ pub fn register(reg: &mut Registry) {
 // ── Handlers ─────────────────────────────────────────────────────────
 
 pub(crate) async fn run_list_loaded(_args: Value) -> Result<Value, IpcError> {
-    let reply = wylde_shared::ipc::send_action(
-        "wylde-ollama",
-        "ollama.list_loaded",
-        json!({}),
-    )
-    .await;
+    let reply =
+        wylde_shared::ipc::send_action("wylde-ollama", "ollama.list_loaded", json!({})).await;
     if !reply.ok {
         return Ok(unreachable_envelope(&reply));
     }
@@ -156,12 +157,9 @@ pub(crate) async fn run_evict(args: Value) -> Result<Value, IpcError> {
     let Some(model) = require_model(&args) else {
         return Ok(json!({"status": "error", "error": "'model' is required"}));
     };
-    let reply = wylde_shared::ipc::send_action(
-        "wylde-ollama",
-        "ollama.eject",
-        json!({"model": &model}),
-    )
-    .await;
+    let reply =
+        wylde_shared::ipc::send_action("wylde-ollama", "ollama.eject", json!({"model": &model}))
+            .await;
     if !reply.ok {
         return Ok(unreachable_envelope(&reply));
     }
@@ -182,12 +180,8 @@ pub(crate) async fn run_auto_evict_lru(args: Value) -> Result<Value, IpcError> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
 
-    let reply = wylde_shared::ipc::send_action(
-        "wylde-ollama",
-        "ollama.list_loaded",
-        json!({}),
-    )
-    .await;
+    let reply =
+        wylde_shared::ipc::send_action("wylde-ollama", "ollama.list_loaded", json!({})).await;
     if !reply.ok {
         return Ok(unreachable_envelope(&reply));
     }
@@ -210,14 +204,8 @@ pub(crate) async fn run_auto_evict_lru(args: Value) -> Result<Value, IpcError> {
 
     let mut sortable = models.clone();
     sortable.sort_by(|a, b| {
-        let ea = a
-            .get("expires_at")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let eb = b
-            .get("expires_at")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let ea = a.get("expires_at").and_then(Value::as_str).unwrap_or("");
+        let eb = b.get("expires_at").and_then(Value::as_str).unwrap_or("");
         ea.cmp(eb)
     });
 
@@ -250,8 +238,8 @@ pub(crate) async fn run_auto_evict_lru(args: Value) -> Result<Value, IpcError> {
         if name.is_empty() {
             continue;
         }
-        let vram_mb = m.get("size_vram").and_then(Value::as_u64).unwrap_or(0) as f64
-            / (1024.0 * 1024.0);
+        let vram_mb =
+            m.get("size_vram").and_then(Value::as_u64).unwrap_or(0) as f64 / (1024.0 * 1024.0);
         if dry_run {
             total_vram_mb -= vram_mb;
             evicted.push(json!({
@@ -261,12 +249,9 @@ pub(crate) async fn run_auto_evict_lru(args: Value) -> Result<Value, IpcError> {
             }));
             continue;
         }
-        let eject_reply = wylde_shared::ipc::send_action(
-            "wylde-ollama",
-            "ollama.eject",
-            json!({"model": name}),
-        )
-        .await;
+        let eject_reply =
+            wylde_shared::ipc::send_action("wylde-ollama", "ollama.eject", json!({"model": name}))
+                .await;
         if eject_reply.ok {
             total_vram_mb -= vram_mb;
             evicted.push(json!({
@@ -332,7 +317,10 @@ mod tests {
             "auto_evict_lru",
         ] {
             let entry = reg.lookup(id).unwrap_or_else(|| panic!("missing {id}"));
-            assert!(matches!(entry.kind, HandlerKind::Active(_)), "{id} not active");
+            assert!(
+                matches!(entry.kind, HandlerKind::Active(_)),
+                "{id} not active"
+            );
         }
     }
 
@@ -348,10 +336,7 @@ mod tests {
             reg.lookup("ollama.preload_model").unwrap().id,
             "preload_model"
         );
-        assert_eq!(
-            reg.lookup("ollama.evict_model").unwrap().id,
-            "evict_model"
-        );
+        assert_eq!(reg.lookup("ollama.evict_model").unwrap().id, "evict_model");
         assert_eq!(
             reg.lookup("ollama.auto_evict_lru").unwrap().id,
             "auto_evict_lru"

@@ -79,10 +79,7 @@ pub fn op_consent_gate(
     let key = format!("{resource_type}.{}", op.as_str());
     let outcome = consent_store().check(&key, || {
         let tool_name = format!("wylde_{}", op.as_str());
-        let desc = format!(
-            "{} on the {resource_type} resource",
-            op.as_str()
-        );
+        let desc = format!("{} on the {resource_type} resource", op.as_str());
         format_prompt(&key, &tool_name, &desc, true)
     });
 
@@ -96,7 +93,8 @@ pub fn op_consent_gate(
                     "verb dispatch of {:?} ({}) blocked: no stored consent \
                      decision for this destructive resource op. GUI: surface \
                      the prompt and call `consent.respond`.",
-                    key, op.as_str()
+                    key,
+                    op.as_str()
                 ),
             );
             err.details = Some(json!({

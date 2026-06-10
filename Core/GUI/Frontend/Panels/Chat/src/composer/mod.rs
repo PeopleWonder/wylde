@@ -43,9 +43,27 @@ pub struct SymbolCandidate {
     pub score: f32,
 }
 
+/// Which durable ignore tier covers a token (Slice M; Plan §5.8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IgnoreTierTag {
+    Conversation,
+    Workspace,
+    Global,
+}
+
+impl IgnoreTierTag {
+    pub fn label(self) -> &'static str {
+        match self {
+            IgnoreTierTag::Conversation => "conversation",
+            IgnoreTierTag::Workspace => "workspace",
+            IgnoreTierTag::Global => "global",
+        }
+    }
+}
+
 /// The recognition state of one composer token: what the workspace said
 /// about it plus the user's choices (disambiguation pick, curation
-/// exclusion).
+/// exclusion, ignore reactivation).
 #[derive(Clone, Debug, PartialEq)]
 pub struct WordRecognition {
     pub token: TokenSpan,
@@ -56,8 +74,14 @@ pub struct WordRecognition {
     pub anchor_count: usize,
     /// The user's disambiguation pick (a candidate `id`), if any.
     pub resolved: Option<String>,
-    /// Curated out of the upcoming send (curate-before-send).
+    /// Curated out of the upcoming send (the ✕ exclude — this message only,
+    /// Plan §5.8).
     pub excluded: bool,
+    /// Durable ignore tiers covering this token (Slice M). A covered token
+    /// still highlights and counts, but rides along deselected…
+    pub ignored_tiers: Vec<IgnoreTierTag>,
+    /// …unless reactivated for this message (the ↺, Plan §5.8).
+    pub reactivated: bool,
 }
 
 impl WordRecognition {
@@ -68,7 +92,20 @@ impl WordRecognition {
             anchor_count: 0,
             resolved: None,
             excluded: false,
+            ignored_tiers: Vec::new(),
+            reactivated: false,
         }
+    }
+
+    /// Is any durable ignore tier covering this token?
+    pub fn is_ignored(&self) -> bool {
+        !self.ignored_tiers.is_empty()
+    }
+
+    /// Will this word's context actually ride along with the send?
+    /// (Recognized, not ✕-excluded, and not ignore-deselected without a ↺.)
+    pub fn is_included(&self) -> bool {
+        self.is_recognized() && !self.excluded && (!self.is_ignored() || self.reactivated)
     }
 
     /// Did the workspace recognize this token at all?
@@ -117,6 +154,8 @@ pub struct ComposerState {
     pub generation: u64,
     /// Open disambiguation dropdown: index into `words`.
     pub disambiguating: Option<usize>,
+    /// Open right-click ignore menu: index into `words` (Slice M).
+    pub ignore_menu: Option<usize>,
     /// Curate-before-send popover open?
     pub curating: bool,
     /// `Ctrl+P` symbol palette state.
@@ -137,6 +176,7 @@ impl ComposerState {
     pub fn begin_scan(&mut self) -> u64 {
         self.generation += 1;
         self.disambiguating = None;
+        self.ignore_menu = None;
         self.curating = false;
         self.generation
     }
@@ -170,15 +210,39 @@ impl ComposerState {
         true
     }
 
-    /// Toggle a word's curation exclusion (curate-before-send).
+    /// Toggle a word in/out of the upcoming send. For an ignored word this
+    /// flips the per-message ↺ reactivation (Plan §5.8: ignored = default
+    /// inactive, reactivate per message); otherwise it flips the ✕ exclude.
     pub fn toggle_excluded(&mut self, word_idx: usize) -> bool {
         match self.words.get_mut(word_idx) {
             Some(w) => {
-                w.excluded = !w.excluded;
+                if w.is_ignored() {
+                    w.reactivated = !w.reactivated;
+                } else {
+                    w.excluded = !w.excluded;
+                }
                 true
             }
             None => false,
         }
+    }
+
+    /// The per-message token lists the send carries (Slices F + M):
+    /// `(excluded_tokens, reactivated_tokens)`.
+    pub fn send_overrides(&self) -> (Vec<String>, Vec<String>) {
+        let excluded = self
+            .words
+            .iter()
+            .filter(|w| w.excluded)
+            .map(|w| w.token.text.clone())
+            .collect();
+        let reactivated = self
+            .words
+            .iter()
+            .filter(|w| w.is_ignored() && w.reactivated)
+            .map(|w| w.token.text.clone())
+            .collect();
+        (excluded, reactivated)
     }
 
     /// The first still-ambiguous word (the `?N` context chip's click
@@ -303,6 +367,38 @@ mod tests {
         assert_eq!(state.first_ambiguous(), Some(1));
         state.resolve(1, "ambig-0");
         assert_eq!(state.first_ambiguous(), None);
+    }
+
+    #[test]
+    fn ignore_semantics_follow_plan_5_8() {
+        // Ignored: still recognized + chip still shows, but not included…
+        let mut w = word("muted", 1, 0);
+        w.ignored_tiers = vec![IgnoreTierTag::Workspace];
+        assert!(w.is_recognized());
+        assert!(w.chip_label().is_some(), "still highlights + counts");
+        assert!(!w.is_included(), "default-inactive");
+
+        // …until reactivated for this message (↺).
+        w.reactivated = true;
+        assert!(w.is_included());
+
+        // toggle_excluded on an ignored word flips ↺, not ✕.
+        let mut state = ComposerState::default();
+        state.words = vec![w];
+        assert!(state.toggle_excluded(0));
+        assert!(!state.words[0].reactivated);
+        assert!(!state.words[0].excluded, "✕ untouched for ignored words");
+
+        // send_overrides carries the two lists.
+        state.words[0].reactivated = true;
+        state.words.push({
+            let mut x = word("dropped", 1, 0);
+            x.excluded = true;
+            x
+        });
+        let (excluded, reactivated) = state.send_overrides();
+        assert_eq!(excluded, vec!["dropped"]);
+        assert_eq!(reactivated, vec!["muted"]);
     }
 
     #[test]

@@ -38,8 +38,18 @@ pub fn register(reg: &mut Registry) {
         vec![
             param("pattern", "string", true, "Regex pattern to search for"),
             param_default("path", "string", "Directory to search", json!(".")),
-            param_default("glob", "string", "Glob to filter files (e.g. '*.rs')", json!("")),
-            param_default("case_insensitive", "boolean", "Case insensitive", json!(false)),
+            param_default(
+                "glob",
+                "string",
+                "Glob to filter files (e.g. '*.rs')",
+                json!(""),
+            ),
+            param_default(
+                "case_insensitive",
+                "boolean",
+                "Case insensitive",
+                json!(false),
+            ),
             param_default("max_count", "number", "Max matches to return", json!(500)),
         ],
         false,
@@ -242,7 +252,9 @@ mod tests {
     async fn code_search_finds_pattern_with_line_numbers() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("a.txt");
-        tokio_fs::write(&path, "alpha\nbeta\nalpha\n").await.unwrap();
+        tokio_fs::write(&path, "alpha\nbeta\nalpha\n")
+            .await
+            .unwrap();
         let v = run_code_search(json!({
             "pattern": "alpha",
             "path": dir.path().display().to_string(),
@@ -273,7 +285,9 @@ mod tests {
 
     #[tokio::test]
     async fn code_search_invalid_regex_returns_error() {
-        let v = run_code_search(json!({"pattern": "[invalid"})).await.unwrap();
+        let v = run_code_search(json!({"pattern": "[invalid"}))
+            .await
+            .unwrap();
         assert_eq!(v["status"], "error");
         assert!(v["error"].as_str().unwrap().contains("invalid regex"));
     }
@@ -310,10 +324,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(v["count"], 1);
-        assert!(v["files"][0]["path"]
-            .as_str()
-            .unwrap()
-            .ends_with("a.rs"));
+        assert!(v["files"][0]["path"].as_str().unwrap().ends_with("a.rs"));
     }
 
     #[test]

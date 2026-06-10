@@ -83,7 +83,10 @@ pub async fn reindex_full(def: &WorkspaceDefinition) -> IndexOutcome {
             stats
         }
         Err(e) => {
-            tracing::warn!("workspaces.rag: full index embed failed for {}: {e}", def.id);
+            tracing::warn!(
+                "workspaces.rag: full index embed failed for {}: {e}",
+                def.id
+            );
             // Leave any prior index untouched; surface the error.
             IndexOutcome {
                 file_count: 0,

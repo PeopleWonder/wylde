@@ -10,9 +10,7 @@
 //!   the crate root `turn/` for now; its relocation under `chat/` is a
 //!   later, mechanical move out of this slice's scope).
 //! * [`search`]     — scoped chat-history search tools (**Slice E**).
-//! * `chat/ignore/` — the global tier of the ignore list (Slice M, later).
-//!
-//! This module currently hosts only [`search`]; the others land with their
-//! slices.
+//! * [`ignore`]     — the global tier of the symbol ignore list (**Slice M**).
 
+pub mod ignore;
 pub mod search;

@@ -419,10 +419,7 @@ mod tests {
         let mut overrides = HashMap::new();
         overrides.insert("vendor/mystery-model".to_owned(), Kind::Embed);
         let mut required = HashMap::new();
-        required.insert(
-            "vendor/mystery-model".to_owned(),
-            vec!["voice".to_owned()],
-        );
+        required.insert("vendor/mystery-model".to_owned(), vec!["voice".to_owned()]);
         let out = scan_hf_cache(&overrides, &required, true);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, Kind::Embed);

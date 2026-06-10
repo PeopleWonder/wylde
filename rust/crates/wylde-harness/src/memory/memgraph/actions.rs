@@ -38,9 +38,8 @@ use crate::memory::rag::tiers::is_known_tier;
 
 /// Token regex matching identifier-shaped substrings. Mirrors Python's
 /// `_QUERY_IDENT_RE` — `\b([A-Za-z_][A-Za-z0-9_]{2,})\b`.
-static IDENT_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]{2,})\b").expect("static ident regex")
-});
+static IDENT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]{2,})\b").expect("static ident regex"));
 
 /// Stopwords mirroring Python's `_STOP` set so identifier extraction
 /// returns the same shortlist for identical queries.
@@ -130,11 +129,7 @@ pub async fn run_graph_query<T: MemgraphTraversal>(
         .map(str::to_owned);
     if let Some(t) = &tier {
         if !is_known_tier(t) {
-            return Ok(empty_envelope(
-                &explicit_entities,
-                &query,
-                "unknown tier",
-            ));
+            return Ok(empty_envelope(&explicit_entities, &query, "unknown tier"));
         }
     }
 
@@ -311,9 +306,19 @@ mod tests {
 
     #[test]
     fn extract_entities_filters_stopwords_and_dedupes() {
-        let ents = extract_entities("how does the foo_bar configure the baz_qux for the foo_bar", 12);
+        let ents = extract_entities(
+            "how does the foo_bar configure the baz_qux for the foo_bar",
+            12,
+        );
         // "how", "does", "the", "for" filtered. "foo_bar" deduped.
-        assert_eq!(ents, vec!["foo_bar".to_owned(), "configure".to_owned(), "baz_qux".to_owned()]);
+        assert_eq!(
+            ents,
+            vec![
+                "foo_bar".to_owned(),
+                "configure".to_owned(),
+                "baz_qux".to_owned()
+            ]
+        );
     }
 
     #[test]
@@ -380,9 +385,7 @@ mod tests {
         let entities = calls[0].payload["entities"]
             .as_array()
             .expect("entities array");
-        assert!(entities
-            .iter()
-            .any(|v| v.as_str() == Some("foo_bar")));
+        assert!(entities.iter().any(|v| v.as_str() == Some("foo_bar")));
     }
 
     #[tokio::test]
@@ -438,12 +441,9 @@ mod tests {
     #[tokio::test]
     async fn run_graph_query_passes_workspace_id_through() {
         let (client, handle) = mock::new_with_static_ok(json!({"chunks": []}));
-        run_graph_query(
-            json!({"entities": ["x"], "workspace_id": "ws-42"}),
-            &client,
-        )
-        .await
-        .unwrap();
+        run_graph_query(json!({"entities": ["x"], "workspace_id": "ws-42"}), &client)
+            .await
+            .unwrap();
         let payload = &handle.calls()[0].payload;
         assert_eq!(payload["workspace"], "ws-42");
     }

@@ -55,7 +55,10 @@ async fn text_search_round_trip_against_live_wylde_ollama() {
     let hits = long_term::text_search("embed-live integration", 5, None)
         .await
         .expect("text_search succeeds");
-    assert!(!hits.is_empty(), "text_search must surface the seeded record");
+    assert!(
+        !hits.is_empty(),
+        "text_search must surface the seeded record"
+    );
     assert!(
         hits.iter().any(|h| h.id == saved.id),
         "seeded record not in hits"

@@ -126,13 +126,19 @@ mod tests {
         let path = PathBuf::from("/proj/src/main.rs");
         // 10 edits, each 10ms apart — all inside one continuing burst.
         for i in 0..10 {
-            d.record(path.clone(), ChangeKind::Upsert, start + Duration::from_millis(i * 10));
+            d.record(
+                path.clone(),
+                ChangeKind::Upsert,
+                start + Duration::from_millis(i * 10),
+            );
         }
         assert_eq!(d.len(), 1, "one path buffered, not ten");
 
         let last_edit = start + Duration::from_millis(90);
         // Just before the window elapses from the LAST edit: nothing due.
-        assert!(d.drain_due(last_edit + Duration::from_millis(400)).is_empty());
+        assert!(d
+            .drain_due(last_edit + Duration::from_millis(400))
+            .is_empty());
         // After the window from the last edit: exactly one collapsed change.
         let due = d.drain_due(last_edit + win + Duration::from_millis(1));
         assert_eq!(due.len(), 1);
@@ -147,11 +153,20 @@ mod tests {
         let mut d = Debouncer::new(win);
         let start = t0();
         d.record(PathBuf::from("/a.rs"), ChangeKind::Upsert, start);
-        d.record(PathBuf::from("/b.rs"), ChangeKind::Upsert, start + Duration::from_millis(20));
-        d.record(PathBuf::from("/c.rs"), ChangeKind::Remove, start + Duration::from_millis(40));
+        d.record(
+            PathBuf::from("/b.rs"),
+            ChangeKind::Upsert,
+            start + Duration::from_millis(20),
+        );
+        d.record(
+            PathBuf::from("/c.rs"),
+            ChangeKind::Remove,
+            start + Duration::from_millis(40),
+        );
 
         let due = d.drain_due(start + Duration::from_millis(40) + win);
-        let paths: std::collections::HashSet<PathBuf> = due.iter().map(|(p, _)| p.clone()).collect();
+        let paths: std::collections::HashSet<PathBuf> =
+            due.iter().map(|(p, _)| p.clone()).collect();
         assert_eq!(paths.len(), 3, "all three released in one batch");
         assert!(d.is_empty());
     }
@@ -164,14 +179,26 @@ mod tests {
         let p = PathBuf::from("/x.rs");
         // modify → modify → delete: net Remove.
         d.record(p.clone(), ChangeKind::Upsert, start);
-        d.record(p.clone(), ChangeKind::Upsert, start + Duration::from_millis(5));
-        d.record(p.clone(), ChangeKind::Remove, start + Duration::from_millis(10));
+        d.record(
+            p.clone(),
+            ChangeKind::Upsert,
+            start + Duration::from_millis(5),
+        );
+        d.record(
+            p.clone(),
+            ChangeKind::Remove,
+            start + Duration::from_millis(10),
+        );
         let due = d.drain_due(start + Duration::from_millis(10) + win);
         assert_eq!(due, vec![(p.clone(), ChangeKind::Remove)]);
 
         // delete → re-create: net Upsert.
         d.record(p.clone(), ChangeKind::Remove, start);
-        d.record(p.clone(), ChangeKind::Upsert, start + Duration::from_millis(5));
+        d.record(
+            p.clone(),
+            ChangeKind::Upsert,
+            start + Duration::from_millis(5),
+        );
         let due = d.drain_due(start + Duration::from_millis(5) + win);
         assert_eq!(due, vec![(p, ChangeKind::Upsert)]);
     }
@@ -183,7 +210,11 @@ mod tests {
         assert!(d.next_deadline().is_none());
         let start = t0();
         d.record(PathBuf::from("/a"), ChangeKind::Upsert, start);
-        d.record(PathBuf::from("/b"), ChangeKind::Upsert, start + Duration::from_millis(30));
+        d.record(
+            PathBuf::from("/b"),
+            ChangeKind::Upsert,
+            start + Duration::from_millis(30),
+        );
         // Earliest deadline is /a's (start + window).
         assert_eq!(d.next_deadline(), Some(start + win));
     }
@@ -194,7 +225,11 @@ mod tests {
         let mut d = Debouncer::new(win);
         let start = t0();
         d.record(PathBuf::from("/early"), ChangeKind::Upsert, start);
-        d.record(PathBuf::from("/late"), ChangeKind::Upsert, start + Duration::from_millis(80));
+        d.record(
+            PathBuf::from("/late"),
+            ChangeKind::Upsert,
+            start + Duration::from_millis(80),
+        );
         // At start+window only /early is due; /late waits.
         let due = d.drain_due(start + win);
         assert_eq!(due.len(), 1);

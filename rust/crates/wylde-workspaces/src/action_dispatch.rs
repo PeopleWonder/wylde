@@ -78,6 +78,11 @@ pub const ANCHORS_LIST_UNDER: &str = "workspaces.anchors.list_under";
 pub const ANCHORS_PROPOSE: &str = "workspaces.anchors.propose";
 pub const ANCHORS_PROMOTE_VIA_ALIAS: &str = "workspaces.anchors.promote_via_alias";
 
+// ── Symbol ignore list — workspace + conversation tiers (Slice M) ────────
+pub const IGNORE_LIST: &str = "workspaces.ignore.list";
+pub const IGNORE_ADD: &str = "workspaces.ignore.add";
+pub const IGNORE_REMOVE: &str = "workspaces.ignore.remove";
+
 /// Every action this service registers. Grows one slice at a time.
 pub const ALL_ACTIONS: &[&str] = &[
     PING,
@@ -122,6 +127,10 @@ pub const ALL_ACTIONS: &[&str] = &[
     ANCHORS_LIST_UNDER,
     ANCHORS_PROPOSE,
     ANCHORS_PROMOTE_VIA_ALIAS,
+    // Slice M — symbol ignore list (workspace + conversation tiers)
+    IGNORE_LIST,
+    IGNORE_ADD,
+    IGNORE_REMOVE,
 ];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -426,6 +435,34 @@ pub fn install() {
          promotion payload for the caller to land via the global \
          anchors.promote_via_alias. Payload: {workspace_id, anchor_id, alias}. \
          Reply: {anchor, via_alias, promote: true}.",
+        META_MODULE,
+    );
+
+    // ── Slice M — symbol ignore list (workspace + conversation tiers) ────
+    register_action_with_meta(
+        IGNORE_LIST,
+        |p: Value| async move { crate::ignore::api::handle_list(p).await },
+        "Both service-side ignore tiers for a workspace. Payload: \
+         {workspace_id, conversation_id?}. Reply: {workspace_id, workspace: \
+         [{token, added_at}], conversation: [...], conversation_id}. The \
+         global tier lives in the harness.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        IGNORE_ADD,
+        |p: Value| async move { crate::ignore::api::handle_add(p).await },
+        "Ignore a token in one tier (default-inactive from now on, Plan \
+         §5.8). Payload: {workspace_id, tier: workspace|conversation, token, \
+         conversation_id? (required for conversation)}. Reply: {ok, added, \
+         workspace_id, token} — re-adding succeeds with added=false \
+         (idempotent write).",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        IGNORE_REMOVE,
+        |p: Value| async move { crate::ignore::api::handle_remove(p).await },
+        "Stop ignoring a token in one tier. Payload: {workspace_id, tier, \
+         token, conversation_id?}. Reply: {ok, removed, workspace_id, token}.",
         META_MODULE,
     );
 

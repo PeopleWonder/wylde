@@ -61,7 +61,8 @@ pub struct IngestRequest {
 /// Default base URL — mirrors `WYLDE_N8N_BASE_URL`. Stripped trailing
 /// slash matches Python.
 pub fn n8n_base_url() -> String {
-    let raw = std::env::var("WYLDE_N8N_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:5678".into());
+    let raw =
+        std::env::var("WYLDE_N8N_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:5678".into());
     raw.trim_end_matches('/').to_owned()
 }
 
@@ -143,13 +144,7 @@ pub async fn trigger_ingest(req: IngestRequest) -> Value {
     let status = resp.status();
     let bytes = match resp.bytes().await {
         Ok(b) => b,
-        Err(e) => {
-            return error_envelope(
-                "request_failed",
-                format!("read body: {e}"),
-                &url,
-            )
-        }
+        Err(e) => return error_envelope("request_failed", format!("read body: {e}"), &url),
     };
 
     if !status.is_success() {

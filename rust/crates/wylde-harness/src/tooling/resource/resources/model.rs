@@ -356,7 +356,10 @@ mod tests {
     async fn execute_unknown_action_errors_cleanly() {
         let out = dispatch(
             ResourceOp::Execute,
-            ResourceRequest { action: Some("bogus".into()), ..Default::default() },
+            ResourceRequest {
+                action: Some("bogus".into()),
+                ..Default::default()
+            },
         )
         .await;
         assert_eq!(out["status"], "error");
@@ -370,11 +373,17 @@ mod tests {
         // envelope — NOT a "missing model" error. Proves the tag threaded.
         let out = dispatch(
             ResourceOp::Delete,
-            ResourceRequest { resource_id: Some("qwen2.5:7b".into()), ..Default::default() },
+            ResourceRequest {
+                resource_id: Some("qwen2.5:7b".into()),
+                ..Default::default()
+            },
         )
         .await;
         if out["status"] == "error" {
-            assert!(!out["error"].as_str().unwrap().contains("requires 'resource_id'"));
+            assert!(!out["error"]
+                .as_str()
+                .unwrap()
+                .contains("requires 'resource_id'"));
         }
     }
 }

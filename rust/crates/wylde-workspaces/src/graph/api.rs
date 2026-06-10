@@ -26,7 +26,9 @@ use crate::graph::BoltClient;
 pub async fn graph(workspace_id: &str) -> Result<WorkspaceGraph> {
     let ws = workspace_id.trim();
     if ws.is_empty() {
-        return Err(WorkspacesError::BadRequest("workspace_id is required".into()));
+        return Err(WorkspacesError::BadRequest(
+            "workspace_id is required".into(),
+        ));
     }
     let rows = BoltClient::new()
         .fetch_workspace_graph(ws)

@@ -126,7 +126,11 @@ impl VectorStore {
     /// Upsert a record by id. If an existing record has the same id it
     /// is replaced; otherwise the record is appended. Vector is L2-
     /// normalised in place so [`query_topk`] reduces to a dot product.
-    pub fn insert(&mut self, id: impl Into<String>, vector: Vec<f32>) -> Result<(), VectorStoreError> {
+    pub fn insert(
+        &mut self,
+        id: impl Into<String>,
+        vector: Vec<f32>,
+    ) -> Result<(), VectorStoreError> {
         if vector.is_empty() {
             return Err(VectorStoreError::EmptyVector);
         }

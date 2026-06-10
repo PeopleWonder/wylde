@@ -100,9 +100,9 @@ impl BoltClient {
                     .password(self.config.password.clone())
                     .build()
                     .map_err(|e| IpcError::new(error_codes::CONFIG, format!("config: {e}")))?;
-                Graph::connect(cfg)
-                    .await
-                    .map_err(|e| IpcError::new(error_codes::CONNECT, format!("{}: {}", self.config.uri, e)))
+                Graph::connect(cfg).await.map_err(|e| {
+                    IpcError::new(error_codes::CONNECT, format!("{}: {}", self.config.uri, e))
+                })
             })
             .await
     }
@@ -116,7 +116,11 @@ impl BoltClient {
         }
         let workspace_default = chunks
             .iter()
-            .find_map(|c| c.get("workspace").and_then(Value::as_str).map(str::to_owned))
+            .find_map(|c| {
+                c.get("workspace")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "default".to_owned());
 
@@ -136,16 +140,27 @@ impl BoltClient {
             for (rel_type, pairs) in &typed_rels {
                 let stmt = cypher::relate_typed(rel_type);
                 graph
-                    .run(neo4rs::query(&stmt).param("pairs", BoltType::List(pairs_to_boltlist(pairs))))
+                    .run(
+                        neo4rs::query(&stmt)
+                            .param("pairs", BoltType::List(pairs_to_boltlist(pairs))),
+                    )
                     .await
-                    .map_err(|e| (error_codes::QUERY.to_owned(), format!("upsert.{rel_type}: {e}")))?;
+                    .map_err(|e| {
+                        (
+                            error_codes::QUERY.to_owned(),
+                            format!("upsert.{rel_type}: {e}"),
+                        )
+                    })?;
             }
             Ok::<_, (String, String)>(())
         };
         match tokio::time::timeout(timeout, fut).await {
             Ok(Ok(())) => Reply::ok(json!({"ok": true, "count": count})),
             Ok(Err((code, message))) => Reply::err_msg(code, message),
-            Err(_) => Reply::err_msg(error_codes::QUERY, format!("upsert timed out after {timeout:?}")),
+            Err(_) => Reply::err_msg(
+                error_codes::QUERY,
+                format!("upsert timed out after {timeout:?}"),
+            ),
         }
     }
 
@@ -157,7 +172,10 @@ impl BoltClient {
         }
         let rel_type = rel_type.trim().to_uppercase();
         if !rel_schema::relation_type_is_valid(&rel_type) {
-            return Reply::err_msg("bad_request", format!("rel_type {rel_type:?} not in vocabulary"));
+            return Reply::err_msg(
+                "bad_request",
+                format!("rel_type {rel_type:?} not in vocabulary"),
+            );
         }
         let edges: Vec<EntityEdge> = pairs
             .into_iter()
@@ -167,7 +185,10 @@ impl BoltClient {
                 if src.is_empty() || tgt.is_empty() || src == tgt {
                     None
                 } else {
-                    Some(EntityEdge { source: src, target: tgt })
+                    Some(EntityEdge {
+                        source: src,
+                        target: tgt,
+                    })
                 }
             })
             .collect();
@@ -189,7 +210,10 @@ impl BoltClient {
         match tokio::time::timeout(timeout, fut).await {
             Ok(Ok(())) => Reply::ok(json!({"ok": true, "written": count})),
             Ok(Err((code, message))) => Reply::err_msg(code, message),
-            Err(_) => Reply::err_msg(error_codes::QUERY, format!("relate timed out after {timeout:?}")),
+            Err(_) => Reply::err_msg(
+                error_codes::QUERY,
+                format!("relate timed out after {timeout:?}"),
+            ),
         }
     }
 
@@ -221,7 +245,10 @@ impl BoltClient {
         match tokio::time::timeout(timeout, fut).await {
             Ok(Ok(v)) => Reply::ok(v),
             Ok(Err((code, message))) => Reply::err_msg(code, message),
-            Err(_) => Reply::err_msg(error_codes::QUERY, format!("delete_workspace timed out after {timeout:?}")),
+            Err(_) => Reply::err_msg(
+                error_codes::QUERY,
+                format!("delete_workspace timed out after {timeout:?}"),
+            ),
         }
     }
 
@@ -280,7 +307,12 @@ impl BoltClient {
     ///     per-file delta cheap (no global `MATCH (e:Entity)` sweep).
     ///
     /// Returns `{ok, workspace, path, chunks_deleted, orphan_entities_deleted}`.
-    pub async fn delete_file_nodes(&self, workspace: &str, path: &str, prune_orphans: bool) -> Reply {
+    pub async fn delete_file_nodes(
+        &self,
+        workspace: &str,
+        path: &str,
+        prune_orphans: bool,
+    ) -> Reply {
         let ws = workspace.trim().to_owned();
         let path = path.trim().to_owned();
         if ws.is_empty() {
@@ -406,7 +438,10 @@ struct EntityEdge {
 fn coerce_upsert_batch(
     chunks: &[Value],
     workspace_default: &str,
-) -> (Vec<UpsertRow>, std::collections::BTreeMap<String, Vec<EntityEdge>>) {
+) -> (
+    Vec<UpsertRow>,
+    std::collections::BTreeMap<String, Vec<EntityEdge>>,
+) {
     use std::collections::BTreeMap;
 
     let mut batch: Vec<UpsertRow> = Vec::with_capacity(chunks.len());
@@ -418,13 +453,29 @@ fn coerce_upsert_batch(
         }
         let row = UpsertRow {
             id,
-            path: c.get("path").and_then(Value::as_str).unwrap_or("").to_owned(),
-            symbol: c.get("symbol").and_then(Value::as_str).unwrap_or("").to_owned(),
-            language: c.get("language").and_then(Value::as_str).unwrap_or("").to_owned(),
+            path: c
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            symbol: c
+                .get("symbol")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
+            language: c
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned(),
             entities: c
                 .get("entities")
                 .and_then(Value::as_array)
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
                 .unwrap_or_default(),
             workspace: c
                 .get("workspace")
@@ -437,13 +488,35 @@ fn coerce_upsert_batch(
 
         if let Some(rels) = c.get("relationships").and_then(Value::as_array) {
             for rel in rels {
-                let rt = rel.get("type").and_then(Value::as_str).unwrap_or("").trim().to_uppercase();
-                let src = rel.get("source").and_then(Value::as_str).unwrap_or("").trim().to_owned();
-                let tgt = rel.get("target").and_then(Value::as_str).unwrap_or("").trim().to_owned();
-                if !rel_schema::relation_type_is_valid(&rt) || src.is_empty() || tgt.is_empty() || src == tgt {
+                let rt = rel
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_uppercase();
+                let src = rel
+                    .get("source")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_owned();
+                let tgt = rel
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .trim()
+                    .to_owned();
+                if !rel_schema::relation_type_is_valid(&rt)
+                    || src.is_empty()
+                    || tgt.is_empty()
+                    || src == tgt
+                {
                     continue;
                 }
-                typed.entry(rt).or_default().push(EntityEdge { source: src, target: tgt });
+                typed.entry(rt).or_default().push(EntityEdge {
+                    source: src,
+                    target: tgt,
+                });
             }
         }
     }

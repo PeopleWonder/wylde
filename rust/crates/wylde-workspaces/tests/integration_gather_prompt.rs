@@ -77,9 +77,7 @@ fn shutdown_and_wait(mut child: Child) {
     loop {
         match child.try_wait() {
             Ok(Some(_)) => return,
-            Ok(None) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(50))
-            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -99,8 +97,9 @@ async fn gather_prompt_surfaces_active_workspace_persona_and_notes() {
     let proj = tempfile::tempdir().expect("proj");
 
     let mut child = spawn_service(&service_name, data_dir.path(), wylde_root.path());
-    let client =
-        WorkspacesClient::new(std::path::PathBuf::from(format!(r"\\.\pipe\{service_name}")));
+    let client = WorkspacesClient::new(std::path::PathBuf::from(format!(
+        r"\\.\pipe\{service_name}"
+    )));
     await_ready(&client, &mut child).await;
 
     // Active workspace with a persona + one note. RAG is disabled for this
@@ -168,8 +167,9 @@ async fn gather_prompt_degrades_then_trips_breaker_when_service_dies() {
     let proj = tempfile::tempdir().expect("proj");
 
     let mut child = spawn_service(&service_name, data_dir.path(), wylde_root.path());
-    let client =
-        WorkspacesClient::new(std::path::PathBuf::from(format!(r"\\.\pipe\{service_name}")));
+    let client = WorkspacesClient::new(std::path::PathBuf::from(format!(
+        r"\\.\pipe\{service_name}"
+    )));
     await_ready(&client, &mut child).await;
 
     let ws = client
@@ -178,7 +178,10 @@ async fn gather_prompt_degrades_then_trips_breaker_when_service_dies() {
         .expect("create");
     let ws_id = ws["id"].as_str().expect("ws id").to_owned();
     // Healthy call works before the kill.
-    client.gather_prompt(&ws_id, "hi").await.expect("pre-kill gather");
+    client
+        .gather_prompt(&ws_id, "hi")
+        .await
+        .expect("pre-kill gather");
 
     // Kill the service mid-session.
     shutdown_and_wait(child);
@@ -195,7 +198,10 @@ async fn gather_prompt_degrades_then_trips_breaker_when_service_dies() {
             err.transport,
             "call {i} after kill must be a transport failure (driver degrades): {err:?}"
         );
-        assert_ne!(err.code, "breaker_open", "breaker must not be open yet at call {i}");
+        assert_ne!(
+            err.code, "breaker_open",
+            "breaker must not be open yet at call {i}"
+        );
     }
 
     // The 6th call fails fast on the now-open breaker — no pipe attempt.

@@ -52,4 +52,7 @@ pub use merge::{merge_and_rank, AGREEMENT_BONUS, COMBINED_ALPHA};
 pub use prune::{prune_rows, PruneError, PruneFilters};
 pub use search::{search, search_logged, search_with_graph, Hit, HybridResult, SearchError};
 pub use store::{TierHit, TierRecord, TieredStore};
-pub use tiers::{is_known_tier, tier_from_str, Tier, ALL_TIERS, TIER_CORE, TIER_EPISODIC, TIER_PROCEDURAL, TIER_SEMANTIC};
+pub use tiers::{
+    is_known_tier, tier_from_str, Tier, ALL_TIERS, TIER_CORE, TIER_EPISODIC, TIER_PROCEDURAL,
+    TIER_SEMANTIC,
+};

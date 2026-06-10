@@ -257,7 +257,11 @@ pub fn chunk_text(text: &str) -> Vec<(String, u32, u32)> {
     let line_at = |idx: usize| -> u32 { nl_prefix[idx.min(chars.len())] + 1 };
 
     if chars.len() <= CHUNK_SIZE_CHARS {
-        let end_line = if chars.is_empty() { 1 } else { line_at(chars.len() - 1) };
+        let end_line = if chars.is_empty() {
+            1
+        } else {
+            line_at(chars.len() - 1)
+        };
         return vec![(text.to_owned(), 1, end_line)];
     }
 
@@ -295,7 +299,11 @@ mod tests {
         let line = "abcdefghij\n"; // 11 chars incl newline
         let text = line.repeat(1000); // 11_000 chars, 1000 lines
         let chunks = chunk_text(&text);
-        assert!(chunks.len() >= 3, "expected multiple chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 3,
+            "expected multiple chunks, got {}",
+            chunks.len()
+        );
         // First chunk starts at line 1.
         assert_eq!(chunks[0].1, 1);
         // Windows advance (overlap < size) so successive starts increase.

@@ -224,10 +224,7 @@ pub fn get_working_memory(conv_id: &str) -> Result<Vec<Value>, InvalidConversati
 /// stub conversation if none exists, coerces a non-object entry to
 /// `{kind: "raw", at, data: <str>}`, and `setdefault`s the `at`
 /// timestamp on object entries.
-pub fn append_working_memory(
-    conv_id: &str,
-    entry: Value,
-) -> Result<Vec<Value>, AppendError> {
+pub fn append_working_memory(conv_id: &str, entry: Value) -> Result<Vec<Value>, AppendError> {
     let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let existing = read_doc(conv_id).map_err(AppendError::InvalidId)?;
     let mut working: Vec<Value> = existing
@@ -240,7 +237,8 @@ pub fn append_working_memory(
     let stamped = match entry {
         Value::Object(mut map) => {
             // `setdefault("at", now)` — only stamp when absent.
-            map.entry("at".to_owned()).or_insert_with(|| json!(now_secs()));
+            map.entry("at".to_owned())
+                .or_insert_with(|| json!(now_secs()));
             Value::Object(map)
         }
         other => {
@@ -337,7 +335,10 @@ mod tests {
     #[test]
     fn get_returns_empty_for_unknown_conversation() {
         let _env = TestEnv::new();
-        assert_eq!(get_working_memory("never-seen").unwrap(), Vec::<Value>::new());
+        assert_eq!(
+            get_working_memory("never-seen").unwrap(),
+            Vec::<Value>::new()
+        );
     }
 
     #[test]
@@ -352,8 +353,8 @@ mod tests {
         let cid = "round_trip_1";
         append_working_memory(cid, json!({"kind": "tool", "data": {"name": "git_status"}}))
             .unwrap();
-        let after = append_working_memory(cid, json!({"kind": "decision", "data": "use SQLite"}))
-            .unwrap();
+        let after =
+            append_working_memory(cid, json!({"kind": "decision", "data": "use SQLite"})).unwrap();
         assert_eq!(after.len(), 2);
         let entries = get_working_memory(cid).unwrap();
         assert_eq!(entries.len(), 2);
@@ -462,8 +463,7 @@ mod tests {
         assert_eq!(after[0]["superseded_by"], "ref-1");
         assert!(after[1].get("superseded_by").is_none());
         // Sibling fields intact.
-        let raw: Value =
-            serde_json::from_str(
+        let raw: Value = serde_json::from_str(
             &wylde_shared::encryption::read_to_string_at_rest(&path_for(cid)).unwrap(),
         )
         .unwrap();
@@ -478,8 +478,7 @@ mod tests {
         let _env = TestEnv::new();
         let cid = "stub_1";
         append_working_memory(cid, json!({"kind": "tool", "data": {}})).unwrap();
-        let raw: Value =
-            serde_json::from_str(
+        let raw: Value = serde_json::from_str(
             &wylde_shared::encryption::read_to_string_at_rest(&path_for(cid)).unwrap(),
         )
         .unwrap();

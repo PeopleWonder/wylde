@@ -137,9 +137,9 @@ pub fn parse_embed_response(
         }
         let mut floats: Vec<f32> = Vec::with_capacity(vec_arr.len());
         for (vi, x) in vec_arr.iter().enumerate() {
-            let f = x
-                .as_f64()
-                .ok_or_else(|| EmbedError::InvalidResponse(format!("entry {idx}[{vi}] is not a number")))?;
+            let f = x.as_f64().ok_or_else(|| {
+                EmbedError::InvalidResponse(format!("entry {idx}[{vi}] is not a number"))
+            })?;
             floats.push(f as f32);
         }
         if target < native {
@@ -184,7 +184,9 @@ fn classify_terminal(err: &IpcError, model: &str) -> Option<EmbedError> {
                     model: model.to_owned(),
                     detail: err.message.clone(),
                 }),
-                Some(s) if (400..500).contains(&s) => Some(EmbedError::BadRequest(format_ipc_err(err))),
+                Some(s) if (400..500).contains(&s) => {
+                    Some(EmbedError::BadRequest(format_ipc_err(err)))
+                }
                 _ => None,
             }
         }

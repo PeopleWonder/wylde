@@ -79,8 +79,7 @@ pub fn merge_and_rank(vector_hits: &[Hit], graph_hits: &[GraphHit], limit: usize
                 .get("vector_similarity")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0);
-            let weighted_pair =
-                COMBINED_ALPHA * existing_vec + (1.0 - COMBINED_ALPHA) * graph_sim;
+            let weighted_pair = COMBINED_ALPHA * existing_vec + (1.0 - COMBINED_ALPHA) * graph_sim;
             let combined = existing_combined.max(weighted_pair) + AGREEMENT_BONUS;
             existing["graph_hops"] = json!(hops);
             existing["graph_similarity"] = json!(graph_sim);
@@ -200,10 +199,7 @@ mod tests {
     fn ranking_is_descending_by_combined_score() {
         let v = [hit("low", 0.1), hit("high", 0.9), hit("mid", 0.5)];
         let ranked = merge_and_rank(&v, &[], 10);
-        let ids: Vec<&str> = ranked
-            .iter()
-            .filter_map(|r| r["id"].as_str())
-            .collect();
+        let ids: Vec<&str> = ranked.iter().filter_map(|r| r["id"].as_str()).collect();
         assert_eq!(ids, vec!["high", "mid", "low"]);
     }
 

@@ -175,11 +175,14 @@ fn nonzero_f64(v: Option<&Value>) -> Option<f64> {
 /// `None` otherwise (the update path distinguishes "not supplied"
 /// from "supplied empty" — Python's `isinstance(..., list)` check).
 fn entities_from(payload: &Value) -> Option<Vec<String>> {
-    payload.get("entities").and_then(Value::as_array).map(|arr| {
-        arr.iter()
-            .filter_map(|v| v.as_str().map(str::to_owned))
-            .collect()
-    })
+    payload
+        .get("entities")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect()
+        })
 }
 
 /// Best-effort write of entity → memory edges into the graph. Rust
@@ -206,9 +209,7 @@ fn record_entities_best_effort(record: &WorkspaceMemory) {
     });
     let record_id = record.id.clone();
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        tracing::debug!(
-            "workspace_memory: graph write skipped for {record_id} (no async runtime)"
-        );
+        tracing::debug!("workspace_memory: graph write skipped for {record_id} (no async runtime)");
         return;
     };
     handle.spawn(async move {
