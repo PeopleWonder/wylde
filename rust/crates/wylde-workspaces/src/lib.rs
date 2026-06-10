@@ -42,6 +42,7 @@ pub mod conversations;
 pub mod embeddings;
 pub mod error;
 pub mod graph;
+pub mod ignore;
 pub mod ipc;
 pub mod migration;
 pub mod notes;

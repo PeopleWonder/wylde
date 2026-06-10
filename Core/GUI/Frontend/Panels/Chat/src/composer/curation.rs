@@ -52,7 +52,7 @@ pub fn view_for(words: &[WordRecognition]) -> CurationView {
             word_idx: i,
             word: w.token.text.clone(),
             summary: summary(w),
-            included: !w.excluded,
+            included: w.is_included(),
         })
         .collect();
     CurationView { items }
@@ -70,11 +70,16 @@ fn summary(w: &WordRecognition) -> String {
     } else if w.is_ambiguous() {
         parts.push(format!("?{} symbols", w.candidates.len()));
     }
-    if parts.is_empty() {
+    let mut s = if parts.is_empty() {
         "no context".to_owned()
     } else {
         parts.join(" + ")
+    };
+    // Surface the durable ignore so the list explains the unchecked default.
+    if let Some(tier) = w.ignored_tiers.first() {
+        s.push_str(&format!(" · ignored ({})", tier.label()));
     }
+    s
 }
 
 #[cfg(test)]

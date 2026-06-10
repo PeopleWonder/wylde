@@ -4,12 +4,15 @@
 //! quietly returns nothing (the composer shows a "recognition offline" hint,
 //! never an error wall; typing and sending are unaffected).
 
+use std::collections::HashMap;
+
 use serde_json::{json, Value};
 
 use super::tokenizer::{TokenKind, TokenSpan};
-use super::{SymbolCandidate, WordRecognition};
+use super::{IgnoreTierTag, SymbolCandidate, WordRecognition};
 
 const SVC_WORKSPACES: &str = "wylde-workspaces";
+const SVC_HARNESS: &str = "wylde-harness";
 
 /// How many symbol candidates to ask for per word. >1 so single-match vs
 /// ambiguous is distinguishable (the Slice G trick), capped small enough for
@@ -78,6 +81,96 @@ pub async fn recognize(workspace_id: &str, token: TokenSpan) -> Result<WordRecog
         }
     }
     Ok(w)
+}
+
+/// Fetch every ignore tier for the scan: workspace + conversation from the
+/// service (`workspaces.ignore.list`), global from the harness
+/// (`ignore.list`). Best-effort — an unreachable tier reads as empty (an
+/// ignore miss must never break recognition).
+pub async fn ignore_tiers(
+    workspace_id: &str,
+    conversation_id: &str,
+) -> HashMap<String, Vec<IgnoreTierTag>> {
+    let mut out: HashMap<String, Vec<IgnoreTierTag>> = HashMap::new();
+
+    if let Ok(v) = workspaces_call(
+        "workspaces.ignore.list",
+        json!({ "workspace_id": workspace_id, "conversation_id": conversation_id }),
+    )
+    .await
+    {
+        for (key, tag) in [
+            ("workspace", IgnoreTierTag::Workspace),
+            ("conversation", IgnoreTierTag::Conversation),
+        ] {
+            if let Some(arr) = v.get(key).and_then(Value::as_array) {
+                for token in arr
+                    .iter()
+                    .filter_map(|e| e.get("token").and_then(Value::as_str))
+                {
+                    out.entry(token.to_owned()).or_default().push(tag);
+                }
+            }
+        }
+    }
+
+    let global = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "ignore.list", "payload": {} })),
+    )
+    .await;
+    if let Ok(v) = global {
+        if let Some(arr) = v.get("ignored").and_then(Value::as_array) {
+            for token in arr
+                .iter()
+                .filter_map(|e| e.get("token").and_then(Value::as_str))
+            {
+                out.entry(token.to_owned())
+                    .or_default()
+                    .push(IgnoreTierTag::Global);
+            }
+        }
+    }
+    out
+}
+
+/// Mutate an ignore tier from the composer's right-click menu. `tier` is the
+/// [`IgnoreTierTag`]; conversation/workspace go to the service, global to
+/// the harness.
+pub async fn set_ignored(
+    workspace_id: &str,
+    conversation_id: &str,
+    tier: IgnoreTierTag,
+    token: &str,
+    ignored: bool,
+) -> Result<(), String> {
+    let action_suffix = if ignored { "add" } else { "remove" };
+    match tier {
+        IgnoreTierTag::Global => wylde_gui_pipe::call(
+            SVC_HARNESS,
+            "POST",
+            "/__action__",
+            Some(json!({
+                "action": format!("ignore.{action_suffix}"),
+                "payload": { "token": token },
+            })),
+        )
+        .await
+        .map(|_| ()),
+        IgnoreTierTag::Workspace | IgnoreTierTag::Conversation => workspaces_call(
+            &format!("workspaces.ignore.{action_suffix}"),
+            json!({
+                "workspace_id": workspace_id,
+                "tier": tier.label(),
+                "token": token,
+                "conversation_id": conversation_id,
+            }),
+        )
+        .await
+        .map(|_| ()),
+    }
 }
 
 /// One `matches[i]` entry (`{ entry: {...}, score }`) → [`SymbolCandidate`].

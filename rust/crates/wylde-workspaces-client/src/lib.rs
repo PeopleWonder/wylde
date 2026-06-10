@@ -607,6 +607,62 @@ impl WorkspacesClient {
         .await
     }
 
+    // ── Slice M — symbol ignore list (workspace + conversation tiers) ────
+
+    /// `workspaces.ignore.list` — both service-side tiers; the conversation
+    /// tier scoped to `conversation_id` (pass `None` for workspace-only).
+    pub async fn ignore_list(
+        &self,
+        workspace_id: &str,
+        conversation_id: Option<&str>,
+    ) -> Result<Value, WorkspacesClientError> {
+        let mut payload = serde_json::json!({ "workspace_id": workspace_id });
+        if let Some(c) = conversation_id.filter(|c| !c.is_empty()) {
+            payload["conversation_id"] = serde_json::Value::from(c);
+        }
+        self.call_verb("workspaces.ignore.list", payload, 1).await
+    }
+
+    /// `workspaces.ignore.add` — ignore `token` in `tier`
+    /// (`"workspace" | "conversation"`); idempotent (re-adds succeed with
+    /// `added: false`).
+    pub async fn ignore_add(
+        &self,
+        workspace_id: &str,
+        tier: &str,
+        token: &str,
+        conversation_id: Option<&str>,
+    ) -> Result<Value, WorkspacesClientError> {
+        let mut payload = serde_json::json!({
+            "workspace_id": workspace_id,
+            "tier": tier,
+            "token": token,
+        });
+        if let Some(c) = conversation_id.filter(|c| !c.is_empty()) {
+            payload["conversation_id"] = serde_json::Value::from(c);
+        }
+        self.call_verb("workspaces.ignore.add", payload, 1).await
+    }
+
+    /// `workspaces.ignore.remove` — stop ignoring `token` in `tier`.
+    pub async fn ignore_remove(
+        &self,
+        workspace_id: &str,
+        tier: &str,
+        token: &str,
+        conversation_id: Option<&str>,
+    ) -> Result<Value, WorkspacesClientError> {
+        let mut payload = serde_json::json!({
+            "workspace_id": workspace_id,
+            "tier": tier,
+            "token": token,
+        });
+        if let Some(c) = conversation_id.filter(|c| !c.is_empty()) {
+            payload["conversation_id"] = serde_json::Value::from(c);
+        }
+        self.call_verb("workspaces.ignore.remove", payload, 1).await
+    }
+
     /// Drive one verb call through the full resilience pipeline: cache →
     /// breaker → timed transport attempt(s) with retry → breaker bookkeeping.
     ///

@@ -200,6 +200,18 @@ pub(crate) trait WorkspaceSource {
         ws: &str,
         symbol_id: &str,
     ) -> impl Future<Output = SourceResult<Value>> + Send;
+
+    /// `workspaces.ignore.list` — the workspace + conversation ignore tiers
+    /// merged into one token list (Slice M). Defaults to empty so existing
+    /// mocks keep compiling; an unreachable service degrades to "no service
+    /// ignores" (an ignore miss must never block a turn).
+    fn ignored_tokens(
+        &self,
+        _ws: &str,
+        _conversation_id: &str,
+    ) -> impl Future<Output = SourceResult<Vec<String>>> + Send {
+        async { Ok(Vec::new()) }
+    }
 }
 
 /// The production [`WorkspaceSource`] — talks to the real service through the
@@ -270,6 +282,28 @@ impl WorkspaceSource for LiveSource {
             Err(e) => Err(classify(&e)),
         }
     }
+
+    async fn ignored_tokens(&self, ws: &str, conversation_id: &str) -> SourceResult<Vec<String>> {
+        match self.client.ignore_list(ws, Some(conversation_id)).await {
+            Ok(v) => Ok(parse_ignored_tokens(&v)),
+            Err(e) => Err(classify(&e)),
+        }
+    }
+}
+
+/// Parse a `workspaces.ignore.list` reply — both tiers' tokens, merged.
+fn parse_ignored_tokens(v: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    for tier in ["workspace", "conversation"] {
+        if let Some(arr) = v.get(tier).and_then(Value::as_array) {
+            out.extend(
+                arr.iter()
+                    .filter_map(|e| e.get("token").and_then(Value::as_str))
+                    .map(str::to_owned),
+            );
+        }
+    }
+    out
 }
 
 /// Parse a `{anchors: [...]}` reply into typed [`Anchor`]s, dropping any that
@@ -305,6 +339,40 @@ fn parse_symbol_ids(v: &Value) -> Vec<String> {
 
 // ── public entry point ────────────────────────────────────────────────────
 
+/// Per-message token overrides from the composer (Slices F + M):
+/// `excluded` tokens never gather this message (the ✕ exclude);
+/// `reactivated` tokens gather even when an ignore tier covers them (the ↺).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct TokenOverrides {
+    pub excluded: Vec<String>,
+    pub reactivated: Vec<String>,
+}
+
+impl TokenOverrides {
+    /// Parse `excluded_tokens` / `reactivated_tokens` arrays off a
+    /// `chat.run_turn` / `chat.start_turn` payload (absent → empty).
+    pub fn from_payload(payload: &Value) -> TokenOverrides {
+        let list = |key: &str| {
+            payload
+                .get(key)
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        TokenOverrides {
+            excluded: list("excluded_tokens"),
+            reactivated: list("reactivated_tokens"),
+        }
+    }
+}
+
 /// Gather a turn's context against the live workspaces service.
 ///
 /// `workspace_id` is the active workspace (absent/blank → no workspace reads;
@@ -315,12 +383,14 @@ pub(crate) async fn gather(
     workspace_id: Option<&str>,
     user_message: &str,
     conversation_id: &str,
+    overrides: &TokenOverrides,
 ) -> GatheredContext {
     gather_with(
         &LiveSource::for_active(),
         workspace_id,
         user_message,
         conversation_id,
+        overrides,
     )
     .await
 }
@@ -332,6 +402,7 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     workspace_id: Option<&str>,
     user_message: &str,
     conversation_id: &str,
+    overrides: &TokenOverrides,
 ) -> GatheredContext {
     // Always-on, in-process slots — never depend on the workspaces service.
     let mut ctx = ChatContext {
@@ -350,7 +421,28 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
             Err(SourceStatus::Empty) => {}
         }
 
-        let tokens = candidate_tokens(user_message);
+        let mut tokens = candidate_tokens(user_message);
+
+        // Slice M (Plan §5.8): durable ignores (global + workspace +
+        // conversation tiers) drop a token unless this message reactivated
+        // it (↺); per-message excludes (✕, Slice F) always drop. Tier reads
+        // are fail-soft — an unreachable ignore list never blocks a turn.
+        let global_ignores: Vec<String> = crate::chat::ignore::store::load()
+            .into_iter()
+            .map(|e| e.token)
+            .collect();
+        let service_ignores = source
+            .ignored_tokens(ws, conversation_id)
+            .await
+            .unwrap_or_default();
+        tokens.retain(|t| {
+            if overrides.excluded.iter().any(|x| x == t) {
+                return false;
+            }
+            let ignored =
+                global_ignores.iter().any(|x| x == t) || service_ignores.iter().any(|x| x == t);
+            !ignored || overrides.reactivated.iter().any(|x| x == t)
+        });
 
         // Anchors + the symbol ids their code-symbol targets point at.
         let (anchors, anchor_symbol_ids) = gather_anchors(source, ws, &tokens).await;
@@ -650,6 +742,9 @@ mod tests {
         contexts: HashMap<String, Value>,
         /// when set, every symbol_context call reports Unavailable
         contexts_unavailable: bool,
+        /// service-side ignored tokens (workspace + conversation tiers,
+        /// Slice M)
+        ignored: Vec<String>,
     }
 
     impl WorkspaceSource for MockSource {
@@ -675,6 +770,13 @@ mod tests {
                 .cloned()
                 .ok_or(SourceStatus::Empty)
         }
+        async fn ignored_tokens(
+            &self,
+            _ws: &str,
+            _conversation_id: &str,
+        ) -> SourceResult<Vec<String>> {
+            Ok(self.ignored.clone())
+        }
     }
 
     fn ctx_json(name: &str, body: &str, callees: &[(&str, u32)]) -> Value {
@@ -693,6 +795,69 @@ mod tests {
         })
     }
 
+    // ── token overrides + ignore tiers (Slices F + M) ───────────────────
+
+    #[test]
+    fn token_overrides_parse_from_payload() {
+        let o = TokenOverrides::from_payload(&json!({
+            "excluded_tokens": ["alpha", "  ", "beta"],
+            "reactivated_tokens": ["gamma"]
+        }));
+        assert_eq!(o.excluded, vec!["alpha", "beta"]);
+        assert_eq!(o.reactivated, vec!["gamma"]);
+        assert_eq!(
+            TokenOverrides::from_payload(&json!({})),
+            TokenOverrides::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn ignored_tokens_skip_gather_unless_reactivated() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut src = MockSource::default();
+        src.symbols.insert("foo".into(), vec!["foo".into()]);
+        src.contexts
+            .insert("foo".into(), ctx_json("foo", "fn foo() {}", &[]));
+        src.ignored = vec!["foo".into()];
+
+        // An ignored token gathers nothing (Plan §5.8: default-inactive).
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "explain foo",
+            "c",
+            &TokenOverrides::default(),
+        )
+        .await;
+        assert!(!out.system_slots.contains("Symbol `foo`"));
+
+        // ↺ reactivation brings it back for this message only.
+        let re = TokenOverrides {
+            reactivated: vec!["foo".into()],
+            ..Default::default()
+        };
+        let out = gather_with(&src, Some("ws"), "explain foo", "c", &re).await;
+        assert!(out.system_slots.contains("Symbol `foo`"));
+    }
+
+    #[tokio::test]
+    async fn per_message_excludes_always_drop() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut src = MockSource::default();
+        src.symbols.insert("foo".into(), vec!["foo".into()]);
+        src.contexts
+            .insert("foo".into(), ctx_json("foo", "fn foo() {}", &[]));
+
+        // The ✕ exclude beats everything — even a (nonsensical) simultaneous
+        // reactivation.
+        let ex = TokenOverrides {
+            excluded: vec!["foo".into()],
+            reactivated: vec!["foo".into()],
+        };
+        let out = gather_with(&src, Some("ws"), "explain foo", "c", &ex).await;
+        assert!(!out.system_slots.contains("Symbol `foo`"));
+    }
+
     // ── symbol detection ────────────────────────────────────────────────
 
     #[tokio::test]
@@ -705,7 +870,14 @@ mod tests {
             ctx_json("foo", "fn foo() { bar() }", &[("bar", 1)]),
         );
 
-        let out = gather_with(&src, Some("ws"), "please explain foo", "conv-x").await;
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "please explain foo",
+            "conv-x",
+            &TokenOverrides::default(),
+        )
+        .await;
         assert!(
             out.system_slots.contains("Code graph context"),
             "slots: {}",
@@ -725,7 +897,14 @@ mod tests {
         src.symbols
             .insert("set_active".into(), vec!["a".into(), "b".into()]);
 
-        let out = gather_with(&src, Some("ws"), "what does set_active do", "conv-x").await;
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "what does set_active do",
+            "conv-x",
+            &TokenOverrides::default(),
+        )
+        .await;
         assert!(
             !out.system_slots.contains("Code graph context"),
             "ambiguous token must add no symbol context: {}",
@@ -752,7 +931,14 @@ mod tests {
         src.contexts
             .insert("run_it".into(), ctx_json("run_it", "fn run_it() {}", &[]));
 
-        let out = gather_with(&src, Some("ws"), "look at {{the_fn}}", "c").await;
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "look at {{the_fn}}",
+            "c",
+            &TokenOverrides::default(),
+        )
+        .await;
         // The anchor shows in the vocabulary block...
         assert!(out.system_slots.contains("{{the_fn}}"));
         // ...and its code target pulled a symbol context.
@@ -768,7 +954,14 @@ mod tests {
         src.symbols.insert("foo".into(), vec!["foo".into()]);
         src.contexts_unavailable = true; // symbol_context Broken
 
-        let out = gather_with(&src, Some("ws"), "explain foo", "c").await;
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "explain foo",
+            "c",
+            &TokenOverrides::default(),
+        )
+        .await;
         // No symbol context block, but the gather still produced (empty) slots
         // and did not panic. The prompt block (gather_prompt) was reachable, so
         // a partial-failure does NOT flag degraded.
@@ -791,7 +984,14 @@ mod tests {
             ..MockSource::default()
         };
 
-        let out = gather_with(&src, Some("ws"), "explain foo", "c").await;
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "explain foo",
+            "c",
+            &TokenOverrides::default(),
+        )
+        .await;
         assert!(out.degraded, "an unreachable workspace prompt must degrade");
         assert!(
             out.system_slots.contains("Aaron"),
@@ -812,12 +1012,19 @@ mod tests {
             .insert("foo".into(), ctx_json("foo", "fn foo() {}", &[]));
 
         // ON: active workspace → symbol context present.
-        let on = gather_with(&src, Some("ws"), "explain foo", "c").await;
+        let on = gather_with(
+            &src,
+            Some("ws"),
+            "explain foo",
+            "c",
+            &TokenOverrides::default(),
+        )
+        .await;
         assert!(on.system_slots.contains("Symbol `foo`"));
 
         // OFF: no workspace → no symbol context (and an empty profile → empty
         // slots, byte-identical to a plain turn).
-        let off = gather_with(&src, None, "explain foo", "c").await;
+        let off = gather_with(&src, None, "explain foo", "c", &TokenOverrides::default()).await;
         assert!(!off.system_slots.contains("Symbol `foo`"));
         assert!(off.system_slots.is_empty());
     }
@@ -841,7 +1048,7 @@ mod tests {
         let prompt = "explain sym00 sym01 sym02 sym03 sym04 sym05 sym06 sym07 sym08 sym09";
 
         let start = std::time::Instant::now();
-        let out = gather_with(&src, Some("ws"), prompt, "c").await;
+        let out = gather_with(&src, Some("ws"), prompt, "c", &TokenOverrides::default()).await;
         let elapsed = start.elapsed();
 
         assert!(

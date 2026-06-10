@@ -255,7 +255,9 @@ pub async fn search_history(
 ) -> Result<SearchResult, ChatSearchError> {
     let query = query.trim();
     if query.is_empty() {
-        return Err(ChatSearchError::BadRequest("query must be non-empty".to_owned()));
+        return Err(ChatSearchError::BadRequest(
+            "query must be non-empty".to_owned(),
+        ));
     }
     let scope = scope::resolve_scope(active_workspace, requested)?;
     let (candidates, degraded) = gather_candidates(&scope).await;
@@ -392,9 +394,7 @@ pub async fn get_conversation(
 
 // ── verb handlers (Reply wrappers) ───────────────────────────────────────
 
-fn parse_common(
-    payload: &Value,
-) -> Result<(DateRange, WorkspaceScope), ChatSearchError> {
+fn parse_common(payload: &Value) -> Result<(DateRange, WorkspaceScope), ChatSearchError> {
     let date_range = DateRange::from_payload(payload.get("date_range"));
     let requested = WorkspaceScope::from_payload(payload.get("workspace_scope"))?;
     Ok((date_range, requested))
@@ -432,7 +432,16 @@ pub async fn handle_search_history(payload: Value) -> Reply {
         .map(|f| f as f32)
         .unwrap_or(DEFAULT_THRESHOLD);
 
-    match search_history(&query, date_range, requested, active.as_deref(), top_k, threshold).await {
+    match search_history(
+        &query,
+        date_range,
+        requested,
+        active.as_deref(),
+        top_k,
+        threshold,
+    )
+    .await
+    {
         Ok(r) => result_reply(r),
         Err(e) => err_reply(e),
     }
@@ -564,8 +573,14 @@ mod tests {
     #[tokio::test]
     async fn search_respects_date_range() {
         let _env = TestEnv::new();
-        seed_standalone("old", convo_with_embedding("apply overrides", vec![1.0, 0.0], 100));
-        seed_standalone("new", convo_with_embedding("apply overrides", vec![1.0, 0.0], 300));
+        seed_standalone(
+            "old",
+            convo_with_embedding("apply overrides", vec![1.0, 0.0], 100),
+        );
+        seed_standalone(
+            "new",
+            convo_with_embedding("apply overrides", vec![1.0, 0.0], 300),
+        );
 
         // Only conversations active at/after 250.
         let r = search_history(
@@ -619,7 +634,10 @@ mod tests {
     async fn standalone_context_never_touches_workspace_backend() {
         let _env = TestEnv::new();
         let _dead = DeadWorkspaces::set();
-        seed_standalone("s1", convo_with_embedding("apply overrides", vec![1.0, 0.0], 100));
+        seed_standalone(
+            "s1",
+            convo_with_embedding("apply overrides", vec![1.0, 0.0], 100),
+        );
         // CurrentContext + no active workspace → standalone only → the dead
         // workspace pipe is never consulted, so this must NOT degrade.
         let r = search_history(
@@ -632,7 +650,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!r.degraded, "standalone-only search must not hit the service");
+        assert!(
+            !r.degraded,
+            "standalone-only search must not hit the service"
+        );
         assert_eq!(r.hits.len(), 1);
     }
 
@@ -640,7 +661,10 @@ mod tests {
     async fn workspace_context_degrades_when_service_dead_but_keeps_standalone() {
         let _env = TestEnv::new();
         let _dead = DeadWorkspaces::set();
-        seed_standalone("s1", convo_with_embedding("apply overrides", vec![1.0, 0.0], 100));
+        seed_standalone(
+            "s1",
+            convo_with_embedding("apply overrides", vec![1.0, 0.0], 100),
+        );
         // Active workspace A + CurrentContext → [Workspace(A), Standalone].
         // The workspace pipe is dead → degraded, but standalone still answers.
         let r = search_history(
@@ -664,9 +688,14 @@ mod tests {
         seed_standalone("old", convo_with_embedding("a", vec![1.0], 100));
         seed_standalone("mid", convo_with_embedding("b", vec![1.0], 200));
         seed_standalone("new", convo_with_embedding("c", vec![1.0], 300));
-        let r = list_recent(2, DateRange::default(), WorkspaceScope::CurrentContext, None)
-            .await
-            .unwrap();
+        let r = list_recent(
+            2,
+            DateRange::default(),
+            WorkspaceScope::CurrentContext,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(r.hits.len(), 2, "limit honoured");
         assert_eq!(r.hits[0].id, "new");
         assert_eq!(r.hits[1].id, "mid");

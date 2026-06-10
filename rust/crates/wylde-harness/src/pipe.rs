@@ -73,12 +73,10 @@ use crate::api::HarnessApi;
 const HANDLER_MODULE_CHAT: &str = "wylde_harness::api::DefaultHarnessApi (chat.*)";
 const HANDLER_MODULE_TOOLS: &str = "wylde_harness::api::DefaultHarnessApi (tools.*)";
 const HANDLER_MODULE_MODELS: &str = "wylde_harness::api::DefaultHarnessApi (models.*)";
-const HANDLER_MODULE_SETTINGS: &str =
-    "wylde_harness::api::DefaultHarnessApi (settings.ollama.*)";
+const HANDLER_MODULE_SETTINGS: &str = "wylde_harness::api::DefaultHarnessApi (settings.ollama.*)";
 const HANDLER_MODULE_PROMPTS: &str = "wylde_harness::api::DefaultHarnessApi (prompts.*)";
 const HANDLER_MODULE_RAG: &str = "wylde_harness::api::DefaultHarnessApi (rag.*)";
-const HANDLER_MODULE_LONG_TERM: &str =
-    "wylde_harness::api::DefaultHarnessApi (memory.long_term.*)";
+const HANDLER_MODULE_LONG_TERM: &str = "wylde_harness::api::DefaultHarnessApi (memory.long_term.*)";
 const HANDLER_MODULE_WORKSPACE_MEMORY: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.workspace.*)";
 const HANDLER_MODULE_REFLECT: &str = "wylde_harness::api::DefaultHarnessApi (memory.reflect)";
@@ -87,9 +85,9 @@ const HANDLER_MODULE_SHORT_TERM: &str =
 const HANDLER_MODULE_CONVERSATIONS: &str =
     "wylde_harness::api::DefaultHarnessApi (conversations.*)";
 const HANDLER_MODULE_CONSENT: &str = "wylde_harness::api::DefaultHarnessApi (consent.*)";
-const HANDLER_MODULE_USER_PROFILE: &str =
-    "wylde_harness::api::DefaultHarnessApi (user_profile.*)";
+const HANDLER_MODULE_USER_PROFILE: &str = "wylde_harness::api::DefaultHarnessApi (user_profile.*)";
 const HANDLER_MODULE_GLOBAL_ANCHORS: &str = "wylde_harness::global_anchors::api (anchors.*)";
+const HANDLER_MODULE_GLOBAL_IGNORE: &str = "wylde_harness::chat::ignore (ignore.*)";
 
 /// Every action the harness pipe registers. Tests compare this against
 /// `list_action_meta()` to catch a missing registration. Order mirrors
@@ -218,6 +216,12 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     // alias-driven promotion (Slice N-data-aliases). Same shape as
     // anchors.create; the whole anchor (all aliases) lands globally.
     "anchors.promote_via_alias",
+    // ignore.* — GLOBAL symbol ignore list (Slice M, harness tier; the
+    // workspace + conversation tiers are `workspaces.ignore.*`). In-process,
+    // user-level — same placement rationale as anchors.*.
+    "ignore.list",
+    "ignore.add",
+    "ignore.remove",
 ];
 
 /// Register every pipe action against `api` on the process-wide IPC
@@ -1234,6 +1238,36 @@ where
     // trait, so they register as plain free-fn closures (like the
     // `wylde-workspaces` service's own action handlers).
     install_global_anchor_actions();
+    install_global_ignore_actions();
+}
+
+/// Register the three in-process `ignore.*` (global-tier) verbs (Slice M).
+fn install_global_ignore_actions() {
+    use crate::chat::ignore as gi;
+
+    register_action_with_meta(
+        "ignore.list",
+        |p: Value| async move { gi::handle_list(p).await },
+        "Every GLOBALLY ignored composer token (Plan §5.8: ignored = \
+         default-inactive, still highlights). No payload. Reply: {scope: \
+         \"global\", ignored: [{token, added_at}], count}. Workspace + \
+         conversation tiers live on workspaces.ignore.*.",
+        HANDLER_MODULE_GLOBAL_IGNORE,
+    );
+    register_action_with_meta(
+        "ignore.add",
+        |p: Value| async move { gi::handle_add(p).await },
+        "Ignore a token globally. Payload: {token}. Reply: {ok, added, \
+         token} — re-adding succeeds with added=false (idempotent).",
+        HANDLER_MODULE_GLOBAL_IGNORE,
+    );
+    register_action_with_meta(
+        "ignore.remove",
+        |p: Value| async move { gi::handle_remove(p).await },
+        "Stop ignoring a token globally. Payload: {token}. Reply: {ok, \
+         removed, token}.",
+        HANDLER_MODULE_GLOBAL_IGNORE,
+    );
 }
 
 /// Register the eight in-process `anchors.*` (global-scope) verbs. Split out so

@@ -14,7 +14,7 @@ use wylde_theme::typography::{size, FAMILY_INTER};
 
 use crate::chat_panel::{pack, ChatPanel};
 use crate::composer::highlight::{composer_theme, hex, ComposerTheme};
-use crate::composer::{curation, disambiguator};
+use crate::composer::{curation, disambiguator, IgnoreTierTag};
 
 /// Append the composer surfaces to the InferenceBar (between the pill row
 /// and the prompt row). No-ops into the same `bar` when there's nothing to
@@ -30,6 +30,9 @@ pub(crate) fn mount(
     }
     if let Some(dropdown) = disambiguation_dropdown(panel, cx) {
         bar = bar.child(dropdown);
+    }
+    if let Some(menu) = ignore_menu(panel, cx) {
+        bar = bar.child(menu);
     }
     if let Some(popover) = curation_popover(panel, cx) {
         bar = bar.child(popover);
@@ -78,8 +81,12 @@ fn chip_strip(
         } else {
             (hex(&style.background_dark), hex(&style.text_dark))
         };
+        // ✕ = per-message exclude; ↺ = ignored, click to reactivate (Plan
+        // §5.8 — ignored still highlights + counts, rides deselected).
         let word_label = if w.excluded {
             format!("{} ✕", w.token.text)
+        } else if w.is_ignored() && !w.reactivated {
+            format!("{} ↺", w.token.text)
         } else {
             w.token.text.clone()
         };
@@ -103,13 +110,23 @@ fn chip_strip(
                     MouseButton::Left,
                     cx.listener(move |this: &mut ChatPanel, _ev: &MouseDownEvent, _w, cx| {
                         // Ambiguous → disambiguate; resolved → toggle the
-                        // word in/out of the send (inline curation).
+                        // word in/out of the send (✕, or ↺ when ignored).
                         if this.composer.words.get(i).is_some_and(|w| w.is_ambiguous()) {
                             this.composer.disambiguating = Some(i);
                             this.composer.curating = false;
                         } else {
                             this.composer.toggle_excluded(i);
                         }
+                        cx.notify();
+                    }),
+                )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this: &mut ChatPanel, _ev: &MouseDownEvent, _w, cx| {
+                        // Right-click → the 3-tier ignore menu (Slice M).
+                        this.composer.ignore_menu = Some(i);
+                        this.composer.disambiguating = None;
+                        this.composer.curating = false;
                         cx.notify();
                     }),
                 ),
@@ -228,6 +245,56 @@ fn disambiguation_dropdown(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Op
                 .child(SharedString::from(
                     "Anchor this? — vocabulary anchors land with Slice N",
                 )),
+        );
+    }
+    Some(card)
+}
+
+/// The right-click ignore menu (Slice M, Plan §5.8): toggle the word's
+/// presence in each of the three tiers.
+fn ignore_menu(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Option<gpui::Div> {
+    let idx = panel.composer.ignore_menu?;
+    let word = panel.composer.words.get(idx)?;
+    let mut card = panel_card().child(
+        div()
+            .text_size(px(size::XS))
+            .text_color(rgb(pack(TEXT_PRIMARY)))
+            .child(SharedString::from(format!(
+                "\"{}\" — ignore means default-inactive from now on",
+                word.token.text
+            ))),
+    );
+    for (ri, tier) in [
+        IgnoreTierTag::Conversation,
+        IgnoreTierTag::Workspace,
+        IgnoreTierTag::Global,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let active = word.ignored_tiers.contains(&tier);
+        let label = if active {
+            format!("Stop ignoring in this {}", tier.label())
+        } else {
+            format!("Ignore in this {}", tier.label())
+        };
+        card = card.child(
+            div()
+                .id(("composer-ignore-row", ri))
+                .px_2()
+                .py_1()
+                .rounded(px(4.0))
+                .bg(rgb(pack(SURFACE_700)))
+                .cursor_pointer()
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_PRIMARY)))
+                .child(SharedString::from(label))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this: &mut ChatPanel, _ev: &MouseDownEvent, _w, cx| {
+                        this.toggle_ignore_tier(idx, tier, cx);
+                    }),
+                ),
         );
     }
     Some(card)

@@ -105,7 +105,9 @@ pub struct ScopedQuery {
 impl ScopedQuery {
     /// True when standalone conversations are in scope.
     pub fn includes_standalone(&self) -> bool {
-        self.backends.iter().any(|b| matches!(b, Backend::Standalone))
+        self.backends
+            .iter()
+            .any(|b| matches!(b, Backend::Standalone))
     }
 
     /// The single workspace id in scope, if any.
@@ -194,11 +196,7 @@ mod tests {
 
     #[test]
     fn workspace_only_current_is_allowed() {
-        let q = resolve_scope(
-            Some("ws-a"),
-            WorkspaceScope::WorkspaceOnly("ws-a".into()),
-        )
-        .unwrap();
+        let q = resolve_scope(Some("ws-a"), WorkspaceScope::WorkspaceOnly("ws-a".into())).unwrap();
         assert_eq!(q.backends, vec![Backend::Workspace("ws-a".into())]);
         assert_eq!(q.workspace_id(), Some("ws-a"));
         assert!(!q.includes_standalone());
@@ -207,11 +205,8 @@ mod tests {
     #[test]
     fn workspace_only_different_is_bad_request_the_escape_attempt() {
         // THE boundary test: in workspace A, ask for B → refused.
-        let err = resolve_scope(
-            Some("ws-a"),
-            WorkspaceScope::WorkspaceOnly("ws-b".into()),
-        )
-        .unwrap_err();
+        let err =
+            resolve_scope(Some("ws-a"), WorkspaceScope::WorkspaceOnly("ws-b".into())).unwrap_err();
         assert!(matches!(err, ChatSearchError::BadRequest(_)));
         assert_eq!(err.code(), "bad_request");
     }
@@ -252,8 +247,8 @@ mod tests {
 
     #[test]
     fn empty_workspace_only_id_is_bad_request() {
-        let err = resolve_scope(Some("ws-a"), WorkspaceScope::WorkspaceOnly("  ".into()))
-            .unwrap_err();
+        let err =
+            resolve_scope(Some("ws-a"), WorkspaceScope::WorkspaceOnly("  ".into())).unwrap_err();
         assert!(matches!(err, ChatSearchError::BadRequest(_)));
     }
 

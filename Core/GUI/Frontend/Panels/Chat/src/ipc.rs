@@ -256,16 +256,20 @@ pub async fn start_turn(
     conversation_id: &str,
     workspace_id: Option<&str>,
 ) -> Result<StartTurnReply, String> {
-    start_turn_with_model(user_message, conversation_id, workspace_id, None).await
+    start_turn_with_model(user_message, conversation_id, workspace_id, None, &[], &[]).await
 }
 
-/// `chat.start_turn` with an optional `model` override.  Empty / None
-/// falls back to the harness's `default_model` config.
+/// `chat.start_turn` with an optional `model` override (empty / None falls
+/// back to the harness's `default_model` config) and the composer's
+/// per-message token overrides (Slices F + M): `excluded_tokens` never
+/// gather this turn, `reactivated_tokens` gather despite a durable ignore.
 pub async fn start_turn_with_model(
     user_message: &str,
     conversation_id: &str,
     workspace_id: Option<&str>,
     model: Option<&str>,
+    excluded_tokens: &[String],
+    reactivated_tokens: &[String],
 ) -> Result<StartTurnReply, String> {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -281,6 +285,12 @@ pub async fn start_turn_with_model(
     }
     if let Some(m) = model.filter(|s| !s.is_empty()) {
         payload.insert("model".into(), Value::String(m.to_owned()));
+    }
+    if !excluded_tokens.is_empty() {
+        payload.insert("excluded_tokens".into(), json!(excluded_tokens));
+    }
+    if !reactivated_tokens.is_empty() {
+        payload.insert("reactivated_tokens".into(), json!(reactivated_tokens));
     }
     let v = wylde_gui_pipe::call(
         SVC_HARNESS,
