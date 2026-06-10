@@ -113,11 +113,18 @@ async fn unregistered_verb_returns_no_action_for_strangler_fallback() {
     // `no_action` so the Python strangler's transport-code fallback
     // reverts to in-process Python instead of bricking the call.
     for verb in [
-        "memory.workspace.list",
-        "memory.reflect",
+        // memory.workspace.* are registered as of the full-Rust cutover
+        // (slice R2a) — they no longer fall through to the strangler,
+        // so they're not listed here. memory.reflect followed in slice
+        // R2b (all scopes served by crate::memory::reflection).
         // conversations.* are registered as of Memory Slice B — they no
         // longer fall through to the strangler, so they're not listed here.
-        "prompts.list",
+        // prompts.* are registered as of the full-Rust cutover
+        // (crate::prompts) — likewise no longer listed. In their place:
+        // workspaces.* were RETIRED from the harness pipe in Thought
+        // Bubble System Slice 0d (they live on the wylde-workspaces
+        // service), so the harness answers them no_action permanently.
+        "workspaces.list_mru",
         "rag.workspaces.list",
         // models.* registry/Ollama verbs are registered as of Slice 3a.
         // (The old Voice-coupled `models.transcribe`/`models.synthesize`

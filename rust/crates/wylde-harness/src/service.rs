@@ -9,8 +9,7 @@
 //!
 //! See [`crate::pipe::ALL_PIPE_ACTIONS`] for the full list. The
 //! Python `Core/harness/pipe/` modules whose subsystem hasn't been
-//! ported yet (memory.workspace.*, prompts.*,
-//! rag.workspaces.*, memory.reflect) are deliberately
+//! ported yet (rag.workspaces.*) are deliberately
 //! NOT registered here —
 //! they surface as `no_action` from the IPC dispatcher, which the
 //! Python strangler's transport-code fallback treats as a signal to
@@ -36,6 +35,12 @@ pub fn install() {
         "wylde-harness: registered {} pipe actions",
         ALL_PIPE_ACTIONS.len()
     );
+    // Background memory scheduler (full-Rust cutover slice R2b) — the
+    // tokio task that fires memory.reflect cycles on idle/daily
+    // cadences. Gated on WYLDE_HARNESS_SCHEDULER (default ON); a no-op
+    // when no async runtime is present (sync test callers). Its first
+    // tick happens one poll interval after boot.
+    crate::memory::scheduler::start_default();
 }
 
 /// Signal stop. The 5.B turn-task pool is detached; outstanding tasks

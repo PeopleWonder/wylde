@@ -5,7 +5,7 @@
 //! the *what to draw* lives in `render/` (Theme-driven), the *how gpui paints
 //! it* lives here.
 
-use gpui::{div, point, px, size, Bounds, Path, Pixels, Window};
+use gpui::{div, point, prelude::*, px, size, Bounds, Path, Pixels, Window};
 use gpui::{FontWeight, SharedString};
 use wylde_theme::typography::FAMILY_INTER;
 

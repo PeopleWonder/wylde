@@ -3,6 +3,38 @@
 All notable changes to Wylde are recorded here. Versions follow
 [SemVer](https://semver.org/); pre-1.0 alphas may break between builds.
 
+## [Unreleased]
+
+### Changed
+
+- **Full-Rust cutover.** Every remaining Python runtime component was ported
+  to Rust and its source deleted (~350 files): the Lifecycle daemon +
+  rollback path (`Core/Lifecycle/`), the Python harness runtime
+  (`Core/harness/` — pipe verbs, memory layers, tooling, model registry,
+  backend), the shared IPC helpers (`Core/shared/`), and the Memgraph
+  Python wrapper (the lifecycle daemon now supervises the bundled Neo4j JVM
+  directly). New in Rust with this wave: `memory.reflect` for all three
+  scopes (conversation reflection, workspace curation, long-term
+  consolidation) and the background memory scheduler (same
+  `scheduler_state.json` + `WYLDE_SCHED_*` envs), now a tokio task inside
+  `wylde-harness` gated on `WYLDE_HARNESS_SCHEDULER`.
+- **Rust-only boot.** `launch_wylde.ps1` lost its Python daemon fallback and
+  PYTHONPATH overlay; the per-service `WYLDE_<SERVICE>_IMPL=python`
+  strangler flags now only log a warning. The kept Python — the
+  `wylde_check` lint tool (`Core/harness/dev/`) and the stdlib N8N tool
+  stubs — is dev-only; `pyproject.toml` carries no runtime dependencies and
+  the stale `uv.lock` was removed.
+
+### Fixed
+
+- **Short-term memory store now honours encryption-at-rest (OI-14).** It
+  used plain file IO on the same conversation documents the conversations
+  store reads/writes encrypted; a lazy-migration read could flip a document
+  to ciphertext mid-flow, after which the short-term store's plain reads
+  saw an unreadable file and silently minted a stub over live data (losing
+  the workspace binding and the working-memory list). Both stores now route
+  through the same `wylde_shared::encryption` read/write path.
+
 ## [0.1.0-alpha.1] — 2026-06-04
 
 First tagged alpha. Published as a GitHub **pre-release** (beta channel).

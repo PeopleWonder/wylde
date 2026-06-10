@@ -9,14 +9,12 @@
 //! fading the originals from default retrieval but keeping them
 //! visible via the Settings history walker.
 //!
-//! Scope coverage: this Rust port covers `"long_term"` scope only. The
-//! Python module also handles `"workspace:<id>"` and
-//! `"conversation:<id>"` scopes; those depend on `workspace_memory` and
-//! `conversation` subsystems that haven't been ported to Rust yet. They
-//! return a skipped [`ReflectionResult`] with a reason pointing at the
-//! pending port (`scope_not_supported`). The `memory.reflect` pipe
-//! verb stays in the strangler-fig deferred list until those land — so
-//! external callers hit the Python path for non-long_term scopes today.
+//! Scope coverage: this module owns the `"long_term"` cycle only. The
+//! top-level scope dispatcher — `"workspace:<id>"`,
+//! `"conversation:<id>"`, empty / unknown scopes, plus the
+//! `memory.reflect` pipe verb itself — lives in
+//! [`crate::memory::reflection`] (full-Rust cutover slice R2b), which
+//! routes the long_term scope here via [`reflect_long_term`].
 //!
 //! ## Why the chat function is injected
 //!
@@ -78,7 +76,10 @@ pub struct ReflectionResult {
 }
 
 impl ReflectionResult {
-    fn skipped(scope: impl Into<String>, considered: usize, reason: impl Into<String>) -> Self {
+    /// A cycle that did nothing, with the reason recorded. Public so
+    /// the scope dispatcher ([`crate::memory::reflection`]) and the
+    /// scheduler tests can build parity shapes.
+    pub fn skipped(scope: impl Into<String>, considered: usize, reason: impl Into<String>) -> Self {
         ReflectionResult {
             scope: scope.into(),
             inputs_considered: considered,
@@ -132,39 +133,9 @@ impl Default for ReflectOptions {
     }
 }
 
-/// Run one consolidation cycle for `scope`. Top-level dispatcher; the
-/// per-scope helpers do the actual work.
-///
-/// `scope` is one of:
-/// * `"long_term"`           — synthesise across all global memories.
-/// * `"workspace:<id>"`      — currently unsupported, skipped with reason.
-/// * `"conversation:<id>"`   — currently unsupported, skipped with reason.
-///
-/// Empty / unknown scopes are skipped with the same shape Python uses.
-pub async fn reflect(
-    scope: &str,
-    chat: &dyn ReflectionChat,
-    opts: ReflectOptions,
-) -> ReflectionResult {
-    let scope = scope.trim();
-    if scope.is_empty() {
-        return ReflectionResult::skipped("", 0, "empty scope");
-    }
-    if scope == "long_term" {
-        return reflect_long_term(chat, opts).await;
-    }
-    if scope.starts_with("workspace:") || scope.starts_with("conversation:") {
-        return ReflectionResult::skipped(
-            scope,
-            0,
-            "scope_not_supported: workspace/conversation reflection still served by Python \
-             until those subsystems are ported (see reflection.rs docs)",
-        );
-    }
-    ReflectionResult::skipped(scope, 0, format!("unknown scope {scope:?}"))
-}
-
-async fn reflect_long_term(
+/// Run one long-term consolidation cycle. Routed to by the top-level
+/// scope dispatcher, [`crate::memory::reflection::reflect`].
+pub async fn reflect_long_term(
     chat: &dyn ReflectionChat,
     opts: ReflectOptions,
 ) -> ReflectionResult {
@@ -361,55 +332,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reflect_empty_scope_is_skipped() {
-        let _env = TestEnv::new();
-        set_embed_dim_3();
-        let chat = FixedChat::new("");
-        let r = reflect("", &chat, ReflectOptions::default()).await;
-        assert!(r.skipped);
-        assert_eq!(r.skip_reason, "empty scope");
-        assert_eq!(r.scope, "");
-    }
-
-    #[tokio::test]
-    async fn reflect_workspace_scope_is_skipped_pending_port() {
-        let _env = TestEnv::new();
-        set_embed_dim_3();
-        let chat = FixedChat::new("");
-        let r = reflect("workspace:foo", &chat, ReflectOptions::default()).await;
-        assert!(r.skipped);
-        assert!(r.skip_reason.contains("scope_not_supported"));
-        assert_eq!(r.scope, "workspace:foo");
-    }
-
-    #[tokio::test]
-    async fn reflect_conversation_scope_is_skipped_pending_port() {
-        let _env = TestEnv::new();
-        set_embed_dim_3();
-        let chat = FixedChat::new("");
-        let r = reflect("conversation:c1", &chat, ReflectOptions::default()).await;
-        assert!(r.skipped);
-        assert!(r.skip_reason.contains("scope_not_supported"));
-    }
-
-    #[tokio::test]
-    async fn reflect_unknown_scope_is_skipped_with_unknown_reason() {
-        let _env = TestEnv::new();
-        set_embed_dim_3();
-        let chat = FixedChat::new("");
-        let r = reflect("nonsense", &chat, ReflectOptions::default()).await;
-        assert!(r.skipped);
-        assert!(r.skip_reason.contains("unknown scope"));
-    }
-
-    #[tokio::test]
     async fn reflect_long_term_skips_when_not_enough_inputs() {
         let _env = TestEnv::new();
         set_embed_dim_3();
         // Seed only 1 record — need 3 by default.
         long_term_save("only one", "test", Some(5.0), vec![], None).unwrap();
         let chat = FixedChat::new("anything");
-        let r = reflect("long_term", &chat, ReflectOptions::default()).await;
+        let r = reflect_long_term(&chat, ReflectOptions::default()).await;
         assert!(r.skipped);
         assert_eq!(r.inputs_considered, 1);
         assert!(r.skip_reason.contains("need 3 inputs"));
@@ -423,7 +352,7 @@ mod tests {
             long_term_save(&format!("rec {i}"), "test", Some(5.0), vec![], None).unwrap();
         }
         let chat = FixedChat::new("NOTHING");
-        let r = reflect("long_term", &chat, ReflectOptions::default()).await;
+        let r = reflect_long_term(&chat, ReflectOptions::default()).await;
         assert!(r.skipped);
         assert_eq!(r.inputs_considered, 3);
         assert!(r.skip_reason.contains("model declined"));
@@ -437,7 +366,7 @@ mod tests {
             long_term_save(&format!("rec {i}"), "test", Some(5.0), vec![], None).unwrap();
         }
         let chat = FixedChat::new("   ");
-        let r = reflect("long_term", &chat, ReflectOptions::default()).await;
+        let r = reflect_long_term(&chat, ReflectOptions::default()).await;
         assert!(r.skipped);
         assert!(r.skip_reason.contains("(empty)"));
     }
@@ -451,7 +380,7 @@ mod tests {
         let r3 = long_term_save("ccc", "test", Some(6.0), vec![], None).unwrap();
 
         let chat = FixedChat::new("a consolidated insight");
-        let r = reflect("long_term", &chat, ReflectOptions::default()).await;
+        let r = reflect_long_term(&chat, ReflectOptions::default()).await;
         assert!(!r.skipped);
         assert_eq!(r.inputs_considered, 3);
         assert_eq!(r.reflection_body, "a consolidated insight");
@@ -480,7 +409,7 @@ mod tests {
         long_term_save("c", "test", Some(10.0), vec![], None).unwrap();
 
         let chat = FixedChat::new("synthesis");
-        let r = reflect("long_term", &chat, ReflectOptions::default()).await;
+        let r = reflect_long_term(&chat, ReflectOptions::default()).await;
         assert!(!r.skipped);
         let new_rec = crate::memory::long_term::get(&r.reflection_id.unwrap()).unwrap();
         assert_eq!(new_rec.importance, 10);
@@ -539,7 +468,7 @@ mod tests {
             model: Some("test-model".to_owned()),
             ..Default::default()
         };
-        let _ = reflect("long_term", &chat, opts).await;
+        let _ = reflect_long_term(&chat, opts).await;
 
         let calls = chat.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);

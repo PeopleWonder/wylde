@@ -63,6 +63,14 @@ pub struct Config {
     /// broker rules.
     pub default_chat_priority: i64,
 
+    /// Whether the background memory scheduler (idle-window
+    /// conversation reflection + daily long-term reflection; see
+    /// `crate::memory::scheduler`) starts at service install.
+    /// `WYLDE_HARNESS_SCHEDULER` — default ON; set `0` / `false` /
+    /// `off` / `no` to disable. (The per-cadence knobs stay on the
+    /// Python-era `WYLDE_SCHED_*` vars, read by the scheduler itself.)
+    pub scheduler_enabled: bool,
+
     pub wylde_root: PathBuf,
 }
 
@@ -108,6 +116,7 @@ impl Config {
                 "WYLDE_HARNESS_TURN_CHAT_PRIORITY",
                 60,
             ),
+            scheduler_enabled: env_bool("WYLDE_HARNESS_SCHEDULER", true),
             wylde_root,
         }
     }
@@ -133,8 +142,21 @@ impl Config {
             treesitter_service: "wylde-treesitter".to_owned(),
             mcp_namespaces: vec!["webcrawler".to_owned(), "wylde_study".to_owned()],
             default_chat_priority: 60,
+            scheduler_enabled: true,
             wylde_root: PathBuf::from("."),
         }
+    }
+}
+
+/// Boolean env flag: absent → `default`; `0` / `false` / `off` / `no`
+/// (case-insensitive) → false; anything else → true.
+fn env_bool(name: &str, default: bool) -> bool {
+    match std::env::var(name) {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        ),
+        Err(_) => default,
     }
 }
 
@@ -210,6 +232,12 @@ mod tests {
         assert_eq!(cfg.ollama_service, "wylde-ollama");
         assert_eq!(cfg.extension_bridge_service, "wylde-extension-bridge");
         assert_eq!(cfg.treesitter_service, "wylde-treesitter");
+    }
+
+    #[test]
+    fn env_bool_parses_disable_values() {
+        assert!(env_bool("WYLDE_HARNESS_TEST_ABSENT_FLAG", true));
+        assert!(!env_bool("WYLDE_HARNESS_TEST_ABSENT_FLAG", false));
     }
 
     #[test]
