@@ -8737,6 +8737,7 @@ dependencies = [
  "serde_yaml",
  "tokio",
  "uuid",
+ "wylde-anchor-actions",
  "wylde-gpui-input",
  "wylde-gui-pipe",
  "wylde-theme",
