@@ -31,6 +31,10 @@ pub mod symbol_index;
 // `BoltClient::graph_handle`. Self-contained in `neighborhood` (Cypher, live
 // source, walk, and the verb handler) so it doesn't touch `api`/`query`.
 pub mod neighborhood;
+// ── TBS Slice L — git blame for the focal symbol ──────────────────────────
+// `git blame --line-porcelain` over the focal's body lines, aggregated
+// per-commit; fail-soft enrichment folded into the `symbol_context` reply.
+pub mod blame;
 
 use serde::{Deserialize, Serialize};
 

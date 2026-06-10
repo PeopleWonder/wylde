@@ -267,11 +267,14 @@ pub fn install() {
         |p: Value| async move { crate::graph::neighborhood::handle_symbol_context(p).await },
         "Structural context for one symbol: body + callers + callees + types \
          used + file siblings, read live from Neo4j. Payload: {workspace_id, \
-         symbol_id, hops?=1, include_body?=true}. Reply: SymbolContext \
-         {symbol, callers, callees, types_used, siblings, hops_traversed, \
-         took_ms}. Read-only; idempotent. `hops` walks the call graph \
-         (per-hop time budget 200ms+300ms×N); not_found when the symbol isn't \
-         in the workspace; bolt_* codes when the backend is unreachable.",
+         symbol_id, hops?=1, include_body?=true, include_blame?=true}. Reply: \
+         SymbolContext {symbol, callers, callees, types_used, siblings, \
+         hops_traversed, took_ms}; symbol.blame carries recent per-commit git \
+         blame for the focal's body lines (Slice L — tracked files only, \
+         fail-soft absent otherwise). Read-only; idempotent. `hops` walks the \
+         call graph (per-hop time budget 200ms+300ms×N); not_found when the \
+         symbol isn't in the workspace; bolt_* codes when the backend is \
+         unreachable.",
         META_MODULE,
     );
 

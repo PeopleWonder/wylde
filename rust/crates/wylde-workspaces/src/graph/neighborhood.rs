@@ -118,6 +118,13 @@ pub struct Symbol {
     /// The symbol's source body, or `None` when `include_body=false`, the
     /// file is unreadable, or the definition couldn't be located.
     pub body: Option<String>,
+    /// Recent git blame over the body's lines (TBS Slice L) — per-commit,
+    /// newest-first. `None` when `include_blame=false`, the body wasn't
+    /// located, or the file isn't tracked in a git repository (fail-soft —
+    /// blame is enrichment, never a failure). Computed by the live wrapper
+    /// AFTER the walk, so the walk itself stays graph-pure and mock-testable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blame: Option<Vec<super::blame::BlameEntry>>,
 }
 
 /// A symbol related to the focal, with the relationship and hop distance.
@@ -319,6 +326,8 @@ where
         file: PathBuf::from(&focal_file),
         line,
         body,
+        // Filled by the live wrapper (`symbol_context`) — see the field docs.
+        blame: None,
     };
 
     let took_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
@@ -873,6 +882,7 @@ pub async fn symbol_context(
     symbol_id: &str,
     hops: Option<u32>,
     include_body: bool,
+    include_blame: bool,
 ) -> Result<Option<SymbolContext>, IpcError> {
     let ws = workspace_id.trim();
     let sym = symbol_id.trim();
@@ -889,15 +899,44 @@ pub async fn symbol_context(
     let graph = client.graph_handle().await?;
     let source = LiveSource::new(graph, timeout);
 
-    walk(&source, ws, sym, hops, include_body, read_file_to_string)
+    let mut ctx = match walk(&source, ws, sym, hops, include_body, read_file_to_string)
         .await
-        .map_err(|e| IpcError::new(e.code, e.message))
+        .map_err(|e| IpcError::new(e.code, e.message))?
+    {
+        Some(ctx) => ctx,
+        None => return Ok(None),
+    };
+
+    // TBS Slice L: recent blame over the focal's body lines, AFTER the walk
+    // so the graph path stays pure. A git subprocess is blocking IO → the
+    // blocking pool; any failure (no git / no repo / untracked) is a silent
+    // None — blame is enrichment, never a verb failure.
+    if include_blame && ctx.symbol.line > 0 {
+        let file = ctx.symbol.file.to_string_lossy().to_string();
+        let start = ctx.symbol.line;
+        let body_lines = ctx
+            .symbol
+            .body
+            .as_deref()
+            .map(|b| b.lines().count() as u32)
+            .unwrap_or(1)
+            .max(1);
+        let end = start + body_lines - 1;
+        ctx.symbol.blame =
+            tokio::task::spawn_blocking(move || super::blame::blame_lines(&file, start, end))
+                .await
+                .ok()
+                .flatten();
+    }
+    Ok(Some(ctx))
 }
 
 /// `workspaces.symbol_context` action handler. Payload:
-/// `{ workspace_id, symbol_id, hops?, include_body? }` (`hops` default 1,
-/// `include_body` default true). Reply data is the [`SymbolContext`];
-/// `not_found` when the symbol isn't in the workspace.
+/// `{ workspace_id, symbol_id, hops?, include_body?, include_blame? }`
+/// (`hops` default 1, `include_body` default true, `include_blame` default
+/// true — Slice L; blame appears only for git-tracked focal files). Reply
+/// data is the [`SymbolContext`]; `not_found` when the symbol isn't in the
+/// workspace.
 pub async fn handle_symbol_context(payload: Value) -> Reply {
     let workspace_id = payload
         .get("workspace_id")
@@ -917,8 +956,12 @@ pub async fn handle_symbol_context(payload: Value) -> Reply {
         .get("include_body")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let include_blame = payload
+        .get("include_blame")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
 
-    match symbol_context(workspace_id, symbol_id, hops, include_body).await {
+    match symbol_context(workspace_id, symbol_id, hops, include_body, include_blame).await {
         Ok(Some(ctx)) => match serde_json::to_value(&ctx) {
             Ok(v) => Reply::ok(v),
             Err(e) => Reply::err_msg("serde", format!("serialize symbol_context: {e}")),
