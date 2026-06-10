@@ -294,10 +294,7 @@ fn render_unavailable(
 /// Shell forwards to `wylde_gui_pipe::lifecycle_action`.  Pure function
 /// so the wiring is unit-testable without a live Lifecycle daemon.
 pub fn start_service_action(service: &str) -> (&'static str, serde_json::Value) {
-    (
-        "service.start",
-        serde_json::json!({ "name": service }),
-    )
+    ("service.start", serde_json::json!({ "name": service }))
 }
 
 /// Stylistic suppression for unused imports when gpui dims them across

@@ -298,10 +298,7 @@ mod tests {
             other => panic!("expected DuplicateKey, got {other:?}"),
         }
         // `Display` impl includes both the offending key and a hint.
-        let msg = format!(
-            "{}",
-            RegistryError::DuplicateKey("core/settings".into())
-        );
+        let msg = format!("{}", RegistryError::DuplicateKey("core/settings".into()));
         assert!(msg.contains("core/settings"));
         assert!(msg.contains("duplicate"));
     }

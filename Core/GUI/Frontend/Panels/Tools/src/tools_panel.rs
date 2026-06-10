@@ -106,12 +106,7 @@ impl ToolsPanel {
     /// the same frame the click lands, before the async wire call
     /// kicks off.  Without that pre-flight stash the user would see a
     /// frame of "Enable / Disable" → "Working…" flicker.
-    pub fn spawn_toggle(
-        &mut self,
-        name: String,
-        target_enabled: bool,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn spawn_toggle(&mut self, name: String, target_enabled: bool, cx: &mut Context<Self>) {
         self.pending_toggle.insert(name.clone());
         cx.notify();
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
@@ -126,8 +121,7 @@ impl ToolsPanel {
                     panel.error = Some(e.clone());
                 }
                 if let Ok(updated) = outcome {
-                    if let Some(row) =
-                        panel.extensions.iter_mut().find(|r| r.name == updated.name)
+                    if let Some(row) = panel.extensions.iter_mut().find(|r| r.name == updated.name)
                     {
                         *row = updated;
                     }
@@ -261,11 +255,7 @@ fn section_title(label: &str) -> gpui::Div {
         .child(SharedString::from(label.to_ascii_uppercase()))
 }
 
-fn extension_row(
-    ext: &ExtensionStatus,
-    pending: bool,
-    cx: &mut Context<ToolsPanel>,
-) -> gpui::Div {
+fn extension_row(ext: &ExtensionStatus, pending: bool, cx: &mut Context<ToolsPanel>) -> gpui::Div {
     let name_for_toggle = ext.name.clone();
     let target_enabled = !ext.enabled;
     let toggle_label = if pending {
@@ -275,8 +265,7 @@ fn extension_row(
     } else {
         "Enable"
     };
-    let toggle_id: ElementId =
-        ElementId::Name(format!("ext-toggle::{}", ext.name).into());
+    let toggle_id: ElementId = ElementId::Name(format!("ext-toggle::{}", ext.name).into());
     let status_color = match ext.status.as_str() {
         "running" => TEXT_PRIMARY,
         "starting" => TEXT_SECONDARY,
@@ -359,7 +348,13 @@ fn panel_row(p: &ExtensionPanel) -> gpui::Div {
         .as_deref()
         .and_then(|s| s.chars().next())
         .map(|c| c.to_ascii_uppercase().to_string())
-        .unwrap_or_else(|| p.title.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_else(|| "·".into()));
+        .unwrap_or_else(|| {
+            p.title
+                .chars()
+                .next()
+                .map(|c| c.to_ascii_uppercase().to_string())
+                .unwrap_or_else(|| "·".into())
+        });
     div()
         .bg(rgb(pack(SURFACE_800)))
         .border_1()

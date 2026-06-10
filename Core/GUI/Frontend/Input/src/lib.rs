@@ -475,7 +475,11 @@ impl Render for TextInput {
         } else {
             BORDER_SUBTLE
         };
-        let bg = if self.disabled { SURFACE_700 } else { SURFACE_900 };
+        let bg = if self.disabled {
+            SURFACE_700
+        } else {
+            SURFACE_900
+        };
 
         // Solid caret whenever the input holds focus — drawn at the cursor
         // (column 0 in an empty input, via `empty_body`).  An earlier
@@ -805,14 +809,14 @@ mod tests {
         assert!(enter_submits(EnterSubmits, MultiLine, false, false)); // Enter → send
         assert!(!enter_submits(EnterSubmits, MultiLine, true, false)); // Shift+Enter → newline
         assert!(enter_submits(EnterSubmits, MultiLine, false, true)); // Ctrl+Enter → send
-        // Single-line EnterSubmits ignores Shift — Enter always submits.
+                                                                      // Single-line EnterSubmits ignores Shift — Enter always submits.
         assert!(enter_submits(EnterSubmits, SingleLine, false, false));
         assert!(enter_submits(EnterSubmits, SingleLine, true, false));
         // ModEnterSubmits (Images' mode): only the chord submits.
         assert!(!enter_submits(ModEnterSubmits, MultiLine, false, false)); // Enter → newline
         assert!(!enter_submits(ModEnterSubmits, MultiLine, true, false)); // Shift+Enter → newline
         assert!(enter_submits(ModEnterSubmits, MultiLine, false, true)); // Ctrl+Enter → send
-        // Never never submits.
+                                                                         // Never never submits.
         assert!(!enter_submits(Never, SingleLine, false, false));
         assert!(!enter_submits(Never, MultiLine, false, true));
     }

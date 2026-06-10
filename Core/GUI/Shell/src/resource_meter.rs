@@ -87,7 +87,8 @@ impl ResourceSnapshot {
 
     /// "Used" RAM is total minus what the OS reports available.
     pub fn ram_used_bytes(&self) -> u64 {
-        self.ram_total_bytes.saturating_sub(self.ram_available_bytes)
+        self.ram_total_bytes
+            .saturating_sub(self.ram_available_bytes)
     }
 
     /// True when neither metric has landed yet (cold start / broker
@@ -101,7 +102,10 @@ impl ResourceSnapshot {
         if self.vram_total_bytes == 0 {
             "VRAM —".to_string()
         } else {
-            format!("VRAM {}", used_over_total(self.vram_used_bytes, self.vram_total_bytes))
+            format!(
+                "VRAM {}",
+                used_over_total(self.vram_used_bytes, self.vram_total_bytes)
+            )
         }
     }
 
@@ -110,7 +114,10 @@ impl ResourceSnapshot {
         if self.ram_total_bytes == 0 {
             "RAM —".to_string()
         } else {
-            format!("RAM {}", used_over_total(self.ram_used_bytes(), self.ram_total_bytes))
+            format!(
+                "RAM {}",
+                used_over_total(self.ram_used_bytes(), self.ram_total_bytes)
+            )
         }
     }
 }

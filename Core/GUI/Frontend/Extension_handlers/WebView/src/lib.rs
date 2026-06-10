@@ -198,16 +198,14 @@ impl IframeHost {
     /// `HasWindowHandle`).  Errors when the platform refuses to mint
     /// the WebView (no WebView2 runtime, etc.) so the caller can fall
     /// back to the `ServiceUnavailable` stub.
-    pub fn mount<W: HasWindowHandle>(
-        &mut self,
-        parent: &W,
-        bounds: Bounds,
-    ) -> anyhow::Result<()> {
+    pub fn mount<W: HasWindowHandle>(&mut self, parent: &W, bounds: Bounds) -> anyhow::Result<()> {
         if self.webview.is_some() {
             return self.set_bounds(bounds);
         }
         let url = self.url.clone();
-        let builder = WebViewBuilder::new().with_url(&url).with_bounds(bounds.to_wry());
+        let builder = WebViewBuilder::new()
+            .with_url(&url)
+            .with_bounds(bounds.to_wry());
         let (builder, report) = translate_sandbox(builder, self.sandbox.as_deref());
         let webview = builder
             .build_as_child(parent)
@@ -316,8 +314,7 @@ mod tests {
     #[test]
     fn translate_sandbox_recognises_allow_scripts_and_forms() {
         let builder = WebViewBuilder::new();
-        let (_b, report) =
-            translate_sandbox(builder, Some("allow-scripts allow-forms"));
+        let (_b, report) = translate_sandbox(builder, Some("allow-scripts allow-forms"));
         assert!(report.recognised.iter().any(|s| s == "allow-scripts"));
         assert!(report.recognised.iter().any(|s| s == "allow-forms"));
         assert!(report.unsupported.is_empty());
@@ -428,6 +425,9 @@ mod tests {
         // leak a tokio task.  Best-effort: if the probe was satisfied
         // by HEAD alone, the second accept never returns.
         server.abort();
-        assert!(res.is_ok(), "expected probe success against fixture, got: {res:?}");
+        assert!(
+            res.is_ok(),
+            "expected probe success against fixture, got: {res:?}"
+        );
     }
 }

@@ -103,9 +103,7 @@ impl TextBuffer {
     }
 
     pub fn has_selection(&self) -> bool {
-        self.anchor
-            .map(|a| a != self.cursor)
-            .unwrap_or(false)
+        self.anchor.map(|a| a != self.cursor).unwrap_or(false)
     }
 
     /// Selection bounds normalised to `(start, end)` with `start <= end`.
@@ -812,7 +810,10 @@ mod tests {
         // didn't fill the ring.
         assert!(b.undo());
         assert!(b.is_empty());
-        assert!(!b.undo(), "second undo should fail; only one snapshot was kept");
+        assert!(
+            !b.undo(),
+            "second undo should fail; only one snapshot was kept"
+        );
     }
 
     #[test]
@@ -835,7 +836,7 @@ mod tests {
     fn set_cursor_clamps_to_utf8_boundary() {
         let mut b = TextBuffer::with_text("é", false); // 2 bytes
         b.set_cursor(1, false); // mid-codepoint
-        // Cursor lands on 0, the safe boundary.
+                                // Cursor lands on 0, the safe boundary.
         assert_eq!(b.cursor(), 0);
     }
 

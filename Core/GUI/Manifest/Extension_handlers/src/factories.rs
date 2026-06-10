@@ -205,7 +205,11 @@ mod tests {
     #[test]
     fn take_consumes_the_entry() {
         let mut m = default_first_party();
-        assert!(m.take("wylde_panel_settings::SettingsPanel::view").is_some());
-        assert!(m.take("wylde_panel_settings::SettingsPanel::view").is_none());
+        assert!(m
+            .take("wylde_panel_settings::SettingsPanel::view")
+            .is_some());
+        assert!(m
+            .take("wylde_panel_settings::SettingsPanel::view")
+            .is_none());
     }
 }

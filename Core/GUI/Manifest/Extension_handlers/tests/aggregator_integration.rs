@@ -105,7 +105,10 @@ fn aggregator_output_is_deterministic_across_runs() {
     }
     let a = fs::read_to_string(&out1).unwrap();
     let b = fs::read_to_string(&out2).unwrap();
-    assert_eq!(a, b, "two aggregator runs must produce byte-identical output");
+    assert_eq!(
+        a, b,
+        "two aggregator runs must produce byte-identical output"
+    );
 }
 
 /// Locate the just-built aggregator binary.  Cargo sets

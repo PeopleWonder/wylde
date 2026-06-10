@@ -29,9 +29,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use gpui::{
-    px, App, AppContext, AsyncApp, Bounds, WindowBounds, WindowHandle, WindowOptions,
-};
+use gpui::{px, App, AppContext, AsyncApp, Bounds, WindowBounds, WindowHandle, WindowOptions};
 
 use crate::shell_root::Shell;
 use crate::tray::TrayEvent;
@@ -251,10 +249,7 @@ fn spawn_nav_drain(cx: &mut gpui::Context<Shell>) {
 fn spawn_tray_drain(cx: &App, rx: Receiver<TrayEvent>, window: Option<WindowHandle<Shell>>) {
     cx.spawn(async move |app_cx: &mut AsyncApp| {
         loop {
-            app_cx
-                .background_executor()
-                .timer(TRAY_POLL_INTERVAL)
-                .await;
+            app_cx.background_executor().timer(TRAY_POLL_INTERVAL).await;
 
             for action in drain_tray_actions(&rx) {
                 match action {

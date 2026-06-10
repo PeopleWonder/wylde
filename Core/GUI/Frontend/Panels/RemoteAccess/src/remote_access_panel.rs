@@ -304,7 +304,10 @@ fn status_card(panel: &RemoteAccessPanel) -> gpui::Div {
             "—".to_owned()
         },
     ));
-    let pubkey = SharedString::from(format!("Server key · {}", short_pubkey(&panel.status.public_key)));
+    let pubkey = SharedString::from(format!(
+        "Server key · {}",
+        short_pubkey(&panel.status.public_key)
+    ));
     let peer_count = SharedString::from(format!("Peer count · {}", panel.peers.len()));
     let endpoint = SharedString::from(format!(
         "Public endpoint · {}",
@@ -378,10 +381,7 @@ fn status_card(panel: &RemoteAccessPanel) -> gpui::Div {
     card_shell(col)
 }
 
-fn peers_card(
-    panel: &RemoteAccessPanel,
-    cx: &mut Context<RemoteAccessPanel>,
-) -> gpui::Div {
+fn peers_card(panel: &RemoteAccessPanel, cx: &mut Context<RemoteAccessPanel>) -> gpui::Div {
     if !panel.initial_load_done {
         return placeholder_card("Listing connected peers…");
     }
@@ -400,10 +400,7 @@ fn peers_card(
     card_shell(col)
 }
 
-fn peer_row(
-    p: &PeerRow,
-    cx: &mut Context<RemoteAccessPanel>,
-) -> Stateful<gpui::Div> {
+fn peer_row(p: &PeerRow, cx: &mut Context<RemoteAccessPanel>) -> Stateful<gpui::Div> {
     let label = if p.label.trim().is_empty() {
         SharedString::from(p.short_key())
     } else {
@@ -543,7 +540,10 @@ fn port_forward_card(listen_port: u32) -> gpui::Div {
 
 fn dns_rewrites_card() -> gpui::Div {
     let rows: [(&str, &str); 3] = [
-        ("wylde.lan", "127.0.0.1 — loopback alias the local Wylde services bind to"),
+        (
+            "wylde.lan",
+            "127.0.0.1 — loopback alias the local Wylde services bind to",
+        ),
         (
             "cloud.wyldebot.com",
             "Resolves to the WyldeLink public host; redirects to 127.0.0.1 when on-tunnel",
@@ -777,8 +777,7 @@ pub(crate) fn parse_iso8601_to_unix(iso: &str) -> Option<f64> {
         (stripped, 0i64)
     } else if iso.len() >= 6 {
         let (head, tail) = iso.split_at(iso.len() - 6);
-        if (tail.starts_with('+') || tail.starts_with('-'))
-            && tail.as_bytes().get(3) == Some(&b':')
+        if (tail.starts_with('+') || tail.starts_with('-')) && tail.as_bytes().get(3) == Some(&b':')
         {
             let sign = if tail.starts_with('+') { 1i64 } else { -1i64 };
             let hh: i64 = tail.get(1..3)?.parse().ok()?;
@@ -829,10 +828,7 @@ fn civil_to_unix(
     let doy = (153 * (m + (if m > 2 { -3 } else { 9 })) + 2) / 5 + day as i64 - 1;
     let doe = yoe as i64 * 365 + (yoe / 4) as i64 - (yoe / 100) as i64 + doy;
     let days = era * 146_097 + doe - 719_468;
-    let seconds = days as f64 * 86_400.0
-        + hour as f64 * 3_600.0
-        + minute as f64 * 60.0
-        + second;
+    let seconds = days as f64 * 86_400.0 + hour as f64 * 3_600.0 + minute as f64 * 60.0 + second;
     Some(seconds)
 }
 
@@ -889,10 +885,7 @@ mod tests {
         // days included) plus 148 days into the year, plus 10 hours.
         //   (56*365 + 14 + 148) * 86_400 + 10*3600 == 1_780_048_800
         let secs = parse_iso8601_to_unix("2026-05-29T10:00:00+00:00").unwrap();
-        assert!(
-            (secs - 1_780_048_800.0).abs() < 60.0,
-            "got {secs}",
-        );
+        assert!((secs - 1_780_048_800.0).abs() < 60.0, "got {secs}",);
     }
 
     #[test]

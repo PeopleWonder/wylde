@@ -177,10 +177,7 @@ mod tests {
     fn disk_round_trip_through_path() {
         // Hermetic: write + read a scratch path directly, bypassing the
         // process-global cache (which other tests in the binary share).
-        let dir = std::env::temp_dir().join(format!(
-            "wylde-privacy-test-{}",
-            std::process::id(),
-        ));
+        let dir = std::env::temp_dir().join(format!("wylde-privacy-test-{}", std::process::id(),));
         let path = dir.join("data").join("settings").join("privacy.json");
         // Missing file → default.
         assert_eq!(read_from_path(&path), PrivacyPrefs::default());
@@ -197,10 +194,8 @@ mod tests {
 
     #[test]
     fn corrupt_file_reads_as_default() {
-        let dir = std::env::temp_dir().join(format!(
-            "wylde-privacy-corrupt-{}",
-            std::process::id(),
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("wylde-privacy-corrupt-{}", std::process::id(),));
         let path = dir.join("privacy.json");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, b"{ not json ]").unwrap();

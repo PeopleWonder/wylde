@@ -62,7 +62,11 @@ pub struct ImageEntry {
 impl ImageEntry {
     pub fn from_value(v: &Value) -> Self {
         Self {
-            id: v.get("id").and_then(|x| x.as_str()).unwrap_or_default().to_owned(),
+            id: v
+                .get("id")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
             filename: v
                 .get("filename")
                 .and_then(|x| x.as_str())
@@ -325,7 +329,9 @@ pub fn parse_models(v: &Value) -> Vec<ImageModel> {
         .and_then(|x| x.as_array())
         .cloned()
         .or_else(|| v.as_array().cloned());
-    let Some(arr) = arr_opt else { return Vec::new(); };
+    let Some(arr) = arr_opt else {
+        return Vec::new();
+    };
     arr.iter().map(ImageModel::from_value).collect()
 }
 
@@ -394,7 +400,10 @@ mod tests {
             "id": "x", "filename": "x.png", "size_bytes": 0, "created_at": 0.0,
             "metadata": {"seed": "deadbeef"}
         });
-        assert_eq!(ImageEntry::from_value(&v).seed().as_deref(), Some("deadbeef"));
+        assert_eq!(
+            ImageEntry::from_value(&v).seed().as_deref(),
+            Some("deadbeef")
+        );
     }
 
     #[test]

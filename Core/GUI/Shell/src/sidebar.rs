@@ -17,9 +17,7 @@
 use gpui::{
     div, prelude::*, px, rgb, Context, ElementId, FontWeight, SharedString, Stateful, Window,
 };
-use wylde_theme::colors::{
-    BORDER_SUBTLE, BRAND, BRAND_DIM, SURFACE_950, TEXT_MUTED, TEXT_PRIMARY,
-};
+use wylde_theme::colors::{BORDER_SUBTLE, BRAND, BRAND_DIM, SURFACE_950, TEXT_MUTED, TEXT_PRIMARY};
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::nav::{NavOrigin, NavRow};
@@ -134,8 +132,7 @@ fn brand_header() -> gpui::Div {
 /// belongs.  Matches on the id segment so a registry-key prefix change
 /// (e.g. a future service rename) still resolves.
 pub fn is_settings_row(row: &NavRow) -> bool {
-    matches!(row.origin, NavOrigin::FirstParty)
-        && row.key.rsplit('/').next() == Some("settings")
+    matches!(row.origin, NavOrigin::FirstParty) && row.key.rsplit('/').next() == Some("settings")
 }
 
 /// Single nav row.  Mouse-down forwards to `Shell::on_nav_click`.
@@ -300,7 +297,11 @@ mod tests {
     #[test]
     fn is_settings_row_matches_only_first_party_settings() {
         // The canonical first-party Settings key.
-        assert!(is_settings_row(&row("core/settings", "Settings", Some("settings"))));
+        assert!(is_settings_row(&row(
+            "core/settings",
+            "Settings",
+            Some("settings")
+        )));
         // A prefix change still resolves (we match the id segment).
         assert!(is_settings_row(&row("app/settings", "Settings", None)));
         // Other panels don't get the update dot.

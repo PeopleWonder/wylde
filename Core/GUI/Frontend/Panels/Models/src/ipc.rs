@@ -335,11 +335,7 @@ pub async fn set_default(name: Option<&str>) -> Result<(), String> {
 /// "client disconnected mid-pull → abandon" so the cancel button on
 /// the View has the cancel semantics it implies.
 pub fn pull_model(model_name: &str) -> Result<wylde_gui_pipe::PipeStream, String> {
-    wylde_gui_pipe::stream_call(
-        SVC_OLLAMA,
-        "ollama.pull",
-        json!({ "name": model_name }),
-    )
+    wylde_gui_pipe::stream_call(SVC_OLLAMA, "ollama.pull", json!({ "name": model_name }))
 }
 
 #[cfg(test)]

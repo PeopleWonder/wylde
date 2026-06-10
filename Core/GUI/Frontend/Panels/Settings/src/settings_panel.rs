@@ -24,17 +24,18 @@ use wylde_gpui_input::{InputEvent, TextInput};
 use wylde_theme::colors::{SURFACE_900, TEXT_PRIMARY, TEXT_SECONDARY};
 use wylde_theme::typography::{size, FAMILY_INTER};
 
+use crate::hotkey::{resolve_capture, CaptureOutcome};
 use crate::ipc::{
     accept_profile_proposal, check_for_update, clear_ollama_override, clear_tool_decision,
     download_and_install, get_autostart_enabled, list_consent, list_input_devices,
     list_profile_proposals, read_effective_model, read_encryption_at_rest, read_model_defaults,
     read_ollama_overrides, read_privacy_prefs, read_update_prefs, read_user_profile,
-    read_voice_settings, reject_profile_proposal, reset_consent, set_autostart_enabled, set_no_auth,
-    set_ollama_override, set_tool_decision, test_mic, update_profile_field, write_encryption_at_rest,
-    write_privacy_prefs, write_update_prefs, write_voice_settings, ConsentSnapshot, OllamaSettings,
-    PrivacyPrefs, UpdateCheck, UpdatePrefs, VoiceDevices, VoiceSettings, VoiceTest,
+    read_voice_settings, reject_profile_proposal, reset_consent, set_autostart_enabled,
+    set_no_auth, set_ollama_override, set_tool_decision, test_mic, update_profile_field,
+    write_encryption_at_rest, write_privacy_prefs, write_update_prefs, write_voice_settings,
+    ConsentSnapshot, OllamaSettings, PrivacyPrefs, UpdateCheck, UpdatePrefs, VoiceDevices,
+    VoiceSettings, VoiceTest,
 };
-use crate::hotkey::{resolve_capture, CaptureOutcome};
 use crate::sections::{
     consent_section, error_banner, hf_privacy_modal, ollama_field_string, ollama_loading_card,
     ollama_section, pack, privacy_section, profile_rules_section, startup_section, updates_section,
@@ -493,7 +494,9 @@ impl SettingsPanel {
                 .await;
             // Superseded by a newer keystroke? Then that one owns the write.
             let current = this
-                .update(app_cx, |panel, _| panel.profile_debounce_gen.get(idx).copied())
+                .update(app_cx, |panel, _| {
+                    panel.profile_debounce_gen.get(idx).copied()
+                })
                 .ok()
                 .flatten();
             if current != Some(gen) {
@@ -608,10 +611,7 @@ impl SettingsPanel {
     }
 
     /// Shared tail: re-read the proposal queue from within an async task.
-    async fn refresh_profile_proposals_async(
-        this: &gpui::WeakEntity<Self>,
-        app_cx: &mut AsyncApp,
-    ) {
+    async fn refresh_profile_proposals_async(this: &gpui::WeakEntity<Self>, app_cx: &mut AsyncApp) {
         if let Ok(proposals) = list_profile_proposals().await {
             let _ = this.update(app_cx, |panel, cx| {
                 panel.profile_proposals = proposals;
@@ -762,7 +762,9 @@ impl SettingsPanel {
                 .await;
             // Superseded by a newer keystroke? Then that one owns the write.
             let current = this
-                .update(app_cx, |panel, _| panel.ollama_debounce_gen.get(idx).copied())
+                .update(app_cx, |panel, _| {
+                    panel.ollama_debounce_gen.get(idx).copied()
+                })
                 .ok()
                 .flatten();
             if current != Some(gen) {
@@ -1476,34 +1478,34 @@ impl Render for SettingsPanel {
                     &self.app_version,
                     cx,
                 ))
-                    // Privacy & Network sits directly below Updates — the
-                    // two "may make an outside connection" sections kept
-                    // adjacent at the top of the page.
-                    .child(privacy_section(self.privacy, self.encryption_at_rest, cx))
-                    .child(startup_section(
-                        self.autostart_enabled,
-                        self.autostart_error.as_deref(),
-                        cx,
-                    ))
-                    .child(ollama_el)
-                    .child(voice_section(
-                        &self.voice,
-                        &self.voice_test,
-                        self.voice_offline,
-                        &hotkey_focus,
-                        self.capturing_hotkey,
-                        self.hotkey_note.as_deref(),
-                        cx,
-                    ))
-                    .child(consent_section(&self.consent, cx))
-                    .child(profile_rules_section(
-                        self.profile_name_input.as_ref(),
-                        self.profile_style_input.as_ref(),
-                        self.profile_rules_input.as_ref(),
-                        &self.user_profile,
-                        &self.profile_proposals,
-                        cx,
-                    )),
+                // Privacy & Network sits directly below Updates — the
+                // two "may make an outside connection" sections kept
+                // adjacent at the top of the page.
+                .child(privacy_section(self.privacy, self.encryption_at_rest, cx))
+                .child(startup_section(
+                    self.autostart_enabled,
+                    self.autostart_error.as_deref(),
+                    cx,
+                ))
+                .child(ollama_el)
+                .child(voice_section(
+                    &self.voice,
+                    &self.voice_test,
+                    self.voice_offline,
+                    &hotkey_focus,
+                    self.capturing_hotkey,
+                    self.hotkey_note.as_deref(),
+                    cx,
+                ))
+                .child(consent_section(&self.consent, cx))
+                .child(profile_rules_section(
+                    self.profile_name_input.as_ref(),
+                    self.profile_style_input.as_ref(),
+                    self.profile_rules_input.as_ref(),
+                    &self.user_profile,
+                    &self.profile_proposals,
+                    cx,
+                )),
             );
 
         // The first-time privacy modal floats above the scroll content via
@@ -1589,8 +1591,14 @@ mod tests {
 
     #[test]
     fn voice_mode_cycle_is_binary() {
-        assert_eq!(next_in_cycle(&["push_to_talk", "always_on"], "push_to_talk"), "always_on");
-        assert_eq!(next_in_cycle(&["push_to_talk", "always_on"], "always_on"), "push_to_talk");
+        assert_eq!(
+            next_in_cycle(&["push_to_talk", "always_on"], "push_to_talk"),
+            "always_on"
+        );
+        assert_eq!(
+            next_in_cycle(&["push_to_talk", "always_on"], "always_on"),
+            "push_to_talk"
+        );
     }
 
     /// The View must hold a settable consent snapshot — the Shell
@@ -1823,7 +1831,10 @@ mod tests {
         );
         // Garbage for a numeric field → skip (don't poison the store).
         assert_eq!(parse_ollama_field(FieldKind::Int, "abc"), FieldWrite::Skip);
-        assert_eq!(parse_ollama_field(FieldKind::Float, "1.2.3"), FieldWrite::Skip);
+        assert_eq!(
+            parse_ollama_field(FieldKind::Float, "1.2.3"),
+            FieldWrite::Skip
+        );
         // A float string in an int field is a skip, not a truncation.
         assert_eq!(parse_ollama_field(FieldKind::Int, "4.5"), FieldWrite::Skip);
     }
