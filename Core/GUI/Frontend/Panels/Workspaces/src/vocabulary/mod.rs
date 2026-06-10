@@ -10,10 +10,9 @@
 //!   * [`list_view`] — the pure merge/filter/sort row model.
 //!   * [`editor`]    — alias parsing + the promotion-dialog state machine.
 //!
-//! Later N stages add `proposals.rs` (the LLM-proposed-anchor review
-//! surface) and the graph-side vocabulary overlay; the shared
-//! `anchor_actions` edit affordances (Plan §6) land with the bubble/graph
-//! consumers that share them.
+//! Connection editing (chips + Add-Connection picker, undo/redo) rides the
+//! shared `wylde-anchor-actions` crate (Plan §6) — the same rules the graph
+//! overlay and the future bubble layer consume.
 
 pub mod editor;
 pub mod ipc;
@@ -31,10 +30,22 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use std::collections::HashSet;
 
+use wylde_anchor_actions::{connection_edit, ConnectionDraft, UndoStack};
+
 use crate::workspaces_panel::pack;
 use editor::PromotionDialog;
 use ipc::{AnchorScopeTag, AnchorView, ProposalView};
 use list_view::{ScopeFilter, ViewFilter};
+
+/// One undoable connection edit: apply `before` to undo, `after` to redo
+/// (the shared `UndoStack` carries the label for the "— undone." toast).
+#[derive(Clone, Debug)]
+struct RelatedEdit {
+    scope: AnchorScopeTag,
+    identifier: String,
+    before: Vec<String>,
+    after: Vec<String>,
+}
 
 /// Cap on per-load stale checks (one `symbols.find` each — a huge
 /// vocabulary shouldn't stall the tab; the rest re-check on later loads).
@@ -81,6 +92,12 @@ pub struct VocabularyTab {
     view_filter: ViewFilter,
     /// Anchors whose code-symbol target no longer resolves (silent badge).
     stale: HashSet<(AnchorScopeTag, String)>,
+    // Connection editing (stage N-3, shared `anchor_actions` rules).
+    /// Open Add-Connection picker for the selected anchor.
+    connect_picker: bool,
+    /// Per-tab undo/redo for connection edits (Ctrl+Z / Ctrl+Shift+Z —
+    /// the §5.9 stack's first wired surface; bubbles/graph join later).
+    undo: UndoStack<RelatedEdit>,
 }
 
 impl VocabularyTab {
@@ -130,6 +147,8 @@ impl VocabularyTab {
             diff: None,
             view_filter: ViewFilter::Active,
             stale: HashSet::new(),
+            connect_picker: false,
+            undo: UndoStack::default(),
         };
         Self::spawn_load(cx);
         tab
@@ -455,6 +474,128 @@ impl VocabularyTab {
         .detach();
     }
 
+    /// Persist a `related_to` list (stage N-3). No undo bookkeeping here —
+    /// callers record the edit (or are themselves the undo/redo applying it).
+    fn persist_related(
+        &mut self,
+        scope: AnchorScopeTag,
+        identifier: String,
+        list: Vec<String>,
+        label: String,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = self.workspace_id.clone().unwrap_or_default();
+        cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
+            let outcome = ipc::update_related(scope, &ws, &identifier, &list).await;
+            let _ = this.update(app_cx, |tab, cx| {
+                tab.status = Some(match outcome {
+                    Ok(_) => Ok(label),
+                    Err(e) => Err(format!("Connection update failed: {e}")),
+                });
+                Self::spawn_load(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Add Connection (Plan §5.6, OI-22): the picker's click lands here; the
+    /// shared `ConnectionDraft` rules validate (self-link / duplicate).
+    fn add_selected_connection(&mut self, target: String, cx: &mut Context<Self>) {
+        let Some((scope, id)) = self.selected.clone() else {
+            return;
+        };
+        let Some(before) = self.find(scope, &id).map(|a| a.related_to.clone()) else {
+            return;
+        };
+        let mut draft = ConnectionDraft::new(id.clone());
+        draft.pick(target.clone());
+        match draft.commit(&before) {
+            Ok(after) => {
+                self.connect_picker = false;
+                let label = format!("Connected {{{{{id}}}}} → {{{{{target}}}}}");
+                self.undo.push(
+                    label.clone(),
+                    RelatedEdit {
+                        scope,
+                        identifier: id.clone(),
+                        before,
+                        after: after.clone(),
+                    },
+                );
+                self.persist_related(scope, id, after, label, cx);
+            }
+            Err(e) => {
+                self.status = Some(Err(format!("Can't connect: {}", e.message())));
+                cx.notify();
+            }
+        }
+    }
+
+    /// Remove Connection (Plan §5.7) — a chip's ✕.
+    fn remove_selected_connection(&mut self, target: String, cx: &mut Context<Self>) {
+        let Some((scope, id)) = self.selected.clone() else {
+            return;
+        };
+        let Some(before) = self.find(scope, &id).map(|a| a.related_to.clone()) else {
+            return;
+        };
+        let Some(after) = connection_edit::remove_connection(&before, &target) else {
+            return; // link wasn't there — nothing to persist
+        };
+        let label = format!("Removed connection {{{{{id}}}}} → {{{{{target}}}}}");
+        self.undo.push(
+            label.clone(),
+            RelatedEdit {
+                scope,
+                identifier: id.clone(),
+                before,
+                after: after.clone(),
+            },
+        );
+        self.persist_related(scope, id, after, label, cx);
+    }
+
+    /// Plan §5.9 undo: re-persist the edit's `before` list.
+    fn undo_last(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self.undo.undo().cloned() else {
+            return;
+        };
+        let RelatedEdit {
+            scope,
+            identifier,
+            before,
+            ..
+        } = entry.action;
+        self.persist_related(
+            scope,
+            identifier,
+            before,
+            format!("{} — undone.", entry.label),
+            cx,
+        );
+    }
+
+    /// Plan §5.9 redo: re-persist the edit's `after` list.
+    fn redo_last(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self.undo.redo().cloned() else {
+            return;
+        };
+        let RelatedEdit {
+            scope,
+            identifier,
+            after,
+            ..
+        } = entry.action;
+        self.persist_related(
+            scope,
+            identifier,
+            after,
+            format!("{} — redone.", entry.label),
+            cx,
+        );
+    }
+
     /// Reject a pending proposal — OI-11 suppression (30 days default).
     fn reject_proposal(&mut self, identifier: String, cx: &mut Context<Self>) {
         let Some(ws) = self.workspace_id.clone() else {
@@ -615,6 +756,30 @@ impl Render for VocabularyTab {
                     false,
                     cx,
                     |_this, cx| Self::spawn_load(cx),
+                ))
+                // §5.9 undo/redo over connection edits (buttons here; the
+                // global Ctrl+Z binding joins when the bubble layer lands).
+                .child(Self::button(
+                    ("vocab-undo", 0),
+                    if self.undo.can_undo() {
+                        "Undo"
+                    } else {
+                        "Undo —"
+                    },
+                    false,
+                    cx,
+                    |this, cx| this.undo_last(cx),
+                ))
+                .child(Self::button(
+                    ("vocab-redo", 0),
+                    if self.undo.can_redo() {
+                        "Redo"
+                    } else {
+                        "Redo —"
+                    },
+                    false,
+                    cx,
+                    |this, cx| this.redo_last(cx),
                 ))
                 .child(Self::button(
                     ("vocab-new", 0),
@@ -934,11 +1099,85 @@ impl Render for VocabularyTab {
                     },
                     a.usage_count
                 )));
-                if !a.related_to.is_empty() {
-                    card = card.child(Self::hint(format!(
-                        "related: {} (connection editing arrives with the graph overlay stage)",
-                        a.related_to.join(", ")
-                    )));
+                // Connections (stage N-3): removable chips + the Add picker.
+                // The shared `connection_edit` rules validate; this surface
+                // persists and records the edit on the §5.9 undo stack.
+                let mut conn_row = div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_1()
+                    .child(Self::hint(if a.related_to.is_empty() {
+                        "no connections yet".to_owned()
+                    } else {
+                        "related:".to_owned()
+                    }));
+                for (ci, rel) in a.related_to.iter().enumerate() {
+                    let rel_owned = rel.clone();
+                    conn_row = conn_row.child(Self::button(
+                        ("vocab-conn-remove", ci),
+                        &format!("{rel} ✕"),
+                        false,
+                        cx,
+                        move |this, cx| this.remove_selected_connection(rel_owned.clone(), cx),
+                    ));
+                }
+                conn_row = conn_row.child(Self::button(
+                    ("vocab-conn-add", 0),
+                    if self.connect_picker {
+                        "Cancel"
+                    } else {
+                        "Add connection…"
+                    },
+                    self.connect_picker,
+                    cx,
+                    |this, cx| {
+                        this.connect_picker = !this.connect_picker;
+                        cx.notify();
+                    },
+                ));
+                card = card.child(conn_row);
+                if self.connect_picker {
+                    // Candidates: every anchor from both stores except self
+                    // and the already-connected (`related_to` keys on bare
+                    // identifiers, so scope doesn't gate the target).
+                    let mut picker = div()
+                        .flex()
+                        .flex_row()
+                        .flex_wrap()
+                        .gap_1()
+                        .child(Self::hint("connect to:".to_owned()));
+                    let mut seen: HashSet<&str> = HashSet::new();
+                    let mut any = false;
+                    for (pi, cand) in self
+                        .ws_anchors
+                        .iter()
+                        .chain(self.global_anchors.iter())
+                        .enumerate()
+                    {
+                        let cid = cand.identifier.as_str();
+                        if cid == id || a.related_to.iter().any(|r| r == cid) {
+                            continue;
+                        }
+                        if !seen.insert(cid) {
+                            continue;
+                        }
+                        any = true;
+                        let target = cand.identifier.clone();
+                        picker = picker.child(Self::button(
+                            ("vocab-conn-cand", pi),
+                            cid,
+                            false,
+                            cx,
+                            move |this, cx| this.add_selected_connection(target.clone(), cx),
+                        ));
+                    }
+                    if !any {
+                        picker =
+                            picker.child(Self::hint("no other anchors to connect to".to_owned()));
+                    }
+                    card = card.child(picker);
                 }
                 card = card.child(
                     div()

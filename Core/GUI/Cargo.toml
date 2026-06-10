@@ -24,6 +24,7 @@ members = [
     "Frontend/Input",
     "Frontend/Extension_handlers/WebView",
     "Frontend/Panels/Settings",
+    "Frontend/Panels/shared/anchor_actions",
     "Frontend/Panels/Workspaces",
     "Frontend/Panels/Tools",
     "Frontend/Panels/Memory",

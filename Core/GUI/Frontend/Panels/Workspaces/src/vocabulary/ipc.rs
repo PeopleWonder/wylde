@@ -168,6 +168,24 @@ pub async fn update_anchor(
     }
 }
 
+/// Persist a new `related_to` list (the connection editor's commit — Plan
+/// §5.6/5.7 via the shared `connection_edit` rules).
+pub async fn update_related(
+    scope: AnchorScopeTag,
+    ws: &str,
+    identifier: &str,
+    related: &[String],
+) -> Result<Value, String> {
+    let mut payload = json!({ "identifier": identifier, "related_to": related });
+    match scope {
+        AnchorScopeTag::Workspace => {
+            payload["workspace_id"] = json!(ws);
+            workspaces_call("workspaces.anchors.update", payload).await
+        }
+        AnchorScopeTag::Global => harness_call("anchors.update", payload).await,
+    }
+}
+
 /// Delete an anchor from its store.
 pub async fn delete_anchor(
     scope: AnchorScopeTag,

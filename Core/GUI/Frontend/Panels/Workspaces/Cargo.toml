@@ -28,6 +28,12 @@ gpui.workspace = true
 # uses for the Profile/Rules section.
 wylde-gpui-input = { path = "../../Input" }
 
+# ONE source of anchor edit affordances (Plan v2 §6, Slice N) — the
+# exclude/ignore transitions, connection editing, approval gates, undo
+# stack and shared menu definition the Vocabulary tab + graph overlay
+# (and later the bubble layer) all share.
+wylde-anchor-actions = { path = "../shared/anchor_actions" }
+
 # Native folder picker.  Replaces the Tauri dialog plugin the Svelte
 # alpha uses; declared once at the workspace root.
 rfd.workspace = true
