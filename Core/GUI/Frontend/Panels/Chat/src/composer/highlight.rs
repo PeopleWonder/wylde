@@ -4,11 +4,11 @@
 //! [`spans_for`] maps recognition results to [`HighlightSpan`]s — byte
 //! ranges with a state-coloured wavy underline (Theme
 //! `chat_composer.highlight_underline`: 2 px wavy) and a hover tooltip.
-//! **Presentation constraint (documented):** the shared `TextInput` exposes
-//! no glyph-position metrics at this gpui rev, so the underline can't be
-//! painted *inside* the input yet; the chip strip renders the same
-//! recognition visibly, and this model is the ready-made feed for the
-//! underline pass when the input grows a decoration API.
+//! The glyph-metrics pass closed the Slice F deferral: [`input_spans`]
+//! feeds these straight into the shared `TextInput`'s decoration-run API
+//! (`set_highlights`), so the squiggle now paints INSIDE the input,
+//! wrap-aware, under the exact glyphs. The chip strip stays — it carries
+//! the click affordances the underline doesn't.
 //!
 //! The `chat_composer` Theme section is parsed here from the same locked
 //! Visual Style v1 YAML the graph panel embeds (one asset on disk, two
@@ -69,6 +69,37 @@ pub fn spans_for(words: &[WordRecognition]) -> Vec<HighlightSpan> {
         .collect()
 }
 
+/// Map the recognition state to the shared input's styled spans — the
+/// in-input wavy underline (glyph-metrics pass). Colours are the locked
+/// `chat_composer` palette's dark variants (the composer's surfaces are
+/// dark, matching the chips): recognized = the tether accent, ambiguous =
+/// the soft-alert tint, excluded = the muted chip text.
+pub fn input_spans(words: &[WordRecognition]) -> Vec<wylde_gpui_input::HighlightSpan> {
+    let t = composer_theme();
+    let wavy = t.highlight_underline.style == "wavy";
+    let thickness = t.highlight_underline.thickness_px;
+    spans_for(words)
+        .into_iter()
+        .map(|s| {
+            let color = gpui::rgb(match s.state {
+                HighlightState::Recognized => hex(&t.tether_line.color_dark),
+                HighlightState::Ambiguous => hex(&t.per_word_chip.ambiguous_state.background_dark),
+                HighlightState::Excluded => hex(&t.per_word_chip.text_dark),
+            });
+            wylde_gpui_input::HighlightSpan {
+                range: s.start..s.end,
+                color: None,
+                background: None,
+                underline: Some(wylde_gpui_input::UnderlineSpec {
+                    color,
+                    thickness,
+                    wavy,
+                }),
+            }
+        })
+        .collect()
+}
+
 fn tooltip(w: &WordRecognition) -> String {
     if w.excluded {
         return format!("{} — excluded from this message", w.token.text);
@@ -102,6 +133,10 @@ pub struct ComposerTheme {
     pub highlight_underline: UnderlineStyle,
     #[serde(default)]
     pub per_word_chip: PerWordChip,
+    /// `chat_composer.tether_line` — the recognition accent (consumed by
+    /// the in-input underline now; the bubble layer's tethers next).
+    #[serde(default)]
+    pub tether_line: TetherLine,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -113,6 +148,26 @@ pub struct UnderlineStyle {
 }
 
 impl Default for UnderlineStyle {
+    fn default() -> Self {
+        serde_yaml::from_str("{}").expect("defaults")
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct TetherLine {
+    #[serde(default = "d_tether_light")]
+    pub color_light: String,
+    #[serde(default = "d_tether_dark")]
+    pub color_dark: String,
+    #[serde(default = "d_tether_px")]
+    pub thickness_px: f32,
+    #[serde(default = "d_tether_opacity")]
+    pub opacity: f32,
+    #[serde(default = "d_tether_dash")]
+    pub dash_pattern: Vec<f32>,
+}
+
+impl Default for TetherLine {
     fn default() -> Self {
         serde_yaml::from_str("{}").expect("defaults")
     }
@@ -181,6 +236,7 @@ pub fn composer_theme() -> ComposerTheme {
         .unwrap_or_else(|| ComposerTheme {
             highlight_underline: UnderlineStyle::default(),
             per_word_chip: PerWordChip::default(),
+            tether_line: TetherLine::default(),
         })
 }
 
@@ -237,6 +293,21 @@ fn d_ambig_text_dark() -> String {
 fn d_ambig_prefix() -> String {
     "?".to_owned()
 }
+fn d_tether_light() -> String {
+    "#3182CE".to_owned()
+}
+fn d_tether_dark() -> String {
+    "#4FD1C5".to_owned()
+}
+fn d_tether_px() -> f32 {
+    1.0
+}
+fn d_tether_opacity() -> f32 {
+    0.4
+}
+fn d_tether_dash() -> Vec<f32> {
+    vec![4.0, 4.0]
+}
 
 #[cfg(test)]
 mod tests {
@@ -288,10 +359,32 @@ mod tests {
     }
 
     #[test]
+    fn input_spans_carry_themed_wavy_underlines() {
+        let words = vec![word("sym", 1, 0), word("ambig", 3, 0)];
+        let spans = input_spans(&words);
+        assert_eq!(spans.len(), 2);
+        for s in &spans {
+            let u = s.underline.expect("underlined");
+            assert!(u.wavy, "locked spec: wavy");
+            assert_eq!(u.thickness, 2.0, "locked spec: 2px");
+            assert!(s.color.is_none() && s.background.is_none());
+        }
+        assert_eq!((spans[0].range.start, spans[0].range.end), (4, 7));
+        // Recognized rides the tether accent; ambiguous the alert tint.
+        assert_ne!(
+            spans[0].underline.unwrap().color,
+            spans[1].underline.unwrap().color
+        );
+    }
+
+    #[test]
     fn embedded_theme_section_matches_locked_spec() {
         let t = composer_theme();
         assert_eq!(t.highlight_underline.thickness_px, 2.0);
         assert_eq!(t.highlight_underline.style, "wavy");
+        assert_eq!(hex(&t.tether_line.color_dark), 0x4FD1C5);
+        assert_eq!(hex(&t.tether_line.color_light), 0x3182CE);
+        assert_eq!(t.tether_line.thickness_px, 1.0);
         let chip = &t.per_word_chip;
         assert_eq!(chip.height_px, 18.0);
         assert_eq!(chip.horizontal_padding_px, 6.0);

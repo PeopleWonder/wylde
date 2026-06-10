@@ -32,35 +32,50 @@
 //!   * Theme-integrated chrome (border, background, focus ring) sourced
 //!     from `wylde_theme::colors::*`.
 //!
-//! ## What's deferred (with externality reasons)
+//! ## The glyph-metrics pass (TBS follow-on slice)
 //!
-//!   * **Click-to-position cursor + drag-to-select + double-click word /
-//!     triple-click line.**  Mapping a `(x, y)` to a UTF-8 byte offset
-//!     needs text metrics gpui doesn't expose on a `div`'s child run at
-//!     `b3d93d44`.  A custom layout-pass slice unblocks them; until then,
-//!     cursor positioning is keyboard-only.  Single mouse-click anywhere
-//!     in the input focuses it.
-//!   * **IME / dead-key composition input.**  Platform composition events
-//!     don't reach arbitrary elements at this rev.  Asian-language users
-//!     get a degraded experience until this lands.
-//!   * **Spell-check underlines + accessibility hooks.**  Both depend on
-//!     platform APIs gpui's element model doesn't yet thread through.
+//! The renderer is a custom [`element::TextArea`] that shapes the buffer
+//! through gpui's text system — the single source of truth for glyph
+//! geometry. That unlocked, in one pass:
+//!
+//!   * **Click-to-position + drag-to-select + double-click word /
+//!     triple-click line** (point → byte offset via the shaped layout).
+//!   * **True soft-wrap with the inline caret** (the old span-row
+//!     limitation is gone).
+//!   * **Highlight spans** ([`HighlightSpan`]) — colour/background/
+//!     (wavy-)underline ranges painted as decoration runs, wrap-aware.
+//!     The composer's IDE-style word squiggle rides this.
+//!   * **The glyph-metrics API** — [`TextInput::rects_for_range`] /
+//!     [`TextInput::index_at_point`] / [`TextInput::caret_screen_rect`],
+//!     window-absolute, describing the last painted frame. The bubble
+//!     layer's tethers anchor to these.
+//!
+//! ## Still deferred (with externality reasons)
+//!
+//!   * **IME / dead-key composition input.**  Needs an
+//!     `EntityInputHandler` + `window.handle_input` wiring pass;
+//!     mechanical now that the element owns shaping, but out of this
+//!     slice's scope.
+//!   * **Spell-check + accessibility hooks.**  Platform APIs gpui's
+//!     element model doesn't yet thread through.
 //!   * **Blinking caret.**  Solid caret only — a per-frame blink loop
 //!     adds a background task per input.  Cosmetic; revisit if needed.
 
 pub mod buffer;
+pub mod element;
+
+use std::ops::Range;
 
 use gpui::{
-    div, prelude::*, px, rgb, App, ClipboardItem, Context, ElementId, EventEmitter, FocusHandle,
-    Focusable, IntoElement, KeyDownEvent, Render, SharedString, Stateful, Window,
+    div, prelude::*, px, rgb, App, Bounds, ClipboardItem, Context, ElementId, EventEmitter,
+    FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Render, Rgba, SharedString, Window,
 };
-use wylde_theme::colors::{
-    BORDER_EMPHASIS, BORDER_FOCUSED, BORDER_SUBTLE, SURFACE_700, SURFACE_900, TEXT_MUTED,
-    TEXT_PRIMARY,
-};
+use wylde_theme::colors::{BORDER_FOCUSED, BORDER_SUBTLE, SURFACE_700, SURFACE_900};
 use wylde_theme::typography::{size as text_size, FAMILY_INTER};
 
 pub use buffer::TextBuffer;
+use element::LayoutInfo;
 
 /// Cap on the number of consecutive typed-char inserts that share a
 /// single undo snapshot before a forced break.  Without it a 5000-char
@@ -98,6 +113,35 @@ pub enum InputEvent {
     Submit(String),
 }
 
+// ── Highlight spans (glyph-metrics slice) ────────────────────────────
+
+/// An underline decoration for a [`HighlightSpan`]. `wavy: true` is the
+/// IDE-style squiggle — gpui paints it natively, wrap-aware.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UnderlineSpec {
+    pub color: Rgba,
+    /// Thickness in CSS pixels.
+    pub thickness: f32,
+    pub wavy: bool,
+}
+
+/// A styled byte range painted as part of the text itself (a shaping
+/// decoration run, not an overlay) — so it wraps exactly with the glyphs.
+/// Ranges may be stale relative to the live buffer (recognition runs
+/// async): out-of-range and mid-character boundaries are clamped/snapped
+/// at paint, never panicking. On overlap, the later span in the `Vec`
+/// wins. Colours come from the CALLER's theme — this crate styles nothing
+/// itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HighlightSpan {
+    pub range: Range<usize>,
+    /// Text colour override.
+    pub color: Option<Rgba>,
+    /// Background fill behind the glyphs.
+    pub background: Option<Rgba>,
+    pub underline: Option<UnderlineSpec>,
+}
+
 // ── The View itself ──────────────────────────────────────────────────
 
 pub struct TextInput {
@@ -119,6 +163,13 @@ pub struct TextInput {
     element_key: SharedString,
     /// Snapshot bookkeeping — collapse typing bursts into one undo step.
     burst_inserts_since_snapshot: usize,
+    /// Styled ranges painted as decoration runs (glyph-metrics slice).
+    highlights: Vec<HighlightSpan>,
+    /// The last painted frame's shaped layout — what the metrics API and
+    /// the mouse handlers read. Written by `element::TextArea::paint`.
+    last_layout: Option<LayoutInfo>,
+    /// A left-button drag-selection is in progress.
+    dragging: bool,
 }
 
 impl TextInput {
@@ -137,6 +188,9 @@ impl TextInput {
             chrome: true,
             element_key: SharedString::from("wylde-input"),
             burst_inserts_since_snapshot: 0,
+            highlights: Vec::new(),
+            last_layout: None,
+            dragging: false,
         }
     }
 
@@ -155,6 +209,9 @@ impl TextInput {
             chrome: true,
             element_key: SharedString::from("wylde-input"),
             burst_inserts_since_snapshot: 0,
+            highlights: Vec::new(),
+            last_layout: None,
+            dragging: false,
         }
     }
 
@@ -267,6 +324,111 @@ impl TextInput {
 
     pub fn emit_changed(&self, cx: &mut Context<Self>) {
         cx.emit(InputEvent::Changed(self.buffer.text().to_owned()));
+    }
+
+    // ── Highlights (glyph-metrics slice) ───────────────────────────
+
+    /// Replace the styled-range set. Ranges are byte offsets into the
+    /// CURRENT text; stale ranges are clamped/snapped at paint, so an
+    /// async producer (the composer's recognition pass) can never panic
+    /// the renderer. Later spans win on overlap.
+    pub fn set_highlights(&mut self, spans: Vec<HighlightSpan>, cx: &mut Context<Self>) {
+        if self.highlights != spans {
+            self.highlights = spans;
+            cx.notify();
+        }
+    }
+
+    pub fn clear_highlights(&mut self, cx: &mut Context<Self>) {
+        if !self.highlights.is_empty() {
+            self.highlights.clear();
+            cx.notify();
+        }
+    }
+
+    // ── Glyph metrics (read the last painted frame) ────────────────
+    //
+    // All coordinates are WINDOW-absolute. The snapshot describes the
+    // most recently painted frame, so values are at most one frame
+    // stale — the right contract for mouse handling and for chrome
+    // (underlines, bubble tethers) that repaints alongside the text.
+
+    /// Screen rects covering `range` — one per visual row touched
+    /// (a soft-wrapped word yields multiple). Empty when nothing has
+    /// painted yet, the buffer is empty, or the range is collapsed.
+    pub fn rects_for_range(&self, range: Range<usize>) -> Vec<Bounds<Pixels>> {
+        self.last_layout
+            .as_ref()
+            .map(|l| l.rects_for_range(range))
+            .unwrap_or_default()
+    }
+
+    /// The byte offset closest to a window point. `None` before the
+    /// first paint.
+    pub fn index_at_point(&self, point: Point<Pixels>) -> Option<usize> {
+        self.last_layout
+            .as_ref()
+            .and_then(|l| l.index_at_point(point))
+    }
+
+    /// The caret's screen rect (2px × line height). `None` before the
+    /// first paint.
+    pub fn caret_screen_rect(&self) -> Option<Bounds<Pixels>> {
+        let layout = self.last_layout.as_ref()?;
+        layout.caret_rect(if self.buffer.is_empty() {
+            0
+        } else {
+            self.buffer.cursor()
+        })
+    }
+
+    /// Window-absolute bounds of the painted text area. `None` before
+    /// the first paint.
+    pub fn layout_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.last_layout.as_ref().map(|l| l.bounds)
+    }
+
+    // ── Internal: mouse dispatch (glyph-metrics slice) ─────────────
+
+    /// Left press: position the caret at the click (Shift extends);
+    /// double-click selects the word, triple-click the logical line.
+    fn handle_mouse_down(&mut self, ev: &MouseDownEvent, cx: &mut Context<Self>) {
+        let Some(ix) = self.index_at_point(ev.position) else {
+            return; // nothing painted yet — focus alone is fine
+        };
+        match ev.click_count {
+            2 => {
+                // Word select: collapse at the click, then span the word.
+                self.buffer.set_cursor(ix, false);
+                self.buffer.move_word_left(false);
+                self.buffer.move_word_right(true);
+            }
+            n if n >= 3 => {
+                self.buffer.set_cursor(ix, false);
+                self.buffer.move_line_start(false);
+                self.buffer.move_line_end(true);
+            }
+            _ => {
+                self.buffer.set_cursor(ix, ev.modifiers.shift);
+                self.dragging = true;
+            }
+        }
+        cx.notify();
+    }
+
+    /// Drag: extend the selection toward the pointer.
+    fn handle_mouse_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if !self.dragging || ev.pressed_button != Some(MouseButton::Left) {
+            return;
+        }
+        if let Some(ix) = self.index_at_point(ev.position) {
+            self.buffer.set_cursor(ix, true);
+            cx.notify();
+        }
+    }
+
+    fn handle_mouse_up(&mut self, _ev: &MouseUpEvent, _cx: &mut Context<Self>) {
+        self.dragging = false;
     }
 
     // ── Internal: key dispatch ─────────────────────────────────────
@@ -481,19 +643,10 @@ impl Render for TextInput {
             SURFACE_900
         };
 
-        // Solid caret whenever the input holds focus — drawn at the cursor
-        // (column 0 in an empty input, via `empty_body`).  An earlier
-        // blink loop gated this on a `caret_visible` phase that could sit
-        // "off" on an idle empty input, so a freshly-clicked empty field
-        // showed no caret until the first keystroke reset the phase. A
-        // solid caret is the reliable always-there affordance.
-        let show_caret = focused;
-
-        let body = if self.buffer.is_empty() {
-            empty_body(&self.placeholder, show_caret)
-        } else {
-            content_node(&self.buffer, show_caret)
-        };
+        // The shaped-text element (element.rs) paints text, selection and
+        // the solid caret itself; the root supplies the text style it
+        // shapes under (family/size/line height) and the event handlers.
+        let body = element::TextArea { input: cx.entity() };
 
         let mut root = div()
             .id(ElementId::Name(self.element_key.clone()))
@@ -502,15 +655,27 @@ impl Render for TextInput {
             .w_full()
             .cursor_text()
             .min_h(px(self.min_height))
+            .font_family(FAMILY_INTER)
+            .text_size(px(text_size::SM))
+            .line_height(px(20.0))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                 this.handle_key(ev, window, cx);
             }))
             .on_mouse_down(
-                gpui::MouseButton::Left,
-                cx.listener(|this, _ev, window, cx| {
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                     this.focus_handle.focus(window, cx);
-                    cx.notify();
+                    this.handle_mouse_down(ev, cx);
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
+                this.handle_mouse_move(ev, cx);
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseUpEvent, _window, cx| {
+                    this.handle_mouse_up(ev, cx);
                 }),
             )
             .child(body);
@@ -534,192 +699,6 @@ impl Render for TextInput {
 
         root
     }
-}
-
-fn placeholder_node(placeholder: &SharedString) -> gpui::Div {
-    div()
-        .font_family(FAMILY_INTER)
-        .text_size(px(text_size::SM))
-        .text_color(rgb(pack(TEXT_MUTED)))
-        .child(placeholder.clone())
-}
-
-/// Body shown when the buffer is empty: the caret (at offset 0) followed
-/// by the muted placeholder.  Without this an empty focused input — the
-/// chat prompt's resting state — would render the placeholder with *no*
-/// caret, so focus had no visible affordance at all.
-fn empty_body(placeholder: &SharedString, show_caret: bool) -> gpui::Div {
-    let mut row = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .w_full()
-        .min_h(px(20.0));
-    if show_caret {
-        // `flex_none` so the 2px caret keeps its width — this row has no
-        // `flex_wrap`, so a shrinkable child could otherwise be squeezed
-        // toward zero next to the placeholder.
-        row = row.child(caret_bar().flex_none());
-    }
-    row.child(placeholder_node(placeholder))
-}
-
-/// Render the buffer's text broken into lines, with caret + selection
-/// highlight inserted at the relevant byte offsets.  `show_caret` gates
-/// the caret bar (true whenever the input holds focus).
-fn content_node(buffer: &TextBuffer, show_caret: bool) -> gpui::Div {
-    let text = buffer.text();
-    let cursor = buffer.cursor();
-    let selection = buffer.selection();
-
-    let mut col = div().flex().flex_col().w_full().gap(px(0.0));
-
-    if buffer.is_single_line() {
-        col = col.child(line_row(text, 0, text.len(), cursor, selection, show_caret));
-        return col;
-    }
-
-    let mut line_start = 0;
-    for (i, ch) in text.char_indices() {
-        if ch == '\n' {
-            col = col.child(line_row(text, line_start, i, cursor, selection, show_caret));
-            line_start = i + 1;
-        }
-    }
-    // Trailing line.
-    col = col.child(line_row(
-        text,
-        line_start,
-        text.len(),
-        cursor,
-        selection,
-        show_caret,
-    ));
-    col
-}
-
-/// Render one line as a horizontal flex of text spans + an optional
-/// caret bar.  Selection ranges that overlap this line draw a coloured
-/// background behind the affected slice.
-fn line_row(
-    text: &str,
-    line_start: usize,
-    line_end: usize,
-    cursor: usize,
-    selection: Option<(usize, usize)>,
-    show_caret: bool,
-) -> Stateful<gpui::Div> {
-    let line_id = ElementId::Name(format!("wylde-input-line::{line_start}").into());
-
-    // Build the sorted list of split points that fall inside this line:
-    // selection start, selection end, cursor.
-    let mut splits: Vec<(usize, SplitKind)> = Vec::new();
-    if let Some((s, e)) = selection {
-        let s = s.max(line_start);
-        let e = e.min(line_end);
-        if s < e {
-            splits.push((s, SplitKind::SelStart));
-            splits.push((e, SplitKind::SelEnd));
-        }
-    }
-    if show_caret && cursor >= line_start && cursor <= line_end {
-        splits.push((cursor, SplitKind::Cursor));
-    }
-    splits.sort_by_key(|(b, _)| *b);
-
-    // Fast path — no caret/selection split on this line.  Render the run
-    // as a single width-bounded text block: a direct string child of a
-    // `w_full()` element soft-wraps to the input's width.  This is what
-    // stops a long pasted line (10k chars, no newline) from rendering as
-    // one unbounded `flex_row` that overflows horizontally and blows out
-    // the InferenceBar's layout.
-    if splits.is_empty() {
-        let mut block = div().id(line_id).w_full().min_h(px(20.0));
-        if line_start < line_end {
-            block = block
-                .font_family(FAMILY_INTER)
-                .text_size(px(text_size::SM))
-                .text_color(rgb(pack(TEXT_PRIMARY)))
-                .child(SharedString::from(text[line_start..line_end].to_owned()));
-        }
-        return block;
-    }
-
-    // Split path — the focused line carries an inline caret and/or a
-    // selection highlight, so it stays a span row.  It's `w_full()` +
-    // `flex_wrap()` so multi-span lines wrap, and `overflow_hidden()` so
-    // even a single oversized run can't push the layout wide.  (True
-    // soft-wrap *with* inline carets needs per-glyph text metrics gpui
-    // doesn't expose at `b3d93d44` — see the crate-level docs.)
-    let mut row = div()
-        .id(line_id)
-        .w_full()
-        .flex()
-        .flex_row()
-        .flex_wrap()
-        .overflow_hidden()
-        .items_center()
-        .min_h(px(20.0));
-
-    let mut in_sel = false;
-    let mut run_start = line_start;
-
-    for (boundary, kind) in &splits {
-        if run_start < *boundary {
-            row = row.child(span_run(&text[run_start..*boundary], in_sel));
-        }
-        match kind {
-            SplitKind::SelStart => {
-                in_sel = true;
-                run_start = *boundary;
-            }
-            SplitKind::SelEnd => {
-                in_sel = false;
-                run_start = *boundary;
-            }
-            SplitKind::Cursor => {
-                row = row.child(caret_bar());
-                run_start = *boundary;
-            }
-        }
-    }
-
-    if run_start < line_end {
-        row = row.child(span_run(&text[run_start..line_end], in_sel));
-    }
-
-    // The empty trailing-line caret (`text` ends with `\n`, cursor on the
-    // blank last line) is handled by the split path above: a cursor at
-    // `line_start == line_end` pushes a `Cursor` split, so the loop emits
-    // the caret bar.  No extra branch needed here.
-    row
-}
-
-#[derive(Debug, Clone, Copy)]
-enum SplitKind {
-    SelStart,
-    SelEnd,
-    Cursor,
-}
-
-fn span_run(text: &str, in_sel: bool) -> gpui::Div {
-    let mut d = div()
-        .font_family(FAMILY_INTER)
-        .text_size(px(text_size::SM))
-        .text_color(rgb(pack(TEXT_PRIMARY)))
-        .child(SharedString::from(text.to_owned()));
-    if in_sel {
-        d = d.bg(rgb(pack(BORDER_EMPHASIS)));
-    }
-    d
-}
-
-/// The insertion caret: a slim, high-contrast vertical bar.  Uses
-/// `TEXT_PRIMARY` (near-white) rather than the brand teal so it reads as
-/// the familiar OS-style text cursor against the dark input, not a
-/// decorative accent.
-fn caret_bar() -> gpui::Div {
-    div().w(px(2.0)).h(px(18.0)).bg(rgb(pack(TEXT_PRIMARY)))
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────

@@ -1347,6 +1347,16 @@ fn pick_next_active(remaining: &[ConversationMeta], _deleted_id: &str) -> Option
 
 // ── Symbol-aware composer plumbing (Slice F) ─────────────────────────────
 impl ChatPanel {
+    /// Mirror the recognition state into the prompt input as styled spans —
+    /// the in-input wavy underline (the glyph-metrics pass closed Slice F's
+    /// deferral). Cheap to call after any `composer.words` mutation: the
+    /// input no-ops when the spans are unchanged.
+    pub(crate) fn sync_prompt_highlights(&self, cx: &mut Context<Self>) {
+        let spans = composer::highlight::input_spans(&self.composer.words);
+        self.prompt_input
+            .update(cx, |input, icx| input.set_highlights(spans, icx));
+    }
+
     /// Debounced recognition scan: tokenize now (cheap, sync), wait out the
     /// debounce window, then resolve each token over the pipe. A newer edit
     /// bumps the generation and this scan's results drop on arrival.
@@ -1357,11 +1367,13 @@ impl ChatPanel {
         let Some(ws) = self.active_workspace_id.clone() else {
             // No workspace → nothing to recognize against.
             let _ = self.composer.install(generation, Vec::new(), false);
+            self.sync_prompt_highlights(cx);
             cx.notify();
             return;
         };
         if tokens.is_empty() {
             let _ = self.composer.install(generation, Vec::new(), false);
+            self.sync_prompt_highlights(cx);
             cx.notify();
             return;
         }
@@ -1400,6 +1412,7 @@ impl ChatPanel {
             }
             let _ = this.update(app_cx, |p, cx| {
                 if p.composer.install(generation, words, degraded) {
+                    p.sync_prompt_highlights(cx);
                     cx.notify();
                 }
             });
@@ -1613,6 +1626,7 @@ impl ChatPanel {
                                 w.reactivated = false;
                             }
                         }
+                        panel.sync_prompt_highlights(cx);
                     }
                     Err(e) => {
                         panel.error = Some(format!("Ignore update failed: {e}"));
