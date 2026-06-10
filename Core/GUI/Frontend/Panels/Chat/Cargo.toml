@@ -42,6 +42,11 @@ serde_json.workspace = true
 anyhow.workspace     = true
 uuid.workspace       = true
 
+# YAML deserialiser for the locked Visual Style v1 `chat_composer` section
+# (Slice F) — the composer chips/underline read their styling from the same
+# embedded style asset the graph panel uses.
+serde_yaml.workspace = true
+
 # Open a URL in the OS default handler — for markdown link clicks in
 # the message log.  cross-platform; the Windows backend uses ShellExecute.
 opener.workspace = true

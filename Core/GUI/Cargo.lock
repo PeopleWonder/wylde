@@ -8730,6 +8730,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tokio",
  "uuid",
  "wylde-gpui-input",

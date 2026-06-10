@@ -32,8 +32,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, Entity,
-    FocusHandle, Focusable, FontWeight, IntoElement, Render, SharedString, Stateful, Subscription,
-    Window,
+    FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, Render, SharedString, Stateful,
+    Subscription, Window,
 };
 use wylde_gpui_input::{InputEvent, SubmitMode, TextInput};
 use wylde_theme::colors::{
@@ -42,13 +42,14 @@ use wylde_theme::colors::{
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
+use crate::composer::{self, ComposerState, WordRecognition};
 use crate::ipc::{
     activate_workspace, cancel_turn, clear_working_memory, delete_conversation, eject_model,
     fetch_conversation_messages, fetch_working_memory, get_active_conversation, list_conversations,
     list_models, new_conversation, recent_workspaces, respond_consent, set_active_conversation,
     set_active_model, set_active_workspace, start_turn_with_model, stream_consent_pending,
-    stream_tools, stream_turn, ConsentEvent,
-    ConversationMeta, PendingConsent, ToolChunk, TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
+    stream_tools, stream_turn, ConsentEvent, ConversationMeta, PendingConsent, ToolChunk,
+    TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
 };
 use crate::markdown;
 
@@ -198,6 +199,12 @@ pub struct ChatPanel {
     /// Held to keep the input → panel subscription alive for the
     /// lifetime of the panel.
     _input_sub: Subscription,
+    /// Symbol-aware composer recognition state (Slice F).
+    pub composer: ComposerState,
+    /// The Ctrl+P symbol palette's query field (rendered only while the
+    /// palette is open).
+    pub palette_input: Entity<TextInput>,
+    _palette_sub: Subscription,
 }
 
 impl ChatPanel {
@@ -213,9 +220,43 @@ impl ChatPanel {
         let prompt_input_for_submit = prompt_input.clone();
         let input_sub = cx.subscribe(
             &prompt_input,
-            move |this: &mut Self, _entity, event: &InputEvent, cx: &mut Context<Self>| {
-                if let InputEvent::Submit(text) = event {
+            move |this: &mut Self, _entity, event: &InputEvent, cx: &mut Context<Self>| match event
+            {
+                InputEvent::Submit(text) => {
                     this.submit_text(text.clone(), &prompt_input_for_submit, cx);
+                }
+                // Symbol-aware composer (Slice F): every edit schedules a
+                // debounced recognition scan.
+                InputEvent::Changed(text) => {
+                    this.schedule_composer_scan(text.clone(), cx);
+                }
+            },
+        );
+
+        // Ctrl+P symbol palette query field (Slice F).
+        let palette_input = cx.new(|input_cx| {
+            TextInput::single_line(input_cx)
+                .with_submit_mode(SubmitMode::EnterSubmits)
+                .with_element_key("chat-symbol-palette")
+                .with_placeholder("Search symbols…")
+        });
+        let palette_sub = cx.subscribe(
+            &palette_input,
+            move |this: &mut Self, _entity, event: &InputEvent, cx: &mut Context<Self>| {
+                match event {
+                    InputEvent::Changed(q) => this.schedule_palette_query(q.clone(), cx),
+                    // Enter accepts the current (top) hit.
+                    InputEvent::Submit(_) => {
+                        let name = this
+                            .composer
+                            .palette
+                            .as_ref()
+                            .and_then(|p| p.selection())
+                            .map(|h| h.name.clone());
+                        if let Some(name) = name {
+                            this.insert_palette_reference(&name, cx);
+                        }
+                    }
                 }
             },
         );
@@ -246,6 +287,9 @@ impl ChatPanel {
             tool_activity: None,
             prompt_input,
             _input_sub: input_sub,
+            composer: ComposerState::default(),
+            palette_input,
+            _palette_sub: palette_sub,
         }
     }
 
@@ -657,12 +701,7 @@ impl ChatPanel {
         .detach();
     }
 
-    fn submit_text(
-        &mut self,
-        text: String,
-        input: &Entity<TextInput>,
-        cx: &mut Context<Self>,
-    ) {
+    fn submit_text(&mut self, text: String, input: &Entity<TextInput>, cx: &mut Context<Self>) {
         let trimmed = text.trim().to_owned();
         // Block empty sends and double-sends: `active_turn_id` covers a
         // turn that has already started, `starting` covers the gap while
@@ -703,10 +742,7 @@ impl ChatPanel {
                 Err(e) => {
                     let _ = this.update(app_cx, |panel, cx| {
                         let msg = format!("[Failed to start turn: {e}]");
-                        if let Some(last) = panel
-                            .messages
-                            .iter_mut()
-                            .find(|m| m.id == assistant_id)
+                        if let Some(last) = panel.messages.iter_mut().find(|m| m.id == assistant_id)
                         {
                             last.content = msg.clone();
                             last.streaming = false;
@@ -726,11 +762,7 @@ impl ChatPanel {
                 Ok(s) => s,
                 Err(e) => {
                     let _ = this.update(app_cx, |panel, cx| {
-                        if let Some(m) = panel
-                            .messages
-                            .iter_mut()
-                            .find(|m| m.id == assistant_id)
-                        {
+                        if let Some(m) = panel.messages.iter_mut().find(|m| m.id == assistant_id) {
                             m.content = format!("[stream error: {e}]");
                             m.streaming = false;
                         }
@@ -817,9 +849,7 @@ impl ChatPanel {
                             .update(app_cx, |panel, cx| {
                                 // Drop chunks from a turn the user already
                                 // cancelled / that already completed.
-                                if panel.active_turn_id.as_deref()
-                                    != Some(turn_id.as_str())
-                                {
+                                if panel.active_turn_id.as_deref() != Some(turn_id.as_str()) {
                                     done = true;
                                     return;
                                 }
@@ -831,8 +861,7 @@ impl ChatPanel {
                                 apply_turn_chunk(&mut panel.messages, &assistant_id, &event);
                                 if matches!(
                                     event,
-                                    TurnChunk::TurnComplete { .. }
-                                        | TurnChunk::TurnAborted { .. }
+                                    TurnChunk::TurnComplete { .. } | TurnChunk::TurnAborted { .. }
                                 ) {
                                     done = true;
                                     panel.active_turn_id = None;
@@ -907,9 +936,8 @@ impl ChatPanel {
                     // Acquire the stream slot, take one frame, put it
                     // back if we got something — keeps the slot field
                     // re-entrant with the cancel path that nulls it.
-                    let next = match this.update(app_cx, |panel, _| {
-                        panel.active_tool_stream.take()
-                    }) {
+                    let next = match this.update(app_cx, |panel, _| panel.active_tool_stream.take())
+                    {
                         Ok(Some(mut s)) => {
                             let frame = s.recv().await;
                             // Stash the stream back so the cancel path
@@ -948,9 +976,7 @@ impl ChatPanel {
                     let event = ToolChunk::from_value(&value);
                     let _ = this.update(app_cx, |panel, cx| {
                         match event {
-                            ToolChunk::Dispatched {
-                                call_id, name, ..
-                            } => {
+                            ToolChunk::Dispatched { call_id, name, .. } => {
                                 panel.tool_activity = Some(ToolActivity {
                                     call_id,
                                     name,
@@ -968,9 +994,7 @@ impl ChatPanel {
                                     panel.tool_activity = None;
                                 }
                             }
-                            ToolChunk::MemoryWritten
-                            | ToolChunk::Warning
-                            | ToolChunk::Unknown => {}
+                            ToolChunk::MemoryWritten | ToolChunk::Warning | ToolChunk::Unknown => {}
                         }
                         cx.notify();
                     });
@@ -1029,7 +1053,9 @@ impl ChatPanel {
         let id_owned = id.to_owned();
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let _ = set_active_workspace(&id_owned).await;
-            let mru = recent_workspaces(WORKSPACE_MRU_LIMIT).await.unwrap_or_default();
+            let mru = recent_workspaces(WORKSPACE_MRU_LIMIT)
+                .await
+                .unwrap_or_default();
             let _ = this.update(app_cx, |panel, cx| {
                 if !mru.is_empty() {
                     panel.workspaces = mru;
@@ -1119,8 +1145,7 @@ impl ChatPanel {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             // Runs on gpui's executor (no tokio reactor) — `tokio::task::
             // spawn_blocking` would panic. Hop onto the bridge runtime.
-            let picked: Option<PathBuf> =
-                wylde_gui_pipe::bridged_spawn_blocking(pick_folder).await;
+            let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(pick_folder).await;
             let Some(path) = picked else {
                 return;
             };
@@ -1134,7 +1159,9 @@ impl ChatPanel {
                     panel.active_workspace_id = Some(ws.id.clone());
                 }
             });
-            let mru = recent_workspaces(WORKSPACE_MRU_LIMIT).await.unwrap_or_default();
+            let mru = recent_workspaces(WORKSPACE_MRU_LIMIT)
+                .await
+                .unwrap_or_default();
             let _ = this.update(app_cx, |panel, cx| {
                 if !mru.is_empty() {
                     panel.workspaces = mru;
@@ -1191,11 +1218,7 @@ fn flush_streaming_bubble(messages: &mut [ChatMessage], assistant_id: &str, fall
 }
 
 /// Apply a single `chat.stream_turn` chunk to the assistant bubble.
-fn apply_turn_chunk(
-    messages: &mut [ChatMessage],
-    assistant_id: &str,
-    event: &TurnChunk,
-) {
+fn apply_turn_chunk(messages: &mut [ChatMessage], assistant_id: &str, event: &TurnChunk) {
     let Some(msg) = messages.iter_mut().find(|m| m.id == assistant_id) else {
         return;
     };
@@ -1236,6 +1259,173 @@ fn pick_next_active(remaining: &[ConversationMeta], _deleted_id: &str) -> Option
     remaining.first().map(|c| c.id.clone())
 }
 
+// ── Symbol-aware composer plumbing (Slice F) ─────────────────────────────
+impl ChatPanel {
+    /// Debounced recognition scan: tokenize now (cheap, sync), wait out the
+    /// debounce window, then resolve each token over the pipe. A newer edit
+    /// bumps the generation and this scan's results drop on arrival.
+    pub(crate) fn schedule_composer_scan(&mut self, text: String, cx: &mut Context<Self>) {
+        let generation = self.composer.begin_scan();
+        let tokens = composer::tokenizer::scan(&text);
+        let Some(ws) = self.active_workspace_id.clone() else {
+            // No workspace → nothing to recognize against.
+            let _ = self.composer.install(generation, Vec::new(), false);
+            cx.notify();
+            return;
+        };
+        if tokens.is_empty() {
+            let _ = self.composer.install(generation, Vec::new(), false);
+            cx.notify();
+            return;
+        }
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            app_cx
+                .background_executor()
+                .timer(Duration::from_millis(composer::input::SCAN_DEBOUNCE_MS))
+                .await;
+            let still_current = this
+                .update(app_cx, |p, _| p.composer.generation == generation)
+                .unwrap_or(false);
+            if !still_current {
+                return;
+            }
+            let mut words: Vec<WordRecognition> = Vec::with_capacity(tokens.len());
+            let mut degraded = false;
+            for t in tokens {
+                let fallback = t.clone();
+                match composer::ipc_to_workspaces::recognize(&ws, t).await {
+                    Ok(w) => words.push(w),
+                    Err(_) => {
+                        // OI-1 graceful degrade: keep the token visible-less
+                        // and flag the strip hint; typing is never blocked.
+                        degraded = true;
+                        words.push(WordRecognition::new(fallback));
+                    }
+                }
+            }
+            let _ = this.update(app_cx, |p, cx| {
+                if p.composer.install(generation, words, degraded) {
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Toggle the Ctrl+P palette. Opening focuses its query field.
+    pub(crate) fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.composer.palette.is_some() {
+            self.composer.palette = None;
+            self.focus_prompt(window, cx);
+        } else {
+            self.composer.palette = Some(Default::default());
+            self.palette_input.update(cx, |i, c| i.clear(c));
+            let handle = self.palette_input.read(cx).focus_handle.clone();
+            handle.focus(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Debounced palette query → `workspaces.symbols.find`.
+    pub(crate) fn schedule_palette_query(&mut self, query: String, cx: &mut Context<Self>) {
+        let Some(palette) = self.composer.palette.as_mut() else {
+            return;
+        };
+        palette.generation += 1;
+        palette.query = query.clone();
+        let generation = palette.generation;
+        let Some(ws) = self.active_workspace_id.clone() else {
+            return;
+        };
+        if query.trim().is_empty() {
+            palette.hits.clear();
+            palette.selected = 0;
+            cx.notify();
+            return;
+        }
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            app_cx
+                .background_executor()
+                .timer(Duration::from_millis(150))
+                .await;
+            let still_current = this
+                .update(app_cx, |p, _| {
+                    p.composer
+                        .palette
+                        .as_ref()
+                        .is_some_and(|pl| pl.generation == generation)
+                })
+                .unwrap_or(false);
+            if !still_current {
+                return;
+            }
+            let hits = composer::ipc_to_workspaces::find_symbols(&ws, query.trim(), 8)
+                .await
+                .unwrap_or_default();
+            let _ = this.update(app_cx, |p, cx| {
+                if let Some(pl) = p.composer.palette.as_mut() {
+                    if pl.generation == generation {
+                        pl.hits = hits;
+                        pl.selected = 0;
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Insert an `@symbol` reference at the prompt cursor and close the
+    /// palette (no refocus — used by the palette input's Enter).
+    pub(crate) fn insert_palette_reference(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.prompt_input.update(cx, |input, c| {
+            composer::input::insert_reference(input, name);
+            input.emit_changed(c);
+        });
+        self.composer.palette = None;
+        cx.notify();
+    }
+
+    /// Click-accept from a palette row: insert + hand focus back to the
+    /// prompt.
+    pub(crate) fn accept_palette_symbol(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.insert_palette_reference(name, cx);
+        self.focus_prompt(window, cx);
+    }
+
+    /// Panel-level keys (the input forwards what it doesn't handle):
+    /// `Ctrl+P` toggles the symbol palette, `Esc` closes composer popovers.
+    pub(crate) fn on_panel_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ks = &ev.keystroke;
+        if ks.key.as_str() == "p" && (ks.modifiers.control || ks.modifiers.platform) {
+            self.toggle_palette(window, cx);
+            return;
+        }
+        if ks.key.as_str() == "escape" {
+            let had_overlay = self.composer.palette.is_some()
+                || self.composer.disambiguating.is_some()
+                || self.composer.curating;
+            if had_overlay {
+                self.composer.palette = None;
+                self.composer.disambiguating = None;
+                self.composer.curating = false;
+                self.focus_prompt(window, cx);
+                cx.notify();
+            }
+        }
+    }
+}
+
 impl Render for ChatPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let inference_bar = inference_bar(self, cx);
@@ -1243,14 +1433,19 @@ impl Render for ChatPanel {
         let consent_strip = consent_card_strip(self, cx);
         let tool_strip = tool_activity_strip(self);
 
-        let mut body = div()
-            .size_full()
-            .flex()
-            .flex_col()
-            .bg(rgb(pack(SURFACE_900)))
-            .child(log)
-            .child(consent_strip)
-            .child(tool_strip);
+        let mut body =
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(rgb(pack(SURFACE_900)))
+                // Composer keys the input doesn't claim (Ctrl+P palette, Esc).
+                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                    this.on_panel_key(ev, window, cx)
+                }))
+                .child(log)
+                .child(consent_strip)
+                .child(tool_strip);
 
         if let Some(err) = &self.error {
             body = body.child(error_strip(err));
@@ -1539,6 +1734,10 @@ fn inference_bar(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
         bar = bar.child(working_memory_panel(panel, cx));
     }
 
+    // Symbol-aware composer surfaces (Slice F): chip strip, disambiguation,
+    // curate-before-send, Ctrl+P palette.
+    bar = crate::composer_ui::mount(bar, panel, cx);
+
     // Second row: prompt input + send/stop button.
     bar = bar.child(prompt_row(panel, cx));
     bar
@@ -1779,7 +1978,9 @@ fn conversation_row(
     // Left: the select target. A nested clickable block (not the whole
     // row) so the delete control on the right doesn't double-fire select.
     let select_block = div()
-        .id(ElementId::Name(format!("chat-conversation-pick::{}", meta.id).into()))
+        .id(ElementId::Name(
+            format!("chat-conversation-pick::{}", meta.id).into(),
+        ))
         .flex_1()
         .flex()
         .flex_col()
@@ -1841,7 +2042,9 @@ fn conversation_row(
 fn delete_request_button(id: &str, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
     let id_for_click = id.to_owned();
     div()
-        .id(ElementId::Name(format!("chat-conversation-del::{id}").into()))
+        .id(ElementId::Name(
+            format!("chat-conversation-del::{id}").into(),
+        ))
         .px_2()
         .py_1()
         .rounded(px(4.0))
@@ -1870,7 +2073,9 @@ fn delete_confirm_controls(id: &str, cx: &mut Context<ChatPanel>) -> gpui::Div {
         .items_center()
         .child(
             div()
-                .id(ElementId::Name(format!("chat-conversation-del-yes::{id}").into()))
+                .id(ElementId::Name(
+                    format!("chat-conversation-del-yes::{id}").into(),
+                ))
                 .px_2()
                 .py_1()
                 .rounded(px(4.0))
@@ -1890,7 +2095,9 @@ fn delete_confirm_controls(id: &str, cx: &mut Context<ChatPanel>) -> gpui::Div {
         )
         .child(
             div()
-                .id(ElementId::Name(format!("chat-conversation-del-no::{id}").into()))
+                .id(ElementId::Name(
+                    format!("chat-conversation-del-no::{id}").into(),
+                ))
                 .px_2()
                 .py_1()
                 .rounded(px(4.0))
@@ -1958,7 +2165,11 @@ fn eject_button(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui
         .text_size(px(size::XS))
         .text_color(text_color)
         // ⏏ eject glyph; trailing "…" while the round-trip is in flight.
-        .child(SharedString::from(if panel.ejecting { "⏏ …" } else { "⏏" }));
+        .child(SharedString::from(if panel.ejecting {
+            "⏏ …"
+        } else {
+            "⏏"
+        }));
     if enabled {
         btn = btn.cursor_pointer().on_mouse_down(
             gpui::MouseButton::Left,
@@ -1997,15 +2208,13 @@ fn workspace_dropdown(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::D
     }
     for ws in &panel.workspaces {
         let id_for_select = ws.id.clone();
-        col = col.child(
-            dropdown_row(
-                ElementId::Name(format!("chat-ws-pick::{}", ws.id).into()),
-                SharedString::from(format!("{}  ·  {}", ws.id, ws.path)),
-                cx.listener(move |this: &mut ChatPanel, _ev, window, cx| {
-                    this.select_workspace(&id_for_select, window, cx);
-                }),
-            ),
-        );
+        col = col.child(dropdown_row(
+            ElementId::Name(format!("chat-ws-pick::{}", ws.id).into()),
+            SharedString::from(format!("{}  ·  {}", ws.id, ws.path)),
+            cx.listener(move |this: &mut ChatPanel, _ev, window, cx| {
+                this.select_workspace(&id_for_select, window, cx);
+            }),
+        ));
     }
     col
 }
@@ -2022,22 +2231,18 @@ fn model_dropdown(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
         }),
     ));
     if panel.models.is_empty() {
-        col = col.child(empty_dropdown_row(
-            "Ollama offline — no models discovered",
-        ));
+        col = col.child(empty_dropdown_row("Ollama offline — no models discovered"));
         return col;
     }
     for m in &panel.models {
         let m_for_select = m.clone();
-        col = col.child(
-            dropdown_row(
-                ElementId::Name(format!("chat-model-pick::{m}").into()),
-                SharedString::from(m.clone()),
-                cx.listener(move |this: &mut ChatPanel, _ev, window, cx| {
-                    this.select_model(Some(m_for_select.clone()), window, cx);
-                }),
-            ),
-        );
+        col = col.child(dropdown_row(
+            ElementId::Name(format!("chat-model-pick::{m}").into()),
+            SharedString::from(m.clone()),
+            cx.listener(move |this: &mut ChatPanel, _ev, window, cx| {
+                this.select_model(Some(m_for_select.clone()), window, cx);
+            }),
+        ));
     }
     col
 }
