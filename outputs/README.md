@@ -14,6 +14,7 @@ artifacts here. Only this README is tracked.
 | `tbs-slice-<name>-*.md` | Slice orientation/status reports — Aaron reads these |
 | `nextcloud-mirrors/` | Point-in-time fetches of other Nextcloud pages (strangler, memgraph, voice, collectives, …). **Fetch date unknown — re-fetch via nctool before trusting.** |
 | `archive/` | Superseded planning snapshots + scratch, dated per sweep. Don't extend; make a new dated folder. |
+| `build-requests/` · `build-results/` | The build-watcher exchange (see `tools/build-watcher/README.md`) — agents drop `.request` files, the watcher on Aaron's machine writes `.result.txt` back |
 
 Rules: Nextcloud is authoritative; the LIVE copies above exist because slice
 agents can't always reach nctool. Any board edit made here is **owed to the

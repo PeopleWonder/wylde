@@ -29,11 +29,11 @@
 //! * `memory.reflect` — `reflection` not in Rust (the `long_term` scope
 //!   IS ported — `memory::long_term::reflection` — the verb waits on the
 //!   conversation/workspace scopes).
+//! * `rag.workspaces.*` (10 verbs) — overlaps `memory.workspaces.*`;
+//!   namespace reconciliation + indexer port pending.
 //!
 //! (`prompts.*` left this list in the full-Rust cutover — the five verbs
 //! are served by [`crate::prompts`] now.)
-//! * `rag.workspaces.*` (10 verbs) — overlaps `memory.workspaces.*`;
-//!   namespace reconciliation + indexer port pending.
 //!
 //! (`models.transcribe` / `models.synthesize` were retired at the voice
 //! cutover and deleted in the Bucket-A IPC cleanup — STT/TTS run
