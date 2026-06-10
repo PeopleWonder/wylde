@@ -396,12 +396,23 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
              `cargo build --release -p wylde-vram-broker`",
     },
     StranglerService {
+        // Collapsed to Rust-only (full-Rust cutover, 2026-06-09): the
+        // Python `Extensions/extension_bridge` importlib dispatcher was
+        // DELETED; `wylde-extension-bridge` (MCP-server host) is
+        // canonical. Both impls bound the SAME pipe and accepted the
+        // SAME `extensions.dispatch` shape (the Rust impl additionally
+        // exposes the nine `ext.*` actions + the `ext.events` stream),
+        // so Gateway routing is unchanged. The master-plan §11 Q-E1
+        // dogfood gate was waived by Aaron with the full-Rust call.
+        // `WYLDE_WYLDE_EXTENSION_BRIDGE_IMPL` no longer has a `python`
+        // target.
         name: service_name::EXTENSION_BRIDGE,
-        python_module: Some("Extensions.extension_bridge.run"),
-        default_impl: ImplLang::Python,
+        python_module: None,
+        default_impl: ImplLang::Rust,
         missing_binary_warn:
-            "extension_bridge: WYLDE_WYLDE_EXTENSION_BRIDGE_IMPL=rust but no \
-             binary found; falling back to python",
+            "extension_bridge: no rust binary found; extension_bridge will not \
+             start — the Python Extensions/extension_bridge module was removed, \
+             so build with `cargo build --release -p wylde-extension-bridge`",
     },
     StranglerService {
         // Collapsed to Rust-only (2026-06-02): the in-tree Python
@@ -607,17 +618,12 @@ pub async fn stop_vram_broker() -> Result<()> {
 
 /// Boot the extension bridge as a subprocess of the Lifecycle daemon.
 ///
-/// Phase 4 strangler-fig: the historical Python impl
-/// (`Extensions.extension_bridge.run`, importlib-based dispatcher) and
-/// the Rust port (`wylde-extension-bridge`, MCP-server host) coexist;
-/// impl is selected via `WYLDE_WYLDE_EXTENSION_BRIDGE_IMPL=python|rust`.
-/// Default is `python`. The Rust impl is a major contract change
-/// (MCP-server host instead of in-process `importlib`); per master
-/// plan §11 Q-E1 we want at least one dogfood week before flipping
-/// the default. Both impls bind the SAME pipe and accept the SAME
-/// `extensions.dispatch` action shape so Gateway routing is
-/// unchanged — the Rust impl additionally exposes nine `ext.*`
-/// actions plus the `ext.events` stream.
+/// Rust-only since the full-Rust cutover (2026-06-09):
+/// `wylde-extension-bridge` (MCP-server host) is the sole impl; the
+/// historical Python importlib dispatcher was deleted. It binds the
+/// same pipe and accepts the same `extensions.dispatch` action shape
+/// the Python impl did, plus nine `ext.*` actions and the
+/// `ext.events` stream — Gateway routing is unchanged.
 pub async fn start_extension_bridge() -> Result<()> {
     start_strangler(strangler_def(service_name::EXTENSION_BRIDGE)).await
 }
