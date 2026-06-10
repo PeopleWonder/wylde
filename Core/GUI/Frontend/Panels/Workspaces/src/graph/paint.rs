@@ -27,7 +27,21 @@ pub(super) fn overlay_text(s: String, sz: f32, w: u16) -> gpui::Div {
 /// concentric filled circles (the radial-gradient fake); edges are thin filled
 /// quads via [`Path`].
 pub(super) fn paint_graph(window: &mut Window, out: &RenderOutput) {
-    // Edges first (under the spheres).
+    // Boundary outlines first (under everything).
+    for r in &out.outlines {
+        window.paint_quad(gpui::quad(
+            Bounds {
+                origin: point(px(r.x), px(r.y)),
+                size: size(px(r.w), px(r.h)),
+            },
+            r.corner_radius,
+            to_rgba(r.fill),
+            px(r.border_width),
+            to_hsla(r.border),
+            gpui::BorderStyle::Solid,
+        ));
+    }
+    // Edges next (under the spheres).
     for e in &out.edges {
         paint_line(window, e.x0, e.y0, e.x1, e.y1, e.thickness, e.color);
     }

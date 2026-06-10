@@ -82,6 +82,21 @@ pub struct EdgeDraw {
     pub thickness: f32,
 }
 
+/// A rounded-rect outline in window px (C-cluster: the Theme
+/// `cluster_boundary` drawn around an expanded-in-place cluster's members).
+/// Drawn under edges and spheres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutlineRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub corner_radius: f32,
+    pub fill: Color,
+    pub border: Color,
+    pub border_width: f32,
+}
+
 /// A full frame's draw list. `bg_inner` / `bg_outer` are the radial-gradient
 /// background endpoints (centre → edge); gpui lacks a radial gradient at this
 /// rev so the panel approximates it (solid inner with a faint vignette).
@@ -89,6 +104,8 @@ pub struct EdgeDraw {
 pub struct RenderOutput {
     pub bg_inner: Color,
     pub bg_outer: Color,
+    /// Boundary outlines (under everything else).
+    pub outlines: Vec<OutlineRect>,
     pub edges: Vec<EdgeDraw>,
     pub spheres: Vec<SphereDraw>,
 }
