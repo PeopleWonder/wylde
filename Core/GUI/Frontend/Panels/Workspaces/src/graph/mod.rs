@@ -12,11 +12,12 @@
 //!   * [`render`] — HOW it draws (pluggable [`render::Renderer`] trait; v1 =
 //!     [`render::render_2d::Renderer2d`]; reads everything from the [`Theme`]).
 //!   * [`ipc`]    — talks to `wylde-workspaces` with graceful degrade (OI-1).
-//!
-//! **Out of scope (later C-* sub-slices):** force-directed physics, real
-//! layout backends, space-map navigation, clustering, the settings menu, the
-//! vocabulary overlay. C-scaffold keeps to foundation + Theme + IPC + static
-//! spheres.
+//!   * [`layout`] / [`physics`] — WHERE things go / HOW they move
+//!     (C-layout / C-physics); the animated swap driver is
+//!     `transition_driver` (private).
+//!   * [`navigation`] — WHERE the user is looking; holds the input handlers
+//!     today, grows to the space-map in Slice C-navigation.
+//!   * `paint` (private) — gpui draw-call plumbing for the renderer output.
 //!
 //! [`GraphView`] is the panel mount point — a gpui view the Workspaces
 //! panel's Graph tab embeds.
@@ -24,8 +25,11 @@
 pub mod ipc;
 pub mod layout;
 pub mod model;
+pub mod navigation;
+mod paint;
 pub mod physics;
 pub mod render;
+mod transition_driver;
 
 // Integration + perf suite (Build Order §4 file tree → `graph/tests/`). A
 // `#[path]` module so it can live in the spec's `tests/` directory without
@@ -38,24 +42,23 @@ mod physics_tests;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
 
 use gpui::{
-    canvas, div, point, prelude::*, px, size, App, AppContext, AsyncApp, Bounds, Context,
-    ElementId, FocusHandle, FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Path, Pixels, Render, ScrollDelta, ScrollWheelEvent,
-    SharedString, Window,
+    canvas, div, prelude::*, App, AppContext, AsyncApp, Bounds, Context, ElementId, FocusHandle,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Render, ScrollWheelEvent, Window,
 };
-use wylde_theme::typography::{size as font_size, weight, FAMILY_INTER};
+use wylde_theme::typography::{size as font_size, weight};
 
-use crate::workspaces_panel::pack;
 use ipc::{GraphFetchError, GraphLoad};
-use layout::{CubicBezier, ForceDirected, LayoutKind, LayoutTransition};
+use layout::{ForceDirected, LayoutKind};
 use model::{Layout, WorkspaceGraph};
+use navigation::input::Drag;
+use paint::{overlay_text, paint_graph, to_rgba};
 use physics::{ActiveRegion, PhysicsConfig, PhysicsHandle, PositionFrame};
 use render::render_2d::Renderer2d;
-use render::{Camera, Color, RenderOutput, Renderer, Scene, Theme, Viewport};
+use render::{Camera, RenderOutput, Renderer, Scene, Theme, Viewport};
+use transition_driver::ActiveTransition;
 
 /// The canvas rectangle (window-absolute px) captured at paint time so mouse
 /// handlers can project model↔screen for hit-testing.
@@ -66,40 +69,6 @@ struct CanvasRect {
     w: f32,
     h: f32,
 }
-
-/// In-flight drag state. A press that lands on a node drags that node (pins it
-/// in the physics worker); a press on empty space pans the camera.
-#[derive(Clone, Debug)]
-struct Drag {
-    x: f32,
-    y: f32,
-    /// Set once the pointer moves past the click/drag threshold, so a release
-    /// without movement is treated as a click (node hit-test) instead of a pan.
-    moved: bool,
-    /// `Some(id)` → dragging that node (pin it to the cursor each move);
-    /// `None` → panning the camera.
-    node: Option<String>,
-}
-
-/// An in-flight animated layout swap (Slice C-layout). The pure tween lives in
-/// [`LayoutTransition`]; this pairs it with a wall-clock start and the target
-/// layout so the driver can finalise (resume / leave-paused physics) on
-/// completion.
-struct ActiveTransition {
-    anim: LayoutTransition,
-    start: Instant,
-    target: LayoutKind,
-}
-
-/// Result of advancing the layout-swap tween one step.
-enum TransitionStep {
-    Running,
-    Completed,
-}
-
-/// Tween tick cadence (~60 fps). The animation runs on the gpui main thread,
-/// independent of the physics worker's own frame interval.
-const TRANSITION_FRAME: Duration = Duration::from_millis(16);
 
 /// The graph panel view. Owns the loaded graph + its scaffold layout, the
 /// theme, the camera, and transient interaction state.
@@ -144,9 +113,6 @@ pub struct GraphView {
     /// real click behaviour future slices add) and logged to stderr.
     last_clicked: Option<String>,
 }
-
-/// Pointer movement (px) past which a press becomes a pan, not a click.
-const DRAG_THRESHOLD: f32 = 3.0;
 
 impl GraphView {
     pub fn new() -> Self {
@@ -289,119 +255,6 @@ impl GraphView {
         self.subscribe_physics(cx);
     }
 
-    // ── Layout swap (Slice C-layout) ─────────────────────────────────────
-
-    /// Switch to `kind` with the locked 500 ms animated tween (Visual Style v1
-    /// `graph_layout_swap`). No-op if already showing `kind`. Cycled by
-    /// `Ctrl+Shift+L` via [`LayoutKind::next`].
-    fn set_layout(&mut self, kind: LayoutKind, cx: &mut Context<Self>) {
-        if !self.begin_layout_swap(kind, Instant::now()) {
-            return;
-        }
-        self.spawn_transition_driver(cx);
-        cx.notify();
-    }
-
-    /// Pure core of [`set_layout`]: snapshot the current positions as `from`,
-    /// compute the target backend's positions as `to`, pause physics, and arm
-    /// the tween. Returns `false` (no swap armed) when already on `kind`. `now`
-    /// is injected so tests drive the animation deterministically.
-    fn begin_layout_swap(&mut self, kind: LayoutKind, now: Instant) -> bool {
-        if kind == self.current_layout && self.transition.is_none() {
-            return false;
-        }
-        let from = (*self.layout).clone();
-        let to = kind.compute_positions(self.graph.as_ref());
-        // Pause physics for the swap. Deterministic targets never resume it;
-        // force-directed resumes (seeded from `to`) when the tween completes.
-        self.physics = None;
-        let (duration_ms, easing) = self.swap_anim();
-        self.transition = Some(ActiveTransition {
-            anim: LayoutTransition::new(from, to, duration_ms, easing),
-            start: now,
-            target: kind,
-        });
-        self.current_layout = kind;
-        if let Some(id) = &self.workspace_id {
-            self.layout_cache.insert(id.clone(), kind);
-        }
-        true
-    }
-
-    /// Advance the in-flight tween to wall-clock `now`. Updates `self.layout`;
-    /// on completion finalises — force-directed respawns the worker seeded from
-    /// the target positions, deterministic layouts leave it paused. cx-free so
-    /// tests step it directly; the gpui driver re-attaches the subscription.
-    fn advance_transition(&mut self, now: Instant) -> TransitionStep {
-        let (layout, done, target, final_to) = {
-            let Some(t) = self.transition.as_ref() else {
-                return TransitionStep::Completed;
-            };
-            let elapsed = now.saturating_duration_since(t.start).as_secs_f32() * 1000.0;
-            if t.anim.is_done(elapsed) {
-                (t.anim.to.clone(), true, t.target, Some(t.anim.to.clone()))
-            } else {
-                (t.anim.sample(elapsed), false, t.target, None)
-            }
-        };
-        self.layout = Rc::new(layout);
-        if !done {
-            return TransitionStep::Running;
-        }
-        self.transition = None;
-        self.physics = if target.is_physics() {
-            self.spawn_worker(final_to.as_ref())
-        } else {
-            None
-        };
-        TransitionStep::Completed
-    }
-
-    /// Drive the tween on the gpui main thread: a ~60 fps timer feeds wall-clock
-    /// into [`advance_transition`](Self::advance_transition) until it completes,
-    /// then re-attaches the physics subscription (a no-op for a paused layout).
-    fn spawn_transition_driver(&self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
-            loop {
-                app_cx.background_executor().timer(TRANSITION_FRAME).await;
-                let running = this.update(app_cx, |view, cx| {
-                    let step = view.advance_transition(Instant::now());
-                    cx.notify();
-                    matches!(step, TransitionStep::Running)
-                });
-                match running {
-                    Ok(true) => continue,
-                    Ok(false) => {
-                        let _ = this.update(app_cx, |view, cx| view.subscribe_physics(cx));
-                        break;
-                    }
-                    Err(_) => break, // the view is gone
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// The layout-swap duration + easing, read FROM the theme
-    /// (`animations.graph_layout_swap`); the fallback (used only when the theme
-    /// failed to load) equals the locked spec value, so a swap still animates.
-    fn swap_anim(&self) -> (f32, CubicBezier) {
-        self.theme
-            .as_ref()
-            .and_then(|t| t.animation("graph_layout_swap"))
-            .map(|a| (a.duration_ms, CubicBezier::from_array(a.easing)))
-            .unwrap_or((500.0, CubicBezier::GRAPH_LAYOUT_SWAP))
-    }
-
-    /// `Ctrl+Shift+L` → cycle force → hierarchical → grid → force.
-    fn on_key(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let ks = &ev.keystroke;
-        if ks.key.as_str() == "l" && ks.modifiers.control && ks.modifiers.shift {
-            let next = self.current_layout.next();
-            self.set_layout(next, cx);
-        }
-    }
-
     /// Tell the worker the current visible model-space rect so it can cull
     /// off-screen nodes (and resume — a camera move is a resume trigger). A
     /// no-op when there is no worker.
@@ -446,95 +299,6 @@ impl GraphView {
         let mut vp = self.viewport(rect);
         vp.camera = camera;
         Some(Renderer2d::new().frame(&scene, &vp))
-    }
-
-    // ── Mouse handlers ──────────────────────────────────────────────────
-
-    fn on_scroll(&mut self, ev: &ScrollWheelEvent, cx: &mut Context<Self>) {
-        let units = match ev.delta {
-            ScrollDelta::Lines(p) => p.y,
-            ScrollDelta::Pixels(p) => f32::from(p.y) / 40.0,
-        };
-        if units.abs() < f32::EPSILON {
-            return;
-        }
-        self.camera.zoom_by(1.15f32.powf(units));
-        // A zoom is a resume trigger + changes which nodes are visible — refresh
-        // the worker's cull region.
-        self.push_viewport();
-        cx.notify();
-    }
-
-    fn on_down(&mut self, ev: &MouseDownEvent, _cx: &mut Context<Self>) {
-        let (sx, sy) = (f32::from(ev.position.x), f32::from(ev.position.y));
-        // A press on a node drags that node; a press on empty space pans.
-        let node = self
-            .render_output(self.canvas, self.camera)
-            .and_then(|out| out.hit_test(sx, sy).map(str::to_owned));
-        self.drag = Some(Drag {
-            x: sx,
-            y: sy,
-            moved: false,
-            node,
-        });
-    }
-
-    fn on_move(&mut self, ev: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let (px_, py) = (f32::from(ev.position.x), f32::from(ev.position.y));
-        let Some(drag) = self.drag.as_ref() else {
-            return;
-        };
-        let (dx, dy) = (px_ - drag.x, py - drag.y);
-        if !drag.moved && dx.abs() + dy.abs() < DRAG_THRESHOLD {
-            return;
-        }
-        let node = drag.node.clone();
-        if let Some(d) = self.drag.as_mut() {
-            d.moved = true;
-            d.x = px_;
-            d.y = py;
-        }
-        match node {
-            // Dragging a node: pin it to the cursor in model space; the worker
-            // freezes its physics and the rest of the graph flows around it.
-            Some(id) => {
-                let m = self.viewport(self.canvas).screen_to_model(px_, py);
-                if let Some(h) = &self.physics {
-                    h.pin(id, m.x, m.y);
-                }
-            }
-            // Empty space: pan the camera.
-            None => self.camera.pan_by(dx, dy),
-        }
-        cx.notify();
-    }
-
-    fn on_up(&mut self, _ev: &MouseUpEvent, cx: &mut Context<Self>) {
-        let Some(drag) = self.drag.take() else {
-            return;
-        };
-        match drag.node {
-            Some(id) => {
-                if drag.moved {
-                    // Drag finished — release the pin so the node rejoins the
-                    // flow and settles into place.
-                    if let Some(h) = &self.physics {
-                        h.release(id);
-                    }
-                } else {
-                    // A click (no movement) — record the selected node.
-                    eprintln!("[workspaces.graph] clicked node {id}");
-                    self.last_clicked = Some(id);
-                    cx.notify();
-                }
-            }
-            None => {
-                if drag.moved {
-                    // It was a pan — refresh the worker's cull region.
-                    self.push_viewport();
-                }
-            }
-        }
     }
 }
 
@@ -755,97 +519,12 @@ impl GraphView {
     }
 }
 
-/// One line of overlay text.
-fn overlay_text(s: String, sz: f32, w: u16) -> gpui::Div {
-    use wylde_theme::colors::TEXT_PRIMARY;
-    div()
-        .font_family(FAMILY_INTER)
-        .text_size(px(sz))
-        .text_color(gpui::rgb(pack(TEXT_PRIMARY)))
-        .font_weight(FontWeight(w as f32))
-        .child(SharedString::from(s))
-}
-
-/// Translate a renderer [`RenderOutput`] into gpui paint calls. Spheres are
-/// concentric filled circles (the radial-gradient fake); edges are thin filled
-/// quads via [`Path`].
-fn paint_graph(window: &mut Window, out: &RenderOutput) {
-    // Edges first (under the spheres).
-    for e in &out.edges {
-        paint_line(window, e.x0, e.y0, e.x1, e.y1, e.thickness, e.color);
-    }
-    // Spheres, layer by layer (rim → core → specular), border on the rim.
-    for s in &out.spheres {
-        for (i, layer) in s.layers.iter().enumerate() {
-            let r = layer.radius.max(0.5);
-            let b = circle_bounds(s.cx + layer.dx, s.cy + layer.dy, r);
-            let (bw, bc) = if i == 0 {
-                (px(s.border_width), to_hsla(s.border_color))
-            } else {
-                (px(0.0), to_hsla(layer.color))
-            };
-            window.paint_quad(gpui::quad(
-                b,
-                r, // corner radius = radius → a circle
-                to_rgba(layer.color),
-                bw,
-                bc,
-                gpui::BorderStyle::Solid,
-            ));
-        }
-    }
-}
-
-/// Square bounds for a circle of radius `r` centred on `(cx, cy)`.
-fn circle_bounds(cx: f32, cy: f32, r: f32) -> Bounds<Pixels> {
-    Bounds {
-        origin: point(px(cx - r), px(cy - r)),
-        size: size(px(r * 2.0), px(r * 2.0)),
-    }
-}
-
-/// Paint a line segment as a thin filled quad (rotated rectangle) via a
-/// triangle-fan [`Path`].
-fn paint_line(window: &mut Window, x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32, c: Color) {
-    let dx = x1 - x0;
-    let dy = y1 - y0;
-    let len = (dx * dx + dy * dy).sqrt();
-    if len < f32::EPSILON {
-        return;
-    }
-    let half = (thickness * 0.5).max(0.3);
-    // Unit normal.
-    let (nx, ny) = (-dy / len * half, dx / len * half);
-    let a = point(px(x0 + nx), px(y0 + ny));
-    let b = point(px(x1 + nx), px(y1 + ny));
-    let cc = point(px(x1 - nx), px(y1 - ny));
-    let d = point(px(x0 - nx), px(y0 - ny));
-    let mut path = Path::new(a);
-    path.line_to(b);
-    path.line_to(cc);
-    path.line_to(d);
-    window.paint_path(path, to_rgba(c));
-}
-
-/// `Color` → gpui `Rgba` (both are 0..=1 RGBA; just a field copy).
-fn to_rgba(c: Color) -> gpui::Rgba {
-    gpui::Rgba {
-        r: c.r,
-        g: c.g,
-        b: c.b,
-        a: c.a,
-    }
-}
-
-/// `Color` → gpui `Hsla` (for border colours, which take `Into<Hsla>`).
-fn to_hsla(c: Color) -> gpui::Hsla {
-    to_rgba(c).into()
-}
-
 #[cfg(test)]
 mod tests {
+    use super::transition_driver::TransitionStep;
     use super::*;
     use model::{Edge, Node, NodeKind, Position, RelType};
+    use std::time::{Duration, Instant};
 
     fn node(id: &str, file: &str) -> Node {
         Node {
@@ -1089,3 +768,4 @@ mod tests {
         );
     }
 }
+

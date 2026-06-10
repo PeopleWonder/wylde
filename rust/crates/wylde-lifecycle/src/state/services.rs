@@ -7,26 +7,20 @@
 //! it. Each `stop_<service>` sends the OS-appropriate graceful signal,
 //! waits for exit, and force-kills on timeout.
 //!
-//! ## Strangler-fig switch
+//! ## Rust-only (full-Rust cutover R6, 2026-06-10)
 //!
-//! Services with both impls (extension_bridge) are dispatched through
-//! [`impl_for`]: `WYLDE_<SERVICE>_IMPL=rust` picks a sibling Rust binary
-//! resolved by [`rust_binary_path`], and a missing or unparseable env var
-//! (or a missing Rust binary) falls back to the Python module with a
-//! warning, so a mis-set deployment can never silently lose the service.
-//! vram_broker, device_gate, and gateway were collapsed to Rust-only on
-//! 2026-06-02, and voice in the Phase 11.E cutover — their Python packages
-//! were deleted, so they have no fallback (a missing binary leaves them
-//! down). This is the SAME dispatch the Python daemon uses — we port it
-//! verbatim so behaviour stays consistent regardless of which daemon is
-//! running.
+//! Every service is Rust; the Python runtime tree was deleted. The
+//! strangler-fig `WYLDE_<SERVICE>_IMPL` env vars are still parsed by
+//! [`impl_for`] for shape consistency, but `=python` only logs a
+//! warning — there is no module left to spawn — so every start path
+//! resolves a Rust binary via [`rust_binary_path`], and a missing
+//! binary leaves the service down with a loud build hint.
 //!
-//! Memory scheduler note: the Python daemon hosts the scheduler
-//! in-process (it's a Python thread; no separate binary). The Rust
-//! daemon can't host it in-process — there's no Rust scheduler — so
-//! [`start_memory_scheduler`] currently logs a one-time advisory and
-//! returns. the Wylde user's launcher script can opt back to the Python
-//! daemon if the scheduler is required for a given session.
+//! Memory scheduler note: the scheduler became a tokio task INSIDE the
+//! Rust wylde-harness in slice R2b (`wylde_harness::memory::scheduler`,
+//! gated on `WYLDE_HARNESS_SCHEDULER`), so the daemon has no scheduler
+//! of its own to start — [`start_memory_scheduler`] just logs that and
+//! returns.
 //!
 //! ## No-spawn mode (test / parity ONLY)
 //!
@@ -40,10 +34,13 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use serde_json::json;
 use tokio::process::{Child, Command};
+use wylde_shared::manifest::{HeartbeatHandle, ManifestWriter};
 
 use crate::state::{
     forget_spawn, is_service_alive, manifest_pid, nospawn_enabled, nospawn_record, nospawn_take,
@@ -71,21 +68,21 @@ impl ImplLang {
     }
 }
 
-/// Read `WYLDE_<SERVICE>_IMPL` for `service`; default Python.
+/// Read `WYLDE_<SERVICE>_IMPL` for `service`; default Rust (the Python
+/// runtime was deleted in the full-Rust cutover R6).
 ///
 /// The service name `wylde-vram-broker` maps to env var
 /// `WYLDE_WYLDE_VRAM_BROKER_IMPL` — dashes become underscores,
 /// everything uppercased. Unrecognised values log a warning and fall
-/// back to `python` so a typo can't take a service offline.
+/// back to `rust` so a typo can't take a service offline.
 pub fn impl_for(service: &str) -> ImplLang {
-    impl_for_with_default(service, ImplLang::Python)
+    impl_for_with_default(service, ImplLang::Rust)
 }
 
-/// Same as [`impl_for`] but with a per-service default for when the env
-/// var is unset or unrecognised. Used by services whose default has
-/// been flipped to Rust — VPN ships `default = Rust` after Phase 2.E
-/// even though the Python implementation is still on disk as a
-/// rollback path.
+/// Same as [`impl_for`] but with an explicit per-service default for
+/// when the env var is unset or unrecognised. Every caller passes
+/// `Rust` since the R6 deletion wave; the parameter survives so call
+/// sites stay explicit about it.
 pub fn impl_for_with_default(service: &str, default: ImplLang) -> ImplLang {
     let var = format!("WYLDE_{}_IMPL", service.to_uppercase().replace('-', "_"));
     let raw = match std::env::var(&var) {
@@ -150,76 +147,9 @@ fn wylde_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn python_executable() -> PathBuf {
-    // The torn-venv investigation lesson (see memory:
-    // `wylde_py3_resolves_to_python_314`): never use `py -3`. The
-    // canonical interpreter for the project is the .venv's
-    // python.exe. Honour an explicit override (`WYLDE_PYTHON`) when
-    // set, otherwise fall back to the venv path under WYLDE_ROOT, and
-    // finally to a plain `python` lookup so dev shells still work.
-    if let Ok(p) = std::env::var("WYLDE_PYTHON") {
-        return PathBuf::from(p);
-    }
-    let venv = wylde_root()
-        .join(".venv")
-        .join("Scripts")
-        .join("python.exe");
-    if venv.exists() {
-        return venv;
-    }
-    PathBuf::from("python")
-}
-
-fn namespace_pythonpath() -> String {
-    // Children spawned with `cwd = WYLDE_ROOT` need
-    // `parent-of-WYLDE_ROOT` on `PYTHONPATH` so `from Wylde.X import Y`
-    // resolves. Mirrors `_services.py`'s overlay.
-    let mut p = wylde_root();
-    p.pop();
-    let mut path = p.to_string_lossy().into_owned();
-    if let Ok(existing) = std::env::var("PYTHONPATH") {
-        if !existing.is_empty() {
-            path.push(';');
-            path.push_str(&existing);
-        }
-    }
-    path
-}
-
-/// Spawn helper for `python -m <module>`. Returns the live Child and
-/// the pid we should record. Always uses
-/// `CREATE_NEW_PROCESS_GROUP` so we can later send `CTRL_BREAK_EVENT`
-/// without taking the parent down with us.
-fn spawn_python_module(module: &str, service_name: &str) -> Result<Child> {
-    let py = python_executable();
-    tracing::info!(
-        "daemon: spawning {} via python -m {} (interpreter={})",
-        service_name,
-        module,
-        py.display()
-    );
-
-    let mut cmd = Command::new(&py);
-    cmd.arg("-m")
-        .arg(module)
-        .current_dir(wylde_root())
-        .env("WYLDE_SERVICE_NAME", service_name)
-        .env("WYLDE_ROOT", wylde_root())
-        .env("PYTHONPATH", namespace_pythonpath())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
-    apply_kill_on_drop(&mut cmd);
-
-    cmd.spawn()
-        .with_context(|| format!("spawn python -m {module} for {service_name}"))
-}
-
-/// Spawn helper for a Rust service binary. Same Stdio + creation
-/// flags as the Python branch so signal handling stays uniform.
+/// Spawn helper for a Rust service binary. Null Stdio +
+/// `CREATE_NEW_PROCESS_GROUP` so signal handling stays uniform across
+/// every daemon-managed service.
 fn spawn_rust_binary(service_name: &str, rust_bin: &Path) -> Result<Child> {
     tracing::info!(
         "daemon: spawning {} via rust binary {}",
@@ -332,29 +262,22 @@ async fn stop_service(name: &str, grace: Duration) -> Result<()> {
 // ── Strangler-fig start table ─────────────────────────────────────────
 //
 // Five services share the same start scaffolding: no-spawn short-circuit
-// → already-alive guard → dispatch → record + track. The only things
-// that vary are the service name, the Python module, the per-service
-// default impl, and the "no binary found" warning text — so they live in
-// a table and share one generic [`start_strangler`]. One of them
-// (extension_bridge) keeps a Python fallback (`python_module:
-// Some(..)`): a missing Rust binary falls back to `python -m <module>`.
-// The other four (device_gate, vram_broker, gateway, voice) were
-// collapsed to Rust-only (`python_module: None`) when their Python
-// packages were deleted — device_gate/vram_broker/gateway on 2026-06-02,
-// voice in the Phase 11.E cutover — so a missing binary leaves them down,
-// with no fallback. The unique services (memgraph, ollama, harness, vpn)
-// stay hand-written below because their control flow genuinely diverges
-// (always-python, hard-fail, early-return-no-spawn).
+// → already-alive guard → spawn → record + track. The only things that
+// vary are the service name, the per-service default impl, and the "no
+// binary found" warning text — so they live in a table and share one
+// generic [`start_strangler`]. All five are rust-only: their Python
+// packages were deleted over the migration — device_gate / vram_broker /
+// gateway on 2026-06-02, voice in the Phase 11.E cutover, and
+// extension_bridge in the full-Rust cutover (2026-06-09) — so a missing
+// binary leaves a service down, with no fallback. The unique services
+// (memgraph, ollama, harness, vpn) stay hand-written below because
+// their control flow genuinely diverges (JVM supervision, hard-fail,
+// early-return-no-spawn).
 
 /// One row of the strangler-fig start table.
 struct StranglerService {
     /// Canonical service name (e.g. `service_name::VOICE`).
     name: &'static str,
-    /// Python fallback module, run as `python -m <python_module>`, or
-    /// `None` for services collapsed to Rust-only. A `None` row has no
-    /// Python impl on disk, so a missing Rust binary means the service
-    /// simply does not start (no fallback) — the VPN pattern.
-    python_module: Option<&'static str>,
     /// Impl chosen when `WYLDE_<SERVICE>_IMPL` is unset/unrecognised.
     default_impl: ImplLang,
     /// Logged when the Rust impl is requested but no binary resolves.
@@ -367,12 +290,10 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
         // `device_gate` package was DELETED once the Rust port reached
         // parity. The Rust verifier carries its own hash verification
         // (bcrypt / sha-crypt / inline APR1), no interpreter deps. There
-        // is no Python fallback — `python_module: None` means a missing
-        // binary leaves the service down rather than spawning a module
-        // that no longer exists. `WYLDE_WYLDE_DEVICE_GATE_IMPL` no longer
-        // has a `python` target.
+        // is no Python fallback — a missing binary leaves the service
+        // down rather than spawning a module that no longer exists.
+        // `WYLDE_WYLDE_DEVICE_GATE_IMPL` no longer has a `python` target.
         name: service_name::DEVICE_GATE,
-        python_module: None,
         default_impl: ImplLang::Rust,
         missing_binary_warn:
             "device_gate: no rust binary found; device_gate will not start — the \
@@ -386,9 +307,8 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
         // Phase-0.5 estimator (a `vram.reserve` with no `bytes` is
         // estimated, not rejected) and DRAM spillover (admits a quantised
         // 27B-class model larger than VRAM on a 16 GB card). There is no
-        // Python fallback (`python_module: None`).
+        // Python fallback.
         name: service_name::VRAM_BROKER,
-        python_module: None,
         default_impl: ImplLang::Rust,
         missing_binary_warn:
             "vram_broker: no rust binary found; vram_broker will not start — the \
@@ -396,22 +316,30 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
              `cargo build --release -p wylde-vram-broker`",
     },
     StranglerService {
+        // Collapsed to Rust-only (full-Rust cutover, 2026-06-09): the
+        // Python `Extensions/extension_bridge` importlib dispatcher was
+        // DELETED; `wylde-extension-bridge` (MCP-server host) is
+        // canonical. Both impls bound the SAME pipe and accepted the
+        // SAME `extensions.dispatch` shape (the Rust impl additionally
+        // exposes the nine `ext.*` actions + the `ext.events` stream),
+        // so Gateway routing is unchanged. The master-plan §11 Q-E1
+        // dogfood gate was waived by Aaron with the full-Rust call.
+        // `WYLDE_WYLDE_EXTENSION_BRIDGE_IMPL` no longer has a `python`
+        // target.
         name: service_name::EXTENSION_BRIDGE,
-        python_module: Some("Extensions.extension_bridge.run"),
-        default_impl: ImplLang::Python,
+        default_impl: ImplLang::Rust,
         missing_binary_warn:
-            "extension_bridge: WYLDE_WYLDE_EXTENSION_BRIDGE_IMPL=rust but no \
-             binary found; falling back to python",
+            "extension_bridge: no rust binary found; extension_bridge will not \
+             start — the Python Extensions/extension_bridge module was removed, \
+             so build with `cargo build --release -p wylde-extension-bridge`",
     },
     StranglerService {
         // Collapsed to Rust-only (2026-06-02): the in-tree Python
         // `Gateway` package was DELETED; the Rust `wylde-gateway` (axum)
         // — a superset of the Python routes — is the canonical
-        // ingress/egress. There is no Python fallback (`python_module:
-        // None`); `WYLDE_WYLDE_GATEWAY_IMPL` no longer has a `python`
-        // target.
+        // ingress/egress. There is no Python fallback;
+        // `WYLDE_WYLDE_GATEWAY_IMPL` no longer has a `python` target.
         name: service_name::GATEWAY,
-        python_module: None,
         default_impl: ImplLang::Rust,
         missing_binary_warn:
             "gateway: no rust binary found; gateway will not start — the Python \
@@ -423,11 +351,9 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
         // tree was DELETED once `wylde-voice` (cpal + ort Whisper/Kokoro +
         // openWakeWord) reached parity and the live session STT/TTS paths
         // moved in-process (orchestrator calls `voice.transcribe` /
-        // `voice.synthesize` directly). There is no Python fallback
-        // (`python_module: None`); `WYLDE_WYLDE_VOICE_IMPL` no longer has a
-        // `python` target.
+        // `voice.synthesize` directly). There is no Python fallback;
+        // `WYLDE_WYLDE_VOICE_IMPL` no longer has a `python` target.
         name: service_name::VOICE,
-        python_module: None,
         default_impl: ImplLang::Rust,
         missing_binary_warn:
             "voice: no rust binary found; voice will not start — the Python \
@@ -455,54 +381,32 @@ async fn start_strangler(def: &StranglerService) -> Result<()> {
         return Ok(());
     }
     if nospawn_enabled() {
-        // Rust-only rows (`python_module: None`) record `rust` regardless
-        // of any stale `=python` override — there is no Python impl to
-        // record. Two-impl rows record whichever impl would have spawned.
-        let recorded = match def.python_module {
-            None => ImplLang::Rust,
-            Some(_) => impl_for_with_default(def.name, def.default_impl),
-        };
-        nospawn_record(def.name, recorded.as_str());
+        // Every row is rust-only — record `rust` regardless of any stale
+        // `=python` override; there is no Python impl to record.
+        nospawn_record(def.name, ImplLang::Rust.as_str());
         tracing::info!(
             "{}: NO-SPAWN — would-have-spawned recorded; no child forked",
             def.name
         );
         return Ok(());
     }
-    let want = impl_for_with_default(def.name, def.default_impl);
-    let (child, impl_lang) = match def.python_module {
-        // Rust-only: no Python fallback. A missing binary leaves the
-        // service down (VPN pattern); an explicit `=python` override is
-        // honoured only as a warning — the module was removed.
+    // Rust-only: the Python runtime tree was deleted (full-Rust cutover
+    // R6). A missing binary leaves the service down (VPN pattern); an
+    // explicit `=python` override is honoured only as a warning.
+    if impl_for_with_default(def.name, def.default_impl) == ImplLang::Python {
+        tracing::warn!(
+            "{}: WYLDE_{}_IMPL=python requested but the Python impl was \
+             removed; this service is rust-only",
+            def.name,
+            def.name.to_uppercase().replace('-', "_"),
+        );
+    }
+    let (child, impl_lang) = match rust_binary_path(def.name) {
+        Some(bin) => (spawn_rust_binary(def.name, &bin)?, ImplLang::Rust),
         None => {
-            if want == ImplLang::Python {
-                tracing::warn!(
-                    "{}: WYLDE_{}_IMPL=python requested but the Python impl was \
-                     removed; this service is rust-only",
-                    def.name,
-                    def.name.to_uppercase().replace('-', "_"),
-                );
-            }
-            match rust_binary_path(def.name) {
-                Some(bin) => (spawn_rust_binary(def.name, &bin)?, ImplLang::Rust),
-                None => {
-                    tracing::warn!("{}", def.missing_binary_warn);
-                    return Ok(());
-                }
-            }
+            tracing::warn!("{}", def.missing_binary_warn);
+            return Ok(());
         }
-        // Two-impl: Rust binary if resolvable, else fall back to the
-        // Python module.
-        Some(module) => match want {
-            ImplLang::Rust => match rust_binary_path(def.name) {
-                Some(bin) => (spawn_rust_binary(def.name, &bin)?, ImplLang::Rust),
-                None => {
-                    tracing::warn!("{}", def.missing_binary_warn);
-                    (spawn_python_module(module, def.name)?, ImplLang::Python)
-                }
-            },
-            ImplLang::Python => (spawn_python_module(module, def.name)?, ImplLang::Python),
-        },
     };
     let pid = child.id().unwrap_or(0);
     tracing::info!(
@@ -517,14 +421,85 @@ async fn start_strangler(def: &StranglerService) -> Result<()> {
 }
 
 // ── Memgraph ──────────────────────────────────────────────────────────
+//
+// Full-Rust cutover (2026-06-09): the Python wrapper (`Core.Memgraph.run`)
+// was retired and the daemon now spawns + supervises the bundled Neo4j
+// JVM directly. The wrapper existed for Python-daemon reasons — its own
+// signal handler and `sys.path` isolation — that don't apply to a tokio
+// child; `kill_on_drop` preserves the "JVM dies with its supervisor"
+// guarantee. The legacy pipe surface was already gone (2026-05-26
+// direct-Bolt cutover): the harness reads/writes the graph over Bolt
+// (neo4rs), so the only job here is JVM lifecycle.
+//
+// The `wylde-memgraph` manifest + heartbeat are written FROM the daemon
+// so the dashboard tile and the orphan sweep keep observing the same
+// service identity (Core-constituent semantics; the registry filters it
+// from the peer-services list as before).
 
-/// Boot Memgraph as a subprocess of the Lifecycle daemon.
+/// The daemon-held manifest writer + heartbeat for the supervised JVM.
+/// `Some` while Memgraph is up; dropped (heartbeat cancelled) on stop.
+static MEMGRAPH_MANIFEST: Mutex<Option<(ManifestWriter, HeartbeatHandle)>> = Mutex::new(None);
+
+/// `CREATE_NO_WINDOW` from `winbase.h` — keeps the `cmd /c neo4j.bat`
+/// console window from flashing up (mirrors the Python wrapper).
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+fn memgraph_neo4j_dir() -> PathBuf {
+    wylde_root()
+        .join("Core")
+        .join("Memgraph")
+        .join("vendor")
+        .join("neo4j")
+}
+
+fn memgraph_jdk_dir() -> PathBuf {
+    wylde_root()
+        .join("Core")
+        .join("Memgraph")
+        .join("vendor")
+        .join("jdk")
+}
+
+fn memgraph_bolt_port() -> u16 {
+    std::env::var("GRAPH_BOLT_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7687)
+}
+
+/// One cheap TCP probe of the Bolt port (mirrors `_bolt_ready`).
+fn memgraph_bolt_ready(port: u16) -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok()
+}
+
+/// JAVA_HOME / NEO4J_HOME / NEO4J_CONF / PATH for the Neo4j launcher,
+/// identical to the Python wrapper's env overlay.
+fn memgraph_apply_env(cmd: &mut Command) {
+    let jdk = memgraph_jdk_dir();
+    let neo4j = memgraph_neo4j_dir();
+    let mut paths = vec![jdk.join("bin")];
+    if let Some(existing) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    let path = std::env::join_paths(paths)
+        .unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default());
+    cmd.env("JAVA_HOME", &jdk)
+        .env("NEO4J_HOME", &neo4j)
+        .env("NEO4J_CONF", neo4j.join("conf"))
+        .env("PATH", path);
+}
+
+/// Boot the bundled Neo4j JVM under the daemon.
 ///
-/// Memgraph stays Python-only: `Core/Memgraph/run.py` spawns a Neo4j
-/// JVM child, manipulates `sys.path`, and installs its own signal
-/// handler. Pulling that into the daemon process would mix signal
-/// handlers and pollute namespaces, so we spawn it as a subprocess
-/// (same as the Python daemon does).
+/// Skips the spawn when Bolt is already answering (external instance —
+/// same as the Python wrapper) and when the vendor launcher is missing
+/// (vendor download incomplete; warn and leave the service down).
+/// Readiness is observed by a background task so `start_all` isn't
+/// blocked for the up-to-120s JVM boot; the harness retries its Bolt
+/// connection lazily on first request either way.
 pub async fn start_memgraph() -> Result<()> {
     if is_service_alive(service_name::MEMGRAPH) {
         let pid = manifest_pid(service_name::MEMGRAPH)
@@ -538,31 +513,193 @@ pub async fn start_memgraph() -> Result<()> {
         return Ok(());
     }
     if nospawn_enabled() {
-        nospawn_record(service_name::MEMGRAPH, ImplLang::Python.as_str());
+        nospawn_record(service_name::MEMGRAPH, ImplLang::Rust.as_str());
         tracing::info!("memgraph: NO-SPAWN — would-have-spawned recorded; no child forked");
         return Ok(());
     }
-    let child = match spawn_python_module("Core.Memgraph.run", service_name::MEMGRAPH) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("daemon: memgraph spawn failed: {:#}", e);
-            return Err(e);
-        }
+
+    let port = memgraph_bolt_port();
+    let bat = memgraph_neo4j_dir().join("bin").join("neo4j.bat");
+
+    let spawned = if memgraph_bolt_ready(port) {
+        tracing::info!(
+            "memgraph: Neo4j already up on bolt://127.0.0.1:{port} (external instance), \
+             skipping spawn"
+        );
+        false
+    } else if !bat.exists() {
+        tracing::warn!(
+            "memgraph: Neo4j launcher not found at {} — vendor download incomplete? \
+             Memgraph will not start.",
+            bat.display()
+        );
+        return Ok(());
+    } else {
+        // Append-mode JVM log, same location the Python wrapper used.
+        let logs_dir = wylde_root().join("Core").join("Memgraph").join("logs");
+        std::fs::create_dir_all(&logs_dir)
+            .with_context(|| format!("create {}", logs_dir.display()))?;
+        let log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs_dir.join("neo4j.log"))
+            .with_context(|| "open neo4j.log")?;
+        let log_err = log.try_clone().with_context(|| "clone neo4j.log handle")?;
+
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/c")
+            .arg(&bat)
+            .arg("console")
+            .current_dir(memgraph_neo4j_dir())
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(log_err));
+        memgraph_apply_env(&mut cmd);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+        apply_kill_on_drop(&mut cmd);
+
+        let child = cmd
+            .spawn()
+            .with_context(|| "spawn cmd /c neo4j.bat console for wylde-memgraph")?;
+        let pid = child.id().unwrap_or(0);
+        tracing::info!(
+            "memgraph: spawned Neo4j launcher (pid={pid}) — boot may take up to 120s"
+        );
+        record_spawn(service_name::MEMGRAPH, pid, ImplLang::Rust.as_str());
+        set_service_proc(service_name::MEMGRAPH, child);
+        true
     };
-    let pid = child.id().unwrap_or(0);
-    tracing::info!(
-        "memgraph: spawned (pid={}) — Neo4j boot may take up to 120s",
-        pid
-    );
-    record_spawn(service_name::MEMGRAPH, pid, ImplLang::Python.as_str());
-    set_service_proc(service_name::MEMGRAPH, child);
+
+    // Manifest + heartbeat (previously written by the Python wrapper).
+    match ManifestWriter::write(
+        service_name::MEMGRAPH,
+        Some(port),
+        "core",
+        "Graph data layer (bundled Neo4j via Bolt). Constituent pipe of Core — \
+         the registry filters this entry out of the peer services list because \
+         Core's rollup manifest covers it.",
+        json!({
+            "dashboard": { "label": "Memgraph", "icon": "database", "color": "blue" },
+        }),
+        Some("rust:wylde-lifecycle (in-daemon Neo4j supervisor)"),
+    ) {
+        Ok(writer) => {
+            let hb = writer.start_heartbeat(Duration::from_secs(10));
+            *MEMGRAPH_MANIFEST.lock().unwrap_or_else(|p| p.into_inner()) = Some((writer, hb));
+        }
+        Err(e) => tracing::warn!("memgraph: manifest write failed: {e:#}"),
+    }
+
+    // Background readiness probe (1s → ×1.5, capped 5s; budget
+    // GRAPH_READY_WAIT_S, default 120) — observational only.
+    if spawned {
+        let wait_s: u64 = std::env::var("GRAPH_READY_WAIT_S")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120);
+        tokio::spawn(async move {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_s);
+            let mut interval = Duration::from_secs(1);
+            while tokio::time::Instant::now() < deadline {
+                if memgraph_bolt_ready(port) {
+                    tracing::info!("memgraph: Neo4j ready on bolt://127.0.0.1:{port}");
+                    return;
+                }
+                tokio::time::sleep(interval).await;
+                interval = interval.mul_f32(1.5).min(Duration::from_secs(5));
+            }
+            tracing::warn!(
+                "memgraph: Neo4j did not come up within {wait_s}s — supervisor stays up; \
+                 the harness retries its Bolt connection lazily on first request"
+            );
+        });
+    }
     Ok(())
 }
 
+/// Stop the supervised Neo4j JVM.
+///
+/// Graceful first — `neo4j.bat stop` pings the running instance over its
+/// admin protocol, flushes the WAL, and releases store locks (20s
+/// budget) — then a `taskkill /T /F` tree-kill backstop so a runaway
+/// `java.exe` is never left behind. Mirrors the Python wrapper's
+/// `_stop_neo4j` two-phase teardown.
 pub async fn stop_memgraph() -> Result<()> {
-    // Memgraph holds Neo4j; give it a longer grace window than the
-    // others (15s, mirroring _services.py).
-    stop_service(service_name::MEMGRAPH, Duration::from_secs(15)).await
+    forget_spawn(service_name::MEMGRAPH);
+    if nospawn_enabled() {
+        nospawn_take(service_name::MEMGRAPH);
+        *MEMGRAPH_MANIFEST.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        return Ok(());
+    }
+    let child = take_service_proc(service_name::MEMGRAPH);
+
+    if child.is_some() {
+        let bat = memgraph_neo4j_dir().join("bin").join("neo4j.bat");
+        if bat.exists() {
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/c")
+                .arg(&bat)
+                .arg("stop")
+                .current_dir(memgraph_neo4j_dir())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            memgraph_apply_env(&mut cmd);
+            #[cfg(windows)]
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+            match cmd.spawn() {
+                Ok(mut stopper) => {
+                    if tokio::time::timeout(Duration::from_secs(20), stopper.wait())
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!("memgraph: neo4j.bat stop timed out after 20s");
+                    }
+                }
+                Err(e) => tracing::warn!("memgraph: neo4j.bat stop spawn failed: {e}"),
+            }
+        }
+    }
+
+    if let Some(mut child) = child {
+        if child.try_wait().ok().flatten().is_none() {
+            let pid = child.id().unwrap_or(0);
+            tracing::info!("memgraph: tree-killing Neo4j launcher (pid={pid})");
+            #[cfg(windows)]
+            {
+                let _ = Command::new("taskkill") // wylde-check: discard-result-ok
+                    .args(["/PID", &pid.to_string(), "/T", "/F"])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await;
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = child.kill().await; // wylde-check: discard-result-ok
+            }
+            if tokio::time::timeout(Duration::from_secs(5), child.wait())
+                .await
+                .is_err()
+            {
+                tracing::warn!("memgraph: Neo4j did not exit cleanly within 5s");
+            }
+        }
+    }
+
+    if let Some((writer, hb)) = MEMGRAPH_MANIFEST
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+    {
+        drop(hb); // cancel the heartbeat before flipping state
+        if let Err(e) = writer.mark_stopped() {
+            tracing::warn!("memgraph: mark_stopped failed: {e:#}");
+        }
+    }
+    Ok(())
 }
 
 // ── Voice ─────────────────────────────────────────────────────────────
@@ -571,9 +708,8 @@ pub async fn stop_memgraph() -> Result<()> {
 // Slice 11.E+ (2026-05-27): default flipped python → rust once the
 // GUI-facing surface (`voice.toggle` / `voice.set_mode` / friends) was
 // ported. Phase 11.E cutover: the Python `Voice/` tree was deleted and
-// `WYLDE_WYLDE_VOICE_IMPL=python` retired, so voice is now Rust-only
-// (`python_module: None` in the table above) — same shape as
-// device_gate/vram_broker/gateway/vpn.
+// `WYLDE_WYLDE_VOICE_IMPL=python` retired, so voice is now Rust-only —
+// same shape as device_gate/vram_broker/gateway/vpn.
 
 pub async fn start_voice() -> Result<()> {
     start_strangler(strangler_def(service_name::VOICE)).await
@@ -607,17 +743,12 @@ pub async fn stop_vram_broker() -> Result<()> {
 
 /// Boot the extension bridge as a subprocess of the Lifecycle daemon.
 ///
-/// Phase 4 strangler-fig: the historical Python impl
-/// (`Extensions.extension_bridge.run`, importlib-based dispatcher) and
-/// the Rust port (`wylde-extension-bridge`, MCP-server host) coexist;
-/// impl is selected via `WYLDE_WYLDE_EXTENSION_BRIDGE_IMPL=python|rust`.
-/// Default is `python`. The Rust impl is a major contract change
-/// (MCP-server host instead of in-process `importlib`); per master
-/// plan §11 Q-E1 we want at least one dogfood week before flipping
-/// the default. Both impls bind the SAME pipe and accept the SAME
-/// `extensions.dispatch` action shape so Gateway routing is
-/// unchanged — the Rust impl additionally exposes nine `ext.*`
-/// actions plus the `ext.events` stream.
+/// Rust-only since the full-Rust cutover (2026-06-09):
+/// `wylde-extension-bridge` (MCP-server host) is the sole impl; the
+/// historical Python importlib dispatcher was deleted. It binds the
+/// same pipe and accepts the same `extensions.dispatch` action shape
+/// the Python impl did, plus nine `ext.*` actions and the
+/// `ext.events` stream — Gateway routing is unchanged.
 pub async fn start_extension_bridge() -> Result<()> {
     start_strangler(strangler_def(service_name::EXTENSION_BRIDGE)).await
 }
@@ -815,12 +946,10 @@ pub async fn stop_workspaces() -> Result<()> {
 // cases, all green). Set `WYLDE_WYLDE_HARNESS_IMPL=python` to
 // revert to the in-process Python driver during the rollback window.
 //
-// The Python harness "impl" is the in-process driver inside
-// the existing Python harness service; when no Rust binary is
-// present we simply don't spawn — the Python harness pipe handles
-// `chat.*` calls as it always has. The strangler-fig switch happens
-// at the Python `_chat.py` action handler, not at the lifecycle
-// daemon.
+// The Python harness (and its in-process `_chat.py` strangler
+// driver) was deleted in the full-Rust cutover R6 — the Rust binary
+// is the only impl, and a missing binary leaves chat.* down until
+// it is built.
 pub async fn start_harness() -> Result<()> {
     if is_service_alive(service_name::HARNESS) {
         let pid = manifest_pid(service_name::HARNESS)
@@ -845,27 +974,23 @@ pub async fn start_harness() -> Result<()> {
     }
     let lang = impl_for_with_default(service_name::HARNESS, ImplLang::Rust);
     if lang == ImplLang::Python {
-        // Python "impl" means: the in-process driver inside the
-        // existing wylde-harness Python service handles chat.*. No
-        // separate child to spawn from here. Returning Ok keeps the
-        // daemon's start_all loop clean.
-        tracing::info!(
-            "wylde-harness: WYLDE_WYLDE_HARNESS_IMPL=python — chat driver \
-             stays in-process on the Python harness; no daemon-managed subprocess"
+        // The Python harness was deleted in the full-Rust cutover R6 —
+        // there is nothing to defer to. Warn and proceed rust-only.
+        tracing::warn!(
+            "wylde-harness: WYLDE_WYLDE_HARNESS_IMPL=python requested but the \
+             Python harness was removed (full-Rust cutover); proceeding rust-only"
         );
-        return Ok(());
     }
     let Some(bin) = rust_binary_path(service_name::HARNESS) else {
-        // Rust impl requested (the default after slice 5.D) but no
-        // binary built. Warn loudly and fall through to "no
-        // subprocess" — the Python harness's _chat.py strangler will
-        // see no manifest at the pipe and keep using the Python
-        // driver, so behaviour stays correct.
+        // No binary built. The Python fallback is gone, so chat.* is
+        // simply down until the binary exists — warn with the build
+        // command and keep the boot sequence going (non-fatal, same
+        // shape as workspaces).
         tracing::warn!(
-            "wylde-harness: rust impl requested (default after slice 5.D) but no \
-             binary found (checked WYLDE_WYLDE_HARNESS_BIN, rust/bin/, \
-             rust/target/release/, rust/target/debug/); falling back to Python \
-             in-process driver — build with `cargo build --release -p wylde-harness`"
+            "wylde-harness: no rust binary found (checked WYLDE_WYLDE_HARNESS_BIN, \
+             rust/bin/, rust/target/release/, rust/target/debug/); the harness will \
+             not start — the Python harness was removed, so build with \
+             `cargo build --release -p wylde-harness`"
         );
         return Ok(());
     };
@@ -935,16 +1060,17 @@ pub async fn stop_vpn() -> Result<()> {
 
 // ── Memory scheduler ──────────────────────────────────────────────────
 
-/// The memory scheduler is an in-process Python thread spawned via
-/// `Core.harness.memory.scheduler.MemoryScheduler.start`. The Rust
-/// daemon has no in-process equivalent — there's no Rust scheduler
-/// crate — so for now we log a one-time advisory. the Wylde user's launcher
-/// script can pick the Python daemon for sessions where reflection +
-/// curation cycles are needed.
+/// The memory scheduler became a tokio task inside the Rust
+/// wylde-harness in the full-Rust cutover slice R2b
+/// (`wylde_harness::memory::scheduler`, started from
+/// `service::install`, gated on `WYLDE_HARNESS_SCHEDULER`, default
+/// on). The daemon therefore has no scheduler of its own to spawn —
+/// this start hook just records that fact in the log so the boot
+/// sequence reads complete.
 pub async fn start_memory_scheduler() -> Result<()> {
     tracing::info!(
-        "memory_scheduler: skipped — Python-only in-process subsystem; \
-         set WYLDE_LIFECYCLE_IMPL=python to enable"
+        "memory_scheduler: in-process in the Rust wylde-harness since slice R2b \
+         (WYLDE_HARNESS_SCHEDULER gates it there); nothing for the daemon to spawn"
     );
     Ok(())
 }
@@ -958,9 +1084,9 @@ mod tests {
     }
 
     #[test]
-    fn impl_for_defaults_to_python() {
+    fn impl_for_defaults_to_rust() {
         clear_env("WYLDE_WYLDE_TEST_IMPL");
-        assert_eq!(impl_for("wylde-test"), ImplLang::Python);
+        assert_eq!(impl_for("wylde-test"), ImplLang::Rust);
     }
 
     #[test]
@@ -978,9 +1104,9 @@ mod tests {
     }
 
     #[test]
-    fn impl_for_unrecognised_falls_back_to_python() {
+    fn impl_for_unrecognised_falls_back_to_rust() {
         std::env::set_var("WYLDE_WYLDE_TYPOSVC_IMPL", "go");
-        assert_eq!(impl_for("wylde-typosvc"), ImplLang::Python);
+        assert_eq!(impl_for("wylde-typosvc"), ImplLang::Rust);
         clear_env("WYLDE_WYLDE_TYPOSVC_IMPL");
     }
 
@@ -1061,27 +1187,22 @@ mod tests {
     }
 
     #[test]
-    fn strangler_defs_carry_expected_module_and_default() {
-        // Module + default impl per row. Only extension_bridge keeps a
-        // Python fallback (`Some(module)`); device_gate, vram_broker,
-        // gateway, and voice were collapsed to Rust-only when their Python
-        // packages were deleted (`None`) — the first three on 2026-06-02,
-        // voice in the Phase 11.E cutover. All five default to Rust except
-        // extension_bridge (still Python pending its dogfood week).
+    fn strangler_defs_carry_expected_default() {
+        // Default impl per row. ALL five are rust-only — device_gate,
+        // vram_broker, gateway on 2026-06-02, voice in the Phase 11.E
+        // cutover, and extension_bridge in the full-Rust cutover
+        // (2026-06-09, dogfood gate waived by Aaron). The
+        // `python_module` field itself went with the Python runtime
+        // tree in slice R6.
         let cases = [
-            (service_name::DEVICE_GATE, None, ImplLang::Rust),
-            (service_name::VRAM_BROKER, None, ImplLang::Rust),
-            (
-                service_name::EXTENSION_BRIDGE,
-                Some("Extensions.extension_bridge.run"),
-                ImplLang::Python,
-            ),
-            (service_name::GATEWAY, None, ImplLang::Rust),
-            (service_name::VOICE, None, ImplLang::Rust),
+            (service_name::DEVICE_GATE, ImplLang::Rust),
+            (service_name::VRAM_BROKER, ImplLang::Rust),
+            (service_name::EXTENSION_BRIDGE, ImplLang::Rust),
+            (service_name::GATEWAY, ImplLang::Rust),
+            (service_name::VOICE, ImplLang::Rust),
         ];
-        for (name, module, default) in cases {
+        for (name, default) in cases {
             let def = strangler_def(name);
-            assert_eq!(def.python_module, module, "module mismatch for {name}");
             assert_eq!(def.default_impl, default, "default mismatch for {name}");
             assert!(
                 !def.missing_binary_warn.is_empty(),

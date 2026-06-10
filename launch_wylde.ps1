@@ -1,21 +1,23 @@
 # launch_wylde.ps1 -- desktop shortcut entry point.
 #
-# Boots the Lifecycle daemon (which spawns Memgraph + Voice + Device
-# Gate as subprocesses, and starts the harness pipe in-process), waits
-# for \\.\pipe\wylde-lifecycle to come up, then launches the gpui GUI
-# (`wylde-gui.exe`).
+# Boots the Rust Lifecycle daemon (`wylde-lifecycle.exe`, which spawns
+# every service as a subprocess), waits for \\.\pipe\wylde-lifecycle to
+# come up, then launches the gpui GUI (`wylde-gui.exe`).
+#
+# Full-Rust cutover (R6, 2026-06-10): the Python Lifecycle daemon and
+# every other Python runtime service were deleted, so the strangler-fig
+# WYLDE_LIFECYCLE_IMPL switch and the PYTHONPATH overlay are gone too.
+# The stack is rust-only: no interpreter, no .venv, no fallback.
 #
 # Slice 11 (final cutover, 2026-05-29) replaced the Tauri+Svelte GUI
 # with the gpui-native `wylde-gui` binary built out of the standalone
-# `Core/GUI/` workspace. The old `src-tauri/target/release/*.exe`
-# lookup + `npm run tauri dev` fallback are gone with that tree.
+# `Core/GUI/` workspace.
 #
 # Logs to $env:TEMP\wylde-launch.log so the desktop shortcut can be
 # debugged without keeping a console window open.
 
 $ErrorActionPreference = 'Stop'
 $WyldeRoot   = $PSScriptRoot
-$WyldeParent = Split-Path -Parent $WyldeRoot
 $LogPath     = Join-Path $env:TEMP 'wylde-launch.log'
 
 function Log {
@@ -30,41 +32,9 @@ Set-Content -Path $LogPath -Value "" -Encoding utf8
 Log "launcher: starting"
 Log "wylde root: $WyldeRoot"
 
-# --- PYTHONPATH ----------------------------------------------------
-# The daemon's _start_<service> overlays use parent-of-Wylde so
-# children resolve "from Wylde.X import Y". Mirror that here for the
-# daemon process itself.
-if ($env:PYTHONPATH) {
-    $env:PYTHONPATH = "$WyldeParent;$env:PYTHONPATH"
-} else {
-    $env:PYTHONPATH = $WyldeParent
-}
-Log "PYTHONPATH: $env:PYTHONPATH"
-
-# --- Pick Rust vs Python daemon (strangler-fig) -------------------
-# WYLDE_LIFECYCLE_IMPL switches the entire daemon between
-# implementations. R4 ported the Lifecycle daemon to Rust; both
-# daemons read the same on-disk manifest schema (wire-compatible per
-# wylde_shared::manifest's parity tests), so a live cutover stays
-# consistent regardless of which side is running.
-#
-# Defaults to 'rust' (2026-05-30 flip): the Wylde user's `py -3` resolves to
-# Python 3.14, which doesn't have the project's .venv deps, so the
-# Python daemon can fail to bind \\.\pipe\wylde-lifecycle and leave the
-# GUI's Chat unreachable. The Rust binary has no interpreter dependency.
-#
-# Resolution order:
-#   1. WYLDE_LIFECYCLE_IMPL=python  -> force Python (manual override)
-#   2. otherwise                    -> Rust if the binary exists
-#   3. Rust binary missing          -> fall back to Python with a warning
-$ImplOverride = if ($env:WYLDE_LIFECYCLE_IMPL) { $env:WYLDE_LIFECYCLE_IMPL.ToLower() } else { '' }
-if ($ImplOverride -and $ImplOverride -ne 'python' -and $ImplOverride -ne 'rust') {
-    Log "WARN: WYLDE_LIFECYCLE_IMPL=$ImplOverride is not 'python' or 'rust'; ignoring (using default 'rust')"
-    $ImplOverride = ''
-}
-
-# Rust binary resolution mirrors _services.py::_rust_binary_path:
-# bundled rust/bin first, then release, then debug.
+# --- Resolve the Rust Lifecycle daemon -----------------------------
+# Bundled rust/bin first, then release, then debug (mirrors
+# services.rs::rust_binary_path).
 $RustBinCandidates = @(
     (Join-Path $WyldeRoot 'rust\bin\wylde-lifecycle.exe'),
     (Join-Path $WyldeRoot 'rust\target\release\wylde-lifecycle.exe'),
@@ -72,68 +42,38 @@ $RustBinCandidates = @(
 )
 $RustBin = $RustBinCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
 
-if ($ImplOverride -eq 'python') {
-    $DaemonImpl = 'python'
-    Log "daemon impl: python (explicit WYLDE_LIFECYCLE_IMPL=python override)"
-} elseif ($RustBin) {
-    $DaemonImpl = 'rust'
-    if ($ImplOverride -eq 'rust') {
-        Log "daemon impl: rust (explicit WYLDE_LIFECYCLE_IMPL=rust)"
-    } else {
-        Log "daemon impl: rust (default)"
-    }
-} else {
-    # Default is rust, but the binary isn't built. Don't hard-fail --
-    # fall back to the Python daemon so the user still gets a stack,
-    # but make the reason loud so future maintainers knows why he's on the
-    # fragile py-3.14 path.
-    $DaemonImpl = 'python'
-    Log "WARN: no wylde-lifecycle.exe found; falling back to Python daemon (py -3 -m Core.Lifecycle.daemon)"
+if (-not $RustBin) {
+    # Rust-only stack: there is no Python daemon to fall back to.
+    Log "ERROR: no wylde-lifecycle.exe found"
     Log "  searched: $($RustBinCandidates -join ', ')"
-    Log "  build the Rust daemon with: cargo build --release -p wylde-lifecycle"
-    Write-Warning "Rust lifecycle binary missing -- falling back to fragile Python daemon. Build it: cargo build --release -p wylde-lifecycle (see $LogPath)"
+    Log "  build with: cargo build --release -p wylde-lifecycle"
+    Write-Error "Wylde daemon binary missing -- build it with `cargo build --release -p wylde-lifecycle` (see $LogPath)"
+    exit 1
 }
 
-if ($DaemonImpl -eq 'rust') {
-    Log "spawning Rust Lifecycle daemon: $RustBin"
-    try {
-        $daemonProc = Start-Process `
-            -FilePath $RustBin `
-            -WorkingDirectory $WyldeRoot `
-            -WindowStyle Hidden `
-            -PassThru
-        Log "daemon spawned: pid=$($daemonProc.Id)"
-    } catch {
-        Log "ERROR: rust daemon spawn failed: $_"
-        Write-Error "Failed to start Wylde daemon -- see $LogPath"
-        exit 1
-    }
-} else {
-    # --- Boot the Python daemon (detached, windowless) ------------
-    # Start-Process -WindowStyle Hidden gives us a detached process
-    # that survives launcher exit; the daemon's internal Popen calls
-    # (Memgraph, Voice, Device Gate) inherit the env we built above.
-    Log "spawning Python Lifecycle daemon"
-    try {
-        $daemonProc = Start-Process `
-            -FilePath 'powershell.exe' `
-            -ArgumentList @('-NoProfile', '-Command', 'py -3 -m Core.Lifecycle.daemon') `
-            -WorkingDirectory $WyldeRoot `
-            -WindowStyle Hidden `
-            -PassThru
-        Log "daemon spawned: pid=$($daemonProc.Id)"
-    } catch {
-        Log "ERROR: daemon spawn failed: $_"
-        Write-Error "Failed to start Wylde daemon -- see $LogPath"
-        exit 1
-    }
+if ($env:WYLDE_LIFECYCLE_IMPL -and $env:WYLDE_LIFECYCLE_IMPL.ToLower() -ne 'rust') {
+    Log "WARN: WYLDE_LIFECYCLE_IMPL=$($env:WYLDE_LIFECYCLE_IMPL) ignored -- the Python daemon was removed in the full-Rust cutover; the stack is rust-only"
+}
+
+Log "spawning Rust Lifecycle daemon: $RustBin"
+try {
+    $daemonProc = Start-Process `
+        -FilePath $RustBin `
+        -WorkingDirectory $WyldeRoot `
+        -WindowStyle Hidden `
+        -PassThru
+    Log "daemon spawned: pid=$($daemonProc.Id)"
+} catch {
+    Log "ERROR: rust daemon spawn failed: $_"
+    Write-Error "Failed to start Wylde daemon -- see $LogPath"
+    exit 1
 }
 
 # --- Wait for the lifecycle pipe ----------------------------------
 # Get-ChildItem \\.\pipe\ lists every named pipe on the system; we
-# poll for up to 20 s waiting for wylde-lifecycle to appear. The
-# pipe shows up as soon as Core.shared.ipc.serve_forever_background
-# binds it, well before the rest of phase 2 finishes.
+# poll for up to 20 s waiting for wylde-lifecycle to appear. The pipe
+# shows up as soon as the daemon binds it, well before the rest of the
+# boot sequence finishes.
 $pipeReady = $false
 $deadline = (Get-Date).AddSeconds(20)
 while ((Get-Date) -lt $deadline) {

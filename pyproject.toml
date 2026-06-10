@@ -1,128 +1,22 @@
 [project]
 name = "wylde"
 version = "0.1.0"
-description = "Wylde — personal AI assistant platform (Gateway, Voice, VPN, Trainer, resource_monitor, Memgraph, harness)."
+description = "Wylde — personal AI assistant platform. All services are Rust (rust/ workspace + Core/GUI); the only Python left in-tree is the wylde_check lint tool (Core/harness/dev/) and the stdlib N8N extension tool stubs."
 requires-python = ">=3.11"
 license = {text = "GPL-3.0-or-later"}
 
-# Core runtime dependencies — pulled in by every service.
-#
-# Every entry below has at least one direct import in live source. Deps
-# only used transitively by other packages (e.g. starlette via fastapi)
-# are intentionally not declared here — let pip resolve them via the
-# upstream packages.
-dependencies = [
-    # Gateway web framework + ASGI server (Gateway/app.py + 26 other files).
-    "fastapi>=0.136",
-    "uvicorn[standard]>=0.44",
-
-    # Pydantic settings + validation (Gateway/settings.py, Gateway/routes/egress.py).
-    "pydantic>=2.12",
-    "pydantic-settings>=2.13",
-
-    # Async HTTP client (Gateway/proxy_core.py + 3 other files).
-    "httpx>=0.28",
-
-    # Sync HTTP client (Core/harness/backend/*, Core/Memgraph ipc, VPN, ...).
-    "requests>=2.31",
-
-    # YAML config loader (Core/Config/__init__.py + 6 other files).
-    "pyyaml>=6.0",
-
-    # Named-pipe IPC wire format (Core/shared/ipc.py + 3 other files).
-    "msgpack>=1.0",
-
-    # Windows pipe transport — imported as win32api/win32file/win32pipe in
-    # Core/shared/ipc.py, Core/Memgraph/ipc.py, Core/harness/memory/memgraph.py.
-    # Marker keeps non-Windows installs working (pipe layer falls through).
-    "pywin32>=306; platform_system == 'Windows'",
-
-    # htpasswd hash verification (device_gate/auth.py). Stdlib ``crypt`` was
-    # removed in Python 3.13, so passlib is the only portable verifier for
-    # APR1 (the default htpasswd format) plus the legacy $6$/$5$/$2*$ hashes
-    # the gate accepts. Hard dep — not optional — because device_gate boots
-    # for every Wylde deployment and silently rejecting all but $apr1$ hashes
-    # under 3.13 would be a quiet capability regression.
-    "passlib>=1.7.4",
-
-    # Process liveness + graceful terminate for the Lifecycle daemon
-    # (Core/Lifecycle/daemon_state/__init__.py:401 _pid_alive,
-    # _orphan_sweep.py:180 _kill_with_grace). Both imports are guarded with
-    # an os.kill / taskkill fallback, but the daemon boots for every Wylde
-    # deployment and the psutil path is strongly preferred (clean zombie /
-    # access-denied handling), so it is declared as a hard core dep rather
-    # than left to chance. Previously reached the lock only transitively via
-    # the now-removed `trainer` extra (accelerate → psutil); declaring it
-    # here keeps it pinned after that extra's removal.
-    "psutil>=7.0",
-]
+# Full-Rust cutover (R6, 2026-06-10): every Python runtime service —
+# Gateway, Lifecycle, harness, Memgraph wrapper, shared IPC, VPN, Voice,
+# device_gate, resource_monitor, extension bridge — has been ported to
+# Rust and its Python source deleted. The packages previously listed
+# here (fastapi, uvicorn, pydantic, httpx, requests, pyyaml, msgpack,
+# pywin32, passlib, psutil) had no remaining importers and are gone.
+# The surviving Python is stdlib-only.
+dependencies = []
 
 [project.optional-dependencies]
-# resource_monitor — VRAM/GPU broker.
-# pynvml drives the NVML device probe in
-# Core/resource_monitor/broker/registry.py. The historical sysmon.py with
-# its docker / psutil container probe was dissolved — those deps are gone.
-# (Flask, which formerly served the broker HTTP API, was dropped once the
-# broker moved off HTTP onto the named-pipe transport — no service imports
-# it anymore.)
-resource-monitor = [
-    "pynvml>=11.5.0",
-]
-
-# Memgraph — Neo4j-backed knowledge graph.
-memgraph = [
-    "neo4j>=5.20",
-]
-
-# VPN — WyldeLink management API + mDNS pairing.
-vpn = [
-    "qrcode==8.0",
-    "zeroconf>=0.131.0",
-]
-
-# Voice — STT (faster-whisper) + TTS (kokoro-onnx).
-# onnxruntime is pulled in transitively by kokoro-onnx — not declared here.
-voice = [
-    "numpy>=1.24",
-    "sounddevice>=0.4.6",
-    "huggingface_hub>=0.23",
-    "faster-whisper>=1.0",
-    "kokoro-onnx>=0.3.0",
-]
-
-# Trainer extra removed 2026-06-04 — the captioning stack (Trainer/Caption/)
-# was extracted from the alpha (see docs/retired-trainer-scope.md). Its sole
-# live consumer outside the deleted tree was psutil, reached transitively via
-# accelerate; psutil is now declared directly in the core `dependencies` above
-# so removing this extra (and its heavy GPU/ML deps: torch, transformers,
-# accelerate, bitsandbytes, qwen-vl-utils, opencv-python, tqdm) drops nothing
-# the live tree still imports.
-
-# Webcrawler extension — HTML scraping / extraction.
-# beautifulsoup4 is the only external dep; extractor.py imports it directly.
-# Optional because Webcrawler defaults to disabled — only installed when the
-# extension is actually used.
-webcrawler = [
-    "beautifulsoup4>=4.12",
-]
-
-# Harness — in-process tooling layer (Core/harness/) plus memory bindings.
-# pyautogui + playwright are lazy-imported in
-# Core/harness/tooling/tools/visual/_visual_lib.py so the tool catalog
-# still resolves without them installed.
-harness = [
-    "lancedb",
-    "pyarrow",
-    "sentence-transformers",
-    "pyautogui",
-    "Pillow",
-    "playwright",
-]
-
-# Dev — test runner + lint/type CLIs.
-# ruff and mypy aren't imported anywhere; they're invoked as CLIs in
-# upcoming F1 (ruff format) and M1-M6 (mypy strict) phases. Bundled here
-# so the dev env is ready before those phases land.
+# Dev — test runner + lint/type CLIs for the surviving Python
+# (Core/harness/dev/wylde_check + its test suite, N8N tool stubs).
 dev = [
     "pytest>=8.0",
     "ruff",
@@ -132,16 +26,10 @@ dev = [
 [tool.pytest.ini_options]
 # Use the importlib import mode so multiple ``tests/`` packages can
 # coexist without colliding on the top-level ``tests`` module name.
-# Without this, two sibling ``tests/`` packages each with their own
-# ``__init__.py`` (Core/harness/tests vs Core/shared/tests etc.) load
-# as the same ``tests.*`` module — the misroute rule 21 documents.
-# Passed via addopts because this pytest version does not accept
-# ``importmode`` as an ini key (only the ``--import-mode`` CLI flag).
 addopts = "--import-mode=importlib"
 
 # Skip directories that should never be walked for tests:
-#   * target/ — Rust build output (rust/target, Core/GUI/target). The dirs
-#     hold no Python, but the name keeps pytest from descending into them.
+#   * target/ — Rust build output (rust/target, Core/GUI/target).
 #   * refactor-archive — historical docs, not code.
 norecursedirs = [
     "target",
@@ -154,15 +42,10 @@ norecursedirs = [
 ]
 
 [tool.mypy]
-# Baseline observability config (M1). Permissive on purpose — we want to
-# see what mypy detects out of the box without strict mode. Strictness
-# (disallow_untyped_defs, strict_optional, etc.) gets layered in at M6
-# once per-service annotation work (M3-M5) is done.
 python_version = "3.11"
 ignore_missing_imports = true
 follow_imports = "normal"
-# Core/ is a namespace package (no __init__.py); without this, modules
-# like Core/Memgraph/manifest.py and Core/Lifecycle/manifest.py collide.
+# Core/ is a namespace package (no __init__.py).
 explicit_package_bases = true
 warn_unused_ignores = true
 warn_redundant_casts = true
@@ -173,76 +56,13 @@ exclude = [
     "rust/",
 ]
 
-# M3 first wave — strict mode for services that are already mypy-clean
-# under the permissive baseline. N8N is the only walkable clean service
-# today; the rename of the three space-named services unlocks them as
-# package-addressable [[overrides]] targets — strict-mode rollout for
-# device_gate / resource_monitor / extension_bridge lands as a follow-up.
+# The service-by-service strict overrides that used to live here were
+# removed with their packages over the Rust migration (device_gate,
+# resource_monitor, VPN, Gateway, Voice, Trainer, Extensions, Memgraph,
+# and finally the whole Core runtime in the R6 full-Rust deletion wave).
+# The two blocks below cover everything that still exists.
 [[tool.mypy.overrides]]
 module = ["N8N.*"]
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-warn_return_any = true
-strict_equality = true
-
-# device_gate strict override removed 2026-06-02 — the Python device_gate/
-# package was deleted after the Rust binary (wylde-device-gate) reached full
-# parity (incl. the recent_actions audit log) and passed a live function test,
-# becoming the sole impl.
-
-# Core.resource_monitor strict override removed 2026-06-02 — the Python
-# VRAM broker (Core/resource_monitor/) was deleted after the Rust binary
-# (wylde-vram-broker) passed a live function test and became the sole impl.
-
-[[tool.mypy.overrides]]
-module = ["Extensions.extension_bridge.*"]
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-warn_return_any = true
-strict_equality = true
-
-# M4 — strict for the remaining services after annotation work.
-[[tool.mypy.overrides]]
-module = ["Core.Memgraph.*", "Memgraph.*"]
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-warn_return_any = true
-strict_equality = true
-
-[[tool.mypy.overrides]]
-module = ["Voice.*"]
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-warn_return_any = true
-strict_equality = true
-
-# VPN strict override removed 2026-06-04 — the Python VPN/ package was deleted
-# 2026-06-02 (commit 9143c46, 3,343 LOC) after wylde-vpn (Rust) reached parity
-# and the daemon spawn path collapsed rust-only. 0 git-tracked VPN/*.py remain,
-# so the override matched no modules. Mirrors the device_gate / resource_monitor
-# removals below.
-
-[[tool.mypy.overrides]]
-module = ["Trainer.*"]
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-warn_return_any = true
-strict_equality = true
-
-# Gateway strict override removed 2026-06-04 — the Python Gateway/ package was
-# deleted (collapsed rust-only 2026-06-02, commit 1b8e5bf); wylde_check rule
-# test_no_gateway_import now forbids `from Gateway`. 0 git-tracked Gateway/*.py
-# remain, so the override matched no modules.
-
-[[tool.mypy.overrides]]
-module = ["Extensions.Webcrawler.*"]
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-warn_return_any = true
-strict_equality = true
-
-[[tool.mypy.overrides]]
-module = ["Extensions.Wylde_Study.*"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 warn_return_any = true

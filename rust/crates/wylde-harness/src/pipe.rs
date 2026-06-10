@@ -25,11 +25,15 @@
 //! transport-code fallback treats as "revert to in-process Python." A
 //! partial port can't brick chat. The deferred punchlist:
 //!
-//! * `memory.workspace.*` (6 verbs) — `workspace_memory` not in Rust.
-//! * `memory.reflect` — `reflection` not in Rust.
-//! * `prompts.*` (5 verbs) — `system_prompts` not in Rust.
 //! * `rag.workspaces.*` (10 verbs) — overlaps `memory.workspaces.*`;
 //!   namespace reconciliation + indexer port pending.
+//!
+//! (`prompts.*` left this list in the full-Rust cutover — the five verbs
+//! are served by [`crate::prompts`] now. `memory.workspace.*` followed in
+//! the same cutover, slice R2a — the six verbs are served by
+//! [`crate::memory::workspace`] now. `memory.reflect` left in slice R2b —
+//! all three scopes are served by [`crate::memory::reflection`], which
+//! also wires a real in-process chat path the Python verb never had.)
 //!
 //! (`models.transcribe` / `models.synthesize` were retired at the voice
 //! cutover and deleted in the Bucket-A IPC cleanup — STT/TTS run
@@ -52,9 +56,10 @@
 //! `delete` + the net-new `get_active` / `set_active` selection-persistence
 //! pair) are registered here, and the Python `_conversations.py` handlers
 //! became thin forwarders too. The remaining Python conversation surface
-//! (`memory.reflect`, plus `save_conversation` itself) still shares the
-//! same JSON files, so both the short-term merge-save and the Slice B
-//! read/list/delete path preserve every sibling field.
+//! (`save_conversation` itself, on the chat-turn path) still shares the
+//! same JSON files, so the short-term merge-save, the Slice B
+//! read/list/delete path, and the R2b reflection rewrite all preserve
+//! every sibling field.
 
 use std::sync::Arc;
 
@@ -70,9 +75,13 @@ const HANDLER_MODULE_TOOLS: &str = "wylde_harness::api::DefaultHarnessApi (tools
 const HANDLER_MODULE_MODELS: &str = "wylde_harness::api::DefaultHarnessApi (models.*)";
 const HANDLER_MODULE_SETTINGS: &str =
     "wylde_harness::api::DefaultHarnessApi (settings.ollama.*)";
+const HANDLER_MODULE_PROMPTS: &str = "wylde_harness::api::DefaultHarnessApi (prompts.*)";
 const HANDLER_MODULE_RAG: &str = "wylde_harness::api::DefaultHarnessApi (rag.*)";
 const HANDLER_MODULE_LONG_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.long_term.*)";
+const HANDLER_MODULE_WORKSPACE_MEMORY: &str =
+    "wylde_harness::api::DefaultHarnessApi (memory.workspace.*)";
+const HANDLER_MODULE_REFLECT: &str = "wylde_harness::api::DefaultHarnessApi (memory.reflect)";
 const HANDLER_MODULE_SHORT_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.short_term.*)";
 const HANDLER_MODULE_CONVERSATIONS: &str =
@@ -127,6 +136,13 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     // settings.encryption.* — encryption-at-rest toggle (OI-14, 2 verbs)
     "settings.encryption.get",
     "settings.encryption.set",
+    // prompts.* — system-prompt overrides + presets (5 verbs; Rust port
+    // of the Python `_prompts.py` actions, full-Rust cutover)
+    "prompts.list",
+    "prompts.save",
+    "prompts.save_preset",
+    "prompts.set_active",
+    "prompts.delete_preset",
     // rag.* — episodic write + semantic search (2 verbs; Wylde_Study S2a)
     "rag.add_episodic",
     "rag.search",
@@ -137,6 +153,17 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.long_term.delete",
     "memory.long_term.history",
     "memory.long_term.search",
+    // memory.workspace.* — workspace-scoped durable memory tier
+    // (6 verbs; full-Rust cutover slice R2a)
+    "memory.workspace.list",
+    "memory.workspace.search",
+    "memory.workspace.save",
+    "memory.workspace.update",
+    "memory.workspace.delete",
+    "memory.workspace.curate",
+    // memory.reflect — consolidation cycles, all scopes (full-Rust
+    // cutover slice R2b)
+    "memory.reflect",
     // workspaces.* — RETIRED from the harness pipe (Thought Bubble System
     // Slice 0d). All workspace verbs now live on the wylde-workspaces
     // service pipe; consumers reach them via the wylde-workspaces-client
@@ -585,6 +612,74 @@ where
         HANDLER_MODULE_SETTINGS,
     );
 
+    // ── prompts.* (system-prompt overrides + presets) ────────────────
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "prompts.list",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.prompts_list(p).await }
+        },
+        "System-prompt catalog + override store in one envelope: groups, \
+         catalog (id/group/label/desc/default), overrides, presets, \
+         active_preset. The Settings prompt editor calls this on mount. \
+         Payload {}.",
+        HANDLER_MODULE_PROMPTS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "prompts.save",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.prompts_save(p).await }
+        },
+        "Save an override for one prompt id. Payload {id, text?}; \
+         text=null (or text equal to the catalog default) clears the \
+         override. Returns the full prompts envelope.",
+        HANDLER_MODULE_PROMPTS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "prompts.save_preset",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.prompts_save_preset(p).await }
+        },
+        "Snapshot the current overrides into a named preset and activate \
+         it. Payload {name} (\"Default\" is reserved). Returns the full \
+         prompts envelope.",
+        HANDLER_MODULE_PROMPTS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "prompts.set_active",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.prompts_set_active(p).await }
+        },
+        "Activate the named preset; \"Default\" resets every override to \
+         the catalog default. Payload {name}. Returns the full prompts \
+         envelope.",
+        HANDLER_MODULE_PROMPTS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "prompts.delete_preset",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.prompts_delete_preset(p).await }
+        },
+        "Remove a named preset (active falls back to Default if it was \
+         the one deleted; \"Default\" itself cannot be deleted). Payload \
+         {name}. Returns the full prompts envelope.",
+        HANDLER_MODULE_PROMPTS,
+    );
+
     // ── rag.* (Wylde_Study S2a) ──────────────────────────────────────
 
     let a = Arc::clone(&api);
@@ -697,6 +792,110 @@ where
          recency decay. Superseded records are filtered out. Returns \
          {results: [SearchHit...]}.",
         HANDLER_MODULE_LONG_TERM,
+    );
+
+    // ── memory.workspace.* (full-Rust cutover slice R2a) ─────────────
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.list",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_list(p).await }
+        },
+        "Return every workspace-scoped record, importance-desc then \
+         recency-desc. Payload {workspace_id, include_superseded?}. \
+         Returns {memories: [...], count, workspace_id}.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.search",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_search(p).await }
+        },
+        "Token-overlap + importance + recency-decay search over a \
+         workspace's memories (superseded records filtered out). \
+         Payload {workspace_id, query, k?|limit?} — hit count clamps \
+         to 1..=50, default 5. Returns {hits: [...]}.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.save",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_save(p).await }
+        },
+        "Persist a new workspace-scoped memory. Payload {workspace_id, \
+         body, source?, importance?, entities?}. Entity edges mirror \
+         into the graph best-effort (never block the save). Returns \
+         the new record as JSON.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.update",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_update(p).await }
+        },
+        "Revise a workspace memory (writes a new record and marks the \
+         old one superseded — both stay on disk for audit walks). \
+         Payload {workspace_id, id, body?, importance?, entities?}. \
+         Returns the replacement record.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.delete",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_delete(p).await }
+        },
+        "Permanently remove a workspace memory (and any records \
+         superseded by it). Payload {workspace_id, id}. Returns \
+         {ok, workspace_id, id}.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.workspace.curate",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_curate(p).await }
+        },
+        "Trigger LLM-driven curation for a workspace. Always returns \
+         the skipped CurationResult shape (chat functions don't cross \
+         the wire; the scheduler runs real passes in-process). Payload \
+         {workspace_id}.",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    // ── memory.reflect (full-Rust cutover slice R2b) ─────────────────
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "memory.reflect",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_reflect(p).await }
+        },
+        "Run one memory-consolidation cycle. Payload {scope} where scope \
+         is \"long_term\" | \"workspace:<id>\" | \"conversation:<id>\". \
+         Returns the ReflectionResult dict (scope, inputs_considered, \
+         reflection_id, reflection_body, superseded_ids, skipped, \
+         skip_reason). Runs a real LLM cycle in-process when a chat model \
+         is resolvable; otherwise replies skipped with \"no chat_fn \
+         supplied\" (Python parity). The background scheduler drives the \
+         same cycles on idle/daily cadences.",
+        HANDLER_MODULE_REFLECT,
     );
 
     // ── workspaces.* — RETIRED (Thought Bubble System Slice 0d) ──────
