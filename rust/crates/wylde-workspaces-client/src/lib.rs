@@ -433,6 +433,45 @@ impl WorkspacesClient {
         .await
     }
 
+    /// `chat.export` (Slice J) — one workspace conversation as a portable
+    /// envelope. Reply `{export, id}`; persisting the file is the caller's
+    /// concern.
+    pub async fn chat_export(
+        &self,
+        workspace_id: &str,
+        conversation_id: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "chat.export",
+            serde_json::json!({
+                "workspace_id": workspace_id,
+                "conversation_id": conversation_id,
+            }),
+            1,
+        )
+        .await
+    }
+
+    /// `chat.import` (Slice J) — land a portable envelope in a workspace. An
+    /// id collision replies `already_exists` unless `overwrite`.
+    pub async fn chat_import(
+        &self,
+        workspace_id: &str,
+        export: Value,
+        overwrite: bool,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "chat.import",
+            serde_json::json!({
+                "workspace_id": workspace_id,
+                "export": export,
+                "overwrite": overwrite,
+            }),
+            1,
+        )
+        .await
+    }
+
     /// `workspaces.conversations.refresh_summary` — persist an LLM summary +
     /// embedding the harness computed for a workspace conversation (Slice E
     /// parity). The service folds the derived fields into the stored doc so the

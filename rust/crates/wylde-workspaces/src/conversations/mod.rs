@@ -14,7 +14,13 @@
 //! * [`store`] — per-workspace `Value`-based document IO (byte-identical to
 //!   the harness flat-store shape; the migration relocates existing
 //!   workspace-tagged docs into this layout).
-//! * [`api`] — the `workspaces.conversations.*` lifecycle verbs.
+//! * [`api`] — the `workspaces.conversations.*` lifecycle verbs + the Slice J
+//!   `chat.export` / `chat.import` escape hatch.
+//! * [`export`] / [`import`] — the portable-envelope halves (TBS Slice J),
+//!   built on `wylde_shared::conversation_export` so the harness's standalone
+//!   store speaks the identical format.
 
 pub mod api;
+pub mod export;
+pub mod import;
 pub mod store;

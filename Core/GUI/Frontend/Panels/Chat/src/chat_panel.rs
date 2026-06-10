@@ -45,8 +45,9 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 use crate::composer::{self, ComposerState, IgnoreTierTag, WordRecognition};
 use crate::ipc::{
     activate_workspace, cancel_turn, clear_working_memory, delete_conversation, eject_model,
-    fetch_conversation_messages, fetch_working_memory, get_active_conversation, list_conversations,
-    list_models, new_conversation, recent_workspaces, respond_consent, set_active_conversation,
+    export_conversation, fetch_conversation_messages, fetch_working_memory,
+    get_active_conversation, import_conversation, list_conversations, list_models,
+    new_conversation, recent_workspaces, respond_consent, set_active_conversation,
     set_active_model, set_active_workspace, start_turn_with_model, stream_consent_pending,
     stream_tools, stream_turn, ConsentEvent, ConversationMeta, PendingConsent, ToolChunk,
     TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
@@ -167,6 +168,9 @@ pub struct ChatPanel {
     /// delete affordance — the id awaiting an inline delete confirmation.
     pub conversations: Vec<ConversationMeta>,
     pub show_conversations: bool,
+    /// Outcome of the last export/import (Slice J) — one quiet line in the
+    /// conversations rail; `Ok` info / `Err` failure.
+    pub transfer_status: Option<Result<String, String>>,
     pub confirm_delete: Option<String>,
     /// Short-term ("working memory") buffer for the active conversation.
     /// Loaded on mount and refreshed after each turn — the chat-turn
@@ -268,6 +272,7 @@ impl ChatPanel {
             conversation_id: "default".to_owned(),
             conversations: Vec::new(),
             show_conversations: false,
+            transfer_status: None,
             confirm_delete: None,
             working_memory: Vec::new(),
             show_working_memory: false,
@@ -1143,6 +1148,83 @@ impl ChatPanel {
     fn focus_prompt(&self, window: &mut Window, cx: &mut Context<Self>) {
         let handle = self.prompt_input.read(cx).focus_handle.clone();
         handle.focus(window, cx);
+    }
+
+    /// Export one conversation to a user-picked file (TBS Slice J): fetch
+    /// the portable envelope from the harness, then a native save dialog,
+    /// then a plaintext-JSON write. A cancelled dialog is silent.
+    pub fn spawn_export_conversation(id: String, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome: Result<String, String> = async {
+                let envelope = export_conversation(&id).await?;
+                let default_name = format!("{id}.wylde-conv.json");
+                let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(move || {
+                    rfd::FileDialog::new()
+                        .set_title("Export conversation")
+                        .set_file_name(&default_name)
+                        .add_filter("Wylde conversation export", &["json"])
+                        .save_file()
+                })
+                .await;
+                let Some(path) = picked else {
+                    return Ok(String::new()); // cancelled — no status
+                };
+                let body = serde_json::to_string_pretty(&envelope).map_err(|e| e.to_string())?;
+                std::fs::write(&path, body).map_err(|e| e.to_string())?;
+                Ok(format!("Exported to {}", path.display()))
+            }
+            .await;
+            let _ = this.update(app_cx, |panel, cx| {
+                match outcome {
+                    Ok(msg) if msg.is_empty() => {}
+                    Ok(msg) => panel.transfer_status = Some(Ok(msg)),
+                    Err(e) => panel.transfer_status = Some(Err(format!("Export failed: {e}"))),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Import a conversation export file as a standalone conversation (TBS
+    /// Slice J): native open dialog → parse → `chat.import`. An id collision
+    /// surfaces the harness's `already_exists` message (delete or rename the
+    /// existing conversation first — nothing is silently replaced).
+    pub fn spawn_import_conversation(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome: Result<Option<String>, String> = async {
+                let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(|| {
+                    rfd::FileDialog::new()
+                        .set_title("Import conversation")
+                        .add_filter("Wylde conversation export", &["json"])
+                        .pick_file()
+                })
+                .await;
+                let Some(path) = picked else { return Ok(None) };
+                let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+                let envelope: serde_json::Value =
+                    serde_json::from_str(&raw).map_err(|e| format!("not valid JSON: {e}"))?;
+                import_conversation(envelope).await.map(Some)
+            }
+            .await;
+            match outcome {
+                Ok(None) => {}
+                Ok(Some(id)) => {
+                    let _ = this.update(app_cx, |panel, cx| {
+                        panel.transfer_status = Some(Ok(format!("Imported {id}")));
+                        cx.notify();
+                    });
+                    Self::reload_conversations(&this, app_cx).await;
+                }
+                Err(e) => {
+                    let _ = this.update(app_cx, |panel, cx| {
+                        panel.transfer_status = Some(Err(format!("Import failed: {e}")));
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
     }
 
     pub fn spawn_pick_workspace(cx: &mut Context<Self>) {
@@ -2040,25 +2122,68 @@ fn conversations_panel(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::
         )
         .child(
             div()
-                .id(ElementId::Name("chat-conversation-new".into()))
-                .px_2()
-                .py_1()
-                .rounded(px(4.0))
-                .border_1()
-                .border_color(rgb(pack(BORDER_SUBTLE)))
-                .cursor_pointer()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::MICRO))
-                .text_color(rgb(pack(BRAND)))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|_this: &mut ChatPanel, _ev, _window, cx| {
-                        ChatPanel::spawn_new_conversation(cx);
-                    }),
+                .flex()
+                .flex_row()
+                .gap_1()
+                .child(
+                    // Slice J: import a portable conversation export file.
+                    div()
+                        .id(ElementId::Name("chat-conversation-import".into()))
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(rgb(pack(BORDER_SUBTLE)))
+                        .cursor_pointer()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::MICRO))
+                        .text_color(rgb(pack(TEXT_SECONDARY)))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|_this: &mut ChatPanel, _ev, _window, cx| {
+                                ChatPanel::spawn_import_conversation(cx);
+                            }),
+                        )
+                        .child(SharedString::from("Import…")),
                 )
-                .child(SharedString::from("+ New")),
+                .child(
+                    div()
+                        .id(ElementId::Name("chat-conversation-new".into()))
+                        .px_2()
+                        .py_1()
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(rgb(pack(BORDER_SUBTLE)))
+                        .cursor_pointer()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::MICRO))
+                        .text_color(rgb(pack(BRAND)))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|_this: &mut ChatPanel, _ev, _window, cx| {
+                                ChatPanel::spawn_new_conversation(cx);
+                            }),
+                        )
+                        .child(SharedString::from("+ New")),
+                ),
         );
     col = col.child(header);
+
+    // Slice J: outcome of the last export/import, one quiet line.
+    if let Some(status) = &panel.transfer_status {
+        let (text, color) = match status {
+            Ok(msg) => (msg.clone(), TEXT_MUTED),
+            Err(msg) => (msg.clone(), BORDER_EMPHASIS),
+        };
+        col = col.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(color)))
+                .pb_1()
+                .child(SharedString::from(text)),
+        );
+    }
 
     if panel.conversations.is_empty() {
         return col.child(empty_dropdown_row(
@@ -2147,12 +2272,36 @@ fn conversation_row(
     }
     row = row.child(select_block);
 
+    row = row.child(export_button(&meta.id, cx));
     if confirming {
         row = row.child(delete_confirm_controls(&meta.id, cx));
     } else {
         row = row.child(delete_request_button(&meta.id, cx));
     }
     row
+}
+
+/// The "⤓" affordance — export this conversation to a file (Slice J).
+fn export_button(id: &str, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
+    let id_for_click = id.to_owned();
+    div()
+        .id(ElementId::Name(
+            format!("chat-conversation-export::{id}").into(),
+        ))
+        .px_2()
+        .py_1()
+        .rounded(px(4.0))
+        .cursor_pointer()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |_this: &mut ChatPanel, _ev, _window, cx| {
+                ChatPanel::spawn_export_conversation(id_for_click.clone(), cx);
+            }),
+        )
+        .child(SharedString::from("⤓"))
 }
 
 /// The "×" affordance that arms the inline delete confirm for `id`.

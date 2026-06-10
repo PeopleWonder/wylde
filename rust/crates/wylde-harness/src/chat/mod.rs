@@ -11,6 +11,9 @@
 //!   later, mechanical move out of this slice's scope).
 //! * [`search`]     — scoped chat-history search tools (**Slice E**).
 //! * [`ignore`]     — the global tier of the symbol ignore list (**Slice M**).
+//! * [`exchange`]   — conversation export/import dispatch (**Slice J**):
+//!   standalone in-process, workspace forwarded to the service.
 
+pub mod exchange;
 pub mod ignore;
 pub mod search;

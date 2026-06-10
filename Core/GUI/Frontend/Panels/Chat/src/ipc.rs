@@ -305,6 +305,45 @@ pub async fn start_turn_with_model(
     Ok(StartTurnReply::from_value(&v))
 }
 
+/// `chat.export` (TBS Slice J) — one conversation as a portable envelope.
+/// The rail is the standalone surface, so no `workspace_id` rides along
+/// (the harness serves the flat store in-process). Returns the envelope.
+pub async fn export_conversation(conversation_id: &str) -> Result<Value, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "chat.export",
+            "payload": { "conversation_id": conversation_id },
+        })),
+    )
+    .await?;
+    v.get("export")
+        .cloned()
+        .ok_or_else(|| "export reply carried no envelope".to_owned())
+}
+
+/// `chat.import` (TBS Slice J) — land a portable envelope as a standalone
+/// conversation. Returns the imported conversation id. An id collision
+/// surfaces as the harness's `already_exists` message.
+pub async fn import_conversation(export: Value) -> Result<String, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "chat.import",
+            "payload": { "export": export },
+        })),
+    )
+    .await?;
+    Ok(v.get("imported")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned())
+}
+
 /// `chat.cancel` — server-side cancel.  Complements the client-side
 /// `drop(active_stream)` path used by the Stop button.
 pub async fn cancel_turn(turn_id: &str) -> Result<(), String> {
