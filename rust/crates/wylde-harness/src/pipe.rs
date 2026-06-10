@@ -26,8 +26,12 @@
 //! partial port can't brick chat. The deferred punchlist:
 //!
 //! * `memory.workspace.*` (6 verbs) — `workspace_memory` not in Rust.
-//! * `memory.reflect` — `reflection` not in Rust.
-//! * `prompts.*` (5 verbs) — `system_prompts` not in Rust.
+//! * `memory.reflect` — `reflection` not in Rust (the `long_term` scope
+//!   IS ported — `memory::long_term::reflection` — the verb waits on the
+//!   conversation/workspace scopes).
+//!
+//! (`prompts.*` left this list in the full-Rust cutover — the five verbs
+//! are served by [`crate::prompts`] now.)
 //! * `rag.workspaces.*` (10 verbs) — overlaps `memory.workspaces.*`;
 //!   namespace reconciliation + indexer port pending.
 //!
@@ -70,6 +74,7 @@ const HANDLER_MODULE_TOOLS: &str = "wylde_harness::api::DefaultHarnessApi (tools
 const HANDLER_MODULE_MODELS: &str = "wylde_harness::api::DefaultHarnessApi (models.*)";
 const HANDLER_MODULE_SETTINGS: &str =
     "wylde_harness::api::DefaultHarnessApi (settings.ollama.*)";
+const HANDLER_MODULE_PROMPTS: &str = "wylde_harness::api::DefaultHarnessApi (prompts.*)";
 const HANDLER_MODULE_RAG: &str = "wylde_harness::api::DefaultHarnessApi (rag.*)";
 const HANDLER_MODULE_LONG_TERM: &str =
     "wylde_harness::api::DefaultHarnessApi (memory.long_term.*)";
@@ -127,6 +132,13 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     // settings.encryption.* — encryption-at-rest toggle (OI-14, 2 verbs)
     "settings.encryption.get",
     "settings.encryption.set",
+    // prompts.* — system-prompt overrides + presets (5 verbs; Rust port
+    // of the Python `_prompts.py` actions, full-Rust cutover)
+    "prompts.list",
+    "prompts.save",
+    "prompts.save_preset",
+    "prompts.set_active",
+    "prompts.delete_preset",
     // rag.* — episodic write + semantic search (2 verbs; Wylde_Study S2a)
     "rag.add_episodic",
     "rag.search",
@@ -583,6 +595,74 @@ where
          it off rewrites each store as plaintext on its next save. Returns \
          {enabled}.",
         HANDLER_MODULE_SETTINGS,
+    );
+
+    // ── prompts.* (system-prompt overrides + presets) ────────────────
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "prompts.list",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.prompts_list(p).await }
+        },
+        "System-prompt catalog + override store in one envelope: groups, \
+         catalog (id/group/label/desc/default), overrides, presets, \
+         active_preset. The Settings prompt editor calls this on mount. \
+         Payload {}.",
+        HANDLER_MODULE_PROMPTS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "prompts.save",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.prompts_save(p).await }
+        },
+        "Save an override for one prompt id. Payload {id, text?}; \
+         text=null (or text equal to the catalog default) clears the \
+         override. Returns the full prompts envelope.",
+        HANDLER_MODULE_PROMPTS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "prompts.save_preset",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.prompts_save_preset(p).await }
+        },
+        "Snapshot the current overrides into a named preset and activate \
+         it. Payload {name} (\"Default\" is reserved). Returns the full \
+         prompts envelope.",
+        HANDLER_MODULE_PROMPTS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "prompts.set_active",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.prompts_set_active(p).await }
+        },
+        "Activate the named preset; \"Default\" resets every override to \
+         the catalog default. Payload {name}. Returns the full prompts \
+         envelope.",
+        HANDLER_MODULE_PROMPTS,
+    );
+
+    let a = Arc::clone(&api);
+    register_action_with_meta(
+        "prompts.delete_preset",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.prompts_delete_preset(p).await }
+        },
+        "Remove a named preset (active falls back to Default if it was \
+         the one deleted; \"Default\" itself cannot be deleted). Payload \
+         {name}. Returns the full prompts envelope.",
+        HANDLER_MODULE_PROMPTS,
     );
 
     // ── rag.* (Wylde_Study S2a) ──────────────────────────────────────

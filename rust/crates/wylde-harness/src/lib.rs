@@ -39,6 +39,10 @@ pub mod global_anchors;
 pub mod memory;
 pub mod model_registry;
 pub mod pipe;
+// NEW — system-prompt overrides + presets (Rust port of the Python
+// `_prompts.py` actions + `Core/shared/system_prompts{,_catalog}.py`;
+// full-Rust cutover). Same `data/system_prompts.json`, no migration.
+pub mod prompts;
 pub mod service;
 pub mod settings;
 pub mod state;

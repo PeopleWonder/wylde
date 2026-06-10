@@ -113,6 +113,14 @@ pub trait HarnessApi: Send + Sync {
     async fn settings_encryption_get(&self, payload: Value) -> Reply;
     async fn settings_encryption_set(&self, payload: Value) -> Reply;
 
+    // prompts.* (5 verbs; system-prompt overrides + presets) — Rust
+    // port of the Python `_prompts.py` actions (full-Rust cutover).
+    async fn prompts_list(&self, payload: Value) -> Reply;
+    async fn prompts_save(&self, payload: Value) -> Reply;
+    async fn prompts_save_preset(&self, payload: Value) -> Reply;
+    async fn prompts_set_active(&self, payload: Value) -> Reply;
+    async fn prompts_delete_preset(&self, payload: Value) -> Reply;
+
     // ── rag.* (2 verbs; Wylde_Study S2a) ─────────────────────────────
     async fn rag_add_episodic(&self, payload: Value) -> Reply;
     async fn rag_search(&self, payload: Value) -> Reply;
@@ -338,6 +346,29 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn settings_encryption_set(&self, payload: Value) -> Reply {
         settings_actions::handle_encryption_set(payload).await
+    }
+
+    // prompts.* (system-prompt overrides + presets). Synchronous store
+    // work; the JSON shaping lives in crate::prompts.
+
+    async fn prompts_list(&self, payload: Value) -> Reply {
+        crate::prompts::handle_list(payload)
+    }
+
+    async fn prompts_save(&self, payload: Value) -> Reply {
+        crate::prompts::handle_save(payload)
+    }
+
+    async fn prompts_save_preset(&self, payload: Value) -> Reply {
+        crate::prompts::handle_save_preset(payload)
+    }
+
+    async fn prompts_set_active(&self, payload: Value) -> Reply {
+        crate::prompts::handle_set_active(payload)
+    }
+
+    async fn prompts_delete_preset(&self, payload: Value) -> Reply {
+        crate::prompts::handle_delete_preset(payload)
     }
 
     // ── rag.* (Wylde_Study S2a) ──────────────────────────────────────
