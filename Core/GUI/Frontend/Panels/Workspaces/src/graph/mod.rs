@@ -15,13 +15,16 @@
 //!   * [`layout`] / [`physics`] — WHERE things go / HOW they move
 //!     (C-layout / C-physics); the animated swap driver is
 //!     `transition_driver` (private).
-//!   * [`navigation`] — WHERE the user is looking; holds the input handlers
-//!     today, grows to the space-map in Slice C-navigation.
+//!   * [`navigation`] — WHERE the user is looking (Slice C-navigation:
+//!     space-map zoom, breadcrumb, exit edges).
+//!   * [`cluster`] — WHICH nodes group (Slice C-cluster: threshold-driven
+//!     auto-clustering + expand-in-place).
 //!   * `paint` (private) — gpui draw-call plumbing for the renderer output.
 //!
 //! [`GraphView`] is the panel mount point — a gpui view the Workspaces
 //! panel's Graph tab embeds.
 
+pub mod cluster;
 pub mod ipc;
 pub mod layout;
 pub mod model;
@@ -42,6 +45,7 @@ mod physics_tests;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use gpui::{
     canvas, div, prelude::*, px, App, AppContext, AsyncApp, Bounds, Context, ElementId,
@@ -50,8 +54,9 @@ use gpui::{
 };
 use wylde_theme::typography::{size as font_size, weight};
 
+use cluster::{ClusterView, Override};
 use ipc::{GraphFetchError, GraphLoad};
-use layout::{ForceDirected, LayoutKind};
+use layout::{CubicBezier, ForceDirected, LayoutKind};
 use model::{Layout, WorkspaceGraph};
 use navigation::input::Drag;
 use navigation::transition::ActiveCameraTween;
@@ -70,6 +75,18 @@ struct CanvasRect {
     oy: f32,
     w: f32,
     h: f32,
+}
+
+/// An open right-click menu over a cluster (C-cluster): Expand Cluster on a
+/// folded sphere, Collapse Cluster on a member of an expandable cluster.
+pub(crate) struct ClusterMenu {
+    /// Click position, window px.
+    x: f32,
+    y: f32,
+    cluster_id: String,
+    /// `true` → the target is folded (menu offers Expand); `false` → expanded
+    /// (menu offers Collapse).
+    folded: bool,
 }
 
 /// The graph panel view. Owns the loaded graph + its scaffold layout, the
@@ -106,6 +123,10 @@ pub struct GraphView {
     /// Exit-edge jump second phase: the cluster to enter once the in-flight
     /// zoom-out tween lands.
     pending_enter: Option<String>,
+    /// Auto-clustering + expand-in-place state (C-cluster).
+    cluster_view: ClusterView,
+    /// Open right-click menu (Expand / Collapse Cluster), if any.
+    cluster_menu: Option<ClusterMenu>,
     /// Focus handle so the canvas can receive `Ctrl+Shift+L`. Created lazily in
     /// `render` (no gpui context at `new()` / in unit tests).
     focus: Option<FocusHandle>,
@@ -143,6 +164,8 @@ impl GraphView {
             navigator: Navigator::default(),
             camera_transition: None,
             pending_enter: None,
+            cluster_view: ClusterView::default(),
+            cluster_menu: None,
             focus: None,
             camera: Camera::default(),
             fitted: false,
@@ -187,6 +210,11 @@ impl GraphView {
                         view.navigator.reset();
                         view.camera_transition = None;
                         view.pending_enter = None;
+                        // Re-run the one-time cluster assignment + auto-fold
+                        // selection; the snap to the post-fit zoom happens at
+                        // the first paint (see canvas_element).
+                        view.cluster_view.rebuild(&view.graph, view.camera.zoom);
+                        view.cluster_menu = None;
                         // Apply the per-workspace remembered layout (default:
                         // force-directed). Deterministic layouts compute their
                         // final positions and leave the physics worker paused;
@@ -303,15 +331,42 @@ impl GraphView {
     /// Render the current scene into a [`RenderOutput`] for `rect`. `None` when
     /// the theme failed to load or there is nothing to draw. Shared by the
     /// canvas paint path and the click hit-test so both see identical geometry.
+    /// The graph + layout the render paths draw: the cluster display
+    /// transform (C-cluster) when folds are active and the view is not
+    /// scoped, else the real ones. Scoped views bypass clustering — the
+    /// scope filter already isolates one cluster's members.
+    fn display_graph_layout(&self) -> (Rc<WorkspaceGraph>, Rc<Layout>) {
+        if !self.navigator.is_scoped() {
+            if let Some((g, l)) = self.cluster_view.apply(&self.graph, &self.layout) {
+                return (Rc::new(g), Rc::new(l));
+            }
+        }
+        (self.graph.clone(), self.layout.clone())
+    }
+
+    /// Expanded-in-place boundary rects (model space) for the current frame;
+    /// empty when scoped.
+    fn boundary_rects(&self) -> Vec<(f32, f32, f32, f32)> {
+        if self.navigator.is_scoped() {
+            return Vec::new();
+        }
+        self.cluster_view
+            .expanded_boundaries(&self.layout)
+            .into_iter()
+            .map(|(_, bb)| bb)
+            .collect()
+    }
+
     fn render_output(&self, rect: CanvasRect, camera: Camera) -> Option<RenderOutput> {
         let theme = self.theme.as_ref()?;
         if self.graph.nodes.is_empty() {
             return None;
         }
         let members = self.navigator.members();
+        let (graph, layout) = self.display_graph_layout();
         let scene = Scene {
-            graph: &self.graph,
-            layout: &self.layout,
+            graph: &graph,
+            layout: &layout,
             theme,
             mode: model::ViewMode::CodeGraph,
             scope: members.as_deref(),
@@ -319,7 +374,8 @@ impl GraphView {
         let mut vp = self.viewport(rect);
         vp.camera = camera;
         let mut out = Renderer2d::new().frame(&scene, &vp);
-        // Scoped: edges that leave the cluster fade out as exit stubs.
+        // Scoped: edges that leave the cluster fade out as exit stubs
+        // (computed over the REAL graph — the scope filter hides the rest).
         if let Some(m) = members.as_deref() {
             let xe = compute_exit_edges(
                 &self.graph,
@@ -337,6 +393,8 @@ impl GraphView {
                 self.navigator.config.exit_stub_segments,
             );
         }
+        // Expanded-in-place cluster boundaries (Theme `cluster_boundary`).
+        append_boundaries(&mut out, &self.boundary_rects(), theme, self.dark, &vp);
         Some(out)
     }
 }
@@ -398,6 +456,10 @@ impl Render for GraphView {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseUpEvent, _w, cx| this.on_up(ev, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, ev: &MouseDownEvent, _w, cx| this.on_right_click(ev, cx)),
             );
 
         // The graph canvas (only when the theme is good and we have nodes).
@@ -407,6 +469,10 @@ impl Render for GraphView {
 
         // Exit-edge destination chips (scoped space-map only, C-navigation).
         content = self.exit_label_chips(content, cx);
+        // Right-click cluster menu (C-cluster).
+        if let Some(menu) = self.cluster_menu_element(cx) {
+            content = content.child(menu);
+        }
         content = content.child(self.overlay());
 
         // Root: breadcrumb bar (Theme `graph_panel.breadcrumb_bar`) over the
@@ -473,6 +539,153 @@ impl GraphView {
         }
         content
     }
+
+    // ── Clustering (Slice C-cluster) ─────────────────────────────────────
+
+    /// The expand-in-place animation params, read FROM the Theme
+    /// (`animations.cluster_expand_in_place`); locked-spec fallback.
+    fn cluster_anim(&self) -> (f32, CubicBezier) {
+        self.theme
+            .as_ref()
+            .and_then(|t| t.animation("cluster_expand_in_place"))
+            .map(|a| (a.duration_ms, CubicBezier::from_array(a.easing)))
+            .unwrap_or((
+                cluster::expand::EXPAND_FALLBACK_MS,
+                cluster::expand::EXPAND_FALLBACK_EASING,
+            ))
+    }
+
+    /// Re-resolve the fold set against the current zoom and overrides; arms
+    /// expand/collapse tweens and starts the animation loop when anything
+    /// flips.
+    pub(in crate::graph) fn sync_clusters(&mut self, cx: &mut Context<Self>) {
+        let anim = self.cluster_anim();
+        if self
+            .cluster_view
+            .sync(self.camera.zoom, Instant::now(), anim)
+        {
+            self.spawn_cluster_driver(cx);
+        }
+    }
+
+    /// Apply a right-click menu choice: override the cluster's fold state and
+    /// animate to it.
+    pub(in crate::graph) fn toggle_cluster_fold(
+        &mut self,
+        cluster_id: &str,
+        expand: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let ov = if expand {
+            Override::Expanded
+        } else {
+            Override::Collapsed
+        };
+        self.cluster_view.set_override(cluster_id, ov);
+        self.cluster_menu = None;
+        self.sync_clusters(cx);
+        cx.notify();
+    }
+
+    /// Drive the expand/collapse tweens at ~60 fps until they all land
+    /// (same main-thread pattern as the layout-swap and camera drivers).
+    fn spawn_cluster_driver(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| loop {
+            app_cx
+                .background_executor()
+                .timer(std::time::Duration::from_millis(16))
+                .await;
+            let running = this.update(app_cx, |view, cx| {
+                let running = view.cluster_view.advance(Instant::now());
+                cx.notify();
+                running
+            });
+            match running {
+                Ok(true) => continue,
+                _ => break,
+            }
+        })
+        .detach();
+    }
+
+    /// The right-click cluster menu (Theme `ui_chrome.context_menu`), if open.
+    fn cluster_menu_element(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
+        let menu = self.cluster_menu.as_ref()?;
+        let theme = self.theme.as_ref()?;
+        let m = &theme.ui_chrome.context_menu;
+        let label = if menu.folded {
+            "Expand Cluster"
+        } else {
+            "Collapse Cluster"
+        };
+        let target = menu.cluster_id.clone();
+        let expand = menu.folded;
+        Some(
+            div()
+                .id("graph-cluster-menu")
+                .absolute()
+                .left(px(menu.x - self.canvas.ox))
+                .top(px(menu.y - self.canvas.oy))
+                .bg(to_rgba(m.background(self.dark)))
+                .rounded(px(m.border_radius_px))
+                .overflow_hidden()
+                .text_size(px(m.font_size_px))
+                // The menu section carries no text colour of its own; the
+                // chrome text pair (breadcrumb bar) is the same palette.
+                .text_color(to_rgba(theme.graph_panel.breadcrumb_bar.text(self.dark)))
+                .child(
+                    div()
+                        .id("graph-cluster-menu-item")
+                        .h(px(m.item_height_px))
+                        .px(px(m.item_padding_px))
+                        .flex()
+                        .items_center()
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| {
+                                cx.stop_propagation();
+                                this.toggle_cluster_fold(&target, expand, cx);
+                            }),
+                        )
+                        .child(SharedString::from(label)),
+                ),
+        )
+    }
+}
+
+/// Project model-space cluster boundary rects into the frame's draw list
+/// using the Theme `cluster_boundary` styling.
+fn append_boundaries(
+    out: &mut RenderOutput,
+    rects: &[(f32, f32, f32, f32)],
+    theme: &Theme,
+    dark: bool,
+    vp: &Viewport,
+) {
+    let cb = &theme.graph_panel.cluster_boundary;
+    for bb in rects {
+        let (x0, y0) = vp.model_to_screen(model::Position {
+            x: bb.0,
+            y: bb.1,
+            z: 0.0,
+        });
+        let (x1, y1) = vp.model_to_screen(model::Position {
+            x: bb.2,
+            y: bb.3,
+            z: 0.0,
+        });
+        out.outlines.push(render::OutlineRect {
+            x: x0,
+            y: y0,
+            w: (x1 - x0).max(0.0),
+            h: (y1 - y0).max(0.0),
+            corner_radius: cb.corner_radius_px,
+            fill: cb.fill(dark),
+            border: cb.border(dark),
+            border_width: cb.border_width_px,
+        });
+    }
 }
 
 impl GraphView {
@@ -481,8 +694,10 @@ impl GraphView {
     /// [`RenderOutput`]; `paint` translates it into gpui draw calls.
     fn canvas_element(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
-        let graph = self.graph.clone();
-        let layout = self.layout.clone();
+        // Draw the display graph (cluster transform applied when folds are
+        // active and the view is unscoped — see `display_graph_layout`).
+        let (graph, layout) = self.display_graph_layout();
+        let boundaries = self.boundary_rects();
         let theme = self.theme.clone();
         let camera = self.camera;
         let dark = self.dark;
@@ -513,8 +728,13 @@ impl GraphView {
                 // (no notify — this only informs the *next* interaction).
                 entity.update(app, |view, _| {
                     view.canvas = rect;
-                    if !view.fitted && cam != view.camera {
-                        view.camera = cam;
+                    if !view.fitted {
+                        if cam != view.camera {
+                            view.camera = cam;
+                        }
+                        // First paint: snap the auto-fold set to the fitted
+                        // zoom (nothing on screen yet to animate from).
+                        view.cluster_view.snap_to(cam.zoom);
                     }
                     view.fitted = true;
                 });
@@ -547,6 +767,8 @@ impl GraphView {
                     );
                     append_exit_stubs(&mut out, &xe.stubs, &theme, dark, stub_segments);
                 }
+                // Expanded-in-place cluster boundaries (C-cluster).
+                append_boundaries(&mut out, &boundaries, &theme, dark, &vp);
                 Some(out)
             },
             move |_bounds, output: Option<RenderOutput>, window, _app| {
@@ -596,6 +818,17 @@ impl GraphView {
             font_size::MICRO,
             weight::REGULAR,
         ));
+
+        if self.cluster_view.is_active() && !self.navigator.is_scoped() {
+            let folded = self.cluster_view.folded_count();
+            if folded > 0 {
+                col = col.child(overlay_text(
+                    format!("{folded} clusters folded — zoom in or right-click a sphere to expand"),
+                    font_size::MICRO,
+                    weight::REGULAR,
+                ));
+            }
+        }
 
         if let Some(id) = &self.last_clicked {
             col = col.child(overlay_text(
@@ -1050,6 +1283,108 @@ mod tests {
         let vp = v.viewport(rect);
         let (cx_, cy_) = vp.model_to_screen(c_pos);
         assert_ne!(scoped.hit_test(cx_, cy_), Some("c"));
+    }
+
+    // ── Auto-clustering (Slice C-cluster) ────────────────────────────────
+
+    /// 12 nodes in two 6-member clusters; config trips auto-clustering.
+    fn cluster_view_graph() -> GraphView {
+        let mut g = WorkspaceGraph::default();
+        for c in ["alpha", "beta"] {
+            let mut members = Vec::new();
+            for i in 0..6 {
+                let id = format!("{c}-n{i}");
+                g.nodes.push(node(&id, &format!("ws/{c}/{id}.rs")));
+                members.push(id);
+            }
+            g.clusters.push(Cluster {
+                id: format!("ws/{c}"),
+                member_ids: members,
+                parent_breadcrumb: vec!["ws".to_owned()],
+                zoom_threshold: 2.0,
+            });
+        }
+        g.edges.push(Edge {
+            src: "alpha-n0".to_owned(),
+            dst: "beta-n0".to_owned(),
+            rel_type: RelType::Calls,
+            weight: 1.0,
+        });
+        let mut v = view_with_graph(g);
+        v.canvas = CanvasRect {
+            ox: 0.0,
+            oy: 0.0,
+            w: 800.0,
+            h: 600.0,
+        };
+        v.cluster_view.config = cluster::ClusterConfig {
+            auto_threshold_nodes: 10,
+            target_visible_nodes: 2,
+            min_fold_size: 3,
+            boundary_pad_px: 18.0,
+        };
+        let zoom = v.camera.zoom;
+        let graph = v.graph.clone();
+        v.cluster_view.rebuild(&graph, zoom);
+        v
+    }
+
+    #[test]
+    fn folded_view_renders_cluster_spheres_and_rerouted_edge() {
+        let v = cluster_view_graph();
+        assert!(v.cluster_view.is_active());
+        assert_eq!(v.cluster_view.folded_count(), 2);
+
+        let (dg, _) = v.display_graph_layout();
+        assert_eq!(dg.nodes.len(), 2, "two cluster spheres only");
+        assert!(dg.nodes.iter().all(|n| n.id.starts_with("cluster::")));
+        assert_eq!(dg.edges.len(), 1, "cross edge re-routed sphere→sphere");
+
+        // The render output draws the display graph; cluster spheres are
+        // hit-testable by their synthetic ids.
+        let out = v.render_output(v.canvas, v.camera).unwrap();
+        assert_eq!(out.spheres.len(), 2);
+        assert!(out.spheres.iter().all(|s| s.id.starts_with("cluster::")));
+    }
+
+    #[test]
+    fn scoped_view_bypasses_clustering() {
+        let mut v = cluster_view_graph();
+        v.enter_cluster_by_id("ws/alpha", Instant::now());
+        let (dg, _) = v.display_graph_layout();
+        assert_eq!(
+            dg.nodes.len(),
+            12,
+            "scoped path uses the real graph (scope filter applies at render)"
+        );
+        let out = v.render_output(v.canvas, v.camera).unwrap();
+        assert_eq!(out.spheres.len(), 6, "alpha members, no spheres folded");
+    }
+
+    #[test]
+    fn toggle_expand_then_boundary_after_anim() {
+        let mut v = cluster_view_graph();
+        // Manual expand override (the menu's action without the gpui menu).
+        v.cluster_view
+            .set_override("ws/alpha", cluster::Override::Expanded);
+        let t0 = Instant::now();
+        let anim = (300.0, layout::CubicBezier::new(0.16, 1.0, 0.3, 1.0));
+        assert!(v.cluster_view.sync(v.camera.zoom, t0, anim));
+        v.cluster_view.advance(t0 + Duration::from_millis(400));
+
+        let (dg, _) = v.display_graph_layout();
+        assert!(
+            dg.nodes.iter().any(|n| n.id == "alpha-n0"),
+            "alpha expanded in place"
+        );
+        assert!(
+            dg.nodes.iter().any(|n| n.id == "cluster::ws/beta"),
+            "beta still folded"
+        );
+        // The expanded-in-place boundary outline lands in the frame.
+        let out = v.render_output(v.canvas, v.camera).unwrap();
+        assert_eq!(out.outlines.len(), 1);
+        assert!(out.outlines[0].w > 0.0 && out.outlines[0].h > 0.0);
     }
 
     #[test]

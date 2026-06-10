@@ -159,6 +159,7 @@ impl Renderer for Renderer2d {
         RenderOutput {
             bg_inner: theme.graph_panel.background.primary(dark),
             bg_outer: theme.graph_panel.background.secondary(dark),
+            outlines: Vec::new(),
             edges,
             spheres,
         }

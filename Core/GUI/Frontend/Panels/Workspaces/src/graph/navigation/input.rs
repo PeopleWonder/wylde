@@ -13,8 +13,9 @@ use gpui::{
     ScrollWheelEvent, Window,
 };
 
-use super::super::GraphView;
+use super::super::{ClusterMenu, GraphView};
 use super::{camera, NavAction};
+use crate::graph::cluster::cluster_id_from_node;
 
 /// In-flight drag state. A press that lands on a node drags that node (pins it
 /// in the physics worker); a press on empty space pans the camera.
@@ -47,9 +48,47 @@ impl GraphView {
             let next = self.current_layout.next();
             self.set_layout(next, cx);
         }
-        if ks.key.as_str() == "escape" && self.navigator.is_scoped() {
-            self.apply_nav_action(NavAction::LeaveScope, cx);
+        if ks.key.as_str() == "escape" {
+            if self.cluster_menu.is_some() {
+                // Esc closes an open cluster menu before it leaves a scope.
+                self.cluster_menu = None;
+                cx.notify();
+            } else if self.navigator.is_scoped() {
+                self.apply_nav_action(NavAction::LeaveScope, cx);
+            }
         }
+    }
+
+    /// Right-click: offer Expand Cluster on a folded cluster sphere, Collapse
+    /// Cluster on a member of an expandable (auto-fold) cluster.
+    pub(crate) fn on_right_click(&mut self, ev: &MouseDownEvent, cx: &mut Context<Self>) {
+        let (sx, sy) = (f32::from(ev.position.x), f32::from(ev.position.y));
+        let hit = self
+            .render_output(self.canvas, self.camera)
+            .and_then(|out| out.hit_test(sx, sy).map(str::to_owned));
+        self.cluster_menu = None;
+        if let Some(id) = hit {
+            if let Some(cid) = cluster_id_from_node(&id) {
+                self.cluster_menu = Some(ClusterMenu {
+                    x: sx,
+                    y: sy,
+                    cluster_id: cid.to_owned(),
+                    folded: true,
+                });
+            } else if !self.navigator.is_scoped() {
+                if let Some(cid) = self.cluster_view.cluster_of(&id).map(str::to_owned) {
+                    if self.cluster_view.is_expandable(&cid) {
+                        self.cluster_menu = Some(ClusterMenu {
+                            x: sx,
+                            y: sy,
+                            cluster_id: cid,
+                            folded: false,
+                        });
+                    }
+                }
+            }
+        }
+        cx.notify();
     }
 
     pub(crate) fn on_scroll(&mut self, ev: &ScrollWheelEvent, cx: &mut Context<Self>) {
@@ -89,13 +128,21 @@ impl GraphView {
             self.apply_nav_action(action, cx);
         }
 
+        // Clusters fold/unfold as the zoom crosses their thresholds.
+        self.sync_clusters(cx);
+
         // A zoom is a resume trigger + changes which nodes are visible — refresh
         // the worker's cull region.
         self.push_viewport();
         cx.notify();
     }
 
-    pub(crate) fn on_down(&mut self, ev: &MouseDownEvent, _cx: &mut Context<Self>) {
+    pub(crate) fn on_down(&mut self, ev: &MouseDownEvent, cx: &mut Context<Self>) {
+        // A left press anywhere dismisses an open cluster menu (the menu
+        // item's own handler stops propagation before this runs).
+        if self.cluster_menu.take().is_some() {
+            cx.notify();
+        }
         let (sx, sy) = (f32::from(ev.position.x), f32::from(ev.position.y));
         // A press on a node drags that node; a press on empty space pans.
         let node = self

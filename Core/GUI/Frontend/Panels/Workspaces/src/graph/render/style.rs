@@ -394,6 +394,53 @@ impl ExitEdgeStyle {
     }
 }
 
+/// `graph_panel.cluster_boundary` (C-cluster) — the faint outline drawn
+/// around an expanded-in-place cluster's members.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ClusterBoundaryStyle {
+    #[serde(default)]
+    pub style: String,
+    #[serde(default = "default_boundary_border_light")]
+    pub border_color_light: String,
+    #[serde(default = "default_boundary_border_dark")]
+    pub border_color_dark: String,
+    #[serde(default = "default_border_width")]
+    pub border_width_px: f32,
+    #[serde(default = "default_boundary_radius")]
+    pub corner_radius_px: f32,
+    #[serde(default = "default_boundary_fill_light")]
+    pub fill_color_light: String,
+    #[serde(default = "default_boundary_fill_dark")]
+    pub fill_color_dark: String,
+    #[serde(default = "default_fill_opacity")]
+    pub fill_opacity: f32,
+}
+
+impl Default for ClusterBoundaryStyle {
+    fn default() -> Self {
+        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults")
+    }
+}
+
+impl ClusterBoundaryStyle {
+    pub fn border(&self, dark: bool) -> Color {
+        Color::parse_or_fallback(if dark {
+            &self.border_color_dark
+        } else {
+            &self.border_color_light
+        })
+    }
+
+    pub fn fill(&self, dark: bool) -> Color {
+        let c = Color::parse_or_fallback(if dark {
+            &self.fill_color_dark
+        } else {
+            &self.fill_color_light
+        });
+        c.with_alpha(c.a * self.fill_opacity.clamp(0.0, 1.0))
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct GraphPanelStyle {
     pub background: PanelBackground,
@@ -404,6 +451,63 @@ pub struct GraphPanelStyle {
     /// Exit-edge fade + label styling (C-navigation).
     #[serde(default)]
     pub exit_edges: ExitEdgeStyle,
+    /// Expanded-cluster boundary outline (C-cluster).
+    #[serde(default)]
+    pub cluster_boundary: ClusterBoundaryStyle,
+}
+
+/// `ui_chrome.context_menu` — the right-click menu chrome (C-cluster uses it
+/// for Expand/Collapse Cluster; Phase 4 surfaces reuse it). Only the fields
+/// the graph panel consumes are modelled.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ContextMenuStyle {
+    #[serde(default = "white")]
+    pub background_light: String,
+    #[serde(default = "default_crumb_bg_dark")]
+    pub background_dark: String,
+    #[serde(default = "default_menu_radius")]
+    pub border_radius_px: f32,
+    #[serde(default = "default_menu_item_height")]
+    pub item_height_px: f32,
+    #[serde(default = "default_menu_item_padding")]
+    pub item_padding_px: f32,
+    #[serde(default = "default_menu_hover_light")]
+    pub item_hover_background_light: String,
+    #[serde(default = "default_menu_hover_dark")]
+    pub item_hover_background_dark: String,
+    #[serde(default = "default_crumb_font")]
+    pub font_size_px: f32,
+}
+
+impl Default for ContextMenuStyle {
+    fn default() -> Self {
+        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults")
+    }
+}
+
+impl ContextMenuStyle {
+    pub fn background(&self, dark: bool) -> Color {
+        Color::parse_or_fallback(if dark {
+            &self.background_dark
+        } else {
+            &self.background_light
+        })
+    }
+
+    pub fn item_hover(&self, dark: bool) -> Color {
+        Color::parse_or_fallback(if dark {
+            &self.item_hover_background_dark
+        } else {
+            &self.item_hover_background_light
+        })
+    }
+}
+
+/// `ui_chrome.*` — shared UI chrome the graph panel consumes.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct UiChromeStyle {
+    #[serde(default)]
+    pub context_menu: ContextMenuStyle,
 }
 
 /// One `animations.*` entry — a duration + cubic-bézier easing. Only the
@@ -432,6 +536,10 @@ pub struct Theme {
     /// back to the locked spec value).
     #[serde(default)]
     pub animations: HashMap<String, AnimationSpec>,
+    /// Shared UI chrome (`ui_chrome.*`); the graph panel reads
+    /// `context_menu` (C-cluster).
+    #[serde(default)]
+    pub ui_chrome: UiChromeStyle,
 }
 
 impl Theme {
@@ -535,6 +643,39 @@ fn default_exit_label_text_dark() -> String {
 }
 fn default_exit_label_font() -> f32 {
     11.0
+}
+fn default_boundary_border_light() -> String {
+    "rgba(0, 0, 0, 0.08)".to_owned()
+}
+fn default_boundary_border_dark() -> String {
+    "rgba(255, 255, 255, 0.08)".to_owned()
+}
+fn default_boundary_radius() -> f32 {
+    12.0
+}
+fn default_boundary_fill_light() -> String {
+    "rgba(0, 0, 0, 0.01)".to_owned()
+}
+fn default_boundary_fill_dark() -> String {
+    "rgba(255, 255, 255, 0.01)".to_owned()
+}
+fn default_fill_opacity() -> f32 {
+    1.0
+}
+fn default_menu_radius() -> f32 {
+    8.0
+}
+fn default_menu_item_height() -> f32 {
+    28.0
+}
+fn default_menu_item_padding() -> f32 {
+    10.0
+}
+fn default_menu_hover_light() -> String {
+    "#EDF2F7".to_owned()
+}
+fn default_menu_hover_dark() -> String {
+    "#2D3748".to_owned()
 }
 fn default_base_modifier() -> f32 {
     0.65
@@ -681,6 +822,44 @@ mod tests {
         let xe = ExitEdgeStyle::default();
         assert_eq!(xe.fade_distance_px, 40.0);
         assert_eq!(xe.label_font_size_px, 11.0);
+    }
+
+    #[test]
+    fn cluster_boundary_matches_locked_spec() {
+        let t = Theme::load_v1().unwrap();
+        let cb = &t.graph_panel.cluster_boundary;
+        assert_eq!(cb.style, "faint_outline");
+        assert_eq!(cb.border_width_px, 1.0);
+        assert_eq!(cb.corner_radius_px, 12.0);
+        let b = cb.border(true);
+        assert!(
+            (b.a - 0.08).abs() < 1e-3,
+            "faint white outline in dark mode"
+        );
+        let f = cb.fill(true);
+        assert!((f.a - 0.01).abs() < 1e-3);
+    }
+
+    #[test]
+    fn context_menu_matches_locked_spec() {
+        let t = Theme::load_v1().unwrap();
+        let m = &t.ui_chrome.context_menu;
+        assert_eq!(m.border_radius_px, 8.0);
+        assert_eq!(m.item_height_px, 28.0);
+        assert_eq!(m.item_padding_px, 10.0);
+        assert_eq!(m.font_size_px, 12.0);
+        // #141B24 dark background.
+        let bg = m.background(true);
+        assert!((bg.r - 0x14 as f32 / 255.0).abs() < 1e-3);
+        assert_ne!(m.item_hover(true), m.item_hover(false));
+    }
+
+    #[test]
+    fn cluster_expand_animation_matches_locked_spec() {
+        let t = Theme::load_v1().unwrap();
+        let a = t.animation("cluster_expand_in_place").expect("locked anim");
+        assert_eq!(a.duration_ms, 300.0);
+        assert_eq!(a.easing, [0.16, 1.0, 0.3, 1.0]);
     }
 
     #[test]
