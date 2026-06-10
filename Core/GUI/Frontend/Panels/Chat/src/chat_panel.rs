@@ -207,6 +207,13 @@ pub struct ChatPanel {
     pub composer: ComposerState,
     /// The floating Thought-Bubble layer (Plan §5.2–5.5).
     pub bubbles: composer::bubbles::BubbleLayer,
+    /// Bubble-op half of the unified §5.9 undo timeline (the text half
+    /// lives in the prompt input's snapshot ring; both stamp from the
+    /// shared clock and `on_panel_key` arbitrates by recency).
+    pub bubble_undo: wylde_anchor_actions::UndoStack<composer::bubbles::BubbleOp>,
+    /// True while the arbiter replays an op — suppresses re-recording and
+    /// cross-stack redo invalidation from its own effects.
+    replaying_undo: bool,
     /// The bubble strip's window-absolute origin, captured by its tether
     /// canvas at paint (the graph panel's CanvasRect pattern) — bubble divs
     /// and tether endpoints position from it.
@@ -226,6 +233,10 @@ impl ChatPanel {
                 .with_min_height(60.0)
                 .with_max_height(180.0)
                 .with_element_key("chat-prompt")
+                // Unified undo (§5.9): the prompt's Ctrl+Z chords bubble to
+                // `on_panel_key`, which interleaves text undo with bubble
+                // ops by timeline recency. Only this input opts in.
+                .with_external_undo()
         });
         let prompt_input_for_submit = prompt_input.clone();
         let input_sub = cx.subscribe(
@@ -238,6 +249,13 @@ impl ChatPanel {
                 // Symbol-aware composer (Slice F): every edit schedules a
                 // debounced recognition scan.
                 InputEvent::Changed(text) => {
+                    // Unified linear history (§5.9): a NEW text op
+                    // invalidates the bubble redo branch — but the
+                    // arbiter's own undo/redo (which also emit Changed)
+                    // must not.
+                    if !this.replaying_undo {
+                        this.bubble_undo.clear_redo();
+                    }
                     this.schedule_composer_scan(text.clone(), cx);
                 }
             },
@@ -300,6 +318,8 @@ impl ChatPanel {
             _input_sub: input_sub,
             composer: ComposerState::default(),
             bubbles: composer::bubbles::BubbleLayer::default(),
+            bubble_undo: wylde_anchor_actions::UndoStack::default(),
+            replaying_undo: false,
             bubble_strip_origin: (0.0, 0.0, 0.0),
             palette_input,
             _palette_sub: palette_sub,
@@ -484,8 +504,10 @@ impl ChatPanel {
             // below reconcile against the harness.
             self.messages.clear();
             self.working_memory.clear();
-            // Bubble pins are per-conversation (§5.4) — a switch resets all.
+            // Bubble pins are per-conversation (§5.4) — a switch resets all,
+            // and the §5.9 undo stack is per-conversation too.
             self.bubbles.on_conversation_changed();
+            self.bubble_undo.clear();
         }
         self.show_conversations = false;
         self.confirm_delete = None;
@@ -1518,7 +1540,9 @@ impl ChatPanel {
     }
 
     /// Panel-level keys (the input forwards what it doesn't handle):
-    /// `Ctrl+P` toggles the symbol palette, `Esc` closes composer popovers.
+    /// `Ctrl+P` toggles the symbol palette, `Esc` closes composer popovers,
+    /// and the unified §5.9 undo chords (the prompt opts out of handling
+    /// them itself — see `with_external_undo`).
     pub(crate) fn on_panel_key(
         &mut self,
         ev: &KeyDownEvent,
@@ -1526,8 +1550,23 @@ impl ChatPanel {
         cx: &mut Context<Self>,
     ) {
         let ks = &ev.keystroke;
-        if ks.key.as_str() == "p" && (ks.modifiers.control || ks.modifiers.platform) {
+        let cmd_or_ctrl = ks.modifiers.control || ks.modifiers.platform;
+        if ks.key.as_str() == "p" && cmd_or_ctrl {
             self.toggle_palette(window, cx);
+            return;
+        }
+        // Unified undo timeline (§5.9): Ctrl+Z undoes the newest thing —
+        // text edit or bubble op, whichever happened last.
+        if ks.key.as_str() == "z" && cmd_or_ctrl && ks.modifiers.shift {
+            self.unified_redo(cx);
+            return;
+        }
+        if ks.key.as_str() == "z" && cmd_or_ctrl {
+            self.unified_undo(cx);
+            return;
+        }
+        if ks.key.as_str() == "y" && cmd_or_ctrl {
+            self.unified_redo(cx);
             return;
         }
         if ks.key.as_str() == "escape" {
@@ -1551,14 +1590,187 @@ impl ChatPanel {
         }
     }
 
+    // ── Unified undo (Plan §5.9): one timeline, two stacks ───────────
+
+    /// Undo the newest thing — a text edit group or a bubble op,
+    /// whichever's timeline stamp is higher.
+    pub(crate) fn unified_undo(&mut self, cx: &mut Context<Self>) {
+        use composer::bubbles::UndoSide;
+        let text_top = self.prompt_input.read(cx).top_undo_seq();
+        match composer::bubbles::newer_side(text_top, self.bubble_undo.top_seq()) {
+            UndoSide::Text => {
+                self.replaying_undo = true;
+                self.prompt_input.update(cx, |input, icx| {
+                    input.undo(icx);
+                });
+                self.replaying_undo = false;
+                cx.notify();
+            }
+            UndoSide::Bubble => {
+                let Some(entry) = self.bubble_undo.undo().cloned() else {
+                    return;
+                };
+                self.replaying_undo = true;
+                self.apply_bubble_op(&entry.action, false, cx);
+                self.replaying_undo = false;
+                cx.notify();
+            }
+            UndoSide::Neither => {}
+        }
+    }
+
+    /// Redo mirrors undo over the redo branches: re-apply whichever
+    /// undone op is chronologically EARLIER first? No — newest-undone
+    /// first means lowest stamp last; redo replays in original order, so
+    /// the SMALLEST stamp on top of the redo branches goes first. Both
+    /// branches are stacks whose tops are the most-recently-undone (=
+    /// oldest-original) ops, so comparing tops by `newer_side` and taking
+    /// the OPPOSITE side replays correctly.
+    pub(crate) fn unified_redo(&mut self, cx: &mut Context<Self>) {
+        use composer::bubbles::UndoSide;
+        let text_top = self.prompt_input.read(cx).top_redo_seq();
+        let bubble_top = self.bubble_undo.top_redo_seq();
+        // Replay in original chronological order: the redo-branch top with
+        // the OLDER stamp happened first, so it re-applies first.
+        let side = match composer::bubbles::newer_side(text_top, bubble_top) {
+            UndoSide::Neither => return,
+            UndoSide::Text if bubble_top.is_some() => UndoSide::Bubble,
+            UndoSide::Bubble if text_top.is_some() => UndoSide::Text,
+            s => s,
+        };
+        match side {
+            UndoSide::Text => {
+                self.replaying_undo = true;
+                self.prompt_input.update(cx, |input, icx| {
+                    input.redo(icx);
+                });
+                self.replaying_undo = false;
+                cx.notify();
+            }
+            UndoSide::Bubble => {
+                let Some(entry) = self.bubble_undo.redo().cloned() else {
+                    return;
+                };
+                self.replaying_undo = true;
+                self.apply_bubble_op(&entry.action, true, cx);
+                self.replaying_undo = false;
+                cx.notify();
+            }
+            UndoSide::Neither => {}
+        }
+    }
+
+    /// Apply a bubble op (`forward` = redo direction, else its inverse).
+    /// Runs under `replaying_undo`, so nothing here re-records.
+    fn apply_bubble_op(
+        &mut self,
+        op: &composer::bubbles::BubbleOp,
+        forward: bool,
+        cx: &mut Context<Self>,
+    ) {
+        use composer::bubbles::BubbleOp;
+        match op {
+            BubbleOp::ToggleExclude { word_idx } => {
+                self.composer.toggle_excluded(*word_idx);
+                self.sync_prompt_highlights(cx);
+            }
+            BubbleOp::TogglePin { label } => {
+                self.bubbles.toggle_pin(label);
+            }
+            BubbleOp::SetOpenWord { from, to } => {
+                let target = if forward { *to } else { *from };
+                match target {
+                    // `open` toggles-to-collapse on a same-word re-open, so
+                    // guard: only drive it when the state actually differs.
+                    Some(w) if self.bubbles.word_idx != Some(w) => {
+                        self.open_word_bubbles(w, cx);
+                    }
+                    Some(_) => {}
+                    None => self.bubbles.collapse(),
+                }
+            }
+        }
+    }
+
+    /// Record one bubble op on the §5.9 timeline: stamp from the shared
+    /// clock, seal the prompt's typing burst (so mid-burst ops interleave
+    /// honestly), and invalidate the text redo branch (linear history).
+    fn record_bubble_op(
+        &mut self,
+        label: impl Into<String>,
+        op: composer::bubbles::BubbleOp,
+        cx: &mut Context<Self>,
+    ) {
+        if self.replaying_undo {
+            return;
+        }
+        self.bubble_undo
+            .push_seq(label, op, wylde_gpui_input::next_undo_seq());
+        self.prompt_input.update(cx, |input, _| {
+            input.seal_undo_burst();
+            input.clear_redo();
+        });
+    }
+
+    /// The undoable ✕/↺ flip every exclude surface routes through (card
+    /// button, shared menu, curation popover).
+    pub(crate) fn toggle_word_excluded_undoable(
+        &mut self,
+        word_idx: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.composer.toggle_excluded(word_idx) {
+            let label = if self.composer.words.get(word_idx).is_some_and(|w| {
+                if w.is_ignored() {
+                    !w.reactivated
+                } else {
+                    w.excluded
+                }
+            }) {
+                "Excluded for this message"
+            } else {
+                "Restored to active"
+            };
+            self.record_bubble_op(
+                label,
+                composer::bubbles::BubbleOp::ToggleExclude { word_idx },
+                cx,
+            );
+            self.sync_prompt_highlights(cx);
+        }
+    }
+
+    /// The undoable 📌 flip (card button + shared menu).
+    pub(crate) fn toggle_bubble_pin_undoable(&mut self, label: &str, cx: &mut Context<Self>) {
+        let now_pinned = self.bubbles.toggle_pin(label);
+        self.record_bubble_op(
+            if now_pinned {
+                "Pinned to this conversation"
+            } else {
+                "Unpinned from this conversation"
+            },
+            composer::bubbles::BubbleOp::TogglePin {
+                label: label.to_owned(),
+            },
+            cx,
+        );
+    }
+
     // ── The Thought-Bubble layer (Plan §5.2–5.5) ─────────────────────
 
     /// Open (or swap to / collapse) a word's bubble set (§5.2, OI-17) and
     /// fetch its anchors. Spawned from a chip click or a click on the
     /// highlighted word itself.
     pub(crate) fn open_word_bubbles(&mut self, word_idx: usize, cx: &mut Context<Self>) {
+        let from = self.bubbles.word_idx;
         if !self.bubbles.open(word_idx) {
-            cx.notify(); // collapsed
+            // Re-click on the open word → collapse (§5.2). Undoable.
+            self.record_bubble_op(
+                "Bubbles collapsed",
+                composer::bubbles::BubbleOp::SetOpenWord { from, to: None },
+                cx,
+            );
+            cx.notify();
             return;
         }
         let Some(word) = self.composer.words.get(word_idx).cloned() else {
@@ -1566,6 +1778,15 @@ impl ChatPanel {
             cx.notify();
             return;
         };
+        // Spawn/swap is §5.9-undoable (the spec's "Spawn (left-click)").
+        self.record_bubble_op(
+            format!("Bubbles for \u{201c}{}\u{201d}", word.token.text),
+            composer::bubbles::BubbleOp::SetOpenWord {
+                from,
+                to: Some(word_idx),
+            },
+            cx,
+        );
         cx.notify();
         let ws = self.active_workspace_id.clone().unwrap_or_default();
         let token = word.token.text.clone();
@@ -1636,14 +1857,13 @@ impl ChatPanel {
         self.bubbles.menu = None;
         match action {
             MenuAction::ToggleExclude { .. } => {
-                self.composer.toggle_excluded(word_idx);
-                self.sync_prompt_highlights(cx);
+                self.toggle_word_excluded_undoable(word_idx, cx);
             }
             MenuAction::TogglePin { .. } => {
                 if let Some(label) =
                     target_label.or_else(|| self.bubbles.bubbles.first().map(|b| b.label.clone()))
                 {
-                    self.bubbles.toggle_pin(&label);
+                    self.toggle_bubble_pin_undoable(&label, cx);
                 }
             }
             MenuAction::ToggleIgnore { tier, .. } => {

@@ -187,6 +187,48 @@ impl BubbleLayer {
     }
 }
 
+/// One §5.9-undoable bubble operation, inverse baked in. Toggles are
+/// self-inverse; the set-open transition carries both endpoints so undo
+/// replays `to → from` and redo `from → to`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BubbleOp {
+    /// The word's ✕/↺ flip (Plan §5.8 exclude/restore).
+    ToggleExclude { word_idx: usize },
+    /// 📌 flip.
+    TogglePin { label: String },
+    /// Spawn / swap / collapse of the open bubble set (§5.2).
+    SetOpenWord {
+        from: Option<usize>,
+        to: Option<usize>,
+    },
+}
+
+/// Which sibling stack owns the next unified undo/redo step (§5.9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UndoSide {
+    Text,
+    Bubble,
+    Neither,
+}
+
+/// The merge rule: compare timeline stamps, newest wins. One shared clock
+/// means stamps never tie across stacks; `>=` keeps the text side stable
+/// if a zero-stamped legacy entry ever appears.
+pub fn newer_side(text_top: Option<u64>, bubble_top: Option<u64>) -> UndoSide {
+    match (text_top, bubble_top) {
+        (None, None) => UndoSide::Neither,
+        (Some(_), None) => UndoSide::Text,
+        (None, Some(_)) => UndoSide::Bubble,
+        (Some(t), Some(b)) => {
+            if t >= b {
+                UndoSide::Text
+            } else {
+                UndoSide::Bubble
+            }
+        }
+    }
+}
+
 /// Build the bubble list for a word: one bubble per matching anchor, plus
 /// the effective symbol's bubble when the word resolves to code. Pure —
 /// `anchors` comes from the panel's fetch.
@@ -343,6 +385,35 @@ mod tests {
         );
         // Lenient on junk.
         assert_eq!(CardContext::from_reply(&json!({})), CardContext::default());
+    }
+
+    #[test]
+    fn newer_side_picks_by_recency_across_stacks() {
+        use UndoSide::*;
+        assert_eq!(newer_side(None, None), Neither);
+        assert_eq!(newer_side(Some(5), None), Text);
+        assert_eq!(newer_side(None, Some(5)), Bubble);
+        assert_eq!(newer_side(Some(7), Some(3)), Text, "text is newer");
+        assert_eq!(newer_side(Some(3), Some(7)), Bubble, "bubble is newer");
+        // The interleave that motivated the design: word(1) → bubble(2) →
+        // word(3) unwinds Text, Bubble, Text.
+        let mut text = vec![1u64, 3];
+        let mut bubble = vec![2u64];
+        let mut order = Vec::new();
+        loop {
+            match newer_side(text.last().copied(), bubble.last().copied()) {
+                Text => {
+                    text.pop();
+                    order.push("text");
+                }
+                Bubble => {
+                    bubble.pop();
+                    order.push("bubble");
+                }
+                Neither => break,
+            }
+        }
+        assert_eq!(order, vec!["text", "bubble", "text"]);
     }
 
     #[test]

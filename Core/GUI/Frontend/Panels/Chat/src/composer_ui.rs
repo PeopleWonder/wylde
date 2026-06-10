@@ -321,7 +321,7 @@ fn bubble_card(
                         MouseButton::Left,
                         cx.listener(move |this: &mut ChatPanel, _ev: &MouseDownEvent, _w, cx| {
                             cx.stop_propagation();
-                            this.bubbles.toggle_pin(&label);
+                            this.toggle_bubble_pin_undoable(&label, cx);
                             cx.notify();
                         }),
                     )
@@ -336,8 +336,7 @@ fn bubble_card(
                         cx.listener(move |this: &mut ChatPanel, _ev: &MouseDownEvent, _w, cx| {
                             cx.stop_propagation();
                             if let Some(wi) = this.bubbles.word_idx {
-                                this.composer.toggle_excluded(wi);
-                                this.sync_prompt_highlights(cx);
+                                this.toggle_word_excluded_undoable(wi, cx);
                             }
                             cx.notify();
                         }),
@@ -845,8 +844,7 @@ fn curation_popover(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Option<gp
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this: &mut ChatPanel, _ev: &MouseDownEvent, _w, cx| {
-                        this.composer.toggle_excluded(word_idx);
-                        this.sync_prompt_highlights(cx);
+                        this.toggle_word_excluded_undoable(word_idx, cx);
                         cx.notify();
                     }),
                 ),

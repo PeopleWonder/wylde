@@ -35,6 +35,10 @@ struct Snapshot {
     text: String,
     cursor: usize,
     anchor: Option<usize>,
+    /// Position on the shared undo timeline (`crate::next_undo_seq`) —
+    /// stamped at push so an external arbiter (the chat panel's unified
+    /// Ctrl+Z) can interleave text undo with other op stacks by recency.
+    seq: u64,
 }
 
 /// Editing buffer + cursor state for `TextInput`.
@@ -140,23 +144,48 @@ impl TextBuffer {
     /// this between adjacent character inserts — the View arbitrates
     /// timing.
     pub fn push_snapshot(&mut self) {
+        // Skip if identical (content-wise — `seq` deliberately excluded) to
+        // the most recent snapshot — keeps the ring from filling with
+        // repeats when the View accidentally calls `push_snapshot` twice in
+        // a row.
+        if self.undo.back().is_some_and(|s| {
+            s.text == self.text && s.cursor == self.cursor && s.anchor == self.anchor
+        }) {
+            return;
+        }
         let snap = Snapshot {
             text: self.text.clone(),
             cursor: self.cursor,
             anchor: self.anchor,
+            seq: crate::next_undo_seq(),
         };
-        // Skip if identical to the most recent snapshot — keeps the ring
-        // from filling with repeats when the View accidentally calls
-        // `push_snapshot` twice in a row.
-        if self.undo.back() == Some(&snap) {
-            return;
-        }
         if self.undo.len() == UNDO_LIMIT {
             self.undo.pop_front();
         }
         self.undo.push_back(snap);
         self.redo.clear();
     }
+
+    /// Timeline position of the newest undoable snapshot — what the
+    /// unified-undo arbiter compares against sibling op stacks.
+    pub fn top_undo_seq(&self) -> Option<u64> {
+        self.undo.back().map(|s| s.seq)
+    }
+
+    /// Timeline position of the newest redoable snapshot.
+    pub fn top_redo_seq(&self) -> Option<u64> {
+        self.redo.back().map(|s| s.seq)
+    }
+
+    /// Drop the redo branch — the unified timeline's linear-history rule:
+    /// a NEW op on any sibling stack invalidates this stack's redo too.
+    pub fn clear_redo(&mut self) {
+        self.redo.clear();
+    }
+
+    // (Unified-undo seq tests live in this file's test module: stamps are
+    // monotonic per push, carried onto redo entries, and cleared with the
+    // branch.)
 
     /// Roll back one snapshot if available.  No-op when there's nothing
     /// to undo; the caller can ignore the return value.
@@ -168,6 +197,10 @@ impl TextBuffer {
             text: self.text.clone(),
             cursor: self.cursor,
             anchor: self.anchor,
+            // The redo entry re-applies the edit group this snapshot
+            // opened — it keeps that group's timeline position so redo
+            // arbitration replays in original chronological order.
+            seq: snap.seq,
         };
         if self.redo.len() == UNDO_LIMIT {
             self.redo.pop_front();
@@ -188,6 +221,7 @@ impl TextBuffer {
             text: self.text.clone(),
             cursor: self.cursor,
             anchor: self.anchor,
+            seq: snap.seq,
         };
         if self.undo.len() == UNDO_LIMIT {
             self.undo.pop_front();
@@ -761,6 +795,30 @@ mod tests {
         let mut b = TextBuffer::new(false);
         b.insert_str("foo\r\nbar\r\nbaz");
         assert_eq!(b.text(), "foo\nbar\nbaz");
+    }
+
+    #[test]
+    fn undo_seqs_are_monotonic_carried_to_redo_and_clearable() {
+        let mut b = TextBuffer::new(false);
+        assert_eq!(b.top_undo_seq(), None);
+        b.push_snapshot();
+        b.insert_str("a");
+        let s1 = b.top_undo_seq().expect("first snapshot stamped");
+        b.push_snapshot();
+        b.insert_str("b");
+        let s2 = b.top_undo_seq().expect("second snapshot stamped");
+        assert!(s2 > s1, "stamps are monotonic ({s1} → {s2})");
+
+        // Undo carries the group's stamp onto the redo branch.
+        assert!(b.undo());
+        assert_eq!(b.top_redo_seq(), Some(s2));
+        assert_eq!(b.top_undo_seq(), Some(s1));
+
+        // clear_redo drops only the redo branch (sibling-stack op landed).
+        b.clear_redo();
+        assert_eq!(b.top_redo_seq(), None);
+        assert_eq!(b.top_undo_seq(), Some(s1), "undo branch untouched");
+        assert!(!b.redo(), "nothing left to redo");
     }
 
     #[test]
