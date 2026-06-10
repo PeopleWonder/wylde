@@ -1304,20 +1304,15 @@ mod tests {
 
     #[test]
     fn strangler_defs_carry_expected_module_and_default() {
-        // Module + default impl per row. Only extension_bridge keeps a
-        // Python fallback (`Some(module)`); device_gate, vram_broker,
-        // gateway, and voice were collapsed to Rust-only when their Python
-        // packages were deleted (`None`) — the first three on 2026-06-02,
-        // voice in the Phase 11.E cutover. All five default to Rust except
-        // extension_bridge (still Python pending its dogfood week).
+        // Module + default impl per row. ALL five are Rust-only now —
+        // device_gate, vram_broker, gateway on 2026-06-02, voice in the
+        // Phase 11.E cutover, and extension_bridge in the full-Rust
+        // cutover (2026-06-09, dogfood gate waived by Aaron) — so every
+        // row carries `None` and defaults to Rust.
         let cases = [
             (service_name::DEVICE_GATE, None, ImplLang::Rust),
             (service_name::VRAM_BROKER, None, ImplLang::Rust),
-            (
-                service_name::EXTENSION_BRIDGE,
-                Some("Extensions.extension_bridge.run"),
-                ImplLang::Python,
-            ),
+            (service_name::EXTENSION_BRIDGE, None, ImplLang::Rust),
             (service_name::GATEWAY, None, ImplLang::Rust),
             (service_name::VOICE, None, ImplLang::Rust),
         ];

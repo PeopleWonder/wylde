@@ -6,7 +6,7 @@
 //! it* lives here.
 
 use gpui::{div, point, px, size, Bounds, Path, Pixels, Window};
-use gpui::{FontWeight, SharedString};
+use gpui::{FontWeight, SharedString, Styled};
 use wylde_theme::typography::FAMILY_INTER;
 
 use super::render::{Color, RenderOutput};
