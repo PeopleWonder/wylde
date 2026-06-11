@@ -11,8 +11,6 @@ The user has been refactoring the gather flow.
 - {{the_gather}} — the pre-LLM context gather
 
 ### Workspace context
-# Workspace context
-
 ## Persona
 Be precise.
 

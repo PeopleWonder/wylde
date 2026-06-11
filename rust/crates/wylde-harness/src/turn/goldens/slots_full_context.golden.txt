@@ -21,13 +21,15 @@ The user has been refactoring the context gather flow.
 - {{the_gather}} — the pre-LLM context gather (code symbol `gather_with`)
 
 ### Workspace context
-# Workspace context
-
 ## Persona
 Be precise.
 
 ## Workspace memory
 - uses cargo nextest
+
+## Workspace files
+
+fn gather_with() { /* fixture snippet */ }
 
 ### Code graph context
 Symbol `gather_with` — src/turn/context_gather.rs:404

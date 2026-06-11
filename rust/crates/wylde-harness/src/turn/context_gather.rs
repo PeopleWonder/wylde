@@ -110,6 +110,20 @@ pub(crate) struct HistoryMessage {
     pub content: String,
 }
 
+/// The active workspace's structured prompt contribution (improvement plan
+/// B6): persona / notes / RAG arrive as separate parts so each maps onto
+/// its own eviction tier — one oversized RAG chunk can no longer evict the
+/// persona and notes with it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct WorkspaceBlock {
+    /// Persona text (already B8-capped by the live gather).
+    pub persona: Option<String>,
+    /// Workspace note snippets, highest-scoring first.
+    pub notes: Vec<String>,
+    /// RAG snippets, best-first.
+    pub rag: Vec<String>,
+}
+
 /// A vocabulary anchor the current prompt referenced. Always in the never-drop
 /// tier (OI-8 tier 7 — "vocabulary block for currently-referenced anchors").
 #[derive(Clone, Debug, PartialEq)]
@@ -125,12 +139,10 @@ pub(crate) struct AnchorBlock {
 /// pressure and [`super::prompt_assembly`] turns what survives into the
 /// system-prompt block.
 ///
-/// Some OI-8 tiers have no Phase-2 source yet and are intentionally absent:
-/// pinned/unpinned **bubbles** (Phase 4), a separate **generic vector-RAG
-/// fallback** slot (RAG arrives pre-merged inside [`Self::workspace_context`]
-/// from `gather_prompt`), and a broad **older-anchors** pool (every anchor
-/// gathered here is a *currently-referenced* one, so it's never-drop). The
-/// eviction ladder documents all tiers for when those land.
+/// Tiers 5/6 (pinned/unpinned **bubbles**, a broad **older-anchors** pool)
+/// still have no source — every anchor gathered here is a *currently-
+/// referenced* one, so it's never-drop. The eviction ladder documents all
+/// tiers for when those land.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ChatContext {
     /// The global user profile block (OI-8 tier 7 — never dropped).
@@ -152,9 +164,16 @@ pub(crate) struct ChatContext {
     pub long_term: Vec<String>,
     /// Anchors the prompt referenced — the never-drop vocabulary block (tier 7).
     pub vocabulary_anchors: Vec<AnchorBlock>,
-    /// The workspace's rendered prompt block (persona + notes + RAG) from
-    /// `workspaces.gather_prompt`. OI-8 tier 3 (workspace_notes).
-    pub workspace_context: Option<String>,
+    /// Workspace RAG snippets (B6 split). OI-8 tier **1** — the generic
+    /// retrieval fallback, first to go; sheds lowest-ranked snippet first.
+    pub workspace_rag: Vec<String>,
+    /// Workspace note snippets (B6 split). OI-8 tier **3**; sheds
+    /// lowest-ranked snippet first.
+    pub workspace_notes: Vec<String>,
+    /// The workspace persona (B6 split). High tier (~6) — the workspace's
+    /// voice; losing it mid-conversation is jarring, so it outlasts every
+    /// retrieved slot and drops just before the history window.
+    pub workspace_persona: Option<String>,
     /// Structural code-graph context for referenced symbols. OI-8 tier 4
     /// (drop deeper hops first).
     pub symbol_contexts: Vec<SymbolContextBlock>,
@@ -200,12 +219,13 @@ type SourceResult<T> = Result<T, SourceStatus>;
 /// `NeighborhoodSource` pattern in `wylde-workspaces`). [`LiveSource`] wraps the
 /// real [`WorkspacesClient`]; tests supply an in-memory mock.
 pub(crate) trait WorkspaceSource {
-    /// `workspaces.gather_prompt` — the rendered persona + notes + RAG block.
+    /// `workspaces.gather_prompt` — the structured persona / notes / RAG
+    /// parts (B6).
     fn gather_prompt(
         &self,
         ws: &str,
         user_message: &str,
-    ) -> impl Future<Output = SourceResult<Option<String>>> + Send;
+    ) -> impl Future<Output = SourceResult<Option<WorkspaceBlock>>> + Send;
 
     /// `workspaces.anchors.find_by_token` — anchors for one token.
     fn find_anchors(
@@ -270,17 +290,25 @@ fn classify(e: &ClientError) -> SourceStatus {
 }
 
 impl WorkspaceSource for LiveSource {
-    async fn gather_prompt(&self, ws: &str, user_message: &str) -> SourceResult<Option<String>> {
+    async fn gather_prompt(
+        &self,
+        ws: &str,
+        user_message: &str,
+    ) -> SourceResult<Option<WorkspaceBlock>> {
         // Reuse the established Slice-0d workspace-prompt fetch + degrade
         // semantics (its own client + NoRetry policy) rather than re-deriving
         // them — keeps one definition of "is the workspace reachable".
         let prompt = crate::turn::workspace_context::gather(Some(ws), user_message).await;
         if prompt.degraded {
             Err(SourceStatus::Unavailable)
-        } else if prompt.slots.trim().is_empty() {
+        } else if prompt.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(prompt.slots))
+            Ok(Some(WorkspaceBlock {
+                persona: prompt.persona,
+                notes: prompt.notes,
+                rag: prompt.rag,
+            }))
         }
     }
 
@@ -461,10 +489,16 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     let mut degraded = false;
 
     if let Some(ws) = workspace_id.map(str::trim).filter(|s| !s.is_empty()) {
-        // The workspace prompt block (persona + notes + RAG). An unreachable
-        // service here is the degrade signal (Slice 0d semantics).
+        // The workspace prompt parts (persona / notes / RAG — B6 split).
+        // An unreachable service here is the degrade signal (Slice 0d
+        // semantics).
         match source.gather_prompt(ws, user_message).await {
-            Ok(block) => ctx.workspace_context = block,
+            Ok(Some(block)) => {
+                ctx.workspace_persona = block.persona;
+                ctx.workspace_notes = block.notes;
+                ctx.workspace_rag = block.rag;
+            }
+            Ok(None) => {}
             Err(SourceStatus::Unavailable) => degraded = true,
             Err(SourceStatus::Empty) => {}
         }
@@ -964,7 +998,7 @@ mod tests {
 
     #[derive(Default)]
     struct MockSource {
-        prompt: Option<String>,
+        prompt: Option<WorkspaceBlock>,
         prompt_unavailable: bool,
         /// token → anchors
         anchors: HashMap<String, Vec<Anchor>>,
@@ -980,7 +1014,7 @@ mod tests {
     }
 
     impl WorkspaceSource for MockSource {
-        async fn gather_prompt(&self, _ws: &str, _m: &str) -> SourceResult<Option<String>> {
+        async fn gather_prompt(&self, _ws: &str, _m: &str) -> SourceResult<Option<WorkspaceBlock>> {
             if self.prompt_unavailable {
                 Err(SourceStatus::Unavailable)
             } else {
@@ -1537,7 +1571,11 @@ mod tests {
     async fn full_gather_flow_under_2s() {
         let _env = crate::user_profile::test_support::TestEnv::new();
         let mut src = MockSource {
-            prompt: Some("Persona: helpful.\nNote: be concise.".into()),
+            prompt: Some(WorkspaceBlock {
+                persona: Some("Be helpful.".into()),
+                notes: vec!["be concise".into()],
+                rag: Vec::new(),
+            }),
             ..MockSource::default()
         };
         // 10 unambiguous symbols, 5 with contexts (cap).
