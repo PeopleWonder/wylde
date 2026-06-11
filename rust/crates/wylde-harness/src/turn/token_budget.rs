@@ -38,10 +38,13 @@
 //   right rung — the order above is the contract.
 //
 // HOW TO ADJUST THE BUDGET:
-//   * The ceiling comes from `budget_tokens()`. Override per deployment with
-//     `WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET` (token count). Default is
-//     `DEFAULT_TOKEN_BUDGET` (large-model sized); set it to ~16k for small
-//     local models so their context window isn't blown.
+//   * The ceiling comes from `chat_options::slot_budget()` (improvement plan
+//     B5): the model's effective num_ctx (user override → declared Modelfile
+//     default → Ollama server default) minus the base prompt, the user
+//     message, and a response reserve. `WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET`
+//     (token count) bypasses the derivation and IS the slot ceiling when set;
+//     `DEFAULT_TOKEN_BUDGET` is the last-resort fallback when the model's
+//     window is unknowable (no override, service unreachable).
 //   * Token counts are *estimated* (`estimate_tokens`, ~4 chars/token). This is
 //     deliberately cheap — the gather runs on the chat hot path. If you need a
 //     true tokenizer count, swap `estimate_tokens` only; the ladder is
@@ -68,18 +71,11 @@
 use crate::turn::context_gather::ChatContext;
 use crate::turn::prompt_assembly;
 
-/// Default context-token ceiling when `WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET` is
-/// unset. Sized for a large model; small local models should override down.
+/// Last-resort context-token ceiling, used only when the model's effective
+/// `num_ctx` is unknowable (no user override AND the Ollama service was
+/// unreachable — see [`super::chat_options::slot_budget`]). Sized for a
+/// large model.
 pub(crate) const DEFAULT_TOKEN_BUDGET: usize = 100_000;
-
-/// The configured context-token budget (env override → default).
-pub(crate) fn budget_tokens() -> usize {
-    std::env::var("WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET")
-        .ok()
-        .and_then(|s| s.trim().parse::<usize>().ok())
-        .filter(|n| *n > 0)
-        .unwrap_or(DEFAULT_TOKEN_BUDGET)
-}
 
 /// Estimate the token count of `s`. Cheap ~4-chars-per-token heuristic — see
 /// the `HOW TO MODIFY` note on swapping in a real tokenizer.
@@ -197,20 +193,6 @@ mod tests {
         assert_eq!(estimate_tokens(""), 0);
         assert_eq!(estimate_tokens("abcd"), 1);
         assert_eq!(estimate_tokens("abcde"), 2);
-    }
-
-    #[test]
-    fn budget_env_override() {
-        let key = "WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET";
-        let prior = std::env::var_os(key);
-        std::env::set_var(key, "16000");
-        assert_eq!(budget_tokens(), 16_000);
-        std::env::set_var(key, "garbage");
-        assert_eq!(budget_tokens(), DEFAULT_TOKEN_BUDGET);
-        match prior {
-            Some(v) => std::env::set_var(key, v),
-            None => std::env::remove_var(key),
-        }
     }
 
     #[test]

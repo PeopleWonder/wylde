@@ -383,11 +383,15 @@ impl TokenOverrides {
 /// only the in-process profile + short-term slots are gathered, so a plain
 /// chat turn with an empty profile stays byte-identical to before).
 /// `conversation_id` keys the short-term working-memory read.
+/// `slot_budget` is the OI-8 eviction ceiling for the rendered slots — the
+/// turn driver derives it from the model's effective `num_ctx`
+/// ([`super::chat_options::slot_budget`], improvement plan B5).
 pub(crate) async fn gather(
     workspace_id: Option<&str>,
     user_message: &str,
     conversation_id: &str,
     overrides: &TokenOverrides,
+    slot_budget: usize,
 ) -> GatheredContext {
     gather_with(
         &LiveSource::for_active(),
@@ -395,6 +399,7 @@ pub(crate) async fn gather(
         user_message,
         conversation_id,
         overrides,
+        slot_budget,
     )
     .await
 }
@@ -407,6 +412,7 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     user_message: &str,
     conversation_id: &str,
     overrides: &TokenOverrides,
+    slot_budget: usize,
 ) -> GatheredContext {
     // Always-on, in-process slots — never depend on the workspaces service.
     let mut ctx = ChatContext {
@@ -463,7 +469,7 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     }
 
     // Trim to the model's budget (OI-8), then render the named slots.
-    token_budget::evict(&mut ctx, token_budget::budget_tokens());
+    token_budget::evict(&mut ctx, slot_budget);
     let system_slots = prompt_assembly::render(&ctx);
 
     GatheredContext {
@@ -831,6 +837,7 @@ mod tests {
             "explain foo",
             "c",
             &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
         )
         .await;
         assert!(!out.system_slots.contains("Symbol `foo`"));
@@ -840,7 +847,15 @@ mod tests {
             reactivated: vec!["foo".into()],
             ..Default::default()
         };
-        let out = gather_with(&src, Some("ws"), "explain foo", "c", &re).await;
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "explain foo",
+            "c",
+            &re,
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
         assert!(out.system_slots.contains("Symbol `foo`"));
     }
 
@@ -858,7 +873,15 @@ mod tests {
             excluded: vec!["foo".into()],
             reactivated: vec!["foo".into()],
         };
-        let out = gather_with(&src, Some("ws"), "explain foo", "c", &ex).await;
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "explain foo",
+            "c",
+            &ex,
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
         assert!(!out.system_slots.contains("Symbol `foo`"));
     }
 
@@ -880,6 +903,7 @@ mod tests {
             "please explain foo",
             "conv-x",
             &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
         )
         .await;
         assert!(
@@ -907,6 +931,7 @@ mod tests {
             "what does set_active do",
             "conv-x",
             &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
         )
         .await;
         assert!(
@@ -941,6 +966,7 @@ mod tests {
             "look at {{the_fn}}",
             "c",
             &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
         )
         .await;
         // The anchor shows in the vocabulary block...
@@ -964,6 +990,7 @@ mod tests {
             "explain foo",
             "c",
             &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
         )
         .await;
         // No symbol context block, but the gather still produced (empty) slots
@@ -994,6 +1021,7 @@ mod tests {
             "explain foo",
             "c",
             &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
         )
         .await;
         assert!(out.degraded, "an unreachable workspace prompt must degrade");
@@ -1022,13 +1050,22 @@ mod tests {
             "explain foo",
             "c",
             &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
         )
         .await;
         assert!(on.system_slots.contains("Symbol `foo`"));
 
         // OFF: no workspace → no symbol context (and an empty profile → empty
         // slots, byte-identical to a plain turn).
-        let off = gather_with(&src, None, "explain foo", "c", &TokenOverrides::default()).await;
+        let off = gather_with(
+            &src,
+            None,
+            "explain foo",
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
         assert!(!off.system_slots.contains("Symbol `foo`"));
         assert!(off.system_slots.is_empty());
     }
@@ -1052,7 +1089,15 @@ mod tests {
         let prompt = "explain sym00 sym01 sym02 sym03 sym04 sym05 sym06 sym07 sym08 sym09";
 
         let start = std::time::Instant::now();
-        let out = gather_with(&src, Some("ws"), prompt, "c", &TokenOverrides::default()).await;
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            prompt,
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
         let elapsed = start.elapsed();
 
         assert!(
