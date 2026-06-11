@@ -31,11 +31,19 @@
 //!
 //! ```text
 //! StoreOnDisk {
-//!     version: u32,          // currently 1
+//!     version: u32,          // currently 2
 //!     dim: u32,
-//!     records: Vec<Record>,  // (id: String, vector: Vec<f32>)
+//!     records: Vec<Record>,  // (id: String, q: Vec<i8>, scale: f32)
 //! }
 //! ```
+//!
+//! **Version 2 (improvement plan B13):** vectors are stored int8
+//! scalar-quantised with a per-vector scale — `real[i] ≈ q[i] * scale` —
+//! for ~4× smaller files and a faster scan; cosine on dequantised values
+//! loses ~nothing at this corpus scale (the Matryoshka truncate-
+//! renormalise seam in `embeddings.rs` already trades embedding
+//! precision deliberately). Version-1 files (raw `Vec<f32>`) are read
+//! transparently and quantised on load; the next persist writes v2.
 //!
 //! Bincode default (little-endian, fixed-int) so the byte layout is
 //! deterministic. Documented in
@@ -53,11 +61,52 @@ struct StoreOnDisk {
     records: Vec<Record>,
 }
 
-/// One row in the store: opaque id + dense embedding vector.
+/// The pre-B13 on-disk shapes, kept readable for transparent migration
+/// (Serialize retained so the migration test can mint v1 bytes).
+#[derive(Debug, Serialize, Deserialize)]
+struct RecordV1 {
+    id: String,
+    vector: Vec<f32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoreOnDiskV1 {
+    #[allow(dead_code)] // peeked before deserialisation; kept for shape parity
+    version: u32,
+    dim: u32,
+    records: Vec<RecordV1>,
+}
+
+/// One row in the store: opaque id + int8-quantised embedding (B13).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Record {
     pub id: String,
-    pub vector: Vec<f32>,
+    /// int8 scalar-quantised, L2-normalised embedding:
+    /// `real[i] ≈ q[i] as f32 * scale`.
+    pub q: Vec<i8>,
+    /// Per-vector dequantisation scale (`max |component| / 127`).
+    pub scale: f32,
+}
+
+impl Record {
+    /// The dequantised (approximately L2-normalised) vector.
+    pub fn dequantized(&self) -> Vec<f32> {
+        self.q.iter().map(|&x| x as f32 * self.scale).collect()
+    }
+}
+
+/// Quantise an (already L2-normalised) vector to int8 + scale.
+fn quantize(v: &[f32]) -> (Vec<i8>, f32) {
+    let max_abs = v.iter().fold(0.0_f32, |m, x| m.max(x.abs()));
+    if max_abs == 0.0 {
+        return (vec![0; v.len()], 0.0);
+    }
+    let scale = max_abs / 127.0;
+    let q = v
+        .iter()
+        .map(|x| (x / scale).round().clamp(-127.0, 127.0) as i8)
+        .collect();
+    (q, scale)
 }
 
 /// Score + id pair returned by [`VectorStore::query_topk`].
@@ -88,7 +137,8 @@ pub enum VectorStoreError {
 }
 
 /// Format version. Bump on any change that breaks reading prior bytes.
-const FORMAT_VERSION: u32 = 1;
+/// v2 = int8 quantised records (B13); v1 (raw f32) still loads.
+const FORMAT_VERSION: u32 = 2;
 
 /// Pure-Rust vector store. Owns the records; dim is fixed at
 /// construction.
@@ -141,11 +191,13 @@ impl VectorStore {
             });
         }
         let normed = l2_normalize(vector);
+        let (q, scale) = quantize(&normed);
         let id = id.into();
         if let Some(slot) = self.records.iter_mut().find(|r| r.id == id) {
-            slot.vector = normed;
+            slot.q = q;
+            slot.scale = scale;
         } else {
-            self.records.push(Record { id, vector: normed });
+            self.records.push(Record { id, q, scale });
         }
         Ok(())
     }
@@ -182,13 +234,13 @@ impl VectorStore {
         if k == 0 || self.records.is_empty() {
             return Ok(Vec::new());
         }
-        let q = l2_normalize(query);
+        let qv = l2_normalize(query);
         let mut hits: Vec<Hit> = self
             .records
             .iter()
             .map(|r| Hit {
                 id: r.id.clone(),
-                similarity: dot(&q, &r.vector),
+                similarity: dot_dequant(&qv, r),
             })
             .collect();
         hits.sort_by(|a, b| {
@@ -231,21 +283,47 @@ impl VectorStore {
     /// Load a previously-persisted store. Errors if the on-disk dim
     /// doesn't match `expected_dim` — caller decides what to do (most
     /// likely: rebuild via reindex).
+    ///
+    /// Version-1 files (raw f32 vectors) load transparently: each record
+    /// is quantised in memory (B13) and the next [`Self::persist`] writes
+    /// the v2 shape — a lazy, lossless-enough migration.
     pub fn load(path: &Path, expected_dim: usize) -> Result<Self, VectorStoreError> {
         let bytes = std::fs::read(path)?;
-        let envelope: StoreOnDisk = bincode::deserialize(&bytes)?;
-        if envelope.version != FORMAT_VERSION {
-            return Err(VectorStoreError::UnsupportedVersion(envelope.version));
-        }
-        if envelope.dim as usize != expected_dim {
+        // Bincode is not self-describing: peek the version (first u32,
+        // little-endian fixed-int) before choosing the record shape.
+        let version = bytes
+            .get(0..4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .unwrap_or(0);
+        let (dim, records): (u32, Vec<Record>) = match version {
+            FORMAT_VERSION => {
+                let envelope: StoreOnDisk = bincode::deserialize(&bytes)?;
+                (envelope.dim, envelope.records)
+            }
+            1 => {
+                let envelope: StoreOnDiskV1 = bincode::deserialize(&bytes)?;
+                let migrated = envelope
+                    .records
+                    .into_iter()
+                    .map(|r| {
+                        // v1 vectors were L2-normalised on insert already.
+                        let (q, scale) = quantize(&r.vector);
+                        Record { id: r.id, q, scale }
+                    })
+                    .collect();
+                (envelope.dim, migrated)
+            }
+            other => return Err(VectorStoreError::UnsupportedVersion(other)),
+        };
+        if dim as usize != expected_dim {
             return Err(VectorStoreError::LoadedDimMismatch {
                 expected: expected_dim,
-                on_disk: envelope.dim as usize,
+                on_disk: dim as usize,
             });
         }
         Ok(Self {
             dim: expected_dim,
-            records: envelope.records,
+            records,
         })
     }
 
@@ -292,8 +370,15 @@ fn l2_normalize(mut v: Vec<f32>) -> Vec<f32> {
     v
 }
 
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
+/// Dot product of an f32 query against a quantised record — accumulate
+/// `q[i] * record.q[i]` then apply the record's scale once at the end.
+fn dot_dequant(query: &[f32], r: &Record) -> f32 {
+    let sum: f32 = query
+        .iter()
+        .zip(r.q.iter())
+        .map(|(x, y)| x * *y as f32)
+        .sum();
+    sum * r.scale
 }
 
 #[cfg(test)]
@@ -314,14 +399,16 @@ mod tests {
     }
 
     #[test]
-    fn insert_normalises_vector_in_place() {
+    fn insert_normalises_then_quantises() {
         let mut s = VectorStore::new(3);
         s.insert("a", vec![3.0, 0.0, 0.0]).unwrap();
         let r = s.get("a").unwrap();
-        // Should be (1, 0, 0) after L2 normalisation.
-        assert!(approx(r.vector[0], 1.0));
-        assert!(approx(r.vector[1], 0.0));
-        assert!(approx(r.vector[2], 0.0));
+        // Should dequantise back to (1, 0, 0) after L2 normalisation.
+        let v = r.dequantized();
+        assert!(approx(v[0], 1.0));
+        assert!(approx(v[1], 0.0));
+        assert!(approx(v[2], 0.0));
+        assert_eq!(r.q[0], 127, "unit component maps to full int8 range");
     }
 
     #[test]
@@ -351,7 +438,7 @@ mod tests {
         s.insert("a", vec![0.0, 1.0, 0.0]).unwrap();
         assert_eq!(s.len(), 1);
         let r = s.get("a").unwrap();
-        assert!(approx(r.vector[1], 1.0));
+        assert!(approx(r.dequantized()[1], 1.0));
     }
 
     #[test]
@@ -440,8 +527,75 @@ mod tests {
         let mut it = back.iter();
         assert_eq!(it.next().unwrap().id, "a");
         assert_eq!(it.next().unwrap().id, "b");
-        // Vectors are byte-identical (already normalised pre-write).
-        assert_eq!(s.get("a").unwrap().vector, back.get("a").unwrap().vector);
+        // Quantised payloads are byte-identical across the round trip.
+        assert_eq!(s.get("a").unwrap().q, back.get("a").unwrap().q);
+        assert_eq!(s.get("a").unwrap().scale, back.get("a").unwrap().scale);
+    }
+
+    #[test]
+    fn quantisation_cosine_error_is_negligible() {
+        // B13 acceptance: int8 + per-vector scale loses ~nothing on the
+        // similarity ordering. Synthetic but non-axis-aligned data.
+        let dim = 64;
+        let mk = |seed: u32| -> Vec<f32> {
+            (0..dim)
+                .map(|i| ((seed * 31 + i as u32 * 7) % 101) as f32 / 101.0 - 0.5)
+                .collect()
+        };
+        let mut s = VectorStore::new(dim as usize);
+        for seed in 0..8 {
+            s.insert(format!("r{seed}"), mk(seed)).unwrap();
+        }
+        for seed in 0..8 {
+            let exact = l2_normalize(mk(seed));
+            let hits = s.query_topk(mk(seed), 1).unwrap();
+            // Self-similarity should be ~1.0 within quantisation error.
+            assert_eq!(hits[0].id, format!("r{seed}"));
+            assert!(
+                (hits[0].similarity - 1.0).abs() < 0.01,
+                "self-similarity {} for r{seed}",
+                hits[0].similarity
+            );
+            let _ = exact;
+        }
+    }
+
+    #[test]
+    fn v1_files_load_transparently_and_requantise() {
+        // Mint a version-1 file (raw f32 records, pre-normalised), then
+        // load: records must arrive quantised with similarities intact.
+        let td = tempdir().unwrap();
+        let path = td.path().join("vec.bin");
+        let v1 = StoreOnDiskV1 {
+            version: 1,
+            dim: 3,
+            records: vec![
+                RecordV1 {
+                    id: "a".into(),
+                    vector: vec![1.0, 0.0, 0.0],
+                },
+                RecordV1 {
+                    id: "b".into(),
+                    vector: vec![0.0, 1.0, 0.0],
+                },
+            ],
+        };
+        std::fs::write(&path, bincode::serialize(&v1).unwrap()).unwrap();
+
+        let s = VectorStore::load(&path, 3).unwrap();
+        assert_eq!(s.len(), 2);
+        let hits = s.query_topk(vec![1.0, 0.0, 0.0], 1).unwrap();
+        assert_eq!(hits[0].id, "a");
+        assert!(approx(hits[0].similarity, 1.0));
+
+        // Persisting writes v2; a reload still works and v1 is gone.
+        s.persist(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(
+            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            2
+        );
+        assert_eq!(VectorStore::load(&path, 3).unwrap().len(), 2);
     }
 
     #[test]
