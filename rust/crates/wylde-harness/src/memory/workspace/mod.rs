@@ -136,27 +136,13 @@ impl CurationResult {
     }
 }
 
-/// System message for the curator LLM. Verbatim from
-/// `_curate.py::_CURATION_SYSTEM` so the cutover doesn't change model
-/// behaviour.
-pub const CURATION_SYSTEM_PROMPT: &str = "You are a memory curator. You read a list of memory records about \
-a project and decide which are still relevant for ongoing work and \
-which are stale, redundant, or no longer important.\n\n\
-Output ONE JSON object per line, no preamble, no trailing text. \
-Each object refers to one input by its 1-based index and carries \
-a verdict. Three verdict shapes:\n  \
-{\"index\": 3, \"verdict\": \"keep\"}\n  \
-{\"index\": 5, \"verdict\": \"supersede\", \"reason\": \"<why>\"}\n  \
-{\"index\": 7, \"verdict\": \"merge\", \"into\": [3, 8], \"new_body\": \"<consolidated paragraph>\", \"reason\": \"<why>\"}\n\n\
-Rules:\n\
-* `keep` — the memory is still useful as-is.\n\
-* `supersede` — the memory is no longer relevant. The reason field \
-is required. The memory will be soft-deleted (still in history).\n\
-* `merge` — combine multiple memories into one new entry. List the \
-input indices in `into` (must include the current index). Provide \
-the consolidated `new_body`. The originals will be marked superseded.\n\n\
-Default to `keep` when uncertain. Be conservative — when in doubt, \
-keep the memory.";
+/// System message for the curator LLM. B9: resolves through the prompts
+/// catalog (`memory.curate`, default byte-identical to the old hardcoded
+/// const, which was itself verbatim from `_curate.py::_CURATION_SYSTEM`)
+/// so the Settings prompt editor can tune it without a rebuild.
+pub fn curation_system_prompt() -> String {
+    crate::prompts::store::effective_prompt("memory.curate")
+}
 
 /// Prefix a supersede verdict's tombstone id carries — a soft-delete
 /// with audit trail (the original stays on disk for history walks but
@@ -254,7 +240,7 @@ async fn ask_curator(
         })
         .collect();
     let messages = vec![
-        json!({"role": "system", "content": CURATION_SYSTEM_PROMPT}),
+        json!({"role": "system", "content": curation_system_prompt()}),
         json!({"role": "user", "content": lines.join("\n")}),
     ];
     let raw = chat.ask(messages, model).await;
@@ -671,7 +657,13 @@ mod tests {
         let calls = chat.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0][0]["role"], "system");
-        assert_eq!(calls[0][0]["content"], CURATION_SYSTEM_PROMPT);
+        // Pinned against key phrases of the catalog default so the B9
+        // migration can never silently change the curator's contract.
+        let sys = calls[0][0]["content"].as_str().unwrap();
+        assert_eq!(sys, curation_system_prompt());
+        assert!(sys.starts_with("You are a memory curator."), "{sys}"); // wylde-check: prompt-literal-ok
+        assert!(sys.contains("{\"index\": 3, \"verdict\": \"keep\"}"));
+        assert!(sys.contains("Default to `keep` when uncertain."));
         let user = calls[0][1]["content"].as_str().unwrap();
         assert_eq!(user, format!("1. (importance 5, id {}) the body", r1.id));
     }

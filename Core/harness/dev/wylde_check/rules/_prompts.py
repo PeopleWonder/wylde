@@ -27,21 +27,19 @@ _pkg = _sys.modules[__name__.rsplit(".", 2)[0]]
 
 # Grandfathered prompt sites.
 #
-# The three harness files are pre-B9 offenders: B9 (prompts→catalog
-# migration) moves them into catalog.json and removes them from this
-# list.
+# The three pre-B9 harness offenders (turn/prompt.rs, the memory curator,
+# the memory consolidator) were migrated into catalog.json by B9
+# (2026-06-11) and removed from this list — the catalog now holds the
+# only harness copy of each.
 #
-# ``wylde-ext-study`` is grandfathered on ARCHITECTURAL grounds, not as
-# B9 debt: the prompts catalog/store is harness-internal, and Wylde
+# ``wylde-ext-study`` remains grandfathered on ARCHITECTURAL grounds, not
+# as B9 debt: the prompts catalog/store is harness-internal, and Wylde
 # crates may only reach each other via wylde-shared/IPC (rule 26) — an
 # extension crate cannot call ``store::effective_prompt``.  If extension
 # prompts ever need tuning, the catalog store moves to wylde-shared (or
 # a ``prompts.get`` verb) first.
 PROMPT_LITERAL_ALLOWLIST = frozenset(
     {
-        "rust/crates/wylde-harness/src/turn/prompt.rs",
-        "rust/crates/wylde-harness/src/memory/workspace/mod.rs",
-        "rust/crates/wylde-harness/src/memory/long_term/reflection.rs",
         "rust/crates/wylde-ext-study/src/tools.rs",
     }
 )

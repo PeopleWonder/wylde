@@ -51,15 +51,13 @@ pub const REFLECTION_TAG: &str = "reflection";
 pub const REFLECTION_IMPORTANCE_FLOOR: i32 = 7;
 
 /// System message the reflection cycle sends with every consolidation
-/// request. Verbatim from `reflection.py::_REFLECTION_SYSTEM` so a
-/// strangler-fig flip doesn't change model behaviour.
-pub const REFLECTION_SYSTEM_PROMPT: &str =
-    "You are a memory consolidator. You read a list of low-level memories \
-     and produce ONE higher-level insight that summarises them — a stable \
-     fact or pattern the system should remember as a single unit going \
-     forward. Output one paragraph, no list markers, no preamble. If the \
-     inputs don't share a coherent theme worth promoting, output the literal \
-     string NOTHING.";
+/// request. B9: resolves through the prompts catalog (`memory.consolidate`,
+/// default byte-identical to the old hardcoded const, which was itself
+/// verbatim from `reflection.py::_REFLECTION_SYSTEM`) so the Settings
+/// prompt editor can tune it without a rebuild.
+pub fn reflection_system_prompt() -> String {
+    crate::prompts::store::effective_prompt("memory.consolidate")
+}
 
 /// Result of one reflection cycle. Same shape as Python
 /// `ReflectionResult.to_dict()`.
@@ -150,7 +148,7 @@ pub async fn reflect_long_term(
 
     let inputs_block = format_inputs(&inputs);
     let messages = vec![
-        json!({"role": "system", "content": REFLECTION_SYSTEM_PROMPT}),
+        json!({"role": "system", "content": reflection_system_prompt()}),
         json!({"role": "user", "content": inputs_block}),
     ];
     let text = chat.ask(messages, opts.model.clone()).await;
@@ -478,7 +476,12 @@ mod tests {
         assert_eq!(model.as_deref(), Some("test-model"));
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages[0]["content"], REFLECTION_SYSTEM_PROMPT);
+        // Pinned against the catalog default's key phrases so the B9
+        // migration can never silently change the consolidator's contract.
+        let sys = messages[0]["content"].as_str().unwrap();
+        assert_eq!(sys, reflection_system_prompt());
+        assert!(sys.starts_with("You are a memory consolidator.")); // wylde-check: prompt-literal-ok
+        assert!(sys.contains("output the literal string NOTHING"));
         assert_eq!(messages[1]["role"], "user");
         let user = messages[1]["content"].as_str().unwrap();
         // Every input appears with a numbered prefix and importance tag.
