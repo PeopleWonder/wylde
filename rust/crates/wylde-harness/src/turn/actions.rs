@@ -215,14 +215,14 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     handle.mark_done();
     state::remove_turn(&turn_id);
 
-    // Post-turn reflection (Thought Bubble System Slice D). Scan the just
-    // -finished exchange for a candidate user_profile update and surface
-    // it (spam-controlled, user-accept) into the pending queue. Best
-    // -effort and infallible from here — a refusal or write error is
-    // swallowed inside the hook, so reflection can never affect the
-    // turn reply. Only runs on a naturally-completed turn (not an abort).
+    // Post-turn hooks — only on a naturally-completed turn (not an abort).
     if completed_naturally {
-        crate::user_profile::reflection::reflect_after_turn(&conversation_id, &user_message);
+        run_post_turn_hooks(
+            &conversation_id,
+            workspace_id.as_deref(),
+            &user_message,
+            &final_text,
+        );
     }
 
     // Surface the graceful-degradation notice when the workspaces service
@@ -632,6 +632,18 @@ async fn drive_streaming_turn(
             // in `_driver.py:416-419`) and finish. Prefix the graceful-
             // degradation notice when the workspaces service was requested
             // but unreachable (scope v2 §7.5).
+            //
+            // Post-turn hooks fire on this natural completion with the
+            // PRE-notice text (the degraded banner is UI chrome, not
+            // exchange content). The streaming path previously had NO
+            // post-turn reflection at all — only run_turn did; B14
+            // closes that gap for both drivers.
+            run_post_turn_hooks(
+                &conversation_id,
+                workspace_id.as_deref(),
+                &user_message,
+                &final_text,
+            );
             let final_text =
                 workspace_context::apply_degraded_notice(final_text, gathered.degraded);
             if !final_text.is_empty() {
@@ -706,6 +718,36 @@ async fn drive_streaming_turn(
     .await;
     handle.mark_done();
     schedule_eviction(turn_id);
+}
+
+/// Post-turn hooks, run only on natural completion:
+///
+/// 1. **Slice-D reflection** — the cheap in-process name-detection scan
+///    (kept as the zero-cost fallback when extraction is disabled or no
+///    default model is configured; the gate's duplicate-pending rule
+///    dedupes any overlap with the extractor).
+/// 2. **B14 post-turn extraction** — one background LLM pass over the
+///    finished exchange feeding working memory + the profile-proposal
+///    gate + the workspace anchor-proposal gate. Spawned so it never
+///    delays (or fails) the turn reply. This is the pass the memory rule
+///    has always promised the model exists (B4 — now it does).
+fn run_post_turn_hooks(
+    conversation_id: &str,
+    workspace_id: Option<&str>,
+    user_message: &str,
+    final_message: &str,
+) {
+    crate::user_profile::reflection::reflect_after_turn(conversation_id, user_message);
+
+    let conv = conversation_id.to_owned();
+    let ws = workspace_id.map(str::to_owned);
+    let user = user_message.to_owned();
+    let assistant = final_message.to_owned();
+    tokio::spawn(async move {
+        let stats =
+            crate::memory::post_turn_extractor::run(&conv, ws.as_deref(), &user, &assistant).await;
+        tracing::debug!(?stats, "post-turn extraction finished");
+    });
 }
 
 async fn emit_aborted(

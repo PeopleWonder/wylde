@@ -404,7 +404,7 @@ pub fn touch_all(record_ids: &[String]) {
     let now = now_secs();
     let mut hit = false;
     for r in records.iter_mut() {
-        if record_ids.iter().any(|id| *id == r.id) {
+        if record_ids.contains(&r.id) {
             r.last_used_at = now;
             hit = true;
         }
