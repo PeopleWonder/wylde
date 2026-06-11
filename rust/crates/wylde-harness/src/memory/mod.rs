@@ -65,6 +65,7 @@ pub mod conversations;
 pub mod embeddings;
 pub mod long_term;
 pub mod memgraph;
+pub mod post_turn_extractor;
 pub mod rag;
 pub mod reflection;
 pub mod scheduler;
