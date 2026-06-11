@@ -49,9 +49,11 @@ mod tests {
     fn save_then_load_round_trips() {
         let _env = TestEnv::new();
         let ws = "ws-persona-000000";
-        save(ws, "You are a terse Rust reviewer.").unwrap();
+        // The persona fixture is user-authored text, not a tunable
+        // system prompt — suppressed inline.
+        save(ws, "You are a terse Rust reviewer.").unwrap(); // wylde-check: prompt-literal-ok
         let p = load(ws);
-        assert_eq!(p.text, "You are a terse Rust reviewer.");
+        assert_eq!(p.text, "You are a terse Rust reviewer."); // wylde-check: prompt-literal-ok
         assert!(!p.is_empty());
     }
 
