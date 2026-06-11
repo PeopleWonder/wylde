@@ -39,6 +39,11 @@ pub mod global_anchors;
 pub mod memory;
 pub mod model_registry;
 pub mod pipe;
+// NEW — Core-plugin host (taxonomy reorg TX S4). Links the installed
+// `Core/Plugins/*` crates (in-process Rust add-ons compiled into the
+// core — NOT Extensions, NOT Services) and registers their tools into
+// the catalog under group "plugins".
+pub mod plugins;
 // NEW — system-prompt overrides + presets (Rust port of the Python
 // `_prompts.py` actions + `Core/shared/system_prompts{,_catalog}.py`;
 // full-Rust cutover). Same `data/system_prompts.json`, no migration.

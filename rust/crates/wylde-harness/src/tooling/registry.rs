@@ -256,10 +256,13 @@ impl Registry {
 }
 
 impl Default for Registry {
-    /// Default registry — every tool the harness ships.
+    /// Default registry — every tool the harness ships: the built-in
+    /// groups plus the installed Core plugins (TX S4 — see
+    /// `crate::plugins` for the linkage table).
     fn default() -> Self {
         let mut reg = Self::empty();
         crate::tooling::tools::register_all(&mut reg);
+        crate::plugins::register(&mut reg);
         reg
     }
 }
