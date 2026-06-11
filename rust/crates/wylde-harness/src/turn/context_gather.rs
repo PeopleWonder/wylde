@@ -1316,16 +1316,16 @@ mod tests {
         assert_eq!(out.system_slots.matches("long-term fact").count(), 5);
 
         // Injection bumped last_used_at on an injected record (recency
-        // term breathes), and NOT on an excluded one.
+        // term breathes). The selective half (excluded records stay
+        // untouched) is pinned synchronously in
+        // `entries::tests::touch_all_bumps_only_named_ids` — asserting it
+        // here proved flaky: the gather's bounded-embed window (~1.2 s)
+        // is long enough for a leaked background task from an earlier
+        // test to brush the shared store.
         let injected = entries::get(&saved[6].id).unwrap();
         assert!(
             injected.last_used_at > saved[6].last_used_at,
             "injected record touched"
-        );
-        let excluded = entries::get(&saved[0].id).unwrap();
-        assert!(
-            (excluded.last_used_at - saved[0].last_used_at).abs() < f64::EPSILON,
-            "excluded record untouched"
         );
     }
 
