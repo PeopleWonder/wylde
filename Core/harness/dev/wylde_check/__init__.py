@@ -103,7 +103,14 @@ The rules:
 26. ``import_paths_rust`` — Rust crates may only depend on each other
                             via ``wylde-shared``; deep ``super::super::``
                             chains are flagged as a sign the module
-                            graph is wrong.
+                            graph is wrong.  TX S4 exemptions: the
+                            Core-plugin SDK ``wylde_plugin_api`` is
+                            importable everywhere (shared surface like
+                            wylde-shared); ``wylde_plugin_*`` crates
+                            are importable from ``wylde-harness`` only
+                            (the plugin host).  The plugin crates
+                            themselves live at ``Core/Plugins/`` and
+                            are outside this rule's walk.
 27. ``no_silent_error_swallow_rust`` — ``let _ = <result>;`` and
                             trailing ``.ok();`` patterns that drop a
                             Result without logging are flagged.  An

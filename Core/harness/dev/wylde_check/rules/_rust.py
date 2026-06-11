@@ -5,6 +5,9 @@ Rust workspace at ``rust/crates/``:
 
 * :func:`check_import_paths_rust` — discourages deep ``super::super``
   traversal and cross-crate imports that bypass ``wylde-shared``.
+  Exempts the Core-plugin SDK (``wylde_plugin_api``, importable
+  everywhere) and ``wylde_plugin_*`` crates from ``wylde-harness``
+  (the plugin host) — see the rule docstring.
 * :func:`check_no_silent_error_swallow_rust` — flags ``let _ = expr;``
   and trailing ``.ok();`` patterns that drop a Result without logging.
 * :func:`check_logging_setup_only_rust` — only the canonical
@@ -93,6 +96,24 @@ def check_import_paths_rust() -> List[Finding]:
     ``wylde-shared``.  Deep ``super::super::`` chains are also flagged
     — by the time you need to traverse three module levels up, the
     module organisation is wrong.
+
+    Principled exemptions (taxonomy reorg TX S4 — Core plugins):
+
+    * ``wylde_plugin_api`` is importable from **everywhere** — it is the
+      Core-plugin SDK, a shared *authoring surface* exactly like
+      ``wylde_shared``: pure types + trait, no service logic, no peer
+      surface being bypassed.
+    * ``wylde_plugin_*`` crates (the plugins themselves) are importable
+      from **wylde-harness only** — the harness IS the plugin host, and
+      compile-time linkage (one dep line + one ``Box::new`` line) is the
+      plugins' deliberate discovery mechanism.  Any other crate linking
+      a plugin would be routing around the host.
+
+    Note: this rule walks ``rust/crates/*/src`` only, so the plugin
+    crates themselves — which live at ``Core/Plugins/<name>/`` by design
+    and import ``wylde_plugin_api`` — are not seen by it at all.  The
+    exemptions above exist for the workspace side: the harness host's
+    ``use wylde_plugin_*`` lines and any crate importing the SDK.
     """
     out: List[Finding] = []
     for path in _walk_rust_sources():
@@ -129,6 +150,15 @@ def check_import_paths_rust() -> List[Finding]:
                 if imported == own_use_name:
                     continue
                 if imported == "wylde_shared":
+                    continue
+                # TX S4: the Core-plugin SDK is a shared authoring
+                # surface like wylde_shared — importable everywhere.
+                if imported == "wylde_plugin_api":
+                    continue
+                # TX S4: plugin crates are linked by the harness host
+                # only (compile-time discovery — see
+                # rust/crates/wylde-harness/src/plugins/mod.rs).
+                if imported.startswith("wylde_plugin_") and crate == "wylde-harness":
                     continue
                 out.append(
                     Finding(
