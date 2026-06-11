@@ -295,21 +295,33 @@ impl WorkspacesClient {
         workspace_id: &str,
         user_message: &str,
     ) -> Result<String, WorkspacesClientError> {
-        let data = self
-            .call_verb(
-                "workspaces.gather_prompt",
-                serde_json::json!({
-                    "workspace_id": workspace_id,
-                    "user_message": user_message,
-                }),
-                1,
-            )
-            .await?;
+        let data = self.gather_prompt_raw(workspace_id, user_message).await?;
         Ok(data
             .get("slots")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned())
+    }
+
+    /// `workspaces.gather_prompt`, full reply — `{slots, persona,
+    /// memory_snippets, rag_snippets}`. The harness gather consumes the
+    /// structured fields so persona / notes / RAG map onto separate
+    /// eviction tiers instead of one opaque block (improvement plan B6);
+    /// [`Self::gather_prompt`] remains the rendered-string convenience.
+    pub async fn gather_prompt_raw(
+        &self,
+        workspace_id: &str,
+        user_message: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.gather_prompt",
+            serde_json::json!({
+                "workspace_id": workspace_id,
+                "user_message": user_message,
+            }),
+            1,
+        )
+        .await
     }
 
     // ── Slice 0c — workspace notes tier ─────────────────────────────────

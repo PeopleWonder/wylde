@@ -21,12 +21,19 @@
 //! client verb table, so a slow/unreachable service fails fast into this
 //! degraded path instead of stacking retry budgets onto every turn.
 
+use serde_json::Value;
 use wylde_workspaces_client::{ClientError, WorkspacesClient};
 
 /// The inline notice prefixed to a turn's response when the workspaces
 /// service was requested but unreachable. Kept short and user-facing.
 pub(crate) const WORKSPACES_UNAVAILABLE_NOTICE: &str =
     "Workspaces unavailable; using base context.";
+
+/// Render-time ceiling on the persona text the harness injects (~2k
+/// estimated tokens at 4 chars/token; the B8 cap, applied here since B6
+/// reads the RAW structured persona instead of the service-rendered
+/// block). Truncation is marked; the stored persona.md is untouched.
+const PERSONA_MAX_CHARS: usize = 8_000;
 
 /// The service name the turn driver forwards workspace reads to. Defaults
 /// to `wylde-workspaces`; overridable via `WYLDE_HARNESS_WORKSPACES_SERVICE`
@@ -40,24 +47,75 @@ pub(crate) fn workspaces_service() -> String {
         .unwrap_or_else(|| "wylde-workspaces".to_owned())
 }
 
-/// The outcome of gathering a turn's workspace prompt context.
+/// The outcome of gathering a turn's workspace prompt context. Since B6
+/// the parts arrive STRUCTURED — persona / notes / RAG map onto separate
+/// `ChatContext` fields (and separate eviction tiers) instead of one
+/// opaque pre-rendered block that evicted wholesale.
+#[derive(Debug, Default, PartialEq)]
 pub(crate) struct WorkspacePrompt {
-    /// Rendered system-prompt slot text to append (empty = nothing to add).
-    pub slots: String,
+    /// The workspace persona text (B8-capped), if any.
+    pub persona: Option<String>,
+    /// Workspace note snippets, highest-scoring first.
+    pub notes: Vec<String>,
+    /// RAG snippets scoped to the workspace folder, best-first.
+    pub rag: Vec<String>,
     /// True when a workspace was requested but the service was unreachable
     /// (Broken / breaker open) — the caller surfaces the inline notice.
     pub degraded: bool,
 }
 
 impl WorkspacePrompt {
-    /// The base-context outcome: no slots, not degraded. Used when no
-    /// workspace is active or the id is blank.
+    /// The base-context outcome: nothing gathered, not degraded. Used when
+    /// no workspace is active or the id is blank.
     fn base() -> Self {
-        Self {
-            slots: String::new(),
-            degraded: false,
-        }
+        Self::default()
     }
+
+    /// True when the workspace contributed nothing.
+    pub fn is_empty(&self) -> bool {
+        self.persona.is_none() && self.notes.is_empty() && self.rag.is_empty()
+    }
+}
+
+/// Parse the structured `workspaces.gather_prompt` reply fields.
+fn parse_prompt_reply(v: &Value) -> WorkspacePrompt {
+    let persona = v
+        .get("persona")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(cap_persona);
+    let list = |key: &str| -> Vec<String> {
+        v.get(key)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    WorkspacePrompt {
+        persona,
+        notes: list("memory_snippets"),
+        rag: list("rag_snippets"),
+        degraded: false,
+    }
+}
+
+/// Apply the B8 persona cap with a visible marker.
+fn cap_persona(persona: &str) -> String {
+    if persona.chars().count() <= PERSONA_MAX_CHARS {
+        return persona.to_owned();
+    }
+    let mut out: String = persona.chars().take(PERSONA_MAX_CHARS).collect();
+    out.push_str(&format!(
+        "\n[persona truncated at {PERSONA_MAX_CHARS} characters — shorten persona.md]"
+    ));
+    out
 }
 
 /// True when the client error means the service did not give an
@@ -73,22 +131,19 @@ fn is_unavailable(e: &ClientError) -> bool {
 ///
 /// An absent / empty `workspace_id` yields base context (no pipe call), so
 /// a plain chat turn is byte-identical to before. A reachable service
-/// returns the rendered slots; an unreachable one degrades.
+/// returns the structured parts (B6); an unreachable one degrades.
 pub(crate) async fn gather(workspace_id: Option<&str>, user_message: &str) -> WorkspacePrompt {
     let Some(ws_id) = workspace_id.map(str::trim).filter(|s| !s.is_empty()) else {
         return WorkspacePrompt::base();
     };
 
     let client = WorkspacesClient::for_service(workspaces_service());
-    match client.gather_prompt(ws_id, user_message).await {
-        Ok(slots) => WorkspacePrompt {
-            slots,
-            degraded: false,
-        },
+    match client.gather_prompt_raw(ws_id, user_message).await {
+        Ok(reply) => parse_prompt_reply(&reply),
         // Service unreachable / breaker open → base context + notice.
         Err(e) if is_unavailable(&e) => WorkspacePrompt {
-            slots: String::new(),
             degraded: true,
+            ..WorkspacePrompt::default()
         },
         // Application error (unknown workspace, bad request) → the service
         // is healthy, it just has nothing for us. Base context, no notice.
@@ -126,11 +181,11 @@ mod tests {
     #[tokio::test]
     async fn no_workspace_is_base_context() {
         let out = gather(None, "hello").await;
-        assert!(out.slots.is_empty());
+        assert!(out.is_empty());
         assert!(!out.degraded);
 
         let out = gather(Some("   "), "hello").await;
-        assert!(out.slots.is_empty());
+        assert!(out.is_empty());
         assert!(!out.degraded);
     }
 
@@ -145,13 +200,42 @@ mod tests {
         );
 
         let out = gather(Some("any-workspace"), "hello").await;
-        assert!(out.slots.is_empty(), "degraded gather must add no slots");
+        assert!(out.is_empty(), "degraded gather must add nothing");
         assert!(out.degraded, "an unreachable service must degrade");
 
         match prior {
             Some(v) => std::env::set_var("WYLDE_HARNESS_WORKSPACES_SERVICE", v),
             None => std::env::remove_var("WYLDE_HARNESS_WORKSPACES_SERVICE"),
         }
+    }
+
+    #[test]
+    fn parse_prompt_reply_reads_structured_fields() {
+        let v = serde_json::json!({
+            "workspace_id": "ws",
+            "slots": "(ignored — B6 consumes the parts)",
+            "persona": "  Be precise.  ",
+            "memory_snippets": ["uses pytest", "  ", "prefers Rust"],
+            "rag_snippets": ["fn main() {}"],
+        });
+        let p = parse_prompt_reply(&v);
+        assert_eq!(p.persona.as_deref(), Some("Be precise."));
+        assert_eq!(p.notes, vec!["uses pytest", "prefers Rust"]);
+        assert_eq!(p.rag, vec!["fn main() {}"]);
+        assert!(!p.degraded);
+
+        // Absent / blank fields parse to an empty contribution.
+        let p = parse_prompt_reply(&serde_json::json!({"persona": ""}));
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn persona_cap_marks_truncation_b8() {
+        let long = "p".repeat(PERSONA_MAX_CHARS + 500);
+        let capped = cap_persona(&long);
+        assert!(capped.contains("[persona truncated at"));
+        assert!(capped.chars().count() < PERSONA_MAX_CHARS + 100);
+        assert_eq!(cap_persona("short"), "short");
     }
 
     #[test]

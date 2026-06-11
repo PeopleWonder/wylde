@@ -19,32 +19,35 @@
 //      active pinned bubbles · vocabulary block for currently-referenced anchors
 //
 // HOW THIS MAPS ONTO THE Phase-2 `ChatContext`:
+//   * tier 1  → `workspace_rag`                   (B6 split — lowest-ranked
+//                                                   snippet sheds first)
 //   * tier 2  → `conversation_summary`            (the conversation doc's
 //                                                   auto_summary — B2)
 //   * tier 2.5 → `long_term`                       (injected long-term memory
 //                                                   — B3; least-relevant line
 //                                                   sheds first)
+//   * tier 3  → `workspace_notes`                 (B6 split — lowest-ranked
+//                                                   snippet sheds first)
+//   * tier ~6 → `workspace_persona`               (B6 split — the workspace's
+//                                                   voice; outlasts every
+//                                                   retrieved slot)
 //   * tier 6.5 → `history`                          (windowed prior turns —
 //                                                   B1; rides the messages
 //                                                   array, counted here, drops
 //                                                   oldest-pair-first and only
 //                                                   after every other
 //                                                   evictable tier)
-//   * tier 3  → `workspace_context`               (persona + notes + RAG arrive
-//                                                   pre-merged from
-//                                                   `workspaces.gather_prompt`,
-//                                                   so they evict as one block)
 //   * tier 4  → `symbol_contexts`                 (shed the highest-hop_distance
 //                                                   neighbour lines first; only
 //                                                   once a block has no neighbours
 //                                                   left is the whole focal block
 //                                                   dropped)
 //   * tier 7  → `user_profile`, `conversation_short_term`, `vocabulary_anchors`
-//   Tiers 1, 5, 6 have no Phase-2 source yet (generic-RAG is folded into the
-//   workspace block; bubbles are Phase 4; every anchor gathered this turn is a
-//   *currently-referenced* one, i.e. tier 7). When those land, give them a
-//   field on `ChatContext` and a branch in `drop_one_lowest_priority` at the
-//   right rung — the order above is the contract.
+//   Tiers 5 and 6 (pinned/unpinned bubbles, a broad older-anchors pool) still
+//   have no source — every anchor gathered this turn is a *currently-
+//   referenced* one, i.e. tier 7. When those land, give them a field on
+//   `ChatContext` and a branch in `drop_one_lowest_priority` at the right
+//   rung — the order above is the contract.
 //
 // HOW TO ADJUST THE BUDGET:
 //   * The ceiling comes from `chat_options::slot_budget()` (improvement plan
@@ -86,10 +89,50 @@ use crate::turn::prompt_assembly;
 /// large model.
 pub(crate) const DEFAULT_TOKEN_BUDGET: usize = 100_000;
 
-/// Estimate the token count of `s`. Cheap ~4-chars-per-token heuristic — see
-/// the `HOW TO MODIFY` note on swapping in a real tokenizer.
+/// Estimate the token count of `s` — per-content-class chars/token ratios
+/// (improvement plan B7). BPE tokenizers spend roughly 3 chars/token on
+/// code (dense punctuation, snake_case splits) vs ~4 on English prose; the
+/// old flat ÷4 systematically underestimated code-heavy slots (symbol
+/// bodies, RAG chunks) by 25-30% — real overshoot exactly when the prompt
+/// was fullest. Still deliberately cheap (eviction re-renders per drop):
+/// one sampled scan, no tokenizer dependency. Swapping in a true BPE count
+/// later still only means replacing this one function.
 pub(crate) fn estimate_tokens(s: &str) -> usize {
-    s.chars().count().div_ceil(4)
+    s.chars().count().div_ceil(chars_per_token(s))
+}
+
+/// How many chars of `s` to sample when classifying its content class.
+const CLASSIFY_SAMPLE_CHARS: usize = 2_000;
+
+/// Punctuation density at/above this percentage classifies as code.
+/// English prose runs 0-2% of [`CODE_SIGNAL_CHARS`]; real code runs
+/// 8-15%+.
+const CODE_SIGNAL_PERCENT: usize = 5;
+
+/// Characters that signal code-like content.
+const CODE_SIGNAL_CHARS: &[char] = &[
+    '{', '}', '(', ')', ';', '_', '=', '<', '>', '[', ']', '#', '/', '\\',
+];
+
+/// 3 chars/token for code-like text, 4 for prose. Sampled, not exact —
+/// an estimator, not a tokenizer.
+fn chars_per_token(s: &str) -> usize {
+    let mut total = 0usize;
+    let mut signals = 0usize;
+    for c in s.chars().take(CLASSIFY_SAMPLE_CHARS) {
+        total += 1;
+        if CODE_SIGNAL_CHARS.contains(&c) {
+            signals += 1;
+        }
+    }
+    if total == 0 {
+        return 4;
+    }
+    if signals * 100 / total >= CODE_SIGNAL_PERCENT {
+        3
+    } else {
+        4
+    }
 }
 
 /// Per-message token overhead for a history message (role + chat-template
@@ -129,7 +172,11 @@ pub(crate) fn evict(ctx: &mut ChatContext, max_tokens: usize) {
 /// `true` if something was dropped, `false` when only never-drop material is
 /// left. Tiers are tried bottom-up (lowest priority first).
 fn drop_one_lowest_priority(ctx: &mut ChatContext) -> bool {
-    // tier 1 — generic auto-context / vector-RAG fallback: no Phase-2 field.
+    // tier 1 — workspace RAG snippets (B6 split): the generic retrieval
+    // fallback, lowest-ranked snippet first.
+    if ctx.workspace_rag.pop().is_some() {
+        return true;
+    }
 
     // tier 2 — conversation summary.
     if ctx.conversation_summary.take().is_some() {
@@ -144,8 +191,8 @@ fn drop_one_lowest_priority(ctx: &mut ChatContext) -> bool {
         return true;
     }
 
-    // tier 3 — workspace context block (persona + notes + RAG).
-    if ctx.workspace_context.take().is_some() {
+    // tier 3 — workspace notes (B6 split): lowest-ranked snippet first.
+    if ctx.workspace_notes.pop().is_some() {
         return true;
     }
 
@@ -162,6 +209,12 @@ fn drop_one_lowest_priority(ctx: &mut ChatContext) -> bool {
     }
 
     // tiers 5/6 — bubbles / older anchors: no Phase-2 field.
+
+    // tier ~6 — the workspace persona (B6 split): the workspace's voice,
+    // jarring to lose mid-conversation — outlasts every retrieved slot.
+    if ctx.workspace_persona.take().is_some() {
+        return true;
+    }
 
     // tier ~6.5 — conversation history (B1): the most protected evictable
     // slot — retrieved enrichment above is re-derivable, dialogue isn't.
@@ -230,10 +283,21 @@ mod tests {
     }
 
     #[test]
-    fn estimate_tokens_is_quarter_chars() {
+    fn estimate_tokens_classifies_prose_vs_code() {
+        // Prose: ~4 chars/token.
         assert_eq!(estimate_tokens(""), 0);
         assert_eq!(estimate_tokens("abcd"), 1);
         assert_eq!(estimate_tokens("abcde"), 2);
+        let prose = "The quick brown fox jumps over the lazy dog and keeps going.";
+        assert_eq!(estimate_tokens(prose), prose.chars().count().div_ceil(4));
+
+        // Code: dense punctuation → ~3 chars/token (B7).
+        let code = "fn foo(x: usize) -> usize {\n    let y = x * 2;\n    bar(y)\n}";
+        assert_eq!(estimate_tokens(code), code.chars().count().div_ceil(3));
+        assert!(
+            estimate_tokens(code) > code.chars().count().div_ceil(4),
+            "code estimates higher than the old flat divisor"
+        );
     }
 
     #[test]
@@ -260,45 +324,51 @@ mod tests {
     }
 
     #[test]
-    fn eviction_order_summary_then_long_term_then_workspace_then_symbols() {
+    fn eviction_ladder_full_order_b6() {
         let mut ctx = ChatContext {
             user_profile: "P".into(),
             conversation_summary: Some("a summary".into()),
-            long_term: vec!["- best fact".into(), "- weaker fact".into()],
-            workspace_context: Some("workspace block".into()),
+            long_term: vec!["- best fact".into()],
+            workspace_rag: vec!["fn a() {}".into(), "fn b() {}".into()],
+            workspace_notes: vec!["uses pytest".into()],
+            workspace_persona: Some("Be precise.".into()),
             symbol_contexts: vec![block("foo", "fn foo() {}", &[1])],
             ..ChatContext::default()
         };
-        // Force one drop at a time by shrinking the budget below total but
-        // above the next-smaller assembly.
 
-        // 1st to go: the summary (tier 2).
+        // tier 1: RAG snippets, lowest-ranked (last) first.
+        drop_one_lowest_priority(&mut ctx);
+        assert_eq!(ctx.workspace_rag, vec!["fn a() {}".to_owned()]);
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.workspace_rag.is_empty());
+        assert!(ctx.conversation_summary.is_some());
+
+        // tier 2: the summary.
         drop_one_lowest_priority(&mut ctx);
         assert!(ctx.conversation_summary.is_none());
-        assert_eq!(ctx.long_term.len(), 2);
 
-        // 2nd + 3rd: long-term lines (tier 2.5), least-relevant first —
-        // the list is best-first, so the tail goes first.
-        drop_one_lowest_priority(&mut ctx);
-        assert_eq!(ctx.long_term, vec!["- best fact".to_owned()]);
+        // tier 2.5: long-term.
         drop_one_lowest_priority(&mut ctx);
         assert!(ctx.long_term.is_empty());
-        assert!(ctx.workspace_context.is_some());
+        assert!(!ctx.workspace_notes.is_empty());
 
-        // 4th: the workspace block (tier 3).
+        // tier 3: notes.
         drop_one_lowest_priority(&mut ctx);
-        assert!(ctx.workspace_context.is_none());
+        assert!(ctx.workspace_notes.is_empty());
         assert!(!ctx.symbol_contexts.is_empty());
 
-        // 5th: the symbol's neighbour line (tier 4, deeper-hops first).
+        // tier 4: the symbol's neighbour line, then the bare focal.
         drop_one_lowest_priority(&mut ctx);
         assert!(ctx.symbol_contexts[0].neighbors.is_empty());
-
-        // 6th: the bare focal block.
+        assert!(ctx.workspace_persona.is_some(), "persona outlasts symbols");
         drop_one_lowest_priority(&mut ctx);
         assert!(ctx.symbol_contexts.is_empty());
 
-        // 7th: nothing left to drop (tier 7 is never-drop).
+        // tier ~6: the persona — last evictable before history.
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.workspace_persona.is_none());
+
+        // tier 7: nothing left to drop.
         assert!(!drop_one_lowest_priority(&mut ctx));
         assert_eq!(ctx.user_profile, "P");
     }
@@ -312,7 +382,7 @@ mod tests {
         };
         let mut ctx = ChatContext {
             user_profile: "P".into(),
-            workspace_context: Some("workspace block".into()),
+            workspace_persona: Some("Be precise.".into()),
             history: vec![
                 msg("user", "old question"),
                 msg("assistant", "old answer"),
@@ -322,9 +392,9 @@ mod tests {
             ..ChatContext::default()
         };
 
-        // Workspace (tier 3) goes before any history.
+        // The persona (tier ~6) goes before any history.
         drop_one_lowest_priority(&mut ctx);
-        assert!(ctx.workspace_context.is_none());
+        assert!(ctx.workspace_persona.is_none());
         assert_eq!(ctx.history.len(), 4);
 
         // Then history sheds the OLDEST exchange as a pair.

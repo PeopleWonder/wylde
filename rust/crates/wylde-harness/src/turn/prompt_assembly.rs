@@ -63,9 +63,56 @@ pub(crate) fn render(ctx: &ChatContext) -> String {
         sections.push(section("Vocabulary", &body));
     }
 
-    if let Some(ws) = ctx.workspace_context.as_deref() {
-        if !ws.trim().is_empty() {
-            sections.push(section("Workspace context", ws.trim()));
+    // The workspace parts render under ONE "### Workspace context" header
+    // with the same subsection names the service's render used, but are
+    // assembled here from the B6-split fields so each part evicts on its
+    // own tier.
+    let has_workspace = ctx.workspace_persona.is_some()
+        || !ctx.workspace_notes.is_empty()
+        || !ctx.workspace_rag.is_empty();
+    if has_workspace {
+        let mut body = String::new();
+        if let Some(p) = ctx.workspace_persona.as_deref() {
+            let p = p.trim();
+            if !p.is_empty() {
+                body.push_str("## Persona\n");
+                body.push_str(p);
+            }
+        }
+        let notes: Vec<&str> = ctx
+            .workspace_notes
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !notes.is_empty() {
+            if !body.is_empty() {
+                body.push_str("\n\n");
+            }
+            body.push_str("## Workspace memory");
+            for n in notes {
+                body.push_str("\n- ");
+                body.push_str(n);
+            }
+        }
+        let rag: Vec<&str> = ctx
+            .workspace_rag
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !rag.is_empty() {
+            if !body.is_empty() {
+                body.push_str("\n\n");
+            }
+            body.push_str("## Workspace files");
+            for r in rag {
+                body.push_str("\n\n");
+                body.push_str(r);
+            }
+        }
+        if !body.is_empty() {
+            sections.push(section("Workspace context", &body));
         }
     }
 
@@ -140,7 +187,9 @@ mod tests {
                 identifier: "the_fn".into(),
                 text: "{{the_fn}} — the entry point".into(),
             }],
-            workspace_context: Some("Persona: terse.".into()),
+            workspace_persona: Some("Be precise.".into()),
+            workspace_notes: vec!["uses cargo nextest".into()],
+            workspace_rag: vec!["fn main() {}".into()],
             symbol_contexts: vec![SymbolContextBlock {
                 symbol_id: "foo".into(),
                 focal: "Symbol `foo` — src/foo.rs:10\nfn foo() {}".into(),
@@ -170,5 +219,32 @@ mod tests {
         // Symbol block renders focal + neighbour.
         assert!(out.contains("Symbol `foo`"));
         assert!(out.contains("calls `bar`"));
+        // The B6-split workspace parts render under one section with the
+        // established subsection names.
+        assert!(out.contains("## Persona\nBe precise."));
+        assert!(out.contains("## Workspace memory\n- uses cargo nextest"));
+        assert!(out.contains("## Workspace files\n\nfn main() {}"));
+    }
+
+    #[test]
+    fn workspace_section_renders_only_present_parts() {
+        // Notes only — no Persona / files subsections.
+        let ctx = ChatContext {
+            workspace_notes: vec!["only memory".into()],
+            ..ChatContext::default()
+        };
+        let out = render(&ctx);
+        assert!(out.contains("### Workspace context"));
+        assert!(out.contains("- only memory"));
+        assert!(!out.contains("## Persona"));
+        assert!(!out.contains("## Workspace files"));
+
+        // Whitespace-only parts render nothing at all.
+        let ctx = ChatContext {
+            workspace_persona: Some("   ".into()),
+            workspace_rag: vec!["  ".into()],
+            ..ChatContext::default()
+        };
+        assert_eq!(render(&ctx), "");
     }
 }

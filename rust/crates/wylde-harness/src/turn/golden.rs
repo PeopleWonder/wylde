@@ -136,9 +136,9 @@ fn fixture_context() -> ChatContext {
             identifier: "the_gather".into(),
             text: "{{the_gather}} — the pre-LLM context gather (code symbol `gather_with`)".into(),
         }],
-        workspace_context: Some(
-            "# Workspace context\n\n## Persona\nBe precise.\n\n## Workspace memory\n- uses cargo nextest".into(),
-        ),
+        workspace_rag: vec!["fn gather_with() { /* fixture snippet */ }".into()],
+        workspace_notes: vec!["uses cargo nextest".into()],
+        workspace_persona: Some("Be precise.".into()),
         symbol_contexts: vec![SymbolContextBlock {
             symbol_id: "gather_with".into(),
             focal: "Symbol `gather_with` — src/turn/context_gather.rs:404\npub(crate) async fn gather_with(...) {}".into(),
@@ -205,9 +205,9 @@ mod tests {
     #[test]
     fn golden_eviction_mid_pressure() {
         // A budget chosen (relative to the fixture) to force the first
-        // few drops: summary (tier 2) and the long-term lines (2.5) go;
-        // the workspace block, the symbol context, and the history
-        // window (tier 6.5) survive.
+        // few drops: the RAG snippet (tier 1, B6) and the summary
+        // (tier 2) go; long-term, notes, persona, the symbol context,
+        // and the history window (tier 6.5) survive.
         let mut ctx = fixture_context();
         let full = token_budget::estimate_tokens(&prompt_assembly::render(&ctx))
             + token_budget::history_tokens(&ctx);
@@ -237,10 +237,15 @@ mod tests {
             &self,
             _ws: &str,
             _m: &str,
-        ) -> Result<Option<String>, crate::turn::context_gather::SourceStatus> {
-            Ok(Some(
-                "# Workspace context\n\n## Persona\nBe precise.".to_owned(),
-            ))
+        ) -> Result<
+            Option<crate::turn::context_gather::WorkspaceBlock>,
+            crate::turn::context_gather::SourceStatus,
+        > {
+            Ok(Some(crate::turn::context_gather::WorkspaceBlock {
+                persona: Some("Be precise.".to_owned()),
+                notes: Vec::new(),
+                rag: Vec::new(),
+            }))
         }
         async fn find_anchors(
             &self,
