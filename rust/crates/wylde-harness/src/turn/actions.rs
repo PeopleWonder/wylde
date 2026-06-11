@@ -731,6 +731,11 @@ async fn drive_streaming_turn(
 ///    gate + the workspace anchor-proposal gate. Spawned so it never
 ///    delays (or fails) the turn reply. This is the pass the memory rule
 ///    has always promised the model exists (B4 — now it does).
+/// 3. **M1 auto-summary producer** — when the conversation has crossed
+///    another 5-message boundary, regenerate its `auto_summary` +
+///    embedding (the tier-2 gather slot and history-search cosine
+///    ranking both feed off it). Spawned fail-soft, kill switch
+///    `WYLDE_AUTO_SUMMARY=off`.
 fn run_post_turn_hooks(
     conversation_id: &str,
     workspace_id: Option<&str>,
@@ -747,6 +752,12 @@ fn run_post_turn_hooks(
         let stats =
             crate::memory::post_turn_extractor::run(&conv, ws.as_deref(), &user, &assistant).await;
         tracing::debug!(?stats, "post-turn extraction finished");
+    });
+
+    let conv = conversation_id.to_owned();
+    let ws = workspace_id.map(str::to_owned);
+    tokio::spawn(async move {
+        crate::chat::search::summary::maybe_refresh(&conv, ws.as_deref()).await;
     });
 }
 
