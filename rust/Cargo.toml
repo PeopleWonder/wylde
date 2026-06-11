@@ -24,6 +24,16 @@ members = [
     # build-order doc on the Nextcloud Wylde collective.
     "crates/wylde-workspaces",
     "crates/wylde-workspaces-client",
+    # Core-plugin SDK + the installed plugins (taxonomy reorg TX S4,
+    # 2026-06-11). PLUGINS are add-ons FOR the core, compiled into it —
+    # distinct from Extensions (leave the ecosystem, bridge/Gateway) and
+    # Services (sibling suites). Plugin crates live in the Core
+    # filesystem by design — `Core/Plugins/<name>/` — and join the
+    # workspace via these relative member paths. Installing a plugin =
+    # folder + member line here + dep line in wylde-harness/Cargo.toml +
+    # one Box::new in wylde-harness/src/plugins/mod.rs.
+    "crates/wylde-plugin-api",
+    "../Core/Plugins/hello_wylde",
     # `crates/wylde-memgraph` removed 2026-05-25 — the memgraph client is
     # an in-process submodule of `wylde-harness/src/memory/memgraph/` per
     # the one-crate harness convention; the bundled Neo4j JVM stays

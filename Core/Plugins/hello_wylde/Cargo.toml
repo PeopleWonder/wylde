@@ -1,0 +1,20 @@
+[package]
+name = "wylde-plugin-hello-wylde"
+# Plugin crates live in the Core filesystem (Aaron's TX S4 placement),
+# OUTSIDE the workspace root directory — cargo's upward workspace
+# discovery can't find `rust/Cargo.toml` from here, so point at it
+# explicitly. Required for the `*.workspace = true` inheritance below.
+workspace = "../../../rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Plugins depend on the SDK (and serde_json for envelopes) — nothing
+# else. A plugin that wants more is probably an Extension or a Service.
+wylde-plugin-api = { path = "../../../rust/crates/wylde-plugin-api" }
+serde_json = { workspace = true }
