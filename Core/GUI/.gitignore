@@ -1,3 +1,6 @@
 # gpui workspace build output (slice-11 cutover: Tauri+Svelte tree deleted).
 target/
+# Separate dev-loop cache (tools/dev/wylde-dev.ps1 sets CARGO_TARGET_DIR
+# here so dev and release/watcher builds never thrash each other).
+target-dev/
 .env

@@ -220,8 +220,56 @@ impl GraphView {
         cx.new(|cx| {
             let view = Self::new();
             Self::spawn_load(cx);
+            Self::spawn_theme_hot_reload(cx);
             view
         })
+    }
+
+    /// Dev theme hot-reload (debug builds + `WYLDE_THEME_PATH` set): poll
+    /// the on-disk Visual Style YAML's mtime every 500 ms and re-parse +
+    /// re-apply the Theme on change — colour/easing/size tweaks repaint
+    /// live, zero rebuild. A no-op (the loop never spawns) in release
+    /// builds or without the env var, so the shipped path is untouched.
+    fn spawn_theme_hot_reload(cx: &mut Context<Self>) {
+        let Some(initial_mtime) = render::style::dev_theme_mtime() else {
+            return;
+        };
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let mut last = initial_mtime;
+            loop {
+                app_cx
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(500))
+                    .await;
+                let Some(mtime) = render::style::dev_theme_mtime() else {
+                    continue; // file briefly missing mid-save — keep polling
+                };
+                if mtime == last {
+                    continue;
+                }
+                last = mtime;
+                // `load_v1` prefers the on-disk YAML in this mode and falls
+                // back to embedded on a mid-edit parse error.
+                let parsed = Theme::load_v1();
+                let alive = this
+                    .update(app_cx, |view, cx| {
+                        match parsed {
+                            Ok(t) => {
+                                view.theme = Some(Rc::new(t));
+                                view.theme_error = None;
+                                eprintln!("[theme-hot] re-applied visual style");
+                            }
+                            Err(e) => view.theme_error = Some(e),
+                        }
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     /// Load (or reload) the active workspace's graph. Degrades gracefully: on
