@@ -535,6 +535,29 @@ mod tests {
     }
 
     #[test]
+    fn touch_all_bumps_only_named_ids() {
+        // The selective-touch contract behind the B3 injection path —
+        // pinned here synchronously (no async gaps for a parallel test's
+        // leaked task to brush the store mid-assertion).
+        let _env = TestEnv::new();
+        let a = save("fact a", "t", Some(5.0), Vec::new(), None).unwrap();
+        let b = save("fact b", "t", Some(5.0), Vec::new(), None).unwrap();
+        let c = save("fact c", "t", Some(5.0), Vec::new(), None).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(15));
+
+        touch_all(&[a.id.clone(), b.id.clone()]);
+        assert!(get(&a.id).unwrap().last_used_at > a.last_used_at);
+        assert!(get(&b.id).unwrap().last_used_at > b.last_used_at);
+        assert!(
+            (get(&c.id).unwrap().last_used_at - c.last_used_at).abs() < f64::EPSILON,
+            "unnamed record untouched"
+        );
+
+        // Empty input is a no-op (no spurious file rewrite panic path).
+        touch_all(&[]);
+    }
+
+    #[test]
     fn save_persists_and_returns_record_with_id_and_timestamps() {
         let _env = TestEnv::new();
         set_embed_dim_3();
