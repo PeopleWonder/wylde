@@ -19,8 +19,11 @@
 //      active pinned bubbles · vocabulary block for currently-referenced anchors
 //
 // HOW THIS MAPS ONTO THE Phase-2 `ChatContext`:
-//   * tier 2  → `conversation_summary`            (placeholder until a harness
-//                                                   summary source lands)
+//   * tier 2  → `conversation_summary`            (the conversation doc's
+//                                                   auto_summary — B2)
+//   * tier 2.5 → `long_term`                       (injected long-term memory
+//                                                   — B3; least-relevant line
+//                                                   sheds first)
 //   * tier 3  → `workspace_context`               (persona + notes + RAG arrive
 //                                                   pre-merged from
 //                                                   `workspaces.gather_prompt`,
@@ -110,6 +113,14 @@ fn drop_one_lowest_priority(ctx: &mut ChatContext) -> bool {
 
     // tier 2 — conversation summary.
     if ctx.conversation_summary.take().is_some() {
+        return true;
+    }
+
+    // tier ~2.5 — long-term memory (B3): shed the least-relevant line
+    // first (the list arrives best-first). Deliberately evictable —
+    // long-term recall is useful grounding, not load-bearing like the
+    // tier-7 slots.
+    if ctx.long_term.pop().is_some() {
         return true;
     }
 
@@ -219,10 +230,11 @@ mod tests {
     }
 
     #[test]
-    fn eviction_order_summary_then_workspace_then_symbols_then_focal() {
+    fn eviction_order_summary_then_long_term_then_workspace_then_symbols() {
         let mut ctx = ChatContext {
             user_profile: "P".into(),
             conversation_summary: Some("a summary".into()),
+            long_term: vec!["- best fact".into(), "- weaker fact".into()],
             workspace_context: Some("workspace block".into()),
             symbol_contexts: vec![block("foo", "fn foo() {}", &[1])],
             ..ChatContext::default()
@@ -233,22 +245,30 @@ mod tests {
         // 1st to go: the summary (tier 2).
         drop_one_lowest_priority(&mut ctx);
         assert!(ctx.conversation_summary.is_none());
+        assert_eq!(ctx.long_term.len(), 2);
+
+        // 2nd + 3rd: long-term lines (tier 2.5), least-relevant first —
+        // the list is best-first, so the tail goes first.
+        drop_one_lowest_priority(&mut ctx);
+        assert_eq!(ctx.long_term, vec!["- best fact".to_owned()]);
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.long_term.is_empty());
         assert!(ctx.workspace_context.is_some());
 
-        // 2nd: the workspace block (tier 3).
+        // 4th: the workspace block (tier 3).
         drop_one_lowest_priority(&mut ctx);
         assert!(ctx.workspace_context.is_none());
         assert!(!ctx.symbol_contexts.is_empty());
 
-        // 3rd: the symbol's neighbour line (tier 4, deeper-hops first).
+        // 5th: the symbol's neighbour line (tier 4, deeper-hops first).
         drop_one_lowest_priority(&mut ctx);
         assert!(ctx.symbol_contexts[0].neighbors.is_empty());
 
-        // 4th: the bare focal block.
+        // 6th: the bare focal block.
         drop_one_lowest_priority(&mut ctx);
         assert!(ctx.symbol_contexts.is_empty());
 
-        // 5th: nothing left to drop (tier 7 is never-drop).
+        // 7th: nothing left to drop (tier 7 is never-drop).
         assert!(!drop_one_lowest_priority(&mut ctx));
         assert_eq!(ctx.user_profile, "P");
     }

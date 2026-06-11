@@ -126,10 +126,18 @@ pub(crate) struct ChatContext {
     /// Current-conversation short-term working memory (OI-8 tier 7 — never
     /// dropped).
     pub conversation_short_term: Vec<String>,
-    /// A running summary of the current conversation. Placeholder in Phase 2
-    /// (no harness summary source yet); modelled at OI-8 tier 2 so it's first
-    /// to go when present.
+    /// A running summary of the current conversation, read from the
+    /// conversation document's `auto_summary` (the chat/search summariser
+    /// regenerates it every 5 messages; joined here by improvement plan B2).
+    /// OI-8 tier 2 — first to go under pressure.
     pub conversation_summary: Option<String>,
+    /// Long-term memory records selected for this turn (improvement plan
+    /// B3): similarity-ranked against the user message when an embedding
+    /// arrives in budget, else the importance-ranked `core_block`. Rendered
+    /// lines, best-first. OI-8 tier ~2.5 — evictable (least-relevant line
+    /// first), above the summary, below the workspace block; deliberately
+    /// NOT in never-drop tier 7.
+    pub long_term: Vec<String>,
     /// Anchors the prompt referenced — the never-drop vocabulary block (tier 7).
     pub vocabulary_anchors: Vec<AnchorBlock>,
     /// The workspace's rendered prompt block (persona + notes + RAG) from
@@ -418,6 +426,12 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     let mut ctx = ChatContext {
         user_profile: crate::user_profile::store::read().profile.to_prompt_block(),
         conversation_short_term: read_short_term(conversation_id),
+        // B2: the auto-summary pipeline (chat/search/summary, regenerated
+        // every 5 messages) finally feeds the tier-2 slot it was built for.
+        conversation_summary: crate::chat::search::summary::auto_summary_for(conversation_id),
+        // B3: the long-term store finally reaches the prompt without the
+        // model having to think of calling memory.search.
+        long_term: gather_long_term(user_message).await,
         ..ChatContext::default()
     };
     let mut degraded = false;
@@ -479,6 +493,69 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
 }
 
 // ── gather helpers ──────────────────────────────────────────────────────
+
+/// How many long-term records ride each turn (B3 — the `core_block`
+/// default).
+const LONG_TERM_LIMIT: usize = 5;
+
+/// Budget for embedding the user message for similarity ranking. Mirrors
+/// the workspaces notes-query embed bound: a slow/down embedder degrades
+/// the ranking to importance/recency, never delays the turn past this.
+const LONG_TERM_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// Select this turn's long-term memory lines (improvement plan B3).
+///
+/// Selection: when the store is non-empty, embed the user message (bounded
+/// by [`LONG_TERM_EMBED_BUDGET`]) and take the combined-score `search`
+/// hits (similarity + importance + recency — the scoring formula finally
+/// runs for injection, not just the `memory.search` verb), topped up with
+/// `core_block` records the search missed. Embedder down/over-budget ⇒
+/// pure `core_block` (importance desc). Every injected record's
+/// `last_used_at` is bumped so the recency term breathes.
+async fn gather_long_term(user_message: &str) -> Vec<String> {
+    use crate::memory::long_term as entries;
+
+    // The store-empty fast path also keeps plain turns embed-free.
+    let core = entries::core_block(Some(LONG_TERM_LIMIT));
+    if core.is_empty() {
+        return Vec::new();
+    }
+
+    let mut selected = core;
+    let embed = tokio::time::timeout(
+        LONG_TERM_EMBED_BUDGET,
+        crate::memory::embeddings::embed_one(user_message.to_owned()),
+    )
+    .await;
+    if let Ok(Ok(vector)) = embed {
+        let hits = entries::search(vector, LONG_TERM_LIMIT, None);
+        if !hits.is_empty() {
+            let mut merged = Vec::with_capacity(LONG_TERM_LIMIT);
+            for h in &hits {
+                if let Some(r) = entries::get(&h.id) {
+                    merged.push(r);
+                }
+            }
+            for r in selected {
+                if merged.len() >= LONG_TERM_LIMIT {
+                    break;
+                }
+                if !merged.iter().any(|m| m.id == r.id) {
+                    merged.push(r);
+                }
+            }
+            merged.truncate(LONG_TERM_LIMIT);
+            selected = merged;
+        }
+    }
+
+    let ids: Vec<String> = selected.iter().map(|r| r.id.clone()).collect();
+    entries::touch_all(&ids);
+    selected
+        .iter()
+        .map(|r| format!("- {}", r.body.trim()))
+        .collect()
+}
 
 /// Injection cap on working-memory entries (improvement plan B8). The
 /// short-term slot is OI-8 tier 7 (never evicted), and the store grows
@@ -927,6 +1004,123 @@ mod tests {
         )
         .await;
         assert!(!out.system_slots.contains("Symbol `foo`"));
+    }
+
+    // ── B2: auto-summary → tier-2 slot ──────────────────────────────────
+
+    #[tokio::test]
+    async fn auto_summary_feeds_the_tier2_slot() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut doc = serde_json::Map::new();
+        doc.insert("id".into(), json!("conv-b2"));
+        doc.insert("messages".into(), json!([]));
+        doc.insert(
+            "auto_summary".into(),
+            json!("They discussed the gather flow."),
+        );
+        crate::memory::conversations::store::save_conversation(&doc).unwrap();
+
+        let src = MockSource::default();
+        let out = gather_with(
+            &src,
+            None,
+            "hello",
+            "conv-b2",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(
+            out.system_slots.contains("### Conversation summary"),
+            "slot present: {}",
+            out.system_slots
+        );
+        assert!(out.system_slots.contains("They discussed the gather flow."));
+
+        // Unknown conversation → no summary slot (and blank stays blank).
+        let out = gather_with(
+            &src,
+            None,
+            "hello",
+            "conv-none",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(!out.system_slots.contains("### Conversation summary"));
+    }
+
+    // ── B3: long-term memory injection ──────────────────────────────────
+
+    #[tokio::test]
+    async fn long_term_core_block_is_injected_capped_and_touched() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        use crate::memory::long_term as entries;
+
+        // 7 records, importance 1..=7 — only the top 5 ride the prompt.
+        let mut saved = Vec::new();
+        for i in 0..7 {
+            let r = entries::save(
+                &format!("long-term fact {i}"),
+                "test",
+                Some((i + 1) as f64),
+                Vec::new(),
+                None,
+            )
+            .expect("save record");
+            saved.push(r);
+        }
+        // Let the clock advance so the injection-touch is observable.
+        std::thread::sleep(std::time::Duration::from_millis(25));
+
+        let src = MockSource::default();
+        let out = gather_with(
+            &src,
+            None,
+            "what do you remember",
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(
+            out.system_slots.contains("### Long-term memory"),
+            "slot present: {}",
+            out.system_slots
+        );
+        // Top importance (7) in; bottom (1) out.
+        assert!(out.system_slots.contains("long-term fact 6"));
+        assert!(!out.system_slots.contains("long-term fact 0"));
+        assert_eq!(out.system_slots.matches("long-term fact").count(), 5);
+
+        // Injection bumped last_used_at on an injected record (recency
+        // term breathes), and NOT on an excluded one.
+        let injected = entries::get(&saved[6].id).unwrap();
+        assert!(
+            injected.last_used_at > saved[6].last_used_at,
+            "injected record touched"
+        );
+        let excluded = entries::get(&saved[0].id).unwrap();
+        assert!(
+            (excluded.last_used_at - saved[0].last_used_at).abs() < f64::EPSILON,
+            "excluded record untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_long_term_store_adds_no_slot() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let src = MockSource::default();
+        let out = gather_with(
+            &src,
+            None,
+            "hello there",
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(!out.system_slots.contains("### Long-term memory"));
     }
 
     // ── B8 short-term injection caps ─────────────────────────────────────

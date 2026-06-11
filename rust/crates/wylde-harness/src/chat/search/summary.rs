@@ -164,6 +164,23 @@ pub fn summary_input_text(doc: &Value) -> String {
     out
 }
 
+/// The stored `auto_summary` for a conversation id, when present and
+/// non-empty. The improvement-plan **B2** read helper: the turn gather
+/// joins this onto `ChatContext.conversation_summary` (the tier-2 slot
+/// that existed since Slice G but had no source). Fail-soft: an unknown
+/// id, an unreadable doc, or a blank summary all yield `None`.
+pub fn auto_summary_for(conversation_id: &str) -> Option<String> {
+    if conversation_id.trim().is_empty() {
+        return None;
+    }
+    let doc = crate::memory::conversations::store::read_conversation(conversation_id).ok()?;
+    doc.get("auto_summary")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
 /// The display summary for a conversation: its `auto_summary` when present,
 /// else a best-effort fallback (title, then the first user message snippet,
 /// then "Untitled conversation"). Search/list always have *something* to
