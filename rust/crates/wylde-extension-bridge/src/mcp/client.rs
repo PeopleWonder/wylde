@@ -28,7 +28,11 @@ pub enum McpError {
     #[error("MCP call timed out after {0:?}")]
     CallTimeout(Duration),
     #[error("MCP server reported spec version {server:?}; host accepts only {current} or {prev}")]
-    UnsupportedSpecVersion { server: String, current: &'static str, prev: &'static str },
+    UnsupportedSpecVersion {
+        server: String,
+        current: &'static str,
+        prev: &'static str,
+    },
     #[error("MCP server returned error: code={code} message={message}")]
     Server { code: i64, message: String },
     #[error("decode error: {0}")]
@@ -67,8 +71,11 @@ impl McpClient {
         init_timeout: Duration,
         client_name: &str,
     ) -> Result<Self, McpError> {
-        let resolved: Vec<String> =
-            spec.command.iter().map(|s| resolve_placeholders(s)).collect();
+        let resolved: Vec<String> = spec
+            .command
+            .iter()
+            .map(|s| resolve_placeholders(s))
+            .collect();
         let (program, args) = resolved
             .split_first()
             .ok_or_else(|| McpError::Transport("empty command argv".into()))?;
@@ -103,7 +110,10 @@ impl McpClient {
             .map_err(|_| McpError::InitTimeout(init_timeout))?
             .map_err(|e| McpError::Transport(e.to_string()))?;
         if let Some(err) = resp.error {
-            return Err(McpError::Server { code: err.code, message: err.message });
+            return Err(McpError::Server {
+                code: err.code,
+                message: err.message,
+            });
         }
         let init: InitializeResult = serde_json::from_value(resp.result.unwrap_or(Value::Null))
             .map_err(|e| McpError::Decode(e.to_string()))?;
@@ -149,10 +159,16 @@ impl McpClient {
             .map_err(|_| McpError::CallTimeout(timeout))?
             .map_err(|e| McpError::Transport(e.to_string()))?;
         if let Some(err) = resp.error {
-            return Err(McpError::Server { code: err.code, message: err.message });
+            return Err(McpError::Server {
+                code: err.code,
+                message: err.message,
+            });
         }
         #[derive(Deserialize)]
-        struct ToolsResult { #[serde(default)] tools: Vec<ToolDescription> }
+        struct ToolsResult {
+            #[serde(default)]
+            tools: Vec<ToolDescription>,
+        }
         let parsed: ToolsResult = serde_json::from_value(resp.result.unwrap_or(json!({})))
             .map_err(|e| McpError::Decode(e.to_string()))?;
         Ok(parsed.tools)
@@ -177,7 +193,10 @@ impl McpClient {
             .map_err(|_| McpError::CallTimeout(timeout))?
             .map_err(|e| McpError::Transport(e.to_string()))?;
         if let Some(err) = resp.error {
-            return Err(McpError::Server { code: err.code, message: err.message });
+            return Err(McpError::Server {
+                code: err.code,
+                message: err.message,
+            });
         }
         Ok(resp.result.unwrap_or(Value::Null))
     }
@@ -191,7 +210,10 @@ impl McpClient {
             .map_err(|_| McpError::CallTimeout(timeout))?
             .map_err(|e| McpError::Transport(e.to_string()))?;
         if let Some(err) = resp.error {
-            return Err(McpError::Server { code: err.code, message: err.message });
+            return Err(McpError::Server {
+                code: err.code,
+                message: err.message,
+            });
         }
         Ok(())
     }
@@ -215,6 +237,14 @@ impl McpClient {
 /// host can rewrite it to the actual .venv interpreter at spawn time.
 /// If the env var is unset, falls back to `<WYLDE_ROOT>/.venv/Scripts/python.exe`
 /// on Windows, otherwise to the literal `python3`.
+///
+/// **`${WYLDE_PYTHON}` is DEPRECATED — test-shim only since 2026-06-11.**
+/// Its last production user (Extensions/N8N's Python-stub command) went
+/// panel-only (`transport: "none"`) in taxonomy reorg TX S3; no
+/// production manifest may use the token any more. The substitution
+/// survives solely for the bridge integration test's `Extensions/_shim`
+/// Python MCP server (`tests/integration.rs`). Rust-native extensions
+/// use `${WYLDE_BIN}`.
 ///
 /// `${WYLDE_BIN}` resolves to the directory holding the built Rust service
 /// binaries so a manifest can point its `command` at a native sidecar — e.g.
