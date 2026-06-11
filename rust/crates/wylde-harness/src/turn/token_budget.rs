@@ -24,6 +24,12 @@
 //   * tier 2.5 → `long_term`                       (injected long-term memory
 //                                                   — B3; least-relevant line
 //                                                   sheds first)
+//   * tier 6.5 → `history`                          (windowed prior turns —
+//                                                   B1; rides the messages
+//                                                   array, counted here, drops
+//                                                   oldest-pair-first and only
+//                                                   after every other
+//                                                   evictable tier)
 //   * tier 3  → `workspace_context`               (persona + notes + RAG arrive
 //                                                   pre-merged from
 //                                                   `workspaces.gather_prompt`,
@@ -86,6 +92,20 @@ pub(crate) fn estimate_tokens(s: &str) -> usize {
     s.chars().count().div_ceil(4)
 }
 
+/// Per-message token overhead for a history message (role + chat-template
+/// framing) on top of its content estimate (B1).
+pub(crate) const HISTORY_MSG_OVERHEAD: usize = 4;
+
+/// Estimated token cost of the windowed history — it rides the `messages`
+/// array rather than the rendered block, but competes for the same context
+/// window, so [`evict`] counts it.
+pub(crate) fn history_tokens(ctx: &ChatContext) -> usize {
+    ctx.history
+        .iter()
+        .map(|m| estimate_tokens(&m.content) + HISTORY_MSG_OVERHEAD)
+        .sum()
+}
+
 /// Evict lowest-priority context (OI-8) until the assembled prompt fits
 /// `max_tokens`, or until only never-drop (tier 7) material remains.
 ///
@@ -94,7 +114,7 @@ pub(crate) fn estimate_tokens(s: &str) -> usize {
 pub(crate) fn evict(ctx: &mut ChatContext, max_tokens: usize) {
     loop {
         let rendered = prompt_assembly::render(ctx);
-        if estimate_tokens(&rendered) <= max_tokens {
+        if estimate_tokens(&rendered) + history_tokens(ctx) <= max_tokens {
             return;
         }
         if !drop_one_lowest_priority(ctx) {
@@ -142,6 +162,16 @@ fn drop_one_lowest_priority(ctx: &mut ChatContext) -> bool {
     }
 
     // tiers 5/6 — bubbles / older anchors: no Phase-2 field.
+
+    // tier ~6.5 — conversation history (B1): the most protected evictable
+    // slot — retrieved enrichment above is re-derivable, dialogue isn't.
+    // Drop the oldest PAIR (one exchange) so the window degrades a turn
+    // at a time; the current exchange is never in `history` at all.
+    if !ctx.history.is_empty() {
+        let n = 2.min(ctx.history.len());
+        ctx.history.drain(0..n);
+        return true;
+    }
 
     // tier 7 — user_profile, conversation_short_term, vocabulary_anchors: never.
     false
@@ -271,6 +301,65 @@ mod tests {
         // 7th: nothing left to drop (tier 7 is never-drop).
         assert!(!drop_one_lowest_priority(&mut ctx));
         assert_eq!(ctx.user_profile, "P");
+    }
+
+    #[test]
+    fn history_drops_oldest_pair_only_after_every_other_evictable() {
+        use crate::turn::context_gather::HistoryMessage;
+        let msg = |role: &str, content: &str| HistoryMessage {
+            role: role.into(),
+            content: content.into(),
+        };
+        let mut ctx = ChatContext {
+            user_profile: "P".into(),
+            workspace_context: Some("workspace block".into()),
+            history: vec![
+                msg("user", "old question"),
+                msg("assistant", "old answer"),
+                msg("user", "recent question"),
+                msg("assistant", "recent answer"),
+            ],
+            ..ChatContext::default()
+        };
+
+        // Workspace (tier 3) goes before any history.
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.workspace_context.is_none());
+        assert_eq!(ctx.history.len(), 4);
+
+        // Then history sheds the OLDEST exchange as a pair.
+        drop_one_lowest_priority(&mut ctx);
+        assert_eq!(ctx.history.len(), 2);
+        assert_eq!(ctx.history[0].content, "recent question");
+
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.history.is_empty());
+
+        // Tier 7 still never drops.
+        assert!(!drop_one_lowest_priority(&mut ctx));
+    }
+
+    #[test]
+    fn evict_counts_history_toward_the_budget() {
+        use crate::turn::context_gather::HistoryMessage;
+        // No rendered slots at all — ONLY history. An unbudgeted history
+        // would never trigger eviction; B1 requires it to.
+        let mut ctx = ChatContext {
+            history: (0..10)
+                .map(|i| HistoryMessage {
+                    role: "user".into(),
+                    content: format!("message {i} {}", "x".repeat(400)),
+                })
+                .collect(),
+            ..ChatContext::default()
+        };
+        evict(&mut ctx, 220);
+        assert!(
+            ctx.history.len() < 10,
+            "history must shed when it alone exceeds the budget"
+        );
+        // The newest messages are the survivors.
+        assert_eq!(ctx.history.last().unwrap().content[..9], *"message 9");
     }
 
     #[test]

@@ -147,6 +147,19 @@ fn fixture_context() -> ChatContext {
                 NeighborLine { hop: 2, text: "  calls `evict` (src/turn/token_budget.rs)".into() },
             ],
         }],
+        // History rides the messages array, not the rendered block — the
+        // goldens over `render` must stay byte-identical with it present
+        // (and the eviction goldens exercise its budget participation).
+        history: vec![
+            crate::turn::context_gather::HistoryMessage {
+                role: "user".into(),
+                content: "what does the gather do?".into(),
+            },
+            crate::turn::context_gather::HistoryMessage {
+                role: "assistant".into(),
+                content: "It assembles the layered context for a turn.".into(),
+            },
+        ],
     }
 }
 
@@ -193,20 +206,25 @@ mod tests {
     fn golden_eviction_mid_pressure() {
         // A budget chosen (relative to the fixture) to force the first
         // few drops: summary (tier 2) and the long-term lines (2.5) go;
-        // the workspace block and the symbol context survive.
+        // the workspace block, the symbol context, and the history
+        // window (tier 6.5) survive.
         let mut ctx = fixture_context();
-        let full = token_budget::estimate_tokens(&prompt_assembly::render(&ctx));
+        let full = token_budget::estimate_tokens(&prompt_assembly::render(&ctx))
+            + token_budget::history_tokens(&ctx);
         token_budget::evict(&mut ctx, full - 40);
+        assert_eq!(ctx.history.len(), 2, "history outlasts tiers 2-4");
         assert_golden("eviction_mid_pressure", &prompt_assembly::render(&ctx));
     }
 
     #[test]
     fn golden_eviction_never_drop_floor() {
-        // An absurdly small budget: everything droppable is gone; the
-        // never-drop tier (profile, short-term, vocabulary) survives
-        // verbatim. This is the floor the model ALWAYS sees.
+        // An absurdly small budget: everything droppable is gone — the
+        // history window included — and the never-drop tier (profile,
+        // short-term, vocabulary) survives verbatim. This is the floor
+        // the model ALWAYS sees.
         let mut ctx = fixture_context();
         token_budget::evict(&mut ctx, 1);
+        assert!(ctx.history.is_empty(), "history is evictable (B1)");
         assert_golden("eviction_never_drop_floor", &prompt_assembly::render(&ctx));
     }
 

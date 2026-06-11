@@ -119,7 +119,12 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
         slot_budget,
     )
     .await;
-    let mut messages = initial_messages(base_prompt, &user_message, &gathered.system_slots);
+    let mut messages = initial_messages(
+        base_prompt,
+        &gathered.history,
+        &user_message,
+        &gathered.system_slots,
+    );
     let tools = tools_payload();
     // The user's per-model inference overrides (Settings → Ollama) ride
     // every round's request as Ollama `options` (B5).
@@ -521,7 +526,12 @@ async fn drive_streaming_turn(
         slot_budget,
     )
     .await;
-    let mut messages = initial_messages(base_prompt, &user_message, &gathered.system_slots);
+    let mut messages = initial_messages(
+        base_prompt,
+        &gathered.history,
+        &user_message,
+        &gathered.system_slots,
+    );
     let tools = tools_payload();
     // Per-model inference overrides ride every round's request (B5).
     let options = chat_options::chat_options(&model);
@@ -781,18 +791,23 @@ fn build_alias_map() -> HashMap<String, String> {
 /// service via [`workspace_context::gather`] and appended onto the end of
 /// the system prompt. An empty string (no active workspace, or the service
 /// degraded) leaves a plain chat turn byte-identical to before.
+/// `history` (B1) is the budget-surviving window of prior-turn messages
+/// from the gather, spliced between the system message and the current
+/// user message so the model finally sees the previous turns.
 fn initial_messages(
     base_system_prompt: String,
+    history: &[Value],
     user_message: &str,
     workspace_slots: &str,
 ) -> Vec<Value> {
     let mut system_prompt = base_system_prompt;
     system_prompt.push_str(workspace_slots);
 
-    vec![
-        json!({"role": "system", "content": system_prompt}),
-        json!({"role": "user", "content": user_message}),
-    ]
+    let mut messages = Vec::with_capacity(history.len() + 2);
+    messages.push(json!({"role": "system", "content": system_prompt}));
+    messages.extend(history.iter().cloned());
+    messages.push(json!({"role": "user", "content": user_message}));
+    messages
 }
 
 /// The base system prompt (instruction + live tool catalog) WITHOUT the
@@ -1246,7 +1261,7 @@ mod tests {
         // system content must advertise tools (a known tool name from
         // the live registry) so the model emits tool-call JSON instead
         // of claiming it has no tools.
-        let messages = initial_messages(base_system_prompt(), "What time is it?", "");
+        let messages = initial_messages(base_system_prompt(), &[], "What time is it?", "");
         assert_eq!(messages.len(), 2, "expected [system, user]: {messages:?}");
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[1]["role"], "user");
@@ -1273,12 +1288,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initial_messages_splices_history_between_system_and_user() {
+        // B1: prior turns ride between the system message and the current
+        // user message, chronological.
+        let history = vec![
+            json!({"role": "user", "content": "earlier question"}),
+            json!({"role": "assistant", "content": "earlier answer"}),
+        ];
+        let messages = initial_messages(base_system_prompt(), &history, "follow-up", "");
+        assert_eq!(messages.len(), 4);
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[1]["content"], "earlier question");
+        assert_eq!(messages[2]["content"], "earlier answer");
+        assert_eq!(messages[3]["role"], "user");
+        assert_eq!(messages[3]["content"], "follow-up");
+    }
+
+    #[tokio::test]
     async fn run_turn_request_body_carries_system_then_user() {
         // Mirror the exact body construction in handle_run_turn /
         // drive_streaming_turn: messages = initial_messages(...), then
         // folded into the Ollama request body. Assert the wire shape.
         let messages = initial_messages(
             base_system_prompt(),
+            &[],
             "Read the README and tell me the license",
             "",
         );
@@ -1308,7 +1341,7 @@ mod tests {
         let tools = tools_payload();
         let body = json!({
             "model": "stub-model",
-            "messages": initial_messages(base_system_prompt(), "hi", ""),
+            "messages": initial_messages(base_system_prompt(), &[], "hi", ""),
             "tools": tools,
             "stream": false,
         });
