@@ -101,6 +101,13 @@ impl UserProfile {
     /// injects. Empty when nothing is set, so an unconfigured profile
     /// costs zero prompt tokens. (Consumed by Slice G; provided here so
     /// the data model owns its own rendering.)
+    ///
+    /// `free_text_rules` is capped at [`FREE_TEXT_RULES_MAX_CHARS`] at
+    /// render time (improvement plan B8): the profile block is OI-8
+    /// tier 7 (never evicted), so a 10-page rules dump would otherwise
+    /// permanently exceed small-model budgets. The truncation is marked
+    /// in the rendered text so it's visible, and the stored value is
+    /// never modified.
     pub fn to_prompt_block(&self) -> String {
         let mut lines = Vec::new();
         if let Some(name) = self.name.as_deref().filter(|s| !s.is_empty()) {
@@ -120,11 +127,23 @@ impl UserProfile {
         }
         let rules = self.free_text_rules.trim();
         if !rules.is_empty() {
-            lines.push(format!("User rules (follow verbatim):\n{rules}"));
+            if rules.chars().count() > FREE_TEXT_RULES_MAX_CHARS {
+                let kept: String = rules.chars().take(FREE_TEXT_RULES_MAX_CHARS).collect();
+                lines.push(format!(
+                    "User rules (follow verbatim):\n{kept}\n[user rules truncated at \
+                     {FREE_TEXT_RULES_MAX_CHARS} characters — shorten them in Settings]"
+                ));
+            } else {
+                lines.push(format!("User rules (follow verbatim):\n{rules}"));
+            }
         }
         lines.join("\n")
     }
 }
+
+/// Render-time ceiling on `free_text_rules` (~2k estimated tokens) — see
+/// [`UserProfile::to_prompt_block`]. Improvement plan B8.
+const FREE_TEXT_RULES_MAX_CHARS: usize = 8_000;
 
 /// `null`/empty → `None`; a non-empty string → `Some`.
 fn string_or_clear(v: &Value) -> Option<String> {
@@ -323,5 +342,22 @@ mod tests {
         let block = p.to_prompt_block();
         assert!(block.contains("Name: Aaron"));
         assert!(block.contains("Be terse."));
+    }
+
+    #[test]
+    fn prompt_block_caps_oversized_rules_with_marker() {
+        let mut p = UserProfile::default();
+        p.free_text_rules = "r".repeat(FREE_TEXT_RULES_MAX_CHARS + 1000);
+        let block = p.to_prompt_block();
+        assert!(block.contains("[user rules truncated at"), "marker present");
+        assert!(
+            block.chars().count() < FREE_TEXT_RULES_MAX_CHARS + 200,
+            "rendered length is capped: {}",
+            block.len()
+        );
+
+        // Under the cap: rendered verbatim, no marker.
+        p.free_text_rules = "Short rule.".into();
+        assert!(!p.to_prompt_block().contains("truncated"));
     }
 }

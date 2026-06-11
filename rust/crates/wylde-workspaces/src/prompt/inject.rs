@@ -90,6 +90,14 @@ pub async fn gather(workspace_id: &str, user_message: &str) -> WorkspaceContext 
     }
 }
 
+/// Render-time ceiling on the persona section (~2k estimated tokens at
+/// 4 chars/token). The persona rides every turn and the harness treats the
+/// workspace block as one eviction unit — a 10-page persona would crowd out
+/// notes + RAG wholesale. Truncation is marked in the rendered text; the
+/// stored persona.md is never modified. (Prompt-engineering improvement
+/// plan B8.)
+const PERSONA_MAX_CHARS: usize = 8_000;
+
 /// Render `ctx` into the system-prompt slot text the harness turn driver
 /// appends after its base instruction + tool catalog. Returns an empty
 /// string when the context is empty (the caller then appends nothing).
@@ -99,9 +107,17 @@ pub fn render_slots(ctx: &WorkspaceContext) -> String {
     }
     let mut out = String::from("\n\n# Workspace context\n");
 
-    if !ctx.persona.trim().is_empty() {
+    let persona = ctx.persona.trim();
+    if !persona.is_empty() {
         out.push_str("\n## Persona\n");
-        out.push_str(ctx.persona.trim());
+        if persona.chars().count() > PERSONA_MAX_CHARS {
+            out.extend(persona.chars().take(PERSONA_MAX_CHARS));
+            out.push_str(&format!(
+                "\n[persona truncated at {PERSONA_MAX_CHARS} characters — shorten persona.md]"
+            ));
+        } else {
+            out.push_str(persona);
+        }
         out.push('\n');
     }
     if !ctx.memory_snippets.is_empty() {
@@ -153,6 +169,31 @@ mod tests {
         assert!(s.contains("- uses pytest"));
         assert!(s.contains("## Workspace files"));
         assert!(s.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn render_slots_caps_an_oversized_persona_with_marker() {
+        let ctx = WorkspaceContext {
+            persona: "p".repeat(PERSONA_MAX_CHARS + 500),
+            memory_snippets: Vec::new(),
+            rag_snippets: Vec::new(),
+        };
+        let s = render_slots(&ctx);
+        assert!(s.contains("[persona truncated at"), "marker present: {s}");
+        // The rendered persona body is capped (allow for headers + marker).
+        assert!(
+            s.chars().count() < PERSONA_MAX_CHARS + 200,
+            "len {}",
+            s.len()
+        );
+
+        // An at-cap persona is untouched.
+        let ctx = WorkspaceContext {
+            persona: "p".repeat(100),
+            memory_snippets: Vec::new(),
+            rag_snippets: Vec::new(),
+        };
+        assert!(!render_slots(&ctx).contains("truncated"));
     }
 
     #[test]

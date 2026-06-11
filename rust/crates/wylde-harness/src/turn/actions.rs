@@ -46,6 +46,7 @@ use wylde_shared::ipc::{self, IpcError, Reply, StreamSender};
 use crate::config::Config;
 use crate::events::{AbortReason, ToolErrorReason, ToolEvent, TurnEvent};
 use crate::state::{self, TurnHandle};
+use crate::turn::chat_options;
 use crate::turn::context_gather;
 use crate::turn::prompt;
 use crate::turn::salvage::{self, RecoveredCall, SalvageResult};
@@ -105,15 +106,24 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     // the turn so the response carries a one-line notice. The composer's
     // per-message ✕/↺ choices (Slices F + M) arrive as token overrides.
     let overrides = context_gather::TokenOverrides::from_payload(&payload);
+    // The gather-slot eviction budget derives from the model's effective
+    // num_ctx (B5) — the base prompt + user message are fixed costs the
+    // slots must leave room for.
+    let base_prompt = base_system_prompt();
+    let slot_budget = chat_options::slot_budget(&model, &base_prompt, &user_message).await;
     let gathered = context_gather::gather(
         workspace_id.as_deref(),
         &user_message,
         &conversation_id,
         &overrides,
+        slot_budget,
     )
     .await;
-    let mut messages = initial_messages(&user_message, &gathered.system_slots);
+    let mut messages = initial_messages(base_prompt, &user_message, &gathered.system_slots);
     let tools = tools_payload();
+    // The user's per-model inference overrides (Settings → Ollama) ride
+    // every round's request as Ollama `options` (B5).
+    let options = chat_options::chat_options(&model);
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
     let mut final_text = String::new();
@@ -124,7 +134,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     for round in 0..tool_round::MAX_TOOL_LOOPS {
         round_state.rounds = round + 1;
 
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "messages": messages,
             "tools": tools,
@@ -132,6 +142,9 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
             "stream": false,
             "keep_alive": "24h",
         });
+        if !options.is_empty() {
+            body["options"] = Value::Object(options.clone());
+        }
 
         let upstream = match ipc::call_action(&cfg.ollama_service, "ollama.chat", body).await {
             Ok(v) => v,
@@ -268,12 +281,18 @@ pub async fn handle_complete(payload: Value) -> Reply {
         "stream": false,
         "keep_alive": "24h",
     });
-    // Map the narrow `max_tokens` knob onto Ollama's generation option.
-    // A non-positive value is ignored (let the backend pick its default).
+    // The user's per-model inference overrides (B5), then the narrow
+    // `max_tokens` knob mapped onto Ollama's generation option — the
+    // explicit per-call value beats a stored num_predict override. A
+    // non-positive value is ignored (let the backend pick its default).
+    let mut options = chat_options::chat_options(&model);
     if let Some(max) = payload.get("max_tokens").and_then(Value::as_i64) {
         if max > 0 {
-            body["options"] = json!({ "num_predict": max });
+            options.insert("num_predict".to_owned(), json!(max));
         }
+    }
+    if !options.is_empty() {
+        body["options"] = Value::Object(options);
     }
 
     match ipc::call_action(&cfg.ollama_service, "ollama.chat", body).await {
@@ -492,15 +511,20 @@ async fn drive_streaming_turn(
     overrides: context_gather::TokenOverrides,
 ) {
     // Gather the turn's context (Slice G) — see `handle_run_turn` for the flow.
+    let base_prompt = base_system_prompt();
+    let slot_budget = chat_options::slot_budget(&model, &base_prompt, &user_message).await;
     let gathered = context_gather::gather(
         workspace_id.as_deref(),
         &user_message,
         &conversation_id,
         &overrides,
+        slot_budget,
     )
     .await;
-    let mut messages = initial_messages(&user_message, &gathered.system_slots);
+    let mut messages = initial_messages(base_prompt, &user_message, &gathered.system_slots);
     let tools = tools_payload();
+    // Per-model inference overrides ride every round's request (B5).
+    let options = chat_options::chat_options(&model);
     let mut round_state = ToolRoundState::new();
     let alias_map = build_alias_map();
 
@@ -520,7 +544,7 @@ async fn drive_streaming_turn(
             return;
         }
 
-        let body = json!({
+        let mut body = json!({
             "model": model,
             "messages": messages,
             "tools": tools,
@@ -528,6 +552,9 @@ async fn drive_streaming_turn(
             "stream": true,
             "keep_alive": "24h",
         });
+        if !options.is_empty() {
+            body["options"] = Value::Object(options.clone());
+        }
 
         let mut stream = ipc::send_action_stream(&cfg.ollama_service, "ollama.chat_stream", body);
         let mut accumulated = String::new();
@@ -754,16 +781,28 @@ fn build_alias_map() -> HashMap<String, String> {
 /// service via [`workspace_context::gather`] and appended onto the end of
 /// the system prompt. An empty string (no active workspace, or the service
 /// degraded) leaves a plain chat turn byte-identical to before.
-fn initial_messages(user_message: &str, workspace_slots: &str) -> Vec<Value> {
-    let catalog = crate::tooling::runner::catalog_payload(crate::tooling::registry::global());
-    let verb_mode = crate::tooling::resource::verb_mode_active();
-    let mut system_prompt = prompt::build_system_prompt(&catalog, verb_mode);
+fn initial_messages(
+    base_system_prompt: String,
+    user_message: &str,
+    workspace_slots: &str,
+) -> Vec<Value> {
+    let mut system_prompt = base_system_prompt;
     system_prompt.push_str(workspace_slots);
 
     vec![
         json!({"role": "system", "content": system_prompt}),
         json!({"role": "user", "content": user_message}),
     ]
+}
+
+/// The base system prompt (instruction + live tool catalog) WITHOUT the
+/// gathered workspace slots. Built once per turn: it both opens the
+/// [`initial_messages`] system message and prices the fixed prompt cost
+/// for [`chat_options::slot_budget`] (B5).
+fn base_system_prompt() -> String {
+    let catalog = crate::tooling::runner::catalog_payload(crate::tooling::registry::global());
+    let verb_mode = crate::tooling::resource::verb_mode_active();
+    prompt::build_system_prompt(&catalog, verb_mode)
 }
 
 /// Build the native Ollama `tools:` request field from the live tool
@@ -1207,7 +1246,7 @@ mod tests {
         // system content must advertise tools (a known tool name from
         // the live registry) so the model emits tool-call JSON instead
         // of claiming it has no tools.
-        let messages = initial_messages("What time is it?", "");
+        let messages = initial_messages(base_system_prompt(), "What time is it?", "");
         assert_eq!(messages.len(), 2, "expected [system, user]: {messages:?}");
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[1]["role"], "user");
@@ -1238,7 +1277,11 @@ mod tests {
         // Mirror the exact body construction in handle_run_turn /
         // drive_streaming_turn: messages = initial_messages(...), then
         // folded into the Ollama request body. Assert the wire shape.
-        let messages = initial_messages("Read the README and tell me the license", "");
+        let messages = initial_messages(
+            base_system_prompt(),
+            "Read the README and tell me the license",
+            "",
+        );
         let body = json!({
             "model": "stub-model",
             "messages": messages,
@@ -1265,7 +1308,7 @@ mod tests {
         let tools = tools_payload();
         let body = json!({
             "model": "stub-model",
-            "messages": initial_messages("hi", ""),
+            "messages": initial_messages(base_system_prompt(), "hi", ""),
             "tools": tools,
             "stream": false,
         });

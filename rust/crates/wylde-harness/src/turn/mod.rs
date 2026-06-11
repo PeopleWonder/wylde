@@ -43,6 +43,7 @@
 //!   `not_implemented`).
 
 pub mod actions;
+pub mod chat_options;
 pub mod context_gather;
 pub mod prompt;
 pub mod prompt_assembly;
