@@ -44,8 +44,8 @@ mod text_search;
 pub(crate) mod test_support;
 
 pub use entries::{
-    core_block, delete, get, history, list_records, save, search, touch, update, SaveError,
-    SearchHit,
+    core_block, delete, get, history, list_records, save, search, touch, touch_all, update,
+    SaveError, SearchHit,
 };
 pub use records::LongTermMemory;
 pub use scoring::{combined_score, heuristic_importance, normalize_importance, DEFAULT_DECAY_DAYS};

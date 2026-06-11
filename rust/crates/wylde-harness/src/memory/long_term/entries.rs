@@ -391,6 +391,29 @@ pub fn touch(record_id: &str) {
     }
 }
 
+/// Bump `last_used_at` on several records in ONE load/save pass — the
+/// per-turn injection path (improvement plan B3) touches every record it
+/// puts in the prompt, and N separate [`touch`] calls would rewrite the
+/// JSON N times. Unknown ids are skipped.
+pub fn touch_all(record_ids: &[String]) {
+    if record_ids.is_empty() {
+        return;
+    }
+    let _g = STORE_LOCK.lock().unwrap();
+    let mut records = load_all();
+    let now = now_secs();
+    let mut hit = false;
+    for r in records.iter_mut() {
+        if record_ids.iter().any(|id| *id == r.id) {
+            r.last_used_at = now;
+            hit = true;
+        }
+    }
+    if hit {
+        let _ = save_all(&records);
+    }
+}
+
 // ── Search ────────────────────────────────────────────────────────────
 
 /// Hit shape returned by [`search`]. Carries the raw record fields the

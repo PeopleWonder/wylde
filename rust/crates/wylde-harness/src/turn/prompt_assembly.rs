@@ -16,10 +16,11 @@
 //!
 //! 1. **User profile** — who it's talking to (never-dropped).
 //! 2. **Conversation memory** — the short-term working memory (never-dropped).
-//! 3. **Conversation summary** — the running summary (placeholder in Phase 2).
-//! 4. **Vocabulary** — anchors the prompt referenced (never-dropped).
-//! 5. **Workspace context** — persona + notes + RAG (`gather_prompt`).
-//! 6. **Code graph context** — structural retrieval for referenced symbols.
+//! 3. **Conversation summary** — the conversation doc's auto_summary (B2).
+//! 4. **Long-term memory** — injected long-term records (B3, evictable).
+//! 5. **Vocabulary** — anchors the prompt referenced (never-dropped).
+//! 6. **Workspace context** — persona + notes + RAG (`gather_prompt`).
+//! 7. **Code graph context** — structural retrieval for referenced symbols.
 //!
 //! An empty [`ChatContext`] renders to `""`, so a plain chat turn with nothing
 //! to add is byte-identical to one with no gather at all.
@@ -46,6 +47,10 @@ pub(crate) fn render(ctx: &ChatContext) -> String {
         if !summary.trim().is_empty() {
             sections.push(section("Conversation summary", summary.trim()));
         }
+    }
+
+    if !ctx.long_term.is_empty() {
+        sections.push(section("Long-term memory", &ctx.long_term.join("\n")));
     }
 
     if !ctx.vocabulary_anchors.is_empty() {
@@ -129,6 +134,8 @@ mod tests {
         let ctx = ChatContext {
             user_profile: "Name: Aaron".into(),
             conversation_short_term: vec!["- recalled a thing".into()],
+            conversation_summary: Some("They were debugging.".into()),
+            long_term: vec!["- prefers tabs".into()],
             vocabulary_anchors: vec![AnchorBlock {
                 identifier: "the_fn".into(),
                 text: "{{the_fn}} — the entry point".into(),
@@ -147,10 +154,19 @@ mod tests {
         let out = render(&ctx);
         let profile = out.find("### User profile").unwrap();
         let memory = out.find("### Conversation memory").unwrap();
+        let summary = out.find("### Conversation summary").unwrap();
+        let long_term = out.find("### Long-term memory").unwrap();
         let vocab = out.find("### Vocabulary").unwrap();
         let ws = out.find("### Workspace context").unwrap();
         let graph = out.find("### Code graph context").unwrap();
-        assert!(profile < memory && memory < vocab && vocab < ws && ws < graph);
+        assert!(
+            profile < memory
+                && memory < summary
+                && summary < long_term
+                && long_term < vocab
+                && vocab < ws
+                && ws < graph
+        );
         // Symbol block renders focal + neighbour.
         assert!(out.contains("Symbol `foo`"));
         assert!(out.contains("calls `bar`"));
