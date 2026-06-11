@@ -1253,6 +1253,16 @@ mod tests {
 
     #[tokio::test]
     async fn start_turn_returns_turn_id_immediately_when_inputs_valid() {
+        // The spawned driving task runs the REAL gather against the
+        // process-global WYLDE_DATA_DIR — including the B3 long-term
+        // injection, whose touch_all WRITES the store it finds there.
+        // Without this sandbox the task brushed whichever other test's
+        // tempdir was live (the env lock can't protect against a writer
+        // that never takes it), intermittently failing the long-term
+        // selective-touch assertions. Holding TestEnv both serializes
+        // this test against every store-touching test and points the
+        // driver at its own throwaway dir.
+        let _env = crate::user_profile::test_support::TestEnv::new();
         let id = state::new_turn_id();
         let reply = handle_start_turn(json!({
             "user_message": "hi",

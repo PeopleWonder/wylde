@@ -1,0 +1,15 @@
+[package]
+name = "wylde-plugin-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Deliberately the only dependency. The SDK is a shared surface like
+# wylde-shared: anything heavier here would be inherited by every
+# plugin AND by the harness host.
+serde_json.workspace = true

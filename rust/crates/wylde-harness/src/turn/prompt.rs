@@ -73,15 +73,18 @@ const SURVIVING_NAMED_TOOLS: &[&str] = &[
 /// Whether a catalog row should be advertised to the model.
 ///
 /// Legacy mode (`verb_mode == false`) advertises every *active* tool, as
-/// before the cutover. Verb mode advertises only the verb tools (group
-/// `"verbs"`) plus the [`SURVIVING_NAMED_TOOLS`] tail. The caller has
-/// already filtered to `status == "active"`.
+/// before the cutover. Verb mode advertises the verb tools (group
+/// `"verbs"`), the Core-plugin tools (group `"plugins"` — TX S4: plugin
+/// tools have no resource equivalent to be reached through, so retiring
+/// them would make them unreachable), plus the [`SURVIVING_NAMED_TOOLS`]
+/// tail. The caller has already filtered to `status == "active"`.
 fn advertise(tool: &Value, verb_mode: bool) -> bool {
     if !verb_mode {
         return true;
     }
-    if tool.get("group").and_then(Value::as_str) == Some("verbs") {
-        return true;
+    match tool.get("group").and_then(Value::as_str) {
+        Some("verbs") | Some("plugins") => return true,
+        _ => {}
     }
     let id = tool.get("id").and_then(Value::as_str).unwrap_or("");
     SURVIVING_NAMED_TOOLS.contains(&id)
@@ -526,6 +529,33 @@ mod tests {
         assert!(
             prompt.contains("wylde_describe first"),
             "describe hint missing"
+        );
+    }
+
+    #[test]
+    fn verb_mode_advertises_plugins_group() {
+        // TX S4: Core-plugin tools (group "plugins") must stay USABLE in
+        // verb mode — they have no resource equivalent, so unlike the
+        // retired named tools there is no verb path to reach them.
+        let mut catalog = mixed_catalog();
+        catalog.push(row(
+            "plugin_hello_wylde_greet",
+            "plugin.hello_wylde.greet",
+            "plugins",
+        ));
+        let prompt = build_system_prompt(&catalog, true, false);
+        assert!(
+            prompt.contains("plugin.hello_wylde.greet"),
+            "plugins-group row must be advertised in verb mode: {prompt}"
+        );
+        let tools = build_tools_field(&catalog, true);
+        let names: Vec<&str> = tools
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&"plugin.hello_wylde.greet"),
+            "plugins-group row must reach the native tools field: {names:?}"
         );
     }
 
