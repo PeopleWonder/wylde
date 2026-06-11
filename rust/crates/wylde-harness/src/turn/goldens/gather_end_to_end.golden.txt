@@ -1,0 +1,22 @@
+
+
+### User profile
+Name: Golden User
+Style: terse
+
+### Conversation summary
+The user has been refactoring the gather flow.
+
+### Vocabulary
+- {{the_gather}} — the pre-LLM context gather
+
+### Workspace context
+# Workspace context
+
+## Persona
+Be precise.
+
+### Code graph context
+Symbol `gather_with` — src/turn/context_gather.rs:404
+pub(crate) async fn gather_with(...) {}
+  called by `handle_run_turn` (src/turn/actions.rs)

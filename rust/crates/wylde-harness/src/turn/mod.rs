@@ -45,6 +45,9 @@
 pub mod actions;
 pub mod chat_options;
 pub mod context_gather;
+/// Prompt eval/regression goldens (improvement plan B11) — test-only.
+#[cfg(test)]
+mod golden;
 pub mod prompt;
 pub mod prompt_assembly;
 pub mod salvage;
