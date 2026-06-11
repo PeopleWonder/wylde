@@ -1,6 +1,6 @@
 """Wylde architectural checker.
 
-Encodes Wylde-specific contracts as forty-eight active rules.  Each rule
+Encodes Wylde-specific contracts as forty-nine active rules.  Each rule
 walks the active tree (skipping `_legacy/`, `__pycache__/`, build
 output, etc.) and emits structured findings.  Pure-Python, no
 subprocesses, no network — runs purely off the filesystem.
@@ -330,6 +330,17 @@ The rules:
                             never flagged.  Opt out with
                             ``// wylde-check: silent-skip-allowed`` (rare);
                             details in docs/wylde_check_rules.md.
+53. ``no_hardcoded_prompts_rust`` — ``"You are ...`` LLM system-prompt
+                            string literals in Rust source must live in
+                            the prompts catalog
+                            (``prompts/catalog.json`` +
+                            ``store::effective_prompt``), not as
+                            hardcoded constants (prompt-engineering B11,
+                            2026-06-11).  Grandfather allowlist
+                            (``rules/_prompts.py``) covers the pre-B9
+                            sites and empties when B9 migrates them.
+                            Test fixtures opt out with
+                            ``// wylde-check: prompt-literal-ok``.
 
 All rules are advisory.  The checker returns an envelope; nothing here
 mutates state.
@@ -463,6 +474,9 @@ from .rules._no_bare_tokio import (  # noqa: E402
     check_no_bare_tokio_in_panel_src,
 )
 from .rules._no_panic_in_panel_render import check_no_panic_in_panel_render  # noqa: E402
+from .rules._prompts import (  # noqa: E402
+    check_no_hardcoded_prompts_rust,
+)
 from .rules._silent_skip_in_service_start import (  # noqa: E402
     check_silent_skip_in_service_start,
 )
@@ -547,6 +561,11 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # Rule 52 — silent early-returns in lifecycle start_<service> functions
     # (silent-skip slice, 2026-05-31); a skipped spawn must log its reason.
     "silent_skip_in_service_start": check_silent_skip_in_service_start,
+    # Rule 53 — hardcoded LLM system-prompt literals in Rust source
+    # (prompt-engineering B11 slice, 2026-06-11); prompts belong in the
+    # catalog so the shipped override surface can tune them. Grandfather
+    # allowlist empties at B9.
+    "no_hardcoded_prompts_rust": check_no_hardcoded_prompts_rust,
 }
 
 # Asserting the count at import time so a future rule add/drop trips the
@@ -560,7 +579,9 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # Bare-tokio panel slice (2026-05-30): +1 (rule 50) = 46 active.
 # Dashboard cold-start crash slice (2026-05-31): +1 (rule 51) = 47 active.
 # Silent-skip-in-service-start slice (2026-05-31): +1 (rule 52) = 48 active.
-assert len(_RULES) == 48, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 48)"
+# Prompt-engineering B11 slice (2026-06-11): +1 (rule 53,
+# no_hardcoded_prompts_rust) = 49 active.
+assert len(_RULES) == 49, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 49)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -728,4 +749,5 @@ __all__ = [
     "check_no_bare_tokio_in_panel_src",
     "check_no_panic_in_panel_render",
     "check_silent_skip_in_service_start",
+    "check_no_hardcoded_prompts_rust",
 ]
