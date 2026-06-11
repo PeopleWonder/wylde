@@ -480,17 +480,61 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
 
 // ── gather helpers ──────────────────────────────────────────────────────
 
-/// Read the conversation's short-term working memory as rendered lines.
-/// In-process and fail-soft: an invalid id / read error yields no lines.
+/// Injection cap on working-memory entries (improvement plan B8). The
+/// short-term slot is OI-8 tier 7 (never evicted), and the store grows
+/// without bound over a long conversation — uncapped, the never-drop floor
+/// can permanently exceed a small model's whole budget, forcing eviction to
+/// delete *everything else* every turn while still overshooting. Newest
+/// entries win; older ones are omitted from the PROMPT only (the store
+/// keeps them, and idle-time consolidation still reads the full list).
+const WORKING_MEMORY_MAX_ENTRIES: usize = 40;
+
+/// Token ceiling (estimated) on the same slot — guards against few-but-huge
+/// entries the entry cap can't catch.
+const WORKING_MEMORY_MAX_TOKENS: usize = 2_000;
+
+/// Read the conversation's short-term working memory as rendered lines,
+/// newest-first-capped per B8. In-process and fail-soft: an invalid id /
+/// read error yields no lines.
 fn read_short_term(conversation_id: &str) -> Vec<String> {
     if conversation_id.trim().is_empty() {
         return Vec::new();
     }
-    crate::memory::short_term::store::get_working_memory(conversation_id)
+    let lines = crate::memory::short_term::store::get_working_memory(conversation_id)
         .unwrap_or_default()
         .iter()
         .filter_map(render_working_memory_entry)
-        .collect()
+        .collect();
+    cap_short_term(lines)
+}
+
+/// Apply the B8 caps: keep the newest [`WORKING_MEMORY_MAX_ENTRIES`] lines
+/// within [`WORKING_MEMORY_MAX_TOKENS`] (always at least the newest line),
+/// prefixing a visible omission marker when anything was dropped.
+fn cap_short_term(lines: Vec<String>) -> Vec<String> {
+    let total = lines.len();
+    let mut kept = lines;
+    if kept.len() > WORKING_MEMORY_MAX_ENTRIES {
+        kept = kept.split_off(kept.len() - WORKING_MEMORY_MAX_ENTRIES);
+    }
+    let token_sum = |ls: &[String]| {
+        ls.iter()
+            .map(|l| token_budget::estimate_tokens(l))
+            .sum::<usize>()
+    };
+    let mut start = 0usize;
+    while start + 1 < kept.len() && token_sum(&kept[start..]) > WORKING_MEMORY_MAX_TOKENS {
+        start += 1;
+    }
+    let mut out: Vec<String> = kept.split_off(start);
+    let omitted = total - out.len();
+    if omitted > 0 {
+        out.insert(
+            0,
+            format!("- [{omitted} older working-memory entries omitted (injection cap)]"),
+        );
+    }
+    out
 }
 
 /// Render one short-term working-memory entry to a compact line. Object entries
@@ -883,6 +927,41 @@ mod tests {
         )
         .await;
         assert!(!out.system_slots.contains("Symbol `foo`"));
+    }
+
+    // ── B8 short-term injection caps ─────────────────────────────────────
+
+    #[test]
+    fn short_term_cap_keeps_newest_entries_with_marker() {
+        let lines: Vec<String> = (0..50).map(|i| format!("- entry {i:02}")).collect();
+        let capped = cap_short_term(lines);
+        // 40 newest kept + 1 omission marker.
+        assert_eq!(capped.len(), WORKING_MEMORY_MAX_ENTRIES + 1);
+        assert!(
+            capped[0].contains("10 older working-memory entries omitted"),
+            "marker: {}",
+            capped[0]
+        );
+        assert_eq!(capped[1], "- entry 10", "oldest survivor");
+        assert_eq!(capped.last().unwrap(), "- entry 49", "newest survives");
+    }
+
+    #[test]
+    fn short_term_token_ceiling_drops_oldest_but_keeps_newest() {
+        // Three entries of ~1500 estimated tokens each (6000 chars) — over
+        // the 2000-token ceiling, so only the newest survives.
+        let lines: Vec<String> = (0..3).map(|i| format!("{i}{}", "x".repeat(6000))).collect();
+        let capped = cap_short_term(lines);
+        assert_eq!(capped.len(), 2, "marker + newest: {capped:?}");
+        assert!(capped[0].contains("2 older working-memory entries omitted"));
+        assert!(capped[1].starts_with('2'), "newest entry survives");
+    }
+
+    #[test]
+    fn short_term_under_caps_is_untouched() {
+        let lines: Vec<String> = (0..5).map(|i| format!("- entry {i}")).collect();
+        assert_eq!(cap_short_term(lines.clone()), lines);
+        assert!(cap_short_term(Vec::new()).is_empty());
     }
 
     // ── symbol detection ────────────────────────────────────────────────
