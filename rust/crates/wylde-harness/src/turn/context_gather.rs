@@ -98,6 +98,18 @@ pub(crate) struct NeighborLine {
     pub text: String,
 }
 
+/// One prior-turn message riding into the model's `messages` array
+/// (improvement plan B1). NOT part of the rendered system-prompt block —
+/// the turn driver interleaves these between the system message and the
+/// current user message — but it competes for the same context window,
+/// so the token budget counts and evicts it (oldest pair first).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HistoryMessage {
+    /// `"user"` or `"assistant"` (system/tool messages never load).
+    pub role: String,
+    pub content: String,
+}
+
 /// A vocabulary anchor the current prompt referenced. Always in the never-drop
 /// tier (OI-8 tier 7 — "vocabulary block for currently-referenced anchors").
 #[derive(Clone, Debug, PartialEq)]
@@ -146,6 +158,12 @@ pub(crate) struct ChatContext {
     /// Structural code-graph context for referenced symbols. OI-8 tier 4
     /// (drop deeper hops first).
     pub symbol_contexts: Vec<SymbolContextBlock>,
+    /// Windowed prior-turn conversation history (B1), chronological.
+    /// Rides the `messages` array, not the rendered block; counted by the
+    /// token budget and evicted oldest-pair-first at tier ~6 — the most
+    /// protected evictable slot, because dialogue continuity is not
+    /// re-derivable the way retrieved enrichment is.
+    pub history: Vec<HistoryMessage>,
 }
 
 /// The result of gathering a turn's context.
@@ -154,6 +172,10 @@ pub(crate) struct GatheredContext {
     /// Empty when nothing was gathered (a plain chat turn stays byte-identical
     /// to before).
     pub system_slots: String,
+    /// Budget-surviving prior-turn history as wire messages
+    /// (`{"role", "content"}`), chronological — the driver splices these
+    /// between the system message and the current user message (B1).
+    pub history: Vec<Value>,
     /// True when an active workspace was requested but its prompt block was
     /// unreachable — the driver surfaces the inline degraded notice.
     pub degraded: bool,
@@ -432,6 +454,8 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         // B3: the long-term store finally reaches the prompt without the
         // model having to think of calling memory.search.
         long_term: gather_long_term(user_message).await,
+        // B1: the model can finally see the previous turns.
+        history: load_history(conversation_id, user_message, slot_budget),
         ..ChatContext::default()
     };
     let mut degraded = false;
@@ -485,14 +509,91 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     // Trim to the model's budget (OI-8), then render the named slots.
     token_budget::evict(&mut ctx, slot_budget);
     let system_slots = prompt_assembly::render(&ctx);
+    let history = ctx
+        .history
+        .iter()
+        .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
+        .collect();
 
     GatheredContext {
         system_slots,
+        history,
         degraded,
     }
 }
 
 // ── gather helpers ──────────────────────────────────────────────────────
+
+/// Cap on the number of prior-turn messages loaded per turn (B1) — 20
+/// messages ≈ 10 exchanges of lookback before the auto-summary (B2)
+/// takes over for older context.
+const HISTORY_MAX_MESSAGES: usize = 20;
+
+/// Absolute token ceiling (estimated) on loaded history. The effective
+/// load budget is `min(this, slot_budget / 2)` so history can never
+/// swamp a small model's window before eviction even runs.
+const HISTORY_MAX_TOKENS: usize = 4_000;
+
+/// Load the windowed conversation history (improvement plan B1):
+/// newest-first within the sub-budget, returned chronological.
+///
+/// * Only `user` / `assistant` messages with non-empty content load —
+///   system messages (defensive; the store shouldn't hold any) and tool
+///   rows are skipped: tool exchanges are intra-turn scaffolding, and
+///   replaying them confuses small models.
+/// * If the newest stored message is a `user` message identical to the
+///   current one, it is skipped — some callers persist the user message
+///   before driving the turn, and the current exchange must never
+///   duplicate (the plan's "never the current exchange").
+/// * Fail-soft: unknown id / unreadable doc ⇒ no history.
+fn load_history(
+    conversation_id: &str,
+    user_message: &str,
+    slot_budget: usize,
+) -> Vec<HistoryMessage> {
+    if conversation_id.trim().is_empty() {
+        return Vec::new();
+    }
+    let Ok(doc) = crate::memory::conversations::store::read_conversation(conversation_id) else {
+        return Vec::new();
+    };
+    let Some(messages) = doc.get("messages").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    let token_budget_cap = HISTORY_MAX_TOKENS.min(slot_budget / 2);
+    let mut picked: Vec<HistoryMessage> = Vec::new();
+    let mut tokens = 0usize;
+    let mut newest = true;
+    for m in messages.iter().rev() {
+        let role = m.get("role").and_then(Value::as_str).unwrap_or("");
+        let content = m
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if content.is_empty() || (role != "user" && role != "assistant") {
+            continue;
+        }
+        if newest {
+            newest = false;
+            if role == "user" && content == user_message.trim() {
+                continue; // the already-persisted current exchange
+            }
+        }
+        let cost = token_budget::estimate_tokens(content) + token_budget::HISTORY_MSG_OVERHEAD;
+        if picked.len() >= HISTORY_MAX_MESSAGES || tokens + cost > token_budget_cap {
+            break;
+        }
+        tokens += cost;
+        picked.push(HistoryMessage {
+            role: role.to_owned(),
+            content: content.to_owned(),
+        });
+    }
+    picked.reverse(); // gathered newest-first; the wire wants chronological
+    picked
+}
 
 /// How many long-term records ride each turn (B3 — the `core_block`
 /// default).
@@ -1048,6 +1149,93 @@ mod tests {
         )
         .await;
         assert!(!out.system_slots.contains("### Conversation summary"));
+    }
+
+    // ── B1: windowed conversation history ───────────────────────────────
+
+    #[tokio::test]
+    async fn history_loads_windowed_strips_system_and_skips_current_exchange() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut doc = serde_json::Map::new();
+        doc.insert("id".into(), json!("conv-b1"));
+        doc.insert(
+            "messages".into(),
+            json!([
+                {"role": "system", "content": "should never load"},
+                {"role": "user", "content": "first question"},
+                {"role": "assistant", "content": "first answer"},
+                {"role": "tool", "content": "{\"result\": 1}"},
+                {"role": "user", "content": "second question"},
+                {"role": "assistant", "content": "second answer"},
+                // The GUI persisted the current user message before the turn.
+                {"role": "user", "content": "what about the second one?"},
+            ]),
+        );
+        crate::memory::conversations::store::save_conversation(&doc).unwrap();
+
+        let src = MockSource::default();
+        let out = gather_with(
+            &src,
+            None,
+            "what about the second one?",
+            "conv-b1",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        let contents: Vec<&str> = out
+            .history
+            .iter()
+            .map(|m| m["content"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            contents,
+            vec![
+                "first question",
+                "first answer",
+                "second question",
+                "second answer"
+            ],
+            "chronological, system/tool stripped, current exchange skipped"
+        );
+        // History rides the messages array, never the rendered block.
+        assert!(!out.system_slots.contains("first question"));
+    }
+
+    #[test]
+    fn history_load_respects_message_and_token_caps() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        // 30 exchanges — far past the 20-message cap.
+        let msgs: Vec<Value> = (0..30)
+            .flat_map(|i| {
+                vec![
+                    json!({"role": "user", "content": format!("q{i:02}")}),
+                    json!({"role": "assistant", "content": format!("a{i:02}")}),
+                ]
+            })
+            .collect();
+        let mut doc = serde_json::Map::new();
+        doc.insert("id".into(), json!("conv-b1-cap"));
+        doc.insert("messages".into(), json!(msgs));
+        crate::memory::conversations::store::save_conversation(&doc).unwrap();
+
+        let picked = load_history(
+            "conv-b1-cap",
+            "a new ask",
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        );
+        assert_eq!(picked.len(), HISTORY_MAX_MESSAGES, "newest 20 only");
+        assert_eq!(picked.last().unwrap().content, "a29", "newest survives");
+        assert_eq!(picked[0].content, "q20", "window starts 10 exchanges back");
+
+        // A tiny slot budget halves into the history cap.
+        let picked = load_history("conv-b1-cap", "a new ask", 40);
+        let total: usize = picked
+            .iter()
+            .map(|m| token_budget::estimate_tokens(&m.content) + token_budget::HISTORY_MSG_OVERHEAD)
+            .sum();
+        assert!(total <= 20, "history fits half the slot budget: {total}");
+        assert!(!picked.is_empty(), "the newest message still loads");
     }
 
     // ── B3: long-term memory injection ──────────────────────────────────
