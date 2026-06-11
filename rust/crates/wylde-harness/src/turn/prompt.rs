@@ -161,35 +161,22 @@ pub fn build_system_prompt(catalog: &[Value], verb_mode: bool) -> String {
     } else {
         String::new()
     };
-    let memory_rule = if verb_mode {
-        "Memory rule: the system automatically tracks important context \
-         from your conversation through a post-turn extraction pass — you \
-         do not need to record things you judge interesting yourself. Use \
-         wylde_create(\"memory\", …) / wylde_update(\"memory\", …) / \
-         wylde_delete(\"memory\", …) ONLY when the user has explicitly \
-         asked you to modify memory (e.g., \"save this to memory\", \
-         \"remember that...\", \"forget X\", \"update what you remember \
-         about Y\"). wylde_search(\"memory\", …) is fine to call any time \
-         you need to look something up."
+
+    // B9: the base instruction and the memory rule resolve through the
+    // prompts catalog/override store, so the Settings prompt editor can
+    // tune them without a rebuild. Catalog defaults are byte-identical to
+    // the pre-B9 hardcoded strings (pinned by the B11 goldens). The
+    // verb-mode guidance stays a const — its wording is mechanically
+    // coupled to the verb registry, not a style knob.
+    let base = crate::prompts::store::effective_prompt("chat.system_base");
+    let memory_rule = crate::prompts::store::effective_prompt(if verb_mode {
+        "chat.memory_rule"
     } else {
-        "Memory rule: the system automatically tracks important context \
-         from your conversation through a post-turn extraction pass — you \
-         do not need to call memory.* tools to record things you judge \
-         interesting. Use memory.long_term.save / memory.workspace.save / \
-         memory.update / memory.delete ONLY when the user has explicitly \
-         asked you to modify memory (e.g., \"save this to memory\", \
-         \"remember that...\", \"forget X\", \"update what you remember \
-         about Y\"). memory.search is fine to call any time you need to \
-         look something up."
-    };
+        "chat.memory_rule_legacy"
+    });
 
     format!(
-        "You are Wylde, a locally-hosted assistant. You can call tools \
-         to take actions or retrieve information. When you need a tool, \
-         respond with a single JSON object and nothing else, of the \
-         form {{\"name\": \"<tool_name>\", \"arguments\": {{ ... }}}} — \
-         use the exact tool name from the list below. Otherwise produce \
-         a direct answer in plain text.\n\n\
+        "{base}\n\n\
          {guidance_block}{memory_rule}\n\n\
          Available tools:\n{tool_block}"
     )

@@ -60,7 +60,7 @@ use wylde_shared::ipc::Reply;
 use crate::memory::conversations::store as conversations_store;
 use crate::memory::long_term;
 use crate::memory::long_term::reflection::{
-    reflect_long_term, ReflectOptions, ReflectionChat, ReflectionResult, REFLECTION_SYSTEM_PROMPT,
+    reflect_long_term, reflection_system_prompt, ReflectOptions, ReflectionChat, ReflectionResult,
     REFLECTION_TAG,
 };
 use crate::memory::short_term::store as short_term_store;
@@ -179,7 +179,7 @@ async fn reflect_conversation(
 
     let inputs_block = format_conversation_inputs(&inputs);
     let messages = vec![
-        json!({"role": "system", "content": REFLECTION_SYSTEM_PROMPT}),
+        json!({"role": "system", "content": reflection_system_prompt()}),
         json!({"role": "user", "content": inputs_block}),
     ];
     let text = chat.ask(messages, opts.model.clone()).await;
@@ -735,7 +735,7 @@ mod tests {
         let (messages, model) = &calls[0];
         assert_eq!(model.as_deref(), Some("test-model"));
         assert_eq!(messages[0]["role"], "system");
-        assert_eq!(messages[0]["content"], REFLECTION_SYSTEM_PROMPT);
+        assert_eq!(messages[0]["content"], reflection_system_prompt());
         let user = messages[1]["content"].as_str().unwrap();
         assert!(
             user.contains("1. (decision) decided thing 0"),

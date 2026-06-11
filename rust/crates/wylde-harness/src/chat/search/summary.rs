@@ -323,11 +323,10 @@ pub async fn generate_summary(convo_text: &str) -> Result<(String, Vec<String>),
     let cfg = crate::config::Config::get();
     let model = default_model()?;
 
-    let prompt = format!(
-        "Summarise this conversation in 1-2 sentences, then on a new line \
-         list 3-6 topic keywords as `Tags: a, b, c`. Be concise and \
-         factual.\n\n---\n{convo_text}\n---"
-    );
+    // B9: the instruction resolves through the prompts catalog so the
+    // Settings prompt editor can tune summary style without a rebuild.
+    let instruction = crate::prompts::store::effective_prompt("conversation.summarise");
+    let prompt = format!("{instruction}\n\n---\n{convo_text}\n---");
     let body = json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
