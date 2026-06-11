@@ -7,6 +7,10 @@ members = [
     "crates/wylde-gateway",
     "crates/wylde-lifecycle",
     "crates/wylde-ollama",
+    # N8N service (taxonomy reorg TX S3, 2026-06-11). Rust port of the
+    # Python `N8N/client.py` REST client behind eight `n8n.*` pipe
+    # actions — n8n itself stays an external, user-managed runtime.
+    "crates/wylde-n8n",
     "crates/wylde-vpn",
     "crates/wylde-extension-bridge",
     "crates/wylde-harness",

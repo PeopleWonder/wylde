@@ -1,15 +1,9 @@
 {
   "name": "n8n",
-  "description": "Panel-only extension that surfaces the local N8N workflow editor (port 5678) inside the Wylde Tauri shell. The N8N daemon itself runs as a Wylde service under <wylde_root>/N8N/ — this extension just declares its UI panel so the GUI's Tools tab can mount it.",
-  "version": "0.1.0",
+  "description": "Panel-only extension (transport=none — no process, no MCP server, no health ping): surfaces the local n8n workflow editor (port 5678) inside the Wylde Tauri shell's Tools tab. The Wylde-side n8n surface is the Rust `wylde-n8n` service (pipe \\\\.\\pipe\\wylde-n8n, taxonomy reorg TX S3); the n8n daemon itself is external and user-managed. This manifest only declares the UI panel.",
+  "version": "0.2.0",
   "enabled": false,
-  "transport": "stdio",
-  "command": [
-    "${WYLDE_PYTHON}",
-    "-c",
-    "import sys; sys.stderr.write('n8n is panel-only; this extension has no MCP server yet — declare tools when the n8n MCP bridge ships\\n')"
-  ],
-  "cwd": "${WYLDE_ROOT}",
+  "transport": "none",
   "capabilities": [],
   "ui_panels": [
     {
@@ -21,10 +15,5 @@
         "url": "http://127.0.0.1:5678"
       }
     }
-  ],
-  "health": {
-    "method": "ping",
-    "interval_s": 30,
-    "timeout_s": 5
-  }
+  ]
 }

@@ -23,9 +23,15 @@ pub enum ManifestError {
     #[error("manifest not found: {0}")]
     NotFound(PathBuf),
     #[error("manifest read failed for {path}: {source}")]
-    Read { path: PathBuf, source: std::io::Error },
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("manifest parse failed for {path}: {source}")]
-    Parse { path: PathBuf, source: serde_json::Error },
+    Parse {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
     #[error("manifest validation failed for {path}: {message}")]
     Validation { path: PathBuf, message: String },
 }
@@ -39,6 +45,16 @@ pub enum Transport {
     /// phase; included so manifests with `"transport": "http"` parse
     /// (and validation rejects them with a clear error).
     Http,
+    /// **Panel-only** — the extension declares UI panels and NO MCP
+    /// server: no process is spawned, no health ping runs, no tools or
+    /// resources can be declared, and `ui_panels` still surface through
+    /// `extensions.list_panels`. The honest shape for an extension
+    /// whose entire job is mounting a local web UI in the GUI's Tools
+    /// tab (Extensions/N8N: the n8n editor iframe; the n8n *service*
+    /// surface is the Rust `wylde-n8n` pipe, not this manifest).
+    /// Replaces the old Python-stub `command` hack that spawned an
+    /// interpreter just to print "panel-only" to stderr.
+    None,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -63,9 +79,15 @@ impl Default for HealthConfig {
     }
 }
 
-fn default_ping() -> String { "ping".to_string() }
-fn default_health_interval_s() -> u64 { 30 }
-fn default_health_timeout_s() -> u64 { 5 }
+fn default_ping() -> String {
+    "ping".to_string()
+}
+fn default_health_interval_s() -> u64 {
+    30
+}
+fn default_health_timeout_s() -> u64 {
+    5
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct DeclaredTool {
@@ -89,8 +111,9 @@ pub struct DeclaredTool {
 /// `tooling::resource::ResourceOp` — kept as a bare const set here so the
 /// bridge can validate `operations` keys without depending on the harness
 /// crate (the two communicate over the JSON wire, not by type sharing).
-pub const RESOURCE_VERBS: [&str; 7] =
-    ["list", "get", "create", "update", "delete", "search", "execute"];
+pub const RESOURCE_VERBS: [&str; 7] = [
+    "list", "get", "create", "update", "delete", "search", "execute",
+];
 
 /// One declared resource (tool-registry consolidation Slice 5a,
 /// `docs/plans/extension-resource-declaration.md` §2.2). `resource_type`
@@ -185,9 +208,15 @@ pub struct ActionDeclaration {
     pub destructive: bool,
 }
 
-fn default_scope() -> String { "global".to_string() }
-fn default_schema_version() -> u32 { 1 }
-fn default_tier() -> String { "read".to_string() }
+fn default_scope() -> String {
+    "global".to_string()
+}
+fn default_schema_version() -> u32 {
+    1
+}
+fn default_tier() -> String {
+    "read".to_string()
+}
 
 /// How a UI panel is rendered inside the Wylde gpui shell.
 ///
@@ -281,7 +310,9 @@ impl McpServerManifest {
     }
 }
 
-fn default_version() -> String { "1.0".to_string() }
+fn default_version() -> String {
+    "1.0".to_string()
+}
 
 /// One extension's full state as loaded from disk: the
 /// `mcp-server.json` manifest plus any legacy metadata harvested from
@@ -311,7 +342,11 @@ impl ExtensionRecord {
         match &self.manifest.cwd {
             Some(c) => {
                 let p = PathBuf::from(c);
-                if p.is_absolute() { p } else { self.root.join(p) }
+                if p.is_absolute() {
+                    p
+                } else {
+                    self.root.join(p)
+                }
             }
             None => self.root.clone(),
         }
@@ -326,10 +361,15 @@ pub fn load_extension(root: &Path) -> Result<ExtensionRecord, ManifestError> {
         return Err(ManifestError::NotFound(manifest_path));
     }
 
-    let raw = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| ManifestError::Read { path: manifest_path.clone(), source: e })?;
-    let manifest: McpServerManifest = serde_json::from_str(&raw)
-        .map_err(|e| ManifestError::Parse { path: manifest_path.clone(), source: e })?;
+    let raw = std::fs::read_to_string(&manifest_path).map_err(|e| ManifestError::Read {
+        path: manifest_path.clone(),
+        source: e,
+    })?;
+    let manifest: McpServerManifest =
+        serde_json::from_str(&raw).map_err(|e| ManifestError::Parse {
+            path: manifest_path.clone(),
+            source: e,
+        })?;
     validate(&manifest_path, &manifest)?;
 
     let legacy = read_legacy(root);
@@ -381,6 +421,29 @@ fn validate(path: &Path, m: &McpServerManifest) -> Result<(), ManifestError> {
                          (Q-E4 — deferred). Use transport=stdio for now."
                     .into(),
             });
+        }
+        Transport::None => {
+            // Panel-only: no process exists, so nothing process-shaped
+            // may be declared. A non-empty command is the bug this
+            // catches (a manifest half-migrated from stdio); tools /
+            // resources would be undispatchable lies — there is no MCP
+            // server to ever answer them.
+            if !m.command.is_empty() {
+                return Err(ManifestError::Validation {
+                    path: path.to_path_buf(),
+                    message: "transport=none (panel-only) must not declare a `command` \
+                             — no process is spawned"
+                        .into(),
+                });
+            }
+            if !m.tools.is_empty() || !m.resources.is_empty() {
+                return Err(ManifestError::Validation {
+                    path: path.to_path_buf(),
+                    message: "transport=none (panel-only) cannot declare `tools` or \
+                             `resources` — there is no MCP server to dispatch them"
+                        .into(),
+                });
+            }
         }
     }
     let mut seen = std::collections::HashSet::new();
@@ -566,17 +629,17 @@ fn validate_ui_panels(path: &Path, panels: &[UiPanel]) -> Result<(), ManifestErr
 /// rather than pulling in the `url` crate; the loopback ruleset is
 /// small and the failure mode (false positive) is conservative.
 fn is_loopback_url(url: &str) -> bool {
-    let rest = match url.strip_prefix("http://").or_else(|| url.strip_prefix("https://")) {
+    let rest = match url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+    {
         Some(r) => r,
         None => return false,
     };
     // Strip optional userinfo (`user:pass@host…`) — host starts after `@`.
     let after_userinfo = rest.rsplit_once('@').map_or(rest, |(_, h)| h);
     // Host ends at the first `/`, `?`, `#`, or end-of-string.
-    let host_with_port = after_userinfo
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("");
+    let host_with_port = after_userinfo.split(['/', '?', '#']).next().unwrap_or("");
     let host = if let Some(rest) = host_with_port.strip_prefix('[') {
         // IPv6 literal — `[host]:port` or `[host]`.
         match rest.split_once(']') {
@@ -585,7 +648,9 @@ fn is_loopback_url(url: &str) -> bool {
         }
     } else {
         // IPv4 / DNS name — strip port if present.
-        host_with_port.rsplit_once(':').map_or(host_with_port, |(h, _)| h)
+        host_with_port
+            .rsplit_once(':')
+            .map_or(host_with_port, |(h, _)| h)
     };
     matches!(host, "127.0.0.1" | "localhost" | "::1")
 }
@@ -617,7 +682,11 @@ fn read_legacy(root: &Path) -> LegacyHarvest {
         .and_then(|v| v.as_str())
         .map(|s| {
             let p = PathBuf::from(s);
-            if p.is_absolute() { p } else { root.join(p) }
+            if p.is_absolute() {
+                p
+            } else {
+                root.join(p)
+            }
         });
     let caps = json
         .get("capabilities")
@@ -643,10 +712,15 @@ fn read_legacy(root: &Path) -> LegacyHarvest {
 /// formatting by round-tripping through a `serde_json::Value` rather
 /// than re-emitting the typed struct.
 pub fn write_enabled(path: &Path, enabled: bool) -> Result<(), ManifestError> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| ManifestError::Read { path: path.to_path_buf(), source: e })?;
-    let mut json: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| ManifestError::Parse { path: path.to_path_buf(), source: e })?;
+    let raw = std::fs::read_to_string(path).map_err(|e| ManifestError::Read {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
+    let mut json: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| ManifestError::Parse {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
     if let Some(obj) = json.as_object_mut() {
         obj.insert("enabled".into(), serde_json::Value::Bool(enabled));
     } else {
@@ -655,11 +729,15 @@ pub fn write_enabled(path: &Path, enabled: bool) -> Result<(), ManifestError> {
             message: "mcp-server.json must be a JSON object".into(),
         });
     }
-    let mut out = serde_json::to_string_pretty(&json)
-        .map_err(|e| ManifestError::Parse { path: path.to_path_buf(), source: e })?;
+    let mut out = serde_json::to_string_pretty(&json).map_err(|e| ManifestError::Parse {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
     out.push('\n');
-    std::fs::write(path, out)
-        .map_err(|e| ManifestError::Read { path: path.to_path_buf(), source: e })?;
+    std::fs::write(path, out).map_err(|e| ManifestError::Read {
+        path: path.to_path_buf(),
+        source: e,
+    })?;
     Ok(())
 }
 
@@ -694,12 +772,11 @@ mod tests {
     #[test]
     fn rejects_stdio_without_command() {
         let td = TempDir::new().unwrap();
-        let root = write_manifest(
-            td.path(),
-            "bad",
-            r#"{"name":"bad","transport":"stdio"}"#,
-        );
-        assert!(matches!(load_extension(&root), Err(ManifestError::Validation { .. })));
+        let root = write_manifest(td.path(), "bad", r#"{"name":"bad","transport":"stdio"}"#);
+        assert!(matches!(
+            load_extension(&root),
+            Err(ManifestError::Validation { .. })
+        ));
     }
 
     #[test]
@@ -710,7 +787,95 @@ mod tests {
             "httpext",
             r#"{"name":"httpext","transport":"http","url":"http://127.0.0.1:9000"}"#,
         );
-        assert!(matches!(load_extension(&root), Err(ManifestError::Validation { .. })));
+        assert!(matches!(
+            load_extension(&root),
+            Err(ManifestError::Validation { .. })
+        ));
+    }
+
+    // ── transport=none (panel-only) ──────────────────────────────────
+
+    #[test]
+    fn parses_panel_only_manifest_with_no_command() {
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(
+            td.path(),
+            "panelonly",
+            r#"{
+                "name":"panelonly",
+                "transport":"none",
+                "ui_panels":[
+                    {"id":"main","title":"Main",
+                     "source":{"kind":"iframe","url":"http://127.0.0.1:5678"}}
+                ]
+            }"#,
+        );
+        let rec = load_extension(&root).expect("panel-only manifest should parse");
+        assert_eq!(rec.manifest.transport, Transport::None);
+        assert!(rec.manifest.command.is_empty());
+        assert_eq!(rec.ui_panels.len(), 1);
+        // Round-trips: serialize → reparse keeps the variant.
+        let blob = serde_json::to_string(&rec.manifest).unwrap();
+        let reparsed: McpServerManifest = serde_json::from_str(&blob).unwrap();
+        assert_eq!(reparsed.transport, Transport::None);
+    }
+
+    #[test]
+    fn panel_only_rejects_a_command() {
+        // A half-migrated manifest (transport flipped to none, stale
+        // command argv left behind) must fail loud at load time.
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(
+            td.path(),
+            "stalecmd",
+            r#"{"name":"stalecmd","transport":"none","command":["python","-c","x"]}"#,
+        );
+        let err = load_extension(&root).unwrap_err();
+        assert!(err.to_string().contains("command"), "got: {err}");
+    }
+
+    #[test]
+    fn panel_only_rejects_tools_and_resources() {
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(
+            td.path(),
+            "noneliar",
+            r#"{"name":"noneliar","transport":"none",
+                "tools":[{"tool_id":"ghost"}]}"#,
+        );
+        let err = load_extension(&root).unwrap_err();
+        assert!(err.to_string().contains("no MCP server"), "got: {err}");
+
+        let root = write_manifest(
+            td.path(),
+            "noneres",
+            r#"{"name":"noneres","transport":"none",
+                "resources":[{"resource_type":"u",
+                    "operations":{"get":{"mcp_tool":"g"}}}]}"#,
+        );
+        let err = load_extension(&root).unwrap_err();
+        assert!(err.to_string().contains("no MCP server"), "got: {err}");
+    }
+
+    #[test]
+    fn panel_only_panel_urls_still_loopback_checked() {
+        let td = TempDir::new().unwrap();
+        let root = write_manifest(
+            td.path(),
+            "nonebad",
+            r#"{
+                "name":"nonebad",
+                "transport":"none",
+                "ui_panels":[
+                    {"id":"bad","title":"Bad",
+                     "source":{"kind":"iframe","url":"https://evil.example/"}}
+                ]
+            }"#,
+        );
+        assert!(matches!(
+            load_extension(&root),
+            Err(ManifestError::Validation { .. })
+        ));
     }
 
     #[test]
@@ -722,7 +887,10 @@ mod tests {
             r#"{"name":"dups","transport":"stdio","command":["x"],
                  "tools":[{"tool_id":"a"},{"tool_id":"a"}]}"#,
         );
-        assert!(matches!(load_extension(&root), Err(ManifestError::Validation { .. })));
+        assert!(matches!(
+            load_extension(&root),
+            Err(ManifestError::Validation { .. })
+        ));
     }
 
     #[test]
@@ -793,7 +961,10 @@ mod tests {
         );
         let err = load_extension(&root).unwrap_err();
         let msg = err.to_string();
-        assert!(matches!(err, ManifestError::Validation { .. }), "expected validation error, got {err}");
+        assert!(
+            matches!(err, ManifestError::Validation { .. }),
+            "expected validation error, got {err}"
+        );
         assert!(
             msg.contains("loopback"),
             "validation message should mention loopback, got: {msg}"
@@ -1008,7 +1179,10 @@ mod tests {
                 "resources":[{"resource_type":"u",
                     "operations":{"frobnicate":{"mcp_tool":"g"}}}]}"#,
         );
-        assert!(matches!(load_extension(&root), Err(ManifestError::Validation { .. })));
+        assert!(matches!(
+            load_extension(&root),
+            Err(ManifestError::Validation { .. })
+        ));
     }
 
     #[test]
@@ -1060,7 +1234,10 @@ mod tests {
                     {"resource_type":"u","operations":{"get":{"mcp_tool":"h"}}}
                 ]}"#,
         );
-        assert!(matches!(load_extension(&root), Err(ManifestError::Validation { .. })));
+        assert!(matches!(
+            load_extension(&root),
+            Err(ManifestError::Validation { .. })
+        ));
     }
 
     #[test]

@@ -1,0 +1,37 @@
+[package]
+name = "wylde-n8n"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wylde-n8n"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+# Pre-build guard — fails the build loud if `wylde-n8n.exe` is still
+# alive in the process table. Windows holds an exclusive sharing lock on
+# a running binary; without the guard the linker fails opaquely with
+# `os error 32` deep into a build.
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+# HTTP to the local n8n daemon — sanctioned direct HTTP (n8n is an
+# external runtime we don't own; same trust boundary as wylde-ollama →
+# 127.0.0.1:11434). Same crate the other service crates already use.
+# `cookies` replaces Python's `requests.Session` cookie jar for the
+# email+password login-session auth mode (`POST /rest/login`).
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies"] }
+
+[dev-dependencies]
+wiremock = "0.6"

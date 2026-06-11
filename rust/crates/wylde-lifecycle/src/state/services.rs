@@ -295,8 +295,7 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
         // `WYLDE_WYLDE_DEVICE_GATE_IMPL` no longer has a `python` target.
         name: service_name::DEVICE_GATE,
         default_impl: ImplLang::Rust,
-        missing_binary_warn:
-            "device_gate: no rust binary found; device_gate will not start — the \
+        missing_binary_warn: "device_gate: no rust binary found; device_gate will not start — the \
              Python device_gate module was removed, so build with `cargo build \
              --release -p wylde-device-gate`",
     },
@@ -310,8 +309,7 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
         // Python fallback.
         name: service_name::VRAM_BROKER,
         default_impl: ImplLang::Rust,
-        missing_binary_warn:
-            "vram_broker: no rust binary found; vram_broker will not start — the \
+        missing_binary_warn: "vram_broker: no rust binary found; vram_broker will not start — the \
              Python Core/resource_monitor package was removed, so build with \
              `cargo build --release -p wylde-vram-broker`",
     },
@@ -328,8 +326,7 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
         // target.
         name: service_name::EXTENSION_BRIDGE,
         default_impl: ImplLang::Rust,
-        missing_binary_warn:
-            "extension_bridge: no rust binary found; extension_bridge will not \
+        missing_binary_warn: "extension_bridge: no rust binary found; extension_bridge will not \
              start — the Python Extensions/extension_bridge module was removed, \
              so build with `cargo build --release -p wylde-extension-bridge`",
     },
@@ -341,8 +338,7 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
         // `WYLDE_WYLDE_GATEWAY_IMPL` no longer has a `python` target.
         name: service_name::GATEWAY,
         default_impl: ImplLang::Rust,
-        missing_binary_warn:
-            "gateway: no rust binary found; gateway will not start — the Python \
+        missing_binary_warn: "gateway: no rust binary found; gateway will not start — the Python \
              Gateway package was removed, so build with `cargo build --release \
              -p wylde-gateway`",
     },
@@ -355,8 +351,7 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
         // `WYLDE_WYLDE_VOICE_IMPL` no longer has a `python` target.
         name: service_name::VOICE,
         default_impl: ImplLang::Rust,
-        missing_binary_warn:
-            "voice: no rust binary found; voice will not start — the Python \
+        missing_binary_warn: "voice: no rust binary found; voice will not start — the Python \
              Voice package was removed, so build with `cargo build --release \
              -p wylde-voice`",
     },
@@ -376,8 +371,14 @@ fn strangler_def(name: &str) -> &'static StranglerService {
 /// def.
 async fn start_strangler(def: &StranglerService) -> Result<()> {
     if is_service_alive(def.name) {
-        let pid = manifest_pid(def.name).or_else(|| service_pid(def.name)).unwrap_or(0);
-        tracing::info!("{}: already alive (manifest pid={}); skipping spawn", def.name, pid);
+        let pid = manifest_pid(def.name)
+            .or_else(|| service_pid(def.name))
+            .unwrap_or(0);
+        tracing::info!(
+            "{}: already alive (manifest pid={}); skipping spawn",
+            def.name,
+            pid
+        );
         return Ok(());
     }
     if nospawn_enabled() {
@@ -563,9 +564,7 @@ pub async fn start_memgraph() -> Result<()> {
             .spawn()
             .with_context(|| "spawn cmd /c neo4j.bat console for wylde-memgraph")?;
         let pid = child.id().unwrap_or(0);
-        tracing::info!(
-            "memgraph: spawned Neo4j launcher (pid={pid}) — boot may take up to 120s"
-        );
+        tracing::info!("memgraph: spawned Neo4j launcher (pid={pid}) — boot may take up to 120s");
         record_spawn(service_name::MEMGRAPH, pid, ImplLang::Rust.as_str());
         set_service_proc(service_name::MEMGRAPH, child);
         true
@@ -931,6 +930,67 @@ pub async fn stop_workspaces() -> Result<()> {
     stop_service(service_name::WORKSPACES, Duration::from_secs(10)).await
 }
 
+// ── wylde-n8n ───────────────────────────────────────────────────────────
+//
+// Taxonomy reorg TX S3 — greenfield Rust (the Python `N8N/client.py` +
+// tools were in-process harness code, never a daemon, so there is no
+// Python service to strangle). The strangler-fig env var pattern is kept
+// for shape consistency (`WYLDE_WYLDE_N8N_IMPL`) but the python branch
+// only warns. This start supervises the Wylde-side pipe service ONLY —
+// the n8n daemon itself is external and user-managed; `wylde-n8n`
+// degrades every call to a structured error envelope while it's down.
+// Optional/non-fatal by contract: a missing binary leaves the service
+// dark with a loud build hint and core boots fine (the
+// `wylde-workspaces` precedent — every consumer fail-softs).
+pub async fn start_n8n() -> Result<()> {
+    if is_service_alive(service_name::N8N) {
+        let pid = manifest_pid(service_name::N8N)
+            .or_else(|| service_pid(service_name::N8N))
+            .unwrap_or(0);
+        tracing::info!(
+            "{}: already alive (manifest pid={}); skipping spawn",
+            service_name::N8N,
+            pid
+        );
+        return Ok(());
+    }
+    if nospawn_enabled() {
+        nospawn_record(service_name::N8N, ImplLang::Rust.as_str());
+        tracing::info!("n8n: NO-SPAWN — would-have-spawned recorded; no child forked");
+        return Ok(());
+    }
+    // wylde-n8n is greenfield Rust. The strangler-fig env var is
+    // accepted for shape consistency but Python isn't a valid impl.
+    let lang = impl_for(service_name::N8N);
+    if lang == ImplLang::Python {
+        tracing::warn!(
+            "n8n: WYLDE_WYLDE_N8N_IMPL=python but wylde-n8n is greenfield Rust \
+             (the Python N8N client was in-process, not a service); proceeding \
+             with rust binary"
+        );
+    }
+    let Some(bin) = rust_binary_path(service_name::N8N) else {
+        tracing::warn!(
+            "n8n: no rust binary found (checked WYLDE_WYLDE_N8N_BIN, \
+             rust/bin/wylde-n8n.exe, rust/target/release/wylde-n8n.exe, \
+             rust/target/debug/wylde-n8n.exe); wylde-n8n will not start — the \
+             service is optional, so the rest of the stack is unaffected. \
+             Build with `cargo build --release -p wylde-n8n`"
+        );
+        return Ok(());
+    };
+    let child = spawn_rust_binary(service_name::N8N, &bin)?;
+    let pid = child.id().unwrap_or(0);
+    tracing::info!("daemon: spawned wylde-n8n impl=rust pid={}", pid);
+    record_spawn(service_name::N8N, pid, ImplLang::Rust.as_str());
+    set_service_proc(service_name::N8N, child);
+    Ok(())
+}
+
+pub async fn stop_n8n() -> Result<()> {
+    stop_service(service_name::N8N, Duration::from_secs(10)).await
+}
+
 // ── wylde-harness ─────────────────────────────────────────────────────
 //
 // Phase 5 of the Rust migration — the consolidated harness crate.
@@ -967,9 +1027,7 @@ pub async fn start_harness() -> Result<()> {
             service_name::HARNESS,
             impl_for_with_default(service_name::HARNESS, ImplLang::Rust).as_str(),
         );
-        tracing::info!(
-            "wylde-harness: NO-SPAWN — would-have-spawned recorded; no child forked"
-        );
+        tracing::info!("wylde-harness: NO-SPAWN — would-have-spawned recorded; no child forked");
         return Ok(());
     }
     let lang = impl_for_with_default(service_name::HARNESS, ImplLang::Rust);
@@ -1161,6 +1219,7 @@ mod tests {
             service_name::VPN,
             service_name::TREESITTER,
             service_name::WORKSPACES,
+            service_name::N8N,
         ] {
             assert!(
                 !names.contains(&unique),
@@ -1183,6 +1242,21 @@ mod tests {
         assert!(
             result.is_ok(),
             "start_workspaces with no binary must be a non-fatal no-op, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_n8n_without_binary_is_non_fatal() {
+        // wylde-n8n is OPTIONAL by contract — core must boot fine when the
+        // binary is missing (or the external n8n daemon is down). Point the
+        // BIN override at a missing path so the resolver returns None
+        // deterministically regardless of any built target on disk.
+        std::env::set_var("WYLDE_WYLDE_N8N_BIN", "/no/such/n8n/binary");
+        let result = start_n8n().await;
+        std::env::remove_var("WYLDE_WYLDE_N8N_BIN");
+        assert!(
+            result.is_ok(),
+            "start_n8n with no binary must be a non-fatal no-op, got {result:?}"
         );
     }
 

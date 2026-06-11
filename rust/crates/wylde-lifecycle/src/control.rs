@@ -58,17 +58,15 @@ use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use wylde_shared::ipc::{
-    register_action, send_with_verb, IpcError, Reply, ACTION_DISPATCH_PATH,
-};
+use wylde_shared::ipc::{register_action, send_with_verb, IpcError, Reply, ACTION_DISPATCH_PATH};
 
 use crate::registry::{self, ServiceInfo};
 use crate::state::services::{
     impl_for, start_device_gate, start_extension_bridge, start_gateway, start_harness,
-    start_memgraph, start_ollama, start_treesitter, start_vpn, start_vram_broker, start_voice,
-    start_workspaces, stop_device_gate, stop_extension_bridge, stop_gateway, stop_harness,
-    stop_memgraph, stop_ollama, stop_treesitter, stop_voice, stop_vpn, stop_vram_broker,
-    stop_workspaces,
+    start_memgraph, start_n8n, start_ollama, start_treesitter, start_voice, start_vpn,
+    start_vram_broker, start_workspaces, stop_device_gate, stop_extension_bridge, stop_gateway,
+    stop_harness, stop_memgraph, stop_n8n, stop_ollama, stop_treesitter, stop_voice, stop_vpn,
+    stop_vram_broker, stop_workspaces,
 };
 use crate::state::{
     is_service_alive, nospawn_enabled, nospawn_record, nospawn_snapshot, request_daemon_exit,
@@ -81,9 +79,11 @@ use crate::state::{
 /// subprocess, on either daemon. `wylde-vpn` (Phase 2) is included even
 /// though it's an `optional` tier service — daemon-managed lifecycle is
 /// still authoritative for spawn/stop. `wylde-workspaces` (Thought Bubble
-/// System Phase 0, Slice A) is the newest entrant — greenfield Rust,
-/// spawned last (it consumes ollama/treesitter/memgraph).
-const DAEMON_MANAGED_SERVICES: [&str; 11] = [
+/// System Phase 0, Slice A) consumes ollama/treesitter/memgraph and is
+/// spawned after them. `wylde-n8n` (taxonomy reorg TX S3) is the newest
+/// entrant — the optional pipe surface over the external, user-managed
+/// n8n daemon; the daemon supervises the wrapper only, never n8n itself.
+const DAEMON_MANAGED_SERVICES: [&str; 12] = [
     service_name::MEMGRAPH,
     service_name::VOICE,
     service_name::DEVICE_GATE,
@@ -95,6 +95,7 @@ const DAEMON_MANAGED_SERVICES: [&str; 11] = [
     service_name::HARNESS,
     service_name::TREESITTER,
     service_name::WORKSPACES,
+    service_name::N8N,
 ];
 
 /// Heartbeat-age thresholds for the `service.list` status bucket.
@@ -369,6 +370,7 @@ async fn dispatch_start(name: &str) -> anyhow::Result<()> {
         service_name::HARNESS => start_harness().await,
         service_name::TREESITTER => start_treesitter().await,
         service_name::WORKSPACES => start_workspaces().await,
+        service_name::N8N => start_n8n().await,
         _ => anyhow::bail!("not a daemon-managed service: {name}"),
     }
 }
@@ -387,6 +389,7 @@ async fn dispatch_stop(name: &str) -> anyhow::Result<()> {
         service_name::HARNESS => stop_harness().await,
         service_name::TREESITTER => stop_treesitter().await,
         service_name::WORKSPACES => stop_workspaces().await,
+        service_name::N8N => stop_n8n().await,
         _ => anyhow::bail!("not a daemon-managed service: {name}"),
     }
 }
@@ -434,7 +437,14 @@ async fn service_health_action(payload: Value) -> Reply {
     if name == service_name::OLLAMA {
         return ollama_health().await;
     }
-    let reply = send_with_verb(&name, LIVENESS_METHOD, "GET", Value::Null, HEALTH_PROBE_TIMEOUT).await;
+    let reply = send_with_verb(
+        &name,
+        LIVENESS_METHOD,
+        "GET",
+        Value::Null,
+        HEALTH_PROBE_TIMEOUT,
+    )
+    .await;
     if reply.ok {
         return Reply::ok(json!({
             "name": name,
@@ -575,7 +585,10 @@ async fn service_start_action(payload: Value) -> Reply {
                 "started": true,
             }))
         }
-        Err(e) => Reply::err(IpcError::new("spawn_failed", format!("spawn failed: {e:#}"))),
+        Err(e) => Reply::err(IpcError::new(
+            "spawn_failed",
+            format!("spawn failed: {e:#}"),
+        )),
     }
 }
 
@@ -803,16 +816,51 @@ mod tests {
         // daemon-managed set so `service.start` / `service.wake` accept it
         // (rather than `not_registered`) and the no-spawn parity surface
         // reports it. The count is the dashboard's expected-running-services
-        // tally — adding workspaces bumps it from 10 → 11 (N+1).
+        // tally — TX S3 added wylde-n8n, bumping it from 11 → 12 (N+1).
         assert_eq!(
             DAEMON_MANAGED_SERVICES.len(),
-            11,
-            "expected 11 daemon-managed services after registering wylde-workspaces"
+            12,
+            "expected 12 daemon-managed services after registering wylde-n8n"
         );
         assert!(
             DAEMON_MANAGED_SERVICES.contains(&service_name::WORKSPACES),
             "wylde-workspaces must be daemon-managed (Slice A)"
         );
+        assert!(
+            DAEMON_MANAGED_SERVICES.contains(&service_name::N8N),
+            "wylde-n8n must be daemon-managed (TX S3)"
+        );
+    }
+
+    #[tokio::test]
+    async fn service_start_n8n_is_registered_not_unknown() {
+        // TX S3 wiring proof: `service.start` for wylde-n8n must route into
+        // `dispatch_start` (→ start_n8n) rather than returning the
+        // `not_registered` envelope. No binary is built in the unit-test
+        // env, so start_n8n is a non-fatal no-op — the point is purely that
+        // the name is recognised and the miss is non-fatal (optional tier).
+        let _g = registry_guard().await;
+        let _sg = crate::state::tests::state_guard().await;
+        clear_nospawn();
+        cleanup();
+        register_with_ipc();
+
+        // Point the BIN override at a missing path so no real child spawns.
+        std::env::set_var("WYLDE_WYLDE_N8N_BIN", "/no/such/n8n/binary");
+        let reply = dispatch_action(json!({
+            "action": "service.start",
+            "payload": {"name": "wylde-n8n"},
+        }))
+        .await;
+        std::env::remove_var("WYLDE_WYLDE_N8N_BIN");
+
+        // Either ok (no-op spawn) — but NEVER the `not_registered` envelope.
+        if let Some(err) = reply.error {
+            assert_ne!(
+                err.code, "not_registered",
+                "wylde-n8n must be a registered daemon-managed service"
+            );
+        }
     }
 
     #[tokio::test]
@@ -915,9 +963,15 @@ mod tests {
     #[test]
     fn shape_service_list_buckets_by_heartbeat_age() {
         let now = chrono::Utc::now();
-        let fresh = (now - chrono::Duration::seconds(30)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let aged = (now - chrono::Duration::seconds(150)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let dead = (now - chrono::Duration::seconds(600)).format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let fresh = (now - chrono::Duration::seconds(30))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        let aged = (now - chrono::Duration::seconds(150))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
+        let dead = (now - chrono::Duration::seconds(600))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string();
 
         let mut a = fresh_info("wylde-a", "standard");
         a.heartbeat = Some(fresh);
@@ -1085,7 +1139,12 @@ mod tests {
         cleanup();
         register_with_ipc();
 
-        for action in ["service.start", "service.stop", "service.wake", "service.health"] {
+        for action in [
+            "service.start",
+            "service.stop",
+            "service.wake",
+            "service.health",
+        ] {
             let reply = dispatch_action(json!({
                 "action": action,
                 "payload": {},

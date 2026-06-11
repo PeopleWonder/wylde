@@ -114,7 +114,13 @@ struct ExtensionState {
 
 impl ExtensionState {
     fn from_record(record: ExtensionRecord) -> Self {
-        let status = if record.manifest.enabled {
+        // Panel-only extensions (transport=none) have no process
+        // lifecycle at all — never "starting", whatever the enabled
+        // flag says. Their panels surface through `list_panels`, which
+        // is status-independent.
+        let status = if record.manifest.transport == crate::manifest::Transport::None {
+            LifecycleStatus::Disabled
+        } else if record.manifest.enabled {
             LifecycleStatus::Starting
         } else {
             LifecycleStatus::Disabled
@@ -164,7 +170,11 @@ impl Host {
         }
         // Remove gone-from-disk extensions; drop their clients.
         let known: std::collections::BTreeSet<&String> = records.keys().collect();
-        let stale: Vec<String> = state.keys().filter(|k| !known.contains(k)).cloned().collect();
+        let stale: Vec<String> = state
+            .keys()
+            .filter(|k| !known.contains(k))
+            .cloned()
+            .collect();
         for name in stale {
             if let Some(mu) = state.remove(&name) {
                 let mut s = mu.into_inner();
@@ -200,6 +210,15 @@ impl Host {
             .get(name)
             .ok_or_else(|| McpError::Transport(format!("unknown extension `{name}`")))?;
         let mut state = mu.lock().await;
+        // Panel-only (transport=none): nothing to spawn, nothing to
+        // health-ping — short-circuit BEFORE the enabled check so a
+        // persisted enabled=true can never fork a ghost process. The
+        // extension's panels are already fully served by `list_panels`.
+        if state.record.manifest.transport == crate::manifest::Transport::None {
+            state.status = LifecycleStatus::Disabled;
+            state.last_error = None;
+            return Ok(());
+        }
         if !state.record.manifest.enabled {
             state.status = LifecycleStatus::Disabled;
             return Ok(());
@@ -338,7 +357,11 @@ impl Host {
     }
 
     /// Persist enabled flag + restart the extension's lifecycle.
-    pub async fn set_enabled(&self, name: &str, enabled: bool) -> Result<ExtensionStatus, McpError> {
+    pub async fn set_enabled(
+        &self,
+        name: &str,
+        enabled: bool,
+    ) -> Result<ExtensionStatus, McpError> {
         let manifest_path = {
             let g = self.extensions.read().await;
             let mu = g
@@ -354,8 +377,12 @@ impl Host {
         if enabled {
             // Ignore startup failure — caller can inspect via ext.get.
             let _ = self.ensure_started(name).await; // wylde-check: discard-result-ok
-            // Broadcast send fails iff there are no subscribers; not an error.
-            let _ = self.events.send(LifecycleEvent::new(name, "enabled", "extension enabled".into())); // wylde-check: discard-result-ok
+                                                     // Broadcast send fails iff there are no subscribers; not an error.
+            let _ = self.events.send(LifecycleEvent::new(
+                name,
+                "enabled",
+                "extension enabled".into(),
+            )); // wylde-check: discard-result-ok
         } else {
             let _ = self.stop_one(name).await; // wylde-check: discard-result-ok
         }
@@ -424,8 +451,8 @@ impl Host {
             let s = mu.lock().await;
             s.client.clone()
         };
-        let client = client
-            .ok_or_else(|| McpError::Transport(format!("extension `{name}` not running")))?;
+        let client =
+            client.ok_or_else(|| McpError::Transport(format!("extension `{name}` not running")))?;
         let timeout = Duration::from_secs(self.cfg.tool_call_timeout_s);
         client.list_tools(timeout).await
     }
@@ -536,9 +563,11 @@ impl Host {
         self.stop_one(extension).await?;
         // ensure_started checks enabled flag and is idempotent.
         let _ = self.ensure_started(extension).await;
-        let _ = self
-            .events
-            .send(LifecycleEvent::new(extension, "restart", "restart requested".into()));
+        let _ = self.events.send(LifecycleEvent::new(
+            extension,
+            "restart",
+            "restart requested".into(),
+        ));
         self.get_status(extension)
             .await
             .ok_or_else(|| McpError::Transport(format!("ext `{extension}` vanished after restart")))
@@ -624,8 +653,70 @@ mod tests {
         assert_eq!(panels[0].icon.as_deref(), Some("🔗"));
         assert_eq!(panels[0].kind, "iframe");
         assert_eq!(panels[0].url, "http://127.0.0.1:5678");
-        assert!(panels.iter().any(|p| p.extension == "study" && p.id == "sessions"));
-        assert!(panels.iter().any(|p| p.extension == "study" && p.id == "history"));
+        assert!(panels
+            .iter()
+            .any(|p| p.extension == "study" && p.id == "sessions"));
+        assert!(panels
+            .iter()
+            .any(|p| p.extension == "study" && p.id == "history"));
+    }
+
+    /// Panel-only record: transport=none, no command, panels only —
+    /// the Extensions/N8N shape after the TX S3 stub removal.
+    fn make_panel_only_record(name: &str, panels: Vec<UiPanel>, enabled: bool) -> ExtensionRecord {
+        let mut rec = make_record(name, panels);
+        rec.manifest.transport = Transport::None;
+        rec.manifest.command = Vec::new();
+        rec.manifest.enabled = enabled;
+        rec
+    }
+
+    #[tokio::test]
+    async fn panel_only_ensure_started_spawns_nothing_and_is_ok() {
+        // Even with enabled=true persisted, a transport=none extension
+        // must never fork a child or report a crash — ensure_started is
+        // a clean no-op (status disabled, no client, no pid, no error).
+        let host = Host::new(Config::get());
+        host.seed_record_for_tests(
+            make_panel_only_record(
+                "n8n",
+                vec![iframe_panel(
+                    "workflows",
+                    "Workflows",
+                    "http://127.0.0.1:5678",
+                    None,
+                )],
+                true,
+            ),
+            LifecycleStatus::Disabled,
+        )
+        .await;
+
+        host.ensure_started("n8n")
+            .await
+            .expect("panel-only start is a no-op");
+        let status = host.get_status("n8n").await.unwrap();
+        assert_eq!(status.status, LifecycleStatus::Disabled);
+        assert!(status.pid.is_none(), "no process may exist");
+        assert!(
+            status.last_error.is_none(),
+            "no-op must not record an error"
+        );
+
+        // …and the panels still surface (status-independent read).
+        let panels = host.list_panels().await;
+        assert_eq!(panels.len(), 1);
+        assert_eq!(panels[0].extension, "n8n");
+        assert_eq!(panels[0].url, "http://127.0.0.1:5678");
+    }
+
+    #[test]
+    fn panel_only_from_record_never_reports_starting() {
+        // enabled=true would normally seed status=Starting; panel-only
+        // has no lifecycle, so it must come up Disabled.
+        let rec = make_panel_only_record("n8n", Vec::new(), true);
+        let state = ExtensionState::from_record(rec);
+        assert_eq!(state.status, LifecycleStatus::Disabled);
     }
 
     #[tokio::test]
@@ -668,8 +759,18 @@ mod tests {
                 destructive: false,
                 tier: "read".into(),
                 actions: vec![
-                    ActionDeclaration { name: "fetch".into(), description: String::new(), mcp_tool: Some("fetch".into()), destructive: false },
-                    ActionDeclaration { name: "scrape".into(), description: String::new(), mcp_tool: Some("scrape".into()), destructive: false },
+                    ActionDeclaration {
+                        name: "fetch".into(),
+                        description: String::new(),
+                        mcp_tool: Some("fetch".into()),
+                        destructive: false,
+                    },
+                    ActionDeclaration {
+                        name: "scrape".into(),
+                        description: String::new(),
+                        mcp_tool: Some("scrape".into()),
+                        destructive: false,
+                    },
                 ],
                 args_schema: serde_json::Value::Null,
                 response_schema: serde_json::Value::Null,
@@ -709,7 +810,8 @@ mod tests {
             ui_panels: Vec::new(),
         };
         let host = Host::new(Config::get());
-        host.seed_record_for_tests(record, LifecycleStatus::Disabled).await;
+        host.seed_record_for_tests(record, LifecycleStatus::Disabled)
+            .await;
 
         let rows = host.list_resource_declarations(None).await;
         assert_eq!(rows.len(), 1);
@@ -717,9 +819,17 @@ mod tests {
         assert_eq!(row["extension"], "Webcrawler");
         assert_eq!(row["resource_type"], "ext:Webcrawler:url");
         assert_eq!(row["bare_resource_type"], "url");
-        let claimed: Vec<&str> = row["claimed_tools"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        let claimed: Vec<&str> = row["claimed_tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
         assert_eq!(claimed, vec!["fetch", "scrape"]);
         // Per-extension filter excludes others.
-        assert!(host.list_resource_declarations(Some("Other")).await.is_empty());
+        assert!(host
+            .list_resource_declarations(Some("Other"))
+            .await
+            .is_empty());
     }
 }
