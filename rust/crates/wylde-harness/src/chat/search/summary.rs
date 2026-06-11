@@ -16,9 +16,10 @@
 //! * **On demand** — [`refresh_standalone`] regenerates one conversation.
 //! * **Cadence** — [`needs_regen`] is true when there is no summary yet, or
 //!   the conversation has crossed another [`SUMMARY_EVERY_N_MESSAGES`]
-//!   boundary since the last one. A caller (the turn driver, a future
-//!   `chat.refresh_summary`) drives the cadence; this module supplies the
-//!   decision + the work.
+//!   boundary since the last one. The turn driver's post-turn hook drives
+//!   the cadence through [`maybe_refresh`] (improvement plan M1; kill
+//!   switch `WYLDE_AUTO_SUMMARY=off`); this module supplies the decision +
+//!   the work.
 //!
 //! ## Separation for testability
 //!
@@ -315,6 +316,73 @@ fn default_model() -> Result<String, SummaryError> {
         .ok_or(SummaryError::NoModel)
 }
 
+/// Whether the post-turn auto-summary producer runs
+/// (`WYLDE_AUTO_SUMMARY=off|0|false` kill switch; on by default —
+/// mirrors `WYLDE_POST_TURN_EXTRACTION`).
+pub fn auto_summary_enabled() -> bool {
+    match std::env::var("WYLDE_AUTO_SUMMARY") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "off" | "0" | "false"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// The post-turn auto-summary **producer** (improvement plan M1) — the
+/// caller `needs_regen`'s module docs always promised. The turn driver
+/// spawns this fire-and-forget after every naturally-completed turn;
+/// when the conversation has crossed another
+/// [`SUMMARY_EVERY_N_MESSAGES`] boundary it regenerates via the right
+/// pipeline for where the doc lives ([`refresh_standalone`] /
+/// [`refresh_workspace`]).
+///
+/// Fail-soft end to end, never on the hot path: a disabled switch, a
+/// missing default model (the extractor's skip rule), an unknown or
+/// unreachable conversation, and any LLM/embedder error all reduce to a
+/// trace log. Regeneration is idempotent per N-boundary (the
+/// `summary_msg_count` bucket check), so a double-fire wastes at most
+/// one call.
+pub async fn maybe_refresh(conversation_id: &str, workspace_id: Option<&str>) {
+    if !auto_summary_enabled() {
+        return;
+    }
+    if default_model().is_err() {
+        tracing::trace!("auto-summary: skipped (no default model)");
+        return;
+    }
+    match workspace_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(ws) => {
+            use wylde_workspaces_client::WorkspacesClient;
+            let client = WorkspacesClient::for_service(super::api::workspaces_service());
+            let doc = match client.conversations_get(ws, conversation_id).await {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::trace!("auto-summary: workspace doc unreadable: {e}");
+                    return;
+                }
+            };
+            if !needs_regen(&doc) {
+                return;
+            }
+            if let Err(e) = refresh_workspace(ws, conversation_id).await {
+                tracing::debug!("auto-summary: workspace refresh failed: {e}");
+            }
+        }
+        None => {
+            let Ok(doc) = conv_store::read_conversation(conversation_id) else {
+                return; // unknown id — nothing to summarise
+            };
+            if !needs_regen(&doc) {
+                return;
+            }
+            if let Err(e) = refresh_standalone(conversation_id).await {
+                tracing::debug!("auto-summary: refresh failed: {e}");
+            }
+        }
+    }
+}
+
 /// Ask the LLM for a 1–2 sentence summary + topic tags of `convo_text` via
 /// `ollama.chat` on the wylde-ollama service. Returns `(summary, tags)`.
 pub async fn generate_summary(convo_text: &str) -> Result<(String, Vec<String>), SummaryError> {
@@ -593,6 +661,26 @@ mod tests {
         assert_eq!(m["topic_tags"], json!(["a", "b"]));
         assert_eq!(m["summary_msg_count"], 7);
         assert_eq!(m["embedding"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn auto_summary_enabled_parses_kill_switch() {
+        let _g = crate::memory::common::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("WYLDE_AUTO_SUMMARY").ok(); // wylde-check: discard-result-ok
+        std::env::remove_var("WYLDE_AUTO_SUMMARY");
+        assert!(auto_summary_enabled(), "default is on");
+        for v in ["off", "0", "false", " OFF "] {
+            std::env::set_var("WYLDE_AUTO_SUMMARY", v);
+            assert!(!auto_summary_enabled(), "{v:?} must disable");
+        }
+        std::env::set_var("WYLDE_AUTO_SUMMARY", "on");
+        assert!(auto_summary_enabled());
+        match prev {
+            Some(v) => std::env::set_var("WYLDE_AUTO_SUMMARY", v),
+            None => std::env::remove_var("WYLDE_AUTO_SUMMARY"),
+        }
     }
 
     /// The persist half of the pipeline (minus the LLM/embedder): writing
