@@ -173,7 +173,7 @@ mod tests {
     fn golden_base_prompt_verb_mode() {
         assert_golden(
             "base_prompt_verb_mode",
-            &prompt::build_system_prompt(&fixture_catalog(), true),
+            &prompt::build_system_prompt(&fixture_catalog(), true, false),
         );
     }
 
@@ -181,7 +181,17 @@ mod tests {
     fn golden_base_prompt_legacy_mode() {
         assert_golden(
             "base_prompt_legacy_mode",
-            &prompt::build_system_prompt(&fixture_catalog(), false),
+            &prompt::build_system_prompt(&fixture_catalog(), false, false),
+        );
+    }
+
+    #[test]
+    fn golden_base_prompt_native_tools() {
+        // B10: native-tool-capable models get the lean base instruction
+        // (no in-content JSON shape).
+        assert_golden(
+            "base_prompt_native_tools",
+            &prompt::build_system_prompt(&fixture_catalog(), true, true),
         );
     }
 

@@ -80,6 +80,47 @@ pub fn iter_patterns() -> impl Iterator<Item = (&'static str, Kind)> {
     PATTERNS.iter().copied()
 }
 
+/// Model families known to honour Ollama's native `tools:` request field
+/// (replying on `message.tool_calls`). Deliberately conservative — a miss
+/// only means the model also gets the in-content JSON instruction (the
+/// pre-B10 behaviour for everyone), while a false positive would strip
+/// the salvage instruction from a model that needs it.
+const NATIVE_TOOL_FAMILIES: &[&str] = &[
+    r"\bqwen2\.5\b",
+    r"\bqwen3\b",
+    r"\bllama3\.[123]\b",
+    r"\bllama-?3\.[123]\b",
+    r"\bmistral\b",
+    r"\bmistral-nemo\b",
+    r"\bmixtral\b",
+    r"\bcommand-r\b",
+    r"\bhermes3\b",
+    r"\bfirefunction\b",
+    r"\bgranite3",
+    r"\bnemotron\b",
+    r"\bdevstral\b",
+    r"\bgpt-oss\b",
+];
+
+static NATIVE_COMPILED: Lazy<Vec<Regex>> = Lazy::new(|| {
+    NATIVE_TOOL_FAMILIES
+        .iter()
+        .map(|pat| Regex::new(&format!("(?i){pat}")).expect("native-tools pattern compiles"))
+        .collect()
+});
+
+/// Whether `model` is known to honour the native `tools:` field
+/// (improvement plan B10). Drives the base-prompt choice: native-capable
+/// models skip the in-content JSON salvage instruction (which wastes
+/// tokens and occasionally yields a double tool-call echo); everything
+/// else keeps it. Unknown models default to `false` — the safe side.
+pub fn supports_native_tools(model: &str) -> bool {
+    if model.is_empty() {
+        return false;
+    }
+    NATIVE_COMPILED.iter().any(|re| re.is_match(model))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +185,36 @@ mod tests {
     fn iter_patterns_returns_full_set() {
         let collected: Vec<_> = iter_patterns().collect();
         assert_eq!(collected.len(), PATTERNS.len());
+    }
+
+    #[test]
+    fn native_tools_known_families_match() {
+        for m in [
+            "qwen2.5:7b",
+            "qwen2.5-coder:14b",
+            "qwen3:8b",
+            "llama3.1:8b",
+            "llama3.2:3b",
+            "mistral:7b",
+            "mistral-nemo:12b",
+            "command-r:35b",
+            "GPT-OSS:20b",
+        ] {
+            assert!(supports_native_tools(m), "{m} should be native-capable");
+        }
+    }
+
+    #[test]
+    fn native_tools_unknown_models_default_false() {
+        for m in [
+            "",
+            "tinyllama:1.1b",
+            "phi3:mini",
+            "gemma2:2b",
+            "deepseek-r1:7b",
+            "totally-custom-model",
+        ] {
+            assert!(!supports_native_tools(m), "{m} must stay on salvage");
+        }
     }
 }

@@ -481,7 +481,7 @@ mod tests {
         register(&mut reg);
         let catalog = crate::tooling::runner::catalog_payload(&reg);
         for verb_mode in [false, true] {
-            let prompt = crate::turn::prompt::build_system_prompt(&catalog, verb_mode);
+            let prompt = crate::turn::prompt::build_system_prompt(&catalog, verb_mode, false);
             let tools = crate::turn::prompt::build_tools_field(&catalog, verb_mode);
             for id in [
                 "wylde_describe",

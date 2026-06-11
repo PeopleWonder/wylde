@@ -115,7 +115,14 @@ Everything else is a resource verb.";
 /// verb tools and the [`SURVIVING_NAMED_TOOLS`] tail are advertised
 /// (resource-backed named tools are retired) and the verb-discovery
 /// guidance is prepended; when off, every active tool is listed (legacy).
-pub fn build_system_prompt(catalog: &[Value], verb_mode: bool) -> String {
+///
+/// `native_tools` (improvement plan B10,
+/// [`crate::model_registry::heuristics::supports_native_tools`]): models
+/// known to honour the native `tools:` field get a base instruction
+/// WITHOUT the in-content JSON shape — the dual instruction wasted prompt
+/// tokens and occasionally yielded both a native call *and* a content
+/// echo. The salvage parser still runs either way (harmless when idle).
+pub fn build_system_prompt(catalog: &[Value], verb_mode: bool, native_tools: bool) -> String {
     let mut tool_lines: Vec<String> = Vec::new();
 
     // Filter first, cap second: the `MAX_CATALOG_TOOLS` bound applies to the
@@ -168,7 +175,11 @@ pub fn build_system_prompt(catalog: &[Value], verb_mode: bool) -> String {
     // the pre-B9 hardcoded strings (pinned by the B11 goldens). The
     // verb-mode guidance stays a const — its wording is mechanically
     // coupled to the verb registry, not a style knob.
-    let base = crate::prompts::store::effective_prompt("chat.system_base");
+    let base = crate::prompts::store::effective_prompt(if native_tools {
+        "chat.system_base_native" // B10 — no in-content JSON instruction
+    } else {
+        "chat.system_base"
+    });
     let memory_rule = crate::prompts::store::effective_prompt(if verb_mode {
         "chat.memory_rule"
     } else {
@@ -348,7 +359,7 @@ mod tests {
 
     #[test]
     fn prompt_lists_active_tool_by_dotted_name() {
-        let prompt = build_system_prompt(&sample_catalog(), false);
+        let prompt = build_system_prompt(&sample_catalog(), false, false);
         assert!(prompt.contains("Available tools:"));
         assert!(prompt.contains("fs.read_file"));
         assert!(prompt.contains("path: string"));
@@ -356,7 +367,7 @@ mod tests {
 
     #[test]
     fn prompt_skips_deferred_tools() {
-        let prompt = build_system_prompt(&sample_catalog(), false);
+        let prompt = build_system_prompt(&sample_catalog(), false, false);
         // `visual.caption` is deferred and appears nowhere in the base
         // instruction text, so its total absence proves the catalog
         // block excluded it.
@@ -368,7 +379,7 @@ mod tests {
 
     #[test]
     fn prompt_advertises_salvage_json_shape() {
-        let prompt = build_system_prompt(&sample_catalog(), false);
+        let prompt = build_system_prompt(&sample_catalog(), false, false);
         // The shape must match what salvage::parse_one_call recovers.
         assert!(prompt.contains("\"name\""));
         assert!(prompt.contains("\"arguments\""));
@@ -376,7 +387,7 @@ mod tests {
 
     #[test]
     fn prompt_handles_empty_catalog() {
-        let prompt = build_system_prompt(&[], false);
+        let prompt = build_system_prompt(&[], false, false);
         assert!(prompt.contains("(no tools available)"));
     }
 
@@ -492,7 +503,7 @@ mod tests {
 
     #[test]
     fn verb_mode_advertises_verbs_and_survivors_only() {
-        let prompt = build_system_prompt(&mixed_catalog(), true);
+        let prompt = build_system_prompt(&mixed_catalog(), true, false);
         // verb tool + the imperative survivor are advertised
         assert!(prompt.contains("wylde_search"), "verb missing: {prompt}");
         assert!(
@@ -520,7 +531,7 @@ mod tests {
 
     #[test]
     fn legacy_mode_still_advertises_resource_backed_tools() {
-        let prompt = build_system_prompt(&mixed_catalog(), false);
+        let prompt = build_system_prompt(&mixed_catalog(), false, false);
         assert!(
             prompt.contains("memory.search"),
             "legacy mode must keep named tools"
@@ -532,7 +543,7 @@ mod tests {
 
     #[test]
     fn verb_mode_memory_rule_references_verbs_not_named_tools() {
-        let prompt = build_system_prompt(&mixed_catalog(), true);
+        let prompt = build_system_prompt(&mixed_catalog(), true, false);
         assert!(prompt.contains("wylde_create(\"memory\""));
         assert!(!prompt.contains("memory.long_term.save"));
     }

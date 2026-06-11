@@ -109,7 +109,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     // The gather-slot eviction budget derives from the model's effective
     // num_ctx (B5) — the base prompt + user message are fixed costs the
     // slots must leave room for.
-    let base_prompt = base_system_prompt();
+    let base_prompt = base_system_prompt(&model);
     let slot_budget = chat_options::slot_budget(&model, &base_prompt, &user_message).await;
     let gathered = context_gather::gather(
         workspace_id.as_deref(),
@@ -516,7 +516,7 @@ async fn drive_streaming_turn(
     overrides: context_gather::TokenOverrides,
 ) {
     // Gather the turn's context (Slice G) — see `handle_run_turn` for the flow.
-    let base_prompt = base_system_prompt();
+    let base_prompt = base_system_prompt(&model);
     let slot_budget = chat_options::slot_budget(&model, &base_prompt, &user_message).await;
     let gathered = context_gather::gather(
         workspace_id.as_deref(),
@@ -836,19 +836,34 @@ fn build_alias_map() -> HashMap<String, String> {
 /// `history` (B1) is the budget-surviving window of prior-turn messages
 /// from the gather, spliced between the system message and the current
 /// user message so the model finally sees the previous turns.
+///
+/// Layout (B12, prompt-cache-aware): the system message carries ONLY the
+/// stable base prompt (instruction + tool catalog — byte-identical across
+/// turns of the same model/mode), and the volatile gathered slots ride at
+/// the head of the CURRENT user message, after the history. Ollama's KV
+/// prefix reuse therefore covers `system + old history` instead of
+/// busting at the first changed slot byte inside the system message —
+/// prompt ingestion dominates latency on local hardware. The slots' own
+/// `### ` headers plus the explicit `### User message` divider keep the
+/// roles unambiguous. Empty slots leave the user message verbatim, so a
+/// plain turn is byte-identical to before.
 fn initial_messages(
     base_system_prompt: String,
     history: &[Value],
     user_message: &str,
     workspace_slots: &str,
 ) -> Vec<Value> {
-    let mut system_prompt = base_system_prompt;
-    system_prompt.push_str(workspace_slots);
+    let slots = workspace_slots.trim();
+    let user_content = if slots.is_empty() {
+        user_message.to_owned()
+    } else {
+        format!("{slots}\n\n### User message\n{user_message}")
+    };
 
     let mut messages = Vec::with_capacity(history.len() + 2);
-    messages.push(json!({"role": "system", "content": system_prompt}));
+    messages.push(json!({"role": "system", "content": base_system_prompt}));
     messages.extend(history.iter().cloned());
-    messages.push(json!({"role": "user", "content": user_message}));
+    messages.push(json!({"role": "user", "content": user_content}));
     messages
 }
 
@@ -856,10 +871,14 @@ fn initial_messages(
 /// gathered workspace slots. Built once per turn: it both opens the
 /// [`initial_messages`] system message and prices the fixed prompt cost
 /// for [`chat_options::slot_budget`] (B5).
-fn base_system_prompt() -> String {
+///
+/// `model` selects the base-instruction variant (B10): native-tool-capable
+/// models skip the in-content JSON salvage instruction.
+fn base_system_prompt(model: &str) -> String {
     let catalog = crate::tooling::runner::catalog_payload(crate::tooling::registry::global());
     let verb_mode = crate::tooling::resource::verb_mode_active();
-    prompt::build_system_prompt(&catalog, verb_mode)
+    let native = crate::model_registry::heuristics::supports_native_tools(model);
+    prompt::build_system_prompt(&catalog, verb_mode, native)
 }
 
 /// Build the native Ollama `tools:` request field from the live tool
@@ -1303,7 +1322,12 @@ mod tests {
         // system content must advertise tools (a known tool name from
         // the live registry) so the model emits tool-call JSON instead
         // of claiming it has no tools.
-        let messages = initial_messages(base_system_prompt(), &[], "What time is it?", "");
+        let messages = initial_messages(
+            base_system_prompt("stub-model"),
+            &[],
+            "What time is it?",
+            "",
+        );
         assert_eq!(messages.len(), 2, "expected [system, user]: {messages:?}");
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[1]["role"], "user");
@@ -1337,7 +1361,8 @@ mod tests {
             json!({"role": "user", "content": "earlier question"}),
             json!({"role": "assistant", "content": "earlier answer"}),
         ];
-        let messages = initial_messages(base_system_prompt(), &history, "follow-up", "");
+        let messages =
+            initial_messages(base_system_prompt("stub-model"), &history, "follow-up", "");
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0]["role"], "system");
         assert_eq!(messages[1]["content"], "earlier question");
@@ -1347,12 +1372,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gathered_slots_ride_the_user_message_not_the_system_prompt() {
+        // B12: the system message stays byte-stable across turns; volatile
+        // gathered slots ride at the head of the current user message.
+        let slots = "\n\n### User profile\nName: Aaron";
+        let with_slots = initial_messages(base_system_prompt("stub-model"), &[], "hello", slots);
+        let plain = initial_messages(base_system_prompt("stub-model"), &[], "hello", "");
+
+        assert_eq!(
+            with_slots[0]["content"], plain[0]["content"],
+            "system message identical with and without slots"
+        );
+        let user = with_slots[1]["content"].as_str().unwrap();
+        assert!(user.starts_with("### User profile"), "slots lead: {user}");
+        assert!(user.ends_with("### User message\nhello"), "{user}");
+        // A plain turn's user message is verbatim.
+        assert_eq!(plain[1]["content"], "hello");
+    }
+
+    #[tokio::test]
+    async fn native_capable_model_gets_the_lean_base_instruction() {
+        // B10: a native-tools family skips the in-content JSON instruction.
+        let native = base_system_prompt("qwen2.5:7b");
+        assert!(
+            !native.contains("respond with a single JSON object"),
+            "no salvage instruction for native-capable models"
+        );
+        assert!(native.contains("You are Wylde"));
+        assert!(native.contains("Available tools:"));
+
+        let salvage = base_system_prompt("totally-custom-model");
+        assert!(
+            salvage.contains("respond with a single JSON object"),
+            "unknown models keep the salvage instruction"
+        );
+    }
+
+    #[tokio::test]
     async fn run_turn_request_body_carries_system_then_user() {
         // Mirror the exact body construction in handle_run_turn /
         // drive_streaming_turn: messages = initial_messages(...), then
         // folded into the Ollama request body. Assert the wire shape.
         let messages = initial_messages(
-            base_system_prompt(),
+            base_system_prompt("stub-model"),
             &[],
             "Read the README and tell me the license",
             "",
@@ -1383,7 +1445,7 @@ mod tests {
         let tools = tools_payload();
         let body = json!({
             "model": "stub-model",
-            "messages": initial_messages(base_system_prompt(), &[], "hi", ""),
+            "messages": initial_messages(base_system_prompt("stub-model"), &[], "hi", ""),
             "tools": tools,
             "stream": false,
         });
