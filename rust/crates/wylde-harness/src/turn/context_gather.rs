@@ -126,9 +126,10 @@ pub(crate) struct ChatContext {
     /// Current-conversation short-term working memory (OI-8 tier 7 — never
     /// dropped).
     pub conversation_short_term: Vec<String>,
-    /// A running summary of the current conversation. Placeholder in Phase 2
-    /// (no harness summary source yet); modelled at OI-8 tier 2 so it's first
-    /// to go when present.
+    /// A running summary of the current conversation, read from the
+    /// conversation document's `auto_summary` (the chat/search summariser
+    /// regenerates it every 5 messages; joined here by improvement plan B2).
+    /// OI-8 tier 2 — first to go under pressure.
     pub conversation_summary: Option<String>,
     /// Anchors the prompt referenced — the never-drop vocabulary block (tier 7).
     pub vocabulary_anchors: Vec<AnchorBlock>,
@@ -418,6 +419,9 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     let mut ctx = ChatContext {
         user_profile: crate::user_profile::store::read().profile.to_prompt_block(),
         conversation_short_term: read_short_term(conversation_id),
+        // B2: the auto-summary pipeline (chat/search/summary, regenerated
+        // every 5 messages) finally feeds the tier-2 slot it was built for.
+        conversation_summary: crate::chat::search::summary::auto_summary_for(conversation_id),
         ..ChatContext::default()
     };
     let mut degraded = false;
@@ -927,6 +931,50 @@ mod tests {
         )
         .await;
         assert!(!out.system_slots.contains("Symbol `foo`"));
+    }
+
+    // ── B2: auto-summary → tier-2 slot ──────────────────────────────────
+
+    #[tokio::test]
+    async fn auto_summary_feeds_the_tier2_slot() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut doc = serde_json::Map::new();
+        doc.insert("id".into(), json!("conv-b2"));
+        doc.insert("messages".into(), json!([]));
+        doc.insert(
+            "auto_summary".into(),
+            json!("They discussed the gather flow."),
+        );
+        crate::memory::conversations::store::save_conversation(&doc).unwrap();
+
+        let src = MockSource::default();
+        let out = gather_with(
+            &src,
+            None,
+            "hello",
+            "conv-b2",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(
+            out.system_slots.contains("### Conversation summary"),
+            "slot present: {}",
+            out.system_slots
+        );
+        assert!(out.system_slots.contains("They discussed the gather flow."));
+
+        // Unknown conversation → no summary slot (and blank stays blank).
+        let out = gather_with(
+            &src,
+            None,
+            "hello",
+            "conv-none",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(!out.system_slots.contains("### Conversation summary"));
     }
 
     // ── B8 short-term injection caps ─────────────────────────────────────

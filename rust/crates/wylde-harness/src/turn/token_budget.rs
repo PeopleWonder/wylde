@@ -19,8 +19,8 @@
 //      active pinned bubbles · vocabulary block for currently-referenced anchors
 //
 // HOW THIS MAPS ONTO THE Phase-2 `ChatContext`:
-//   * tier 2  → `conversation_summary`            (placeholder until a harness
-//                                                   summary source lands)
+//   * tier 2  → `conversation_summary`            (the conversation doc's
+//                                                   auto_summary — B2)
 //   * tier 3  → `workspace_context`               (persona + notes + RAG arrive
 //                                                   pre-merged from
 //                                                   `workspaces.gather_prompt`,
