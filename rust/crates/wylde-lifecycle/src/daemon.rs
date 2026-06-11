@@ -15,10 +15,11 @@
 //!
 //! * Discovery + launcher are Python-only — services.yaml is read by
 //!   Python tools and rewritten by `Core/Lifecycle/discovery.py`.
-//!   Non-core services launched from services.yaml (N8N) will not boot
-//!   when the Rust daemon runs. The extension bridge is
-//!   a daemon-managed tier=core service (spawned directly below), so
-//!   it boots under either daemon.
+//!   (N8N, the one service that used to ride that path, became the
+//!   daemon-managed `wylde-n8n` in taxonomy reorg TX S3 — the n8n
+//!   daemon itself stays external and user-managed.) The extension
+//!   bridge is a daemon-managed tier=core service (spawned directly
+//!   below), so it boots under either daemon.
 //! * The harness pipe (`\\.\pipe\wylde-harness`) is hosted by Python's
 //!   `Core/harness/server.py`. The Rust daemon doesn't bring it up;
 //!   chat-surface clients will see `pipe_unavailable` until the
@@ -225,6 +226,14 @@ pub async fn serve_forever() -> Result<i32> {
     if let Err(e) = services::start_workspaces().await {
         tracing::error!("daemon: start_workspaces raised: {:#}", e);
     }
+    // wylde-n8n — optional pipe surface over the external, user-managed
+    // n8n daemon (taxonomy reorg TX S3). A leaf service: nothing in core
+    // depends on it (the harness verb layer fail-softs), and it launches
+    // nothing itself — the n8n daemon is the user's to run. A missing
+    // binary is non-fatal.
+    if let Err(e) = services::start_n8n().await {
+        tracing::error!("daemon: start_n8n raised: {:#}", e);
+    }
 
     if nospawn {
         tracing::info!(
@@ -247,9 +256,7 @@ pub async fn serve_forever() -> Result<i32> {
     // service.shutdown_all action flips the stop notify.
     let stop = Arc::new(Notify::new());
     register_stop_event(stop.clone());
-    let pipe_suffix = service_name
-        .strip_prefix("wylde-")
-        .unwrap_or(&service_name);
+    let pipe_suffix = service_name.strip_prefix("wylde-").unwrap_or(&service_name);
     tracing::info!(r"daemon: ready (\\.\pipe\wylde-{})", pipe_suffix);
 
     tokio::select! {

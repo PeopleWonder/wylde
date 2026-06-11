@@ -83,6 +83,15 @@ pub mod service_name {
     /// Memgraph (graph writes), so those must be up first. Consumers degrade
     /// gracefully when it's down (Slice 0d), so a failed spawn is non-fatal.
     pub const WORKSPACES: &str = "wylde-workspaces";
+    /// N8N workflow service (taxonomy reorg TX S3) — the Rust pipe
+    /// surface over the **external, user-managed** n8n daemon. The
+    /// daemon supervises only `wylde-n8n.exe`; it never launches n8n
+    /// itself. Optional/non-fatal: a missing binary (or a down n8n)
+    /// leaves the service dark and core boots fine — the harness verb
+    /// layer degrades to structured errors (the `wylde-workspaces`
+    /// precedent). The Python-era `N8N/manifest.json` registry entry
+    /// (enabled: false, no entry_point) was retired with this service.
+    pub const N8N: &str = "wylde-n8n";
 }
 
 /// Window after spawn within which the service is expected to publish
@@ -455,9 +464,10 @@ pub async fn stop_all_daemon_managed() -> ShutdownSummary {
     // adjacent `stop_<service>` future is awaited. This mirrors the Python
     // `stop_all_daemon_managed`'s `_try(name, alive, fn)` ordering.
     // Shutdown order (per master plan Phase 1 §6a, extended for VPN +
-    // Harness + Workspaces):
-    //   Gateway → Workspaces → TreeSitter → ExtensionBridge → Harness →
-    //   Voice → DeviceGate → Ollama → VPN → VramBroker → Memgraph
+    // Harness + Workspaces + N8N):
+    //   Gateway → N8N → Workspaces → TreeSitter → ExtensionBridge →
+    //   Harness → Voice → DeviceGate → Ollama → VPN → VramBroker →
+    //   Memgraph
     //
     // Workspaces stops near the front: it consumes Ollama (embeddings),
     // tree-sitter (chunk/extract over the pipe), and Memgraph (Bolt graph
@@ -473,11 +483,19 @@ pub async fn stop_all_daemon_managed() -> ShutdownSummary {
     // but ordering it after the VRAM consumers keeps the broker the
     // last "infrastructure" service torn down before Memgraph. Memgraph
     // last so anything still holding a Bolt driver releases first.
-    let steps: [(&str, bool, anyhow::Result<()>); 11] = [
+    let steps: [(&str, bool, anyhow::Result<()>); 12] = [
         (
             service_name::GATEWAY,
             is_service_alive(service_name::GATEWAY),
             services::stop_gateway().await,
+        ),
+        // wylde-n8n is a leaf wrapper over the external n8n daemon (which
+        // we never stop — it's user-managed); nothing depends on the pipe
+        // once Gateway/Harness callers are draining, so it goes early.
+        (
+            service_name::N8N,
+            is_service_alive(service_name::N8N),
+            services::stop_n8n().await,
         ),
         // wylde-workspaces is a consumer of Ollama / tree-sitter / Memgraph,
         // so it must drain BEFORE them — stop it up front alongside the other

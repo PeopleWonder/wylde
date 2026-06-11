@@ -25,6 +25,10 @@
 //!   6 surfaced — the 11 "awaiting migration" named tools are now
 //!   resource-backed and retired from advertising. The four voice
 //!   mic/wake-word device tools stay named (permanent imperatives).
+//! * **TX S3 — [`n8n`]**: `n8n_workflow` + `n8n_execution`, forwarding
+//!   over IPC to the optional `wylde-n8n` service (fail-soft when it's
+//!   absent). Restores the LLM access the dead Python `N8N/tools/`
+//!   named tools provided before the Python cutover.
 //!
 //! Every handler is a thin adapter that reshapes a [`super::ResourceRequest`]
 //! into the `args` the existing tool handler expects and calls straight
@@ -50,6 +54,7 @@ pub mod extensions;
 pub mod fs;
 pub mod memory;
 pub mod model;
+pub mod n8n;
 pub mod rag;
 pub mod time;
 pub mod treesitter;
@@ -72,4 +77,5 @@ pub fn register_all(reg: &mut ResourceRegistry) {
     time::register_time_resource(reg);
     diff::register_diff_resource(reg);
     voice::register_voice_resource(reg);
+    n8n::register_n8n_resources(reg);
 }

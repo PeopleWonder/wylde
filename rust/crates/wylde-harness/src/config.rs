@@ -49,6 +49,14 @@ pub struct Config {
     /// Lets tests retarget to a fake sidecar pipe.
     pub treesitter_service: String,
 
+    /// Service name for the N8N workflow service (`wylde-n8n`, pipe at
+    /// `\\.\pipe\wylde-n8n`). The verb-layer `n8n_workflow` /
+    /// `n8n_execution` resources dispatch `n8n.*` actions against this
+    /// over IPC and degrade fail-soft when the service (or the external
+    /// n8n daemon behind it) is absent — core never depends on it.
+    /// Lets tests retarget to a fake pipe.
+    pub n8n_service: String,
+
     /// Known MCP extension namespaces — the routing heuristic in
     /// [`crate::dispatch::route`] checks the dotted prefix of every
     /// tool name against this set. A real registry handshake against
@@ -107,6 +115,9 @@ impl Config {
                 "WYLDE_HARNESS_TURN_TREESITTER_SERVICE",
                 "wylde-treesitter",
             ),
+            // No TURN-era alias — the n8n resource postdates the rename.
+            n8n_service: std::env::var("WYLDE_HARNESS_N8N_SERVICE")
+                .unwrap_or_else(|_| "wylde-n8n".to_owned()),
             mcp_namespaces: env_csv(
                 "WYLDE_HARNESS_MCP_NAMESPACES",
                 &["webcrawler", "wylde_study"],
@@ -140,6 +151,7 @@ impl Config {
             ollama_service: "wylde-ollama".to_owned(),
             extension_bridge_service: "wylde-extension-bridge".to_owned(),
             treesitter_service: "wylde-treesitter".to_owned(),
+            n8n_service: "wylde-n8n".to_owned(),
             mcp_namespaces: vec!["webcrawler".to_owned(), "wylde_study".to_owned()],
             default_chat_priority: 60,
             scheduler_enabled: true,
@@ -232,6 +244,7 @@ mod tests {
         assert_eq!(cfg.ollama_service, "wylde-ollama");
         assert_eq!(cfg.extension_bridge_service, "wylde-extension-bridge");
         assert_eq!(cfg.treesitter_service, "wylde-treesitter");
+        assert_eq!(cfg.n8n_service, "wylde-n8n");
     }
 
     #[test]
