@@ -542,19 +542,71 @@ pub struct Theme {
     pub ui_chrome: UiChromeStyle,
 }
 
+/// Env var naming the on-disk Visual Style YAML for **dev theme
+/// hot-reload**. Honoured only in debug builds (`cfg!(debug_assertions)`);
+/// release builds always parse the embedded asset — the `include_str!`
+/// path is byte-for-byte what shipped.
+pub const THEME_PATH_ENV: &str = "WYLDE_THEME_PATH";
+
+/// Dev-only: the on-disk YAML to hot-reload from. `None` in release
+/// builds, when the env var is unset/blank, or when the file is
+/// unreadable — every miss falls back to the embedded asset, so a broken
+/// dev setup degrades to exactly the shipped behaviour.
+fn dev_theme_yaml() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let path = std::env::var(THEME_PATH_ENV)
+        .ok()
+        .filter(|p| !p.trim().is_empty())?;
+    std::fs::read_to_string(path).ok()
+}
+
+/// Dev-only: the watched YAML's mtime, when hot-reload is active. The
+/// graph panel polls this to know when to re-parse + repaint (no `notify`
+/// dependency — a 500 ms mtime poll is plenty for a human-in-the-loop
+/// tweak cycle).
+pub fn dev_theme_mtime() -> Option<std::time::SystemTime> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let path = std::env::var(THEME_PATH_ENV)
+        .ok()
+        .filter(|p| !p.trim().is_empty())?;
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
 impl Theme {
     /// Parse the embedded Visual Style v1 YAML. `Err` only if the asset is
     /// malformed — which is a compile-time-fixed bug, not a runtime
     /// condition; the panel calls [`Theme::load_v1`] which logs + fails soft.
     pub fn from_embedded() -> Result<Theme, serde_yaml::Error> {
-        serde_yaml::from_str(VISUAL_STYLE_V1_YAML)
+        Theme::from_yaml(VISUAL_STYLE_V1_YAML)
     }
 
-    /// Load the locked theme for the panel. The embedded asset is validated by
-    /// the unit tests, so a parse failure here means the asset was edited and
-    /// broken — we surface it via the returned `Result` and let the caller
-    /// degrade rather than panicking in a render path.
+    /// Parse any Visual Style YAML string — the embedded asset and the dev
+    /// hot-reload path share this one parser, so they can never drift.
+    pub fn from_yaml(yaml: &str) -> Result<Theme, serde_yaml::Error> {
+        serde_yaml::from_str(yaml)
+    }
+
+    /// Load the theme for the panel. Release builds (and dev builds without
+    /// [`THEME_PATH_ENV`]) parse the embedded locked asset, exactly as
+    /// before. Dev builds with the env set read the YAML **from disk**, so
+    /// a saved tweak re-applies live (the panel's hot-reload poll calls
+    /// back in here); a disk parse error logs and falls back to embedded —
+    /// a typo mid-edit never blanks the graph.
     pub fn load_v1() -> Result<Theme, String> {
+        if let Some(yaml) = dev_theme_yaml() {
+            match Theme::from_yaml(&yaml) {
+                Ok(t) => return Ok(t),
+                Err(e) => {
+                    eprintln!(
+                        "[theme-hot] on-disk YAML parse error (falling back to embedded): {e}"
+                    );
+                }
+            }
+        }
         Theme::from_embedded().map_err(|e| format!("visual_style_v1.yaml parse error: {e}"))
     }
 
@@ -699,6 +751,36 @@ fn default_edge_thickness() -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_yaml_applies_a_tweaked_value_and_falls_back_on_garbage() {
+        // The dev hot-reload contract: the SAME parser handles disk YAML,
+        // so a saved tweak lands exactly as the embedded asset would.
+        let tweaked = VISUAL_STYLE_V1_YAML.replacen(
+            "module_palette:",
+            "module_palette_tweak_marker: 1\nmodule_palette:",
+            1,
+        );
+        assert!(Theme::from_yaml(&tweaked).is_ok(), "unknown keys ignored");
+        // A real value change parses and is visible (the related_to edge's
+        // light colour — the `color_light:` form is unique to that key).
+        let recolored = VISUAL_STYLE_V1_YAML.replacen(
+            "color_light: \"#B83280\"",
+            "color_light: \"#112233\"",
+            1,
+        );
+        assert_ne!(recolored, VISUAL_STYLE_V1_YAML, "fixture changed something");
+        let t = Theme::from_yaml(&recolored).expect("tweaked YAML parses");
+        let edge = t.edges.get("related_to").expect("related_to edge");
+        assert_eq!(
+            edge.color(false),
+            Color::parse("#112233").unwrap(),
+            "the disk tweak is what renders"
+        );
+        // Mid-edit garbage is an Err the loader falls back from — never a
+        // panic in the paint path.
+        assert!(Theme::from_yaml("nodes: [unterminated").is_err());
+    }
 
     #[test]
     fn embedded_theme_parses() {

@@ -160,3 +160,12 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+# Dev-iteration speedup (chore/tbs-dev-env): full DWARF debuginfo dominates
+# dev link time + target-dir size on a workspace this size; line tables keep
+# backtraces and breakpoint-by-line working, which is all the dev loop
+# needs. Dev-profile-only by definition — the shipped [profile.release]
+# above is untouched. Flip back to `debug = true` for a full-stepping
+# debugger session.
+[profile.dev]
+debug = "line-tables-only"

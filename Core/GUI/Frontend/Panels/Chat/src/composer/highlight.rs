@@ -221,16 +221,33 @@ impl Default for AmbiguousChip {
     }
 }
 
-/// Parse the embedded YAML's `chat_composer` section. Failure (an edited,
-/// broken asset) degrades to the locked defaults — composer styling never
-/// panics a render.
+/// Dev theme hot-reload (debug builds + `WYLDE_THEME_PATH` set — the same
+/// env the graph panel's hot-reload uses): the on-disk YAML, when
+/// readable. `composer_theme` is called per render, so a saved tweak
+/// applies on the next repaint with no watcher of its own. `None` in
+/// release builds — the shipped path stays the embedded asset.
+fn dev_theme_yaml() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let path = std::env::var("WYLDE_THEME_PATH")
+        .ok()
+        .filter(|p| !p.trim().is_empty())?;
+    std::fs::read_to_string(path).ok()
+}
+
+/// Parse the YAML's `chat_composer` section (on-disk in dev hot-reload
+/// mode, embedded otherwise). Failure (an edited, broken asset) degrades
+/// to the locked defaults — composer styling never panics a render.
 pub fn composer_theme() -> ComposerTheme {
     #[derive(Deserialize)]
     struct Root {
         #[serde(default)]
         chat_composer: Option<ComposerTheme>,
     }
-    serde_yaml::from_str::<Root>(VISUAL_STYLE_V1_YAML)
+    let disk = dev_theme_yaml();
+    let yaml: &str = disk.as_deref().unwrap_or(VISUAL_STYLE_V1_YAML);
+    serde_yaml::from_str::<Root>(yaml)
         .ok()
         .and_then(|r| r.chat_composer)
         .unwrap_or_else(|| ComposerTheme {

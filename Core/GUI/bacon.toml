@@ -1,0 +1,29 @@
+# bacon config — the Wylde dev loop (chore/tbs-dev-env).
+#
+# `bacon dev` (the default job) builds + runs the gpui app and, on every
+# source save, kills the running instance, incrementally rebuilds, and
+# relaunches it. Launched via tools/dev/wylde-dev.ps1, which also sets the
+# dev-only acceleration env (separate target-dev cache + rust-lld linker)
+# and the theme hot-reload env — see that script's header for the full
+# environment contract.
+#
+# `bacon check` / `bacon test` are the quieter loops for non-visual work.
+
+default_job = "dev"
+
+[jobs.dev]
+command = ["cargo", "run", "-p", "wylde-gui"]
+need_stdout = true
+allow_warnings = true
+background = false
+on_change_strategy = "kill_then_restart"
+
+[jobs.check]
+command = ["cargo", "check", "--workspace"]
+need_stdout = false
+allow_warnings = true
+
+[jobs.test]
+command = ["cargo", "test", "--workspace"]
+need_stdout = true
+allow_warnings = true
