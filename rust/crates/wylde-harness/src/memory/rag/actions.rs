@@ -12,9 +12,14 @@
 //! LLM-decomposition + HyDE + multi-hop + cross-encoder rerank loop on
 //! top of the bare vector search. None of that lands in Phase 7.B-3 —
 //! the Rust port stops at the bare `search` surface, gated by the
-//! caller supplying a precomputed `query_vector` (no embedder is wired
-//! into the harness yet — that comes with the wylde-ollama Rust port).
-//! See `super::search` module docs for the documented divergence.
+//! caller supplying a precomputed `query_vector`. (The harness embedder
+//! HAS been wired for a while — `memory::embeddings::embed_one`, used
+//! by `add_episodic` right below — the "no embedder" notes this file
+//! used to carry were stale. M4 made `meta.graph_query` the embedded
+//! natural-language entry point and de-catalogued `rag_ask` instead of
+//! wiring the embed here: this store has no chat-side ingest, and
+//! advertising retrieval over an empty store trades one failure mode
+//! for another. M7 retires the subsystem.)
 //!
 //! When `query_vector` is absent the handler returns
 //! `status=insufficient_context` with an explanatory note, matching
@@ -57,8 +62,8 @@ const DEFAULT_EPISODIC_SCORE: f32 = 0.5;
 /// Accepted args:
 /// * `q` (required) — natural-language question.
 /// * `query_vector` (optional, array of numbers) — precomputed embedding.
-///   When absent the handler returns `insufficient_context` because the
-///   Rust embedder isn't wired yet.
+///   When absent the handler returns `insufficient_context` (deliberate —
+///   see the module docs; `meta.graph_query` is the embedded entry point).
 /// * `limit` (optional, default 8) — clamped to 1..=50.
 /// * `workspace` (optional) — workspace id; advisory in this slice.
 /// * `tier` (optional) — restrict search to one tier.
@@ -89,16 +94,16 @@ pub async fn run_rag_ask(args: Value) -> Result<Value, IpcError> {
         .map(str::to_owned);
 
     let Some(query_vector) = parse_float_array(args.get("query_vector")) else {
-        // No embedder wired — record a synthetic miss so analytics still see the query.
+        // Record a synthetic miss so analytics still see the query.
         let _ = miss_log::log_query(&query, &workspace_id, &[], tier.as_deref());
         return Ok(json!({
             "status": "insufficient_context",
             "q": query,
             "results": [],
             "count": 0,
-            "reason": "embed_not_wired",
-            "note": "Rust rag.ask requires a precomputed `query_vector` until the wylde-ollama \
-                     embedder is ported. Use the Python harness for question-only retrieval.",
+            "reason": "query_vector_required",
+            "note": "rag.ask requires a precomputed `query_vector`. For natural-language \
+                     retrieval call meta.graph_query — it embeds `q` server-side.",
         }));
     };
 
@@ -254,8 +259,8 @@ pub async fn run_rag_add_episodic(args: Value) -> Result<Value, IpcError> {
 /// Handler for the `rag.search` pipe action.
 ///
 /// The embed-wired sibling of [`run_rag_ask`]: where `rag.ask` deliberately
-/// refuses to embed (it's the model-callable tool and returns
-/// `embed_not_wired` without a precomputed vector), `rag.search` is the
+/// refuses to embed (it returns `query_vector_required` without a
+/// precomputed vector — see the module docs), `rag.search` is the
 /// extension-facing action that *does* embed the query server-side via
 /// [`embed_one`], then runs the exact same first-party search
 /// ([`search_logged`] over [`TieredStore`]). No parallel retrieval path —
@@ -732,7 +737,7 @@ mod tests {
         force_embed_dim_4();
         let v = run_rag_ask(json!({"q": "anything"})).await.unwrap();
         assert_eq!(v["status"], "insufficient_context");
-        assert_eq!(v["reason"], "embed_not_wired");
+        assert_eq!(v["reason"], "query_vector_required");
         assert_eq!(v["count"], 0);
     }
 
