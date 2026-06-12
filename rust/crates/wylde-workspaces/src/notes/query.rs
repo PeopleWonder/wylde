@@ -26,9 +26,17 @@
 use super::entry::{self, WorkspaceMemoryEntry};
 
 /// Recency's share of the blended score (Q3). Relevance gets the rest.
+///
+/// Deliberately ADDITIVE where the harness memory tiers multiply
+/// (`wylde-harness` `memory/long_term/scoring.rs::combined_score` —
+/// see its module docs for the M8b rationale): notes carry no
+/// importance dimension, and the additive blend keeps a
+/// stale-but-relevant note retrievable instead of zeroing it out.
 pub const ALPHA_RECENCY: f64 = 0.4;
 
-/// Half-life-ish decay horizon (days) for the recency term.
+/// Half-life-ish decay horizon (days) for the recency term. A
+/// cross-tier design constant — keep aligned with the harness's
+/// `DEFAULT_DECAY_DAYS` (M8b; each crate pins 30 in its own tests).
 pub const RECENCY_DECAY_DAYS: f64 = 30.0;
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
@@ -173,6 +181,13 @@ pub async fn top_entries_bounded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M8b alignment pin: the harness memory tiers pin the same 30-day
+    /// horizon (`wylde-harness` scoring tests). Change both together.
+    #[test]
+    fn decay_horizon_stays_aligned_with_the_harness_memory_tiers() {
+        assert_eq!(RECENCY_DECAY_DAYS, 30.0);
+    }
 
     #[test]
     fn recency_score_is_one_for_now_and_decays() {

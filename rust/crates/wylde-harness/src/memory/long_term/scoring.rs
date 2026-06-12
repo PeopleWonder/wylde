@@ -9,8 +9,24 @@
 //! ```text
 //! score = similarity * (importance / 10) * exp(-age_days / decay)
 //! ```
+//!
+//! ## Relation to the notes-tier scoring (memory plan M8b)
+//!
+//! The workspaces service scores its user-notes tier differently —
+//! `wylde-workspaces/src/notes/query.rs` blends ADDITIVELY
+//! (`0.4·recency + 0.6·relevance`) where this module multiplies.
+//! That divergence is deliberate: notes have no importance dimension,
+//! and an additive blend keeps a stale-but-relevant note retrievable
+//! (multiplying would zero it out), while memory records NEED the
+//! multiplicative gate so importance and staleness can actually
+//! suppress. The shared design constant is the **30-day decay
+//! horizon** — keep [`DEFAULT_DECAY_DAYS`] and the service's
+//! `RECENCY_DECAY_DAYS` aligned (each crate pins its own value to 30
+//! in tests; cross-crate the constant can't be shared without a dep
+//! the wrong way across the rule-26 boundary).
 
-/// Default decay constant in days. Matches Python.
+/// Default decay constant in days. Matches Python — and the notes
+/// tier's `RECENCY_DECAY_DAYS` (see the module docs' M8b note).
 pub const DEFAULT_DECAY_DAYS: f64 = 30.0;
 
 const SECONDS_PER_DAY: f64 = 86_400.0;
@@ -71,6 +87,15 @@ mod tests {
 
     fn approx(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-6
+    }
+
+    /// M8b alignment pin: the 30-day decay horizon is a cross-tier
+    /// design constant — the notes tier (`wylde-workspaces`
+    /// `RECENCY_DECAY_DAYS`) pins the same value in its own suite. If
+    /// you change one, change both (and both tests).
+    #[test]
+    fn decay_horizon_stays_aligned_with_the_notes_tier() {
+        assert_eq!(DEFAULT_DECAY_DAYS, 30.0);
     }
 
     #[test]
