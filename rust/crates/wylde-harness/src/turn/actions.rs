@@ -119,6 +119,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
         slot_budget,
     )
     .await;
+    log_tier7_degrade(&gathered, &conversation_id, slot_budget);
     let mut messages = initial_messages(
         base_prompt,
         &gathered.history,
@@ -526,6 +527,7 @@ async fn drive_streaming_turn(
         slot_budget,
     )
     .await;
+    log_tier7_degrade(&gathered, &conversation_id, slot_budget);
     let mut messages = initial_messages(
         base_prompt,
         &gathered.history,
@@ -759,6 +761,22 @@ fn run_post_turn_hooks(
     tokio::spawn(async move {
         crate::chat::search::summary::maybe_refresh(&conv, ws.as_deref()).await;
     });
+}
+
+/// Driver-side surfacing of the M3 tier-7 degrade flag: a warn log per
+/// affected turn (the shrunk slots carry their own in-prompt markers;
+/// a Settings/UI annotation is the deferred B8 surface).
+fn log_tier7_degrade(
+    gathered: &context_gather::GatheredContext,
+    conversation_id: &str,
+    slot_budget: usize,
+) {
+    if gathered.tier7_degraded {
+        tracing::warn!(
+            "turn: tier-7 degrade pass shrank never-drop context for {conversation_id} \
+             (slot budget {slot_budget} tokens — small context window)"
+        );
+    }
 }
 
 async fn emit_aborted(

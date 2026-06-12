@@ -310,11 +310,26 @@ impl MemoryScheduler {
         counts
     }
 
-    /// Fire conversation-scoped reflection on idle windows. A
-    /// conversation fires when it has been idle ≥ `conversation_idle_s`
-    /// AND we haven't already reflected since its last activity.
+    /// Fire conversation-scoped reflection on idle windows — or on
+    /// working-memory **pressure** (memory plan M3b). A conversation
+    /// fires when we haven't already reflected since its last activity
+    /// AND either:
+    ///
+    /// * it has been idle ≥ `conversation_idle_s` (the original rule), or
+    /// * its non-superseded working-memory count has crossed the
+    ///   pressure threshold (`WYLDE_SCHED_WM_PRESSURE_N`, default 30) —
+    ///   active sessions never idle, so without this WM grows
+    ///   monotonically to the injection cap, which is exactly the
+    ///   tier-7 pressure M3's render-time degrade defends against.
+    ///   Consolidating mid-session shrinks the never-drop floor at the
+    ///   source.
+    ///
+    /// A successful reflection supersedes the consumed entries (count
+    /// drops, trigger disarms); a skipped one re-arms only after the
+    /// next activity bumps `updated_at` past the reflect stamp.
     async fn tick_conversations(&mut self, now: f64) -> usize {
         let mut fired = 0;
+        let pressure_n = wm_pressure_threshold();
         for meta in conversations_store::list_conversations() {
             let Some(cid) = meta
                 .get("id")
@@ -333,12 +348,24 @@ impl MemoryScheduler {
                 .get(cid)
                 .copied()
                 .unwrap_or(0.0);
-            let idle_for = now - updated_at;
-            if idle_for < self.cadence.conversation_idle_s {
-                continue;
-            }
             if last >= updated_at {
                 continue;
+            }
+            let idle_fire = (now - updated_at) >= self.cadence.conversation_idle_s;
+            // The count read is cheap but still a file read — only taken
+            // when the idle rule didn't already decide to fire.
+            let pressure_fire = !idle_fire
+                && pressure_n
+                    .map(|n| non_superseded_wm_count(cid) >= n)
+                    .unwrap_or(false);
+            if !idle_fire && !pressure_fire {
+                continue;
+            }
+            if pressure_fire {
+                tracing::info!(
+                    "scheduler: WM pressure trigger for {cid} (≥ {} live entries)",
+                    pressure_n.unwrap_or(0)
+                );
             }
             let cid = cid.to_owned();
             self.fire_reflect(&format!("conversation:{cid}")).await;
@@ -408,6 +435,48 @@ fn system_clock() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0)
+}
+
+/// Default working-memory pressure threshold (M3b) — ~75% of the B8
+/// injection cap (40 entries), so consolidation fires before the prompt
+/// window fills.
+const WM_PRESSURE_DEFAULT_N: usize = 30;
+
+/// The M3b pressure threshold: `WYLDE_SCHED_WM_PRESSURE_N` (default
+/// [`WM_PRESSURE_DEFAULT_N`]); `0` / `off` / `false` disables the
+/// trigger entirely (the slice kill switch).
+fn wm_pressure_threshold() -> Option<usize> {
+    match std::env::var("WYLDE_SCHED_WM_PRESSURE_N") {
+        Ok(v) => {
+            let t = v.trim().to_ascii_lowercase();
+            if matches!(t.as_str(), "off" | "false") {
+                return None;
+            }
+            match t.parse::<usize>() {
+                Ok(0) => None,
+                Ok(n) => Some(n),
+                Err(_) => Some(WM_PRESSURE_DEFAULT_N),
+            }
+        }
+        Err(_) => Some(WM_PRESSURE_DEFAULT_N),
+    }
+}
+
+/// Count of live (non-superseded) working-memory entries for a
+/// conversation — the same population reflection would consume.
+fn non_superseded_wm_count(conversation_id: &str) -> usize {
+    crate::memory::short_term::store::get_working_memory(conversation_id)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|e| {
+                    e.get("superseded_by")
+                        .and_then(Value::as_str)
+                        .is_none_or(|s| s.is_empty())
+                })
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 // ── Boot wiring ────────────────────────────────────────────────────────
@@ -626,6 +695,96 @@ mod tests {
         let counts = s.tick().await;
         assert_eq!(counts.conversation, 0);
         assert_eq!(*fired.lock().unwrap(), vec!["long_term".to_owned()]);
+    }
+
+    // ── M3b: working-memory pressure trigger ────────────────────────
+
+    /// Seed a conversation with `live` non-superseded WM entries (plus
+    /// one superseded entry, which must NOT count toward pressure).
+    fn seed_conversation_with_wm(cid: &str, updated_at: i64, live: usize) {
+        let dir = crate::memory::common::conversations_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut wm: Vec<Value> = (0..live)
+            .map(|i| json!({"kind": "fact", "data": format!("entry {i}"), "at": updated_at}))
+            .collect();
+        wm.push(json!({"kind": "fact", "data": "consumed", "superseded_by": "ref-1"}));
+        let doc = json!({
+            "id": cid,
+            "title": "T",
+            "created_at": updated_at,
+            "updated_at": updated_at,
+            "messages": [],
+            "working_memory": wm,
+        });
+        std::fs::write(
+            dir.join(format!("{cid}.json")),
+            serde_json::to_string_pretty(&doc).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn wm_pressure_fires_reflection_for_an_active_conversation() {
+        let _env = TestEnv::new();
+        let base = 1_750_000_000.0_f64;
+        // Active 10s ago — far under the idle gate — but 30 live WM
+        // entries (the default threshold).
+        seed_conversation_with_wm("conv-pressure", (base - 10.0) as i64, 30);
+
+        let clock_cell = Arc::new(Mutex::new(base));
+        let fired: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut s = test_scheduler(&clock_cell, &fired);
+        let counts = s.tick().await;
+        assert_eq!(counts.conversation, 1, "pressure fires despite activity");
+        assert!(fired
+            .lock()
+            .unwrap()
+            .contains(&"conversation:conv-pressure".to_owned()));
+
+        // No re-fire until fresh activity bumps updated_at past the stamp.
+        *clock_cell.lock().unwrap() = base + 60.0;
+        let counts = s.tick().await;
+        assert_eq!(counts.conversation, 0, "stamped — no spin on a skip");
+    }
+
+    #[tokio::test]
+    async fn wm_below_threshold_does_not_fire_pressure() {
+        let _env = TestEnv::new();
+        let base = 1_750_000_000.0_f64;
+        // 29 live + 1 superseded: the superseded entry must not tip it.
+        seed_conversation_with_wm("conv-under", (base - 10.0) as i64, 29);
+
+        let clock_cell = Arc::new(Mutex::new(base));
+        let fired: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut s = test_scheduler(&clock_cell, &fired);
+        let counts = s.tick().await;
+        assert_eq!(counts.conversation, 0);
+    }
+
+    #[tokio::test]
+    async fn wm_pressure_threshold_is_env_tunable_and_disableable() {
+        let _env = TestEnv::new();
+        let base = 1_750_000_000.0_f64;
+        seed_conversation_with_wm("conv-tune", (base - 10.0) as i64, 10);
+
+        let prior = std::env::var_os("WYLDE_SCHED_WM_PRESSURE_N");
+        std::env::set_var("WYLDE_SCHED_WM_PRESSURE_N", "10");
+        let clock_cell = Arc::new(Mutex::new(base));
+        let fired: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut s = test_scheduler(&clock_cell, &fired);
+        let counts = s.tick().await;
+        assert_eq!(counts.conversation, 1, "tuned-down threshold fires at 10");
+
+        // Disabled: re-arm with fresh activity, then assert no fire.
+        std::env::set_var("WYLDE_SCHED_WM_PRESSURE_N", "off");
+        seed_conversation_with_wm("conv-tune", (base + 30.0) as i64, 10);
+        *clock_cell.lock().unwrap() = base + 60.0;
+        let counts = s.tick().await;
+        assert_eq!(counts.conversation, 0, "off disables the trigger");
+        match prior {
+            Some(v) => std::env::set_var("WYLDE_SCHED_WM_PRESSURE_N", v),
+            None => std::env::remove_var("WYLDE_SCHED_WM_PRESSURE_N"),
+        }
     }
 
     #[tokio::test]
