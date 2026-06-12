@@ -26,6 +26,11 @@
 //   * tier 2.5 → `long_term`                       (injected long-term memory
 //                                                   — B3; least-relevant line
 //                                                   sheds first)
+//   * tier 2.7 → `workspace_memory`                (workspace memory records
+//                                                   — memory plan M2 option B;
+//                                                   importance+supersession
+//                                                   tier; least-relevant line
+//                                                   sheds first)
 //   * tier 3  → `workspace_notes`                 (B6 split — lowest-ranked
 //                                                   snippet sheds first)
 //   * tier ~6 → `workspace_persona`               (B6 split — the workspace's
@@ -191,6 +196,15 @@ fn drop_one_lowest_priority(ctx: &mut ChatContext) -> bool {
         return true;
     }
 
+    // tier ~2.7 — workspace memory records (M2 option B): least-relevant
+    // line first (the list arrives best-first). Sits between the global
+    // long-term tier and the user-curated notes: machine-distilled
+    // insights outlast generic recall but yield to what the user wrote
+    // deliberately.
+    if ctx.workspace_memory.pop().is_some() {
+        return true;
+    }
+
     // tier 3 — workspace notes (B6 split): lowest-ranked snippet first.
     if ctx.workspace_notes.pop().is_some() {
         return true;
@@ -329,6 +343,7 @@ mod tests {
             user_profile: "P".into(),
             conversation_summary: Some("a summary".into()),
             long_term: vec!["- best fact".into()],
+            workspace_memory: vec!["- distilled insight".into()],
             workspace_rag: vec!["fn a() {}".into(), "fn b() {}".into()],
             workspace_notes: vec!["uses pytest".into()],
             workspace_persona: Some("Be precise.".into()),
@@ -350,6 +365,11 @@ mod tests {
         // tier 2.5: long-term.
         drop_one_lowest_priority(&mut ctx);
         assert!(ctx.long_term.is_empty());
+        assert!(!ctx.workspace_memory.is_empty());
+
+        // tier ~2.7: workspace memory records (M2 option B).
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.workspace_memory.is_empty());
         assert!(!ctx.workspace_notes.is_empty());
 
         // tier 3: notes.

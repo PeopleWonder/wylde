@@ -23,13 +23,13 @@
 //! ## Scope dispatch on `create`
 //!
 //! `wylde_create` dispatches on `body.scope`: `"long_term"` (or absent)
-//! routes to the long-term save handler. `"workspace"` is **not yet
-//! ported to Rust** — the durable workspace-memory *save* path has no
-//! Rust handler (only the workspace *registry* exists, see
-//! `crate::memory::workspaces`), so the verb returns an explicit
-//! `not_supported` envelope rather than silently writing to the wrong
-//! tier. When that handler lands, this dispatch grows a second arm with
-//! no change to the verb surface.
+//! routes to the long-term save handler; `"workspace"` routes to the
+//! durable workspace-memory save (`memory.workspace.save` — requires
+//! `body.workspace_id`). Workspace-scoped records are the canonical
+//! middle memory tier (memory plan M2, option B): reflection
+//! consolidates into them and the turn gather injects the top-k as the
+//! `### Workspace insights` prompt slot, so a model save here really
+//! does resurface in later workspace-bound turns.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -135,19 +135,34 @@ fn op_create(
     async move {
         match scope.as_str() {
             "" | "long_term" => tools_memory::run_save(Value::Object(body)).await,
-            "workspace" => Ok(json!({
-                "status": "not_supported",
-                "error": "workspace-scoped memory save is not ported to Rust yet; \
-                          only scope=\"long_term\" is available via wylde_create. \
-                          (The workspace memory registry exists but the durable \
-                          save handler does not — see crate::memory::workspaces.)",
-                "scope": "workspace",
-            })),
+            "workspace" => {
+                // M2 (option B): route to the durable workspace store —
+                // the tier the gather injects as "### Workspace
+                // insights". The save handler validates workspace_id +
+                // body and writes entity graph edges best-effort.
+                let reply =
+                    crate::memory::workspace::actions::handle_save(Value::Object(body)).await;
+                if reply.ok {
+                    Ok(json!({
+                        "status": "success",
+                        "scope": "workspace",
+                        "memory": reply.data,
+                    }))
+                } else {
+                    let e = reply.error;
+                    Ok(json!({
+                        "status": "error",
+                        "scope": "workspace",
+                        "error": e
+                            .map(|e| format!("{}: {}", e.code, e.message))
+                            .unwrap_or_else(|| "workspace save failed".to_owned()),
+                    }))
+                }
+            }
             other => Ok(json!({
                 "status": "error",
                 "error": format!(
-                    "unknown memory scope {other:?}; expected \"long_term\" \
-                     (workspace not yet supported)"
+                    "unknown memory scope {other:?}; expected \"long_term\" or \"workspace\""
                 ),
             })),
         }
@@ -246,20 +261,23 @@ fn describe_memory() -> Value {
                 "verb": "wylde_create",
                 "destructive": true,
                 "description": "Save a new memory. Dispatch on body.scope: \"long_term\" \
-                                (default) saves a global record. \"workspace\" is not yet \
-                                supported in Rust.",
+                                (default) saves a global record. \"workspace\" (requires \
+                                body.workspace_id) saves a workspace-scoped record that is \
+                                injected into later prompts for that workspace.",
                 "schema": {
                     "type": "object",
                     "properties": {
                         "body": {
                             "type": "object",
                             "properties": {
-                                "scope": {"type": "string", "enum": ["long_term"], "description": "Memory tier (default long_term)"},
+                                "scope": {"type": "string", "enum": ["long_term", "workspace"], "description": "Memory tier (default long_term)"},
+                                "workspace_id": {"type": "string", "description": "Target workspace (required when scope=workspace)"},
                                 "body": {"type": "string", "description": "Memory text"},
                                 "source": {"type": "string", "description": "Origin tag"},
                                 "importance": {"type": "number", "description": "Importance 0..10"},
-                                "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tag list"},
-                                "vector": {"type": "array", "items": {"type": "number"}, "description": "Precomputed embedding"}
+                                "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tag list (long_term only)"},
+                                "entities": {"type": "array", "items": {"type": "string"}, "description": "Entity names (workspace only)"},
+                                "vector": {"type": "array", "items": {"type": "number"}, "description": "Precomputed embedding (long_term only)"}
                             },
                             "required": ["body"]
                         }
@@ -455,7 +473,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_scope_workspace_is_not_supported() {
+    async fn create_scope_workspace_saves_durable_record() {
+        // M2 (option B): the workspace arm writes to the durable
+        // workspace store — the tier the gather injects.
+        let _env = TestEnv::new();
+        set_embed_dim_3();
+        let out = dispatch(
+            ResourceOp::Create,
+            ResourceRequest {
+                body: json!({
+                    "scope": "workspace",
+                    "workspace_id": "ws-verb",
+                    "body": "saved through the verb",
+                    "importance": 7,
+                }),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(out["status"], "success", "got {out:?}");
+        assert_eq!(out["scope"], "workspace");
+        let id = out["memory"]["id"].as_str().expect("record id");
+        let rec = crate::memory::workspace::store::get("ws-verb", id).expect("persisted");
+        assert_eq!(rec.body, "saved through the verb");
+        assert_eq!(rec.importance, 7);
+    }
+
+    #[tokio::test]
+    async fn create_scope_workspace_requires_workspace_id() {
         let _env = TestEnv::new();
         set_embed_dim_3();
         let out = dispatch(
@@ -466,8 +511,11 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(out["status"], "not_supported");
-        assert_eq!(out["scope"], "workspace");
+        assert_eq!(out["status"], "error");
+        assert!(out["error"]
+            .as_str()
+            .unwrap()
+            .contains("workspace_id is required"));
     }
 
     #[tokio::test]

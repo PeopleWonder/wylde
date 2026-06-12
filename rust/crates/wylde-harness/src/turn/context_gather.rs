@@ -162,6 +162,16 @@ pub(crate) struct ChatContext {
     /// first), above the summary, below the workspace block; deliberately
     /// NOT in never-drop tier 7.
     pub long_term: Vec<String>,
+    /// Workspace memory **records** selected for this turn (memory plan
+    /// M2, option B): top-k from the harness workspace store
+    /// (`memory/workspace/`) — the tier reflection consolidates into for
+    /// workspace-bound conversations, with importance + supersession
+    /// semantics the flat notes tier lacks. Scored-search hits against
+    /// the user message topped up with the importance-ranked head.
+    /// Rendered lines, best-first. OI-8 tier ~2.7 — evictable
+    /// (least-relevant line first), after `long_term`, before the
+    /// user-curated `workspace_notes`.
+    pub workspace_memory: Vec<String>,
     /// Anchors the prompt referenced — the never-drop vocabulary block (tier 7).
     pub vocabulary_anchors: Vec<AnchorBlock>,
     /// Workspace RAG snippets (B6 split). OI-8 tier **1** — the generic
@@ -503,6 +513,12 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
             Err(SourceStatus::Empty) => {}
         }
 
+        // M2 (option B): the workspace memory records tier — in-process
+        // like short-term/long-term (the store is harness-local), so it
+        // doesn't ride the WorkspaceSource trait and never degrades the
+        // turn.
+        ctx.workspace_memory = gather_workspace_memory(ws, user_message);
+
         let mut tokens = candidate_tokens(user_message);
 
         // Slice M (Plan §5.8): durable ignores (global + workspace +
@@ -689,6 +705,65 @@ async fn gather_long_term(user_message: &str) -> Vec<String> {
     selected
         .iter()
         .map(|r| format!("- {}", r.body.trim()))
+        .collect()
+}
+
+/// How many workspace memory records ride each turn (memory plan M2,
+/// option B). Matches the workspace search verb's default hit count.
+const WORKSPACE_MEMORY_LIMIT: usize = 5;
+
+/// Whether the workspace-memory gather slot is enabled
+/// (`WYLDE_WORKSPACE_MEMORY_SLOT=off|0|false` kill switch; on by
+/// default — the M2 behavioral-slice switch).
+fn workspace_memory_slot_enabled() -> bool {
+    match std::env::var("WYLDE_WORKSPACE_MEMORY_SLOT") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "off" | "0" | "false"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// Select this turn's workspace memory record lines (memory plan M2,
+/// option B — Aaron's call: the harness workspace store, with its
+/// importance + supersession semantics, is the canonical middle tier
+/// and must reach prompts).
+///
+/// Selection mirrors [`gather_long_term`]'s shape on the workspace
+/// store's own machinery: `search_records` hits against the user
+/// message (token-overlap similarity × importance × recency decay —
+/// non-superseded records only), topped up with the importance-ranked
+/// `list_records` head when the search comes back thin. In-process,
+/// synchronous, fail-soft: an empty store yields no lines and a plain
+/// turn stays byte-identical.
+fn gather_workspace_memory(workspace_id: &str, user_message: &str) -> Vec<String> {
+    use crate::memory::workspace::store as ws_store;
+
+    if !workspace_memory_slot_enabled() {
+        return Vec::new();
+    }
+    let hits = ws_store::search_records(workspace_id, user_message, WORKSPACE_MEMORY_LIMIT, None);
+    let mut selected: Vec<(String, String)> = hits
+        .into_iter()
+        .map(|h| (h.id, h.body))
+        .collect();
+    if selected.len() < WORKSPACE_MEMORY_LIMIT {
+        // Top up with the importance-ranked head the search missed —
+        // high-importance insights ride even with zero token overlap
+        // (the same "core block" rule B3 gave the long-term tier).
+        for r in ws_store::list_records(workspace_id, false) {
+            if selected.len() >= WORKSPACE_MEMORY_LIMIT {
+                break;
+            }
+            if !selected.iter().any(|(id, _)| *id == r.id) {
+                selected.push((r.id, r.body));
+            }
+        }
+    }
+    selected
+        .iter()
+        .map(|(_, body)| format!("- {}", body.trim()))
         .collect()
 }
 
@@ -1183,6 +1258,111 @@ mod tests {
         )
         .await;
         assert!(!out.system_slots.contains("### Conversation summary"));
+    }
+
+    // ── M2 (option B): workspace memory records → the insights slot ────
+
+    #[tokio::test]
+    async fn workspace_memory_records_feed_the_insights_slot() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        use crate::memory::workspace::store as ws_store;
+        let v1 = ws_store::save_new("ws", "stale guidance", "reflection", Some(6.0), vec![])
+            .unwrap();
+        // Supersede v1 — only the replacement may ride.
+        ws_store::update("ws", &v1.id, Some("fresh distilled guidance"), None, None).unwrap();
+        ws_store::save_new("ws", "unrelated high-value insight", "chat", Some(9.0), vec![])
+            .unwrap();
+
+        let src = MockSource::default();
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "anything at all",
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(
+            out.system_slots.contains("### Workspace insights"),
+            "slot present: {}",
+            out.system_slots
+        );
+        assert!(out.system_slots.contains("- fresh distilled guidance"));
+        assert!(out.system_slots.contains("- unrelated high-value insight"));
+        assert!(
+            !out.system_slots.contains("stale guidance"),
+            "superseded record must not ride"
+        );
+
+        // No workspace → no records read, no slot.
+        let out = gather_with(
+            &src,
+            None,
+            "anything at all",
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(!out.system_slots.contains("### Workspace insights"));
+    }
+
+    #[tokio::test]
+    async fn workspace_memory_search_hits_outrank_importance_fillers() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        use crate::memory::workspace::store as ws_store;
+        // Six high-importance fillers + one low-importance record that
+        // actually matches the user message: the search hit must ride.
+        for i in 0..6 {
+            ws_store::save_new("ws", &format!("filler insight {i}"), "", Some(9.0), vec![])
+                .unwrap();
+        }
+        ws_store::save_new(
+            "ws",
+            "the eviction ladder orders the gather slots",
+            "",
+            Some(2.0),
+            vec![],
+        )
+        .unwrap();
+
+        let out = gather_with(
+            &MockSource::default(),
+            Some("ws"),
+            "how does the eviction ladder order slots?",
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        let slots = &out.system_slots;
+        let insights_at = slots.find("### Workspace insights").expect("slot");
+        // The hit leads the list — search hits come before importance
+        // fillers, so the first line after the header is the match.
+        let after_header = &slots[insights_at..];
+        let first_line = after_header.lines().nth(1).expect("first insight line");
+        assert_eq!(first_line, "- the eviction ladder orders the gather slots");
+    }
+
+    #[tokio::test]
+    async fn workspace_memory_slot_kill_switch() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        use crate::memory::workspace::store as ws_store;
+        ws_store::save_new("ws", "should not ride", "", Some(8.0), vec![]).unwrap();
+
+        std::env::set_var("WYLDE_WORKSPACE_MEMORY_SLOT", "off");
+        let out = gather_with(
+            &MockSource::default(),
+            Some("ws"),
+            "anything",
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        std::env::remove_var("WYLDE_WORKSPACE_MEMORY_SLOT");
+        assert!(!out.system_slots.contains("### Workspace insights"));
     }
 
     // ── B1: windowed conversation history ───────────────────────────────

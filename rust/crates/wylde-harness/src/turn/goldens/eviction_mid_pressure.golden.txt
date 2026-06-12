@@ -14,6 +14,10 @@ Always show diffs.
 - prefers Rust over Python for new modules
 - works from a Windows box
 
+### Workspace insights
+- the gather refactor must keep render byte-stable
+- goldens bless via WYLDE_BLESS_GOLDENS
+
 ### Vocabulary
 - {{the_gather}} — the pre-LLM context gather (code symbol `gather_with`)
 

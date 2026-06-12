@@ -132,6 +132,10 @@ fn fixture_context() -> ChatContext {
             "- prefers Rust over Python for new modules".into(),
             "- works from a Windows box".into(),
         ],
+        workspace_memory: vec![
+            "- the gather refactor must keep render byte-stable".into(),
+            "- goldens bless via WYLDE_BLESS_GOLDENS".into(),
+        ],
         vocabulary_anchors: vec![AnchorBlock {
             identifier: "the_gather".into(),
             text: "{{the_gather}} — the pre-LLM context gather (code symbol `gather_with`)".into(),
@@ -331,6 +335,16 @@ mod tests {
         crate::memory::conversations::store::save_conversation(&doc).unwrap();
         // (No long-term records: keeps the e2e embed-free and fast; the
         // long-term slot is pinned by the fixture-level goldens above.)
+        // One workspace memory record (M2 option B) — the in-process
+        // records tier renders deterministically (body text only).
+        crate::memory::workspace::store::save_new(
+            "ws",
+            "the gather flow is being refactored slice by slice",
+            "reflection:conversation:conv-golden",
+            Some(8.0),
+            Vec::new(),
+        )
+        .unwrap();
 
         let out = crate::turn::context_gather::gather_with(
             &GoldenSource,

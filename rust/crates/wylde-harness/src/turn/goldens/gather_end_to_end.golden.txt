@@ -7,6 +7,9 @@ Style: terse
 ### Conversation summary
 The user has been refactoring the gather flow.
 
+### Workspace insights
+- the gather flow is being refactored slice by slice
+
 ### Vocabulary
 - {{the_gather}} — the pre-LLM context gather
 
