@@ -145,6 +145,59 @@ impl UserProfile {
 /// [`UserProfile::to_prompt_block`]. Improvement plan B8.
 const FREE_TEXT_RULES_MAX_CHARS: usize = 8_000;
 
+/// The M3 tier-7 degrade ladder for the rendered rules block: each call
+/// to [`degrade_rules_once`] steps the rules text down to the next
+/// ceiling, and the final step drops the rules block entirely. The
+/// name/style/preference lines above it are the hard floor and are
+/// never touched here.
+const RULES_DEGRADE_STEPS: &[usize] = &[4_000, 1_000, 0];
+
+/// The header `to_prompt_block` renders ahead of the free-text rules.
+const RULES_HEADER: &str = "User rules (follow verbatim):";
+
+/// Marker appended when the M3 degrade pass truncates the rules render.
+const RULES_DEGRADE_MARKER: &str =
+    "[user rules truncated to fit the model's context window — shorten them in Settings]";
+
+/// Shrink the RENDERED profile block's rules section one degrade step
+/// (M3 tier-7 pass): 4k chars → 1k → gone. Operates on the rendered
+/// string — the stored profile is never modified. Returns `false` when
+/// there is no rules section left to shrink (the name/style floor).
+pub(crate) fn degrade_rules_once(block: &mut String) -> bool {
+    let Some(pos) = block.find(RULES_HEADER) else {
+        return false;
+    };
+    let body_start = pos + RULES_HEADER.len();
+    let body = block[body_start..].trim_start_matches('\n');
+    let body_len = body.chars().count();
+    // The marker the truncation appends counts toward the next call's
+    // body length — a step only applies when it STRICTLY shrinks, or
+    // re-applying the same ceiling would loop forever.
+    let marker_len = RULES_DEGRADE_MARKER.chars().count() + 1; // + '\n'
+    for &step in RULES_DEGRADE_STEPS {
+        if step == 0 {
+            // Drop the whole rules section (header included). The next
+            // call finds no header and reports the floor.
+            block.truncate(pos);
+            while block.ends_with('\n') {
+                block.pop();
+            }
+            return true;
+        }
+        if body_len <= step + marker_len {
+            continue;
+        }
+        let kept: String = body.chars().take(step).collect();
+        block.truncate(body_start);
+        block.push('\n');
+        block.push_str(&kept);
+        block.push('\n');
+        block.push_str(RULES_DEGRADE_MARKER);
+        return true;
+    }
+    false
+}
+
 /// `null`/empty → `None`; a non-empty string → `Some`.
 fn string_or_clear(v: &Value) -> Option<String> {
     v.as_str().map(str::to_owned).filter(|s| !s.is_empty())

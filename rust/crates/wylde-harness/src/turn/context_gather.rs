@@ -208,6 +208,12 @@ pub(crate) struct GatheredContext {
     /// True when an active workspace was requested but its prompt block was
     /// unreachable — the driver surfaces the inline degraded notice.
     pub degraded: bool,
+    /// True when the M3 tier-7 degrade pass had to shrink never-drop
+    /// content (working-memory window, profile rules, vocabulary) to fit
+    /// a small model's window. The shrunk slots carry their own visible
+    /// markers; this flag is for logging/UI annotation (the B8 Settings
+    /// surface, when it lands).
+    pub tier7_degraded: bool,
 }
 
 // ── workspace data source (real + mockable) ──────────────────────────────
@@ -557,7 +563,10 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     }
 
     // Trim to the model's budget (OI-8), then render the named slots.
-    token_budget::evict(&mut ctx, slot_budget);
+    // When the never-drop tier alone still exceeds the budget, evict's
+    // M3 degrade pass shrinks tier-7 content rather than shipping an
+    // over-window prompt Ollama would front-truncate.
+    let tier7_degraded = token_budget::evict(&mut ctx, slot_budget);
     let system_slots = prompt_assembly::render(&ctx);
     let history = ctx
         .history
@@ -569,6 +578,7 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         system_slots,
         history,
         degraded,
+        tier7_degraded,
     }
 }
 
@@ -822,6 +832,45 @@ fn cap_short_term(lines: Vec<String>) -> Vec<String> {
         );
     }
     out
+}
+
+/// The M3 tier-7 degrade floor: the newest working-memory entries that
+/// survive even a 4096-window squeeze. Below this the slot stops being
+/// "memory" at all, and the trade flips back toward overshooting.
+pub(crate) const WORKING_MEMORY_DEGRADE_FLOOR: usize = 5;
+
+/// Shed the OLDEST real working-memory line for the M3 tier-7 degrade
+/// pass, maintaining the visible omission marker (same format the B8
+/// injection cap writes, so the model sees one consistent signal).
+/// Returns `false` — nothing removed — once only
+/// [`WORKING_MEMORY_DEGRADE_FLOOR`] real entries remain.
+pub(crate) fn degrade_short_term_once(lines: &mut Vec<String>) -> bool {
+    let omitted = parse_omission_marker(lines.first());
+    let has_marker = omitted.is_some();
+    let real = lines.len() - usize::from(has_marker);
+    if real <= WORKING_MEMORY_DEGRADE_FLOOR {
+        return false;
+    }
+    // Remove the oldest real entry (just after the marker when present).
+    lines.remove(usize::from(has_marker));
+    let total_omitted = omitted.unwrap_or(0) + 1;
+    let marker =
+        format!("- [{total_omitted} older working-memory entries omitted (injection cap)]");
+    if has_marker {
+        lines[0] = marker;
+    } else {
+        lines.insert(0, marker);
+    }
+    true
+}
+
+/// Parse the omitted-count out of a B8 omission marker line, when `line`
+/// is one.
+fn parse_omission_marker(line: Option<&String>) -> Option<usize> {
+    let l = line?;
+    let rest = l.strip_prefix("- [")?;
+    let end = rest.find(" older working-memory entries omitted (injection cap)]")?;
+    rest[..end].parse().ok()
 }
 
 /// Render one short-term working-memory entry to a compact line. Object entries
