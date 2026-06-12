@@ -67,10 +67,24 @@ use crate::memory::short_term::store as short_term_store;
 use crate::memory::workspace;
 use crate::model_registry::model_state;
 
-/// Importance assigned to a conversation synthesis. Working-memory
-/// entries carry no importance of their own, so Python pinned the
-/// "reflection-worthy floor" — 7 — and we mirror it.
+/// Importance floor for a conversation synthesis. Python pinned a
+/// constant 7 because working-memory entries carried no importance of
+/// their own; since M6 the extractor stamps one per entry, so the
+/// synthesis inherits `max(7, max input importance)` — the same rule
+/// the long-term cycle always used ([`reflection_importance`]).
 pub const CONVERSATION_REFLECTION_IMPORTANCE: f64 = 7.0;
+
+/// The M6 inheritance rule: the synthesis is at least
+/// "reflection-worthy" (7) and at least as important as its most
+/// important input. Inputs without an importance field (pre-M6
+/// entries) contribute nothing.
+fn reflection_importance(inputs: &[Value]) -> f64 {
+    let max_input = inputs
+        .iter()
+        .filter_map(|e| e.get("importance").and_then(Value::as_f64))
+        .fold(0.0_f64, f64::max);
+    CONVERSATION_REFLECTION_IMPORTANCE.max(max_input)
+}
 
 /// Run one consolidation cycle for `scope`. Mirrors
 /// `reflection.py::reflect` exactly:
@@ -222,7 +236,7 @@ async fn reflect_conversation(
                 ws_id,
                 &text,
                 &source,
-                Some(CONVERSATION_REFLECTION_IMPORTANCE),
+                Some(reflection_importance(&inputs)),
                 Vec::new(),
             ) {
                 Ok(r) => r.id,
@@ -253,7 +267,7 @@ async fn reflect_conversation(
         match long_term::save(
             &text,
             &source,
-            Some(CONVERSATION_REFLECTION_IMPORTANCE),
+            Some(reflection_importance(&inputs)),
             vec![REFLECTION_TAG.to_owned()],
             None,
         ) {
@@ -573,6 +587,24 @@ mod tests {
             self.calls.lock().unwrap().push((messages, model));
             self.reply.clone()
         }
+    }
+
+    // ── M6: synthesis inherits the inputs' importance ───────────────
+
+    #[test]
+    fn reflection_importance_is_max_of_floor_and_inputs() {
+        // No importances (pre-M6 entries) → the floor.
+        let inputs = vec![json!({"data": "x"}), json!({"data": "y"})];
+        assert_eq!(reflection_importance(&inputs), 7.0);
+        // An 8-importance input lifts the synthesis with it.
+        let inputs = vec![
+            json!({"data": "x", "importance": 4}),
+            json!({"data": "y", "importance": 8}),
+        ];
+        assert_eq!(reflection_importance(&inputs), 8.0);
+        // Low importances never pull the synthesis below the floor.
+        let inputs = vec![json!({"data": "x", "importance": 2})];
+        assert_eq!(reflection_importance(&inputs), 7.0);
     }
 
     // ── M5: workspace-tier dedup (token overlap, no embedder) ───────
