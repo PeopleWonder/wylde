@@ -470,9 +470,9 @@ fn non_superseded_wm_count(conversation_id: &str) -> usize {
             entries
                 .iter()
                 .filter(|e| {
-                    !e.get("superseded_by")
+                    e.get("superseded_by")
                         .and_then(Value::as_str)
-                        .is_some_and(|s| !s.is_empty())
+                        .is_none_or(|s| s.is_empty())
                 })
                 .count()
         })
