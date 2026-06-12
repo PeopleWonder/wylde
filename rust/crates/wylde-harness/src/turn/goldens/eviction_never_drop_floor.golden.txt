@@ -3,12 +3,7 @@
 ### User profile
 Name: Golden User
 Style: terse
-User rules (follow verbatim):
-Always show diffs.
 
 ### Conversation memory
 - the user is renaming the gather module
 - tests must stay green
-
-### Vocabulary
-- {{the_gather}} — the pre-LLM context gather (code symbol `gather_with`)

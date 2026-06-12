@@ -74,6 +74,18 @@
 //   — the user profile et al. are load-bearing and the whole feature assumes
 //   they're always present.
 //
+// THE TIER-7 DEGRADE PASS (memory plan M3):
+//   When everything droppable is gone and the render STILL exceeds the
+//   budget (a real 4096-window model under working-memory pressure), the
+//   pass in `degrade_tier7` shrinks never-drop CONTENT instead of shipping
+//   an over-window prompt the server would front-truncate: the
+//   working-memory window sheds oldest-first to a 5-entry floor, the
+//   profile's free-text-rules render steps 4k → 1k → dropped, vocabulary
+//   anchors go last. Name/style/preference profile lines + the newest 5
+//   WM entries are the hard floor. Each shrink leaves a visible marker.
+//   Off via WYLDE_TIER7_DEGRADE=off, and always off when
+//   WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET pins the budget explicitly.
+//
 // NOTE — brief vs spec (the reconciliation the last six slices also made; the
 // authoritative Plan v2 §7/§9.1 + Build Order Appendix A win): the slice brief
 // ordered `workspace_notes` ABOVE `symbol_context` (notes dropped later). The
@@ -155,22 +167,105 @@ pub(crate) fn history_tokens(ctx: &ChatContext) -> usize {
 }
 
 /// Evict lowest-priority context (OI-8) until the assembled prompt fits
-/// `max_tokens`, or until only never-drop (tier 7) material remains.
+/// `max_tokens`, or until only never-drop (tier 7) material remains —
+/// then, when even that overshoots, run the **M3 tier-7 degrade pass**
+/// rather than shipping an over-window prompt a small model's server
+/// would front-truncate (killing the base instruction + tool catalog,
+/// the most load-bearing bytes — evaluation §3.3).
+///
+/// Returns `true` when the degrade pass shrank tier-7 content; the
+/// shrunk slots carry their own visible markers.
 ///
 /// Measures against the *rendered* output ([`prompt_assembly::render`]) so the
 /// budget reflects exactly what the model receives, not an internal sum.
-pub(crate) fn evict(ctx: &mut ChatContext, max_tokens: usize) {
+pub(crate) fn evict(ctx: &mut ChatContext, max_tokens: usize) -> bool {
     loop {
         let rendered = prompt_assembly::render(ctx);
         if estimate_tokens(&rendered) + history_tokens(ctx) <= max_tokens {
-            return;
+            return false;
         }
         if !drop_one_lowest_priority(ctx) {
-            // Nothing droppable left — the never-drop tier alone is over budget.
-            // Better to overshoot on the load-bearing slots than discard them.
-            return;
+            // Nothing droppable left — the never-drop tier alone is over
+            // budget. Pre-M3 this returned (deliberate overshoot); now the
+            // degrade pass shrinks the tier-7 *content* instead.
+            break;
         }
     }
+    if !tier7_degrade_enabled() {
+        return false;
+    }
+    degrade_tier7(ctx, max_tokens)
+}
+
+/// Whether the M3 degrade pass runs. Off when:
+/// * `WYLDE_TIER7_DEGRADE=off|0|false` (the slice kill switch), or
+/// * `WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET` is set — the explicit
+///   deployment knob keeps meaning "I know what I'm doing": an operator
+///   who pinned the budget gets the historical deliberate overshoot.
+fn tier7_degrade_enabled() -> bool {
+    if std::env::var("WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    match std::env::var("WYLDE_TIER7_DEGRADE") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "off" | "0" | "false"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// Shrink never-drop content until the render fits `max_tokens` LESS a
+/// ~10% pessimism margin (the B7 estimator's error band runs ±25-30% on
+/// pathological content; 10% under-target keeps the fit invariant honest
+/// for the common case without gutting the floor), or until the hard
+/// floor is reached. Degrade order:
+///
+/// 1. working-memory window — oldest entries first, down to the newest
+///    [`crate::turn::context_gather::WORKING_MEMORY_DEGRADE_FLOOR`];
+/// 2. profile free-text rules render — 4k chars → 1k → dropped
+///    (name/style/preference lines are the hard floor, never touched);
+/// 3. vocabulary anchors — smallest and highest-signal, degrade last.
+fn degrade_tier7(ctx: &mut ChatContext, max_tokens: usize) -> bool {
+    let target = max_tokens.saturating_sub(max_tokens / 10);
+    let mut changed = false;
+    loop {
+        let rendered = prompt_assembly::render(ctx);
+        if estimate_tokens(&rendered) + history_tokens(ctx) <= target {
+            break;
+        }
+        if !degrade_one_tier7(ctx) {
+            // Hard floor reached — overshoot the remainder (the floor is
+            // sized to fit any real window; see WORKING_MEMORY_DEGRADE_FLOOR).
+            break;
+        }
+        changed = true;
+    }
+    if changed {
+        tracing::warn!(
+            "token_budget: tier-7 degrade pass shrank never-drop content to fit \
+             a {max_tokens}-token slot budget (small context window)"
+        );
+    }
+    changed
+}
+
+/// One unit of tier-7 degradation, in the documented order. Returns
+/// `false` at the hard floor.
+fn degrade_one_tier7(ctx: &mut ChatContext) -> bool {
+    if crate::turn::context_gather::degrade_short_term_once(&mut ctx.conversation_short_term) {
+        return true;
+    }
+    if crate::user_profile::profile::degrade_rules_once(&mut ctx.user_profile) {
+        return true;
+    }
+    if ctx.vocabulary_anchors.pop().is_some() {
+        return true;
+    }
+    false
 }
 
 /// Remove exactly one unit of the lowest-priority surviving context. Returns
@@ -453,9 +548,11 @@ mod tests {
     }
 
     #[test]
-    fn never_drops_profile_short_term_or_vocabulary_even_when_over_budget() {
+    fn hard_floor_survives_even_when_over_budget() {
+        // The M3 floor: profile lines WITHOUT a rules section, ≤5 WM
+        // entries, and no anchors left to shed — nothing degradable.
         let mut ctx = ChatContext {
-            user_profile: "a very long profile ".repeat(50),
+            user_profile: "Name: Aaron\nStyle: terse".into(),
             conversation_short_term: vec!["- working memory line".into()],
             vocabulary_anchors: vec![AnchorBlock {
                 identifier: "x".into(),
@@ -463,11 +560,160 @@ mod tests {
             }],
             ..ChatContext::default()
         };
-        // Absurdly small budget: nothing droppable, so the never-drop tier
-        // survives intact (overshoot rather than discard).
-        evict(&mut ctx, 1);
-        assert!(!ctx.user_profile.is_empty());
+        // Absurdly small budget: the degrade pass sheds the anchor (the
+        // last degradable unit) and then overshoots rather than discard
+        // the floor.
+        let degraded = evict(&mut ctx, 1);
+        assert!(degraded, "the anchor shed counts as degradation");
+        assert_eq!(ctx.user_profile, "Name: Aaron\nStyle: terse");
         assert_eq!(ctx.conversation_short_term.len(), 1);
-        assert_eq!(ctx.vocabulary_anchors.len(), 1);
+        assert!(ctx.vocabulary_anchors.is_empty(), "anchors degrade last");
+    }
+
+    // ── the M3 tier-7 degrade pass ───────────────────────────────────
+
+    /// A guard that pins the degrade-pass env knobs for one test.
+    struct DegradeEnvGuard {
+        _g: std::sync::MutexGuard<'static, ()>,
+        prior_budget: Option<std::ffi::OsString>,
+        prior_switch: Option<std::ffi::OsString>,
+    }
+
+    impl DegradeEnvGuard {
+        fn new() -> Self {
+            let g = crate::memory::common::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let prior_budget = std::env::var_os("WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET");
+            let prior_switch = std::env::var_os("WYLDE_TIER7_DEGRADE");
+            std::env::remove_var("WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET");
+            std::env::remove_var("WYLDE_TIER7_DEGRADE");
+            Self {
+                _g: g,
+                prior_budget,
+                prior_switch,
+            }
+        }
+    }
+
+    impl Drop for DegradeEnvGuard {
+        fn drop(&mut self) {
+            match self.prior_budget.take() {
+                Some(v) => std::env::set_var("WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET", v),
+                None => std::env::remove_var("WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET"),
+            }
+            match self.prior_switch.take() {
+                Some(v) => std::env::set_var("WYLDE_TIER7_DEGRADE", v),
+                None => std::env::remove_var("WYLDE_TIER7_DEGRADE"),
+            }
+        }
+    }
+
+    /// A never-drop-heavy context: 20 WM lines + a profile with a big
+    /// rules section + one anchor. ~No droppable tiers at all.
+    fn tier7_heavy_ctx() -> ChatContext {
+        ChatContext {
+            user_profile: format!(
+                "Name: Aaron\nStyle: terse\nUser rules (follow verbatim):\n{}",
+                "always run the linter before committing anything anywhere. ".repeat(100)
+            ),
+            conversation_short_term: (0..20)
+                .map(|i| format!("- working memory entry {i} with some real content"))
+                .collect(),
+            vocabulary_anchors: vec![AnchorBlock {
+                identifier: "x".into(),
+                text: "{{x}} — a vocabulary definition".into(),
+            }],
+            ..ChatContext::default()
+        }
+    }
+
+    #[test]
+    fn degrade_pass_fits_the_render_to_a_small_window() {
+        let _env = DegradeEnvGuard::new();
+        let mut ctx = tier7_heavy_ctx();
+        let full = estimate_tokens(&prompt_assembly::render(&ctx));
+        assert!(full > 600, "fixture must overshoot the budget under test");
+
+        let degraded = evict(&mut ctx, 600);
+        assert!(degraded);
+        let after = estimate_tokens(&prompt_assembly::render(&ctx)) + history_tokens(&ctx);
+        // The M3 fit invariant: rendered slots fit the budget (the pass
+        // targets budget − 10% for estimator slack).
+        assert!(
+            after <= 600,
+            "degraded render must fit the budget: {after} > 600"
+        );
+        // The shrunk slots carry visible markers.
+        let rendered = prompt_assembly::render(&ctx);
+        assert!(rendered.contains("older working-memory entries omitted"));
+        // The hard floor held: name/style + the newest 5 WM entries.
+        assert!(rendered.contains("Name: Aaron"));
+        assert!(rendered.contains("- working memory entry 19"));
+        assert!(rendered.contains("- working memory entry 15"));
+    }
+
+    #[test]
+    fn degrade_sheds_wm_before_rules_before_anchors() {
+        let _env = DegradeEnvGuard::new();
+        let mut ctx = tier7_heavy_ctx();
+        // First degrade unit: the oldest WM entry, marker prepended.
+        assert!(super::degrade_one_tier7(&mut ctx));
+        assert!(ctx.conversation_short_term[0].contains("1 older working-memory"));
+        assert!(!ctx
+            .conversation_short_term
+            .iter()
+            .any(|l| l.contains("entry 0 ")));
+        assert!(ctx.user_profile.contains("User rules"), "rules untouched");
+
+        // Exhaust WM down to the floor; rules degrade next.
+        while crate::turn::context_gather::degrade_short_term_once(
+            &mut ctx.conversation_short_term,
+        ) {}
+        assert_eq!(ctx.conversation_short_term.len(), 5 + 1, "floor + marker");
+        assert!(super::degrade_one_tier7(&mut ctx));
+        assert!(
+            ctx.user_profile.contains("truncated to fit"),
+            "rules step down with a marker: {}",
+            ctx.user_profile
+        );
+        // Two more steps: 1k, then dropped entirely.
+        assert!(super::degrade_one_tier7(&mut ctx));
+        assert!(super::degrade_one_tier7(&mut ctx));
+        assert!(
+            !ctx.user_profile.contains("User rules"),
+            "rules section dropped at the last step: {}",
+            ctx.user_profile
+        );
+        assert!(ctx.user_profile.contains("Name: Aaron"), "hard floor");
+
+        // Anchors are the last degradable unit.
+        assert!(super::degrade_one_tier7(&mut ctx));
+        assert!(ctx.vocabulary_anchors.is_empty());
+        assert!(!super::degrade_one_tier7(&mut ctx), "hard floor reached");
+    }
+
+    #[test]
+    fn explicit_budget_knob_disables_the_degrade_pass() {
+        let _env = DegradeEnvGuard::new();
+        std::env::set_var("WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET", "16000");
+        let mut ctx = tier7_heavy_ctx();
+        let before = ctx.clone();
+        let degraded = evict(&mut ctx, 100);
+        assert!(!degraded);
+        assert_eq!(ctx, before, "explicit knob keeps the historical overshoot");
+        std::env::remove_var("WYLDE_HARNESS_CONTEXT_TOKEN_BUDGET");
+    }
+
+    #[test]
+    fn kill_switch_disables_the_degrade_pass() {
+        let _env = DegradeEnvGuard::new();
+        std::env::set_var("WYLDE_TIER7_DEGRADE", "off");
+        let mut ctx = tier7_heavy_ctx();
+        let before = ctx.clone();
+        let degraded = evict(&mut ctx, 100);
+        assert!(!degraded);
+        assert_eq!(ctx, before);
+        std::env::remove_var("WYLDE_TIER7_DEGRADE");
     }
 }
