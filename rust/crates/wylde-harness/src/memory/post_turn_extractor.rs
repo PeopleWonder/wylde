@@ -46,6 +46,10 @@ pub const EXTRACTION_PROMPT_ID: &str = "chat.post_turn_extraction";
 
 /// Per-turn cap on extracted working-memory entries.
 pub const MAX_MEMORY_ENTRIES: usize = 3;
+/// Ceiling on extractor-assigned importance (M6): 9–10 are reserved
+/// for the user's own hand-flagged memories; a small-model extractor
+/// emitting junk tens must not outrank those.
+pub const MAX_EXTRACTOR_IMPORTANCE: i32 = 8;
 /// Per-turn cap on profile proposals handed to the OI-7 gate.
 pub const MAX_PROFILE_PROPOSALS: usize = 2;
 /// Per-turn cap on anchor proposals forwarded to the workspace gate.
@@ -61,6 +65,12 @@ pub struct MemoryEntry {
     /// `fact` / `decision` / `preference` (free-form; `fact` default).
     pub kind: String,
     pub text: String,
+    /// LLM-judged importance (memory plan M6), normalised 1..=10 at
+    /// parse time and capped at [`MAX_EXTRACTOR_IMPORTANCE`] — 9–10
+    /// stay reserved for hand-flagged memories. Rides the working-
+    /// memory entry so the consolidation cycle inherits real signal
+    /// instead of pinning a constant.
+    pub importance: i32,
 }
 
 /// One extracted anchor candidate (always a concept — the extractor has
@@ -141,7 +151,21 @@ pub fn parse_extraction(raw: &str, conversation_id: &str) -> Extraction {
                 k @ ("fact" | "decision" | "preference") => k.to_owned(),
                 _ => "fact".to_owned(),
             };
-            out.memory_entries.push(MemoryEntry { kind, text });
+            // M6: the extractor's importance judgment, normalised by the
+            // shared rule (numeric → clamp 1..=10; missing/garbage → the
+            // length+entity heuristic, its documented fallback role) and
+            // capped below the hand-flagged band.
+            let importance = crate::memory::long_term::normalize_importance(
+                e.get("importance").and_then(Value::as_f64),
+                &text,
+                0,
+            )
+            .min(MAX_EXTRACTOR_IMPORTANCE);
+            out.memory_entries.push(MemoryEntry {
+                kind,
+                text,
+                importance,
+            });
         }
     }
 
@@ -316,9 +340,10 @@ pub async fn apply(
 ) -> ExtractionStats {
     let mut stats = ExtractionStats::default();
 
-    // 1. Working-memory entries (the store stamps `at`).
+    // 1. Working-memory entries (the store stamps `at`). The M6
+    // importance rides each entry so consolidation inherits it.
     for e in &extraction.memory_entries {
-        let entry = json!({ "kind": e.kind, "data": e.text });
+        let entry = json!({ "kind": e.kind, "data": e.text, "importance": e.importance });
         match crate::memory::short_term::store::append_working_memory(conversation_id, entry) {
             Ok(_) => stats.memory_entries_saved += 1,
             Err(err) => {
@@ -467,6 +492,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_importance_clamps_and_falls_back_to_heuristic() {
+        let raw = json!({
+            "memory_entries": [
+                {"text": "judged entry", "importance": 6},
+                {"text": "over-enthusiastic entry", "importance": 10},
+                {"text": "short", "importance": "junk"},
+            ],
+        })
+        .to_string();
+        let x = parse_extraction(&raw, "c1");
+        assert_eq!(x.memory_entries[0].importance, 6, "LLM judgment kept");
+        assert_eq!(
+            x.memory_entries[1].importance, MAX_EXTRACTOR_IMPORTANCE,
+            "9-10 reserved for hand-flagged"
+        );
+        // Non-numeric → the length+entity heuristic (3 for a short body).
+        assert_eq!(x.memory_entries[2].importance, 3, "heuristic fallback");
+    }
+
+    #[test]
     fn parse_garbage_yields_empty_extraction() {
         assert!(parse_extraction("", "c").is_empty());
         assert!(parse_extraction("no json here", "c").is_empty());
@@ -509,6 +554,7 @@ mod tests {
             memory_entries: vec![MemoryEntry {
                 kind: "decision".into(),
                 text: "pin gpui at b3d93d44".into(),
+                importance: 6,
             }],
             profile_proposals: vec![
                 ProposalCandidate {
@@ -542,6 +588,7 @@ mod tests {
         assert_eq!(wm[0]["kind"], "decision");
         assert_eq!(wm[0]["data"], "pin gpui at b3d93d44");
         assert!(wm[0].get("at").is_some(), "store stamps the timestamp");
+        assert_eq!(wm[0]["importance"], 6, "M6 importance rides the entry");
 
         // The admitted proposal is in the pending queue, not the profile.
         let store = crate::user_profile::store::read();
