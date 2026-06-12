@@ -671,8 +671,13 @@ const LONG_TERM_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_mi
 /// hits (similarity + importance + recency — the scoring formula finally
 /// runs for injection, not just the `memory.search` verb), topped up with
 /// `core_block` records the search missed. Embedder down/over-budget ⇒
-/// pure `core_block` (importance desc). Every injected record's
-/// `last_used_at` is bumped so the recency term breathes.
+/// pure `core_block` (importance desc).
+///
+/// Touch damping (memory plan M5): only the **similarity hits** get
+/// their `last_used_at` bumped. Pre-M5 every injected record was
+/// touched, so the importance-sorted `core_block` fillers re-warmed
+/// themselves every turn — injection was self-reinforcing and the
+/// recency term could never demote a stale "core" record.
 async fn gather_long_term(user_message: &str) -> Vec<String> {
     use crate::memory::long_term as entries;
 
@@ -683,6 +688,7 @@ async fn gather_long_term(user_message: &str) -> Vec<String> {
     }
 
     let mut selected = core;
+    let mut hit_ids: Vec<String> = Vec::new();
     let embed = tokio::time::timeout(
         LONG_TERM_EMBED_BUDGET,
         crate::memory::embeddings::embed_one(user_message.to_owned()),
@@ -694,6 +700,7 @@ async fn gather_long_term(user_message: &str) -> Vec<String> {
             let mut merged = Vec::with_capacity(LONG_TERM_LIMIT);
             for h in &hits {
                 if let Some(r) = entries::get(&h.id) {
+                    hit_ids.push(r.id.clone());
                     merged.push(r);
                 }
             }
@@ -710,8 +717,7 @@ async fn gather_long_term(user_message: &str) -> Vec<String> {
         }
     }
 
-    let ids: Vec<String> = selected.iter().map(|r| r.id.clone()).collect();
-    entries::touch_all(&ids);
+    entries::touch_all(&hit_ids);
     selected
         .iter()
         .map(|r| format!("- {}", r.body.trim()))
@@ -1414,6 +1420,44 @@ mod tests {
         assert!(!out.system_slots.contains("### Workspace insights"));
     }
 
+    // ── M5: touch damping — core fillers don't self-reinforce ──────────
+
+    #[tokio::test]
+    async fn core_block_fillers_are_not_touched_by_injection() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        use crate::memory::long_term as lt;
+        // Records WITHOUT embeddings: whatever the embedder does (live
+        // box embeds, headless box times out), the similarity search
+        // returns no hits, so the injected lines are pure core_block —
+        // and post-M5 those must NOT be re-warmed.
+        let a = lt::save("core fact one", "t", Some(9.0), vec![], None).unwrap();
+        let b = lt::save("core fact two", "t", Some(8.0), vec![], None).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        let a_before = lt::get(&a.id).unwrap().last_used_at;
+        let b_before = lt::get(&b.id).unwrap().last_used_at;
+
+        let out = gather_with(
+            &MockSource::default(),
+            None,
+            "anything at all",
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(
+            out.system_slots.contains("- core fact one"),
+            "fillers still ride: {}",
+            out.system_slots
+        );
+        assert_eq!(
+            lt::get(&a.id).unwrap().last_used_at,
+            a_before,
+            "filler must not be re-warmed by injection (M5)"
+        );
+        assert_eq!(lt::get(&b.id).unwrap().last_used_at, b_before);
+    }
+
     // ── B1: windowed conversation history ───────────────────────────────
 
     #[tokio::test]
@@ -1544,17 +1588,15 @@ mod tests {
         assert!(!out.system_slots.contains("long-term fact 0"));
         assert_eq!(out.system_slots.matches("long-term fact").count(), 5);
 
-        // Injection bumped last_used_at on an injected record (recency
-        // term breathes). The selective half (excluded records stay
-        // untouched) is pinned synchronously in
-        // `entries::tests::touch_all_bumps_only_named_ids` — asserting it
-        // here proved flaky: the gather's bounded-embed window (~1.2 s)
-        // is long enough for a leaked background task from an earlier
-        // test to brush the shared store.
+        // M5 touch damping: these records carry no embeddings, so they
+        // ride as core_block FILLERS — and fillers are no longer
+        // re-warmed by injection (pre-M5 touch-everything made the
+        // importance-sorted five self-reinforcing; only similarity
+        // hits touch now — see `core_block_fillers_are_not_touched_by_injection`).
         let injected = entries::get(&saved[6].id).unwrap();
-        assert!(
-            injected.last_used_at > saved[6].last_used_at,
-            "injected record touched"
+        assert_eq!(
+            injected.last_used_at, saved[6].last_used_at,
+            "core filler must NOT be re-warmed by injection (M5)"
         );
     }
 

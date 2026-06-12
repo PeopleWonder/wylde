@@ -322,6 +322,21 @@ pub fn link_supersession(workspace_id: &str, old_id: &str, new_id: &str) -> bool
     }
 }
 
+/// Bump a record's `last_used_at` (M5 — the dedup path re-warms the
+/// existing insight instead of minting a duplicate). No-op for an
+/// unknown id.
+pub fn touch(workspace_id: &str, record_id: &str) {
+    let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let mut records = load_all(workspace_id);
+    let Some(rec) = records.iter_mut().find(|r| r.id == record_id) else {
+        return;
+    };
+    rec.last_used_at = now_secs();
+    if let Err(e) = save_all(workspace_id, &records) {
+        tracing::warn!("workspace_memory: save_all failed during touch: {}", e);
+    }
+}
+
 /// Permanently remove a record AND every record whose `superseded_by`
 /// names it (its audit predecessors). Returns `true` if anything was
 /// deleted.

@@ -545,11 +545,17 @@ mod tests {
         let c = save("fact c", "t", Some(5.0), Vec::new(), None).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(15));
 
+        // Snapshot c IMMEDIATELY before the touch — comparing against
+        // the value captured at save time left a 15ms window where a
+        // leaked background task from a parallel test could brush the
+        // store and flake this assertion (the PE run's one flake;
+        // re-observed in this run).
+        let c_before = get(&c.id).unwrap().last_used_at;
         touch_all(&[a.id.clone(), b.id.clone()]);
         assert!(get(&a.id).unwrap().last_used_at > a.last_used_at);
         assert!(get(&b.id).unwrap().last_used_at > b.last_used_at);
         assert!(
-            (get(&c.id).unwrap().last_used_at - c.last_used_at).abs() < f64::EPSILON,
+            (get(&c.id).unwrap().last_used_at - c_before).abs() < f64::EPSILON,
             "unnamed record untouched"
         );
 

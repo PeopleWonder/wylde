@@ -206,19 +206,49 @@ async fn reflect_conversation(
     let source = format!("reflection:conversation:{conversation_id}");
 
     let new_id = if let Some(ws_id) = &target_workspace {
-        match workspace::save_new(
-            ws_id,
-            &text,
-            &source,
-            Some(CONVERSATION_REFLECTION_IMPORTANCE),
-            Vec::new(),
-        ) {
-            Ok(r) => r.id,
-            Err(e) => {
-                tracing::warn!("reflection: workspace save failed: {e}");
-                return ReflectionResult::skipped(scope, inputs.len(), format!("save failed: {e}"));
+        // M5 dedup, workspace flavour: the workspace store has no
+        // embeddings, so the check is the store's own token-overlap
+        // similarity (a near-duplicate paragraph overlaps ~fully).
+        if let Some(existing_id) = workspace_duplicate_insight(ws_id, &text) {
+            tracing::debug!(
+                existing = %existing_id,
+                new_body = %text,
+                "reflection: near-duplicate workspace insight — superseding inputs into it"
+            );
+            workspace::store::touch(ws_id, &existing_id);
+            existing_id
+        } else {
+            match workspace::save_new(
+                ws_id,
+                &text,
+                &source,
+                Some(CONVERSATION_REFLECTION_IMPORTANCE),
+                Vec::new(),
+            ) {
+                Ok(r) => r.id,
+                Err(e) => {
+                    tracing::warn!("reflection: workspace save failed: {e}");
+                    return ReflectionResult::skipped(
+                        scope,
+                        inputs.len(),
+                        format!("save failed: {e}"),
+                    );
+                }
             }
         }
+    } else if let Some(existing_id) =
+        crate::memory::long_term::reflection::find_duplicate_insight(&text).await
+    {
+        // M5 dedup, long-term flavour (cosine ≥ τ against existing
+        // REFLECTION_TAG records): supersede inputs into the existing
+        // insight instead of minting a near-duplicate.
+        tracing::debug!(
+            existing = %existing_id,
+            new_body = %text,
+            "reflection: near-duplicate insight — superseding inputs into it"
+        );
+        crate::memory::long_term::touch(&existing_id);
+        existing_id
     } else {
         match long_term::save(
             &text,
@@ -324,6 +354,22 @@ pub fn format_conversation_inputs(entries: &[Value]) -> String {
 /// The conversation's bound workspace id, or `None` when unbound /
 /// unreadable. Mirrors `_conversation_target` (errors fold to the
 /// long-term target).
+/// M5 dedup for the workspace tier: the store has no embeddings, so a
+/// near-duplicate is detected by its own token-overlap similarity
+/// (`search_records`, using the new insight's text as the query). The
+/// τ knob is shared with the cosine flavour
+/// (`WYLDE_REFLECT_DEDUP_TAU`); `None` when dedup is disabled or
+/// nothing is close enough. Only reflection-sourced records count —
+/// a user's own note must never absorb an insight.
+pub(crate) fn workspace_duplicate_insight(workspace_id: &str, text: &str) -> Option<String> {
+    let tau = crate::memory::long_term::reflection::dedup_tau()?;
+    workspace::store::search_records(workspace_id, text, 5, None)
+        .into_iter()
+        .filter(|h| h.similarity >= tau)
+        .find(|h| h.source.starts_with("reflection:"))
+        .map(|h| h.id)
+}
+
 fn conversation_workspace(conversation_id: &str) -> Option<String> {
     let doc = conversations_store::read_conversation(conversation_id).ok()?;
     doc.get("workspace_id")
@@ -527,6 +573,40 @@ mod tests {
             self.calls.lock().unwrap().push((messages, model));
             self.reply.clone()
         }
+    }
+
+    // ── M5: workspace-tier dedup (token overlap, no embedder) ───────
+
+    #[test]
+    fn workspace_duplicate_insight_matches_reflection_sourced_records_only() {
+        let _env = TestEnv::new();
+        let insight = workspace::store::save_new(
+            "ws9",
+            "the user prefers terse replies and tabs",
+            "reflection:conversation:c1",
+            Some(7.0),
+            vec![],
+        )
+        .unwrap();
+        // A user note with the SAME text must never absorb an insight.
+        workspace::store::save_new(
+            "ws9",
+            "the user prefers terse replies and tabs",
+            "chat",
+            Some(7.0),
+            vec![],
+        )
+        .unwrap();
+
+        assert_eq!(
+            workspace_duplicate_insight("ws9", "the user prefers terse replies and tabs"),
+            Some(insight.id.clone()),
+            "full-overlap reflection record absorbs"
+        );
+        assert_eq!(
+            workspace_duplicate_insight("ws9", "a completely different topic entirely"),
+            None
+        );
     }
 
     fn seed_working_memory(cid: &str, n: usize) {

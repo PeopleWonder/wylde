@@ -50,6 +50,60 @@ pub const REFLECTION_TAG: &str = "reflection";
 /// "reflection-worthy" even if the inputs were all importance 1.
 pub const REFLECTION_IMPORTANCE_FLOOR: i32 = 7;
 
+/// Dedup threshold (M5): a new insight whose cosine similarity against
+/// an existing REFLECTION_TAG record reaches this is NOT saved — the
+/// inputs supersede into the existing insight instead. Tunable via
+/// `WYLDE_REFLECT_DEDUP_TAU`; `0` disables dedup entirely.
+pub const REFLECT_DEDUP_TAU_DEFAULT: f64 = 0.92;
+
+/// The effective dedup threshold. `None` = dedup disabled.
+pub(crate) fn dedup_tau() -> Option<f64> {
+    match std::env::var("WYLDE_REFLECT_DEDUP_TAU") {
+        Ok(v) => match v.trim().parse::<f64>() {
+            Ok(t) if t <= 0.0 => None,
+            Ok(t) => Some(t.min(1.0)),
+            Err(_) => Some(REFLECT_DEDUP_TAU_DEFAULT),
+        },
+        Err(_) => Some(REFLECT_DEDUP_TAU_DEFAULT),
+    }
+}
+
+/// Pure half of the M5 dedup decision: among similarity hits for the
+/// new insight's vector, the first existing REFLECTION_TAG record at or
+/// above `tau` cosine. Split from the embed call so it unit-tests with
+/// injected vectors.
+pub(crate) fn duplicate_for_vector(vector: Vec<f32>, tau: f64) -> Option<String> {
+    super::entries::search(vector, 5, None)
+        .into_iter()
+        .filter(|h| h.similarity >= tau)
+        .find(|h| {
+            super::entries::get(&h.id)
+                .map(|r| r.tags.iter().any(|t| t == REFLECTION_TAG))
+                .unwrap_or(false)
+        })
+        .map(|h| h.id)
+}
+
+/// Embed budget for the dedup check — same bound the gather uses.
+const DEDUP_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// Find an existing near-duplicate insight for `text` (M5). Fail-soft:
+/// dedup disabled / embedder down / over budget → `None`, and the save
+/// proceeds exactly as before M5.
+pub(crate) async fn find_duplicate_insight(text: &str) -> Option<String> {
+    let tau = dedup_tau()?;
+    let vector = match tokio::time::timeout(
+        DEDUP_EMBED_BUDGET,
+        crate::memory::embeddings::embed_one(text.to_owned()),
+    )
+    .await
+    {
+        Ok(Ok(v)) => v,
+        _ => return None, // embedder down — today's behavior (save without dedup)
+    };
+    duplicate_for_vector(vector, tau)
+}
+
 /// System message the reflection cycle sends with every consolidation
 /// request. B9: resolves through the prompts catalog (`memory.consolidate`,
 /// default byte-identical to the old hardcoded const, which was itself
@@ -160,6 +214,36 @@ pub async fn reflect_long_term(
             format!("model declined: {text}")
         };
         return ReflectionResult::skipped("long_term", inputs.len(), reason);
+    }
+
+    // M5 dedup: a recurring theme must not mint a near-duplicate
+    // paragraph every cycle it touches. When an existing insight is
+    // close enough, the inputs supersede into IT — no new record.
+    if let Some(existing_id) = find_duplicate_insight(&text).await {
+        tracing::debug!(
+            existing = %existing_id,
+            new_body = %text,
+            "reflection: near-duplicate insight — superseding inputs into the existing record"
+        );
+        super::entries::touch(&existing_id);
+        let mut superseded_ids: Vec<String> = Vec::new();
+        for r in &inputs {
+            match link_supersession(&r.id, &existing_id) {
+                Ok(()) => superseded_ids.push(r.id.clone()),
+                Err(e) => {
+                    tracing::warn!("reflection: dedup link_supersession failed for {}: {e}", r.id)
+                }
+            }
+        }
+        return ReflectionResult {
+            scope: "long_term".to_owned(),
+            inputs_considered: inputs.len(),
+            reflection_id: Some(existing_id),
+            reflection_body: text,
+            superseded_ids,
+            skipped: false,
+            skip_reason: String::new(),
+        };
     }
 
     let importance = max(
@@ -326,6 +410,60 @@ mod tests {
         async fn ask(&self, messages: Vec<Value>, model: Option<String>) -> String {
             self.calls.lock().unwrap().push((messages, model));
             self.reply.clone()
+        }
+    }
+
+    // ── M5: dedup decision (injected vectors — no embedder) ─────────
+
+    #[test]
+    fn duplicate_for_vector_finds_close_reflection_record_only() {
+        let _env = TestEnv::new();
+        set_embed_dim_3();
+        // An existing insight at [1,0,0] and a PLAIN record at the same
+        // spot — only the REFLECTION_TAG one may absorb a duplicate.
+        let insight = long_term_save(
+            "the user prefers terse replies",
+            "reflection:long_term",
+            Some(8.0),
+            vec![REFLECTION_TAG.to_owned()],
+            Some(vec![1.0, 0.0, 0.0]),
+        )
+        .unwrap();
+        long_term_save(
+            "plain fact at the same embedding",
+            "test",
+            Some(8.0),
+            vec![],
+            Some(vec![1.0, 0.0, 0.0]),
+        )
+        .unwrap();
+
+        // Identical vector → cosine 1.0 ≥ τ: the insight wins.
+        assert_eq!(
+            duplicate_for_vector(vec![1.0, 0.0, 0.0], 0.92),
+            Some(insight.id.clone())
+        );
+        // A far vector → no duplicate.
+        assert_eq!(duplicate_for_vector(vec![0.0, 1.0, 0.0], 0.92), None);
+    }
+
+    #[test]
+    fn dedup_tau_parses_env_and_disables_on_zero() {
+        let _g = crate::memory::common::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prior = std::env::var_os("WYLDE_REFLECT_DEDUP_TAU");
+        std::env::remove_var("WYLDE_REFLECT_DEDUP_TAU");
+        assert_eq!(dedup_tau(), Some(REFLECT_DEDUP_TAU_DEFAULT));
+        std::env::set_var("WYLDE_REFLECT_DEDUP_TAU", "0.85");
+        assert_eq!(dedup_tau(), Some(0.85));
+        std::env::set_var("WYLDE_REFLECT_DEDUP_TAU", "0");
+        assert_eq!(dedup_tau(), None, "0 disables dedup");
+        std::env::set_var("WYLDE_REFLECT_DEDUP_TAU", "junk");
+        assert_eq!(dedup_tau(), Some(REFLECT_DEDUP_TAU_DEFAULT));
+        match prior {
+            Some(v) => std::env::set_var("WYLDE_REFLECT_DEDUP_TAU", v),
+            None => std::env::remove_var("WYLDE_REFLECT_DEDUP_TAU"),
         }
     }
 
