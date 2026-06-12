@@ -197,7 +197,11 @@ async fn reflect_conversation(
     // tier when the conversation carries a workspace_id, the global
     // long-term tier otherwise. The binding is trusted as-is (no
     // registry existence check) — same as Python post the
-    // config-file-backed workspaces redesign.
+    // config-file-backed workspaces redesign. Since memory plan M2
+    // (option B) the workspace tier is PROMPT-VISIBLE: the turn gather
+    // injects its top-k as "### Workspace insights", so this save is
+    // the consolidation loop's output reaching later turns — not an
+    // archive write.
     let target_workspace = conversation_workspace(conversation_id);
     let source = format!("reflection:conversation:{conversation_id}");
 

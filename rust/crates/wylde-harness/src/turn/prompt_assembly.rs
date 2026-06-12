@@ -18,9 +18,12 @@
 //! 2. **Conversation memory** — the short-term working memory (never-dropped).
 //! 3. **Conversation summary** — the conversation doc's auto_summary (B2).
 //! 4. **Long-term memory** — injected long-term records (B3, evictable).
-//! 5. **Vocabulary** — anchors the prompt referenced (never-dropped).
-//! 6. **Workspace context** — persona + notes + RAG (`gather_prompt`).
-//! 7. **Code graph context** — structural retrieval for referenced symbols.
+//! 5. **Workspace insights** — workspace memory records (memory plan M2
+//!    option B: the importance+supersession tier reflection consolidates
+//!    into; evictable).
+//! 6. **Vocabulary** — anchors the prompt referenced (never-dropped).
+//! 7. **Workspace context** — persona + notes + RAG (`gather_prompt`).
+//! 8. **Code graph context** — structural retrieval for referenced symbols.
 //!
 //! An empty [`ChatContext`] renders to `""`, so a plain chat turn with nothing
 //! to add is byte-identical to one with no gather at all.
@@ -51,6 +54,17 @@ pub(crate) fn render(ctx: &ChatContext) -> String {
 
     if !ctx.long_term.is_empty() {
         sections.push(section("Long-term memory", &ctx.long_term.join("\n")));
+    }
+
+    // "Workspace insights", not "Workspace memory" — the established
+    // notes subsection inside "### Workspace context" already uses that
+    // name (here and in the service's whole-block render); two
+    // same-named headers would teach the model they're one tier.
+    if !ctx.workspace_memory.is_empty() {
+        sections.push(section(
+            "Workspace insights",
+            &ctx.workspace_memory.join("\n"),
+        ));
     }
 
     if !ctx.vocabulary_anchors.is_empty() {
@@ -183,6 +197,7 @@ mod tests {
             conversation_short_term: vec!["- recalled a thing".into()],
             conversation_summary: Some("They were debugging.".into()),
             long_term: vec!["- prefers tabs".into()],
+            workspace_memory: vec!["- the build watcher polls outputs/".into()],
             vocabulary_anchors: vec![AnchorBlock {
                 identifier: "the_fn".into(),
                 text: "{{the_fn}} — the entry point".into(),
@@ -205,6 +220,7 @@ mod tests {
         let memory = out.find("### Conversation memory").unwrap();
         let summary = out.find("### Conversation summary").unwrap();
         let long_term = out.find("### Long-term memory").unwrap();
+        let insights = out.find("### Workspace insights").unwrap();
         let vocab = out.find("### Vocabulary").unwrap();
         let ws = out.find("### Workspace context").unwrap();
         let graph = out.find("### Code graph context").unwrap();
@@ -212,10 +228,12 @@ mod tests {
             profile < memory
                 && memory < summary
                 && summary < long_term
-                && long_term < vocab
+                && long_term < insights
+                && insights < vocab
                 && vocab < ws
                 && ws < graph
         );
+        assert!(out.contains("### Workspace insights\n- the build watcher polls outputs/"));
         // Symbol block renders focal + neighbour.
         assert!(out.contains("Symbol `foo`"));
         assert!(out.contains("calls `bar`"));
