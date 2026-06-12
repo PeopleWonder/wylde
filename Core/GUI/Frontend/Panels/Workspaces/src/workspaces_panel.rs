@@ -192,25 +192,54 @@ impl WorkspacesPanel {
         .detach();
     }
 
-    /// Per-row "Re-index" handler — fires a full rebuild and refreshes.
+    /// Per-row "Re-index" handler — drives a full rebuild and folds the
+    /// verb's reply back into the row.
+    ///
+    /// The reply (`file_count` / `last_error`) is the *only* source for the
+    /// row's index state: `workspaces.list_mru` returns the slim
+    /// `WorkspaceDefinition` projection, which carries no `file_count` /
+    /// `last_indexed_at` / `indexing` fields, so a post-reindex `list_mru`
+    /// refresh can't surface the result — and would clobber the optimistic
+    /// "Indexing…" flag the click set. Re-index never changes the MRU set,
+    /// so we skip the refresh and update the clicked row in place.
     pub fn spawn_reindex(id: String, cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let outcome = reindex_workspace(&id).await;
             let _ = this.update(app_cx, |panel, cx| {
-                if let Err(e) = outcome {
-                    panel.error = Some(e);
-                }
-                cx.notify();
-            });
-            let ws = list_workspaces().await.unwrap_or_default();
-            let _ = this.update(app_cx, |panel, cx| {
-                if !ws.is_empty() {
-                    panel.workspaces = ws;
-                }
+                panel.apply_reindex_outcome(&id, &outcome);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// Fold a `workspaces.reindex` reply into the clicked row: clear the
+    /// in-progress flag, then either surface the fresh file count + a
+    /// "just now" timestamp on success, or raise the embed error.
+    ///
+    /// The verb replies OK at the transport layer even when the embed
+    /// itself failed (e.g. the embedder is unreachable) — the real failure
+    /// rides in the reply's `last_error` — so we collapse both the
+    /// transport error and the in-reply `last_error` into one error here.
+    fn apply_reindex_outcome(&mut self, id: &str, outcome: &Result<serde_json::Value, String>) {
+        let result: Result<Option<u64>, String> = match outcome {
+            Err(transport_err) => Err(transport_err.clone()),
+            Ok(reply) => match reply.get("last_error").and_then(|v| v.as_str()) {
+                Some(embed_err) => Err(embed_err.to_owned()),
+                None => Ok(reply.get("file_count").and_then(|v| v.as_u64())),
+            },
+        };
+        if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == id) {
+            ws.indexing = false;
+            if let Ok(file_count) = &result {
+                ws.file_count = *file_count;
+                ws.last_indexed_at = Some("just now".to_owned());
+            }
+        }
+        match result {
+            Ok(_) => self.error = None,
+            Err(e) => self.error = Some(e),
+        }
     }
 
     /// Per-row "Remove" handler.  The Svelte page requires a
@@ -571,7 +600,13 @@ fn workspace_card(
         } else {
             "Re-index"
         },
-        cx.listener(move |_this: &mut WorkspacesPanel, _ev, _window, cx| {
+        cx.listener(move |this: &mut WorkspacesPanel, _ev, _window, cx| {
+            // Optimistic in-progress flip so the button reads "Indexing…"
+            // the instant it's clicked; `spawn_reindex` clears it on reply.
+            if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == id_for_reindex) {
+                ws.indexing = true;
+            }
+            cx.notify();
             WorkspacesPanel::spawn_reindex(id_for_reindex.clone(), cx);
         }),
     ));
@@ -791,5 +826,56 @@ mod tests {
         assert!(!is_service_unavailable(
             "not_found: workspace \"x\" not found"
         ));
+    }
+
+    fn panel_with_one_indexing_row() -> WorkspacesPanel {
+        let mut p = WorkspacesPanel::new();
+        p.workspaces = vec![WorkspaceSummary {
+            id: "ws-a".to_owned(),
+            indexing: true,
+            ..Default::default()
+        }];
+        p
+    }
+
+    #[test]
+    fn reindex_success_updates_row_and_clears_state() {
+        let mut p = panel_with_one_indexing_row();
+        p.error = Some("stale".to_owned());
+        let reply = serde_json::json!({
+            "ok": true, "workspace_id": "ws-a",
+            "file_count": 42, "chunk_count": 100, "last_error": null,
+        });
+        p.apply_reindex_outcome("ws-a", &Ok(reply));
+        let row = &p.workspaces[0];
+        assert!(!row.indexing, "in-progress flag must clear");
+        assert_eq!(row.file_count, Some(42), "fresh count comes from the reply");
+        assert_eq!(row.last_indexed_at.as_deref(), Some("just now"));
+        assert!(p.error.is_none(), "a clean reindex clears the error strip");
+    }
+
+    #[test]
+    fn reindex_surfaces_embed_error_from_last_error() {
+        // The verb replies transport-OK even when the embed failed; the real
+        // failure rides in `last_error` and must reach the error strip.
+        let mut p = panel_with_one_indexing_row();
+        let reply = serde_json::json!({
+            "ok": false, "workspace_id": "ws-a",
+            "file_count": 0, "chunk_count": 0,
+            "last_error": "embedder unreachable",
+        });
+        p.apply_reindex_outcome("ws-a", &Ok(reply));
+        assert!(!p.workspaces[0].indexing, "flag clears even on failure");
+        assert_eq!(p.error.as_deref(), Some("embedder unreachable"));
+        // A failed pass must not claim a fresh index.
+        assert!(p.workspaces[0].last_indexed_at.is_none());
+    }
+
+    #[test]
+    fn reindex_surfaces_transport_error() {
+        let mut p = panel_with_one_indexing_row();
+        p.apply_reindex_outcome("ws-a", &Err("pipe_unavailable: down".to_owned()));
+        assert!(!p.workspaces[0].indexing);
+        assert_eq!(p.error.as_deref(), Some("pipe_unavailable: down"));
     }
 }
