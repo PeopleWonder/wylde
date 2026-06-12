@@ -3,16 +3,18 @@
 //! Rust port of `Core/harness/tooling/tools/meta/graph_query/graph_query.py`.
 //! Three paths, picked by what the caller supplies:
 //!
-//! * **Hybrid path** (Phase 7.B-3+) — when the caller supplies a
-//!   precomputed `query_vector` (the Rust embedder isn't wired yet),
-//!   run `rag::search` for vector seeds → `expand_by_graph` for graph
+//! * **Hybrid path** (Phase 7.B-3+, model-reachable since memory plan
+//!   M4) — runs when the caller supplies a precomputed `query_vector`
+//!   OR a bare `q` (embedded server-side, bounded + fail-soft):
+//!   `rag::search` for vector seeds → `expand_by_graph` for graph
 //!   neighbours → `merge_and_rank` to fuse them. Returns the same
 //!   envelope shape Python's hybrid path returns (`vector_seeds`
 //!   populated, `source: "memgraph+vector"`).
 //! * **Entity path** — when the caller supplies an explicit `entities`
 //!   list, drive `client::traverse` directly.
-//! * **`q` path** — extract candidate identifiers from the query
-//!   (lower-bound keyword fallback) and call `traverse` with them.
+//! * **`q` fallback** — when the embed degrades (embedder down / over
+//!   budget / `WYLDE_GRAPH_QUERY_EMBED=off`), extract candidate
+//!   identifiers from the query and call `traverse` with them.
 //!
 //! Failure model matches Python: empty `results` + `count: 0` for every
 //! error path. Never raises — the tool is meant to fail soft so a
@@ -93,11 +95,67 @@ fn normalize_chunks(data: &Value) -> Vec<Value> {
     Vec::new()
 }
 
-/// Tool handler.
+/// Budget for the M4 server-side query embed — mirrors the gather's
+/// long-term embed bound: a slow/down embedder degrades to the
+/// entity-only path, never stalls the tool call past this.
+const QUERY_EMBED_BUDGET: std::time::Duration = std::time::Duration::from_millis(1200);
+
+/// Whether `q` is embedded server-side when no `query_vector` arrives
+/// (`WYLDE_GRAPH_QUERY_EMBED=off|0|false` kill switch; on by default —
+/// the M4 behavioral-slice switch).
+fn graph_query_embed_enabled() -> bool {
+    match std::env::var("WYLDE_GRAPH_QUERY_EMBED") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "off" | "0" | "false"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// The production query embedder: one bounded `embed_one` call.
+/// Fail-soft — timeout or embedder error degrades to `None` (the
+/// entity-only traversal, exactly today's behavior).
+async fn live_query_embedder(query: String) -> Option<Vec<f32>> {
+    match tokio::time::timeout(QUERY_EMBED_BUDGET, crate::memory::embeddings::embed_one(query))
+        .await
+    {
+        Ok(Ok(v)) => Some(v),
+        Ok(Err(e)) => {
+            tracing::debug!("graph_query: query embed failed, entity-only path: {e}");
+            None
+        }
+        Err(_) => {
+            tracing::debug!("graph_query: query embed over budget, entity-only path");
+            None
+        }
+    }
+}
+
+/// Tool handler. The M4 wiring: a bare `q` is embedded server-side
+/// (bounded, fail-soft) so the hybrid vector+graph path — previously
+/// reachable only via a precomputed 384-float `query_vector` no chat
+/// model can produce — runs for plain natural-language calls.
 pub async fn run_graph_query<T: MemgraphTraversal>(
     args: Value,
     client: &T,
 ) -> Result<Value, IpcError> {
+    run_graph_query_with(args, client, live_query_embedder).await
+}
+
+/// Embedder-injectable core of [`run_graph_query`] (tests pass a fake
+/// so they stay hermetic — a live wylde-ollama on the dev box must not
+/// flip the path under test).
+async fn run_graph_query_with<T, F, Fut>(
+    args: Value,
+    client: &T,
+    embedder: F,
+) -> Result<Value, IpcError>
+where
+    T: MemgraphTraversal,
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Option<Vec<f32>>>,
+{
     let query = args
         .get("q")
         .and_then(Value::as_str)
@@ -133,7 +191,13 @@ pub async fn run_graph_query<T: MemgraphTraversal>(
         }
     }
 
-    let query_vector = parse_float_array(args.get("query_vector"));
+    // A supplied query_vector wins; otherwise M4 embeds `q` server-side
+    // (the one missing call that made the hybrid path model-unreachable).
+    let query_vector = match parse_float_array(args.get("query_vector")) {
+        Some(v) => Some(v),
+        None if !query.is_empty() && graph_query_embed_enabled() => embedder(query.clone()).await,
+        None => None,
+    };
 
     let entity_seeds = if !explicit_entities.is_empty() {
         explicit_entities.clone()
@@ -374,10 +438,18 @@ mod tests {
         assert_eq!(out["source"], "memgraph");
     }
 
+    /// Embedder stub for the degraded path — what a down/over-budget
+    /// embedder yields. Keeps q-path tests hermetic: a live
+    /// wylde-ollama on the dev box must not flip them onto the hybrid
+    /// path.
+    async fn no_embed(_q: String) -> Option<Vec<f32>> {
+        None
+    }
+
     #[tokio::test]
     async fn run_graph_query_q_extracts_entities_then_traverses() {
         let (client, handle) = mock::new_with_static_ok(json!({"chunks": []}));
-        run_graph_query(json!({"q": "find foo_bar in baz"}), &client)
+        run_graph_query_with(json!({"q": "find foo_bar in baz"}), &client, no_embed)
             .await
             .unwrap();
         let calls = handle.calls();
@@ -415,13 +487,101 @@ mod tests {
     #[tokio::test]
     async fn run_graph_query_q_only_with_no_extractable_entities_returns_empty() {
         let (client, handle) = mock::new_with_static_ok(json!({"chunks": []}));
-        let out = run_graph_query(json!({"q": "is it ok"}), &client)
+        let out = run_graph_query_with(json!({"q": "is it ok"}), &client, no_embed)
             .await
             .unwrap();
-        // No identifier-shaped tokens after filtering stopwords.
+        // No identifier-shaped tokens after filtering stopwords, and the
+        // embed degraded — entity fallback has nothing to walk.
         assert_eq!(handle.calls().len(), 0, "must not hit the backend");
         assert_eq!(out["count"], 0);
         assert!(out["error"].is_string());
+    }
+
+    // ── M4: server-side query embed ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn bare_q_embeds_server_side_onto_the_hybrid_path() {
+        let _env = TestEnv::new();
+        seed_hybrid_store();
+        let (client, _) = mock::new_with_static_ok(json!({
+            "chunks": [{"id": "g-1", "hops": 1, "via_entities": ["the Wylde user"]}]
+        }));
+        // No query_vector in args — the injected embedder supplies it.
+        let out = run_graph_query_with(
+            json!({"q": "tell me about the Wylde user", "limit": 5}),
+            &client,
+            |_q: String| async { Some(vec![1.0_f32, 0.0, 0.0, 0.0]) },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["source"], "memgraph+vector");
+        let ids: Vec<&str> = out["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert!(ids.contains(&"v-a"), "vector seed reached: {ids:?}");
+        assert!(ids.contains(&"g-1"), "graph expansion reached: {ids:?}");
+    }
+
+    /// Pins `WYLDE_GRAPH_QUERY_EMBED=off` under the shared env lock for
+    /// one test body (guard lives in a struct field so it can be held
+    /// across the handler await).
+    struct EmbedOffGuard {
+        _g: std::sync::MutexGuard<'static, ()>,
+        prior: Option<std::ffi::OsString>,
+    }
+
+    impl EmbedOffGuard {
+        fn new() -> Self {
+            let g = crate::memory::common::TEST_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let prior = std::env::var_os("WYLDE_GRAPH_QUERY_EMBED");
+            std::env::set_var("WYLDE_GRAPH_QUERY_EMBED", "off");
+            Self { _g: g, prior }
+        }
+    }
+
+    impl Drop for EmbedOffGuard {
+        fn drop(&mut self) {
+            match self.prior.take() {
+                Some(v) => std::env::set_var("WYLDE_GRAPH_QUERY_EMBED", v),
+                None => std::env::remove_var("WYLDE_GRAPH_QUERY_EMBED"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn embed_kill_switch_skips_the_embedder_entirely() {
+        let _env = EmbedOffGuard::new();
+        let (client, handle) = mock::new_with_static_ok(json!({"chunks": []}));
+        let out = run_graph_query_with(
+            json!({"q": "find foo_bar"}),
+            &client,
+            |_q: String| async { panic!("embedder must not be called when switched off") },
+        )
+        .await
+        .unwrap();
+        // Entity fallback ran (traverse hit) — today's pre-M4 behavior.
+        assert_eq!(handle.calls().len(), 1);
+        assert_eq!(out["source"], "memgraph");
+    }
+
+    #[tokio::test]
+    async fn supplied_query_vector_wins_over_the_embedder() {
+        let _env = TestEnv::new();
+        seed_hybrid_store();
+        let (client, _) = mock::new_with_static_ok(json!({"chunks": []}));
+        let out = run_graph_query_with(
+            json!({"q": "the Wylde user", "query_vector": [1.0, 0.0, 0.0, 0.0]}),
+            &client,
+            |_q: String| async { panic!("embedder must not run when a vector is supplied") },
+        )
+        .await
+        .unwrap();
+        assert_eq!(out["source"], "vector");
     }
 
     #[tokio::test]

@@ -59,32 +59,30 @@ pub fn register(reg: &mut Registry) {
         "graph_query",
         "meta.graph_query",
         "meta",
-        "Traverse the knowledge graph from a set of entities, a natural-\
-         language query, or a precomputed `query_vector`. When \
-         `query_vector` is supplied the call runs the hybrid path — \
-         vector top-K seeds plus graph expansion, fused by \
-         merge_and_rank. Without `query_vector` the call walks the \
-         Memgraph service from entity seeds only (extracted from `q` or \
-         passed via `entities`) and returns chunks ranked by graph \
-         proximity.",
+        "Search the code/knowledge graph with a natural-language query. \
+         `q` is embedded server-side and runs the hybrid path — vector \
+         top-K seeds plus graph expansion, fused and ranked. Pass \
+         `entities` to walk the graph from explicit entity names \
+         instead. Fail-soft: if the embedder is unavailable the call \
+         degrades to entity-seed traversal extracted from `q`.",
         vec![
             param(
                 "q",
                 "string",
                 false,
-                "Natural-language query — identifiers are extracted as entity seeds",
+                "Natural-language query — embedded server-side for hybrid retrieval",
             ),
             param(
                 "entities",
                 "array",
                 false,
-                "Explicit entity-name list; skips identifier extraction",
+                "Explicit entity-name list; skips embedding and identifier extraction",
             ),
             param(
                 "query_vector",
                 "array",
                 false,
-                "Precomputed embedding — enables the hybrid vector+graph path",
+                "Advanced: precomputed embedding (overrides the server-side embed of `q`)",
             ),
             param_default(
                 "max_hops",

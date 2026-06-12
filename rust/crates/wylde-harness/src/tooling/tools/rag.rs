@@ -1,10 +1,15 @@
-//! `rag.*` — active RAG tools (Phase 7.B-3).
+//! `rag.*` — RAG tools (Phase 7.B-3; surface shrinking per memory plan
+//! M4 → M7).
 //!
-//! Eight model-callable tools wired against [`crate::memory::rag`]:
+//! Eight tools wired against [`crate::memory::rag`]:
 //!
-//! * `rag_ask` — vector top-K + optional graph expansion. Requires a
-//!   precomputed `query_vector` until the wylde-ollama embedder lands;
-//!   without one the handler returns `insufficient_context`.
+//! * `rag_ask` — **de-catalogued (M4)**: registered deferred so it
+//!   leaves the model catalog and the `tools:` field. It always failed
+//!   for the model (it required a precomputed `query_vector` no chat
+//!   model can produce), burning one of the ≤60 catalog slots teaching
+//!   a dead end. `meta.graph_query` now embeds `q` server-side and is
+//!   the model's retrieval entry point. The `rag.ask` IPC action
+//!   remains for compatibility until M7 retires the subsystem.
 //! * `rag_index` / `rag_reindex` — N8N webhook trigger over HTTP (see
 //!   `crate::memory::rag::ingest`).
 //! * `rag_prune` — filtered destructive cleanup with dry-run by default.
@@ -20,18 +25,18 @@
 use serde_json::json;
 
 use crate::memory::rag::actions;
-use crate::tooling::registry::{entry_active, param, param_default, Registry};
+use crate::tooling::registry::{entry_active, entry_deferred, param, param_default, Registry};
 
 pub fn register(reg: &mut Registry) {
-    reg.insert(entry_active(
+    // M4: deferred → filtered out of the base prompt and the `tools:`
+    // field (only `status == "active"` entries advertise). Use
+    // meta.graph_query instead — it embeds `q` server-side.
+    reg.insert(entry_deferred(
         "rag_ask",
         "rag.ask",
         "rag",
-        "Retrieve answer-grounding chunks for a natural-language question from the active \
-         workspace index. The Rust port returns ranked vector hits when a precomputed \
-         `query_vector` is supplied; without it the call returns \
-         status=insufficient_context (the embedder lives in the Python harness until the \
-         wylde-ollama Rust port lands).",
+        "Retired from the model catalog (memory plan M4): use meta.graph_query, which \
+         embeds natural-language queries server-side for hybrid vector+graph retrieval.",
         vec![
             param("q", "string", true, "Question to answer"),
             param_default(
@@ -44,7 +49,7 @@ pub fn register(reg: &mut Registry) {
                 "query_vector",
                 "array",
                 false,
-                "Precomputed embedding (until embed wired)",
+                "Precomputed embedding",
             ),
             param("workspace", "string", false, "Workspace id"),
             param(
@@ -55,7 +60,8 @@ pub fn register(reg: &mut Registry) {
             ),
         ],
         false,
-        |args, _| async move { actions::run_rag_ask(args).await },
+        "7",
+        "retired from the model catalog by memory plan M4 — call meta.graph_query instead",
     ));
 
     reg.insert(entry_active(
