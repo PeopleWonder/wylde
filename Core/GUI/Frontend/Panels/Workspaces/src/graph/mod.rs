@@ -608,7 +608,7 @@ impl Render for GraphView {
         if let Some(card) = self.outline_element(cx) {
             content = content.child(card);
         }
-        content = content.child(self.overlay());
+        content = content.child(self.overlay(cx));
 
         // Root: breadcrumb bar (Theme `graph_panel.breadcrumb_bar`) over the
         // graph area.
@@ -1120,7 +1120,7 @@ impl GraphView {
 
     /// The status overlay (top strip): workspace name + counts + zoom + last
     /// clicked, plus the loading / empty / degrade states.
-    fn overlay(&self) -> gpui::Div {
+    fn overlay(&self, cx: &mut Context<Self>) -> gpui::Div {
         let mut col = div()
             .absolute()
             .top_0()
@@ -1193,14 +1193,37 @@ impl GraphView {
             ));
         } else if let Some(err) = &self.error {
             // Graceful degrade banner (OI-1).
-            let msg = if err.is_service_unavailable() {
-                "Workspaces service unavailable — showing last-known graph. Start the \
-                 workspaces service, then click to retry."
-                    .to_owned()
+            if err.is_service_unavailable() {
+                // The banner advertises "click to retry" — make it real: a
+                // clickable chip re-runs `spawn_load` (mirrors the Registry
+                // tab's error-strip Retry). Previously the only mouse handler
+                // on the graph started a pan, so the click was dead and the
+                // graph never recovered until the whole tab remounted.
+                col = col.child(
+                    overlay_text(
+                        "Workspaces service unavailable — showing last-known graph. \
+                         Start the workspaces service, then click to retry."
+                            .to_owned(),
+                        font_size::XS,
+                        weight::REGULAR,
+                    )
+                    .id("workspaces-graph-retry")
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_this, _ev: &MouseDownEvent, _w, cx| {
+                            cx.stop_propagation();
+                            GraphView::spawn_load(cx);
+                        }),
+                    ),
+                );
             } else {
-                err.message().to_owned()
-            };
-            col = col.child(overlay_text(msg, font_size::XS, weight::REGULAR));
+                col = col.child(overlay_text(
+                    err.message().to_owned(),
+                    font_size::XS,
+                    weight::REGULAR,
+                ));
+            }
         } else if self.workspace_id.is_none() {
             col = col.child(overlay_text(
                 "No active workspace — add one in the Registry tab to see its code graph."
