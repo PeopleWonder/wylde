@@ -6,10 +6,18 @@
 //! * **Hybrid path** (Phase 7.B-3+, model-reachable since memory plan
 //!   M4) — runs when the caller supplies a precomputed `query_vector`
 //!   OR a bare `q` (embedded server-side, bounded + fail-soft):
-//!   `rag::search` for vector seeds → `expand_by_graph` for graph
+//!   `long_term::search` for vector seeds → `expand_by_graph` for graph
 //!   neighbours → `merge_and_rank` to fuse them. Returns the same
 //!   envelope shape Python's hybrid path returns (`vector_seeds`
 //!   populated, `source: "memgraph+vector"`).
+//!
+//!   The vector stage reads the **long-term memory store** (M7). It used
+//!   to read the tiered RAG store, but M7 retired `memory/rag/`; the
+//!   long-term store is the one vector store with live embed-on-write
+//!   ingest, so the model-reachable hybrid path M4 unlocked keeps
+//!   working after the deletion. `merge_and_rank` moved to
+//!   [`crate::memory::memgraph::fusion`] for the same reason — it is
+//!   retrieval fusion, not RAG.
 //! * **Entity path** — when the caller supplies an explicit `entities`
 //!   list, drive `client::traverse` directly.
 //! * **`q` fallback** — when the embed degrades (embedder down / over
@@ -30,13 +38,10 @@ use regex::Regex;
 use serde_json::{json, Value};
 use wylde_shared::ipc::IpcError;
 
-use crate::memory::common::{data_dir, embed_dim};
+use crate::memory::long_term;
+use crate::memory::memgraph::fusion::{merge_and_rank, VectorSeed};
 use crate::memory::memgraph::graph_retrieval::{expand_by_graph, ExpandOptions};
 use crate::memory::memgraph::transport::MemgraphTraversal;
-use crate::memory::rag::merge::merge_and_rank;
-use crate::memory::rag::search::{search, Hit, SearchError};
-use crate::memory::rag::store::TieredStore;
-use crate::memory::rag::tiers::is_known_tier;
 
 /// Token regex matching identifier-shaped substrings. Mirrors Python's
 /// `_QUERY_IDENT_RE` — `\b([A-Za-z_][A-Za-z0-9_]{2,})\b`.
@@ -180,16 +185,6 @@ where
     let max_hops = clamp_int(args.get("max_hops"), 1, 1, 4);
     let limit = clamp_int(args.get("limit"), 10, 1, 50);
     let vector_k = clamp_int(args.get("vector_k"), 5, 1, 20);
-    let tier = args
-        .get("tier")
-        .or_else(|| args.get("memory_type"))
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    if let Some(t) = &tier {
-        if !is_known_tier(t) {
-            return Ok(empty_envelope(&explicit_entities, &query, "unknown tier"));
-        }
-    }
 
     // A supplied query_vector wins; otherwise M4 embeds `q` server-side
     // (the one missing call that made the hybrid path model-unreachable).
@@ -216,7 +211,6 @@ where
             &query,
             &entity_seeds,
             qv,
-            tier.as_deref(),
             &workspace_id,
             vector_k as usize,
             max_hops,
@@ -277,27 +271,20 @@ async fn run_hybrid_path<T: MemgraphTraversal>(
     query: &str,
     entity_seeds: &[String],
     query_vector: Vec<f32>,
-    tier: Option<&str>,
     workspace_id: &str,
     vector_k: usize,
     hops: u32,
     limit: usize,
 ) -> Result<Value, IpcError> {
-    let store = TieredStore::open_at(&data_dir(), embed_dim());
-    let vector_hits: Vec<Hit> = match search(&store, query_vector, tier, vector_k) {
-        Ok(hits) => hits,
-        Err(SearchError::UnknownTier(_)) => {
-            return Ok(empty_envelope(entity_seeds, query, "unknown tier"));
-        }
-        Err(SearchError::Vector(_)) => {
-            return Ok(empty_envelope(
-                entity_seeds,
-                query,
-                "vector store unavailable",
-            ));
-        }
-    };
-    let candidates: Vec<Value> = vector_hits.iter().map(Hit::to_value).collect();
+    // M7: vector seeds come from the long-term store (the one vector
+    // store with live embed-on-write ingest) rather than the retired
+    // tiered RAG store. `long_term::search` already re-ranks by
+    // importance × recency and filters superseded records; it never
+    // errors (an unavailable store degrades to an empty list).
+    let search_hits = long_term::search(query_vector, vector_k, None);
+    let vector_hits: Vec<VectorSeed> =
+        search_hits.iter().map(VectorSeed::from_long_term).collect();
+    let candidates: Vec<Value> = vector_hits.iter().map(VectorSeed::to_value).collect();
 
     let opts = ExpandOptions {
         workspace_id: workspace_id.to_owned(),
@@ -308,7 +295,7 @@ async fn run_hybrid_path<T: MemgraphTraversal>(
     let graph_hits = expand_by_graph(client, candidates.clone(), opts).await;
 
     let ranked = merge_and_rank(&vector_hits, &graph_hits, limit);
-    let vector_seeds: Vec<Value> = vector_hits.iter().map(Hit::to_value).collect();
+    let vector_seeds: Vec<Value> = vector_hits.iter().map(VectorSeed::to_value).collect();
     let count = ranked.len();
     let source = if graph_hits.is_empty() {
         "vector"
@@ -363,9 +350,8 @@ fn empty_envelope(entities: &[String], query: &str, err: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::long_term::test_support::TestEnv;
     use crate::memory::memgraph::client::mock;
-    use crate::memory::rag::store::TierRecord;
-    use crate::memory::rag::test_support::TestEnv;
     use wylde_shared::ipc::Reply;
 
     #[test]
@@ -502,7 +488,7 @@ mod tests {
     #[tokio::test]
     async fn bare_q_embeds_server_side_onto_the_hybrid_path() {
         let _env = TestEnv::new();
-        seed_hybrid_store();
+        let (id_a, _id_b) = seed_hybrid_store();
         let (client, _) = mock::new_with_static_ok(json!({
             "chunks": [{"id": "g-1", "hops": 1, "via_entities": ["the Wylde user"]}]
         }));
@@ -521,7 +507,10 @@ mod tests {
             .iter()
             .filter_map(|r| r["id"].as_str())
             .collect();
-        assert!(ids.contains(&"v-a"), "vector seed reached: {ids:?}");
+        assert!(
+            ids.contains(&id_a.as_str()),
+            "long-term vector seed reached: {ids:?}"
+        );
         assert!(ids.contains(&"g-1"), "graph expansion reached: {ids:?}");
     }
 
@@ -581,6 +570,7 @@ mod tests {
         )
         .await
         .unwrap();
+        // Graph returns nothing, so the merged source is vector-only.
         assert_eq!(out["source"], "vector");
     }
 
@@ -610,29 +600,24 @@ mod tests {
 
     // ── hybrid path ─────────────────────────────────────────────────────
 
-    fn seed_hybrid_store() {
+    /// Seed the long-term store with two orthogonal 4-d vectors and
+    /// return their generated ids (`a = [1,0,0,0]`, `b = [0,1,0,0]`).
+    /// M7 swapped the hybrid path's vector stage from the retired RAG
+    /// TieredStore onto this store, so the ids are now store-generated
+    /// rather than caller-chosen.
+    fn seed_hybrid_store() -> (String, String) {
         std::env::set_var("WYLDE_EMBED_DIM", "4");
-        let dir = std::env::var_os("WYLDE_DATA_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap();
-        let mut s = TieredStore::open_at(&dir, 4);
-        s.insert(
-            TierRecord::new("v-a", "alpha", "episodic", 0.4, "", ""),
-            Some(vec![1.0, 0.0, 0.0, 0.0]),
-        )
-        .unwrap();
-        s.insert(
-            TierRecord::new("v-b", "beta", "core", 0.9, "", ""),
-            Some(vec![0.0, 1.0, 0.0, 0.0]),
-        )
-        .unwrap();
-        s.save().unwrap();
+        let a = long_term::save("alpha", "test", Some(4.0), vec![], Some(vec![1.0, 0.0, 0.0, 0.0]))
+            .expect("seed long-term record a");
+        let b = long_term::save("beta", "test", Some(9.0), vec![], Some(vec![0.0, 1.0, 0.0, 0.0]))
+            .expect("seed long-term record b");
+        (a.id, b.id)
     }
 
     #[tokio::test]
     async fn hybrid_path_merges_vector_and_graph_hits() {
         let _env = TestEnv::new();
-        seed_hybrid_store();
+        let (id_a, _id_b) = seed_hybrid_store();
         // Memgraph returns one graph-only neighbour anchored on the
         // entity name we pass as a seed.
         let (client, _) = mock::new_with_static_ok(json!({
@@ -653,7 +638,10 @@ mod tests {
         let results = out["results"].as_array().unwrap();
         let ids: Vec<&str> = results.iter().filter_map(|r| r["id"].as_str()).collect();
         assert!(ids.contains(&"g-1"), "graph hit present: {ids:?}");
-        assert!(ids.contains(&"v-a"), "vector hit present: {ids:?}");
+        assert!(
+            ids.contains(&id_a.as_str()),
+            "long-term vector hit present: {ids:?}"
+        );
         // vector_seeds populated.
         let seeds = out["vector_seeds"].as_array().unwrap();
         assert!(!seeds.is_empty(), "vector_seeds populated");
@@ -678,25 +666,6 @@ mod tests {
         assert_eq!(out["source"], "vector");
         let count = out["count"].as_i64().unwrap();
         assert!(count > 0, "vector hits survive when graph empty");
-    }
-
-    #[tokio::test]
-    async fn hybrid_path_unknown_tier_returns_empty_envelope() {
-        let _env = TestEnv::new();
-        seed_hybrid_store();
-        let (client, _) = mock::new_with_static_ok(json!({"chunks": []}));
-        let out = run_graph_query(
-            json!({
-                "q": "anything",
-                "query_vector": [1.0, 0.0, 0.0, 0.0],
-                "tier": "junk",
-            }),
-            &client,
-        )
-        .await
-        .unwrap();
-        assert_eq!(out["count"], 0);
-        assert_eq!(out["error"], "unknown tier");
     }
 
     #[tokio::test]

@@ -603,13 +603,10 @@ mod tests {
             ("fs_file", ResourceOp::Update),       // fs.edit_file / fs.write_file
             ("fs_file", ResourceOp::Search),       // search.code_search
             ("fs_dir", ResourceOp::Search),        // search.code_search_files
-            ("rag_chunk", ResourceOp::Search),     // rag.ask
-            ("rag_chunk", ResourceOp::Delete),     // rag.prune
-            ("rag", ResourceOp::Execute),          // rag.index / rag.reindex
-            ("rag_feedback", ResourceOp::Create),  // rag.feedback
-            ("rag_miss", ResourceOp::List),        // rag.misses
-            ("rag_chunk_usage", ResourceOp::List), // rag.chunk_usage
-            ("rag_graph_stats", ResourceOp::Get),  // rag.graph_stats
+            // The rag_chunk / rag / rag_feedback / rag_miss / rag_chunk_usage
+            // / rag_graph_stats resources were retired with the rag
+            // subsystem (memory plan M7). `graph` survives — it is the
+            // knowledge-graph entry point, not rag.
             ("graph", ResourceOp::Search),         // meta.graph_query
             // ── Slice 4b clusters ──
             ("model", ResourceOp::List),    // ollama.list_loaded_models

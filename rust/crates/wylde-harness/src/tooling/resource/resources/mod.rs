@@ -11,10 +11,12 @@
 //!
 //! * **Slice 2 — [`memory`]**: the `memory` resource, delegating to the
 //!   existing `memory.*` named-tool handlers.
-//! * **Slice 3 — [`rag`] + [`treesitter`]**: the RAG / knowledge-graph
-//!   surface (`rag_chunk`, `rag`, `rag_feedback`, `rag_miss`,
-//!   `rag_chunk_usage`, `rag_graph_stats`, `graph`) plus the tree-sitter
-//!   sidecar surface (`code_chunk`, `code_entity`).
+//! * **Slice 3 — [`graph`] + [`treesitter`]**: the knowledge-graph
+//!   surface (`graph`) plus the tree-sitter sidecar surface
+//!   (`code_chunk`, `code_entity`). The six `rag_*` resources that once
+//!   shared this slice (`rag_chunk`, `rag`, `rag_feedback`, `rag_miss`,
+//!   `rag_chunk_usage`, `rag_graph_stats`) were retired with the rag
+//!   subsystem by memory plan M7; only `graph` — not rag — survives.
 //! * **Slice 4 — [`fs`]**: `fs_file` + `fs_dir`, delegating to the
 //!   existing `fs.*` + `search.*` named-tool handlers.
 //! * **Slice 4b — [`model`] + [`time`] + [`diff`] + [`voice`]**: the four
@@ -52,10 +54,10 @@ use super::ResourceRegistry;
 pub mod diff;
 pub mod extensions;
 pub mod fs;
+pub mod graph;
 pub mod memory;
 pub mod model;
 pub mod n8n;
-pub mod rag;
 pub mod time;
 pub mod treesitter;
 pub mod voice;
@@ -70,7 +72,7 @@ pub mod voice;
 /// built-in clusters.
 pub fn register_all(reg: &mut ResourceRegistry) {
     memory::register_memory_resource(reg);
-    rag::register_rag_resources(reg);
+    graph::register_graph_resources(reg);
     treesitter::register_treesitter_resources(reg);
     fs::register_fs_resources(reg);
     model::register_model_resource(reg);

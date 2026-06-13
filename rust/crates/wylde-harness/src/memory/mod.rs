@@ -17,11 +17,15 @@
 //! * **7.C** — long-term memory (`long_term.py` + `scoring.py` +
 //!   `reflection.py`). Importance + recency scoring, supersession
 //!   chains, reflection cycles, JSON + LanceDB persistence.
-//! * **7.D** — RAG: chunking, embedding (via wylde-ollama),
-//!   retrieval, miss log, multihop, decompose, entities, feedback,
-//!   gate, cache. Wires the `rag.*` deferred tools as Active.
-//! * **7.E** — Memgraph: graph_retrieval + memgraph clients. Wires
-//!   `meta.graph_query`.
+//! * **7.D** — RAG: **retired by memory plan M7.** The harness-side
+//!   `memory/rag/` tiered store + `rag.*` tool surface was ~140 KB of
+//!   half-wired scaffolding (ingest was an N8N stub; the model-facing
+//!   front door always failed). It is gone; the graph's hybrid vector
+//!   stage now reads the long-term store. WyldeStudy, its only consumer,
+//!   is de-registered and returns as an Extension on a clean contract.
+//! * **7.E** — Memgraph: graph_retrieval + memgraph clients + the
+//!   vector+graph fusion ([`memgraph::fusion`], relocated from rag at
+//!   M7). Wires `meta.graph_query`.
 //! * **7.F** — `scheduler.py` — landed in the full-Rust cutover
 //!   (slice R2b) as [`scheduler`], together with the [`reflection`]
 //!   scope dispatcher serving the `memory.reflect` pipe verb.
@@ -40,7 +44,6 @@
 //! * [`common`] — `DATA_DIR`, `ensure_dir`, embed-dim constants,
 //!   Memgraph service identity. Equivalent of `_common.py`.
 //! * `long_term/` — 7.C (not yet present).
-//! * `rag/` — 7.D (not yet present).
 //! * `memgraph/` — 7.E (not yet present).
 //!
 //! ## Strangler-fig env var
@@ -66,7 +69,6 @@ pub mod embeddings;
 pub mod long_term;
 pub mod memgraph;
 pub mod post_turn_extractor;
-pub mod rag;
 pub mod reflection;
 pub mod scheduler;
 pub mod short_term;
