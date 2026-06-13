@@ -271,9 +271,17 @@ impl MemoryPanel {
             // thread, so the wait must use the native executor timer.
             app_cx.background_executor().timer(SEARCH_DEBOUNCE).await;
 
-            // If the user typed again, our generation is stale — bail.
+            // If the user typed again, our generation is stale — bail. Clear
+            // the spinner first so a stale debounce can't strand "Loading…"
+            // (e.g. racing the initial load).
             let still_current = this
-                .update(app_cx, |panel, _| panel.search_generation == gen)
+                .update(app_cx, |panel, _| {
+                    let current = panel.search_generation == gen;
+                    if !current {
+                        panel.loading_long_term = false;
+                    }
+                    current
+                })
                 .unwrap_or(false);
             if !still_current {
                 return;
@@ -281,23 +289,22 @@ impl MemoryPanel {
 
             let outcome = search_long_term(&query, SEARCH_LIMIT).await;
             let _ = this.update(app_cx, |panel, cx| {
-                // Final stale-check: a search that landed AFTER a newer
-                // keystroke arrived shouldn't clobber the more-current
-                // result set.
-                if panel.search_generation != gen {
-                    return;
-                }
-                match outcome {
-                    Ok(rows) => {
-                        panel.error = None;
-                        panel.long_term = rows;
-                        panel.search_active = true;
-                    }
-                    Err(err) => {
-                        panel.error = Some(err);
-                    }
-                }
+                // Clear the spinner for this completion regardless of
+                // staleness — a discarded stale result must never strand
+                // "Loading…". Apply the result set only if still current.
                 panel.loading_long_term = false;
+                if panel.search_generation == gen {
+                    match outcome {
+                        Ok(rows) => {
+                            panel.error = None;
+                            panel.long_term = rows;
+                            panel.search_active = true;
+                        }
+                        Err(err) => {
+                            panel.error = Some(err);
+                        }
+                    }
+                }
                 cx.notify();
             });
         })

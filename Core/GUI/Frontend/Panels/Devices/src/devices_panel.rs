@@ -349,11 +349,16 @@ impl DevicesPanel {
         }
         cx.notify();
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
-            let _ = cancel_pairing().await;
+            // Surface a cancel failure: the card was closed optimistically,
+            // but if the backend cancel errors the server-side pairing window
+            // is still open (a device could still complete against the code).
+            let outcome = cancel_pairing().await;
             let _ = this.update(app_cx, |panel, cx| {
+                if let Err(e) = outcome {
+                    panel.error = Some(format!("cancel pairing: {e}"));
+                }
                 cx.notify();
                 Self::spawn_refresh(cx);
-                let _ = panel; // suppress unused warning when no body needs it.
             });
         })
         .detach();

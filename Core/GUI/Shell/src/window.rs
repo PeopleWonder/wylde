@@ -225,7 +225,14 @@ fn spawn_nav_drain(cx: &mut gpui::Context<Shell>) {
         while let Some(key) = rx.recv().await {
             let alive = this
                 .update(app_cx, |shell, cx| {
-                    shell.on_nav_click(&key);
+                    if !shell.on_nav_click(&key) {
+                        // A panel requested navigation to a key that no nav
+                        // row owns (likely a renamed/retired panel). Don't
+                        // drop it silently — surface it for diagnosis.
+                        eprintln!(
+                            "[wylde-gui] cross-panel nav request for unknown panel key {key:?} ignored"
+                        );
+                    }
                     cx.notify();
                 })
                 .is_ok();
