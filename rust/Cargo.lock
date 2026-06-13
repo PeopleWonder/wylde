@@ -5275,21 +5275,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wylde-ext-study"
-version = "0.1.0-alpha.1"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "wylde-prebuild-guard",
- "wylde-shared",
-]
-
-[[package]]
 name = "wylde-ext-webcrawler"
 version = "0.1.0-alpha.1"
 dependencies = [

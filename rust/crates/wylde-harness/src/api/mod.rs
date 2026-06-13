@@ -58,7 +58,6 @@ use crate::chat::search::api as chat_search;
 use crate::config::Config;
 use crate::memory::conversations::actions as conversations_actions;
 use crate::memory::long_term::{self, SaveError};
-use crate::memory::rag::actions as rag_actions;
 use crate::memory::short_term::actions as short_term_actions;
 use crate::memory::workspace::actions as workspace_memory_actions;
 use crate::model_registry::actions as model_actions;
@@ -74,8 +73,6 @@ mod helpers;
 
 #[cfg(test)]
 mod tests_memory;
-#[cfg(test)]
-mod tests_rag;
 #[cfg(test)]
 mod tests_tools;
 
@@ -148,10 +145,6 @@ pub trait HarnessApi: Send + Sync {
     async fn prompts_save_preset(&self, payload: Value) -> Reply;
     async fn prompts_set_active(&self, payload: Value) -> Reply;
     async fn prompts_delete_preset(&self, payload: Value) -> Reply;
-
-    // ── rag.* (2 verbs; Wylde_Study S2a) ─────────────────────────────
-    async fn rag_add_episodic(&self, payload: Value) -> Reply;
-    async fn rag_search(&self, payload: Value) -> Reply;
 
     // ── memory.long_term.* (6 verbs) ─────────────────────────────────
     async fn memory_long_term_list(&self, payload: Value) -> Reply;
@@ -418,28 +411,6 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn prompts_delete_preset(&self, payload: Value) -> Reply {
         crate::prompts::handle_delete_preset(payload)
-    }
-
-    // ── rag.* (Wylde_Study S2a) ──────────────────────────────────────
-    // Thin pass-throughs to the rag action handlers, which already
-    // return the `status`-envelope shape the `rag.*` family uses. These
-    // are plain pipe actions (not model-callable tools): like every
-    // other action here they delegate straight to the subsystem and do
-    // not run the per-tool consent / device-tier gate — that gate is
-    // applied by `tools.run`'s dispatcher, not by direct actions.
-
-    async fn rag_add_episodic(&self, payload: Value) -> Reply {
-        match rag_actions::run_rag_add_episodic(payload).await {
-            Ok(v) => Reply::ok(v),
-            Err(e) => Reply::err(e),
-        }
-    }
-
-    async fn rag_search(&self, payload: Value) -> Reply {
-        match rag_actions::run_rag_search(payload).await {
-            Ok(v) => Reply::ok(v),
-            Err(e) => Reply::err(e),
-        }
     }
 
     // ── memory.long_term.* ───────────────────────────────────────────

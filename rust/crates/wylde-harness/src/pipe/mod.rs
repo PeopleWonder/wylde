@@ -81,7 +81,6 @@ mod globals;
 mod memory;
 mod models;
 mod prompts;
-mod rag;
 mod settings;
 mod tools;
 mod user_profile;
@@ -142,9 +141,13 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "prompts.save_preset",
     "prompts.set_active",
     "prompts.delete_preset",
-    // rag.* — episodic write + semantic search (2 verbs; Wylde_Study S2a)
-    "rag.add_episodic",
-    "rag.search",
+    // rag.* — RETIRED from the harness pipe (memory plan M7). The
+    // tiered RAG store + its `rag.add_episodic` / `rag.search` verbs
+    // (Wylde_Study S2a) were retired with the rest of `memory/rag/`.
+    // The harness no longer answers them (→ no_action), and WyldeStudy
+    // (their only consumer) is de-registered until it returns as an
+    // Extension. The vector+graph hybrid path now reads the long-term
+    // store via `meta.graph_query` / the `graph` resource.
     // memory.long_term.* — global memory tier (6 verbs)
     "memory.long_term.list",
     "memory.long_term.save",
@@ -243,7 +246,6 @@ where
     models::install(&api);
     settings::install(&api);
     prompts::install(&api);
-    rag::install(&api);
     memory::install(&api);
     conversations::install(&api);
     consent::install(&api);

@@ -17,7 +17,14 @@ members = [
     "crates/wylde-voice",
     "crates/wylde-treesitter",
     "crates/wylde-ext-webcrawler",
-    "crates/wylde-ext-study",
+    # `crates/wylde-ext-study` — DE-REGISTERED from the default build by
+    # memory plan M7 (moved to `exclude` below). It was the only consumer
+    # of the retired `rag.add_episodic` / `rag.search` pipe verbs, so its
+    # `study_index_page` / `study_query` tools would now fail at dispatch.
+    # Its `Extensions/Wylde_Study/{manifest,mcp-server}.json` are already
+    # `enabled: false`, so the extension bridge doesn't advertise it. The
+    # crate source is retained as the seed of the future Extension (see
+    # the WyldeStudy rewire spec in outputs/wylde-memory-fixes-DONE.md).
     "crates/wylde-updater",
     # Thought Bubble System (Phase 0, Slice 0a). The new workspace-scoped
     # service + the shared IPC client every consumer depends on. See the
@@ -50,7 +57,13 @@ members = [
 # (reqwest) and depends on the *built* service binaries. Excluding it keeps
 # `cargo build` / `cargo test` for the four service crates unaffected. Run it
 # explicitly — see rust/tests/parity/README.md.
-exclude = ["tests/parity"]
+exclude = [
+    "tests/parity",
+    # De-registered from the default build by memory plan M7 — see the
+    # comment in `members` above. Excluded (not deleted) so the crate
+    # source survives as the seed of the future WyldeStudy Extension.
+    "crates/wylde-ext-study",
+]
 
 [workspace.package]
 version = "0.1.0-alpha.1"

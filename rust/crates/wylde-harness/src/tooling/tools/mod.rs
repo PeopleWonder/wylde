@@ -48,7 +48,6 @@ pub mod fs;
 pub mod memory;
 pub mod meta;
 pub mod ollama;
-pub mod rag;
 pub mod search;
 pub mod time_tools;
 pub mod verbs;
@@ -63,7 +62,6 @@ pub fn register_all(reg: &mut Registry) {
     memory::register(reg);
     meta::register(reg);
     ollama::register(reg);
-    rag::register(reg);
     search::register(reg);
     time_tools::register(reg);
     verbs::register(reg);
