@@ -603,7 +603,15 @@ impl ChatPanel {
         cx.notify();
         let active_after = self.conversation_id.clone();
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
-            let _ = delete_conversation(&id).await;
+            // Surface a delete failure instead of swallowing it: the row was
+            // dropped optimistically above, and the reload below would
+            // silently flicker it back with no explanation otherwise.
+            if let Err(e) = delete_conversation(&id).await {
+                let _ = this.update(app_cx, |panel, cx| {
+                    panel.error = Some(format!("delete conversation: {e}"));
+                    cx.notify();
+                });
+            }
             if was_active {
                 let _ = set_active_conversation(&active_after).await;
                 Self::reload_conversation_messages(&this, app_cx).await;
@@ -1833,10 +1841,16 @@ impl ChatPanel {
                 if panel.bubbles.expanded != Some(bubble_ix) {
                     return;
                 }
-                if let Ok(v) = reply {
-                    panel.bubbles.context = Some(composer::bubbles::CardContext::from_reply(&v));
-                    cx.notify();
+                match reply {
+                    Ok(v) => {
+                        panel.bubbles.context =
+                            Some(composer::bubbles::CardContext::from_reply(&v));
+                    }
+                    // Surface the failure so the card stops spinning forever
+                    // (e.g. workspaces service unreachable).
+                    Err(_) => panel.bubbles.context_failed = true,
                 }
+                cx.notify();
             });
         })
         .detach();

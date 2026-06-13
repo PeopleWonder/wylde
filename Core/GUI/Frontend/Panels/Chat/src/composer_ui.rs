@@ -368,6 +368,8 @@ fn bubble_card(
                             card.child(SharedString::from(format!("{title}: {}", list.join(", "))));
                     }
                 }
+            } else if panel.bubbles.context_failed {
+                card = card.child(SharedString::from("context unavailable"));
             } else {
                 card = card.child(SharedString::from("loading context…"));
             }
