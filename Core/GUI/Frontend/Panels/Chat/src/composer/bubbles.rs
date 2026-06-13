@@ -103,6 +103,9 @@ pub struct BubbleLayer {
     pub expanded: Option<usize>,
     /// Drill-in context for the expanded bubble, when fetched.
     pub context: Option<CardContext>,
+    /// Set when the `symbol_context` fetch failed, so the card can show
+    /// "context unavailable" instead of an eternal "loading context…".
+    pub context_failed: bool,
     /// Right-click menu open on a bubble (index into `bubbles`).
     pub menu: Option<usize>,
     /// 📌 pinned bubble labels — persist across messages within this
@@ -123,6 +126,7 @@ impl BubbleLayer {
         self.bubbles.clear();
         self.expanded = None;
         self.context = None;
+        self.context_failed = false;
         self.menu = None;
         true
     }
@@ -134,6 +138,7 @@ impl BubbleLayer {
         self.bubbles.clear();
         self.expanded = None;
         self.context = None;
+        self.context_failed = false;
         self.menu = None;
     }
 
@@ -148,10 +153,12 @@ impl BubbleLayer {
         if self.expanded == Some(ix) {
             self.expanded = None;
             self.context = None;
+            self.context_failed = false;
             return false;
         }
         self.expanded = Some(ix);
         self.context = None;
+        self.context_failed = false;
         ix < self.bubbles.len()
     }
 
