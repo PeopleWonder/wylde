@@ -75,6 +75,7 @@ pub mod actions;
 pub mod bolt;
 pub mod client;
 pub mod cypher;
+pub mod fusion;
 pub mod graph_retrieval;
 pub mod schema;
 pub mod transport;

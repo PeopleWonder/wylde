@@ -98,12 +98,6 @@ pub fn register(reg: &mut Registry) {
                 json!(5),
             ),
             param(
-                "tier",
-                "string",
-                false,
-                "Restrict vector search to one tier (core/episodic/semantic/procedural)",
-            ),
-            param(
                 "workspace_id",
                 "string",
                 false,
