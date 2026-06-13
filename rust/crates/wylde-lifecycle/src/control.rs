@@ -194,7 +194,36 @@ pub fn register_with_ipc() {
         lifecycle_start_service_action(payload).await
     });
 
-    tracing::info!("control: registered 10 actions on wylde-lifecycle");
+    // Self-updater preferences (Phase 12.5). The Settings → Updates
+    // section dispatches these against the lifecycle daemon; without them
+    // every toggle landed on `no_action` and the read fell back to
+    // hard-coded defaults (see `updater_prefs`).
+    register_action("updater.get_prefs", |payload: Value| async move {
+        updater_get_prefs_action(payload).await
+    });
+    register_action("updater.set_prefs", |payload: Value| async move {
+        updater_set_prefs_action(payload).await
+    });
+
+    tracing::info!("control: registered 12 actions on wylde-lifecycle");
+}
+
+/// `updater.get_prefs` — return the persisted updater prefs (defaults
+/// when the file is missing/unreadable).
+async fn updater_get_prefs_action(_payload: Value) -> Reply {
+    Reply::ok(crate::updater_prefs::load().to_value())
+}
+
+/// `updater.set_prefs` — merge the partial patch into the on-disk prefs
+/// and return the merged shape. The whole payload object *is* the patch
+/// (the GUI sends e.g. `{"channel":"beta"}` or `{"last_checked":N}`).
+async fn updater_set_prefs_action(payload: Value) -> Reply {
+    let mut prefs = crate::updater_prefs::load();
+    prefs.apply_patch(&payload);
+    if let Err(e) = crate::updater_prefs::save(&prefs) {
+        return Reply::err_msg("io_error", format!("persist updater prefs: {e}"));
+    }
+    Reply::ok(prefs.to_value())
 }
 
 /// Payload returned by `service.shutdown_all`. Matches the Python
@@ -758,7 +787,7 @@ mod tests {
 
     /// Every action `register_with_ipc` binds — kept in one place so the
     /// cleanup and the registration assertion can't drift apart.
-    const ALL_ACTIONS: [&str; 10] = [
+    const ALL_ACTIONS: [&str; 12] = [
         "service.shutdown_all",
         "lifecycle.shutdown_all",
         "lifecycle.status",
@@ -769,6 +798,8 @@ mod tests {
         "service.wake",
         "service.list",
         "service.health",
+        "updater.get_prefs",
+        "updater.set_prefs",
     ];
 
     fn cleanup() {

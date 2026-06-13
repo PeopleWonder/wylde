@@ -35,3 +35,4 @@ pub mod control;
 pub mod daemon;
 pub mod registry;
 pub mod state;
+pub mod updater_prefs;
