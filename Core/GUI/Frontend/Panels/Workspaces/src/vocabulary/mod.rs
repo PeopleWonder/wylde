@@ -19,8 +19,8 @@ pub mod ipc;
 pub mod list_view;
 
 use gpui::{
-    div, prelude::*, px, rgb, Context, Entity, FontWeight, IntoElement, MouseButton,
-    MouseDownEvent, Render, SharedString, Window,
+    div, prelude::*, px, rgb, Context, Entity, FocusHandle, FontWeight, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, Render, SharedString, Window,
 };
 use wylde_gpui_input::TextInput;
 use wylde_theme::colors::{
@@ -98,6 +98,13 @@ pub struct VocabularyTab {
     /// Per-tab undo/redo for connection edits (Ctrl+Z / Ctrl+Shift+Z —
     /// the §5.9 stack's first wired surface; bubbles/graph join later).
     undo: UndoStack<RelatedEdit>,
+    /// Focus home for the tab so the Ctrl+Z / Ctrl+Shift+Z chord has an
+    /// element to dispatch to (the root carries `on_key_down`). Clicking a
+    /// child text input focuses that input instead (deeper target).
+    focus: FocusHandle,
+    /// One-shot guard: take focus on the first render so the chord works
+    /// without the user having to click the tab first.
+    focused_once: bool,
 }
 
 impl VocabularyTab {
@@ -149,6 +156,8 @@ impl VocabularyTab {
             stale: HashSet::new(),
             connect_picker: false,
             undo: UndoStack::default(),
+            focus: cx.focus_handle(),
+            focused_once: false,
         };
         Self::spawn_load(cx);
         tab
@@ -679,7 +688,15 @@ impl VocabularyTab {
 }
 
 impl Render for VocabularyTab {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Take focus once so the Ctrl+Z / Ctrl+Shift+Z chord has a home
+        // without the user clicking the tab first. Clicking a child text
+        // input re-focuses that input (deeper target), so this doesn't
+        // fight typing.
+        if !self.focused_once {
+            self.focus.focus(window, cx);
+            self.focused_once = true;
+        }
         let query = self.search.read(cx).text().to_owned();
         let rows = list_view::rows(
             &self.ws_anchors,
@@ -693,6 +710,20 @@ impl Render for VocabularyTab {
 
         let mut root = div()
             .id("workspaces-vocabulary-tab")
+            .track_focus(&self.focus)
+            // Ctrl+Z / Ctrl+Shift+Z — connection-edit undo/redo (§5.9). Keys
+            // the focused child input doesn't claim bubble up to here. The
+            // header Undo/Redo buttons remain the always-available path.
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _w, cx| {
+                let ks = &ev.keystroke;
+                if ks.key.as_str() == "z" && ks.modifiers.control {
+                    if ks.modifiers.shift {
+                        this.redo_last(cx);
+                    } else {
+                        this.undo_last(cx);
+                    }
+                }
+            }))
             .size_full()
             .overflow_y_scroll()
             .flex()
