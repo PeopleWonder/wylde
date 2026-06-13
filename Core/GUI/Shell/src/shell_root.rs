@@ -130,8 +130,14 @@ impl Shell {
     /// Sidebar click handler.  Updates the selection; the next render
     /// re-evaluates `slot_state()` and mints the panel View if it
     /// wasn't already cached.
-    pub fn on_nav_click(&mut self, key: &str) {
+    /// Returns `true` when `key` names a known panel (selection applied or
+    /// it was already active); `false` when no such panel exists — lets the
+    /// cross-panel nav drain log a stale/renamed key instead of dropping it
+    /// silently.
+    pub fn on_nav_click(&mut self, key: &str) -> bool {
+        let known = self.nav.has_key(key);
         let _ = self.nav.select(key);
+        known
     }
 
     /// Health-probe reply handler.  Called from the async startup task

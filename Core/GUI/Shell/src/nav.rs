@@ -87,6 +87,14 @@ impl NavModel {
         true
     }
 
+    /// Whether `key` names a known nav row. Lets a caller distinguish
+    /// "already selected" from "no such panel" (both make `select` return
+    /// `false`) so a cross-panel nav request for a renamed/stale key can be
+    /// logged rather than silently dropped.
+    pub fn has_key(&self, key: &str) -> bool {
+        self.rows.iter().any(|r| r.key == key)
+    }
+
     /// Mark a service's health status.  The slot's stub fires when any
     /// required service is explicitly `false`; absent / `true` both
     /// mean "let the panel mount".

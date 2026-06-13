@@ -107,11 +107,19 @@ pub struct ImagesPanel {
     pub generate_running: bool,
     pub generate_error: Option<String>,
     pub generate_last_id: Option<String>,
+    /// Stop was clicked but the gateway/ComfyUI job can't actually be
+    /// cancelled mid-run (no cancel verb), so it keeps running in the
+    /// background. We keep `generate_running` true (no overlapping GPU
+    /// jobs) and show an honest "finishing in the background" notice until
+    /// the original future resolves.
+    pub generate_detached: bool,
     pub prompt_input: Entity<TextInput>,
     pub selected_model: Option<String>,
-    /// In-flight generate task.  Dropping the `Task` cancels the
-    /// underlying future — gpui tasks are abort-on-drop.  Held here so
-    /// a Stop click can clear the option and trigger the cancel.
+    /// In-flight generate task.  Dropping the gpui `Task` only aborts the
+    /// gpui-side await — the work was dispatched onto the tokio runtime via
+    /// the Pipe bridge, whose `JoinHandle` is detached (not aborted) on
+    /// drop, so the gateway request keeps running. We therefore hold the
+    /// task to completion rather than dropping it on Stop.
     pub generate_task: Option<Task<()>>,
     _input_sub: Subscription,
 }
@@ -152,6 +160,7 @@ impl ImagesPanel {
             generate_running: false,
             generate_error: None,
             generate_last_id: None,
+            generate_detached: false,
             prompt_input,
             selected_model: None,
             generate_task: None,
@@ -374,6 +383,7 @@ impl ImagesPanel {
         self.generate_running = true;
         self.generate_error = None;
         self.generate_last_id = None;
+        self.generate_detached = false;
         // Clear the input now so the user sees the panel taking over.
         let input = self.prompt_input.clone();
         input.update(cx, |i, cx| i.clear(cx));
@@ -388,6 +398,7 @@ impl ImagesPanel {
             let outcome = generate(req).await;
             let _ = this.update(app_cx, |panel, cx| {
                 panel.generate_running = false;
+                panel.generate_detached = false;
                 panel.generate_task = None;
                 match outcome {
                     Ok(out) => {
@@ -409,10 +420,17 @@ impl ImagesPanel {
     }
 
     pub fn cancel_generate(&mut self, cx: &mut Context<Self>) {
-        // Dropping the gpui Task aborts the future driving it.
-        self.generate_task = None;
-        self.generate_running = false;
-        self.generate_error = Some("cancelled".into());
+        // A ComfyUI generate can't be cancelled mid-run (no cancel verb),
+        // and the request was dispatched onto tokio via the Pipe bridge —
+        // dropping the gpui task would only detach it, leaving the GPU job
+        // running while re-enabling Generate (→ overlapping jobs). Instead
+        // we keep the task to completion and just mark it detached: the
+        // submit guard stays engaged and the notice goes honest. The
+        // original future clears this state when the job actually finishes.
+        if !self.generate_running || self.generate_detached {
+            return;
+        }
+        self.generate_detached = true;
         cx.notify();
     }
 
@@ -605,7 +623,15 @@ fn generate_bar(panel: &ImagesPanel, cx: &mut Context<ImagesPanel>) -> gpui::Div
     };
     let prompt_input = panel.prompt_input.clone();
 
-    let action_button = if panel.generate_running {
+    let action_button = if panel.generate_detached {
+        // Stop was clicked but the job is still finishing — no re-stop, and
+        // Generate stays guarded. A non-interactive "Finishing…" pill.
+        pill_button(
+            ElementId::Name("images-generate-finishing".into()),
+            SharedString::from("Finishing…"),
+            cx.listener(|_this: &mut ImagesPanel, _ev, _w, _cx| {}),
+        )
+    } else if panel.generate_running {
         pill_button(
             ElementId::Name("images-generate-stop".into()),
             SharedString::from("Stop"),
@@ -643,14 +669,18 @@ fn generate_bar(panel: &ImagesPanel, cx: &mut Context<ImagesPanel>) -> gpui::Div
     );
 
     if panel.generate_running {
+        let notice = if panel.generate_detached {
+            "Can't cancel a ComfyUI job mid-run — it's finishing in the background, then it'll \
+             appear in the library."
+        } else {
+            "Generation in flight — the ComfyUI proxy may take up to 10 min on a slow GPU."
+        };
         col = col.child(
             div()
                 .font_family(FAMILY_INTER)
                 .text_size(px(size::MICRO))
                 .text_color(rgb(pack(BRAND_LIGHT)))
-                .child(SharedString::from(
-                    "Generation in flight — the ComfyUI proxy may take up to 10 min on a slow GPU.",
-                )),
+                .child(SharedString::from(notice)),
         );
     }
     if let Some(err) = &panel.generate_error {
