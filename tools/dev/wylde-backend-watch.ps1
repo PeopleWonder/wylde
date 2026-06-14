@@ -122,6 +122,14 @@ if (-not (Test-Path $IpcCall)) {
 }
 
 # --- helpers -----------------------------------------------------------
+# Write a UTF-8 file with NO byte-order mark. `Set-Content -Encoding utf8` in
+# Windows PowerShell 5.1 prepends a BOM (EF BB BF); ipc_call reads the JSON
+# payload byte-for-byte and rejects a leading BOM as invalid JSON, so every
+# bounce would silently fail. This guarantees BOM-free bytes.
+function Write-Utf8NoBom([string]$path, [string]$text) {
+    [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 function Get-CrateMaxMtime([string]$crate) {
     $dir = Join-Path $CratesDir $crate
     $files = Get-ChildItem -Path $dir -Recurse -File -Include *.rs, *.toml -ErrorAction SilentlyContinue
@@ -177,8 +185,8 @@ function Invoke-Bounce([string]$service) {
         return
     }
     $payloadFile = Join-Path $env:TEMP "wylde-hotreload-$service.json"
-    @{ name = $service; binary = $exe } | ConvertTo-Json -Compress |
-        Set-Content -Path $payloadFile -Encoding utf8
+    $payloadJson = @{ name = $service; binary = $exe } | ConvertTo-Json -Compress
+    Write-Utf8NoBom $payloadFile $payloadJson
     $reply = & $IpcCall lifecycle dev.restart_service "@$payloadFile" 2>&1
     $rc = $LASTEXITCODE
     Remove-Item $payloadFile -ErrorAction SilentlyContinue
