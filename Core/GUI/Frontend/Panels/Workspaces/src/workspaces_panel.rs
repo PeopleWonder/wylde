@@ -104,6 +104,16 @@ impl WorkspacesPanel {
             // `open_in_editor` lands on an already-live entity.
             let files = cx.new(FilesTab::new);
             let editor = cx.new(EditorTab::new);
+            // The file-tree drives the editor across the tab boundary (S5): a
+            // file-row click emits FileOpenEvent; we open it + flip to Editor.
+            cx.subscribe(
+                &files,
+                |panel: &mut Self, _files, event: &crate::files::FileOpenEvent, cx| {
+                    let crate::files::FileOpenEvent::Open(path) = event;
+                    panel.open_in_editor(path.clone(), None, cx);
+                },
+            )
+            .detach();
             let mut panel = Self::new();
             panel.graph = Some(graph);
             panel.settings = Some(settings);
@@ -209,6 +219,10 @@ impl WorkspacesPanel {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let _ = this.update(app_cx, |panel, cx| {
                 panel.active_id = Some(id.clone());
+                // Re-root the file tree on the newly-active workspace (S5).
+                if let Some(files) = &panel.files {
+                    files.update(cx, |f, fcx| f.reload(fcx));
+                }
                 cx.notify();
             });
             let outcome = set_active_workspace(&id).await;
