@@ -30,6 +30,24 @@ pub const FALLBACK_FAMILIES: &[&str] = &[
     "sans-serif",
 ];
 
+/// Monospace family for code surfaces (the `wylde-gpui-code-editor` element
+/// and any inline code chrome). Requested by name; gpui's text system falls
+/// back through [`MONO_FALLBACK_FAMILIES`] / its own platform chain when the
+/// first choice isn't installed. Cascadia Mono ships with modern Windows;
+/// the fallbacks cover macOS/Linux and end in the generic `monospace` so
+/// resolution always succeeds.
+pub const FAMILY_MONO: &str = "Cascadia Mono";
+
+/// Fallback monospace families, in request order.
+pub const MONO_FALLBACK_FAMILIES: &[&str] = &[
+    "Consolas",          // Windows
+    "SF Mono",           // macOS
+    "Menlo",             // macOS
+    "DejaVu Sans Mono",  // Linux
+    "Liberation Mono",   // Linux
+    "monospace",         // generic — always resolvable
+];
+
 /// Named text sizes in pixels at the default DPI.  Map roughly to the
 /// Tailwind scale used on the Svelte side (text-xs / text-sm / text-base
 /// / text-lg / text-xl).  Tailwind's scale is rem-based; gpui's text
@@ -74,6 +92,16 @@ mod tests {
                 .iter()
                 .any(|f| matches!(*f, "sans-serif" | "serif" | "monospace")),
             "fallback list must include a generic family so resolution always succeeds",
+        );
+    }
+
+    #[test]
+    fn mono_fallback_ends_in_generic_monospace() {
+        assert!(!FAMILY_MONO.is_empty());
+        assert_eq!(
+            MONO_FALLBACK_FAMILIES.last(),
+            Some(&"monospace"),
+            "mono fallback must end in the generic `monospace` so resolution always succeeds",
         );
     }
 
