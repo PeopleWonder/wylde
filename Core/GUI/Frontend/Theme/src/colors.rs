@@ -39,6 +39,13 @@ pub const TEXT_SECONDARY: Rgba = rgb_const(0x94a3b8);
 pub const TEXT_MUTED: Rgba = rgb_const(0x4a5568);
 pub const TEXT_DIM: Rgba = rgb_const(0x334155);
 
+// ── Semantic status ──────────────────────────────────────────────────
+//
+// Danger/warning hues for error strips and editor diagnostic squiggles (IDE
+// S9). Kept as theme tokens so a palette change is one edit, not scattered hex.
+pub const DANGER: Rgba = rgb_const(0xe06c75);
+pub const WARNING: Rgba = rgb_const(0xe5c07b);
+
 // ── Borders (translucent over deep-navy surface) ─────────────────────
 //
 // The Svelte version expresses these as `rgba(14, 116, 144, 0.1)` and

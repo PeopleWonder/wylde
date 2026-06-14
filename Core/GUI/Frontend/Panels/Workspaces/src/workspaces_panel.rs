@@ -146,8 +146,15 @@ impl WorkspacesPanel {
     ) {
         let path = path.into();
         let workspace_id = self.active_id.clone().unwrap_or_default();
+        // The active workspace's absolute folder — the LSP root + file-URI base.
+        let folder = self
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .map(|w| w.path.clone())
+            .unwrap_or_default();
         if let Some(editor) = &self.editor {
-            editor.update(cx, |e, ecx| e.open(workspace_id, path, line, ecx));
+            editor.update(cx, |e, ecx| e.open(workspace_id, folder, path, line, ecx));
         }
         self.tab = WorkspacesTab::Editor;
         cx.notify();

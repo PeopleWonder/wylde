@@ -45,6 +45,79 @@ pub async fn write_file(
     .await
 }
 
+// ── LSP (wylde-lsp service, IDE S9) ──────────────────────────────────────
+//
+// All best-effort: an `Err` (service down / rust-analyzer absent) means "no
+// LSP", and the editor degrades to plain text + tree-sitter. `path` here is
+// the file's ABSOLUTE path (rust-analyzer needs real file URIs + a root).
+
+/// `lsp.open` — open a document (lazily starts rust-analyzer against `root`).
+pub async fn lsp_open(root: &str, abs_path: &str, text: &str) -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        "wylde-lsp",
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "lsp.open",
+            "payload": { "root": root, "path": abs_path, "text": text, "language": "rust" },
+        })),
+    )
+    .await
+}
+
+/// `lsp.change` — full-text document change.
+pub async fn lsp_change(abs_path: &str, text: &str, version: i64) -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        "wylde-lsp",
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "lsp.change",
+            "payload": { "path": abs_path, "text": text, "version": version },
+        })),
+    )
+    .await
+}
+
+/// `lsp.diagnostics` — latest cached diagnostics for a document.
+pub async fn lsp_diagnostics(abs_path: &str) -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        "wylde-lsp",
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "lsp.diagnostics", "payload": { "path": abs_path } })),
+    )
+    .await
+}
+
+/// `lsp.completion` — completions at a 0-based position.
+pub async fn lsp_completion(abs_path: &str, line: u32, character: u32) -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        "wylde-lsp",
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "lsp.completion",
+            "payload": { "path": abs_path, "line": line, "character": character },
+        })),
+    )
+    .await
+}
+
+/// `lsp.hover` — hover info at a 0-based position.
+pub async fn lsp_hover(abs_path: &str, line: u32, character: u32) -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        "wylde-lsp",
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "lsp.hover",
+            "payload": { "path": abs_path, "line": line, "character": character },
+        })),
+    )
+    .await
+}
+
 /// `treesitter.highlight` — syntax spans for the editor's live buffer.
 /// `abs_path` supplies the file extension for grammar resolution; `source` is
 /// the in-memory text (so highlighting reflects unsaved edits). Returns
