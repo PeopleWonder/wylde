@@ -31,6 +31,8 @@
 //! knob editors. Vocabulary / Conversations tabs are wired by their own
 //! later slices.
 
+pub mod editor;
+pub mod files;
 pub mod graph;
 pub mod ipc;
 pub mod settings_tab;

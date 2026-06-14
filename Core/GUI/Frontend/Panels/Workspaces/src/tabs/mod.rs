@@ -14,8 +14,15 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WorkspacesTab {
     /// The MRU workspace list + add/switch/reindex/remove (the original panel).
+    /// Stays the default selection — you pick/add an active workspace here
+    /// before the Files/Editor surfaces have anything to show.
     #[default]
     Registry,
+    /// The lazy file-tree of the active workspace's folder (IDE S5).
+    Files,
+    /// The code editor (IDE S3/S4) — a Workspaces TAB only (OQ-8), never a
+    /// top-level left-nav panel.
+    Editor,
     /// The visual code graph (Slice C-scaffold → C-settings).
     Graph,
     /// The anchor world-model / vocabulary editor (Slice N).
@@ -31,6 +38,8 @@ impl WorkspacesTab {
     pub fn label(self) -> &'static str {
         match self {
             WorkspacesTab::Registry => "Registry",
+            WorkspacesTab::Files => "Files",
+            WorkspacesTab::Editor => "Editor",
             WorkspacesTab::Graph => "Graph",
             WorkspacesTab::Vocabulary => "Vocabulary",
             WorkspacesTab::Conversations => "Conversations",
@@ -38,14 +47,18 @@ impl WorkspacesTab {
         }
     }
 
-    /// Tabs that have a body wired today, in display order. Later slices add
-    /// their tab here when they ship its view. Graph sits right after Registry
-    /// (before Conversations in the canonical ordering), per the brief;
-    /// Vocabulary landed with Slice N; Settings (Slice C-settings) closes the
-    /// row.
+    /// Tabs that have a body wired today, in display order.
+    ///
+    /// **Locked order (IDE OQ-5):** `Files, Editor, Graph, Registry,
+    /// Vocabulary, Settings` — the IDE surfaces lead (the panel reads
+    /// left→right like an editor: file-tree, code, graph), with the
+    /// management tabs (Registry, Settings) demoted to the right. Adding a
+    /// tab = add the variant, give it a label, place it here, wire its body.
     pub const WIRED: &'static [WorkspacesTab] = &[
-        WorkspacesTab::Registry,
+        WorkspacesTab::Files,
+        WorkspacesTab::Editor,
         WorkspacesTab::Graph,
+        WorkspacesTab::Registry,
         WorkspacesTab::Vocabulary,
         WorkspacesTab::Settings,
     ];
@@ -61,12 +74,15 @@ mod tests {
     }
 
     #[test]
-    fn graph_follows_registry_in_wired_order() {
+    fn wired_order_is_the_locked_ide_layout() {
+        // IDE OQ-5: IDE surfaces lead, management tabs trail.
         assert_eq!(
             WorkspacesTab::WIRED,
             &[
-                WorkspacesTab::Registry,
+                WorkspacesTab::Files,
+                WorkspacesTab::Editor,
                 WorkspacesTab::Graph,
+                WorkspacesTab::Registry,
                 WorkspacesTab::Vocabulary,
                 WorkspacesTab::Settings
             ]
@@ -74,9 +90,19 @@ mod tests {
     }
 
     #[test]
+    fn ide_tabs_are_wired_and_labelled() {
+        assert!(WorkspacesTab::WIRED.contains(&WorkspacesTab::Files));
+        assert!(WorkspacesTab::WIRED.contains(&WorkspacesTab::Editor));
+        assert_eq!(WorkspacesTab::Files.label(), "Files");
+        assert_eq!(WorkspacesTab::Editor.label(), "Editor");
+    }
+
+    #[test]
     fn every_tab_has_a_label() {
         for t in [
             WorkspacesTab::Registry,
+            WorkspacesTab::Files,
+            WorkspacesTab::Editor,
             WorkspacesTab::Graph,
             WorkspacesTab::Vocabulary,
             WorkspacesTab::Conversations,
