@@ -54,8 +54,10 @@
 //! for every daemon-managed service in either daemon (those services
 //! are spawned through `daemon_state`, not the launcher).
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use anyhow::Context;
 use serde::Serialize;
 use serde_json::{json, Value};
 use wylde_shared::ipc::{register_action, send_with_verb, IpcError, Reply, ACTION_DISPATCH_PATH};
@@ -107,6 +109,31 @@ const STALE_MAX_AGE_S: f64 = 300.0;
 /// Per-call timeout for the `service.health` pipe probe. Matches the
 /// `timeout=5.0` in Python's `health_action`.
 const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Env flag that gates the DEV-ONLY `dev.restart_service` action.
+///
+/// Set (to a truthy value) ONLY by `tools/dev/wylde-dev.ps1` when it
+/// boots the daemon for the full-stack hot-reload loop. A production /
+/// release daemon never sets it, so [`register_with_ipc`] never binds
+/// the action and the handler — were it ever reached — refuses with
+/// `not_dev_mode`. There is no release code path that flips this on; it
+/// exists purely so the backend file-watcher can bounce a single
+/// just-rebuilt service without restarting the whole stack. See
+/// `outputs/dev-fullstack-hotreload-report.md`.
+const DEV_HOTRELOAD_ENV: &str = "WYLDE_DEV_HOTRELOAD";
+
+/// Truthy-parse the dev hot-reload gate. Mirrors the daemon's no-spawn
+/// truthiness set so `1/true/yes/on` all enable it.
+fn dev_hotreload_enabled() -> bool {
+    matches!(
+        std::env::var(DEV_HOTRELOAD_ENV)
+            .unwrap_or_default()
+            .trim()
+            .to_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
 
 /// Method the health probe pings to decide liveness.
 ///
@@ -206,6 +233,134 @@ pub fn register_with_ipc() {
     });
 
     tracing::info!("control: registered 12 actions on wylde-lifecycle");
+
+    // DEV-ONLY: the full-stack hot-reload restart hook. Bound ONLY when
+    // `WYLDE_DEV_HOTRELOAD` is truthy — set exclusively by
+    // `tools/dev/wylde-dev.ps1`. A normal/release daemon never sets the
+    // flag, so this action simply does not exist there (no release
+    // behaviour change whatsoever). See `dev_restart_service_action`.
+    if dev_hotreload_enabled() {
+        register_action("dev.restart_service", |payload: Value| async move {
+            dev_restart_service_action(payload).await
+        });
+        tracing::warn!(
+            "control: DEV hot-reload active ({DEV_HOTRELOAD_ENV}) — bound dev.restart_service; \
+             this must never appear in a release daemon"
+        );
+    }
+}
+
+/// DEV-ONLY per-service restart hook for the full-stack hot-reload loop.
+///
+/// Gated behind [`DEV_HOTRELOAD_ENV`] at *both* registration time (see
+/// [`register_with_ipc`]) and here (defence-in-depth: a stale handler
+/// can never act in a daemon where the flag was cleared). Graceful,
+/// single-service bounce that leaves the GUI and every other service
+/// untouched:
+///
+///   1. `dispatch_stop(name)` — the same graceful CTRL_BREAK + wait +
+///      force-kill teardown a production `service.stop` uses, releasing
+///      the Windows sharing lock on the staged `.exe`.
+///   2. *swap* (optional) — copy the freshly-built `payload.binary` over
+///      the service's staged binary (the `WYLDE_<NAME>_BIN` override the
+///      dev daemon spawns from). The copy happens only AFTER the stop, so
+///      the dest is unlocked. On a copy failure the previous binary is
+///      respawned so the service is never left dark.
+///   3. `dispatch_start(name)` — respawns from the (possibly swapped)
+///      staged path; the new child rebinds its pipe and consumers
+///      re-handshake lazily on their next request.
+///
+/// The watcher only calls this on a SUCCESSFUL build, so a build failure
+/// never reaches here — the old service keeps running and the watcher
+/// surfaces the compiler error itself.
+async fn dev_restart_service_action(payload: Value) -> Reply {
+    if !dev_hotreload_enabled() {
+        return Reply::err(IpcError::new(
+            "not_dev_mode",
+            format!("dev.restart_service is gated behind {DEV_HOTRELOAD_ENV}"),
+        ));
+    }
+    let name = match require_name(&payload) {
+        Ok(n) => n,
+        Err(e) => return Reply::err(e),
+    };
+    if !DAEMON_MANAGED_SERVICES.contains(&name.as_str()) {
+        return Reply::err(IpcError::new(
+            "not_registered",
+            format!("unknown service {name:?}"),
+        ));
+    }
+
+    // 1. Graceful stop — releases the staged-exe sharing lock.
+    if let Err(e) = dispatch_stop(&name).await {
+        return Reply::err(IpcError::new("stop_failed", format!("stop failed: {e:#}")));
+    }
+
+    // 2. Optional binary swap (the service is stopped, so its staged
+    //    `.exe` is now writable). On failure, respawn the OLD bytes so we
+    //    never leave the service dark, and surface the swap error.
+    let mut swapped = false;
+    if let Some(src) = payload.get("binary").and_then(Value::as_str) {
+        match swap_staged_binary(&name, src) {
+            Ok(()) => swapped = true,
+            Err(e) => {
+                let _ = dispatch_start(&name).await; // wylde-check: discard-result-ok
+                return Reply::err(IpcError::new(
+                    "swap_failed",
+                    format!("binary swap failed: {e:#}; respawned previous binary"),
+                ));
+            }
+        }
+    }
+
+    // 3. Respawn from the (possibly swapped) staged path.
+    if let Err(e) = dispatch_start(&name).await {
+        return Reply::err(IpcError::new(
+            "spawn_failed",
+            format!("respawn failed: {e:#}"),
+        ));
+    }
+
+    let pid = service_pid(&name).map(Value::from).unwrap_or(Value::Null);
+    Reply::ok(json!({
+        "name": name,
+        "status": "restarted",
+        "pid": pid,
+        "swapped": swapped,
+    }))
+}
+
+/// Resolve the staged binary path the dev daemon spawns `name` from —
+/// the `WYLDE_<NAME>_BIN` override (`wylde-workspaces` →
+/// `WYLDE_WYLDE_WORKSPACES_BIN`). `None` when the override is unset (the
+/// daemon isn't in the dev BIN-override configuration).
+fn staged_binary_target(name: &str) -> Option<PathBuf> {
+    let var = format!("WYLDE_{}_BIN", name.to_uppercase().replace('-', "_"));
+    std::env::var_os(var).map(PathBuf::from)
+}
+
+/// Copy a freshly-built `src` binary over `name`'s staged binary. The
+/// caller MUST have stopped the service first (else the dest `.exe` is
+/// locked on Windows). Pulled out so it can be unit-tested without a
+/// live daemon.
+fn swap_staged_binary(name: &str, src: &str) -> anyhow::Result<()> {
+    let dest = staged_binary_target(name).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no stage target: WYLDE_{}_BIN is unset",
+            name.to_uppercase().replace('-', "_")
+        )
+    })?;
+    let src_path = Path::new(src);
+    if !src_path.exists() {
+        anyhow::bail!("source binary does not exist: {src}");
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create stage dir {}", parent.display()))?;
+    }
+    std::fs::copy(src_path, &dest)
+        .with_context(|| format!("copy {} -> {}", src, dest.display()))?;
+    Ok(())
 }
 
 /// `updater.get_prefs` — return the persisted updater prefs (defaults
@@ -1371,5 +1526,184 @@ mod tests {
 
         clear_nospawn();
         cleanup();
+    }
+
+    // ── DEV-ONLY dev.restart_service (full-stack hot-reload) ────────────
+
+    const DEV_RESTART_ACTION: &str = "dev.restart_service";
+
+    /// Clear the dev gate so it can never leak into a sibling test's
+    /// `register_with_ipc`. Always paired with `unregister_action` of the
+    /// dev verb.
+    fn clear_dev_gate() {
+        std::env::remove_var(super::DEV_HOTRELOAD_ENV);
+        unregister_action(DEV_RESTART_ACTION);
+    }
+
+    #[tokio::test]
+    async fn dev_restart_service_not_registered_without_gate() {
+        // The DEV verb must be invisible in a normal/release daemon: with
+        // WYLDE_DEV_HOTRELOAD unset, register_with_ipc must NOT bind it.
+        let _g = registry_guard().await;
+        clear_dev_gate();
+        cleanup();
+        register_with_ipc();
+        assert!(
+            !list_actions().contains(&DEV_RESTART_ACTION.to_string()),
+            "dev.restart_service must not be registered without the dev gate"
+        );
+        cleanup();
+        clear_dev_gate();
+    }
+
+    #[tokio::test]
+    async fn dev_restart_service_registered_with_gate() {
+        let _g = registry_guard().await;
+        clear_dev_gate();
+        cleanup();
+        std::env::set_var(super::DEV_HOTRELOAD_ENV, "1");
+        register_with_ipc();
+        assert!(
+            list_actions().contains(&DEV_RESTART_ACTION.to_string()),
+            "dev.restart_service must be registered when the dev gate is on"
+        );
+        cleanup();
+        clear_dev_gate();
+    }
+
+    #[tokio::test]
+    async fn dev_restart_service_refuses_when_gate_cleared() {
+        // Defence-in-depth: even if the action is somehow still bound, the
+        // handler itself re-checks the gate and refuses with not_dev_mode.
+        let _g = registry_guard().await;
+        clear_dev_gate();
+        cleanup();
+        std::env::set_var(super::DEV_HOTRELOAD_ENV, "1");
+        register_with_ipc();
+        // Clear the gate but leave the handler bound.
+        std::env::remove_var(super::DEV_HOTRELOAD_ENV);
+        let reply = dispatch_action(json!({
+            "action": DEV_RESTART_ACTION,
+            "payload": {"name": "wylde-workspaces"},
+        }))
+        .await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "not_dev_mode");
+        cleanup();
+        clear_dev_gate();
+    }
+
+    #[tokio::test]
+    async fn dev_restart_service_rejects_unknown_name() {
+        let _g = registry_guard().await;
+        let _sg = crate::state::tests::state_guard().await;
+        clear_nospawn();
+        clear_dev_gate();
+        cleanup();
+        std::env::set_var(super::DEV_HOTRELOAD_ENV, "1");
+        register_with_ipc();
+
+        let reply = dispatch_action(json!({
+            "action": DEV_RESTART_ACTION,
+            "payload": {"name": "wylde-parity-bogus"},
+        }))
+        .await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.unwrap().code, "not_registered");
+
+        cleanup();
+        clear_dev_gate();
+    }
+
+    #[tokio::test]
+    async fn dev_restart_service_bounces_managed_service_no_binary() {
+        // Happy path with no binary swap: stop (no tracked child → no-op)
+        // then start. wylde-workspaces with its BIN override pointed at a
+        // missing path resolves to no binary, so start is a non-fatal
+        // no-op — the action still returns ok with status "restarted",
+        // proving the stop→start composition is wired and that a missing
+        // binary doesn't crash the bounce.
+        let _g = registry_guard().await;
+        let _sg = crate::state::tests::state_guard().await;
+        clear_nospawn();
+        clear_dev_gate();
+        cleanup();
+        std::env::set_var(super::DEV_HOTRELOAD_ENV, "1");
+        register_with_ipc();
+
+        std::env::set_var("WYLDE_WYLDE_WORKSPACES_BIN", "/no/such/workspaces/binary");
+        let reply = dispatch_action(json!({
+            "action": DEV_RESTART_ACTION,
+            "payload": {"name": "wylde-workspaces"},
+        }))
+        .await;
+        std::env::remove_var("WYLDE_WYLDE_WORKSPACES_BIN");
+
+        assert!(reply.ok, "expected ok, got {reply:?}");
+        assert_eq!(reply.data["name"], "wylde-workspaces");
+        assert_eq!(reply.data["status"], "restarted");
+        assert_eq!(reply.data["swapped"], false);
+
+        cleanup();
+        clear_dev_gate();
+    }
+
+    #[test]
+    fn swap_staged_binary_copies_src_over_dest() {
+        // Pure helper: with the BIN override pointing at a (nonexistent)
+        // dest under a temp dir, swap_staged_binary copies the src bytes
+        // into place, creating the stage dir as needed.
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("fresh.exe");
+        std::fs::write(&src, b"NEWBYTES").unwrap();
+        let dest = tmp.path().join("stage").join("wylde-swaptest.exe");
+        std::env::set_var("WYLDE_WYLDE_SWAPTEST_BIN", &dest);
+
+        let r = swap_staged_binary("wylde-swaptest", src.to_str().unwrap());
+        std::env::remove_var("WYLDE_WYLDE_SWAPTEST_BIN");
+        assert!(r.is_ok(), "swap failed: {r:?}");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"NEWBYTES");
+    }
+
+    #[test]
+    fn swap_staged_binary_errors_without_stage_target() {
+        std::env::remove_var("WYLDE_WYLDE_NOSTAGE_BIN");
+        let err = swap_staged_binary("wylde-nostage", "/whatever")
+            .expect_err("expected error when BIN override is unset");
+        assert!(
+            err.to_string().contains("WYLDE_WYLDE_NOSTAGE_BIN"),
+            "error should name the missing override: {err}"
+        );
+    }
+
+    #[test]
+    fn swap_staged_binary_errors_on_missing_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("wylde-misssrc.exe");
+        std::env::set_var("WYLDE_WYLDE_MISSSRC_BIN", &dest);
+        let err = swap_staged_binary("wylde-misssrc", "/no/such/source/binary")
+            .expect_err("expected error when source is missing");
+        std::env::remove_var("WYLDE_WYLDE_MISSSRC_BIN");
+        assert!(
+            err.to_string().contains("source binary does not exist"),
+            "error should flag the missing source: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dev_hotreload_enabled_reads_env() {
+        // Hold the registry guard: this mutates the process-global dev
+        // gate env, which the register-time tests read — serialise so a
+        // transient flip can't bind/unbind the verb under them.
+        let _g = registry_guard().await;
+        std::env::remove_var(super::DEV_HOTRELOAD_ENV);
+        assert!(!dev_hotreload_enabled());
+        for truthy in ["1", "true", "yes", "on", "ON", "True"] {
+            std::env::set_var(super::DEV_HOTRELOAD_ENV, truthy);
+            assert!(dev_hotreload_enabled(), "{truthy:?} should enable the gate");
+        }
+        std::env::set_var(super::DEV_HOTRELOAD_ENV, "0");
+        assert!(!dev_hotreload_enabled());
+        std::env::remove_var(super::DEV_HOTRELOAD_ENV);
     }
 }
