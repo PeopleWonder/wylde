@@ -73,6 +73,15 @@ function Bin-EnvName([string]$svc) {
     'WYLDE_' + ($svc.ToUpper() -replace '-', '_') + '_BIN'
 }
 
+# Write a UTF-8 file with NO byte-order mark. Windows PowerShell 5.1's
+# `Set-Content -Encoding utf8` prepends a BOM (EF BB BF); ipc_call reads the
+# JSON payload byte-for-byte and rejects a leading BOM as "payload is not valid
+# JSON: expected value at line 1 column 1". This helper guarantees BOM-free
+# bytes on every PowerShell edition.
+function Write-Utf8NoBom([string]$path, [string]$text) {
+    [System.IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 # ── 1. Stage backend binaries + set the dev daemon environment ─────────
 if ($HotReload) {
     Write-Host ""
@@ -104,7 +113,13 @@ if ($HotReload) {
         $env:RUSTFLAGS = '-C linker=rust-lld'
         $pkgArgs = @(); foreach ($s in $needBuild) { $pkgArgs += @('-p', $s) }
         Push-Location $RustRoot
-        & cargo build @pkgArgs 2>&1 | Out-Host
+        # NB: no `2>&1`. cargo logs progress to stderr; under this script's
+        # ErrorActionPreference='Stop', merging a native command's stderr into
+        # the pipeline (2>&1) wraps each line in a terminating NativeCommandError
+        # in PowerShell 5.1 -- it would crash the launcher on the first
+        # "Compiling ..." line. Letting stderr flow straight to the console is
+        # safe and still shows the build output.
+        & cargo build @pkgArgs | Out-Host
         Pop-Location
         $env:CARGO_TARGET_DIR = $prevTarget; $env:RUSTFLAGS = $prevFlags
         foreach ($svc in $needBuild) {
@@ -146,7 +161,9 @@ function Ensure-IpcCall {
     $env:CARGO_TARGET_DIR = Join-Path $RustRoot 'target-dev'
     $env:RUSTFLAGS = '-C linker=rust-lld'
     Push-Location $RustRoot
-    & cargo build -q -p wylde-shared --example ipc_call 2>&1 | Out-Host
+    # No `2>&1` -- see the note in step 1: merging cargo's stderr under
+    # ErrorActionPreference='Stop' would crash the launcher in PS 5.1.
+    & cargo build -q -p wylde-shared --example ipc_call | Out-Host
     Pop-Location
     $env:CARGO_TARGET_DIR = $prevTarget; $env:RUSTFLAGS = $prevFlags
     if (Test-Path $ipc) { return $ipc } else { return $null }
@@ -158,8 +175,14 @@ function Ensure-IpcCall {
 function Test-DevDaemon([string]$ipc) {
     if (-not $ipc) { return $false }
     $pf = Join-Path $env:TEMP 'wylde-devprobe.json'
-    '{"name":"__probe__"}' | Set-Content -Path $pf -Encoding utf8
-    $out = & $ipc lifecycle dev.restart_service "@$pf" 2>&1
+    # BOM-free (see Write-Utf8NoBom) -- a BOM here makes ipc_call reject the
+    # probe as invalid JSON and write to stderr, which used to crash the whole
+    # launcher (BOM -> native stderr -> terminating error). And capture stdout
+    # WITHOUT `2>&1`: any stderr from ipc_call must not be merged into the
+    # pipeline under ErrorActionPreference='Stop'. The structured reply we test
+    # below comes on stdout regardless.
+    Write-Utf8NoBom $pf '{"name":"__probe__"}'
+    $out = & $ipc lifecycle dev.restart_service "@$pf"
     Remove-Item $pf -ErrorAction SilentlyContinue
     try {
         $j = ($out | Out-String | ConvertFrom-Json)
