@@ -157,8 +157,9 @@ pub struct GraphView {
     error: Option<GraphFetchError>,
     canvas: CanvasRect,
     drag: Option<Drag>,
-    /// Last node the user clicked — surfaced in the header (placeholder for the
-    /// real click behaviour future slices add) and logged to stderr.
+    /// The selected node — set by a click (opens its file outline) or
+    /// programmatically by [`GraphView::focus_node`] (the S6 deep-link entry
+    /// point); surfaced in the header.
     last_clicked: Option<String>,
     /// Which graph layer is showing (Slice N): `V` cycles CodeGraph →
     /// Overlay → VocabularyGraph. Render-only — see `display_graph_layout`.
@@ -717,6 +718,49 @@ impl GraphView {
             self.profiles.set_pointer(&ws, name);
         }
         self.persist_profiles();
+        cx.notify();
+        true
+    }
+
+    /// Deep-link focus (S6, plan P1.4): the programmatic entry point that
+    /// drives the graph to a specific node — used by cross-panel deep-links
+    /// (S7: click a vocab word → open the graph on that symbol) and, later,
+    /// jumps from the editor. Selects the node, reveals it if it sits in a
+    /// folded cluster, tweens the camera to centre on it (keeping the user's
+    /// zoom), and opens its file outline — the same surface a click produces.
+    /// No-op when the node isn't in the loaded graph.
+    ///
+    /// Returns `true` when the node was found and focused.
+    pub fn focus_node(&mut self, node_id: &str, cx: &mut Context<Self>) -> bool {
+        if !self.graph.nodes.iter().any(|n| n.id == node_id) {
+            return false;
+        }
+        // Reveal a folded cluster containing the node so it's actually visible.
+        if let Some(cluster) = self.cluster_view.cluster_of(node_id).map(str::to_owned) {
+            if self.cluster_view.is_folded(&cluster) {
+                self.toggle_cluster_fold(&cluster, true, cx);
+            }
+        }
+        // Centre the camera on the node (positions live in the base physics
+        // layout — present even while the node is folded into a cluster).
+        if let Some(pos) = self.layout.get(node_id) {
+            let zoom = self.camera.zoom;
+            let target = navigation::camera::camera_to_center(pos.x, pos.y, zoom);
+            self.begin_camera_tween(target, "graph_profile_switch", Instant::now());
+            self.spawn_camera_driver(cx);
+        }
+        // Mirror a click: select + open the file outline when the node has one.
+        let file = self
+            .graph
+            .nodes
+            .iter()
+            .find(|n| n.id == node_id)
+            .map(|n| n.file.clone())
+            .filter(|f| !f.is_empty());
+        self.last_clicked = Some(node_id.to_owned());
+        if let Some(file) = file {
+            self.open_outline(file, cx);
+        }
         cx.notify();
         true
     }

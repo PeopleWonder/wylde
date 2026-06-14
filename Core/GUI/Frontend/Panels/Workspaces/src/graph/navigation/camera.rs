@@ -47,6 +47,19 @@ pub fn camera_to_fit(bounds: (f32, f32, f32, f32), width: f32, height: f32, marg
     }
 }
 
+/// A camera that centres model-space point `(x, y)` in the viewport at the
+/// given `zoom` (zoom unchanged). The deep-link focus (S6 `focus_node`) uses
+/// this to bring a node to the centre without changing the user's zoom level —
+/// the same centring math `camera_to_fit` applies, minus the fit-zoom step.
+pub fn camera_to_center(x: f32, y: f32, zoom: f32) -> Camera {
+    let zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+    Camera {
+        pan_x: -x * zoom,
+        pan_y: -y * zoom,
+        zoom,
+    }
+}
+
 /// Bounding box of `member_ids`' positions in model space, or `None` when no
 /// member has a position. `pad` (model units) expands the box on every side
 /// so a cluster's "extent" includes some breathing room around node centres.
@@ -153,6 +166,21 @@ mod tests {
         zoom_toward(&mut cam, 2.0, 400.0, 300.0, &v);
         assert!(cam.pan_x.abs() < 1e-4 && cam.pan_y.abs() < 1e-4);
         assert_eq!(cam.zoom, 2.0);
+    }
+
+    #[test]
+    fn camera_to_center_places_point_at_viewport_centre() {
+        // Centring (10, 20) at zoom 2 → pan = -(x,y)*zoom, zoom preserved.
+        let cam = camera_to_center(10.0, 20.0, 2.0);
+        assert_eq!(cam.zoom, 2.0);
+        assert_eq!(cam.pan_x, -20.0);
+        assert_eq!(cam.pan_y, -40.0);
+    }
+
+    #[test]
+    fn camera_to_center_clamps_zoom() {
+        assert_eq!(camera_to_center(0.0, 0.0, 1e6).zoom, MAX_ZOOM);
+        assert_eq!(camera_to_center(0.0, 0.0, 1e-6).zoom, MIN_ZOOM);
     }
 
     #[test]
