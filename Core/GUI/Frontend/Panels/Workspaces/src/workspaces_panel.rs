@@ -20,8 +20,8 @@
 use std::path::PathBuf;
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyElement, AnyView, App, AppContext, AsyncApp, Context, ElementId,
-    Entity, FontWeight, IntoElement, Render, SharedString, Stateful, Window,
+    div, prelude::*, px, relative, rgb, AnyElement, AnyView, App, AppContext, AsyncApp, Context,
+    ElementId, Entity, FontWeight, IntoElement, Render, SharedString, Stateful, Window,
 };
 use wylde_theme::colors::{
     BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_DIM, SURFACE_800, SURFACE_900, TEXT_MUTED,
@@ -90,8 +90,9 @@ pub struct ModelPull {
 pub enum PullPhase {
     /// Button shown; the pull hasn't started.
     Offered,
-    /// Streaming `ollama.pull`; carries the latest progress frame.
-    Downloading(wylde_gui_pipe::PullProgress),
+    /// Streaming `ollama.pull`; carries the running aggregate (overall
+    /// percent across layers) that the progress bar renders.
+    Downloading(wylde_gui_pipe::PullAggregate),
     /// The pull failed; carries the message. The button re-offers a retry.
     Failed(String),
 }
@@ -451,10 +452,7 @@ impl WorkspacesPanel {
             }
         };
         if let Some(p) = self.pull.as_mut() {
-            p.phase = PullPhase::Downloading(wylde_gui_pipe::PullProgress {
-                status: "starting…".to_owned(),
-                ..Default::default()
-            });
+            p.phase = PullPhase::Downloading(wylde_gui_pipe::PullAggregate::default());
         }
         cx.notify();
 
@@ -466,7 +464,15 @@ impl WorkspacesPanel {
                         let done = progress.is_success();
                         let _ = this.update(app_cx, |panel, cx| {
                             if let Some(p) = panel.pull.as_mut() {
-                                p.phase = PullPhase::Downloading(progress);
+                                // Fold the frame into the running aggregate so
+                                // the bar tracks overall percent, not per-layer.
+                                if let PullPhase::Downloading(agg) = &mut p.phase {
+                                    agg.update(&progress);
+                                } else {
+                                    let mut agg = wylde_gui_pipe::PullAggregate::default();
+                                    agg.update(&progress);
+                                    p.phase = PullPhase::Downloading(agg);
+                                }
                             }
                             cx.notify();
                         });
@@ -1034,24 +1040,16 @@ fn error_strip(msg: &str, cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
 
 /// Inline "Download <model>" affordance shown beneath the error strip when
 /// a re-index failed because an embedding model isn't installed. Offers a
-/// one-click pull (with live progress) and, on success, auto-re-indexes —
-/// so the user never has to drop to `ollama pull` in a terminal.
+/// one-click pull and, on success, auto-re-indexes — so the user never has
+/// to drop to `ollama pull` in a terminal.
+///
+/// While the pull runs this renders a real, live **progress bar** (filled
+/// to the overall percent across all layers) with status text like
+/// `pulling 42%`, right here on the panel where Download was clicked — not
+/// a spinner. On finish the strip is cleared (success) or shows the error +
+/// a "Retry download" button.
 fn download_strip(pull: &ModelPull, cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
     let model = pull.model.clone();
-    let (text, button) = match &pull.phase {
-        PullPhase::Offered => (
-            format!("Embedding model '{model}' isn't installed."),
-            Some(("Download model", false)),
-        ),
-        PullPhase::Downloading(progress) => (
-            format!("Downloading '{model}' — {}", progress.label()),
-            None,
-        ),
-        PullPhase::Failed(msg) => (
-            format!("Download of '{model}' failed: {msg}"),
-            Some(("Retry download", true)),
-        ),
-    };
 
     let mut strip = div()
         .bg(rgb(pack(SURFACE_800)))
@@ -1061,26 +1059,77 @@ fn download_strip(pull: &ModelPull, cx: &mut Context<WorkspacesPanel>) -> gpui::
         .px_3()
         .py_2()
         .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .gap_3()
-        .child(
-            div()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::XS))
-                .text_color(rgb(pack(TEXT_PRIMARY)))
-                .child(SharedString::from(text)),
-        );
+        .flex_col()
+        .gap_2();
 
-    if let Some((label, _is_retry)) = button {
-        strip = strip.child(action_button(
-            ElementId::Name("workspaces-download-model".into()),
-            label,
-            cx.listener(|this: &mut WorkspacesPanel, _event, _window, cx| {
-                this.start_model_pull(cx);
-            }),
-        ));
+    match &pull.phase {
+        PullPhase::Downloading(agg) => {
+            // Header line: model + overall percent / status.
+            strip = strip.child(
+                div()
+                    .font_family(FAMILY_INTER)
+                    .text_size(px(size::XS))
+                    .text_color(rgb(pack(TEXT_PRIMARY)))
+                    .child(SharedString::from(format!(
+                        "Downloading '{model}' — {}",
+                        agg.label()
+                    ))),
+            );
+            // The actual progress bar: a full-width track with a brand-filled
+            // inner whose width is the overall ratio. `relative(ratio)` keeps
+            // it responsive to the panel width; clipped to the track so it
+            // never overshoots while a frame is mid-update.
+            let ratio = agg.overall_ratio().unwrap_or(0.0);
+            strip = strip.child(
+                div()
+                    .w_full()
+                    .h(px(6.0))
+                    .bg(rgb(pack(SURFACE_900)))
+                    .rounded(px(3.0))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h(px(6.0))
+                            .w(relative(ratio.clamp(0.0, 1.0)))
+                            .bg(rgb(pack(BRAND)))
+                            .rounded(px(3.0)),
+                    ),
+            );
+        }
+        PullPhase::Offered | PullPhase::Failed(_) => {
+            let (text, label) = match &pull.phase {
+                PullPhase::Offered => (
+                    format!("Embedding model '{model}' isn't installed."),
+                    "Download model",
+                ),
+                PullPhase::Failed(msg) => {
+                    (format!("Download of '{model}' failed: {msg}"), "Retry download")
+                }
+                PullPhase::Downloading(_) => unreachable!(),
+            };
+            strip = strip.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .font_family(FAMILY_INTER)
+                            .text_size(px(size::XS))
+                            .text_color(rgb(pack(TEXT_PRIMARY)))
+                            .child(SharedString::from(text)),
+                    )
+                    .child(action_button(
+                        ElementId::Name("workspaces-download-model".into()),
+                        label,
+                        cx.listener(|this: &mut WorkspacesPanel, _event, _window, cx| {
+                            this.start_model_pull(cx);
+                        }),
+                    )),
+            );
+        }
     }
 
     strip

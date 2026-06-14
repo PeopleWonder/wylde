@@ -49,7 +49,7 @@ pub use model_bus::{
     subscribe as subscribe_model_bus, ModelEvent,
 };
 pub use focus_bus::{request_workspace_focus, take_workspace_focus_receiver, WorkspaceFocus};
-pub use model_pull::{parse_pullable_model, pull_model, PullProgress};
+pub use model_pull::{parse_pullable_model, pull_model, PullAggregate, PullProgress};
 pub use nav_bus::{install_nav_sender, is_nav_installed, request_nav};
 
 use serde_json::{Map, Value};

@@ -13,7 +13,7 @@
 //! `nomic-embed-text`) makes it fast: Ollama re-verifies cached layers and
 //! emits `success` without a multi-hundred-MB download.
 
-use wylde_gui_pipe::{pull_model, PullProgress};
+use wylde_gui_pipe::{pull_model, PullAggregate, PullProgress};
 
 #[tokio::test]
 #[ignore = "streams a real ollama.pull against the live wrapper + Ollama daemon"]
@@ -25,15 +25,25 @@ async fn pull_model_streams_progress_to_success() {
 
     let mut saw_status = false;
     let mut saw_success = false;
+    let mut saw_overall_percent = false;
+    // The same aggregate the GUI progress bar renders — driven here by REAL
+    // frames so we prove the bar's data pipeline, not just the raw stream.
+    let mut agg = PullAggregate::default();
+
     // Generous frame budget; a cached re-verify finishes in a handful of
     // frames, a cold pull in a few thousand. Either way we stop on success.
     for _ in 0..50_000 {
         match stream.recv().await {
             Some(Ok(v)) => {
                 let p = PullProgress::from_value(&v);
+                agg.update(&p);
                 if !p.status.is_empty() {
                     saw_status = true;
-                    eprintln!("pull frame: {}", p.label());
+                    // What the bar's label would read at this instant.
+                    eprintln!("bar: {} (overall {:?})", agg.label(), agg.percent());
+                }
+                if agg.percent().is_some() {
+                    saw_overall_percent = true;
                 }
                 if p.is_success() {
                     saw_success = true;
@@ -46,6 +56,10 @@ async fn pull_model_streams_progress_to_success() {
     }
 
     assert!(saw_status, "expected at least one progress frame carrying a status");
+    assert!(
+        saw_overall_percent,
+        "expected the aggregate to yield an overall percent for the bar"
+    );
     assert!(
         saw_success,
         "expected the pull of {model:?} to reach a success frame"
