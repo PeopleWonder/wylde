@@ -779,6 +779,10 @@ fn active_card(active_id: &str, workspaces: &[WorkspaceSummary]) -> gpui::Div {
         .child(
             div()
                 .flex_1()
+                // Allow the column to shrink below its content so a long
+                // workspace path stays inside the card instead of pushing the
+                // row wider than the box.
+                .min_w_0()
                 .flex()
                 .flex_col()
                 .gap(px(2.0))
@@ -799,6 +803,9 @@ fn active_card(active_id: &str, workspaces: &[WorkspaceSummary]) -> gpui::Div {
                 )
                 .child(
                     div()
+                        // A path has no spaces to wrap on; clip the overflow at
+                        // the card edge rather than letting it run past.
+                        .overflow_hidden()
                         .font_family(FAMILY_INTER)
                         .text_size(px(size::XS))
                         .text_color(rgb(pack(TEXT_MUTED)))
@@ -842,6 +849,9 @@ fn workspace_card(
         .child(
             div()
                 .flex_1()
+                // Shrink below content so a long path doesn't push the action
+                // buttons out of the card.
+                .min_w_0()
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -859,6 +869,8 @@ fn workspace_card(
                 )
                 .child(
                     div()
+                        // Clip a long no-whitespace path at the card edge.
+                        .overflow_hidden()
                         .font_family(FAMILY_INTER)
                         .text_size(px(size::XS))
                         .text_color(rgb(pack(TEXT_MUTED)))
@@ -911,6 +923,9 @@ where
     let label_owned = SharedString::from(label.to_owned());
     div()
         .id(id)
+        // Never let the button shrink/wrap when it shares a row with a long
+        // wrapping label — it keeps its intrinsic size; the text takes the rest.
+        .flex_shrink_0()
         .px_2()
         .py_1()
         .rounded(px(4.0))
@@ -1019,6 +1034,11 @@ fn error_strip(msg: &str, cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
         .gap_3()
         .child(
             div()
+                // flex_1 + min_w_0 lets the text shrink below its content
+                // width so a long error (e.g. the missing-model hint) WRAPS
+                // inside the box instead of running past the right edge.
+                .flex_1()
+                .min_w_0()
                 .font_family(FAMILY_INTER)
                 .text_size(px(size::XS))
                 .text_color(rgb(pack(TEXT_PRIMARY)))
@@ -1116,6 +1136,10 @@ fn download_strip(pull: &ModelPull, cx: &mut Context<WorkspacesPanel>) -> gpui::
                     .gap_3()
                     .child(
                         div()
+                            // Wrap a long failure message inside the box
+                            // instead of overflowing past the button/edge.
+                            .flex_1()
+                            .min_w_0()
                             .font_family(FAMILY_INTER)
                             .text_size(px(size::XS))
                             .text_color(rgb(pack(TEXT_PRIMARY)))
