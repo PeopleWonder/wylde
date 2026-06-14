@@ -55,6 +55,30 @@ pub const BORDER_EMPHASIS: Rgba = rgba_const(0x0e7490, 0.28);
 /// the `rgb(pack(..))` idiom used elsewhere drops the alpha.
 pub const BORDER_FOCUSED: Rgba = rgba_const(0x0e7490, 0.75);
 
+// ── Syntax-highlight palette (IDE code editor) ───────────────────────
+//
+// Foreground colours the code editor maps tree-sitter highlight scopes onto
+// (the panel owns the scope→token mapping; these are the *tokens*, so a
+// palette change touches one file). A dark, One-Dark-adjacent set tuned to sit
+// on the SURFACE_950 editor background. Default (unmatched) text uses
+// `TEXT_PRIMARY`.
+pub mod syntax {
+    use super::{rgb_const, Rgba};
+
+    pub const KEYWORD: Rgba = rgb_const(0xc586c0); // control flow, fn, let, pub…
+    pub const STRING: Rgba = rgb_const(0x98c379); // string / char literals
+    pub const COMMENT: Rgba = rgb_const(0x5c6a76); // comments (muted)
+    pub const FUNCTION: Rgba = rgb_const(0x61afef); // fn names, methods
+    pub const TYPE: Rgba = rgb_const(0xe5c07b); // types, traits, structs
+    pub const NUMBER: Rgba = rgb_const(0xd19a66); // numeric literals
+    pub const CONSTANT: Rgba = rgb_const(0xd19a66); // consts, builtins, enums
+    pub const VARIABLE: Rgba = rgb_const(0xe2e8f0); // identifiers / properties
+    pub const OPERATOR: Rgba = rgb_const(0x94a3b8); // operators
+    pub const PUNCTUATION: Rgba = rgb_const(0x94a3b8); // brackets, delimiters
+    pub const ATTRIBUTE: Rgba = rgb_const(0x06b6d4); // attributes / decorators
+    pub const TAG: Rgba = rgb_const(0xe06c75); // markup tags / labels
+}
+
 // ── Const-time constructors ──────────────────────────────────────────
 //
 // `gpui::rgb`/`rgba` aren't `const fn` in every gpui release.  These

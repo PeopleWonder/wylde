@@ -28,6 +28,10 @@ gpui.workspace = true
 # uses for the Profile/Rules section.
 wylde-gpui-input = { path = "../../Input" }
 
+# Dedicated code-editor element (IDE S3, OQ-3 = Option B) — backs the Editor
+# tab. A sibling of wylde-gpui-input, NOT a wrapper of it.
+wylde-gpui-code-editor = { path = "../../Code_editor" }
+
 # ONE source of anchor edit affordances (Plan v2 §6, Slice N) — the
 # exclude/ignore transitions, connection editing, approval gates, undo
 # stack and shared menu definition the Vocabulary tab + graph overlay
