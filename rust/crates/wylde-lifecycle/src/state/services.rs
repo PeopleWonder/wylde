@@ -818,6 +818,126 @@ pub async fn stop_ollama() -> Result<()> {
     stop_service(service_name::OLLAMA, Duration::from_secs(10)).await
 }
 
+// ── Upstream Ollama daemon (external, user-managed) ──────────────────────
+//
+// `wylde-ollama` (above) is the Wylde *wrapper* — a pipe proxy that talks
+// to the third-party Ollama daemon at 127.0.0.1:11434. The wrapper never
+// managed that daemon's lifecycle: per docs/wylde-ollama-design.md Ollama
+// is a user-installed dependency that "may start lazily". That left the
+// GUI's "Start wylde-ollama" stub button impotent whenever the wrapper
+// pipe was up but the Ollama daemon itself was down — `service.start` saw
+// the wrapper alive and no-op'd, so the panel's required-service stub
+// never cleared ("clicking does nothing"). The functions below let
+// `service.start wylde-ollama` actually start the upstream daemon.
+//
+// Unlike the daemon-managed wrappers, this process is NOT supervised: no
+// spawn record, no kill_on_drop. It must OUTLIVE the Wylde stack so that
+// bouncing/stopping the wrapper never tears down the user's running
+// models — exactly how the daemon would behave if the user had launched
+// `ollama serve` themselves.
+
+/// Locate the `ollama` executable. Resolution order:
+///   1. `WYLDE_OLLAMA_SERVE_BIN` override (must point at an existing file).
+///   2. `ollama[.exe]` on `PATH`.
+///   3. Default Windows install: `%LOCALAPPDATA%\Programs\Ollama\ollama.exe`.
+///
+/// Reads env + filesystem (no process spawn); delegates the decision to
+/// the pure [`locate_ollama_binary_in`] so it is unit-testable without
+/// mutating process env.
+pub fn locate_ollama_binary() -> Option<PathBuf> {
+    let default_dir: Option<PathBuf> = {
+        #[cfg(windows)]
+        {
+            std::env::var_os("LOCALAPPDATA")
+                .map(|l| PathBuf::from(l).join("Programs").join("Ollama"))
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    };
+    locate_ollama_binary_in(
+        std::env::var_os("WYLDE_OLLAMA_SERVE_BIN"),
+        std::env::var_os("PATH"),
+        default_dir,
+    )
+}
+
+/// Pure resolver: first an explicit `override_bin` file, then `ollama` (with
+/// the host exe suffix) on any `path_var` entry, then the same exe inside
+/// `default_install_dir`. Returns the first existing file.
+fn locate_ollama_binary_in(
+    override_bin: Option<std::ffi::OsString>,
+    path_var: Option<std::ffi::OsString>,
+    default_install_dir: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(over) = override_bin {
+        let p = PathBuf::from(over);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let exe = format!("ollama{}", std::env::consts::EXE_SUFFIX);
+    if let Some(paths) = path_var {
+        for dir in std::env::split_paths(&paths) {
+            let cand = dir.join(&exe);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    if let Some(dir) = default_install_dir {
+        let cand = dir.join(&exe);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// Spawn `ollama serve` as a detached, independent process and return the
+/// binary that was launched. Best-effort: the child handle is dropped
+/// WITHOUT `kill_on_drop`, so the daemon survives this process — it is the
+/// user's external service, not a Wylde-supervised one.
+///
+/// `Err` distinguishes "not installed" (the message carries the
+/// `ollama_not_installed` marker the caller maps to a stable code) from a
+/// real spawn failure.
+pub fn spawn_ollama_serve() -> Result<PathBuf> {
+    let Some(bin) = locate_ollama_binary() else {
+        anyhow::bail!(
+            "ollama_not_installed: could not find the `ollama` executable (checked \
+             WYLDE_OLLAMA_SERVE_BIN, PATH, and the default install location) — \
+             install Ollama from https://ollama.com"
+        );
+    };
+    // Deliberately std::process::Command, not the tokio Command used for
+    // wrapper services: we want a fully detached child with NO kill_on_drop
+    // so dropping the handle here leaves `ollama serve` running.
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW:
+        // independent of Wylde, its own process group (a Ctrl-Break aimed
+        // at the stack never reaches it), and no console window flash.
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    }
+    let child = cmd
+        .spawn()
+        .with_context(|| format!("spawn `{} serve`", bin.display()))?;
+    // Detach: a std Child's Drop does NOT signal the process, so the
+    // daemon keeps running after we drop our handle.
+    drop(child);
+    Ok(bin)
+}
+
 // ── Tree-sitter sidecar ─────────────────────────────────────────────────
 //
 // Greenfield Rust — there is no Python predecessor for `wylde-treesitter`.
@@ -1188,6 +1308,59 @@ mod tests {
         // form (e.g. "wylde-foo" → WYLDE_WYLDE_FOO_BIN).
         clear_env("WYLDE_WYLDE_NONEXISTENT_BIN");
         assert_eq!(rust_binary_path("wylde-nonexistent"), None);
+    }
+
+    // ── Upstream Ollama binary discovery (pure resolver) ──────────────
+
+    #[test]
+    fn locate_ollama_override_wins_when_file_exists() {
+        // An existing file via the explicit override is returned verbatim,
+        // ahead of PATH and the default install dir.
+        let me = std::env::current_exe().unwrap();
+        let got = locate_ollama_binary_in(Some(me.clone().into_os_string()), None, None);
+        assert_eq!(got, Some(me));
+    }
+
+    #[test]
+    fn locate_ollama_override_missing_file_is_skipped() {
+        let got = locate_ollama_binary_in(
+            Some(std::ffi::OsString::from("/no/such/ollama/here")),
+            None,
+            None,
+        );
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn locate_ollama_finds_exe_on_path() {
+        // Drop a real `ollama<EXE_SUFFIX>` file in a temp dir, hand that dir
+        // as the only PATH entry, and assert the resolver finds it.
+        let dir = tempfile::tempdir().unwrap();
+        let exe = format!("ollama{}", std::env::consts::EXE_SUFFIX);
+        let bin = dir.path().join(&exe);
+        std::fs::write(&bin, b"#!stub").unwrap();
+        let path_var = std::env::join_paths([dir.path()]).unwrap();
+        let got = locate_ollama_binary_in(None, Some(path_var), None);
+        assert_eq!(got, Some(bin));
+    }
+
+    #[test]
+    fn locate_ollama_falls_back_to_default_install_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = format!("ollama{}", std::env::consts::EXE_SUFFIX);
+        let bin = dir.path().join(&exe);
+        std::fs::write(&bin, b"#!stub").unwrap();
+        // No override, empty PATH → the default install dir is consulted.
+        let got = locate_ollama_binary_in(None, None, Some(dir.path().to_path_buf()));
+        assert_eq!(got, Some(bin));
+    }
+
+    #[test]
+    fn locate_ollama_none_when_nothing_matches() {
+        let empty = tempfile::tempdir().unwrap();
+        let path_var = std::env::join_paths([empty.path()]).unwrap();
+        let got = locate_ollama_binary_in(None, Some(path_var), Some(empty.path().to_path_buf()));
+        assert_eq!(got, None);
     }
 
     // ── Strangler-fig start table ──────────────────────────────────────

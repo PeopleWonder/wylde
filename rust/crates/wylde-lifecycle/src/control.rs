@@ -110,6 +110,19 @@ const STALE_MAX_AGE_S: f64 = 300.0;
 /// `timeout=5.0` in Python's `health_action`.
 const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Per-call timeout for dispatching `ollama.health` to the wrapper while
+/// `service.start wylde-ollama` ensures the upstream daemon. Short — it is
+/// only asking the (already-up) wrapper whether 127.0.0.1:11434 answers.
+const OLLAMA_UPSTREAM_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// How long `service.start wylde-ollama` waits for a freshly-spawned
+/// `ollama serve` to start answering before giving up. Stays under the
+/// GUI pipe's 30 s response budget so the button's click resolves.
+const OLLAMA_UPSTREAM_START_DEADLINE: Duration = Duration::from_secs(15);
+
+/// Poll cadence while waiting for the freshly-spawned Ollama daemon.
+const OLLAMA_UPSTREAM_START_POLL: Duration = Duration::from_millis(400);
+
 /// Env flag that gates the DEV-ONLY `dev.restart_service` action.
 ///
 /// Set (to a truthy value) ONLY by `tools/dev/wylde-dev.ps1` when it
@@ -736,9 +749,88 @@ async fn ollama_health() -> Reply {
     Reply::err(IpcError::new(code, msg))
 }
 
+/// Ask the live wrapper whether the upstream Ollama daemon is serving.
+///
+/// Returns `Some(true)`/`Some(false)` when the wrapper answered its pipe
+/// (folding in its own `GET /api/tags` probe of 127.0.0.1:11434), and
+/// `None` when the wrapper pipe itself is unreachable — so the caller can
+/// decline to touch the upstream from here.
+async fn ollama_upstream_serving() -> Option<bool> {
+    let body = json!({ "action": "ollama.health", "payload": {} });
+    let reply = send_with_verb(
+        service_name::OLLAMA,
+        ACTION_DISPATCH_PATH,
+        "POST",
+        body,
+        OLLAMA_UPSTREAM_PROBE_TIMEOUT,
+    )
+    .await;
+    if !reply.ok {
+        return None;
+    }
+    Some(reply.data.get("upstream").and_then(Value::as_str) == Some("ok"))
+}
+
+/// Ensure the external Ollama daemon is reachable for `service.start
+/// wylde-ollama`. The wrapper being alive is NOT enough: `service.health`
+/// folds in the daemon at 127.0.0.1:11434, which `service.start` never
+/// started, so the GUI's "Start wylde-ollama" stub button used to no-op
+/// against the already-alive wrapper and the stub never cleared. When the
+/// wrapper reports the daemon down, spawn `ollama serve` and wait for it to
+/// answer. Returns whether it spawned the daemon.
+async fn ensure_ollama_upstream() -> Result<bool, IpcError> {
+    match ollama_upstream_serving().await {
+        // Wrapper pipe unreachable — nothing to do about upstream here;
+        // the caller reports the wrapper status as-is.
+        None => Ok(false),
+        // Already serving — idempotent no-op.
+        Some(true) => Ok(false),
+        Some(false) => {
+            let bin = crate::state::services::spawn_ollama_serve().map_err(|e| {
+                let msg = format!("{e:#}");
+                // The helper marks a missing binary so we can hand the GUI a
+                // stable, actionable code distinct from a real spawn failure.
+                let code = if msg.contains("ollama_not_installed") {
+                    "ollama_not_installed"
+                } else {
+                    "ollama_start_failed"
+                };
+                IpcError::new(code, msg)
+            })?;
+            tracing::info!(
+                "daemon: spawned upstream `ollama serve` from {}",
+                bin.display()
+            );
+            let started = std::time::Instant::now();
+            loop {
+                if matches!(ollama_upstream_serving().await, Some(true)) {
+                    return Ok(true);
+                }
+                if started.elapsed() >= OLLAMA_UPSTREAM_START_DEADLINE {
+                    return Err(IpcError::new(
+                        "ollama_start_timeout",
+                        format!(
+                            "started `ollama serve` ({}) but the Ollama daemon did not answer \
+                             at 127.0.0.1:11434 within {}s",
+                            bin.display(),
+                            OLLAMA_UPSTREAM_START_DEADLINE.as_secs(),
+                        ),
+                    ));
+                }
+                tokio::time::sleep(OLLAMA_UPSTREAM_START_POLL).await;
+            }
+        }
+    }
+}
+
 /// Production spawn for a daemon-managed service. Idempotent on
 /// already-running. Names outside `DAEMON_MANAGED_SERVICES` get the
 /// Python-compatible `not_registered` error envelope.
+///
+/// `wylde-ollama` is special: once the wrapper is alive it additionally
+/// ensures the external Ollama daemon is reachable (see
+/// [`ensure_ollama_upstream`]), so the GUI's "Start wylde-ollama" button
+/// actually starts the LLM layer instead of no-op'ing against the wrapper.
 async fn service_start_action(payload: Value) -> Reply {
     let name = match require_name(&payload) {
         Ok(n) => n,
@@ -750,30 +842,42 @@ async fn service_start_action(payload: Value) -> Reply {
             format!("unknown service {name:?}"),
         ));
     }
-    if is_service_alive(&name) {
-        let pid = service_pid(&name).map(Value::from).unwrap_or(Value::Null);
-        return Reply::ok(json!({
-            "name": name,
-            "status": "running",
-            "pid": pid,
-            "started": false,
-        }));
-    }
-    match dispatch_start(&name).await {
-        Ok(()) => {
-            let pid = service_pid(&name).map(Value::from).unwrap_or(Value::Null);
-            Reply::ok(json!({
-                "name": name,
-                "status": "running",
-                "pid": pid,
-                "started": true,
-            }))
+
+    // Bring the wrapper process itself up (idempotent on already-running).
+    let mut started = false;
+    if !is_service_alive(&name) {
+        if let Err(e) = dispatch_start(&name).await {
+            return Reply::err(IpcError::new(
+                "spawn_failed",
+                format!("spawn failed: {e:#}"),
+            ));
         }
-        Err(e) => Reply::err(IpcError::new(
-            "spawn_failed",
-            format!("spawn failed: {e:#}"),
-        )),
+        started = true;
     }
+
+    if name == service_name::OLLAMA {
+        return match ensure_ollama_upstream().await {
+            Ok(upstream_started) => {
+                let pid = service_pid(&name).map(Value::from).unwrap_or(Value::Null);
+                Reply::ok(json!({
+                    "name": name,
+                    "status": "running",
+                    "pid": pid,
+                    "started": started,
+                    "upstream_started": upstream_started,
+                }))
+            }
+            Err(e) => Reply::err(e),
+        };
+    }
+
+    let pid = service_pid(&name).map(Value::from).unwrap_or(Value::Null);
+    Reply::ok(json!({
+        "name": name,
+        "status": "running",
+        "pid": pid,
+        "started": started,
+    }))
 }
 
 /// Production stop for a daemon-managed service. Names outside

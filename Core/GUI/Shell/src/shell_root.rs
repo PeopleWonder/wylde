@@ -172,7 +172,13 @@ impl Shell {
         for service in unique_required_services(&self.nav.rows) {
             let svc: Arc<str> = Arc::from(service.as_str());
             cx.spawn(async move |this, app_cx: &mut AsyncApp| loop {
-                let healthy = wylde_gui_pipe::service_health(&svc).await.is_ok();
+                // `is_ok()` alone is not enough for wylde-ollama: its
+                // service.health stays ok (with an `upstream` flag) even when
+                // the Ollama daemon is down, so gate readiness on the body.
+                let healthy = match wylde_gui_pipe::service_health(&svc).await {
+                    Ok(body) => crate::nav::service_health_body_is_ready(&svc, &body),
+                    Err(_) => false,
+                };
                 let alive = this
                     .update(app_cx, |this, cx| {
                         this.apply_service_health(&svc, healthy, cx);
@@ -403,10 +409,13 @@ impl Shell {
         let task = cx.spawn(async move |this, cx: &mut AsyncApp| {
             let _ = wylde_gui_pipe::lifecycle_action(verb, payload).await;
             // Whether the start succeeded or not, re-probe so the UI
-            // stops showing the stub the moment the daemon is up.
-            let healthy = wylde_gui_pipe::service_health(&service_for_async)
-                .await
-                .is_ok();
+            // stops showing the stub the moment the daemon is up. Same
+            // body-aware readiness gate as the poll loop — for ollama the
+            // pipe answering ok isn't enough; the upstream daemon must be up.
+            let healthy = match wylde_gui_pipe::service_health(&service_for_async).await {
+                Ok(body) => crate::nav::service_health_body_is_ready(&service_for_async, &body),
+                Err(_) => false,
+            };
             let _ = this.update(cx, |this, cx| {
                 this.apply_service_health(&service_for_async, healthy, cx);
             });

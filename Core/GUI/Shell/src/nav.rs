@@ -135,6 +135,37 @@ impl NavModel {
     }
 }
 
+/// Canonical service name of the Ollama inference wrapper. Centralised so
+/// the panel-readiness gate and tests agree on the spelling.
+pub const SVC_OLLAMA: &str = "wylde-ollama";
+
+/// Decide whether a `service.health` ok-body means the service is ready
+/// for its panel to mount.
+///
+/// For `wylde-ollama` the lifecycle daemon composes wrapper-pipe liveness
+/// with a probe of the external Ollama daemon at 127.0.0.1:11434 and
+/// returns `ok` **with** an `reply.upstream` flag even when that daemon is
+/// down — deliberately, so the Dashboard can paint a degraded (yellow)
+/// tile rather than red. But a Chat/Models panel is unusable until the LLM
+/// layer is actually reachable, so we gate ollama on `reply.upstream ==
+/// "ok"`: a wrapper answering its pipe is NOT enough. Without this the
+/// panels mounted on a down upstream and chat only failed at send-time,
+/// with no affordance to start Ollama. Every other service is ready as
+/// soon as the daemon answered `ok`.
+///
+/// A missing `reply.upstream` (an older lifecycle daemon that didn't
+/// compose the upstream probe) is treated as ready, so this never
+/// over-blocks against a daemon that predates the composed health shape.
+pub fn service_health_body_is_ready(name: &str, body: &serde_json::Value) -> bool {
+    if name == SVC_OLLAMA {
+        return match body.get("reply").and_then(|r| r.get("upstream")) {
+            Some(upstream) => upstream.as_str() == Some("ok"),
+            None => true,
+        };
+    }
+    true
+}
+
 /// What the panel slot is asked to render this frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlotState {
@@ -160,6 +191,44 @@ mod tests {
             order,
             required_services: requires.iter().map(|s| (*s).to_owned()).collect(),
         }
+    }
+
+    use serde_json::json;
+
+    #[test]
+    fn ollama_ready_only_when_upstream_ok() {
+        // service.health for ollama folds the upstream daemon status into
+        // `reply.upstream`. The panel must gate on it being "ok".
+        let ok = json!({ "name": "wylde-ollama", "reply": { "ok": true, "upstream": "ok" } });
+        assert!(service_health_body_is_ready("wylde-ollama", &ok));
+
+        for down in ["unreachable", "timeout"] {
+            let body =
+                json!({ "name": "wylde-ollama", "reply": { "ok": true, "upstream": down } });
+            assert!(
+                !service_health_body_is_ready("wylde-ollama", &body),
+                "upstream={down} must gate the panel"
+            );
+        }
+    }
+
+    #[test]
+    fn ollama_missing_upstream_field_does_not_over_block() {
+        // An older lifecycle daemon that didn't compose the upstream probe
+        // returns an ok-body without `reply.upstream`; don't stub on it.
+        let body = json!({ "name": "wylde-ollama", "reply": { "ok": true } });
+        assert!(service_health_body_is_ready("wylde-ollama", &body));
+        let bare = json!({ "ok": true });
+        assert!(service_health_body_is_ready("wylde-ollama", &bare));
+    }
+
+    #[test]
+    fn non_ollama_services_ready_on_any_ok_body() {
+        // Every other service is ready as soon as service.health answered ok
+        // — the gate is ollama-specific.
+        let body = json!({ "ok": true });
+        assert!(service_health_body_is_ready("wylde-harness", &body));
+        assert!(service_health_body_is_ready("wylde-gateway", &json!({})));
     }
 
     #[test]
