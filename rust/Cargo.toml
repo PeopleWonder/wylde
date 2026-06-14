@@ -31,6 +31,11 @@ members = [
     # build-order doc on the Nextcloud Wylde collective.
     "crates/wylde-workspaces",
     "crates/wylde-workspaces-client",
+    # Optional rust-analyzer LSP host (IDE S8, OQ-1). Supervises a single
+    # rust-analyzer child and exposes diagnostics/completions/hover over
+    # `lsp.*` pipe verbs. Taxonomy-clean: the editor works without it; it
+    # degrades to plain text + tree-sitter when absent.
+    "crates/wylde-lsp",
     # Core-plugin SDK + the installed plugins (taxonomy reorg TX S4,
     # 2026-06-11). PLUGINS are add-ons FOR the core, compiled into it —
     # distinct from Extensions (leave the ecosystem, bridge/Gateway) and

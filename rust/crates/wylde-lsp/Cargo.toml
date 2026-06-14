@@ -1,0 +1,20 @@
+[package]
+name = "wylde-lsp"
+description = "Optional rust-analyzer LSP host (IDE S8). Supervises a single rust-analyzer child and exposes diagnostics / completions / hover over `lsp.*` pipe verbs. Taxonomy-clean and OPTIONAL: the editor works without it (plain text + tree-sitter); when rust-analyzer is absent the service stays up and reports unavailable so callers degrade."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
