@@ -1,7 +1,7 @@
 # install-shortcuts.ps1 -- create the two Wylde desktop shortcuts.
 #
 #   "Wylde Live" -> launch_wylde.ps1            (the normal release-feel app)
-#   "Wylde Dev"  -> tools/dev/wylde-dev.ps1     (hot-reload dev environment)
+#   "Wylde Dev"  -> tools/dev/wylde-dev.ps1     (full-stack hot-reload: GUI + backend)
 #
 # Both .lnk targets invoke powershell with -File (never -Command -- inline
 # command strings trip Defender heuristics). Plain WScript.Shell COM, all
@@ -45,9 +45,15 @@ New-WyldeShortcut `
     -Description 'Launch Wylde (release build: lifecycle daemon + GUI)'
 
 # Dev: bacon is a TUI -- it needs a normal, persistent console window.
+# wylde-dev.ps1 is the FULL-STACK hot-reload entry point (GUI bacon loop +
+# backend service watcher in its own window + live theme reload); the
+# shortcut target is unchanged by that work -- same script, same -File
+# invocation -- so re-running this installer just refreshes the .lnk in
+# place. The backend watcher opens its own window from wylde-dev.ps1; this
+# shortcut still launches the GUI bacon console.
 New-WyldeShortcut `
     -Name 'Wylde Dev' `
     -ScriptPath (Join-Path $RepoRoot 'tools\dev\wylde-dev.ps1') `
     -WorkDir $RepoRoot `
     -WindowStyle 1 `
-    -Description 'Wylde dev loop: auto rebuild+relaunch on save, live theme hot-reload'
+    -Description 'Wylde full-stack hot-reload: GUI + backend services rebuild+bounce on save, live theme reload'
