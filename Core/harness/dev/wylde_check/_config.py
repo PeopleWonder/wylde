@@ -352,6 +352,13 @@ RUST_LOGGING_INIT_PATTERNS: Tuple[re.Pattern[str], ...] = (
 #     bridge would lose direct access to the child's pipes. Scope is
 #     narrow: only the MCP transport modules (``src/mcp/``) need to
 #     spawn; the rule still fires for spawns elsewhere in the crate.
+#   * ``wylde-lsp`` — rust-analyzer LSP host (IDE S8): an LSP client IS a
+#     language-server supervisor — it owns the stdin/stdout of the
+#     ``rust-analyzer`` child to speak JSON-RPC. Same principled exemption
+#     as the extension bridge's stdio MCP transport: routing the spawn
+#     through a lifecycle pipe action would lose the direct pipe access the
+#     protocol needs. The service is OPTIONAL (core works without it) and
+#     spawns exactly one well-known binary.
 RUST_PROCESS_SPAWN_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"\bstd::process::Command::new\s*\("),
     re.compile(r"\btokio::process::Command::new\s*\("),
@@ -362,6 +369,7 @@ RUST_PROCESS_SPAWN_PATTERNS: Tuple[re.Pattern[str], ...] = (
 RUST_PROCESS_SPAWN_ALLOWED_CRATES: Tuple[str, ...] = (
     "wylde-lifecycle",
     "wylde-extension-bridge",
+    "wylde-lsp",
 )
 # Back-compat alias for callers that still import the singular name.
 RUST_PROCESS_SPAWN_ALLOWED_CRATE: str = RUST_PROCESS_SPAWN_ALLOWED_CRATES[0]
