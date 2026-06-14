@@ -154,6 +154,31 @@ static TABLE: &[VerbDef] = &[
         retry: RetryPolicy::idempotent_read(),
         cache_ttl: None,
     },
+    // ── S1 (IDE plan P0.2) — jailed file I/O ─────────────────────────────
+    // read/list are idempotent reads (Fast · exp-backoff ≤4) and explicitly
+    // UNcached — files mutate under the editor, so a cached read would serve a
+    // stale buffer after a save. write is a non-idempotent file mutation:
+    // NoRetry (a retried write could clobber an interleaved external edit the
+    // optimistic-concurrency check is there to catch) and Medium budget for a
+    // possibly-large save + fsync. None cached.
+    VerbDef {
+        name: "workspaces.fs.read",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.fs.write",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::MEDIUM),
+        retry: RetryPolicy::NoRetry,
+        cache_ttl: None,
+    },
+    VerbDef {
+        name: "workspaces.fs.list_dir",
+        timeout: TimeoutPolicy::Fixed(crate::timeouts::FAST),
+        retry: RetryPolicy::idempotent_read(),
+        cache_ttl: None,
+    },
     // ── Slice 0c — workspace notes tier (Build Order Appendix A) ─────────
     VerbDef {
         name: "workspaces.notes.list",
@@ -465,6 +490,24 @@ mod tests {
             assert_eq!(d.retry.max_attempts(), 1, "{verb} = no retry");
             assert!(d.cache_ttl.is_none(), "{verb}");
         }
+    }
+
+    #[test]
+    fn fs_verbs_policies() {
+        // S1: read/list are uncached idempotent reads; write is NoRetry.
+        let read = lookup("workspaces.fs.read").expect("fs.read");
+        assert_eq!(read.timeout, TimeoutPolicy::fast());
+        assert!(read.retry.max_attempts() > 1, "read retries");
+        assert!(read.cache_ttl.is_none(), "fs.read must not be cached");
+
+        let list = lookup("workspaces.fs.list_dir").expect("fs.list_dir");
+        assert_eq!(list.timeout, TimeoutPolicy::fast());
+        assert!(list.cache_ttl.is_none());
+
+        let write = lookup("workspaces.fs.write").expect("fs.write");
+        assert_eq!(write.timeout.budget(1), Duration::from_secs(2)); // Medium
+        assert_eq!(write.retry.max_attempts(), 1, "write is NoRetry");
+        assert!(write.cache_ttl.is_none());
     }
 
     #[test]

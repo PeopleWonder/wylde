@@ -195,6 +195,57 @@ impl WorkspacesClient {
         .await
     }
 
+    // ── S1 (IDE plan P0.2) — jailed file I/O ────────────────────────────
+
+    /// `workspaces.fs.read` — read one workspace file's text, root-jailed.
+    /// Returns `{content, encoding, binary, truncated, size_bytes, mtime}`.
+    pub async fn fs_read(
+        &self,
+        workspace_id: &str,
+        path: &str,
+    ) -> Result<Value, WorkspacesClientError> {
+        self.call_verb(
+            "workspaces.fs.read",
+            serde_json::json!({ "workspace_id": workspace_id, "path": path }),
+            1,
+        )
+        .await
+    }
+
+    /// `workspaces.fs.write` — atomically save text to a workspace file,
+    /// root-jailed. Pass `expected_mtime` (from a prior read) for optimistic
+    /// concurrency. Returns `{mtime, size_bytes}`.
+    pub async fn fs_write(
+        &self,
+        workspace_id: &str,
+        path: &str,
+        content: &str,
+        expected_mtime: Option<f64>,
+    ) -> Result<Value, WorkspacesClientError> {
+        let mut payload = serde_json::json!({
+            "workspace_id": workspace_id, "path": path, "content": content,
+        });
+        if let Some(m) = expected_mtime {
+            payload["expected_mtime"] = serde_json::json!(m);
+        }
+        self.call_verb("workspaces.fs.write", payload, 1).await
+    }
+
+    /// `workspaces.fs.list_dir` — list one directory level under a workspace,
+    /// root-jailed (lazy expansion). `path` defaults to the workspace root.
+    /// Returns `{path, entries}`.
+    pub async fn fs_list_dir(
+        &self,
+        workspace_id: &str,
+        path: Option<&str>,
+    ) -> Result<Value, WorkspacesClientError> {
+        let mut payload = serde_json::json!({ "workspace_id": workspace_id });
+        if let Some(p) = path {
+            payload["path"] = serde_json::Value::String(p.to_owned());
+        }
+        self.call_verb("workspaces.fs.list_dir", payload, 1).await
+    }
+
     // ── Slice B — code graph read API ───────────────────────────────────
 
     /// `workspaces.graph` — the workspace's code graph (`{nodes, edges,

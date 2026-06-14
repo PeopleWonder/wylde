@@ -46,7 +46,16 @@ pub struct Config {
     /// via `WYLDE_WORKSPACES_TREESITTER_SERVICE`. Consumed by the graph-ingest
     /// half of [`crate::rag::indexer`].
     pub treesitter_service: String,
+
+    /// Max bytes `workspaces.fs.read` returns before flagging `truncated`
+    /// (S1 / OQ-7). Default 2 MiB; override via
+    /// `WYLDE_WORKSPACES_FS_MAX_READ_BYTES`. The editor opens anything larger
+    /// read-only with a visible banner rather than silently truncating.
+    pub fs_max_read_bytes: u64,
 }
+
+/// Default cap for `workspaces.fs.read` (2 MiB).
+pub const DEFAULT_FS_MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
 
 impl Config {
     fn load() -> Self {
@@ -76,12 +85,19 @@ impl Config {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "wylde-treesitter".to_owned());
 
+        let fs_max_read_bytes = std::env::var("WYLDE_WORKSPACES_FS_MAX_READ_BYTES")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_FS_MAX_READ_BYTES);
+
         Self {
             service_name,
             data_dir,
             wylde_root,
             ollama_service,
             treesitter_service,
+            fs_max_read_bytes,
         }
     }
 

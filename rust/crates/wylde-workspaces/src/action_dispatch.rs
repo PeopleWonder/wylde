@@ -48,6 +48,11 @@ pub const SYMBOLS_FIND: &str = "workspaces.symbols.find";
 // ── Symbol context read API (Slice G-data — Phase 1) ─────────────────────
 pub const SYMBOL_CONTEXT: &str = "workspaces.symbol_context";
 
+// ── File I/O — jailed editor/file-tree surface (S1 / IDE plan P0.2) ──────
+pub const FS_READ: &str = "workspaces.fs.read";
+pub const FS_WRITE: &str = "workspaces.fs.write";
+pub const FS_LIST_DIR: &str = "workspaces.fs.list_dir";
+
 // ── Workspace notes tier (Slice 0c) ──────────────────────────────────────
 pub const NOTES_LIST: &str = "workspaces.notes.list";
 pub const NOTES_ADD: &str = "workspaces.notes.add";
@@ -111,6 +116,10 @@ pub const ALL_ACTIONS: &[&str] = &[
     SYMBOLS_FIND,
     // Slice G-data — symbol context read API
     SYMBOL_CONTEXT,
+    // S1 (IDE plan P0.2) — jailed file I/O
+    FS_READ,
+    FS_WRITE,
+    FS_LIST_DIR,
     // Slice 0c — notes
     NOTES_LIST,
     NOTES_ADD,
@@ -275,6 +284,43 @@ pub fn install() {
          call graph (per-hop time budget 200ms+300ms×N); not_found when the \
          symbol isn't in the workspace; bolt_* codes when the backend is \
          unreachable.",
+        META_MODULE,
+    );
+
+    // ── S1 (IDE plan P0.2) — jailed file I/O ─────────────────────────────
+    register_action_with_meta(
+        FS_READ,
+        |p: Value| async move { crate::fs::api::handle_read(p).await },
+        "Read one workspace file's text, root-jailed. Payload: {workspace_id, \
+         path}. Reply: {content, encoding: utf8|utf8-lossy|binary, binary, \
+         truncated, size_bytes, mtime}. `binary` (null byte in first 1KB) → \
+         empty content; oversized (> fs_max_read_bytes, default 2MiB) → \
+         truncated:true with the head only. path_escape on a jail breach; io \
+         on a missing/unreadable file.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        FS_WRITE,
+        |p: Value| async move { crate::fs::api::handle_write(p).await },
+        "Atomically save text to a workspace file, root-jailed. Payload: \
+         {workspace_id, path, content, expected_mtime?}. Reply: {mtime, \
+         size_bytes}. expected_mtime gives optimistic concurrency — a newer \
+         on-disk mtime returns `conflict` (details: current_mtime) so the \
+         editor can prompt. Temp-file+rename atomic write; the existing watcher \
+         picks up the change for a debounced re-index (the write does not \
+         enqueue indexing itself). path_escape on a jail breach.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        FS_LIST_DIR,
+        |p: Value| async move { crate::fs::api::handle_list_dir(p).await },
+        "List one directory level under a workspace, root-jailed (lazy tree \
+         expansion). Payload: {workspace_id, path?=root}. Reply: {path, \
+         entries:[{name, kind: file|dir|symlink, size_bytes?, mtime?, \
+         ignored}]}. `ignored` marks entries the indexer's walk skips (.git/ \
+         target/ node_modules/ dotfiles/ binary suffixes) — still listed so \
+         the tree can show binaries/oversized. Dirs sort first. path_escape on \
+         a jail breach.",
         META_MODULE,
     );
 
