@@ -349,8 +349,33 @@ fn bubble_card(
         BubbleKind::Anchor { description } => {
             card = card.child(SharedString::from(format!("anchor · {description}")));
         }
-        BubbleKind::Symbol { file, line, .. } => {
+        BubbleKind::Symbol { id, file, line } => {
             card = card.child(SharedString::from(format!("{file}:{line}")));
+            // "View in graph" — the cross-panel deep-link (IDE S7): open the
+            // Workspaces Graph tab centred on this symbol. Pushes a typed focus
+            // (buffered by the focus bus) then switches panels.
+            let symbol_id = id.clone();
+            card = card.child(
+                div()
+                    .id("chat-bubble-view-graph")
+                    .cursor_pointer()
+                    .text_size(px(size::MICRO))
+                    .text_color(rgb(pack(TEXT_PRIMARY)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |_this: &mut ChatPanel, _ev: &MouseDownEvent, _w, cx| {
+                            cx.stop_propagation();
+                            wylde_gui_pipe::request_workspace_focus(
+                                wylde_gui_pipe::WorkspaceFocus {
+                                    tab: Some("graph".to_owned()),
+                                    node_id: Some(symbol_id.clone()),
+                                },
+                            );
+                            wylde_gui_pipe::request_nav("core/workspaces");
+                        }),
+                    )
+                    .child(SharedString::from("⊙ view in graph")),
+            );
             if let Some(ctxd) = &panel.bubbles.context {
                 if let Some(preview) = &ctxd.body_preview {
                     card = card.child(SharedString::from(preview.clone()));
