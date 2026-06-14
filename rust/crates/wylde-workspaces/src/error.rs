@@ -30,6 +30,13 @@ pub enum WorkspacesError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A caller-supplied file path escaped (or could not be resolved against)
+    /// the workspace root jail — the security boundary for `workspaces.fs.*`
+    /// (S1). Distinct wire code so the GUI never confuses a jail breach with a
+    /// benign missing file (which surfaces as `io`).
+    #[error("path escape: {0}")]
+    PathEscape(String),
+
     /// (de)serialization failure on a stored or wire value.
     #[error("serde error: {0}")]
     Serde(String),
@@ -57,6 +64,7 @@ impl WorkspacesError {
             WorkspacesError::UnknownAction(_) => "no_action",
             WorkspacesError::BadRequest(_) => "bad_request",
             WorkspacesError::Io(_) => "io",
+            WorkspacesError::PathEscape(_) => "path_escape",
             WorkspacesError::Serde(_) => "serde",
             WorkspacesError::Backend { .. } => "graph_backend",
             WorkspacesError::Other(_) => "internal",

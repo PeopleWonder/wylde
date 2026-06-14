@@ -41,6 +41,7 @@ pub mod config;
 pub mod conversations;
 pub mod embeddings;
 pub mod error;
+pub mod fs;
 pub mod graph;
 pub mod ignore;
 pub mod ipc;
