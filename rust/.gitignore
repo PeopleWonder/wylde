@@ -1,1 +1,7 @@
 target/
+# Dev-only hot-reload target cache (tools/dev/wylde-backend-watch.ps1).
+# Kept separate from target/ so dev-pipeline bytes (rust-lld + line-tables)
+# never invalidate release/watcher fingerprints. `stage/` under it holds the
+# binaries the dev daemon actually spawns (build writes debug/, the daemon
+# spawns stage/ — so a rebuild can't fight the running .exe's lock).
+target-dev/

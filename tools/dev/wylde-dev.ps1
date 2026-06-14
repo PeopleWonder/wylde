@@ -1,49 +1,176 @@
 # wylde-dev.ps1 -- the "Wylde Dev" hot-iteration environment.
 #
+# FULL-STACK hot-reload: both halves of the stack rebuild on save.
+#
+#   GUI half  (bacon dev, foreground): save a GUI .rs -> app killed,
+#             incrementally rebuilt, relaunched; save visual_style_v1.yaml
+#             -> live theme repaint (no rebuild).
+#   Backend half (wylde-backend-watch.ps1, its own window): save a backend
+#             service crate's .rs -> that ONE service rebuilds and bounces
+#             via the dev daemon's dev.restart_service verb; the GUI and
+#             every other service stay up.
+#
 # What it does, in order:
-#   1. Boots the Rust Lifecycle daemon (same binary + pipe-wait as
-#      launch_wylde.ps1) IF the lifecycle pipe isn't already up, so the
-#      dev GUI talks to real services. Fail-soft: if the daemon binary is
-#      missing or the pipe never appears, the GUI still launches and every
-#      panel degrades gracefully (OI-1 banners).
-#   2. Sets the dev-only acceleration + hot-reload environment:
-#        CARGO_TARGET_DIR = Core/GUI/target-dev
-#            A SEPARATE incremental cache for the dev loop, so dev builds
-#            and the build-watcher/release builds (plain target/) never
-#            invalidate each other's fingerprints.
-#        RUSTFLAGS = -C linker=rust-lld
-#            rust-lld ships with the rustup toolchain (no install) and
-#            links the dev binary several times faster than MSVC link.exe.
-#            Scoped HERE -- not .cargo/config.toml -- so the shipped
-#            release build's linker is untouched (cargo cannot scope a
-#            linker per-profile on stable; see the dev-env report).
-#        WYLDE_THEME_PATH = <repo>/Core/GUI/Frontend/Panels/Workspaces/
-#                           assets/visual_style_v1.yaml
-#            Debug builds read the Visual Style YAML from THIS file at
-#            runtime and hot-reload it on save (graph repaints live;
-#            composer styling applies next repaint). Release builds ignore
-#            the variable entirely (the embedded asset ships unchanged).
-#   3. Hands off to `bacon dev` (Core/GUI/bacon.toml): save a .rs file ->
-#      kill the running app -> incremental rebuild -> relaunch.
+#   1. Stages the backend dev binaries + sets the dev daemon's environment
+#      (WYLDE_DEV_HOTRELOAD gate + per-service WYLDE_<NAME>_BIN overrides ->
+#      rust/target-dev/stage). The daemon spawns each service from its
+#      STAGED copy, so the backend watcher can rebuild into
+#      rust/target-dev/debug/ WITHOUT fighting the running .exe's lock, then
+#      ask the daemon to swap+respawn.
+#   2. Boots the Rust Lifecycle daemon IF the pipe isn't already up -- now a
+#      *dev* daemon (it inherits the gate + overrides from step 1). If a
+#      stack is already up, probes whether it's a dev daemon: if yes, reuse
+#      + hot-reload; if it's a plain stack, backend hot-reload is disabled
+#      for the session (GUI hot-reload still works) with a hint to relaunch
+#      from a clean state. Fail-soft throughout (OI-1 banners).
+#   3. Sets the dev-only GUI acceleration + hot-reload environment:
+#        CARGO_TARGET_DIR = Core/GUI/target-dev   (separate GUI cache)
+#        RUSTFLAGS        = -C linker=rust-lld     (fast dev linker)
+#        WYLDE_THEME_PATH = .../visual_style_v1.yaml  (live theme reload)
+#      All scoped to this script + target-dev caches -- the shipped release
+#      build (rust/target, Core/GUI/target) is never touched. See the
+#      dev-env report for why the linker is NOT in .cargo/config.toml.
+#   4. Launches the backend watcher (its own window) when a dev daemon is
+#      confirmed, then hands off to `bacon dev` (the GUI loop) in the
+#      foreground. Quitting bacon (q) tears the backend watcher down.
 #
 # Invoke as:  powershell -NoProfile -ExecutionPolicy Bypass -File wylde-dev.ps1
 # (the "Wylde Dev" desktop shortcut does exactly that). No elevation.
 #
-# First run builds the whole GUI workspace into target-dev (one-time,
-# several minutes); every save after that is an incremental rebuild.
+#   -NoBackendHotReload   GUI-only loop (the pre-2026-06-13 behaviour).
+#
+# First run stages from already-built binaries (fast) or, for any service
+# with no binary yet, builds it cold into target-dev once.
+
+param(
+    [switch]$NoBackendHotReload
+)
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $GuiRoot  = Join-Path $RepoRoot 'Core\GUI'
+$RustRoot = Join-Path $RepoRoot 'rust'
+$BackendWatch = Join-Path $PSScriptRoot 'wylde-backend-watch.ps1'
 
 Write-Host "Wylde Dev -- repo: $RepoRoot"
 
-# --- 1. Lifecycle daemon (skip if the pipe is already up) -----------
-$pipeUp = $false
-try {
-    $pipes = Get-ChildItem '\\.\pipe\' -ErrorAction Stop | Select-Object -ExpandProperty Name
-    $pipeUp = $pipes -contains 'wylde-lifecycle'
-} catch {}
+# Daemon-managed backend services (1:1 crate==service==bin). Mirrors
+# DAEMON_MANAGED_SERVICES in rust/crates/wylde-lifecycle/src/control.rs,
+# minus wylde-memgraph (Neo4j JVM, not a rebuildable Rust binary).
+$DaemonServices = @(
+    'wylde-workspaces', 'wylde-harness', 'wylde-gateway', 'wylde-ollama',
+    'wylde-vram-broker', 'wylde-device-gate', 'wylde-extension-bridge',
+    'wylde-voice', 'wylde-vpn', 'wylde-treesitter', 'wylde-n8n'
+)
+# Stage-only (not daemon-supervised; GUI-spawned).
+$StageOnlyServices = @('wylde-lsp')
+
+$HotReload = -not $NoBackendHotReload
+$StageDir  = Join-Path $RustRoot 'target-dev\stage'
+$DevDebug  = Join-Path $RustRoot 'target-dev\debug'
+
+function Bin-EnvName([string]$svc) {
+    'WYLDE_' + ($svc.ToUpper() -replace '-', '_') + '_BIN'
+}
+
+# ── 1. Stage backend binaries + set the dev daemon environment ─────────
+if ($HotReload) {
+    Write-Host ""
+    Write-Host "staging backend dev binaries (rust/target-dev/stage) ..."
+    New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
+
+    $allSvc = $DaemonServices + $StageOnlyServices
+    $needBuild = @()
+    foreach ($svc in $allSvc) {
+        $stage = Join-Path $StageDir "$svc.exe"
+        if (Test-Path $stage) { continue }
+        # Seed from the best already-built binary (fast path).
+        $src = @(
+            (Join-Path $RustRoot "bin\$svc.exe"),
+            (Join-Path $RustRoot "target\release\$svc.exe"),
+            (Join-Path $RustRoot "target\debug\$svc.exe"),
+            (Join-Path $DevDebug "$svc.exe")
+        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+        if ($src) { Copy-Item $src $stage -Force }
+        else { $needBuild += $svc }
+    }
+
+    # Any service with no binary anywhere: build it once into target-dev
+    # (cold first-run cost, one cargo invocation for all of them).
+    if ($needBuild.Count -gt 0) {
+        Write-Host "  building (cold) into target-dev: $($needBuild -join ', ')"
+        $prevTarget = $env:CARGO_TARGET_DIR; $prevFlags = $env:RUSTFLAGS
+        $env:CARGO_TARGET_DIR = Join-Path $RustRoot 'target-dev'
+        $env:RUSTFLAGS = '-C linker=rust-lld'
+        $pkgArgs = @(); foreach ($s in $needBuild) { $pkgArgs += @('-p', $s) }
+        Push-Location $RustRoot
+        & cargo build @pkgArgs 2>&1 | Out-Host
+        Pop-Location
+        $env:CARGO_TARGET_DIR = $prevTarget; $env:RUSTFLAGS = $prevFlags
+        foreach ($svc in $needBuild) {
+            $built = Join-Path $DevDebug "$svc.exe"
+            if (Test-Path $built) { Copy-Item $built (Join-Path $StageDir "$svc.exe") -Force }
+            else { Write-Warning "  $svc has no binary yet -- it will be built+staged on first edit." }
+        }
+    }
+
+    # Point the daemon at the staged binaries + open the dev gate. Only set
+    # an override when the stage file actually exists (a SET-but-missing
+    # WYLDE_<NAME>_BIN would otherwise keep that service dark all session).
+    $env:WYLDE_DEV_HOTRELOAD = '1'
+    $env:WYLDE_ROOT = $RepoRoot
+    $staged = 0
+    foreach ($svc in $allSvc) {
+        $stage = Join-Path $StageDir "$svc.exe"
+        if (Test-Path $stage) {
+            Set-Item -Path ("env:" + (Bin-EnvName $svc)) -Value $stage
+            $staged++
+        }
+    }
+    Write-Host "staged $staged service binary(ies); dev gate WYLDE_DEV_HOTRELOAD=1"
+}
+
+# ── helper: is a lifecycle daemon already up, and is it a dev daemon? ───
+function Test-PipeUp {
+    try {
+        return ([System.IO.Directory]::GetFiles('\\.\pipe\') |
+            Where-Object { $_ -like '*wylde-lifecycle' }).Count -gt 0
+    } catch { return $false }
+}
+
+# Build the dev ipc client once (lib crate -> links while the stack is up).
+function Ensure-IpcCall {
+    $ipc = Join-Path $DevDebug 'examples\ipc_call.exe'
+    if (Test-Path $ipc) { return $ipc }
+    $prevTarget = $env:CARGO_TARGET_DIR; $prevFlags = $env:RUSTFLAGS
+    $env:CARGO_TARGET_DIR = Join-Path $RustRoot 'target-dev'
+    $env:RUSTFLAGS = '-C linker=rust-lld'
+    Push-Location $RustRoot
+    & cargo build -q -p wylde-shared --example ipc_call 2>&1 | Out-Host
+    Pop-Location
+    $env:CARGO_TARGET_DIR = $prevTarget; $env:RUSTFLAGS = $prevFlags
+    if (Test-Path $ipc) { return $ipc } else { return $null }
+}
+
+# Probe whether the running daemon exposes dev.restart_service. An
+# unregistered action returns error.code == 'no_action' (plain daemon);
+# a dev daemon returns a different code (not_registered for the bogus name).
+function Test-DevDaemon([string]$ipc) {
+    if (-not $ipc) { return $false }
+    $pf = Join-Path $env:TEMP 'wylde-devprobe.json'
+    '{"name":"__probe__"}' | Set-Content -Path $pf -Encoding utf8
+    $out = & $ipc lifecycle dev.restart_service "@$pf" 2>&1
+    Remove-Item $pf -ErrorAction SilentlyContinue
+    try {
+        $j = ($out | Out-String | ConvertFrom-Json)
+        if ($j.error -and $j.error.code -eq 'no_action') { return $false }
+        return $true
+    } catch { return $false }
+}
+
+# ── 2. Lifecycle daemon (boot dev daemon, or detect a reused stack) ────
+$pipeUp = Test-PipeUp
+$devDaemon = $false
 
 if (-not $pipeUp) {
     $daemonCandidates = @(
@@ -54,35 +181,62 @@ if (-not $pipeUp) {
     $daemon = $daemonCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
     if ($daemon) {
         Write-Host "starting lifecycle daemon: $daemon"
+        # Inherits WYLDE_DEV_HOTRELOAD + WYLDE_<NAME>_BIN from step 1 -> a dev daemon.
         Start-Process -FilePath $daemon -WorkingDirectory $RepoRoot -WindowStyle Hidden | Out-Null
         $deadline = (Get-Date).AddSeconds(20)
         while ((Get-Date) -lt $deadline) {
-            try {
-                $pipes = Get-ChildItem '\\.\pipe\' -ErrorAction Stop |
-                         Select-Object -ExpandProperty Name
-                if ($pipes -contains 'wylde-lifecycle') { $pipeUp = $true; break }
-            } catch {}
+            if (Test-PipeUp) { $pipeUp = $true; break }
             Start-Sleep -Milliseconds 250
         }
+        if ($pipeUp -and $HotReload) { $devDaemon = $true }
     }
     if (-not $pipeUp) {
         Write-Warning "lifecycle pipe not up -- the dev GUI will run with degraded services (OI-1 banners)."
     }
 } else {
     Write-Host "lifecycle pipe already up -- reusing the running stack"
+    if ($HotReload) {
+        $ipc = Ensure-IpcCall
+        $devDaemon = Test-DevDaemon $ipc
+        if (-not $devDaemon) {
+            Write-Warning ("a NON-dev stack is already running. Backend hot-reload needs the dev daemon, " +
+                "so it is DISABLED this session (GUI hot-reload still works). For full-stack hot-reload, " +
+                "stop the stack (Dashboard -> Shut down, or close Wylde) and relaunch Wylde Dev.")
+        }
+    }
 }
 
-# --- 2. Dev-only environment ---------------------------------------
+# ── 3. Dev-only GUI environment ────────────────────────────────────────
 $env:CARGO_TARGET_DIR = Join-Path $GuiRoot 'target-dev'
 $env:RUSTFLAGS        = '-C linker=rust-lld'
 $env:WYLDE_THEME_PATH = Join-Path $GuiRoot 'Frontend\Panels\Workspaces\assets\visual_style_v1.yaml'
 
-Write-Host "target dir : $env:CARGO_TARGET_DIR"
+Write-Host ""
+Write-Host "target dir : $env:CARGO_TARGET_DIR (GUI)"
 Write-Host "linker     : rust-lld (dev only)"
 Write-Host "theme hot  : $env:WYLDE_THEME_PATH"
-Write-Host ""
-Write-Host "bacon dev -- save a .rs file to rebuild+relaunch; edit the YAML to restyle live; q quits."
 
-# --- 3. The watch loop ----------------------------------------------
+# ── 4. Launch the backend watcher (own window), then the GUI loop ──────
+$watcher = $null
+if ($HotReload -and $devDaemon) {
+    Write-Host "backend hot-reload: ON -- launching watcher window"
+    $watcher = Start-Process powershell `
+        -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $BackendWatch, '-RepoRoot', $RepoRoot `
+        -PassThru -WindowStyle Normal
+} elseif ($HotReload) {
+    Write-Host "backend hot-reload: OFF (no dev daemon) -- GUI hot-reload only"
+} else {
+    Write-Host "backend hot-reload: OFF (-NoBackendHotReload) -- GUI hot-reload only"
+}
+
+Write-Host ""
+Write-Host "bacon dev -- save a GUI .rs to rebuild+relaunch; edit the YAML to restyle live; q quits."
 Set-Location $GuiRoot
-bacon dev
+try {
+    bacon dev
+} finally {
+    if ($watcher -and -not $watcher.HasExited) {
+        Write-Host "stopping backend watcher (pid $($watcher.Id))"
+        Stop-Process -Id $watcher.Id -Force -ErrorAction SilentlyContinue
+    }
+}
