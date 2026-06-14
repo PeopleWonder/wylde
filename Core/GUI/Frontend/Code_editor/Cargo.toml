@@ -1,0 +1,23 @@
+[package]
+name = "wylde-gpui-code-editor"
+description = "Native gpui code-editor element for Wylde — purpose-built (NOT a wrapper of wylde-gpui-input): per-line shaping, line-number gutter, internal scroll with viewport culling, decoration runs for syntax/diagnostics, full keyboard+mouse editing, undo/redo, and a window-absolute glyph-metrics snapshot. Architected for folding / minimap / multi-cursor / large files."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens (mono family, surface/text/border colours) so the editor
+# matches every other Wylde surface and stays config-driven, never hardcoded.
+wylde-theme = { path = "../Theme" }
+
+# gpui — Element trait, div builders, text shaping, KeyDownEvent, ClipboardItem.
+gpui.workspace = true
+
+# Grapheme-aware cursor traversal so arrow/backspace move by user-perceived
+# character, matching the proven wylde-gpui-input editing model.
+unicode-segmentation = "1"
