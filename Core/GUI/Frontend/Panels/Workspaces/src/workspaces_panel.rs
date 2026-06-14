@@ -29,6 +29,8 @@ use wylde_theme::colors::{
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
+use crate::editor::EditorTab;
+use crate::files::FilesTab;
 use crate::graph::GraphView;
 use crate::ipc::{
     activate_workspace, delete_workspace, list_workspaces, reindex_workspace, set_active_workspace,
@@ -57,6 +59,12 @@ pub struct WorkspacesPanel {
     /// The Vocabulary tab's view (Slice N: the anchor system UI). Same
     /// `None`-in-unit-tests caveat.
     pub vocabulary: Option<Entity<VocabularyTab>>,
+    /// The Files tab's view (IDE S5: lazy workspace file-tree). Same
+    /// `None`-in-unit-tests caveat.
+    pub files: Option<Entity<FilesTab>>,
+    /// The Editor tab's view (IDE S3/S4: the code editor). Same
+    /// `None`-in-unit-tests caveat.
+    pub editor: Option<Entity<EditorTab>>,
 }
 
 impl WorkspacesPanel {
@@ -70,6 +78,8 @@ impl WorkspacesPanel {
             graph: None,
             settings: None,
             vocabulary: None,
+            files: None,
+            editor: None,
         }
     }
 
@@ -89,14 +99,40 @@ impl WorkspacesPanel {
             let settings = cx.new(|scx| GraphSettingsTab::new(graph.clone(), scx));
             // The Vocabulary tab loads the anchor stores eagerly too.
             let vocabulary = cx.new(VocabularyTab::new);
+            // IDE tabs (S2): the Files tree and the code Editor, eager-mounted
+            // like the others so switching is instant and a cross-tab
+            // `open_in_editor` lands on an already-live entity.
+            let files = cx.new(FilesTab::new);
+            let editor = cx.new(EditorTab::new);
             let mut panel = Self::new();
             panel.graph = Some(graph);
             panel.settings = Some(settings);
             panel.vocabulary = Some(vocabulary);
+            panel.files = Some(files);
+            panel.editor = Some(editor);
             Self::spawn_refresh(cx);
             panel
         })
         .into()
+    }
+
+    /// Open a workspace-relative `path` in the Editor tab (optionally at a
+    /// 1-based `line`) and switch to it. The shared cross-tab "open this file"
+    /// affordance (IDE S2): the Files tab calls it on a row click, and later
+    /// the graph / composer can drive it too. No-op on test-only construction
+    /// where the editor entity is absent.
+    pub fn open_in_editor(
+        &mut self,
+        path: impl Into<String>,
+        line: Option<u32>,
+        cx: &mut Context<Self>,
+    ) {
+        let path = path.into();
+        if let Some(editor) = &self.editor {
+            editor.update(cx, |e, ecx| e.open(path, line, ecx));
+        }
+        self.tab = WorkspacesTab::Editor;
+        cx.notify();
     }
 
     /// Reload the workspace list from the harness.  One async task; if
@@ -276,6 +312,15 @@ impl Default for WorkspacesPanel {
 impl Render for WorkspacesPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body: AnyElement = match self.tab {
+            WorkspacesTab::Files => match self.files.clone() {
+                Some(view) => view.into_any_element(),
+                // No child entity (test-only construction) — render nothing.
+                None => div().into_any_element(),
+            },
+            WorkspacesTab::Editor => match self.editor.clone() {
+                Some(view) => view.into_any_element(),
+                None => div().into_any_element(),
+            },
             WorkspacesTab::Graph => match self.graph.clone() {
                 Some(view) => view.into_any_element(),
                 // No child entity (test-only construction) — render nothing.
