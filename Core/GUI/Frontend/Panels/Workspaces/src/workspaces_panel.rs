@@ -65,6 +65,35 @@ pub struct WorkspacesPanel {
     /// The Editor tab's view (IDE S3/S4: the code editor). Same
     /// `None`-in-unit-tests caveat.
     pub editor: Option<Entity<EditorTab>>,
+    /// In-flight "download a missing embedding model" affordance, set when a
+    /// re-index fails with a `model not installed` error. Drives the inline
+    /// "Download <model>" button + progress so the user never drops to a
+    /// terminal. `None` when the last index error (if any) isn't a
+    /// missing-model error.
+    pub pull: Option<ModelPull>,
+}
+
+/// An offer to download a model surfaced from a failed re-index, plus its
+/// in-flight progress. Built from the index error via
+/// [`wylde_gui_pipe::parse_pullable_model`] so the model name is never
+/// hardcoded.
+pub struct ModelPull {
+    /// Model to pull, e.g. `"nomic-embed-text"`.
+    pub model: String,
+    /// Workspace to re-index automatically once the model is installed, so
+    /// the user isn't left to re-trigger the action that failed.
+    pub retry_id: String,
+    pub phase: PullPhase,
+}
+
+/// Lifecycle of the inline model download.
+pub enum PullPhase {
+    /// Button shown; the pull hasn't started.
+    Offered,
+    /// Streaming `ollama.pull`; carries the latest progress frame.
+    Downloading(wylde_gui_pipe::PullProgress),
+    /// The pull failed; carries the message. The button re-offers a retry.
+    Failed(String),
 }
 
 impl WorkspacesPanel {
@@ -80,6 +109,7 @@ impl WorkspacesPanel {
             vocabulary: None,
             files: None,
             editor: None,
+            pull: None,
         }
     }
 
@@ -367,9 +397,114 @@ impl WorkspacesPanel {
             }
         }
         match result {
-            Ok(_) => self.error = None,
-            Err(e) => self.error = Some(e),
+            Ok(_) => {
+                self.error = None;
+                self.pull = None;
+            }
+            Err(e) => {
+                // If the failure is a missing-embedding-model error, offer an
+                // inline "Download <model>" affordance (and remember which
+                // workspace to re-index once it lands) instead of leaving the
+                // user to run `ollama pull` in a terminal. Don't clobber a
+                // download already in flight for the same model.
+                let already_pulling = matches!(
+                    self.pull.as_ref(),
+                    Some(p) if matches!(p.phase, PullPhase::Downloading(_))
+                );
+                if !already_pulling {
+                    self.pull =
+                        wylde_gui_pipe::parse_pullable_model(&e).map(|model| ModelPull {
+                            model,
+                            retry_id: id.to_owned(),
+                            phase: PullPhase::Offered,
+                        });
+                }
+                self.error = Some(e);
+            }
         }
+    }
+
+    /// Start (or retry) the inline model download for the current
+    /// [`ModelPull`] offer. Streams `ollama.pull`, updating the phase with
+    /// each progress frame; on success it clears the offer and
+    /// automatically re-triggers the re-index that failed, so the user
+    /// isn't left to re-run it by hand. Mirrors the Models panel's pull
+    /// loop, with auto-retry instead of an installed-list refresh.
+    pub fn start_model_pull(&mut self, cx: &mut Context<Self>) {
+        let Some(pull) = self.pull.as_ref() else {
+            return;
+        };
+        if matches!(pull.phase, PullPhase::Downloading(_)) {
+            return; // already in flight
+        }
+        let model = pull.model.clone();
+        let retry_id = pull.retry_id.clone();
+
+        let mut stream = match wylde_gui_pipe::pull_model(&model) {
+            Ok(s) => s,
+            Err(e) => {
+                if let Some(p) = self.pull.as_mut() {
+                    p.phase = PullPhase::Failed(format!("download start: {e}"));
+                }
+                cx.notify();
+                return;
+            }
+        };
+        if let Some(p) = self.pull.as_mut() {
+            p.phase = PullPhase::Downloading(wylde_gui_pipe::PullProgress {
+                status: "starting…".to_owned(),
+                ..Default::default()
+            });
+        }
+        cx.notify();
+
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            loop {
+                match stream.recv().await {
+                    Some(Ok(v)) => {
+                        let progress = wylde_gui_pipe::PullProgress::from_value(&v);
+                        let done = progress.is_success();
+                        let _ = this.update(app_cx, |panel, cx| {
+                            if let Some(p) = panel.pull.as_mut() {
+                                p.phase = PullPhase::Downloading(progress);
+                            }
+                            cx.notify();
+                        });
+                        if done {
+                            let _ = this.update(app_cx, |panel, cx| {
+                                panel.pull = None;
+                                panel.error = None;
+                                cx.notify();
+                                // Auto-retry the index now that the model exists.
+                                WorkspacesPanel::spawn_reindex(retry_id.clone(), cx);
+                            });
+                            return;
+                        }
+                    }
+                    Some(Err(e)) => {
+                        let _ = this.update(app_cx, |panel, cx| {
+                            if let Some(p) = panel.pull.as_mut() {
+                                p.phase = PullPhase::Failed(format!("download '{model}': {e}"));
+                            }
+                            cx.notify();
+                        });
+                        return;
+                    }
+                    None => {
+                        let _ = this.update(app_cx, |panel, cx| {
+                            if let Some(p) = panel.pull.as_mut() {
+                                p.phase = PullPhase::Failed(format!(
+                                    "download '{model}': stream ended unexpectedly"
+                                ));
+                            }
+                            cx.notify();
+                        });
+                        return;
+                    }
+                }
+            }
+        })
+        .detach();
     }
 
     /// Per-row "Remove" handler.  The Svelte page requires a
@@ -480,6 +615,10 @@ impl WorkspacesPanel {
 
         if let Some(err) = &self.error {
             column = column.child(error_strip(err, cx));
+        }
+
+        if let Some(pull) = &self.pull {
+            column = column.child(download_strip(pull, cx));
         }
 
         if self.loading {
@@ -893,6 +1032,60 @@ fn error_strip(msg: &str, cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
     strip
 }
 
+/// Inline "Download <model>" affordance shown beneath the error strip when
+/// a re-index failed because an embedding model isn't installed. Offers a
+/// one-click pull (with live progress) and, on success, auto-re-indexes —
+/// so the user never has to drop to `ollama pull` in a terminal.
+fn download_strip(pull: &ModelPull, cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
+    let model = pull.model.clone();
+    let (text, button) = match &pull.phase {
+        PullPhase::Offered => (
+            format!("Embedding model '{model}' isn't installed."),
+            Some(("Download model", false)),
+        ),
+        PullPhase::Downloading(progress) => (
+            format!("Downloading '{model}' — {}", progress.label()),
+            None,
+        ),
+        PullPhase::Failed(msg) => (
+            format!("Download of '{model}' failed: {msg}"),
+            Some(("Retry download", true)),
+        ),
+    };
+
+    let mut strip = div()
+        .bg(rgb(pack(SURFACE_800)))
+        .border_1()
+        .border_color(rgb(pack(BORDER_DEFAULT)))
+        .rounded(px(4.0))
+        .px_3()
+        .py_2()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_PRIMARY)))
+                .child(SharedString::from(text)),
+        );
+
+    if let Some((label, _is_retry)) = button {
+        strip = strip.child(action_button(
+            ElementId::Name("workspaces-download-model".into()),
+            label,
+            cx.listener(|this: &mut WorkspacesPanel, _event, _window, cx| {
+                this.start_model_pull(cx);
+            }),
+        ));
+    }
+
+    strip
+}
+
 /// Pack an `Rgba` into the `u32` shape gpui's `rgb()` accepts.  Same
 /// shim every panel keeps locally.
 pub(crate) fn pack(c: gpui::Rgba) -> u32 {
@@ -1016,5 +1209,47 @@ mod tests {
         p.apply_reindex_outcome("ws-a", &Err("pipe_unavailable: down".to_owned()));
         assert!(!p.workspaces[0].indexing);
         assert_eq!(p.error.as_deref(), Some("pipe_unavailable: down"));
+    }
+
+    #[test]
+    fn reindex_missing_model_offers_download_with_retry_id() {
+        // The real error Aaron hit: the embed step fails because the model
+        // isn't installed. The panel must offer an inline download tied to
+        // the workspace that failed (for auto-retry).
+        let mut p = panel_with_one_indexing_row();
+        let reply = serde_json::json!({
+            "ok": false, "workspace_id": "ws-a",
+            "last_error": "backend has no model named \"nomic-embed-text\" — \
+                pull it with: ollama pull nomic-embed-text \
+                (model \"nomic-embed-text\" not installed in Ollama)",
+        });
+        p.apply_reindex_outcome("ws-a", &Ok(reply));
+        let pull = p.pull.as_ref().expect("a missing-model error must offer a download");
+        assert_eq!(pull.model, "nomic-embed-text");
+        assert_eq!(pull.retry_id, "ws-a", "auto-retry must target the failed workspace");
+        assert!(matches!(pull.phase, PullPhase::Offered));
+        // The raw error still shows in the strip above the offer.
+        assert!(p.error.as_deref().unwrap().contains("nomic-embed-text"));
+    }
+
+    #[test]
+    fn reindex_non_model_error_offers_no_download() {
+        let mut p = panel_with_one_indexing_row();
+        p.apply_reindex_outcome("ws-a", &Err("ollama_unreachable: upstream down".to_owned()));
+        assert!(p.pull.is_none(), "non-model errors must not offer a download");
+    }
+
+    #[test]
+    fn successful_reindex_clears_a_prior_download_offer() {
+        let mut p = panel_with_one_indexing_row();
+        p.pull = Some(ModelPull {
+            model: "nomic-embed-text".to_owned(),
+            retry_id: "ws-a".to_owned(),
+            phase: PullPhase::Offered,
+        });
+        let reply = serde_json::json!({ "ok": true, "file_count": 7, "last_error": null });
+        p.apply_reindex_outcome("ws-a", &Ok(reply));
+        assert!(p.pull.is_none(), "a clean reindex retires the download offer");
+        assert!(p.error.is_none());
     }
 }
