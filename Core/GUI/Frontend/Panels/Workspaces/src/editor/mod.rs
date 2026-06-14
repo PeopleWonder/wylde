@@ -19,16 +19,19 @@
 
 pub mod highlight_map;
 pub mod ipc;
+pub mod lsp_decor;
 
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, rgb, Context, Entity, FontWeight, IntoElement, Render, SharedString,
-    Subscription, Window,
+    div, prelude::*, px, rgb, Context, Entity, FontWeight, IntoElement, MouseButton, MouseDownEvent,
+    Render, SharedString, Subscription, Window,
 };
 use wylde_gpui_code_editor::{CodeEditor, EditorEvent};
-use wylde_theme::colors::{BORDER_SUBTLE, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY};
-use wylde_theme::typography::{size, weight, FAMILY_INTER};
+use wylde_theme::colors::{
+    BORDER_SUBTLE, BRAND, SURFACE_800, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+};
+use wylde_theme::typography::{size, weight, FAMILY_INTER, FAMILY_MONO};
 
 use crate::workspaces_panel::pack;
 
@@ -73,6 +76,8 @@ pub struct EditorTab {
     _sub: Option<Subscription>,
     /// Active workspace the open file is scoped to.
     workspace_id: Option<String>,
+    /// Absolute path of the active workspace's folder (LSP root + file URIs).
+    folder: Option<String>,
     /// Workspace-relative path of the open file.
     rel_path: Option<String>,
     /// mtime from the last read/write — optimistic-concurrency token.
@@ -84,6 +89,20 @@ pub struct EditorTab {
     load_gen: u64,
     /// Bumped on each highlight request so a stale highlight is ignored.
     highlight_gen: u64,
+    // ── LSP (S9) ─────────────────────────────────────────────────────────
+    /// Tree-sitter syntax decorations (fills) — kept apart from diagnostics so
+    /// either can update independently; combined before `set_decorations`.
+    syntax_decos: Vec<wylde_gpui_code_editor::Decoration>,
+    /// LSP diagnostic underlines (squiggles).
+    diag_decos: Vec<wylde_gpui_code_editor::Decoration>,
+    /// LSP document version (didChange).
+    lsp_version: i64,
+    /// Debounce/staleness guard for the LSP change→diagnostics cycle.
+    lsp_gen: u64,
+    /// Current completion items `(label, detail)` from the last Ctrl+Space.
+    completions: Vec<(String, Option<String>)>,
+    /// Current hover text (F1), shown in a dismissable strip.
+    hover: Option<String>,
 }
 
 impl EditorTab {
@@ -102,39 +121,62 @@ impl EditorTab {
                             this.status = Status::Ready;
                         }
                         this.spawn_highlight(cx);
+                        this.spawn_lsp_sync(cx);
                         cx.notify();
                     }
                 }
                 EditorEvent::SaveRequested => this.save(cx),
+                EditorEvent::CompletionRequested { line, character } => {
+                    this.request_completion(*line, *character, cx);
+                }
+                EditorEvent::HoverRequested { line, character } => {
+                    this.request_hover(*line, *character, cx);
+                }
             }
         });
         Self {
             editor: Some(editor),
             _sub: Some(sub),
             workspace_id: None,
+            folder: None,
             rel_path: None,
             mtime: None,
             dirty: false,
             status: Status::Empty,
             load_gen: 0,
             highlight_gen: 0,
+            syntax_decos: Vec::new(),
+            diag_decos: Vec::new(),
+            lsp_version: 1,
+            lsp_gen: 0,
+            completions: Vec::new(),
+            hover: None,
         }
     }
 
-    /// Open `path` (workspace-relative) in `workspace_id`, optionally scrolling
-    /// to 1-based `line`. Drives the `fs.read` → buffer → highlight pipeline.
+    /// Open `path` (workspace-relative) in `workspace_id` rooted at the
+    /// absolute `folder`, optionally scrolling to 1-based `line`. Drives the
+    /// `fs.read` → buffer → highlight (+ LSP) pipeline.
     pub fn open(
         &mut self,
         workspace_id: String,
+        folder: String,
         path: String,
         line: Option<u32>,
         cx: &mut Context<Self>,
     ) {
         self.workspace_id = Some(workspace_id.clone());
+        self.folder = (!folder.is_empty()).then_some(folder);
         self.rel_path = Some(path.clone());
         self.dirty = false;
         self.status = Status::Loading;
         self.load_gen += 1;
+        // Reset LSP/decoration state for the new file.
+        self.syntax_decos.clear();
+        self.diag_decos.clear();
+        self.completions.clear();
+        self.hover = None;
+        self.lsp_version = 1;
         let gen = self.load_gen;
         cx.notify();
 
@@ -193,6 +235,185 @@ impl EditorTab {
         self.status = if truncated { Status::Oversized } else { Status::Ready };
         cx.notify();
         self.spawn_highlight(cx);
+        // Open the document in the LSP (best-effort; rust files only). The
+        // content is read from the editor so it matches exactly what loaded.
+        if !read_only {
+            self.spawn_lsp_open(cx);
+        }
+    }
+
+    /// Absolute path of the open file (`folder` + relative path), if known.
+    fn abs_path(&self) -> Option<String> {
+        let (folder, rel) = (self.folder.as_ref()?, self.rel_path.as_ref()?);
+        Some(format!("{}/{}", folder.trim_end_matches(['/', '\\']), rel))
+    }
+
+    /// Is the open file a Rust source file? (LSP = rust-analyzer only, S8.)
+    fn is_rust(&self) -> bool {
+        self.rel_path
+            .as_deref()
+            .map(|p| p.ends_with(".rs"))
+            .unwrap_or(false)
+    }
+
+    /// Set the editor's decorations to syntax fills + diagnostic underlines
+    /// combined (diagnostics after, so underline-only layers over the colour).
+    fn set_combined_decorations(&self, cx: &mut Context<Self>) {
+        let Some(ed) = &self.editor else { return };
+        let mut all = self.syntax_decos.clone();
+        all.extend(self.diag_decos.clone());
+        ed.update(cx, |e, ec| e.set_decorations(all, ec));
+    }
+
+    /// Open the current document in the LSP and fetch its first diagnostics.
+    fn spawn_lsp_open(&mut self, cx: &mut Context<Self>) {
+        if !self.is_rust() {
+            return;
+        }
+        let (Some(folder), Some(abs), Some(ed)) =
+            (self.folder.clone(), self.abs_path(), self.editor.clone())
+        else {
+            return;
+        };
+        let text = ed.read(cx).text().to_owned();
+        cx.spawn(async move |this, app| {
+            // Best-effort: an Err just means no LSP (degrade to plain text).
+            if ipc::lsp_open(&folder, &abs, &text).await.is_err() {
+                return;
+            }
+            Self::fetch_diagnostics(this, app, abs).await;
+        })
+        .detach();
+    }
+
+    /// Debounced LSP didChange + diagnostics refresh on edit.
+    fn spawn_lsp_sync(&mut self, cx: &mut Context<Self>) {
+        if !self.is_rust() {
+            return;
+        }
+        let Some(abs) = self.abs_path() else {
+            return;
+        };
+        self.lsp_version += 1;
+        let version = self.lsp_version;
+        self.lsp_gen += 1;
+        let gen = self.lsp_gen;
+        cx.spawn(async move |this, app| {
+            app.background_executor()
+                .timer(Duration::from_millis(HIGHLIGHT_DEBOUNCE_MS))
+                .await;
+            // Bail if a newer edit superseded this one.
+            let stale = this
+                .update(app, |t, _| t.lsp_gen != gen)
+                .unwrap_or(true);
+            if stale {
+                return;
+            }
+            let text = match this.update(app, |t, cx| {
+                t.editor.as_ref().map(|e| e.read(cx).text().to_owned())
+            }) {
+                Ok(Some(t)) => t,
+                _ => return,
+            };
+            if ipc::lsp_change(&abs, &text, version).await.is_err() {
+                return;
+            }
+            // rust-analyzer needs a beat to recompute; then pull diagnostics.
+            app.background_executor()
+                .timer(Duration::from_millis(400))
+                .await;
+            Self::fetch_diagnostics(this, app, abs).await;
+        })
+        .detach();
+    }
+
+    /// Fetch + apply diagnostics for `abs` (shared by open + sync).
+    async fn fetch_diagnostics(
+        this: gpui::WeakEntity<Self>,
+        app: &mut gpui::AsyncApp,
+        abs: String,
+    ) {
+        let Ok(reply) = ipc::lsp_diagnostics(&abs).await else {
+            return;
+        };
+        let _ = this.update(app, |t, cx| {
+            let text = t
+                .editor
+                .as_ref()
+                .map(|e| e.read(cx).text().to_owned())
+                .unwrap_or_default();
+            t.diag_decos = lsp_decor::diagnostics_to_decorations(&text, &reply);
+            t.set_combined_decorations(cx);
+        });
+    }
+
+    /// Ctrl+Space → fetch completions at the position into the strip.
+    fn request_completion(&mut self, line: u32, character: u32, cx: &mut Context<Self>) {
+        if !self.is_rust() {
+            return;
+        }
+        let Some(abs) = self.abs_path() else { return };
+        self.hover = None;
+        cx.spawn(async move |this, app| {
+            let Ok(reply) = ipc::lsp_completion(&abs, line, character).await else {
+                return;
+            };
+            let items: Vec<(String, Option<String>)> = reply
+                .get("items")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|it| {
+                            let label = it.get("label").and_then(|v| v.as_str())?.to_owned();
+                            let detail = it
+                                .get("detail")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_owned);
+                            Some((label, detail))
+                        })
+                        .take(20)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let _ = this.update(app, |t, cx| {
+                t.completions = items;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// F1 → fetch hover info at the position into the strip.
+    fn request_hover(&mut self, line: u32, character: u32, cx: &mut Context<Self>) {
+        if !self.is_rust() {
+            return;
+        }
+        let Some(abs) = self.abs_path() else { return };
+        self.completions.clear();
+        cx.spawn(async move |this, app| {
+            let Ok(reply) = ipc::lsp_hover(&abs, line, character).await else {
+                return;
+            };
+            let contents = reply
+                .get("contents")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            let _ = this.update(app, |t, cx| {
+                t.hover = (!contents.trim().is_empty()).then_some(contents);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Apply a chosen completion: insert its label at the caret.
+    fn apply_completion(&mut self, label: String, cx: &mut Context<Self>) {
+        if let Some(ed) = &self.editor {
+            ed.update(cx, |e, ec| e.insert_text(&label, ec));
+        }
+        self.completions.clear();
+        cx.notify();
     }
 
     /// Save the buffer via `fs.write` (optimistic concurrency on mtime).
@@ -273,9 +494,8 @@ impl EditorTab {
                     if t.highlight_gen != gen {
                         return;
                     }
-                    if let Some(ed) = &t.editor {
-                        ed.update(cx, |e, ec| e.set_decorations(decos, ec));
-                    }
+                    t.syntax_decos = decos;
+                    t.set_combined_decorations(cx);
                 });
             }
         })
@@ -311,7 +531,7 @@ impl EditorTab {
 }
 
 impl Render for EditorTab {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = div()
             .id("workspaces-editor-tab")
             .size_full()
@@ -378,7 +598,94 @@ impl Render for EditorTab {
                 .into_any_element(),
         };
 
-        let _ = TEXT_PRIMARY; // reserved for future status accents
+        // Hover strip (F1) — dismissable.
+        if let Some(hover) = self.hover.clone() {
+            root = root.child(
+                div()
+                    .id("editor-hover-strip")
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(rgb(pack(BORDER_SUBTLE)))
+                    .bg(rgb(pack(SURFACE_800)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_family(FAMILY_MONO)
+                            .text_size(px(size::XS))
+                            .text_color(rgb(pack(TEXT_PRIMARY)))
+                            .child(SharedString::from(hover)),
+                    )
+                    .child(
+                        div()
+                            .id("editor-hover-dismiss")
+                            .cursor_pointer()
+                            .text_size(px(size::XS))
+                            .text_color(rgb(pack(TEXT_MUTED)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _ev: &MouseDownEvent, _w, cx| {
+                                    this.hover = None;
+                                    cx.notify();
+                                }),
+                            )
+                            .child(SharedString::from("✕")),
+                    ),
+            );
+        }
+
+        // Completion list (Ctrl+Space) — click a row to insert it.
+        if !self.completions.is_empty() {
+            let mut list = div()
+                .id("editor-completions")
+                .flex()
+                .flex_col()
+                .max_h(px(160.0))
+                .overflow_y_scroll()
+                .border_b_1()
+                .border_color(rgb(pack(BORDER_SUBTLE)))
+                .bg(rgb(pack(SURFACE_800)));
+            for (i, (label, detail)) in self.completions.clone().into_iter().enumerate() {
+                let insert = label.clone();
+                let mut row = div()
+                    .id(("editor-completion", i))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_0p5()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(pack(BRAND))))
+                    .font_family(FAMILY_MONO)
+                    .text_size(px(size::XS))
+                    .child(
+                        div()
+                            .text_color(rgb(pack(TEXT_PRIMARY)))
+                            .child(SharedString::from(label)),
+                    );
+                if let Some(d) = detail {
+                    row = row.child(
+                        div()
+                            .text_color(rgb(pack(TEXT_MUTED)))
+                            .child(SharedString::from(d)),
+                    );
+                }
+                row = row.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| {
+                        this.apply_completion(insert.clone(), cx);
+                    }),
+                );
+                list = list.child(row);
+            }
+            root = root.child(list);
+        }
+
         root.child(body)
     }
 }

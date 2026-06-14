@@ -64,6 +64,11 @@ pub enum EditorEvent {
     /// User pressed the save chord (Ctrl/Cmd+S). The parent performs the
     /// actual `workspaces.fs.write`.
     SaveRequested,
+    /// User asked for completions (Ctrl+Space) at this 0-based position. The
+    /// parent calls the LSP service and feeds items back via `insert_text`.
+    CompletionRequested { line: u32, character: u32 },
+    /// User asked for hover info (F1) at this 0-based position.
+    HoverRequested { line: u32, character: u32 },
 }
 
 /// The code-editor view.
@@ -192,6 +197,31 @@ impl CodeEditor {
             self.decorations.clear();
             cx.notify();
         }
+    }
+
+    /// Insert `text` at the caret (replacing any selection) and emit `Changed`.
+    /// Used by the LSP completion flow to apply a chosen item. No-op when
+    /// read-only.
+    pub fn insert_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.read_only || text.is_empty() {
+            return;
+        }
+        self.buffer.push_snapshot();
+        self.buffer.insert_str(text);
+        self.ensure_cursor_visible();
+        cx.emit(EditorEvent::Changed(self.buffer.text().to_owned()));
+        cx.notify();
+    }
+
+    /// Caret position as 0-based `(line, character)`. `character` is a Unicode
+    /// scalar count within the line — a close approximation of LSP's UTF-16
+    /// code-unit convention (exact for the BMP/ASCII that dominates code).
+    pub fn cursor_position(&self) -> (u32, u32) {
+        let cursor = self.buffer.cursor();
+        let (line, _) = self.buffer.line_col_of(cursor);
+        let line_start = self.buffer.offset_of_line(line);
+        let character = self.buffer.text()[line_start..cursor].chars().count() as u32;
+        (line as u32, character)
     }
 
     /// Move the caret to the start of 1-based `line` and scroll it into view
@@ -331,6 +361,18 @@ impl CodeEditor {
         match key {
             "s" if cmd_or_ctrl => {
                 cx.emit(EditorEvent::SaveRequested);
+                return;
+            }
+            // Ctrl+Space — request LSP completions at the caret.
+            "space" if cmd_or_ctrl => {
+                let (line, character) = self.cursor_position();
+                cx.emit(EditorEvent::CompletionRequested { line, character });
+                return;
+            }
+            // F1 — request LSP hover at the caret.
+            "f1" => {
+                let (line, character) = self.cursor_position();
+                cx.emit(EditorEvent::HoverRequested { line, character });
                 return;
             }
             "enter" if !self.read_only => {
