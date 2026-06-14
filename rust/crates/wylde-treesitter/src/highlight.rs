@@ -93,30 +93,55 @@ fn resolve_grammar(path: &str, language: Option<&str>) -> Result<&'static Gramma
 }
 
 /// `treesitter.highlight` core. See the module docs for the shape.
-pub fn highlight(path: &str, language: Option<&str>) -> Result<Value, IpcError> {
+///
+/// When `inline_source` is `Some`, that text is highlighted directly and the
+/// disk read + size check are skipped — `path` is then used only for grammar
+/// resolution (its extension). This is the live-editor path: the code editor
+/// (IDE S4) highlights its in-memory buffer, which may differ from the
+/// on-disk file. When `None`, the file at `path` is read from disk (the
+/// original Slice H behaviour, unchanged).
+pub fn highlight(
+    path: &str,
+    language: Option<&str>,
+    inline_source: Option<&str>,
+) -> Result<Value, IpcError> {
     let cfg = Config::get();
 
-    match std::fs::metadata(path) {
-        Ok(m) if (m.len() as usize) > cfg.max_source_bytes => {
+    let source = if let Some(src) = inline_source {
+        if src.len() > cfg.max_source_bytes {
             return Err(IpcError::new(
                 "invalid_request",
                 format!(
-                    "file {path:?} is {} bytes; exceeds max_source_bytes={}",
-                    m.len(),
+                    "inline source is {} bytes; exceeds max_source_bytes={}",
+                    src.len(),
                     cfg.max_source_bytes
                 ),
             ));
         }
-        Ok(_) => {}
-        Err(e) => {
-            return Err(IpcError::new(
-                "not_found",
-                format!("could not stat {path:?}: {e}"),
-            ));
+        src.to_owned()
+    } else {
+        match std::fs::metadata(path) {
+            Ok(m) if (m.len() as usize) > cfg.max_source_bytes => {
+                return Err(IpcError::new(
+                    "invalid_request",
+                    format!(
+                        "file {path:?} is {} bytes; exceeds max_source_bytes={}",
+                        m.len(),
+                        cfg.max_source_bytes
+                    ),
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                return Err(IpcError::new(
+                    "not_found",
+                    format!("could not stat {path:?}: {e}"),
+                ));
+            }
         }
-    }
-    let source = std::fs::read_to_string(path)
-        .map_err(|e| IpcError::new("read_failed", format!("could not read {path:?}: {e}")))?;
+        std::fs::read_to_string(path)
+            .map_err(|e| IpcError::new("read_failed", format!("could not read {path:?}: {e}")))?
+    };
 
     let grammar = resolve_grammar(path, language)?;
     let (highlights, locals) = query_sources(grammar);
@@ -208,10 +233,29 @@ mod tests {
         f
     }
 
+    #[test]
+    fn inline_source_highlights_without_reading_disk() {
+        // The live-editor path (IDE S4): grammar resolved from the path's
+        // extension, but the bytes come from `inline_source` — the file on
+        // disk here is empty, proving disk is never read.
+        let f = temp_source("", "rs");
+        let out = highlight(
+            f.path().to_str().unwrap(),
+            None,
+            Some("fn main() { let x = 1; }"),
+        )
+        .unwrap();
+        let spans = out["spans"].as_array().unwrap();
+        assert!(!spans.is_empty(), "inline source should produce spans");
+        assert!(spans
+            .iter()
+            .any(|s| s["scope"].as_str() == Some("keyword")));
+    }
+
     /// The scope names highlighting `src` produced, plus the raw reply.
     fn scopes_of(src: &str, ext: &str) -> (Vec<String>, Value) {
         let f = temp_source(src, ext);
-        let out = highlight(f.path().to_str().unwrap(), None).unwrap();
+        let out = highlight(f.path().to_str().unwrap(), None, None).unwrap();
         let scopes = out["spans"]
             .as_array()
             .unwrap()
@@ -331,22 +375,22 @@ mod tests {
     #[test]
     fn unknown_extension_vs_explicit_unknown_language() {
         let f = temp_source("plain\n", "txt");
-        let err = highlight(f.path().to_str().unwrap(), None).unwrap_err();
+        let err = highlight(f.path().to_str().unwrap(), None, None).unwrap_err();
         assert_eq!(err.code, "unsupported_language");
-        let err = highlight(f.path().to_str().unwrap(), Some("haskell")).unwrap_err();
+        let err = highlight(f.path().to_str().unwrap(), Some("haskell"), None).unwrap_err();
         assert_eq!(err.code, "unknown_language");
     }
 
     #[test]
     fn missing_file_is_not_found() {
-        let err = highlight("C:/no/such/file.rs", None).unwrap_err();
+        let err = highlight("C:/no/such/file.rs", None, None).unwrap_err();
         assert_eq!(err.code, "not_found");
     }
 
     #[test]
     fn empty_file_yields_no_spans() {
         let f = temp_source("", "py");
-        let out = highlight(f.path().to_str().unwrap(), None).unwrap();
+        let out = highlight(f.path().to_str().unwrap(), None, None).unwrap();
         assert_eq!(out["span_count"], 0);
     }
 }

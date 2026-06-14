@@ -118,9 +118,9 @@ impl WorkspacesPanel {
 
     /// Open a workspace-relative `path` in the Editor tab (optionally at a
     /// 1-based `line`) and switch to it. The shared cross-tab "open this file"
-    /// affordance (IDE S2): the Files tab calls it on a row click, and later
-    /// the graph / composer can drive it too. No-op on test-only construction
-    /// where the editor entity is absent.
+    /// affordance (IDE S2/S4): the Files tab calls it on a row click, and later
+    /// the graph / composer can drive it too. Scopes the read to the active
+    /// workspace. No-op on test-only construction where the editor is absent.
     pub fn open_in_editor(
         &mut self,
         path: impl Into<String>,
@@ -128,8 +128,9 @@ impl WorkspacesPanel {
         cx: &mut Context<Self>,
     ) {
         let path = path.into();
+        let workspace_id = self.active_id.clone().unwrap_or_default();
         if let Some(editor) = &self.editor {
-            editor.update(cx, |e, ecx| e.open(path, line, ecx));
+            editor.update(cx, |e, ecx| e.open(workspace_id, path, line, ecx));
         }
         self.tab = WorkspacesTab::Editor;
         cx.notify();
