@@ -121,6 +121,13 @@ impl WorkspacesPanel {
             panel.files = Some(files);
             panel.editor = Some(editor);
             Self::spawn_refresh(cx);
+            // Drain cross-panel focus deep-links (S7): a vocab word in the
+            // InferenceBar (Chat panel) pushes a WorkspaceFocus; this panel
+            // selects the target tab + focuses the graph node. Buffered, so a
+            // focus pushed before this first mount is still delivered.
+            if let Some(rx) = wylde_gui_pipe::take_workspace_focus_receiver() {
+                Self::spawn_focus_drain(rx, cx);
+            }
             panel
         })
         .into()
@@ -144,6 +151,71 @@ impl WorkspacesPanel {
         }
         self.tab = WorkspacesTab::Editor;
         cx.notify();
+    }
+
+    /// Drain the cross-panel focus bus (S7). Each [`wylde_gui_pipe::WorkspaceFocus`]
+    /// selects a tab and (optionally) focuses a graph node.
+    fn spawn_focus_drain(
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<wylde_gui_pipe::WorkspaceFocus>,
+        cx: &mut Context<Self>,
+    ) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            while let Some(focus) = rx.recv().await {
+                let alive = this
+                    .update(app_cx, |panel, cx| panel.apply_nav_focus(focus, cx))
+                    .is_ok();
+                if !alive {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Apply a cross-panel focus: select the target tab, then focus the graph
+    /// node (retried across the graph's async load).
+    pub fn apply_nav_focus(
+        &mut self,
+        focus: wylde_gui_pipe::WorkspaceFocus,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = focus.tab.as_deref() {
+            self.tab = match tab {
+                "files" => WorkspacesTab::Files,
+                "editor" => WorkspacesTab::Editor,
+                "graph" => WorkspacesTab::Graph,
+                "registry" => WorkspacesTab::Registry,
+                "vocabulary" => WorkspacesTab::Vocabulary,
+                "settings" => WorkspacesTab::Settings,
+                _ => self.tab,
+            };
+        }
+        if let Some(node) = focus.node_id {
+            self.spawn_focus_node(node, cx);
+        }
+        cx.notify();
+    }
+
+    /// Focus a graph node, retrying as the graph's async load fills in nodes
+    /// (a deep-link can arrive before the graph has loaded). Gives up quietly
+    /// after a few seconds.
+    fn spawn_focus_node(&mut self, node: String, cx: &mut Context<Self>) {
+        let Some(graph) = self.graph.clone() else {
+            return;
+        };
+        cx.spawn(async move |_this, app_cx: &mut AsyncApp| {
+            for _ in 0..20 {
+                let done = graph.update(app_cx, |gv, gcx| gv.focus_node(&node, gcx));
+                if done {
+                    return;
+                }
+                app_cx
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+            }
+        })
+        .detach();
     }
 
     /// Reload the workspace list from the harness.  One async task; if

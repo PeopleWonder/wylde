@@ -31,6 +31,7 @@
 
 pub mod chat;
 pub mod conversation_bus;
+pub mod focus_bus;
 pub mod memory_long_term;
 pub mod model_bus;
 pub mod nav_bus;
@@ -46,6 +47,7 @@ pub use model_bus::{
     current_active_model, publish_active_model, publish_starred_default,
     subscribe as subscribe_model_bus, ModelEvent,
 };
+pub use focus_bus::{request_workspace_focus, take_workspace_focus_receiver, WorkspaceFocus};
 pub use nav_bus::{install_nav_sender, is_nav_installed, request_nav};
 
 use serde_json::{Map, Value};
