@@ -71,6 +71,21 @@ use render::{Camera, RenderOutput, Renderer, Scene, Theme, Viewport};
 use settings::{persistence, GraphProfile, ProfileLibrary, DEFAULT_PROFILE};
 use transition_driver::ActiveTransition;
 
+/// Lifecycle name of the workspaces backend — target of the graph view's
+/// Start/Restart recovery affordance (decision 7).
+const GRAPH_WORKSPACES_SERVICE: &str = "wylde-workspaces";
+
+/// Which one-click recovery a recoverable graph error offers (decision 7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GraphRecovery {
+    /// Workspaces service is down → start it (`service.start`).
+    StartService,
+    /// Workspaces service is out of date → restart it (`service.restart`).
+    RestartService,
+    /// Graph DB (Bolt/Memgraph) is down → start it (`start_graph_database`).
+    StartGraphDb,
+}
+
 /// The canvas rectangle (window-absolute px) captured at paint time so mouse
 /// handlers can project model↔screen for hit-testing.
 #[derive(Clone, Copy, Debug, Default)]
@@ -354,6 +369,32 @@ impl GraphView {
                     }
                 }
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// One-click recovery for a recoverable graph error (decision 7): drive the
+    /// reusable lifecycle helper for `action`, then reload the graph so a
+    /// now-reachable backend repopulates without a manual retry. A control
+    /// failure surfaces as a logical error on the banner.
+    fn spawn_recovery(&self, action: GraphRecovery, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = match action {
+                GraphRecovery::StartService => {
+                    wylde_gui_pipe::start_service(GRAPH_WORKSPACES_SERVICE).await
+                }
+                GraphRecovery::RestartService => {
+                    wylde_gui_pipe::restart_service(GRAPH_WORKSPACES_SERVICE).await
+                }
+                GraphRecovery::StartGraphDb => wylde_gui_pipe::start_graph_database().await,
+            };
+            let _ = this.update(app_cx, |view, cx| match outcome {
+                Ok(_) => GraphView::spawn_load(cx),
+                Err(e) => {
+                    view.error = Some(ipc::GraphFetchError::Logical(e));
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -1241,20 +1282,49 @@ impl GraphView {
             // "out of date" (no_action: running binary lacks the verb) → Update.
             // Telling the user to start an already-running service was the bug.
             if err.is_recoverable() {
-                // The banner advertises "click to retry" — make it real: a
-                // clickable chip re-runs `spawn_load` (mirrors the Registry
-                // tab's error-strip Retry). Previously the only mouse handler
-                // on the graph started a pan, so the click was dead and the
-                // graph never recovered until the whole tab remounted.
-                let banner = if err.is_out_of_date() {
-                    "Workspaces service is out of date — its build doesn't have the \
-                     code-graph yet. Update/restart the workspaces service, then click to retry."
+                // Three recoverable states, each with the RIGHT one-click fix
+                // (decision 7): graph-db down → Start graph database; service
+                // out of date → Restart; service down → Start. Plus a real
+                // click-to-retry below. (Telling the user to start an
+                // already-running service was the F2 bug.)
+                let (banner, label, action) = if err.is_graph_db_down() {
+                    (
+                        "Graph database isn't running — the code graph is stored in Memgraph \
+                         (Bolt :7687).",
+                        "Start graph database",
+                        GraphRecovery::StartGraphDb,
+                    )
+                } else if err.is_out_of_date() {
+                    (
+                        "Workspaces service is out of date — its build doesn't have the \
+                         code-graph yet.",
+                        "Restart service",
+                        GraphRecovery::RestartService,
+                    )
                 } else {
-                    "Workspaces service unavailable — showing last-known graph. \
-                     Start the workspaces service, then click to retry."
+                    (
+                        "Workspaces service isn't running — showing last-known graph.",
+                        "Start service",
+                        GraphRecovery::StartService,
+                    )
                 };
+                col = col.child(overlay_text(banner.to_owned(), font_size::XS, weight::REGULAR));
+                // The one-click recovery button.
                 col = col.child(
-                    overlay_text(banner.to_owned(), font_size::XS, weight::REGULAR)
+                    overlay_text(label.to_owned(), font_size::XS, weight::SEMIBOLD)
+                        .id("workspaces-graph-recover")
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this: &mut GraphView, _ev: &MouseDownEvent, _w, cx| {
+                                cx.stop_propagation();
+                                this.spawn_recovery(action, cx);
+                            }),
+                        ),
+                );
+                // Retry once the underlying fix has landed.
+                col = col.child(
+                    overlay_text("Click to retry".to_owned(), font_size::MICRO, weight::REGULAR)
                         .id("workspaces-graph-retry")
                         .cursor_pointer()
                         .on_mouse_down(

@@ -32,6 +32,11 @@ pub enum GraphFetchError {
     /// predates the feature. → "service out of date, Update/Restart + Retry".
     /// Telling the user to *start* an already-running service was the F2 bug.
     OutOfDate(String),
+    /// The workspaces service is up, but the **graph database** (Memgraph, the
+    /// Bolt `:7687` backend) is down — a `bolt_*`/connect error from the graph
+    /// query. Distinct from the service being down: the fix is "Start graph
+    /// database", not "Start the workspaces service" (decision 7 / design §7.1).
+    GraphDbDown(String),
     /// A logical error (bad request, backend/Neo4j error). Shown verbatim.
     Logical(String),
 }
@@ -41,6 +46,7 @@ impl GraphFetchError {
         match self {
             GraphFetchError::ServiceUnavailable(m)
             | GraphFetchError::OutOfDate(m)
+            | GraphFetchError::GraphDbDown(m)
             | GraphFetchError::Logical(m) => m,
         }
     }
@@ -54,10 +60,16 @@ impl GraphFetchError {
         matches!(self, GraphFetchError::OutOfDate(_))
     }
 
-    /// Either of the two recoverable states — both offer a click-to-retry chip
-    /// (after the user starts/updates the service it succeeds without remount).
+    /// The graph database (Bolt/Memgraph) is down — offers "Start graph database".
+    pub fn is_graph_db_down(&self) -> bool {
+        matches!(self, GraphFetchError::GraphDbDown(_))
+    }
+
+    /// Any state with a one-click recovery affordance: service down (Start),
+    /// out of date (Restart), or graph-db down (Start graph database). All
+    /// three also offer click-to-retry once the underlying fix lands.
     pub fn is_recoverable(&self) -> bool {
-        self.is_service_unavailable() || self.is_out_of_date()
+        self.is_service_unavailable() || self.is_out_of_date() || self.is_graph_db_down()
     }
 }
 
@@ -71,10 +83,19 @@ pub fn classify(err: String) -> GraphFetchError {
         || err.contains("pipe_timeout")
         || err.contains("pipe_io")
         || err.contains("not running");
+    // The graph DB being down surfaces as a bolt connect error from the graph
+    // query (graph/bolt.rs) — a logical-looking error, but with a *different*
+    // one-click fix than the workspaces service being down.
+    let graph_db_down = err.contains("bolt_")
+        || err.contains("bolt connect")
+        || err.contains("memgraph")
+        || err.contains(":7687");
     if down {
         GraphFetchError::ServiceUnavailable(err)
     } else if err.contains("no_action") {
         GraphFetchError::OutOfDate(err)
+    } else if graph_db_down {
+        GraphFetchError::GraphDbDown(err)
     } else {
         GraphFetchError::Logical(err)
     }
@@ -132,8 +153,23 @@ mod tests {
         let e = classify("bad_request: workspace_id is required".to_owned());
         assert!(!e.is_recoverable());
         assert_eq!(e.message(), "bad_request: workspace_id is required");
-        // A backend/Neo4j error is logical, not a degrade.
-        assert!(!classify("bolt_unavailable: neo4j down".to_owned()).is_recoverable());
+    }
+
+    #[test]
+    fn classifies_bolt_errors_as_graph_db_down() {
+        // The graph DB (Bolt/Memgraph) being down is its own recoverable state
+        // with a distinct fix — "Start graph database" — not a plain logical
+        // error and not the workspaces service being down (decision 7).
+        for e in [
+            "bolt_connect: connection refused 127.0.0.1:7687",
+            "bolt_unavailable: neo4j down",
+            "memgraph not reachable",
+        ] {
+            let c = classify(e.to_owned());
+            assert!(c.is_graph_db_down(), "{e} should be graph-db-down");
+            assert!(c.is_recoverable(), "{e} offers Start graph database");
+            assert!(!c.is_service_unavailable(), "{e} is not the workspaces pipe being down");
+        }
     }
 
     #[test]
