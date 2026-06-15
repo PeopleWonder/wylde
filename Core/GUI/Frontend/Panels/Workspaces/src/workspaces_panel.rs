@@ -671,8 +671,12 @@ impl WorkspacesPanel {
         bar
     }
 
-    /// The Registry tab body (the original panel content).
-    fn registry_body(&self, cx: &mut Context<Self>) -> gpui::Div {
+    /// The Registry landing body: a single uniform, recency-ordered list of
+    /// clickable workspace cards (UX rework decision 3 — the separate "ACTIVE
+    /// WORKSPACE" hero card is gone, no duplication). `list_mru` already
+    /// returns MRU order, so the topmost row (index 0) is the most recent and
+    /// is labelled as such.
+    fn registry_body(&self, cx: &mut Context<Self>) -> Stateful<gpui::Div> {
         let header = header_row(cx);
 
         let mut column = div()
@@ -695,16 +699,21 @@ impl WorkspacesPanel {
         } else if self.workspaces.is_empty() {
             column = column.child(empty_state());
         } else {
-            if let Some(active_id) = &self.active_id {
-                column = column.child(active_card(active_id, &self.workspaces));
-            }
-            for ws in &self.workspaces {
+            for (i, ws) in self.workspaces.iter().enumerate() {
                 let is_active = self.active_id.as_deref() == Some(ws.id.as_str());
-                column = column.child(workspace_card(ws, is_active, cx));
+                // Topmost MRU row is the most recent.
+                column = column.child(workspace_card(ws, is_active, i == 0, cx));
             }
         }
 
-        div().p_6().child(column)
+        // The list scrolls within the panel slot; a long MRU window shouldn't
+        // push the docked surfaces off-screen.
+        div()
+            .id(ElementId::Name("ws-registry-scroll".into()))
+            .size_full()
+            .overflow_y_scroll()
+            .p_6()
+            .child(column)
     }
 }
 
@@ -831,78 +840,10 @@ fn add_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
         .child(SharedString::from("+ Add workspace"))
 }
 
-fn active_card(active_id: &str, workspaces: &[WorkspaceSummary]) -> gpui::Div {
-    let path = workspaces
-        .iter()
-        .find(|w| w.id == active_id)
-        .map(|w| w.path.clone())
-        .unwrap_or_default();
-    div()
-        .bg(rgb(pack(SURFACE_800)))
-        .border_1()
-        .border_color(rgb(pack(BORDER_SUBTLE)))
-        .rounded(px(6.0))
-        .p_4()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap_3()
-        .child(
-            div()
-                .w(px(36.0))
-                .h(px(36.0))
-                .rounded(px(6.0))
-                .bg(rgb(pack(BRAND_DIM)))
-                .flex()
-                .items_center()
-                .justify_center()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::LG))
-                .font_weight(FontWeight(weight::SEMIBOLD as f32))
-                .text_color(rgb(pack(TEXT_PRIMARY)))
-                .child(SharedString::from("F")),
-        )
-        .child(
-            div()
-                .flex_1()
-                // Allow the column to shrink below its content so a long
-                // workspace path stays inside the card instead of pushing the
-                // row wider than the box.
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(
-                    div()
-                        .font_family(FAMILY_INTER)
-                        .text_size(px(size::MICRO))
-                        .text_color(rgb(pack(TEXT_MUTED)))
-                        .font_weight(FontWeight(weight::SEMIBOLD as f32))
-                        .child(SharedString::from("ACTIVE WORKSPACE")),
-                )
-                .child(
-                    div()
-                        .font_family(FAMILY_INTER)
-                        .text_size(px(size::SM))
-                        .text_color(rgb(pack(TEXT_PRIMARY)))
-                        .child(SharedString::from(active_id.to_owned())),
-                )
-                .child(
-                    div()
-                        // A path has no spaces to wrap on; clip the overflow at
-                        // the card edge rather than letting it run past.
-                        .overflow_hidden()
-                        .font_family(FAMILY_INTER)
-                        .text_size(px(size::XS))
-                        .text_color(rgb(pack(TEXT_MUTED)))
-                        .child(SharedString::from(path)),
-                ),
-        )
-}
-
 fn workspace_card(
     ws: &WorkspaceSummary,
     is_active: bool,
+    is_most_recent: bool,
     cx: &mut Context<WorkspacesPanel>,
 ) -> Stateful<gpui::Div> {
     let border = if is_active {
@@ -921,6 +862,27 @@ fn workspace_card(
     let id_for_remove = ws.id.clone();
     let label_active = SharedString::from(ws.id.clone());
     let label_path = SharedString::from(ws.path.clone());
+
+    // The identity column: an optional "MOST RECENT" caption on the topmost
+    // (MRU-head) card, the workspace id, its path, then the index-status strip.
+    let mut identity = div()
+        .flex_1()
+        // Shrink below content so a long path doesn't push the action
+        // buttons out of the card.
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_1();
+    if is_most_recent {
+        identity = identity.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(BRAND)))
+                .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                .child(SharedString::from("MOST RECENT")),
+        );
+    }
 
     // The whole card is clickable → ENTER the workspace (UX rework decision 2).
     let mut row = div()
@@ -942,14 +904,7 @@ fn workspace_card(
             }),
         )
         .child(
-            div()
-                .flex_1()
-                // Shrink below content so a long path doesn't push the action
-                // buttons out of the card.
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_1()
+            identity
                 .child(
                     div()
                         .font_family(FAMILY_INTER)
@@ -1030,19 +985,38 @@ where
         .child(label_owned)
 }
 
+/// The per-card index-status strip (decision 4): file count · last-indexed,
+/// plus a live "Indexing…" pill while a re-index is in flight. The fields ride
+/// `list_mru` (F4 joined RagState into it), so this survives a reload instead
+/// of reverting to "never". Every token here is real status — no decoration.
 fn meta_strip(ws: &WorkspaceSummary) -> gpui::Div {
     let chunks = ws
         .file_count
         .map(|n| format!("{n} files"))
         .unwrap_or_else(|| "—".into());
     let last = ws.last_indexed_at.clone().unwrap_or_else(|| "never".into());
-    div()
+    let mut strip = div()
         .flex()
         .flex_row()
+        .items_center()
         .gap_3()
         .font_family(FAMILY_INTER)
         .text_size(px(size::MICRO))
-        .text_color(rgb(pack(TEXT_MUTED)))
+        .text_color(rgb(pack(TEXT_MUTED)));
+    // A live indexing indicator leads the strip when a re-index is running, so
+    // the card's status reflects the in-progress work (the Re-index button also
+    // reads "Indexing…", but the card status must stand on its own).
+    if ws.indexing {
+        strip = strip.child(
+            div()
+                .px_1()
+                .rounded(px(3.0))
+                .bg(rgb(pack(BRAND_DIM)))
+                .text_color(rgb(pack(TEXT_PRIMARY)))
+                .child(SharedString::from("Indexing…")),
+        );
+    }
+    strip
         .child(SharedString::from(chunks))
         .child(SharedString::from(format!("Last index: {last}")))
 }
