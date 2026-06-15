@@ -16,6 +16,17 @@
 //! [`crate::registry::delete`], deleting a workspace deletes its
 //! conversations (plan §3 — "workspace deletion deletes its conversations").
 //!
+//! ## Route 1 caveat (C9)
+//!
+//! This bundle cascade only covers conversations stored *here*. Under the
+//! chat-scoping plan's **Route 1**, this service store is legacy/export-only
+//! and a workspace's live **bound** conversations are written to the harness
+//! flat store (`<data_dir>/conversations/<id>.json`, with a matching
+//! `workspace_id`) instead — which the bundle removal never touches. So the
+//! `workspaces.delete` path ([`crate::api::handle_delete`]) additionally asks
+//! the harness to sweep those flat docs (`conversations.delete_by_workspace`);
+//! the two together are the full deletion story. See `outputs/c9-report.md`.
+//!
 //! ## Why `Value`/`Map` rather than a typed `Conversation` struct
 //!
 //! The on-disk document is the same free-form shape the harness flat store

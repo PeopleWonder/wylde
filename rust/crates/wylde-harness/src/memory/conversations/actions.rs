@@ -63,6 +63,27 @@ pub async fn handle_delete(payload: Value) -> Reply {
     }
 }
 
+/// `conversations.delete_by_workspace` — sweep every flat-store
+/// conversation bound to a workspace (Route 1 deletion complement). Payload
+/// `{ workspace_id }`. Returns `{ ok: true, workspace_id, deleted }` where
+/// `deleted` is the count of swept docs. A blank `workspace_id` is rejected
+/// with `bad_request` so a caller can never aim a mass-delete at the unbound
+/// (global) conversations, which carry an empty `workspace_id`.
+pub async fn handle_delete_by_workspace(payload: Value) -> Reply {
+    let Some(workspace_id) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    // Reject a whitespace-only id too — `require_string` only filters the
+    // truly-empty string, but a blank id must never reach the sweep (the
+    // store no-ops on blank, but failing loudly here keeps a caller from
+    // believing a blank-id mass-delete "succeeded with 0").
+    if workspace_id.trim().is_empty() {
+        return Reply::err_msg("bad_request", "workspace_id must not be blank");
+    }
+    let deleted = store::delete_by_workspace(&workspace_id);
+    Reply::ok(json!({ "ok": true, "workspace_id": workspace_id, "deleted": deleted }))
+}
+
 /// `conversations.set_workspace` — re-assign a conversation's workspace
 /// (Q4 mutable binding). Payload `{ id, workspace_id? }`; an empty /
 /// absent `workspace_id` clears the binding. Upserts the document so the
@@ -185,6 +206,35 @@ mod tests {
         let reply = handle_delete(json!({})).await;
         assert!(!reply.ok);
         assert_eq!(reply.error.unwrap().code, "bad_request");
+    }
+
+    #[tokio::test]
+    async fn delete_by_workspace_sweeps_and_reports_count() {
+        let _env = TestEnv::new();
+        seed("w1", json!({"id": "w1", "messages": [], "workspace_id": "ws-z"}));
+        seed("w2", json!({"id": "w2", "messages": [], "workspace_id": "ws-z"}));
+        seed("keep", json!({"id": "keep", "messages": []}));
+
+        let reply = handle_delete_by_workspace(json!({"workspace_id": "ws-z"})).await;
+        assert!(reply.ok);
+        assert_eq!(reply.data["deleted"], 2);
+        assert_eq!(reply.data["workspace_id"], "ws-z");
+        // Unbound chat survives; listing now shows only it.
+        let listed = handle_list(Value::Null).await;
+        assert_eq!(listed.data["count"], 1);
+        assert_eq!(listed.data["conversations"][0]["id"], "keep");
+    }
+
+    #[tokio::test]
+    async fn delete_by_workspace_requires_workspace_id() {
+        let _env = TestEnv::new();
+        // Blank / absent must be rejected so it can't nuke global chats.
+        let missing = handle_delete_by_workspace(json!({})).await;
+        assert!(!missing.ok);
+        assert_eq!(missing.error.unwrap().code, "bad_request");
+        let blank = handle_delete_by_workspace(json!({"workspace_id": "   "})).await;
+        assert!(!blank.ok);
+        assert_eq!(blank.error.unwrap().code, "bad_request");
     }
 
     #[tokio::test]

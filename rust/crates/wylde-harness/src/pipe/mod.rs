@@ -174,11 +174,12 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.short_term.get",
     "memory.short_term.append",
     "memory.short_term.clear",
-    // conversations.* — lifecycle + active selection + workspace (7 verbs)
+    // conversations.* — lifecycle + active selection + workspace (8 verbs)
     "conversations.new",
     "conversations.list",
     "conversations.get",
     "conversations.delete",
+    "conversations.delete_by_workspace",
     "conversations.get_active",
     "conversations.set_active",
     "conversations.set_workspace",

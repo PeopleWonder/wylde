@@ -122,6 +122,31 @@ pub async fn handle_delete(payload: Value) -> Reply {
         // Slice F-data — same re-evaluation for the symbol index: a deleted
         // active workspace clears the pointer, so this drops its index.
         crate::graph::symbol_index::on_active_changed();
+        // C9 — Route 1 deletion sweep. The registry's bundle-dir removal
+        // cascades the *legacy* per-workspace service-store conversations, but
+        // under Route 1 a workspace's live **bound** conversations live in the
+        // harness flat store (`<data_dir>/conversations/<id>.json` with a
+        // matching `workspace_id`), which the bundle removal never touches.
+        // Ask the harness — the canonical owner of that store — to sweep them,
+        // or they orphan in the global list forever. Fire-and-forget for the
+        // same reason as the graph prune below (a Fast/Medium verb must not
+        // block on a peer service) and so a unit-test delete never stalls on a
+        // pipe connect; best-effort, so an unreachable/slow harness only logs.
+        let sweep_ws = id.clone();
+        tokio::spawn(async move {
+            let sweep = wylde_shared::ipc::send_action(
+                "wylde-harness",
+                "conversations.delete_by_workspace",
+                json!({ "workspace_id": sweep_ws.clone() }),
+            )
+            .await;
+            if !sweep.ok {
+                tracing::warn!(
+                    "workspaces.delete: flat-store conversation sweep degraded for {sweep_ws}: {:?}",
+                    sweep.error
+                );
+            }
+        });
         // Slice I — also clean up the workspace's Neo4j footprint (the Slice A
         // report flagged that `delete` left graph nodes behind). Fire-and-
         // forget: a Bolt connect can take seconds when the graph is down, and
