@@ -446,8 +446,32 @@ static MEMGRAPH_MANIFEST: Mutex<Option<(ManifestWriter, HeartbeatHandle)>> = Mut
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// Absolute Wylde root for the Neo4j supervisor.
+///
+/// `wylde_root()` returns the relative `"."` when `WYLDE_ROOT` is unset —
+/// and the production launcher (`launch_wylde.ps1`) does NOT export it, only
+/// the dev launcher does. That relative root is fatal for the memgraph
+/// spawn specifically: the child `cmd` runs with `current_dir` set to the
+/// neo4j subdir, so a root-relative `neo4j.bat` (and `JAVA_HOME` /
+/// `NEO4J_HOME`) then resolves *under* that subdir and double-nests —
+/// `cmd` dies instantly with "The system cannot find the path specified."
+/// and Neo4j never boots (Bolt :7687 stays closed). `bat.exists()` is
+/// checked from the daemon CWD so it passes, masking the break. Anchoring
+/// to an absolute path makes `current_dir` + the bat arg + the env overlay
+/// all resolve regardless of CWD or whether `WYLDE_ROOT` is set.
+fn memgraph_root_abs() -> PathBuf {
+    let root = wylde_root();
+    if root.is_absolute() {
+        root
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&root))
+            .unwrap_or(root)
+    }
+}
+
 fn memgraph_neo4j_dir() -> PathBuf {
-    wylde_root()
+    memgraph_root_abs()
         .join("Core")
         .join("Memgraph")
         .join("vendor")
@@ -455,7 +479,7 @@ fn memgraph_neo4j_dir() -> PathBuf {
 }
 
 fn memgraph_jdk_dir() -> PathBuf {
-    wylde_root()
+    memgraph_root_abs()
         .join("Core")
         .join("Memgraph")
         .join("vendor")
@@ -537,7 +561,9 @@ pub async fn start_memgraph() -> Result<()> {
         return Ok(());
     } else {
         // Append-mode JVM log, same location the Python wrapper used.
-        let logs_dir = wylde_root().join("Core").join("Memgraph").join("logs");
+        // Absolute root (see `memgraph_root_abs`) so the log path is stable
+        // even if the daemon CWD differs from the repo root.
+        let logs_dir = memgraph_root_abs().join("Core").join("Memgraph").join("logs");
         std::fs::create_dir_all(&logs_dir)
             .with_context(|| format!("create {}", logs_dir.display()))?;
         let log = std::fs::OpenOptions::new()
@@ -1265,6 +1291,24 @@ mod tests {
     fn impl_for_defaults_to_rust() {
         clear_env("WYLDE_WYLDE_TEST_IMPL");
         assert_eq!(impl_for("wylde-test"), ImplLang::Rust);
+    }
+
+    // Regression: the Neo4j supervisor MUST spawn with absolute paths. When
+    // `WYLDE_ROOT` is unset (the production launcher never exports it),
+    // `wylde_root()` is the relative `"."`; combined with `current_dir` set
+    // to the neo4j subdir, a relative bat/JAVA_HOME/NEO4J_HOME double-nests
+    // and `cmd` dies with "The system cannot find the path specified."
+    // (Neo4j never boots, Bolt :7687 stays closed). `memgraph_root_abs`
+    // guarantees these are absolute regardless of CWD / WYLDE_ROOT.
+    #[test]
+    fn memgraph_dirs_are_absolute() {
+        assert!(
+            memgraph_root_abs().is_absolute(),
+            "memgraph root must be absolute, got {:?}",
+            memgraph_root_abs()
+        );
+        assert!(memgraph_neo4j_dir().is_absolute());
+        assert!(memgraph_jdk_dir().is_absolute());
     }
 
     #[test]
