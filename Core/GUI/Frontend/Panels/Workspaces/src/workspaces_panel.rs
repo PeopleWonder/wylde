@@ -77,6 +77,12 @@ pub struct WorkspacesPanel {
     /// The Editor tab's view (IDE S3/S4: the code editor). Same
     /// `None`-in-unit-tests caveat.
     pub editor: Option<Entity<EditorTab>>,
+    /// The docked InferenceBar (UX rework decision 6): a thin view over the
+    /// SHARED `ChatPanel` singleton's bar, mounted at the bottom of the
+    /// in-workspace view so chat is grounded in the workspace and the
+    /// conversation is shared with the main Chat panel. `None` only in
+    /// test-only construction (no gpui context to build the child view).
+    pub dock: Option<AnyView>,
     /// In-flight "download a missing embedding model" affordance, set when a
     /// re-index fails with a `model not installed` error. Drives the inline
     /// "Download <model>" button + progress so the user never drops to a
@@ -123,13 +129,19 @@ impl WorkspacesPanel {
             vocabulary: None,
             files: None,
             editor: None,
+            dock: None,
             pull: None,
         }
     }
 
     /// Factory entry — matches the manifest `factory:` string
     /// (`wylde_panel_workspaces::WorkspacesPanel::view`).
-    pub fn view(_window: &mut Window, cx: &mut App) -> AnyView {
+    pub fn view(window: &mut Window, cx: &mut App) -> AnyView {
+        // Build the docked InferenceBar over the SHARED ChatPanel singleton
+        // (decision 6), using the App context before we descend into the
+        // panel's own Context. This also creates + wires the Chat singleton on
+        // first use if no Chat surface has mounted yet.
+        let dock = wylde_panel_chat::InferenceBarDock::view(window, cx);
         cx.new(|cx| {
             // Create the Graph tab's view eagerly so it starts loading the
             // active workspace's graph in the background — switching tabs is
@@ -164,6 +176,7 @@ impl WorkspacesPanel {
             panel.vocabulary = Some(vocabulary);
             panel.files = Some(files);
             panel.editor = Some(editor);
+            panel.dock = Some(dock);
             Self::spawn_refresh(cx);
             // Drain cross-panel focus deep-links (S7): a vocab word in the
             // InferenceBar (Chat panel) pushes a WorkspaceFocus; this panel
@@ -659,11 +672,19 @@ impl Render for WorkspacesPanel {
                         None => div().into_any_element(),
                     },
                 };
-                root.child(self.in_workspace_bar(cx)).child(
+                let mut col = root.child(self.in_workspace_bar(cx)).child(
                     // The body fills the remaining height; `min_h_0` lets the
                     // graph canvas size to the slot instead of overflowing.
                     div().flex_1().min_h(px(0.0)).overflow_hidden().child(body),
-                )
+                );
+                // Dock the shared InferenceBar at the bottom of the in-workspace
+                // view (decision 6) — chat grounded in the workspace, sharing
+                // the conversation with the main Chat panel. Fixed height below
+                // the flex_1 body; only shown in-workspace, never on the Registry.
+                if let Some(dock) = &self.dock {
+                    col = col.child(dock.clone());
+                }
+                col
             }
         }
     }

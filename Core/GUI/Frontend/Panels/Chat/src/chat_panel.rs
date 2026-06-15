@@ -28,12 +28,13 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, Entity,
     FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseDownEvent, Render,
-    SharedString, Stateful, Subscription, Window,
+    SharedString, Stateful, Subscription, WeakEntity, Window,
 };
 use wylde_gpui_input::{InputEvent, SubmitMode, TextInput};
 use wylde_theme::colors::{
@@ -55,6 +56,15 @@ use crate::ipc::{
 use crate::markdown;
 
 const WORKSPACE_MRU_LIMIT: u32 = 5;
+
+/// Process-wide shared [`ChatPanel`] singleton (UX rework decision 6). Holds a
+/// weak handle so the entity is freed if every surface that renders it unmounts;
+/// [`ChatPanel::shared`] rebuilds it on the next request. Lazily created on
+/// first use, like the cross-panel buses.
+fn shared_cell() -> &'static Mutex<Option<WeakEntity<ChatPanel>>> {
+    static SHARED: OnceLock<Mutex<Option<WeakEntity<ChatPanel>>>> = OnceLock::new();
+    SHARED.get_or_init(|| Mutex::new(None))
+}
 
 /// Consent-subscription reconnect backoff floor.  First retry after a
 /// failed/dropped `consent.stream_pending` waits this long.
@@ -326,8 +336,33 @@ impl ChatPanel {
         }
     }
 
+    /// Registry factory for the Chat slot. Resolves the **shared singleton**
+    /// (see [`ChatPanel::shared`]) so the Chat panel and the Workspaces
+    /// InferenceBar dock are the same live entity.
     pub fn view(_window: &mut Window, cx: &mut App) -> AnyView {
-        cx.new(|cx| {
+        Self::shared(cx).into()
+    }
+
+    /// Resolve the process-wide shared ChatPanel singleton, creating + wiring
+    /// it on first use (UX rework decision 6).
+    ///
+    /// Both the Chat slot (this crate's registry factory) and the Workspaces
+    /// dock ([`InferenceBarDock`]) resolve to THIS one entity, so the
+    /// conversation is literally shared — same messages, same model picker,
+    /// same composer — not merely the same conversation id. Idempotent: a live
+    /// handle is reused; a dropped one is rebuilt with the full network setup
+    /// (workspaces/models/session/consent), so the consent stream is
+    /// subscribed exactly once regardless of which surface mounts first.
+    pub fn shared(cx: &mut App) -> Entity<ChatPanel> {
+        if let Some(existing) = shared_cell()
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .and_then(|weak| weak.upgrade())
+        {
+            return existing;
+        }
+        let entity = cx.new(|cx| {
             let panel = Self::new(cx);
             // Announce the conversation this panel owns on the cross-panel
             // bus so a sibling that's already mounted (e.g. the Memory
@@ -343,8 +378,11 @@ impl ChatPanel {
             Self::spawn_restore_session(cx);
             Self::spawn_consent_subscription(cx);
             panel
-        })
-        .into()
+        });
+        if let Ok(mut g) = shared_cell().lock() {
+            *g = Some(entity.downgrade());
+        }
+        entity
     }
 
     pub fn spawn_load_workspaces(cx: &mut Context<Self>) {
@@ -2022,6 +2060,43 @@ impl Render for ChatPanel {
             body = body.child(error_strip(err));
         }
         body.child(inference_bar)
+    }
+}
+
+/// A thin View that renders ONLY the shared [`ChatPanel`]'s InferenceBar — the
+/// docked composer at the bottom of the Workspaces in-workspace view (UX rework
+/// decision 6). Holds the shared singleton entity and delegates its render into
+/// it, so the docked bar reflects the exact same conversation / model picker /
+/// composer state as the Chat panel — full bar, shared conversation.
+///
+/// Safe because the Shell shows one panel at a time: the InferenceBar is only
+/// ever rendered in one place per frame (the Chat slot OR this dock, never
+/// both), so the shared `prompt_input` and the bar's fixed ElementIds never
+/// collide.
+pub struct InferenceBarDock {
+    chat: Entity<ChatPanel>,
+}
+
+impl InferenceBarDock {
+    /// Registry/factory entry — builds the dock over the shared ChatPanel
+    /// singleton (creating + wiring the singleton if no surface has yet).
+    pub fn view(_window: &mut Window, cx: &mut App) -> AnyView {
+        let chat = ChatPanel::shared(cx);
+        cx.new(|_cx| Self { chat }).into()
+    }
+
+    /// The shared ChatPanel entity this dock renders (test/inspection hook).
+    pub fn chat(&self) -> &Entity<ChatPanel> {
+        &self.chat
+    }
+}
+
+impl Render for InferenceBarDock {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Delegate into the shared ChatPanel: build its InferenceBar with the
+        // chat entity's own context, so every listener routes back to the chat
+        // panel (and thus the shared conversation), not this dock.
+        self.chat.update(cx, |panel, ccx| inference_bar(panel, ccx))
     }
 }
 
