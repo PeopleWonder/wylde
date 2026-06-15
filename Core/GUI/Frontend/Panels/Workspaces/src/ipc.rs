@@ -6,10 +6,11 @@
 //! call targets `"wylde-workspaces"`. A down/unlaunched service surfaces as
 //! a `pipe_unavailable` error the View renders as the §7.5 "service
 //! unavailable + Retry" fallback while preserving its last-known rows.
-//! `list_mru` is the slim MRU-5 projection, so index-only fields
-//! (`file_count`, `last_indexed_at`, `indexing`) are not populated on the
-//! list rows; the re-index control drives the Rust file-indexer ported in
-//! PR #18 via `workspaces.reindex`.
+//! As of F4 `list_mru` joins each workspace's `RagState`, so the index-only
+//! fields (`file_count`, `last_indexed_at`, `indexing`) ARE populated on the
+//! list rows and survive a reload — previously they lived only in the
+//! one-shot `workspaces.reindex` reply and reverted to "never" on refresh.
+//! `last_indexed_at` arrives as epoch seconds (`f64`) and is formatted here.
 
 use serde_json::{json, Value};
 
@@ -45,10 +46,16 @@ impl WorkspaceSummary {
                 .unwrap_or_default()
                 .to_owned(),
             file_count: v.get("file_count").and_then(|x| x.as_u64()),
-            last_indexed_at: v
-                .get("last_indexed_at")
-                .and_then(|x| x.as_str())
-                .map(|s| s.to_owned()),
+            // F4: the backend now joins RagState, sending `last_indexed_at` as
+            // epoch seconds (f64). Format it to a relative display string; a
+            // legacy string value (e.g. an in-session "just now") is kept as-is.
+            last_indexed_at: v.get("last_indexed_at").and_then(|x| {
+                if let Some(n) = x.as_f64() {
+                    format_indexed_at(n)
+                } else {
+                    x.as_str().map(str::to_owned)
+                }
+            }),
             last_activated_at: v
                 .get("last_activated_at")
                 .and_then(|x| x.as_str())
@@ -59,6 +66,34 @@ impl WorkspaceSummary {
                 .and_then(|x| x.as_str())
                 .map(|s| s.to_owned()),
         }
+    }
+}
+
+/// Format an `last_indexed_at` epoch (seconds) into a short relative string
+/// for the meta strip, or `None` for "never" (epoch ≤ 0). Reads the wall
+/// clock; the pure core is [`relative_indexed`] (tested).
+fn format_indexed_at(epoch: f64) -> Option<String> {
+    if epoch <= 0.0 {
+        return None;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(epoch);
+    Some(relative_indexed(now, epoch))
+}
+
+/// Pure relative-time formatter: how long before `now` was `epoch`.
+fn relative_indexed(now: f64, epoch: f64) -> String {
+    let secs = (now - epoch).max(0.0);
+    if secs < 45.0 {
+        "just now".to_owned()
+    } else if secs < 3600.0 {
+        format!("{}m ago", ((secs / 60.0).round() as u64).max(1))
+    } else if secs < 86_400.0 {
+        format!("{}h ago", ((secs / 3600.0).round() as u64).max(1))
+    } else {
+        format!("{}d ago", ((secs / 86_400.0).round() as u64).max(1))
     }
 }
 
@@ -203,6 +238,36 @@ mod tests {
         assert_eq!(s.last_activated_at.as_deref(), Some("2026-05-28T12:30:00Z"));
         assert!(!s.indexing);
         assert_eq!(s.persona.as_deref(), Some("rust expert"));
+    }
+
+    #[test]
+    fn last_indexed_at_epoch_formats_relative() {
+        // F4: the backend joins RagState and sends an epoch f64 — it must be
+        // formatted (not dropped as it was when only `as_str` was tried).
+        let v = json!({ "id": "w", "file_count": 7, "last_indexed_at": 1.0_f64 });
+        let s = WorkspaceSummary::from_value(&v);
+        assert_eq!(s.file_count, Some(7));
+        assert!(
+            s.last_indexed_at.is_some(),
+            "a positive epoch must render, not show 'never'"
+        );
+    }
+
+    #[test]
+    fn last_indexed_at_zero_is_never() {
+        let s = WorkspaceSummary::from_value(&json!({ "last_indexed_at": 0.0_f64 }));
+        assert_eq!(s.last_indexed_at, None, "epoch 0 ⇒ never");
+    }
+
+    #[test]
+    fn relative_indexed_buckets() {
+        let now = 1_000_000.0;
+        assert_eq!(relative_indexed(now, now - 10.0), "just now");
+        assert_eq!(relative_indexed(now, now - 120.0), "2m ago");
+        assert_eq!(relative_indexed(now, now - 7200.0), "2h ago");
+        assert_eq!(relative_indexed(now, now - 2.0 * 86_400.0), "2d ago");
+        // Future/equal timestamps never go negative.
+        assert_eq!(relative_indexed(now, now + 50.0), "just now");
     }
 
     #[test]
