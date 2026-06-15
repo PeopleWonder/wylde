@@ -31,6 +31,23 @@ use crate::config::Config;
 const RETRY_ATTEMPTS: usize = 3;
 const RETRY_BASE_DELAY_MS: u64 = 500;
 
+/// Max inputs per `ollama.embed` round-trip. The bundled nomic-embed-text
+/// runner CRASHES (its `/tokenize` socket goes away → "connection refused",
+/// surfaced as a 400) once an `input` array exceeds ~255 entries, so a whole-
+/// repo index — which collects every chunk into one `embed()` call — would
+/// always fail at the first batch (files=0, chunks=0). Cap each round-trip
+/// well under the cliff; `embed()` splits larger inputs and concatenates the
+/// results in order. Override via `WYLDE_EMBED_MAX_BATCH`.
+const EMBED_MAX_BATCH: usize = 64;
+
+fn embed_max_batch() -> usize {
+    std::env::var("WYLDE_EMBED_MAX_BATCH")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(EMBED_MAX_BATCH)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum EmbedError {
     /// Backend returned 404 — embedding model not pulled. Non-retryable.
@@ -52,7 +69,30 @@ pub enum EmbedError {
 
 /// Embed a list of texts. One vector per input. Returns an empty vec when
 /// called with no inputs (does not round-trip to the backend).
+///
+/// Inputs are split into batches of at most [`embed_max_batch`] before each
+/// `ollama.embed` round-trip (the embed runner crashes on oversized
+/// arrays — see [`EMBED_MAX_BATCH`]) and the per-batch vectors are
+/// concatenated back in input order.
 pub async fn embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, EmbedError> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let max = embed_max_batch();
+    if texts.len() <= max {
+        return embed_batch(texts).await;
+    }
+    let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+    for batch in texts.chunks(max) {
+        let mut vectors = embed_batch(batch.to_vec()).await?;
+        out.append(&mut vectors);
+    }
+    Ok(out)
+}
+
+/// Embed one batch (caller guarantees `texts.len() <= embed_max_batch()`).
+/// Holds the retry / shape-validation policy for a single round-trip.
+async fn embed_batch(texts: Vec<String>) -> Result<Vec<Vec<f32>>, EmbedError> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
@@ -305,5 +345,26 @@ mod tests {
     async fn embed_empty_input_skips_ipc() {
         let out = embed(Vec::new()).await.unwrap();
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn embed_max_batch_default_and_override() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("WYLDE_EMBED_MAX_BATCH").ok();
+        std::env::remove_var("WYLDE_EMBED_MAX_BATCH");
+        assert_eq!(embed_max_batch(), EMBED_MAX_BATCH);
+        // The default must stay safely under the runner's batch-count cliff.
+        assert!(EMBED_MAX_BATCH <= 200, "default batch must stay under the ~255 crash threshold");
+        std::env::set_var("WYLDE_EMBED_MAX_BATCH", "16");
+        assert_eq!(embed_max_batch(), 16);
+        // A bogus / zero value falls back to the default rather than dividing by zero.
+        std::env::set_var("WYLDE_EMBED_MAX_BATCH", "0");
+        assert_eq!(embed_max_batch(), EMBED_MAX_BATCH);
+        std::env::set_var("WYLDE_EMBED_MAX_BATCH", "notanumber");
+        assert_eq!(embed_max_batch(), EMBED_MAX_BATCH);
+        match prev {
+            Some(v) => std::env::set_var("WYLDE_EMBED_MAX_BATCH", v),
+            None => std::env::remove_var("WYLDE_EMBED_MAX_BATCH"),
+        }
     }
 }
