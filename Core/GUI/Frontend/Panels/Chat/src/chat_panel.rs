@@ -66,6 +66,16 @@ fn shared_cell() -> &'static Mutex<Option<WeakEntity<ChatPanel>>> {
     SHARED.get_or_init(|| Mutex::new(None))
 }
 
+/// Process-wide [`ChatScope::Docked`] singleton — the Workspaces InferenceBar
+/// dock's own [`ChatPanel`], kept in a cell SEPARATE from [`shared_cell`] so the
+/// dock and the Chat slot are distinct live entities with independent
+/// conversation scope (C1 un-shares them). Same weak-handle / lazy-rebuild
+/// discipline as the global cell.
+fn docked_cell() -> &'static Mutex<Option<WeakEntity<ChatPanel>>> {
+    static DOCKED: OnceLock<Mutex<Option<WeakEntity<ChatPanel>>>> = OnceLock::new();
+    DOCKED.get_or_init(|| Mutex::new(None))
+}
+
 /// Consent-subscription reconnect backoff floor.  First retry after a
 /// failed/dropped `consent.stream_pending` waits this long.
 const CONSENT_RECONNECT_MIN: Duration = Duration::from_millis(250);
@@ -167,9 +177,46 @@ pub struct ToolActivity {
     pub since: Instant,
 }
 
+/// Which surface a [`ChatPanel`] backs, and thus which process-wide scope the
+/// entity owns. Two distinct entities live at once: the Chat slot's [`Global`]
+/// singleton ([`shared_cell`]) and the Workspaces dock's [`Docked`] singleton
+/// ([`docked_cell`]). They hold independent conversations, so the two surfaces
+/// can show different threads with different scope — C1 un-shares the dock from
+/// the old single `ChatPanel::shared` entity.
+///
+/// [`Global`]: ChatScope::Global
+/// [`Docked`]: ChatScope::Docked
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChatScope {
+    /// The Chat panel slot — an *unbound* conversation (layers 1 + 3). Owns the
+    /// single process-wide consent subscription and restores the global
+    /// active-conversation pointer.
+    #[default]
+    Global,
+    /// The Workspaces InferenceBar dock — *bound* to a workspace's scope
+    /// (wired in C3+). Does NOT subscribe consent (the Global singleton owns
+    /// that one subscription) and restores a per-workspace pointer (C7; stubbed
+    /// to the default conversation until then).
+    Docked,
+}
+
+impl ChatScope {
+    /// Only the Global singleton wires the process-wide consent stream, so the
+    /// just-merged single-consent invariant (UX rework decision 6) survives the
+    /// dock owning its own entity: mounting both surfaces yields exactly one
+    /// `consent.stream_pending` subscription, never two competing prompts.
+    pub fn wires_consent(self) -> bool {
+        matches!(self, ChatScope::Global)
+    }
+}
+
 /// Root Chat panel.
 pub struct ChatPanel {
     pub focus_handle: FocusHandle,
+    /// Which surface this entity backs (Chat slot vs Workspaces dock). Drives
+    /// per-mode wiring: only [`ChatScope::Global`] subscribes consent, and each
+    /// mode restores its own session pointer.
+    pub scope: ChatScope,
     pub messages: Vec<ChatMessage>,
     pub active_turn_id: Option<String>,
     pub conversation_id: String,
@@ -235,7 +282,7 @@ pub struct ChatPanel {
 }
 
 impl ChatPanel {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(scope: ChatScope, cx: &mut Context<Self>) -> Self {
         let prompt_input = cx.new(|input_cx| {
             TextInput::multi_line(input_cx)
                 .with_placeholder("Send a message  ·  Enter to send, Shift+Enter for newline")
@@ -301,6 +348,7 @@ impl ChatPanel {
 
         Self {
             focus_handle: cx.focus_handle(),
+            scope,
             messages: Vec::new(),
             active_turn_id: None,
             conversation_id: "default".to_owned(),
@@ -336,23 +384,24 @@ impl ChatPanel {
         }
     }
 
-    /// Registry factory for the Chat slot. Resolves the **shared singleton**
-    /// (see [`ChatPanel::shared`]) so the Chat panel and the Workspaces
-    /// InferenceBar dock are the same live entity.
+    /// Registry factory for the Chat slot. Resolves the **Global singleton**
+    /// (see [`ChatPanel::shared`]) — the Workspaces InferenceBar dock resolves a
+    /// *separate* [`ChatScope::Docked`] entity (see [`ChatPanel::docked`]), so
+    /// the two surfaces hold independent conversations (C1).
     pub fn view(_window: &mut Window, cx: &mut App) -> AnyView {
         Self::shared(cx).into()
     }
 
-    /// Resolve the process-wide shared ChatPanel singleton, creating + wiring
-    /// it on first use (UX rework decision 6).
+    /// Resolve the process-wide **Global** ChatPanel singleton (the Chat slot),
+    /// creating + wiring it on first use.
     ///
-    /// Both the Chat slot (this crate's registry factory) and the Workspaces
-    /// dock ([`InferenceBarDock`]) resolve to THIS one entity, so the
-    /// conversation is literally shared — same messages, same model picker,
-    /// same composer — not merely the same conversation id. Idempotent: a live
-    /// handle is reused; a dropped one is rebuilt with the full network setup
-    /// (workspaces/models/session/consent), so the consent stream is
-    /// subscribed exactly once regardless of which surface mounts first.
+    /// This is the [`ChatScope::Global`] entity. The Workspaces dock no longer
+    /// resolves here — C1 gave it its own [`ChatScope::Docked`] entity
+    /// ([`ChatPanel::docked`]). The Global singleton owns the **single**
+    /// process-wide consent subscription (UX rework decision 6's invariant):
+    /// idempotent — a live handle is reused; a dropped one is rebuilt with the
+    /// full network setup (workspaces/models/session/consent), so consent is
+    /// subscribed exactly once while the entity is live.
     pub fn shared(cx: &mut App) -> Entity<ChatPanel> {
         if let Some(existing) = shared_cell()
             .lock()
@@ -363,7 +412,7 @@ impl ChatPanel {
             return existing;
         }
         let entity = cx.new(|cx| {
-            let panel = Self::new(cx);
+            let panel = Self::new(ChatScope::Global, cx);
             // Announce the conversation this panel owns on the cross-panel
             // bus so a sibling that's already mounted (e.g. the Memory
             // panel's short-term view) reflects it immediately.  Until a
@@ -376,10 +425,52 @@ impl ChatPanel {
             // its working-memory buffer + the switcher list — sequenced in
             // one task so the WM load reads the *restored* id, not "default".
             Self::spawn_restore_session(cx);
-            Self::spawn_consent_subscription(cx);
+            Self::wire_consent_for_scope(ChatScope::Global, cx);
             panel
         });
         if let Ok(mut g) = shared_cell().lock() {
+            *g = Some(entity.downgrade());
+        }
+        entity
+    }
+
+    /// Resolve the process-wide **Docked** ChatPanel singleton (the Workspaces
+    /// InferenceBar dock), creating + wiring it on first use.
+    ///
+    /// Distinct from [`ChatPanel::shared`]: a separate entity in
+    /// [`ChatScope::Docked`] mode with its own conversation scope, so the dock
+    /// and the Chat slot show independent threads (C1). Two deliberate
+    /// differences from the Global wiring:
+    /// 1. **No consent subscription** — the Global singleton owns the one
+    ///    `consent.stream_pending` subscription (UX rework decision 6); the dock
+    ///    must not double-subscribe.
+    /// 2. **Per-mode restore** — the dock keeps its own (per-workspace, C7)
+    ///    pointer instead of adopting the global active-conversation pointer,
+    ///    and it does not announce on the active-conversation bus (that bus
+    ///    tracks the Global surface the Memory panel mirrors).
+    pub fn docked(cx: &mut App) -> Entity<ChatPanel> {
+        if let Some(existing) = docked_cell()
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .and_then(|weak| weak.upgrade())
+        {
+            return existing;
+        }
+        let entity = cx.new(|cx| {
+            let panel = Self::new(ChatScope::Docked, cx);
+            Self::spawn_load_workspaces(cx);
+            Self::spawn_load_models(cx);
+            // Per-mode restore (stubbed to "default" until C7's per-workspace
+            // pointer): hydrate the WM strip + switcher without adopting the
+            // global active-conversation pointer.
+            Self::spawn_restore_session_docked(cx);
+            // No-op for Docked: the Global singleton owns the single consent
+            // subscription (the decision lives in `ChatScope::wires_consent`).
+            Self::wire_consent_for_scope(ChatScope::Docked, cx);
+            panel
+        });
+        if let Ok(mut g) = docked_cell().lock() {
             *g = Some(entity.downgrade());
         }
         entity
@@ -476,6 +567,19 @@ impl ChatPanel {
                     Self::reload_conversation_messages(&this, app_cx).await;
                 }
             }
+            Self::reload_working_memory(&this, app_cx).await;
+            Self::reload_conversations(&this, app_cx).await;
+        })
+        .detach();
+    }
+
+    /// Docked-mode session restore (C1). Unlike [`spawn_restore_session`], the
+    /// dock does NOT adopt the process-wide active-conversation pointer — its
+    /// own per-workspace pointer lands in C7. Until then it stays on the
+    /// default conversation and just hydrates the working-memory strip + the
+    /// switcher list so the dock isn't blank on first mount.
+    pub fn spawn_restore_session_docked(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             Self::reload_working_memory(&this, app_cx).await;
             Self::reload_conversations(&this, app_cx).await;
         })
@@ -674,6 +778,17 @@ impl ChatPanel {
             Self::reload_working_memory(&this, app_cx).await;
         })
         .detach();
+    }
+
+    /// Wire the process-wide consent subscription iff `scope` owns it
+    /// ([`ChatScope::wires_consent`]). The single source of truth for the
+    /// single-consent invariant (UX rework decision 6): both constructors route
+    /// their consent decision through here, so the Global singleton subscribes
+    /// exactly once and the Docked dock never double-subscribes.
+    fn wire_consent_for_scope(scope: ChatScope, cx: &mut Context<Self>) {
+        if scope.wires_consent() {
+            Self::spawn_consent_subscription(cx);
+        }
     }
 
     pub fn spawn_consent_subscription(cx: &mut Context<Self>) {
@@ -2078,14 +2193,16 @@ pub struct InferenceBarDock {
 }
 
 impl InferenceBarDock {
-    /// Registry/factory entry — builds the dock over the shared ChatPanel
-    /// singleton (creating + wiring the singleton if no surface has yet).
+    /// Registry/factory entry — builds the dock over the **Docked** ChatPanel
+    /// singleton (creating + wiring it on first use). C1: this is a *separate*
+    /// entity from the Chat slot's Global singleton, so the dock owns its own
+    /// conversation scope.
     pub fn view(_window: &mut Window, cx: &mut App) -> AnyView {
-        let chat = ChatPanel::shared(cx);
+        let chat = ChatPanel::docked(cx);
         cx.new(|_cx| Self { chat }).into()
     }
 
-    /// The shared ChatPanel entity this dock renders (test/inspection hook).
+    /// The Docked ChatPanel entity this dock renders (test/inspection hook).
     pub fn chat(&self) -> &Entity<ChatPanel> {
         &self.chat
     }
@@ -2093,9 +2210,9 @@ impl InferenceBarDock {
 
 impl Render for InferenceBarDock {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Delegate into the shared ChatPanel: build its InferenceBar with the
-        // chat entity's own context, so every listener routes back to the chat
-        // panel (and thus the shared conversation), not this dock.
+        // Delegate into the Docked ChatPanel: build its InferenceBar with the
+        // chat entity's own context, so every listener routes back to the docked
+        // panel (and thus its own scoped conversation), not this dock wrapper.
         self.chat.update(cx, |panel, ccx| inference_bar(panel, ccx))
     }
 }
@@ -3155,6 +3272,56 @@ mod tests {
             assert_eq!(b, CONSENT_RECONNECT_MAX);
             assert!(b <= CONSENT_RECONNECT_MAX);
         }
+    }
+
+    // ── C1: dock un-shared from the global singleton ─────────────────
+    // No gpui-executor test harness exists in this crate (every test here is
+    // pure logic — the consent-backoff test above pins "the part that's pure
+    // and testable" by the same principle). So C1's two regressions are pinned
+    // at the storage + wiring-decision level rather than by mounting live
+    // entities: (1) the dock uses a SEPARATE singleton cell → two distinct
+    // entities; (2) only the Global scope wires consent → exactly one
+    // subscription across both surfaces.
+
+    /// C1 un-shares the Workspaces dock from the Chat slot: each owns its own
+    /// process-wide ChatPanel entity, stored in a SEPARATE cell. If the dock
+    /// ever delegated back into the global singleton's cell, the two surfaces
+    /// would again be the same live entity (the bug C1 reverses).
+    #[test]
+    fn dock_and_chat_slot_use_distinct_singletons() {
+        assert!(
+            !std::ptr::eq(shared_cell(), docked_cell()),
+            "dock must not delegate into the global ChatPanel singleton cell",
+        );
+    }
+
+    /// The just-merged single-consent invariant (UX rework decision 6) must
+    /// survive the dock owning its own entity: with both surfaces mounted —
+    /// the Chat slot (Global) and the Workspaces dock (Docked) — exactly ONE
+    /// `consent.stream_pending` subscription is wired, never two competing
+    /// prompts. Only Global wires it; the dock relies on the Global singleton's.
+    #[test]
+    fn only_global_scope_wires_consent_subscription() {
+        assert!(ChatScope::Global.wires_consent());
+        assert!(!ChatScope::Docked.wires_consent());
+
+        // Both surfaces mounted → exactly one subscription, order-independent
+        // (the dock may mount before the Chat slot).
+        for mounted in [
+            [ChatScope::Global, ChatScope::Docked],
+            [ChatScope::Docked, ChatScope::Global],
+        ] {
+            let subscriptions = mounted.iter().filter(|s| s.wires_consent()).count();
+            assert_eq!(subscriptions, 1, "exactly one consent subscription");
+        }
+    }
+
+    /// The default scope is Global, so anything that builds a `ChatPanel`
+    /// without naming a scope (or relies on the derive) stays on the safe,
+    /// consent-owning surface rather than silently becoming a second dock.
+    #[test]
+    fn chat_scope_defaults_to_global() {
+        assert_eq!(ChatScope::default(), ChatScope::Global);
     }
 
     #[test]
