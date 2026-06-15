@@ -30,6 +30,50 @@ pub const DEFAULT_BOLT_URL: &str = "bolt://127.0.0.1:7687";
 /// `WYLDE_BOLT_CONNECT_TIMEOUT_SECS`.
 pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Default per-query timeout for a graph WRITE. Distinct from the 5s
+/// connect timeout: a whole-repo `upsert` MERGEs thousands of Chunk +
+/// Entity nodes, which takes far longer than connecting. The old code
+/// bounded the entire upsert by `connect_timeout`, so a real index — e.g.
+/// 16k chunks in one UNWIND — always timed out at 5s and wrote ZERO Chunk
+/// nodes (the Workspaces graph tab then read back empty even with Neo4j up
+/// and the vector index fully built). Batched writes (see [`WRITE_BATCH`])
+/// keep each query small; this is the per-batch budget. Override via
+/// `WYLDE_BOLT_WRITE_TIMEOUT_SECS`.
+pub const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Max rows per write query. A single UNWIND over the whole repo is both
+/// slow (one statement blocks until every MERGE lands) and memory-heavy on
+/// the server; splitting into bounded batches keeps each query inside the
+/// write timeout and lets large repos make steady progress. Override via
+/// `WYLDE_BOLT_WRITE_BATCH`.
+pub const WRITE_BATCH: usize = 500;
+
+fn write_batch_size() -> usize {
+    std::env::var("WYLDE_BOLT_WRITE_BATCH")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(WRITE_BATCH)
+}
+
+/// Run one write query bounded by `timeout`. Shared by the batched
+/// `upsert` / `relate` loops so each sub-batch gets the full budget.
+async fn run_timed(
+    graph: &Graph,
+    q: neo4rs::Query,
+    timeout: Duration,
+    what: &str,
+) -> Result<(), (String, String)> {
+    match tokio::time::timeout(timeout, graph.run(q)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err((error_codes::QUERY.to_owned(), format!("{what}: {e}"))),
+        Err(_) => Err((
+            error_codes::QUERY.to_owned(),
+            format!("{what} timed out after {timeout:?}"),
+        )),
+    }
+}
+
 /// `bolt_*` error codes surfaced via [`Reply::err_msg`].
 pub mod error_codes {
     pub const CONFIG: &str = "bolt_config";
@@ -45,6 +89,8 @@ pub struct BoltConfig {
     pub user: String,
     pub password: String,
     pub connect_timeout: Duration,
+    /// Per-query budget for a write (see [`DEFAULT_WRITE_TIMEOUT`]).
+    pub write_timeout: Duration,
 }
 
 impl BoltConfig {
@@ -55,11 +101,17 @@ impl BoltConfig {
             .and_then(|v| v.parse::<f64>().ok())
             .map(Duration::from_secs_f64)
             .unwrap_or(DEFAULT_CONNECT_TIMEOUT);
+        let write_timeout = std::env::var("WYLDE_BOLT_WRITE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(Duration::from_secs_f64)
+            .unwrap_or(DEFAULT_WRITE_TIMEOUT);
         Self {
             uri: std::env::var("GRAPH_BOLT_URL").unwrap_or_else(|_| DEFAULT_BOLT_URL.to_owned()),
             user: std::env::var("GRAPH_USER").unwrap_or_default(),
             password: std::env::var("GRAPH_PASSWORD").unwrap_or_default(),
             connect_timeout,
+            write_timeout,
         }
     }
 }
@@ -127,40 +179,41 @@ impl BoltClient {
         let (batch, typed_rels) = coerce_upsert_batch(&chunks, &workspace_default);
 
         let count = batch.len();
-        let timeout = self.config.connect_timeout;
+        let write_timeout = self.config.write_timeout;
+        let bs = write_batch_size();
+        // Batched so a whole-repo upsert never blocks on one giant UNWIND
+        // (which used to time out at 5s and write nothing). Each sub-batch
+        // gets the full write budget; total time is unbounded by design —
+        // graph-write is a fail-soft background pass.
         let fut = async {
             let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
-            graph
-                .run(
+            for sub in batch.chunks(bs) {
+                run_timed(
+                    graph,
                     neo4rs::query(cypher::UPSERT_ENTITIES)
-                        .param("batch", BoltType::List(batch_to_boltlist(&batch))),
+                        .param("batch", BoltType::List(batch_to_boltlist(sub))),
+                    write_timeout,
+                    "upsert",
                 )
-                .await
-                .map_err(|e| (error_codes::QUERY.to_owned(), format!("upsert: {e}")))?;
+                .await?;
+            }
             for (rel_type, pairs) in &typed_rels {
                 let stmt = cypher::relate_typed(rel_type);
-                graph
-                    .run(
-                        neo4rs::query(&stmt)
-                            .param("pairs", BoltType::List(pairs_to_boltlist(pairs))),
+                for sub in pairs.chunks(bs) {
+                    run_timed(
+                        graph,
+                        neo4rs::query(&stmt).param("pairs", BoltType::List(pairs_to_boltlist(sub))),
+                        write_timeout,
+                        &format!("upsert.{rel_type}"),
                     )
-                    .await
-                    .map_err(|e| {
-                        (
-                            error_codes::QUERY.to_owned(),
-                            format!("upsert.{rel_type}: {e}"),
-                        )
-                    })?;
+                    .await?;
+                }
             }
             Ok::<_, (String, String)>(())
         };
-        match tokio::time::timeout(timeout, fut).await {
-            Ok(Ok(())) => Reply::ok(json!({"ok": true, "count": count})),
-            Ok(Err((code, message))) => Reply::err_msg(code, message),
-            Err(_) => Reply::err_msg(
-                error_codes::QUERY,
-                format!("upsert timed out after {timeout:?}"),
-            ),
+        match fut.await {
+            Ok(()) => Reply::ok(json!({"ok": true, "count": count})),
+            Err((code, message)) => Reply::err_msg(code, message),
         }
     }
 
@@ -197,23 +250,24 @@ impl BoltClient {
         }
         let count = edges.len();
         let stmt = cypher::relate_typed(&rel_type);
-        let payload = BoltType::List(pairs_to_boltlist(&edges));
-        let timeout = self.config.connect_timeout;
+        let write_timeout = self.config.write_timeout;
+        let bs = write_batch_size();
         let fut = async {
             let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
-            graph
-                .run(neo4rs::query(&stmt).param("pairs", payload))
-                .await
-                .map_err(|e| (error_codes::QUERY.to_owned(), format!("relate: {e}")))?;
+            for sub in edges.chunks(bs) {
+                run_timed(
+                    graph,
+                    neo4rs::query(&stmt).param("pairs", BoltType::List(pairs_to_boltlist(sub))),
+                    write_timeout,
+                    "relate",
+                )
+                .await?;
+            }
             Ok::<_, (String, String)>(())
         };
-        match tokio::time::timeout(timeout, fut).await {
-            Ok(Ok(())) => Reply::ok(json!({"ok": true, "written": count})),
-            Ok(Err((code, message))) => Reply::err_msg(code, message),
-            Err(_) => Reply::err_msg(
-                error_codes::QUERY,
-                format!("relate timed out after {timeout:?}"),
-            ),
+        match fut.await {
+            Ok(()) => Reply::ok(json!({"ok": true, "written": count})),
+            Err((code, message)) => Reply::err_msg(code, message),
         }
     }
 
@@ -592,8 +646,26 @@ mod tests {
             user: String::new(),
             password: String::new(),
             connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            write_timeout: DEFAULT_WRITE_TIMEOUT,
         };
         assert_eq!(cfg.uri, "bolt://127.0.0.1:7687");
+    }
+
+    #[test]
+    fn write_batch_size_is_bounded_and_overridable() {
+        std::env::remove_var("WYLDE_BOLT_WRITE_BATCH");
+        assert_eq!(write_batch_size(), WRITE_BATCH);
+        // Must keep each UNWIND well under the size that times a real upsert
+        // out — a whole-repo single batch is exactly the bug this fixes.
+        assert!(WRITE_BATCH <= 1000);
+        // The default write budget must exceed the connect budget — the old
+        // code conflated them and capped bulk writes at 5s.
+        assert!(DEFAULT_WRITE_TIMEOUT > DEFAULT_CONNECT_TIMEOUT);
+        std::env::set_var("WYLDE_BOLT_WRITE_BATCH", "128");
+        assert_eq!(write_batch_size(), 128);
+        std::env::set_var("WYLDE_BOLT_WRITE_BATCH", "0");
+        assert_eq!(write_batch_size(), WRITE_BATCH);
+        std::env::remove_var("WYLDE_BOLT_WRITE_BATCH");
     }
 
     #[test]
