@@ -8654,6 +8654,15 @@ name = "wylde-anchor-actions"
 version = "0.1.0-alpha.1"
 
 [[package]]
+name = "wylde-gpui-code-editor"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "gpui",
+ "unicode-segmentation",
+ "wylde-theme",
+]
+
+[[package]]
 name = "wylde-gpui-input"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -8719,6 +8728,8 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wylde-plugin-api",
+ "wylde-plugin-hello-wylde",
  "wylde-prebuild-guard",
  "wylde-shared",
  "wylde-workspaces-client",
@@ -8889,9 +8900,26 @@ dependencies = [
  "serde_yaml",
  "tokio",
  "wylde-anchor-actions",
+ "wylde-gpui-code-editor",
  "wylde-gpui-input",
  "wylde-gui-pipe",
+ "wylde-panel-chat",
  "wylde-theme",
+]
+
+[[package]]
+name = "wylde-plugin-api"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "wylde-plugin-hello-wylde"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "serde_json",
+ "wylde-plugin-api",
 ]
 
 [[package]]

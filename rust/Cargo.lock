@@ -5393,6 +5393,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wylde-lsp"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "wylde-prebuild-guard",
+ "wylde-shared",
+]
+
+[[package]]
 name = "wylde-n8n"
 version = "0.1.0-alpha.1"
 dependencies = [
