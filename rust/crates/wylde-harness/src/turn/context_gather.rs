@@ -519,10 +519,27 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     let mut degraded = false;
 
     if let Some(ws) = active_ws {
+        // 2.3 (conversation-aware query construction): embed an *augmented*
+        // retrieval query — the live message plus a bounded keyword tail
+        // drawn from the conversation's recent turns / auto-summary /
+        // working memory — instead of just the last message, so a terse
+        // follow-up ("why?") still retrieves chunks about the thread's topic.
+        // The live message leads and stays dominant (the tail is capped) to
+        // avoid history drifting retrieval off the current question. Composed
+        // here from the already-gathered in-process context slots; only the
+        // RAG/notes embed query is affected (symbol/anchor lookups below keep
+        // the literal message tokens).
+        let retrieval_query = compose_retrieval_query(
+            user_message,
+            ctx.conversation_summary.as_deref(),
+            &ctx.conversation_short_term,
+            &ctx.history,
+        );
+
         // The workspace prompt parts (persona / notes / RAG — B6 split).
         // An unreachable service here is the degrade signal (Slice 0d
         // semantics).
-        match source.gather_prompt(ws, user_message).await {
+        match source.gather_prompt(ws, &retrieval_query).await {
             Ok(Some(block)) => {
                 ctx.workspace_persona = block.persona;
                 ctx.workspace_notes = block.notes;
@@ -949,6 +966,146 @@ fn candidate_tokens(user_message: &str) -> Vec<String> {
     out
 }
 
+// ── 2.3 conversation-aware retrieval query ───────────────────────────────
+
+/// Max distinct context keywords folded into the RAG/notes embed query
+/// (2.3). Bounded so a long thread can't swamp the live message's
+/// embedding — the block's "keep the live message dominant to avoid drift".
+const RETRIEVAL_CONTEXT_TERMS_MAX: usize = 24;
+
+/// Min length for a context keyword (matches the symbol-token bar): shorter
+/// fragments are noise that only dilutes the query embedding.
+const RETRIEVAL_KEYWORD_MIN_LEN: usize = MIN_TOKEN_LEN;
+
+/// How many of the most-recent prior turns we mine for context keywords.
+/// One exchange (the immediately preceding user+assistant pair) is the
+/// thread topic a terse follow-up refers to; older turns are covered by the
+/// auto-summary.
+const RETRIEVAL_HISTORY_TURNS: usize = 2;
+
+/// High-frequency function words excluded from the keyword tail — they carry
+/// no retrieval signal and only dilute the live message's dominance. (Only
+/// the *appended tail* is filtered; the live message is always embedded
+/// verbatim regardless.)
+const RETRIEVAL_STOPWORDS: &[&str] = &[
+    "the", "and", "for", "that", "this", "with", "you", "your", "are", "was",
+    "were", "have", "has", "had", "not", "but", "can", "could", "would",
+    "should", "does", "did", "what", "why", "how", "when", "where", "who",
+    "which", "into", "from", "about", "there", "then", "them", "they", "its",
+    "our", "out", "get", "got", "one", "all", "any", "more", "than", "also",
+    "like", "just", "explain", "please", "tell", "use", "using",
+];
+
+/// Compose the workspace RAG / notes embed query for this turn (improvement
+/// 2.3, *conversation-aware query construction*).
+///
+/// The live `user_message` always leads and stays the dominant contributor;
+/// a **bounded** tail of distinctive keywords — drawn from the conversation's
+/// working memory, the most-recent prior turns, then the running auto-summary
+/// (freshest source first, so the cap keeps the most-current terms) — nudges
+/// retrieval toward the thread topic. A one-word follow-up ("why?") then
+/// pulls that topic's chunks instead of nothing; a substantive question keeps
+/// its own terms dominant because the tail is capped at
+/// [`RETRIEVAL_CONTEXT_TERMS_MAX`] keywords and excludes anything already in
+/// the message.
+///
+/// When the conversation contributes no fresh keyword (a first / plain turn,
+/// or the message already names everything), the original message is returned
+/// unchanged — that turn embeds byte-identically to before.
+fn compose_retrieval_query(
+    user_message: &str,
+    summary: Option<&str>,
+    short_term: &[String],
+    history: &[HistoryMessage],
+) -> String {
+    let msg = user_message.trim();
+
+    // Words already in the live message are never repeated in the tail — no
+    // point re-embedding a term the message already carries, and it keeps the
+    // message the largest coherent contributor.
+    let mut in_message: std::collections::HashSet<String> = std::collections::HashSet::new();
+    push_lowercased_words(msg, &mut in_message);
+
+    let mut terms: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // Working memory — the conversation's most salient current facts (newest
+    // entries are last in the slice, so mine newest-first).
+    for line in short_term.iter().rev() {
+        push_keywords(line, &in_message, &mut seen, &mut terms);
+        if terms.len() >= RETRIEVAL_CONTEXT_TERMS_MAX {
+            break;
+        }
+    }
+    // The most-recent prior turns (history is chronological → take the tail).
+    for m in history.iter().rev().take(RETRIEVAL_HISTORY_TURNS) {
+        if terms.len() >= RETRIEVAL_CONTEXT_TERMS_MAX {
+            break;
+        }
+        push_keywords(&m.content, &in_message, &mut seen, &mut terms);
+    }
+    // The running auto-summary — broadest context, fills any remaining room.
+    if let Some(s) = summary {
+        push_keywords(s, &in_message, &mut seen, &mut terms);
+    }
+    terms.truncate(RETRIEVAL_CONTEXT_TERMS_MAX);
+
+    if terms.is_empty() {
+        return user_message.to_owned();
+    }
+    // Live message leads; the bounded keyword tail trails behind a visible
+    // marker so it reads as retrieval scaffolding, not part of the question.
+    format!("{msg}\n\n[conversation context: {}]", terms.join(" "))
+}
+
+/// Collect identifier-ish words (alnum + `_`) of any length, lowercased, into
+/// `out` — used to build the "already in the message" exclusion set.
+fn push_lowercased_words(text: &str, out: &mut std::collections::HashSet<String>) {
+    let mut cur = String::new();
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            cur.push(ch.to_ascii_lowercase());
+        } else if !cur.is_empty() {
+            out.insert(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        out.insert(cur);
+    }
+}
+
+/// Extract distinctive keywords from `text` (identifier-ish words ≥
+/// [`RETRIEVAL_KEYWORD_MIN_LEN`], lowercased, not a stopword, not already in
+/// the message, first-seen only) and append them to `out`.
+fn push_keywords(
+    text: &str,
+    in_message: &std::collections::HashSet<String>,
+    seen: &mut std::collections::HashSet<String>,
+    out: &mut Vec<String>,
+) {
+    let mut cur = String::new();
+    let consider = |cur: &mut String,
+                    seen: &mut std::collections::HashSet<String>,
+                    out: &mut Vec<String>| {
+        if cur.len() >= RETRIEVAL_KEYWORD_MIN_LEN
+            && !RETRIEVAL_STOPWORDS.contains(&cur.as_str())
+            && !in_message.contains(cur.as_str())
+            && seen.insert(cur.clone())
+        {
+            out.push(cur.clone());
+        }
+        cur.clear();
+    };
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            cur.push(ch.to_ascii_lowercase());
+        } else {
+            consider(&mut cur, seen, out);
+        }
+    }
+    consider(&mut cur, seen, out);
+}
+
 /// Resolve anchors for every candidate token concurrently. Returns the deduped
 /// anchor blocks (the never-drop vocabulary block) plus the symbol ids their
 /// code-symbol targets reference (which become symbol-context lookups too).
@@ -1155,10 +1312,18 @@ mod tests {
         /// service-side ignored tokens (workspace + conversation tiers,
         /// Slice M)
         ignored: Vec<String>,
+        /// every `user_message`/query string `gather_prompt` was called with,
+        /// in call order — lets a test inspect the exact retrieval query the
+        /// gather forwarded to the service (2.3).
+        gather_prompt_queries: std::sync::Mutex<Vec<String>>,
     }
 
     impl WorkspaceSource for MockSource {
-        async fn gather_prompt(&self, _ws: &str, _m: &str) -> SourceResult<Option<WorkspaceBlock>> {
+        async fn gather_prompt(&self, _ws: &str, m: &str) -> SourceResult<Option<WorkspaceBlock>> {
+            self.gather_prompt_queries
+                .lock()
+                .unwrap()
+                .push(m.to_owned());
             if self.prompt_unavailable {
                 Err(SourceStatus::Unavailable)
             } else {
@@ -1327,6 +1492,109 @@ mod tests {
         )
         .await;
         assert!(!out.system_slots.contains("### Conversation summary"));
+    }
+
+    // ── 2.3: conversation-aware retrieval query construction ────────────
+
+    #[test]
+    fn compose_query_folds_context_keeps_message_dominant_and_passes_through() {
+        // Working memory + recent turns + summary all establish a topic the
+        // terse live message does not name.
+        let history = vec![
+            HistoryMessage {
+                role: "user".into(),
+                content: "how does the eviction ladder shed tokens?".into(),
+            },
+            HistoryMessage {
+                role: "assistant".into(),
+                content: "the budget evicts the workspace_rag tier first".into(),
+            },
+        ];
+        let short_term = vec!["- focus: tokenizer internals".to_owned()];
+        let summary = Some("Discussing the eviction ladder and token budget.");
+
+        let q = compose_retrieval_query("why?", summary, &short_term, &history);
+        // Live message leads (dominant) ...
+        assert!(q.starts_with("why?"), "live message must lead: {q}");
+        // ... and the thread topic is folded in from each source.
+        assert!(q.contains("tokenizer"), "working-memory keyword folded: {q}");
+        assert!(
+            q.contains("eviction") && q.contains("ladder"),
+            "recent-turn / summary keywords folded: {q}"
+        );
+        // Stopwords + message-words are excluded from the tail.
+        assert!(!q.contains("[conversation context: why"), "no message echo");
+
+        // No conversation context → byte-identical passthrough (plain turn).
+        assert_eq!(
+            compose_retrieval_query("brand new question", None, &[], &[]),
+            "brand new question"
+        );
+    }
+
+    #[test]
+    fn compose_query_caps_the_keyword_tail() {
+        // 60 distinct long keywords across working memory — the tail is
+        // bounded so a long thread can't swamp the live message.
+        let wm: Vec<String> = (0..60).map(|i| format!("- keyword{i:03}xyz")).collect();
+        let q = compose_retrieval_query("ok", None, &wm, &[]);
+        let tail = q
+            .split_once("[conversation context: ")
+            .and_then(|(_, t)| t.strip_suffix(']'))
+            .expect("context tail present");
+        assert_eq!(
+            tail.split_whitespace().count(),
+            RETRIEVAL_CONTEXT_TERMS_MAX,
+            "keyword tail is capped"
+        );
+    }
+
+    #[tokio::test]
+    async fn gather_forwards_conversation_aware_query_to_the_workspace_source() {
+        // The REAL gather path (gather_with) must hand the *augmented* query
+        // to the workspace source — proving the composed query reaches the
+        // RAG/notes embed boundary, not just that the helper works.
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut doc = serde_json::Map::new();
+        doc.insert("id".into(), json!("conv-2-3"));
+        doc.insert(
+            "messages".into(),
+            json!([
+                {"role": "user", "content": "how does the eviction ladder shed tokens?"},
+                {"role": "assistant", "content": "the budget evicts the workspace_rag tier first"},
+            ]),
+        );
+        doc.insert(
+            "auto_summary".into(),
+            json!("Discussing the eviction ladder and the token budget."),
+        );
+        crate::memory::conversations::store::save_conversation(&doc).unwrap();
+
+        let src = MockSource::default();
+        // A one-word follow-up carrying none of the topic itself.
+        let _ = gather_with(
+            &src,
+            Some("ws"),
+            "why?",
+            "conv-2-3",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+
+        let queries = src.gather_prompt_queries.lock().unwrap().clone();
+        let forwarded = queries.first().expect("gather_prompt was called");
+        assert!(
+            forwarded.starts_with("why?"),
+            "the live message leads the forwarded query: {forwarded}"
+        );
+        assert!(
+            forwarded.contains("eviction") || forwarded.contains("ladder") || forwarded.contains("budget"),
+            "the forwarded RAG query carries the thread topic: {forwarded}"
+        );
+        // Sanity: a query that is *just* the bare message would not contain
+        // any of the prior-turn vocabulary.
+        assert_ne!(forwarded, "why?", "the query must be augmented, not bare");
     }
 
     // ── M2 (option B): workspace memory records → the insights slot ────
