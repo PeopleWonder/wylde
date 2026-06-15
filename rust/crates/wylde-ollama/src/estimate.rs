@@ -24,6 +24,8 @@
 //! conservative default: a flaky `/api/tags` must never block a chat, and it
 //! must never let a non-positive `bytes` reach the broker.
 
+use std::borrow::Cow;
+
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
 
@@ -116,16 +118,34 @@ async fn on_disk_size(up: &Upstream, model: &str) -> TagsLookup {
 }
 
 /// Match an Ollama model-list entry against `want` by its `name` (or `model`
-/// alias) field, case-insensitively. The `:tag` suffix is kept verbatim so
-/// `:7b` and `:14b` never collide.
+/// alias) field, case-insensitively.
+///
+/// A bare name carries an implicit `:latest` tag in Ollama, so we normalise the
+/// implicit tag on *both* sides before comparing: a request for
+/// `nomic-embed-text` matches a listed `nomic-embed-text:latest` (and vice
+/// versa). Explicit sized tags are kept verbatim, so `:7b` and `:14b` never
+/// collide and neither is mistaken for `:latest`.
 fn model_matches(entry: &Value, want: &str) -> bool {
-    let want = want.trim();
+    let want = with_implicit_latest(want.trim());
     ["name", "model"].iter().any(|k| {
         entry
             .get(*k)
             .and_then(Value::as_str)
-            .is_some_and(|n| n.eq_ignore_ascii_case(want))
+            .is_some_and(|n| with_implicit_latest(n.trim()).eq_ignore_ascii_case(&want))
     })
+}
+
+/// Append the implicit `:latest` tag to a bare model name. The tag separator is
+/// the last `:` that follows the final `/` (so registry/namespace paths like
+/// `hf.co/u/Repo-GGUF:Q4` are handled, and a host `localhost:11434/...` colon is
+/// not mistaken for a tag). Already-tagged names are returned unchanged.
+fn with_implicit_latest(name: &str) -> Cow<'_, str> {
+    let last_segment = name.rsplit('/').next().unwrap_or(name);
+    if last_segment.contains(':') {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(format!("{name}:latest"))
+    }
 }
 
 #[cfg(test)]
@@ -205,5 +225,70 @@ mod tests {
         let (_server, up) = fake().await;
         let e = estimate_vram_bytes(&up, "qwen:7b").await;
         assert_eq!(e, VramEstimate::Bytes(DEFAULT_ESTIMATE_BYTES));
+    }
+
+    // --- F3: bare name ⇄ :latest tag resolution (model_matches) ---
+
+    #[test]
+    fn bare_name_matches_latest_entry() {
+        // The live bug: requesting `nomic-embed-text` must match the installed
+        // `nomic-embed-text:latest` entry from /api/tags.
+        let entry = json!({"name": "nomic-embed-text:latest"});
+        assert!(model_matches(&entry, "nomic-embed-text"));
+    }
+
+    #[test]
+    fn latest_request_matches_bare_entry() {
+        // Symmetric: an explicit :latest request matches a bare listed name.
+        let entry = json!({"name": "nomic-embed-text"});
+        assert!(model_matches(&entry, "nomic-embed-text:latest"));
+    }
+
+    #[test]
+    fn bare_matches_bare_and_latest_matches_latest() {
+        assert!(model_matches(&json!({"name": "nomic-embed-text"}), "nomic-embed-text"));
+        assert!(model_matches(
+            &json!({"name": "nomic-embed-text:latest"}),
+            "nomic-embed-text:latest"
+        ));
+    }
+
+    #[test]
+    fn sized_tags_never_collide() {
+        // :7b and :14b are distinct and neither resolves to :latest.
+        let seven = json!({"name": "qwen:7b"});
+        assert!(model_matches(&seven, "qwen:7b"));
+        assert!(!model_matches(&seven, "qwen:14b"));
+        assert!(!model_matches(&seven, "qwen")); // bare → qwen:latest ≠ qwen:7b
+        assert!(!model_matches(&seven, "qwen:latest"));
+    }
+
+    #[test]
+    fn registry_path_colon_is_not_a_host_tag() {
+        // A namespaced GGUF tag still matches itself; the bare form gets :latest.
+        let entry = json!({"name": "hf.co/u/Repo-GGUF:Q4_K_M"});
+        assert!(model_matches(&entry, "hf.co/u/Repo-GGUF:Q4_K_M"));
+        assert!(!model_matches(&entry, "hf.co/u/Repo-GGUF")); // → :latest ≠ :Q4_K_M
+    }
+
+    #[tokio::test]
+    async fn cold_bare_name_resolves_latest_size_from_tags() {
+        // End-to-end through estimate: bare request, :latest entry on disk.
+        let (server, up) = fake().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": []})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "models": [{"name": "nomic-embed-text:latest", "size": GIB}]
+            })))
+            .mount(&server)
+            .await;
+        let e = estimate_vram_bytes(&up, "nomic-embed-text").await;
+        // Present (not NotPulled): bare name resolved to the :latest entry.
+        assert!(matches!(e, VramEstimate::Bytes(_)), "got {e:?}");
     }
 }
