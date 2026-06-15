@@ -208,6 +208,30 @@ impl ChatScope {
     pub fn wires_consent(self) -> bool {
         matches!(self, ChatScope::Global)
     }
+
+    /// D1: only a *bound* surface — the Workspaces dock ([`ChatScope::Docked`])
+    /// — may carry a `workspace_id`. The Global Chat slot is **structurally
+    /// unbound**: there is no escape hatch to attach a workspace to it, so this
+    /// returns `false` for `Global`. Render code hides the workspace pills on
+    /// Global; the setters and the turn-send read both force the id to `None`
+    /// through [`resolve_workspace_id`] so the field can never drift.
+    ///
+    /// [`resolve_workspace_id`]: ChatScope::resolve_workspace_id
+    pub fn allows_workspace_bind(self) -> bool {
+        matches!(self, ChatScope::Docked)
+    }
+
+    /// The workspace id this surface may actually use, given a `candidate`
+    /// (a picked folder, a dropdown selection, a restored pointer, or the
+    /// value read at turn-send). On `Global` this is always `None` (D1 — no
+    /// opt-in); on `Docked` the candidate passes through unchanged.
+    pub fn resolve_workspace_id(self, candidate: Option<String>) -> Option<String> {
+        if self.allows_workspace_bind() {
+            candidate
+        } else {
+            None
+        }
+    }
 }
 
 /// Root Chat panel.
@@ -924,7 +948,11 @@ impl ChatPanel {
         cx.notify();
 
         let conversation_id = self.conversation_id.clone();
-        let workspace_id = self.active_workspace_id.clone();
+        // D1: the turn carries a workspace_id only on a *bound* (Docked) surface.
+        // Global is structurally unbound, so this resolves to `None` regardless
+        // of the field — the single read that guarantees a global turn never
+        // rides a workspace context.
+        let workspace_id = self.scope.resolve_workspace_id(self.active_workspace_id.clone());
         let model = self.active_model.clone();
         // The composer's per-message ✕/↺ choices ride the send (Slices F+M).
         let (excluded_tokens, reactivated_tokens) = self.composer.send_overrides();
@@ -1248,7 +1276,10 @@ impl ChatPanel {
     }
 
     pub fn select_workspace(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.active_workspace_id = Some(id.to_owned());
+        // D1: the Global Chat slot is structurally unbound — it never carries a
+        // workspace, so a selection there resolves to `None` (the affordance is
+        // also hidden on Global, this is the defense-in-depth setter guard).
+        self.active_workspace_id = self.scope.resolve_workspace_id(Some(id.to_owned()));
         self.show_ws_dropdown = false;
         // Persist the active pointer + MRU bump on the harness, then
         // refresh the dropdown so it reflects the new MRU order.
@@ -1435,7 +1466,11 @@ impl ChatPanel {
                     panel.error = Some(format!("activate workspace: {e}"));
                 }
                 if let Ok(ws) = &outcome {
-                    panel.active_workspace_id = Some(ws.id.clone());
+                    // D1: Global stays unbound even via the folder picker — the
+                    // scope resolves the id to `None` there (picker is hidden on
+                    // Global; this guards the setter against any future caller).
+                    panel.active_workspace_id =
+                        panel.scope.resolve_workspace_id(Some(ws.id.clone()));
                 }
             });
             let mru = recent_workspaces(WORKSPACE_MRU_LIMIT)
@@ -2487,7 +2522,10 @@ fn inference_bar(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
     if panel.show_conversations {
         bar = bar.child(conversations_panel(panel, cx));
     }
-    if panel.show_ws_dropdown {
+    // D1: workspace dropdown only on a bound (Docked) surface — Global can no
+    // longer reach the toggle, but gate the render too so the surface stays
+    // structurally workspace-free even if the flag were ever set elsewhere.
+    if panel.show_ws_dropdown && panel.scope.allows_workspace_bind() {
         bar = bar.child(workspace_dropdown(panel, cx));
     }
     if panel.show_model_dropdown {
@@ -2515,35 +2553,44 @@ fn pill_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
         Some(m) => format!("model · {m}"),
         None => "model · auto".to_owned(),
     });
-    div()
+    let mut row = div()
         .flex()
         .flex_row()
         .gap_2()
         .items_center()
-        .child(conversations_pill(panel, cx))
-        .child(pill_button(
-            ElementId::Name("chat-ws-toggle".into()),
-            workspace_label,
-            cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
-                this.toggle_ws_dropdown(cx);
-            }),
-        ))
-        .child(pill_button(
-            ElementId::Name("chat-ws-pick".into()),
-            SharedString::from("+ folder"),
-            cx.listener(|_this: &mut ChatPanel, _ev, _window, cx| {
-                ChatPanel::spawn_pick_workspace(cx);
-            }),
-        ))
-        .child(pill_button(
-            ElementId::Name("chat-model-toggle".into()),
-            model_label,
-            cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
-                this.toggle_model_dropdown(cx);
-            }),
-        ))
-        .child(eject_button(panel, cx))
-        .child(working_memory_pill(panel, cx))
+        .child(conversations_pill(panel, cx));
+
+    // D1: the workspace affordances (label/dropdown toggle + folder picker) exist
+    // only on a *bound* surface — the Workspaces dock. The Global Chat slot is
+    // structurally workspace-free: no opt-in, no "bind this chat" control, so the
+    // pills are simply not rendered there.
+    if panel.scope.allows_workspace_bind() {
+        row = row
+            .child(pill_button(
+                ElementId::Name("chat-ws-toggle".into()),
+                workspace_label,
+                cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+                    this.toggle_ws_dropdown(cx);
+                }),
+            ))
+            .child(pill_button(
+                ElementId::Name("chat-ws-pick".into()),
+                SharedString::from("+ folder"),
+                cx.listener(|_this: &mut ChatPanel, _ev, _window, cx| {
+                    ChatPanel::spawn_pick_workspace(cx);
+                }),
+            ));
+    }
+
+    row.child(pill_button(
+        ElementId::Name("chat-model-toggle".into()),
+        model_label,
+        cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+            this.toggle_model_dropdown(cx);
+        }),
+    ))
+    .child(eject_button(panel, cx))
+    .child(working_memory_pill(panel, cx))
 }
 
 /// Working-memory toggle pill — shows the live entry count for the active
@@ -3322,6 +3369,52 @@ mod tests {
     #[test]
     fn chat_scope_defaults_to_global() {
         assert_eq!(ChatScope::default(), ChatScope::Global);
+    }
+
+    // ── C2: Global Chat strictly workspace-free [D1] ─────────────────
+    // Same testing principle as C1: no gpui-executor harness exists here, so the
+    // structural invariant is pinned on the pure `ChatScope` resolver that *every*
+    // workspace-id site routes through — the dropdown selection (`select_workspace`),
+    // the folder picker (`spawn_pick_workspace`), and the turn-send read
+    // (`send_user_message`). If any of those ever bound the Global slot, the value
+    // they'd store/send is exactly `resolve_workspace_id`'s output, asserted None here.
+
+    /// D1: the Global Chat surface is structurally unbound — there is no escape
+    /// hatch to attach a workspace. Only the Docked dock may bind one. This pins
+    /// the predicate the render uses to hide the workspace pills on Global.
+    #[test]
+    fn only_docked_scope_allows_workspace_bind() {
+        assert!(
+            !ChatScope::Global.allows_workspace_bind(),
+            "Global Chat must be structurally workspace-free (D1)",
+        );
+        assert!(
+            ChatScope::Docked.allows_workspace_bind(),
+            "the Workspaces dock is the only bound surface",
+        );
+    }
+
+    /// D1: no matter what workspace id is offered to a Global panel — a dropdown
+    /// pick, a picked folder, a restored pointer, or the value read at turn-send —
+    /// it resolves to `None`. The turn-send read (`send_user_message`) routes
+    /// through this exact call, so a global turn can never ride a workspace
+    /// context. Docked passes the candidate through unchanged.
+    #[test]
+    fn global_scope_forces_workspace_id_to_none() {
+        // Stored id (e.g. a stale/restored value) → None on the send read.
+        assert_eq!(
+            ChatScope::Global.resolve_workspace_id(Some("ws-abc".into())),
+            None,
+            "Global turn-send must carry no workspace_id",
+        );
+        // Already-absent stays absent.
+        assert_eq!(ChatScope::Global.resolve_workspace_id(None), None);
+        // Docked is untouched — its scope arrives via C3.
+        assert_eq!(
+            ChatScope::Docked.resolve_workspace_id(Some("ws-abc".into())),
+            Some("ws-abc".to_owned()),
+        );
+        assert_eq!(ChatScope::Docked.resolve_workspace_id(None), None);
     }
 
     #[test]
