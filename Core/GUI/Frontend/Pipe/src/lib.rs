@@ -39,6 +39,7 @@ pub mod nav_bus;
 pub mod privacy_prefs;
 pub mod tools;
 pub mod updater_state;
+pub mod workspace_scope_bus;
 
 pub use conversation_bus::{
     current_active_conversation, publish_active_conversation, publish_conversation_list_changed,
@@ -49,6 +50,10 @@ pub use model_bus::{
     subscribe as subscribe_model_bus, ModelEvent,
 };
 pub use focus_bus::{request_workspace_focus, take_workspace_focus_receiver, WorkspaceFocus};
+pub use workspace_scope_bus::{
+    current_active_workspace, publish_active_workspace, take_workspace_scope_receiver,
+    WorkspaceScope,
+};
 pub use model_pull::{parse_pullable_model, pull_model, PullAggregate, PullProgress};
 pub use nav_bus::{install_nav_sender, is_nav_installed, request_nav};
 
