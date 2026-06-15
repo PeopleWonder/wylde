@@ -24,8 +24,8 @@ use gpui::{
     ElementId, Entity, FontWeight, IntoElement, Render, SharedString, Stateful, Window,
 };
 use wylde_theme::colors::{
-    BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_DIM, SURFACE_800, SURFACE_900, TEXT_MUTED,
-    TEXT_PRIMARY, TEXT_SECONDARY,
+    BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_DIM, DANGER, SURFACE_800, SURFACE_900, TEXT_MUTED,
+    TEXT_PRIMARY, TEXT_SECONDARY, WARNING,
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
@@ -668,7 +668,20 @@ impl WorkspacesPanel {
         for tab in WorkspacesTab::WIRED.iter().copied() {
             bar = bar.child(tab_button(tab, self.tab == tab, cx));
         }
-        bar
+        // A flexible spacer pushes the readiness chip to the right edge of the
+        // tab bar, so state is legible from whichever tab is selected.
+        bar = bar.child(div().flex_1());
+        bar.child(readiness_chip(self.readiness()))
+    }
+
+    /// Readiness of the entered workspace (decision 5), folding the last
+    /// service error with that workspace's index state.
+    fn readiness(&self) -> Readiness {
+        let ws = self
+            .entered
+            .as_ref()
+            .and_then(|id| self.workspaces.iter().find(|w| &w.id == id));
+        Readiness::compute(self.error.as_deref(), ws)
     }
 
     /// The Registry landing body: a single uniform, recency-ordered list of
@@ -780,6 +793,38 @@ fn back_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
         )
         // "← Workspaces" reads as "back to the workspace list".
         .child(SharedString::from("← Workspaces"))
+}
+
+/// The readiness chip (decision 5): a small coloured dot + short label in the
+/// in-workspace tab bar. Conveys service-up/indexed state at a glance from any
+/// tab — itself meaningful status, per Aaron's no-decoration principle.
+fn readiness_chip(readiness: Readiness) -> gpui::Div {
+    let (colour, label) = readiness.chip();
+    div()
+        .flex_shrink_0()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py_0p5()
+        .rounded(px(999.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .child(
+            div()
+                .w(px(7.0))
+                .h(px(7.0))
+                .rounded(px(999.0))
+                .bg(rgb(pack(colour))),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(SharedString::from(label)),
+        )
 }
 
 fn header_row(cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
@@ -1086,6 +1131,62 @@ fn classify_service_error(err: &str) -> ServiceErrorKind {
     }
 }
 
+/// Workspace **readiness** (UX rework decision 5) — the single state the
+/// in-workspace tab bar's chip surfaces, so the panel reads legibly from any
+/// tab. Two signals only: is the service reachable & current, and is the
+/// workspace indexed. Per decision 8 the graph node count is deliberately NOT
+/// part of readiness — it's a metric shown inside the Graph view, not a gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Readiness {
+    /// Service up + workspace indexed — green.
+    Ready,
+    /// A re-index is in flight — amber.
+    Indexing,
+    /// Service up but the workspace has never been indexed — amber.
+    NotIndexed,
+    /// The service pipe is down — red.
+    ServiceDown,
+    /// The service is up but its binary predates the verb (`no_action`) — red.
+    OutOfDate,
+}
+
+impl Readiness {
+    /// Derive readiness from the last service error (if any) and the entered
+    /// workspace's index state. A service problem dominates (you can't trust
+    /// index state from a down/stale service); otherwise indexing → fresh →
+    /// never. A *logical* error (bad_request etc.) is not a readiness-red — it
+    /// doesn't mean the service is down — so it falls through to index state.
+    fn compute(error: Option<&str>, ws: Option<&WorkspaceSummary>) -> Readiness {
+        if let Some(e) = error {
+            match classify_service_error(e) {
+                ServiceErrorKind::Down => return Readiness::ServiceDown,
+                ServiceErrorKind::OutOfDate => return Readiness::OutOfDate,
+                ServiceErrorKind::Logical => {}
+            }
+        }
+        match ws {
+            Some(w) if w.indexing => Readiness::Indexing,
+            Some(w) if w.file_count.unwrap_or(0) > 0 || w.last_indexed_at.is_some() => {
+                Readiness::Ready
+            }
+            // A workspace with no index yet, or no summary loaded — "not indexed".
+            _ => Readiness::NotIndexed,
+        }
+    }
+
+    /// (dot colour, short label) for the chip. Colours are theme tokens: BRAND
+    /// = ready, WARNING (amber) = work pending, DANGER (red) = service problem.
+    fn chip(self) -> (gpui::Rgba, &'static str) {
+        match self {
+            Readiness::Ready => (BRAND, "Ready"),
+            Readiness::Indexing => (WARNING, "Indexing"),
+            Readiness::NotIndexed => (WARNING, "Not indexed"),
+            Readiness::ServiceDown => (DANGER, "Service down"),
+            Readiness::OutOfDate => (DANGER, "Out of date"),
+        }
+    }
+}
+
 /// Error banner. For a recoverable service error (down / out of date) it shows
 /// the graceful-degradation message + a Retry button (re-reads the list); the
 /// panel preserves its last-known workspace rows underneath. Other errors
@@ -1335,6 +1436,54 @@ mod tests {
         // so the banner says "update/restart", not "start", the running service.
         let e = "no_action: unknown action workspaces.graph";
         assert_eq!(classify_service_error(e), ServiceErrorKind::OutOfDate);
+    }
+
+    #[test]
+    fn readiness_service_problems_dominate_index_state() {
+        // A down/stale service is red regardless of (untrustworthy) index state.
+        let indexed = WorkspaceSummary {
+            file_count: Some(10),
+            last_indexed_at: Some("2m ago".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            Readiness::compute(Some("pipe_unavailable: down"), Some(&indexed)),
+            Readiness::ServiceDown
+        );
+        assert_eq!(
+            Readiness::compute(Some("no_action: unknown action"), Some(&indexed)),
+            Readiness::OutOfDate
+        );
+        // A logical error is NOT readiness-red — it doesn't mean the service is
+        // down — so index state still decides.
+        assert_eq!(
+            Readiness::compute(Some("bad_request: id required"), Some(&indexed)),
+            Readiness::Ready
+        );
+    }
+
+    #[test]
+    fn readiness_reflects_index_state_when_service_ok() {
+        let indexing = WorkspaceSummary { indexing: true, ..Default::default() };
+        assert_eq!(Readiness::compute(None, Some(&indexing)), Readiness::Indexing);
+
+        let fresh = WorkspaceSummary { file_count: Some(3), ..Default::default() };
+        assert_eq!(Readiness::compute(None, Some(&fresh)), Readiness::Ready);
+
+        let never = WorkspaceSummary::default();
+        assert_eq!(Readiness::compute(None, Some(&never)), Readiness::NotIndexed);
+        // No summary loaded yet ⇒ not indexed.
+        assert_eq!(Readiness::compute(None, None), Readiness::NotIndexed);
+    }
+
+    #[test]
+    fn readiness_chip_colours_map_to_theme_tokens() {
+        // Ready is brand; pending is amber; service problems are danger-red.
+        assert_eq!(Readiness::Ready.chip().0, BRAND);
+        assert_eq!(Readiness::Indexing.chip().0, WARNING);
+        assert_eq!(Readiness::NotIndexed.chip().0, WARNING);
+        assert_eq!(Readiness::ServiceDown.chip().0, DANGER);
+        assert_eq!(Readiness::OutOfDate.chip().0, DANGER);
     }
 
     fn panel_with_one_indexing_row() -> WorkspacesPanel {
