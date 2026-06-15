@@ -29,6 +29,10 @@ use wylde_theme::colors::{
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
+/// Lifecycle service name for the workspaces backend — the target of the
+/// in-panel Start/Restart affordance (decision 7).
+const WORKSPACES_SERVICE: &str = "wylde-workspaces";
+
 use crate::editor::EditorTab;
 use crate::files::FilesTab;
 use crate::graph::GraphView;
@@ -316,6 +320,42 @@ impl WorkspacesPanel {
                     }
                 }
                 panel.loading = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Drive a one-click service-control affordance (decision 7): start or
+    /// restart the `wylde-workspaces` service via the reusable lifecycle
+    /// helpers, then re-read the list so a now-reachable / now-current service
+    /// repopulates the panel without a manual Retry. `restart` picks the
+    /// `service.restart` verb (out-of-date recovery); otherwise `service.start`
+    /// (down recovery). A control failure replaces the banner with its error.
+    pub fn spawn_service_control(restart: bool, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = if restart {
+                wylde_gui_pipe::restart_service(WORKSPACES_SERVICE).await
+            } else {
+                wylde_gui_pipe::start_service(WORKSPACES_SERVICE).await
+            };
+            if let Err(e) = outcome {
+                let _ = this.update(app_cx, |panel, cx| {
+                    panel.error = Some(e);
+                    cx.notify();
+                });
+                return;
+            }
+            // Control succeeded — re-read the list (clears the banner on success).
+            let ws = list_workspaces().await;
+            let _ = this.update(app_cx, |panel, cx| {
+                match ws {
+                    Ok(ws) => {
+                        panel.error = None;
+                        panel.workspaces = ws;
+                    }
+                    Err(e) => panel.error = Some(e),
+                }
                 cx.notify();
             });
         })
@@ -1195,13 +1235,11 @@ fn error_strip(msg: &str, cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
     let kind = classify_service_error(msg);
     let unavailable = kind != ServiceErrorKind::Logical;
     let text = match kind {
-        ServiceErrorKind::Down => "Workspaces service unavailable — showing last-known data. \
-             Start the workspaces service, then Retry."
-            .to_owned(),
+        ServiceErrorKind::Down => {
+            "Workspaces service isn't running — showing last-known data.".to_owned()
+        }
         ServiceErrorKind::OutOfDate => {
-            "Workspaces service is out of date — this feature isn't in your build. \
-             Update/restart the workspaces service, then Retry."
-                .to_owned()
+            "Workspaces service is out of date — this feature isn't in your build.".to_owned()
         }
         ServiceErrorKind::Logical => msg.to_owned(),
     };
@@ -1232,6 +1270,30 @@ fn error_strip(msg: &str, cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
         );
 
     if unavailable {
+        // One-click recovery (decision 7): a down service offers Start; an
+        // out-of-date service offers Restart (picks up the rebuilt binary).
+        // This replaces the old passive "go start it yourself" sentence.
+        match kind {
+            ServiceErrorKind::Down => {
+                strip = strip.child(action_button(
+                    ElementId::Name("workspaces-start-service".into()),
+                    "Start service",
+                    cx.listener(|_this: &mut WorkspacesPanel, _event, _window, cx| {
+                        WorkspacesPanel::spawn_service_control(false, cx);
+                    }),
+                ));
+            }
+            ServiceErrorKind::OutOfDate => {
+                strip = strip.child(action_button(
+                    ElementId::Name("workspaces-restart-service".into()),
+                    "Restart service",
+                    cx.listener(|_this: &mut WorkspacesPanel, _event, _window, cx| {
+                        WorkspacesPanel::spawn_service_control(true, cx);
+                    }),
+                ));
+            }
+            ServiceErrorKind::Logical => {}
+        }
         strip = strip.child(action_button(
             ElementId::Name("workspaces-retry".into()),
             "Retry",

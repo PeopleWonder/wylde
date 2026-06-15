@@ -715,6 +715,43 @@ pub async fn service_health(service: &str) -> Result<Value, String> {
     lifecycle_action("service.health", serde_json::json!({ "name": service })).await
 }
 
+// ── Reusable service-control affordance (GUI-wide) ────────────────────
+//
+// Aaron's locked decision 7: start/restart backend services from ANYWHERE in
+// the GUI "for ease of use", not just one panel. These named wrappers over
+// `lifecycle_action` are the shared core every surface drives — the Workspaces
+// error states (down → Start, out-of-date → Restart), the Graph view's
+// "Start graph database", and any future panel — so the lifecycle verb shape
+// lives in exactly one place. The Shell slot's "Start service" button predates
+// this and uses the same `service.start` verb (see `slot::start_service_action`).
+
+/// The Lifecycle daemon's canonical name for the graph database (Memgraph,
+/// the Bolt `:7687` backend). Matches the Dashboard's `MONITORED_SERVICES`
+/// entry so a one-click "Start graph database" targets the same service the
+/// health strip probes.
+pub const MEMGRAPH_SERVICE: &str = "wylde-memgraph";
+
+/// Start a stopped service (`service.start`). Used by the "down" recovery
+/// affordance — the pipe is unreachable, so the daemon needs to (re)spawn it.
+pub async fn start_service(service: &str) -> Result<Value, String> {
+    lifecycle_action("service.start", serde_json::json!({ "name": service })).await
+}
+
+/// Restart a running service (`service.restart`). Used by the "out of date"
+/// recovery affordance — the service answers but its binary predates the verb,
+/// so a restart picks up the rebuilt binary. (The lifecycle `service.restart`
+/// verb is owned by the backend lifecycle crate; this is only the GUI driver.)
+pub async fn restart_service(service: &str) -> Result<Value, String> {
+    lifecycle_action("service.restart", serde_json::json!({ "name": service })).await
+}
+
+/// Start the graph database ([`MEMGRAPH_SERVICE`]) — the one-click recovery
+/// for a down Bolt `:7687` backend (decision 7). Thin alias over
+/// [`start_service`] so call sites read intent, not a service name.
+pub async fn start_graph_database() -> Result<Value, String> {
+    start_service(MEMGRAPH_SERVICE).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -725,6 +762,17 @@ mod tests {
         assert_eq!(pipe_name("lifecycle"), r"\\.\pipe\wylde-lifecycle");
         assert_eq!(pipe_name("wylde-lifecycle"), r"\\.\pipe\wylde-lifecycle");
         assert_eq!(pipe_name("harness"), r"\\.\pipe\wylde-harness");
+    }
+
+    #[test]
+    fn service_control_helpers_exist_and_target_canonical_memgraph() {
+        // Build-time witness that the reusable service-control surface compiles
+        // (decision 7). The graph-db alias must target the same service name
+        // the Dashboard health strip probes.
+        let _ = start_service;
+        let _ = restart_service;
+        let _ = start_graph_database;
+        assert_eq!(MEMGRAPH_SERVICE, "wylde-memgraph");
     }
 
     #[test]
