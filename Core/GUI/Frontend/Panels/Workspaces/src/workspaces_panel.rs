@@ -994,30 +994,50 @@ fn loading_row() -> gpui::Div {
         .child(SharedString::from("Loading…"))
 }
 
-/// True when a pipe error means the `wylde-workspaces` service is
-/// unreachable (down / not launched / slow), as opposed to a logical
-/// application error. Drives the friendly "service unavailable" fallback
-/// (scope v2 §7.5) — the panel keeps its last-known list and offers Retry.
-fn is_service_unavailable(err: &str) -> bool {
-    err.contains("pipe_unavailable")
-        || err.contains("pipe_connect")
-        || err.contains("pipe_timeout")
-        || err.contains("not running")
-        || err.contains("no_action")
+/// How a `wylde-workspaces` error should be presented (F2). A `pipe_*`
+/// transport failure means the service is genuinely *down* (→ "Start it"); a
+/// `no_action` means the service is *up* but its binary predates the verb (→
+/// "Update/Restart it") — conflating the two told users to start a running
+/// service. Anything else is a plain logical error, shown verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceErrorKind {
+    Down,
+    OutOfDate,
+    Logical,
 }
 
-/// Error banner. For a workspaces-service-unavailable error it shows the
-/// graceful-degradation message + a Retry button (re-reads the list); the
+fn classify_service_error(err: &str) -> ServiceErrorKind {
+    if err.contains("pipe_unavailable")
+        || err.contains("pipe_connect")
+        || err.contains("pipe_timeout")
+        || err.contains("pipe_io")
+        || err.contains("not running")
+    {
+        ServiceErrorKind::Down
+    } else if err.contains("no_action") {
+        ServiceErrorKind::OutOfDate
+    } else {
+        ServiceErrorKind::Logical
+    }
+}
+
+/// Error banner. For a recoverable service error (down / out of date) it shows
+/// the graceful-degradation message + a Retry button (re-reads the list); the
 /// panel preserves its last-known workspace rows underneath. Other errors
 /// render verbatim.
 fn error_strip(msg: &str, cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
-    let unavailable = is_service_unavailable(msg);
-    let text = if unavailable {
-        "Workspaces service unavailable — showing last-known data. \
-         Start the workspaces service, then Retry."
-            .to_owned()
-    } else {
-        msg.to_owned()
+    let kind = classify_service_error(msg);
+    let unavailable = kind != ServiceErrorKind::Logical;
+    let text = match kind {
+        ServiceErrorKind::Down => "Workspaces service unavailable — showing last-known data. \
+             Start the workspaces service, then Retry."
+            .to_owned(),
+        ServiceErrorKind::OutOfDate => {
+            "Workspaces service is out of date — this feature isn't in your build. \
+             Update/restart the workspaces service, then Retry."
+                .to_owned()
+        }
+        ServiceErrorKind::Logical => msg.to_owned(),
     };
 
     let mut strip = div()
@@ -1215,22 +1235,30 @@ mod tests {
     fn service_unavailable_detects_pipe_down_errors() {
         // The shapes `wylde_gui_pipe::call` returns when wylde-workspaces
         // isn't reachable → the "service unavailable + Retry" fallback.
-        assert!(is_service_unavailable(
-            "pipe_unavailable: service 'wylde-workspaces' is not running (pipe not found)"
-        ));
-        assert!(is_service_unavailable(
-            "pipe_connect: wylde-workspaces: oops"
-        ));
-        assert!(is_service_unavailable(
-            "pipe_timeout: no response from 'wylde-workspaces' within 10s"
-        ));
+        for e in [
+            "pipe_unavailable: service 'wylde-workspaces' is not running (pipe not found)",
+            "pipe_connect: wylde-workspaces: oops",
+            "pipe_timeout: no response from 'wylde-workspaces' within 10s",
+        ] {
+            assert_eq!(classify_service_error(e), ServiceErrorKind::Down, "{e}");
+        }
         // A logical application error is NOT a service-unavailable fallback.
-        assert!(!is_service_unavailable(
-            "bad_request: workspace_id is required"
-        ));
-        assert!(!is_service_unavailable(
-            "not_found: workspace \"x\" not found"
-        ));
+        assert_eq!(
+            classify_service_error("bad_request: workspace_id is required"),
+            ServiceErrorKind::Logical
+        );
+        assert_eq!(
+            classify_service_error("not_found: workspace \"x\" not found"),
+            ServiceErrorKind::Logical
+        );
+    }
+
+    #[test]
+    fn no_action_classifies_as_out_of_date_not_down() {
+        // F2: a running service that lacks the verb is OUT OF DATE, not down —
+        // so the banner says "update/restart", not "start", the running service.
+        let e = "no_action: unknown action workspaces.graph";
+        assert_eq!(classify_service_error(e), ServiceErrorKind::OutOfDate);
     }
 
     fn panel_with_one_indexing_row() -> WorkspacesPanel {
