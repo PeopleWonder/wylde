@@ -161,11 +161,40 @@ pub async fn handle_set_persona(payload: Value) -> Reply {
     Reply::ok(json!({ "ok": true, "workspace_id": id }))
 }
 
+/// Join a workspace definition with its live index state (F4). The
+/// config-only [`registry::WorkspaceDefinition::to_value`] omits
+/// `file_count` / `last_indexed_at` / `indexing` — those live in a separate
+/// `rag_state.json` ([`indexer::status`]) that no read joined, which is why
+/// the Registry showed "Last index: never" permanently even after a
+/// successful index. Merge the [`store::RagState`] snapshot onto the
+/// definition object so every list row carries live index state.
+///
+/// `last_indexed_at` is the raw epoch-seconds `f64` from `RagState`; the GUI
+/// formats it for display (0.0 ⇒ "never"). Fields are additive, so the
+/// InferenceBar / Memory dropdown consumers that read `list_mru` are unaffected.
+fn def_with_index_state(def: &registry::WorkspaceDefinition) -> Value {
+    let mut v = def.to_value();
+    let st = indexer::status(&def.id);
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("indexing".to_owned(), json!(st.indexing));
+        obj.insert("last_indexed_at".to_owned(), json!(st.last_indexed_at));
+        obj.insert("file_count".to_owned(), json!(st.file_count));
+        obj.insert("chunk_count".to_owned(), json!(st.chunk_count));
+        obj.insert("last_error".to_owned(), json!(st.last_error));
+    }
+    v
+}
+
 /// `workspaces.list_mru` — MRU-5 workspace list + active id for the
-/// InferenceBar dropdown. No payload.
+/// InferenceBar dropdown and the Registry list. No payload.
+///
+/// Each row is the workspace definition joined with its live index state
+/// (F4) so `file_count` / `last_indexed_at` / `indexing` survive a reload —
+/// previously they were carried only in the one-shot `reindex` reply and
+/// lost on refresh.
 pub async fn handle_list_mru(_payload: Value) -> Reply {
     let (defs, active_id) = registry::list_mru();
-    let workspaces: Vec<Value> = defs.iter().map(|d| d.to_value()).collect();
+    let workspaces: Vec<Value> = defs.iter().map(def_with_index_state).collect();
     Reply::ok(json!({ "workspaces": workspaces, "active_id": active_id }))
 }
 
@@ -299,6 +328,49 @@ mod tests {
         let active = handle_set_active(json!({ "workspace_id": id })).await;
         assert!(active.ok);
         assert_eq!(active.data["active_id"], id);
+    }
+
+    #[tokio::test]
+    async fn list_mru_joins_index_state() {
+        // F4: list_mru must carry the RagState fields (file_count /
+        // last_indexed_at / indexing) joined from rag_state.json, so the
+        // Registry stops showing "Last index: never" after an index.
+        let _env = TestEnv::new();
+        let td = tempdir().unwrap();
+        let p = td.path().join("idx-ws");
+        std::fs::create_dir(&p).unwrap();
+        let created = handle_create(json!({ "folder": p.to_string_lossy() })).await;
+        let id = created.data["id"].as_str().unwrap().to_owned();
+
+        // Before any index: fields are present and zero/false (not absent).
+        let listed = handle_list_mru(Value::Null).await;
+        let row = &listed.data["workspaces"][0];
+        assert_eq!(row["file_count"], json!(0));
+        assert_eq!(row["last_indexed_at"], json!(0.0));
+        assert_eq!(row["indexing"], json!(false));
+
+        // Simulate a completed index by writing RagState directly.
+        indexer::store::save_state(
+            &id,
+            &indexer::store::RagState {
+                indexing: false,
+                last_indexed_at: 1_781_470_631.0,
+                file_count: 7,
+                chunk_count: 42,
+                last_error: None,
+            },
+        )
+        .unwrap();
+
+        let listed = handle_list_mru(Value::Null).await;
+        let row = &listed.data["workspaces"][0];
+        assert_eq!(row["file_count"], json!(7), "count must survive reload");
+        assert_eq!(row["chunk_count"], json!(42));
+        assert_eq!(row["last_indexed_at"], json!(1_781_470_631.0));
+        assert_eq!(row["indexing"], json!(false));
+        // Definition fields are still present (join, not replace).
+        assert_eq!(row["id"], json!(id));
+        assert_eq!(row["rag_enabled"], json!(true));
     }
 
     #[tokio::test]
