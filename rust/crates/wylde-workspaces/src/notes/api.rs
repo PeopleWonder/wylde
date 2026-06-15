@@ -44,7 +44,10 @@ pub async fn handle_list(payload: Value) -> Reply {
 }
 
 /// `workspaces.notes.add` — append a note and embed it on write. Payload
-/// `{ workspace_id, text }`. Returns the new note.
+/// `{ workspace_id, text, source? }`. The optional `source` records the
+/// note's provenance — the C2b copy-in passes `"long-term-copy"` when the
+/// user manually promotes a long-term memory into this workspace; omitted
+/// for ordinary notes. Returns the new note.
 pub async fn handle_add(payload: Value) -> Reply {
     let Some(ws) = require_string(&payload, "workspace_id") else {
         return Reply::err_msg("bad_request", "workspace_id is required");
@@ -53,6 +56,9 @@ pub async fn handle_add(payload: Value) -> Reply {
         return Reply::err_msg("bad_request", "text is required");
     };
     let mut e = WorkspaceMemoryEntry::new(entry::new_note_id(), &text);
+    if let Some(source) = require_string(&payload, "source") {
+        e.source = source;
+    }
     // Embed on write so per-turn scoring stays a single dot product. Bounded
     // to stay inside the Medium verb budget: a down/slow embedder is
     // non-fatal — the note persists with an empty embedding (recency only).
@@ -183,6 +189,37 @@ mod tests {
         assert_eq!(del.data["ok"], true);
         let empty = handle_list(json!({ "workspace_id": ws })).await;
         assert_eq!(empty.data["count"], 0);
+    }
+
+    #[tokio::test]
+    async fn add_with_source_persists_provenance() {
+        // The C2b copy-in real path: a long-term item promoted into a
+        // workspace's notes carries its `source` provenance tag, and the
+        // tag survives the on-disk round-trip exposed by `list`.
+        let _env = TestEnv::new();
+        let ws = "ws-notes-copyin-000000";
+        let added = handle_add(json!({
+            "workspace_id": ws,
+            "text": "Aaron prefers Bash over PowerShell",
+            "source": "long-term-copy",
+        }))
+        .await;
+        assert!(added.ok, "add failed: {:?}", added.error);
+        assert_eq!(added.data["source"], "long-term-copy");
+        assert_eq!(added.data["text"], "Aaron prefers Bash over PowerShell");
+
+        let listed = handle_list(json!({ "workspace_id": ws })).await;
+        assert_eq!(listed.data["count"], 1);
+        assert_eq!(listed.data["notes"][0]["source"], "long-term-copy");
+    }
+
+    #[tokio::test]
+    async fn add_without_source_defaults_empty() {
+        let _env = TestEnv::new();
+        let ws = "ws-notes-nosource-000000";
+        let added = handle_add(json!({ "workspace_id": ws, "text": "ambient" })).await;
+        assert!(added.ok);
+        assert_eq!(added.data["source"], "");
     }
 
     #[tokio::test]
