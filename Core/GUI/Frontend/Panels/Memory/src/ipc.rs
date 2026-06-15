@@ -112,6 +112,34 @@ impl WorkspaceSummary {
     }
 }
 
+/// Provenance tag stamped on a workspace note that the user manually
+/// copied in from long-term memory (the C2b opt-in). The harness never
+/// auto-injects long-term into a bound workspace chat [D2]; this is how a
+/// specific item gets promoted into the workspace's own notes tier.
+pub const COPY_IN_SOURCE: &str = "long-term-copy";
+
+/// Copy a long-term memory's body into a workspace's notes tier via
+/// `workspaces.notes.add`. The manual half of C2b: long-term stays out of
+/// bound workspace chats, so the user promotes an item explicitly. The
+/// note is tagged with [`COPY_IN_SOURCE`] so its provenance is recorded.
+pub async fn copy_long_term_to_workspace(workspace_id: &str, body: &str) -> Result<(), String> {
+    wylde_gui_pipe::call(
+        SVC_WORKSPACES,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "workspaces.notes.add",
+            "payload": {
+                "workspace_id": workspace_id,
+                "text": body,
+                "source": COPY_IN_SOURCE,
+            },
+        })),
+    )
+    .await
+    .map(|_| ())
+}
+
 /// Read the curated long-term list, importance-desc.
 pub async fn list_long_term() -> Result<Vec<LongTermRecord>, String> {
     let v = wylde_gui_pipe::call(
@@ -333,6 +361,13 @@ mod tests {
         let _ = search_long_term;
         let _ = recent_workspaces;
         let _ = fetch_short_term;
+        let _ = copy_long_term_to_workspace;
+    }
+
+    #[test]
+    fn copy_in_source_tag_is_stable() {
+        // Frozen so the backend provenance filter and this tag stay aligned.
+        assert_eq!(COPY_IN_SOURCE, "long-term-copy");
     }
 
     #[test]

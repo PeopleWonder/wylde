@@ -32,6 +32,14 @@ pub struct WorkspaceMemoryEntry {
     /// prompt).
     pub text: String,
 
+    /// Provenance tag — where this note came from. Empty for notes the
+    /// curation / reflection layer minted; set to `"long-term-copy"` when
+    /// the user manually promotes a long-term memory into this workspace
+    /// (the C2b copy-in opt-in). Defaults empty so existing `memory.jsonl`
+    /// files load unchanged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+
     /// Creation time (epoch seconds).
     #[serde(default)]
     pub created_at: f64,
@@ -63,6 +71,7 @@ impl WorkspaceMemoryEntry {
         Self {
             id: id.into(),
             text: text.into(),
+            source: String::new(),
             created_at: now,
             last_used_at: now,
             embedding: Vec::new(),
@@ -75,6 +84,7 @@ impl WorkspaceMemoryEntry {
         serde_json::json!({
             "id": self.id,
             "text": self.text,
+            "source": self.source,
             "created_at": self.created_at,
             "last_used_at": self.last_used_at,
         })
@@ -200,6 +210,33 @@ mod tests {
         // is ciphertext on disk under OI-14).
         let raw = wylde_shared::encryption::read_to_string_at_rest(&memory_path(ws)).unwrap();
         assert_eq!(raw.lines().filter(|l| !l.is_empty()).count(), 2);
+    }
+
+    #[test]
+    fn source_tag_round_trips_and_defaults_empty() {
+        let _env = TestEnv::new();
+        let ws = "ws-source-000000";
+        let tagged = WorkspaceMemoryEntry {
+            source: "long-term-copy".to_owned(),
+            ..WorkspaceMemoryEntry::new("s1", "promoted insight")
+        };
+        append(ws, tagged).unwrap();
+        // A plain note minted via `new` carries no source.
+        append(ws, WorkspaceMemoryEntry::new("s2", "ambient note")).unwrap();
+        let back = load(ws);
+        assert_eq!(back[0].source, "long-term-copy");
+        assert!(back[1].source.is_empty(), "default source is empty");
+        // Pre-source on-disk lines (no `source` key) still load.
+        let dir = crate::registry::persistence::workspace_dir("ws-source-legacy-000000");
+        crate::common::ensure_dir(&dir).unwrap();
+        wylde_shared::encryption::write_at_rest(
+            &memory_path("ws-source-legacy-000000"),
+            b"{\"id\":\"old\",\"text\":\"legacy\"}\n",
+        )
+        .unwrap();
+        let legacy = load("ws-source-legacy-000000");
+        assert_eq!(legacy.len(), 1);
+        assert!(legacy[0].source.is_empty());
     }
 
     #[test]

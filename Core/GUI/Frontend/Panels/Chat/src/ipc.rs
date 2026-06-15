@@ -477,6 +477,34 @@ pub async fn set_active_workspace(workspace_id: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// `workspaces.notes.add` — append `text` to a workspace's notes tier.
+/// Thin wrapper so the dock/Chat surface — which owns the entered-
+/// workspace scope — can promote an item (e.g. a long-term memory) into
+/// the active workspace's notes (the C2b copy-in opt-in [D2]). `source`
+/// records provenance (`"long-term-copy"` for the manual copy-in); pass
+/// an empty string for an untagged note.
+pub async fn add_workspace_note(
+    workspace_id: &str,
+    text: &str,
+    source: &str,
+) -> Result<(), String> {
+    wylde_gui_pipe::call(
+        SVC_WORKSPACES,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "workspaces.notes.add",
+            "payload": {
+                "workspace_id": workspace_id,
+                "text": text,
+                "source": source,
+            },
+        })),
+    )
+    .await
+    .map(|_| ())
+}
+
 /// `consent.respond` — Allow / Deny / Once response to a pending
 /// gate prompt.  `remember = false` makes the decision authorise the
 /// current call without writing the persisted consent store
@@ -1016,6 +1044,7 @@ mod tests {
         let _ = eject_model;
         let _ = recent_workspaces;
         let _ = activate_workspace;
+        let _ = add_workspace_note;
         let _ = respond_consent;
         let _ = stream_turn;
         let _ = stream_consent_pending;

@@ -36,8 +36,8 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::ipc::{
-    fetch_short_term, list_long_term, recent_workspaces, search_long_term, LongTermRecord,
-    ShortTermEntry, WorkspaceSummary,
+    copy_long_term_to_workspace, fetch_short_term, list_long_term, recent_workspaces,
+    search_long_term, LongTermRecord, ShortTermEntry, WorkspaceSummary,
 };
 
 /// MRU cap used for the workspace section.
@@ -76,6 +76,12 @@ pub struct MemoryPanel {
     /// is in flight — drives the "Loading…" row instead of a flash of
     /// "empty buffer".
     pub loading_short_term: bool,
+    /// Transient status line for the last long-term → workspace copy-in
+    /// (C2b). `Some(msg)` renders a strip under the header; cleared on the
+    /// next refresh. The user copies a long-term item into the most-recent
+    /// workspace's notes — long-term is never auto-injected into bound
+    /// workspace chats [D2], so this is the manual promotion path.
+    pub copy_feedback: Option<String>,
     _search_sub: Subscription,
 }
 
@@ -109,6 +115,7 @@ impl MemoryPanel {
             active_conversation: None,
             short_term: Vec::new(),
             loading_short_term: false,
+            copy_feedback: None,
             _search_sub: sub,
         }
     }
@@ -218,6 +225,8 @@ impl MemoryPanel {
                         panel.error = None;
                         panel.long_term = rows;
                         panel.search_active = false;
+                        // A fresh list supersedes the last copy-in notice.
+                        panel.copy_feedback = None;
                     }
                     Err(err) => {
                         panel.error = Some(err);
@@ -320,6 +329,35 @@ impl MemoryPanel {
         }
         cx.notify();
     }
+
+    /// The workspace a copy-in targets: the MRU head (most recently
+    /// activated ≈ the "entered" workspace). `None` until the workspace
+    /// list loads, or when the user has no workspaces — the per-row
+    /// "Copy to …" affordance is hidden in that case.
+    pub fn copy_target_id(&self) -> Option<String> {
+        self.workspaces.first().map(|w| w.id.clone())
+    }
+
+    /// Copy a long-term record's body into the target workspace's notes
+    /// tier (C2b copy-in). Fires `workspaces.notes.add` off-thread; the
+    /// result lands in [`Self::copy_feedback`] for a transient status
+    /// strip. Soft-fails — a transport error surfaces in the strip rather
+    /// than tearing down the browser.
+    pub fn spawn_copy_in(&mut self, workspace_id: String, body: String, cx: &mut Context<Self>) {
+        self.copy_feedback = Some(format!("Copying into “{workspace_id}”…"));
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = copy_long_term_to_workspace(&workspace_id, &body).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.copy_feedback = Some(match outcome {
+                    Ok(()) => format!("Copied into “{workspace_id}” notes."),
+                    Err(err) => format!("Copy into “{workspace_id}” failed: {err}"),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 }
 
 impl Render for MemoryPanel {
@@ -336,6 +374,10 @@ impl Render for MemoryPanel {
             column = column.child(error_strip(err));
         }
 
+        if let Some(msg) = &self.copy_feedback {
+            column = column.child(info_strip(msg));
+        }
+
         column = column.child(section_title("Long-term"));
         column = column.child(search_strip(self));
         if self.loading_long_term {
@@ -347,9 +389,12 @@ impl Render for MemoryPanel {
                 "No long-term memory yet. Memories you ask Wylde to remember land here."
             }));
         } else {
+            // Copy-in targets the most-recent workspace (the entered one);
+            // hidden until the workspace list loads.
+            let copy_target = self.copy_target_id();
             for rec in &self.long_term {
                 let expanded = self.expanded.contains(&rec.id);
-                column = column.child(long_term_row(rec, expanded, cx));
+                column = column.child(long_term_row(rec, expanded, copy_target.as_deref(), cx));
             }
         }
 
@@ -476,6 +521,7 @@ fn search_strip(panel: &MemoryPanel) -> gpui::Div {
 fn long_term_row(
     rec: &LongTermRecord,
     expanded: bool,
+    copy_target: Option<&str>,
     cx: &mut Context<MemoryPanel>,
 ) -> Stateful<gpui::Div> {
     let id_for_click = rec.id.clone();
@@ -554,7 +600,48 @@ fn long_term_row(
                 .child(tag_label),
         );
     }
+
+    // C2b copy-in: promote this long-term item into the entered
+    // workspace's notes. Shown only once a target workspace exists.
+    if let Some(ws_id) = copy_target {
+        row = row.child(copy_in_button(&rec.id, &rec.body, ws_id, cx));
+    }
     row
+}
+
+/// Per-row "Copy to <workspace>" affordance (C2b copy-in). Promotes this
+/// long-term item into the most-recent workspace's notes tier; stops
+/// propagation so the click doesn't also toggle the row's expand.
+fn copy_in_button(
+    record_id: &str,
+    body: &str,
+    workspace_id: &str,
+    cx: &mut Context<MemoryPanel>,
+) -> Stateful<gpui::Div> {
+    let body_for_click = body.to_owned();
+    let ws_for_click = workspace_id.to_owned();
+    let label = SharedString::from(format!("Copy to “{workspace_id}”"));
+    div()
+        .id(ElementId::Name(format!("memory-copyin::{record_id}").into()))
+        .self_start()
+        .px_3()
+        .py_1()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_DEFAULT)))
+        .cursor_pointer()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::MICRO))
+        .text_color(rgb(pack(TEXT_SECONDARY)))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut MemoryPanel, _ev, _window, cx| {
+                // Don't also toggle the row's expand underneath us.
+                cx.stop_propagation();
+                this.spawn_copy_in(ws_for_click.clone(), body_for_click.clone(), cx);
+            }),
+        )
+        .child(label)
 }
 
 fn workspace_row(ws: &WorkspaceSummary) -> gpui::Div {
@@ -798,6 +885,22 @@ fn loading_row() -> gpui::Div {
         .text_size(px(size::SM))
         .text_color(rgb(pack(TEXT_MUTED)))
         .child(SharedString::from("Loading…"))
+}
+
+/// Transient status strip for the long-term → workspace copy-in (C2b).
+/// Uses the brand accent border so it reads as a notice, not an error.
+fn info_strip(msg: &str) -> gpui::Div {
+    div()
+        .bg(rgb(pack(SURFACE_800)))
+        .border_1()
+        .border_color(rgb(pack(BRAND_DIM)))
+        .rounded(px(4.0))
+        .px_3()
+        .py_2()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(TEXT_SECONDARY)))
+        .child(SharedString::from(msg.to_owned()))
 }
 
 fn error_strip(msg: &str) -> gpui::Div {
