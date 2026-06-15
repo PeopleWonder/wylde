@@ -20,13 +20,18 @@ pub struct GraphLoad {
     pub graph: WorkspaceGraph,
 }
 
-/// Why a graph load failed — distinguishes the service-down degrade path
-/// (OI-1) from a logical/application error so the view renders the right thing.
+/// Why a graph load failed — distinguishes three states the view renders
+/// differently (OI-1 / F2): the service is *down*, the service is *up but its
+/// binary is too old to know the verb*, and a plain logical error.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphFetchError {
-    /// The service is unreachable (down / not launched / slow / breaker open).
-    /// → "service unavailable + Retry" fallback; keep last-known data.
+    /// The pipe is unreachable (down / not launched / slow / breaker open).
+    /// → "service unavailable, Start it + Retry" fallback; keep last-known data.
     ServiceUnavailable(String),
+    /// The service answered but doesn't know the verb (`no_action`) — its binary
+    /// predates the feature. → "service out of date, Update/Restart + Retry".
+    /// Telling the user to *start* an already-running service was the F2 bug.
+    OutOfDate(String),
     /// A logical error (bad request, backend/Neo4j error). Shown verbatim.
     Logical(String),
 }
@@ -34,28 +39,42 @@ pub enum GraphFetchError {
 impl GraphFetchError {
     pub fn message(&self) -> &str {
         match self {
-            GraphFetchError::ServiceUnavailable(m) | GraphFetchError::Logical(m) => m,
+            GraphFetchError::ServiceUnavailable(m)
+            | GraphFetchError::OutOfDate(m)
+            | GraphFetchError::Logical(m) => m,
         }
     }
 
     pub fn is_service_unavailable(&self) -> bool {
         matches!(self, GraphFetchError::ServiceUnavailable(_))
     }
+
+    /// The service is reachable but its build lacks the verb (stale binary).
+    pub fn is_out_of_date(&self) -> bool {
+        matches!(self, GraphFetchError::OutOfDate(_))
+    }
+
+    /// Either of the two recoverable states — both offer a click-to-retry chip
+    /// (after the user starts/updates the service it succeeds without remount).
+    pub fn is_recoverable(&self) -> bool {
+        self.is_service_unavailable() || self.is_out_of_date()
+    }
 }
 
-/// Classify a raw `wylde_gui_pipe::call` error string. Mirrors the registry
-/// tab's `is_service_unavailable` heuristic: a `pipe_*` transport failure or a
-/// `no_action` (service reachable but verb unknown — e.g. running an old build)
-/// is a service-availability problem; everything else is logical.
+/// Classify a raw `wylde_gui_pipe::call` error string. A `pipe_*` transport
+/// failure (or "not running") means the service is genuinely *down*; a
+/// `no_action` means the service is *up* but its binary predates the verb — a
+/// distinct "out of date" state (F2). Everything else is a logical error.
 pub fn classify(err: String) -> GraphFetchError {
-    let unavailable = err.contains("pipe_unavailable")
+    let down = err.contains("pipe_unavailable")
         || err.contains("pipe_connect")
         || err.contains("pipe_timeout")
         || err.contains("pipe_io")
-        || err.contains("not running")
-        || err.contains("no_action");
-    if unavailable {
+        || err.contains("not running");
+    if down {
         GraphFetchError::ServiceUnavailable(err)
+    } else if err.contains("no_action") {
+        GraphFetchError::OutOfDate(err)
     } else {
         GraphFetchError::Logical(err)
     }
@@ -90,22 +109,31 @@ mod tests {
             "pipe_unavailable: service 'wylde-workspaces' is not running (pipe not found)",
             "pipe_connect: wylde-workspaces: oops",
             "pipe_timeout: no response from 'wylde-workspaces' within 30s",
-            "no_action: workspaces.graph",
         ] {
-            assert!(
-                classify(e.to_owned()).is_service_unavailable(),
-                "{e} should degrade"
-            );
+            let c = classify(e.to_owned());
+            assert!(c.is_service_unavailable(), "{e} should be 'down'");
+            assert!(!c.is_out_of_date(), "{e} is not out-of-date");
+            assert!(c.is_recoverable());
         }
+    }
+
+    #[test]
+    fn classifies_no_action_as_out_of_date_not_down() {
+        // F2: a running service that lacks the verb is OUT OF DATE, not down.
+        // Telling the user to "start" a running service was the bug.
+        let c = classify("no_action: unknown action workspaces.graph".to_owned());
+        assert!(c.is_out_of_date(), "no_action should be out-of-date");
+        assert!(!c.is_service_unavailable(), "no_action is not 'down'");
+        assert!(c.is_recoverable());
     }
 
     #[test]
     fn classifies_logical_errors_verbatim() {
         let e = classify("bad_request: workspace_id is required".to_owned());
-        assert!(!e.is_service_unavailable());
+        assert!(!e.is_recoverable());
         assert_eq!(e.message(), "bad_request: workspace_id is required");
         // A backend/Neo4j error is logical, not a degrade.
-        assert!(!classify("bolt_unavailable: neo4j down".to_owned()).is_service_unavailable());
+        assert!(!classify("bolt_unavailable: neo4j down".to_owned()).is_recoverable());
     }
 
     #[test]
