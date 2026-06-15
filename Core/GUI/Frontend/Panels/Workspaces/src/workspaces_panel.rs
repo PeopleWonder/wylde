@@ -198,7 +198,16 @@ impl WorkspacesPanel {
     pub fn enter_workspace(&mut self, id: String, cx: &mut Context<Self>) {
         self.entered = Some(id.clone());
         self.tab = WorkspacesTab::Files;
-        Self::spawn_set_active(id, cx);
+        Self::spawn_set_active(id.clone(), cx);
+        // C3 (the A1 live-bug fix): re-scope the docked chat to this workspace.
+        // Before C3, `enter_workspace` only marked the workspace active in the
+        // service — nothing told the InferenceBar dock, so every dock turn rode
+        // `None` and ran on base (unbound) context. Publishing here on the
+        // cross-panel workspace-scope bus is the consumer half the C3-bus file
+        // was built for: the docked `ChatPanel` drains it and adopts this
+        // `workspace_id` (`apply_workspace_scope`), so the next dock turn
+        // carries the workspace's context.
+        wylde_gui_pipe::publish_active_workspace(Some(id));
         cx.notify();
     }
 
@@ -207,6 +216,10 @@ impl WorkspacesPanel {
     /// deactivate the workspace, it just stops scoping the panel to it.
     pub fn leave_workspace(&mut self, cx: &mut Context<Self>) {
         self.entered = None;
+        // C3: leaving a workspace clears the docked chat's scope back to
+        // unbound (the dock applies `None`), the mirror of `enter_workspace`'s
+        // publish above.
+        wylde_gui_pipe::publish_active_workspace(None);
         cx.notify();
     }
 

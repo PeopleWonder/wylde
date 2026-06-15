@@ -489,6 +489,11 @@ impl ChatPanel {
             // pointer): hydrate the WM strip + switcher without adopting the
             // global active-conversation pointer.
             Self::spawn_restore_session_docked(cx);
+            // C3: follow the cross-panel workspace-scope bus. Entering a
+            // workspace in the Workspaces panel re-scopes this dock to that
+            // `workspace_id`; leaving clears it. This is the consumer half of
+            // the A1 live-bug fix — without it, dock turns stay unbound.
+            Self::spawn_workspace_scope_drain(cx);
             // No-op for Docked: the Global singleton owns the single consent
             // subscription (the decision lives in `ChatScope::wires_consent`).
             Self::wire_consent_for_scope(ChatScope::Docked, cx);
@@ -608,6 +613,65 @@ impl ChatPanel {
             Self::reload_conversations(&this, app_cx).await;
         })
         .detach();
+    }
+
+    /// Follow the cross-panel **workspace-scope** bus (C3) for the life of the
+    /// docked dock. Seeds the dock's scope synchronously from the bus latch —
+    /// covering a workspace entered *before* this dock first mounted, the
+    /// late-mounter gap the bus documents — then drains the receiver so every
+    /// later enter/leave re-scopes the dock live.
+    ///
+    /// Single-consumer, mirroring [`workspaces_panel`]'s focus drain: the dock
+    /// is a process-wide singleton, so the receiver is taken exactly once. On a
+    /// rebuild after the weak handle lapsed, the receiver is already gone — the
+    /// latch seed alone then carries the rebuilt dock to the current scope.
+    pub fn spawn_workspace_scope_drain(cx: &mut Context<Self>) {
+        let seed = wylde_gui_pipe::current_active_workspace();
+        let mut rx = wylde_gui_pipe::take_workspace_scope_receiver();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            if this
+                .update(app_cx, |panel, cx| panel.apply_workspace_scope(seed, cx))
+                .is_err()
+            {
+                return;
+            }
+            // `rx` is `None` only on a rebuilt dock whose predecessor took the
+            // single-consumer receiver; the latch seed above is then the best
+            // available current value.
+            let Some(rx) = rx.as_mut() else { return };
+            while let Some(scope) = rx.recv().await {
+                if this
+                    .update(app_cx, |panel, cx| panel.apply_workspace_scope(scope, cx))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Apply a cross-panel workspace-scope change (C3). The Workspaces panel's
+    /// `enter_workspace` publishes `Some(id)` and `leave_workspace` publishes
+    /// `None`; the dock re-scopes its chat so the *next turn rides this
+    /// `workspace_id`*. This is the A1 live-bug fix: before C3 nothing ever set
+    /// the dock's id, so every dock turn ran on base (unbound) context.
+    ///
+    /// Routed through [`ChatScope::resolve_workspace_id`] so D1 holds even here:
+    /// on the Global singleton it forces `None`, so the Chat slot could never
+    /// become bound even if it somehow drained this bus. Only the Docked dock
+    /// adopts the id. No-op (no re-render) when the scope is unchanged.
+    pub fn apply_workspace_scope(
+        &mut self,
+        scope: wylde_gui_pipe::WorkspaceScope,
+        cx: &mut Context<Self>,
+    ) {
+        let resolved = self.scope.resolve_workspace_id(scope);
+        if self.active_workspace_id == resolved {
+            return;
+        }
+        self.active_workspace_id = resolved;
+        cx.notify();
     }
 
     /// Re-fetch the saved-chat list and replace the rail's copy. Soft-fail
@@ -3415,6 +3479,61 @@ mod tests {
             Some("ws-abc".to_owned()),
         );
         assert_eq!(ChatScope::Docked.resolve_workspace_id(None), None);
+    }
+
+    // ── C3: enter/leave → workspace-scope hook (the A1 live-bug fix) ──────
+    // No gpui-executor harness exists here (same constraint as C1/C2), so the
+    // live `apply_workspace_scope`/`spawn_workspace_scope_drain` entity path
+    // can't be mounted. But the REAL cross-panel pipe CAN be driven: the
+    // workspace-scope bus's channel + latch are per-test-binary OnceLocks, so
+    // this binary owns a fresh receiver. The test below drives the genuine
+    // producer→bus→consumer path end to end — `publish_active_workspace` (what
+    // `enter_workspace`/`leave_workspace` call) → the real receiver/latch →
+    // `ChatScope::resolve_workspace_id` (what `apply_workspace_scope` applies)
+    // — proving the wiring the A1 bug lacked, minus only the gpui `notify`.
+
+    /// C3 end-to-end over the real bus: an entered workspace published by the
+    /// Workspaces panel arrives on the dock's receiver/latch and resolves to a
+    /// bound id on the Docked surface (so the next dock turn rides it), while
+    /// the same value forced through the Global surface stays `None` (D1).
+    /// Leaving clears it back to unbound. This is the producer-without-consumer
+    /// defect C3 fixes — `enter_workspace` formerly published nothing.
+    #[test]
+    fn workspace_scope_bus_rescopes_docked_dock() {
+        // Enter: the Workspaces panel publishes the entered workspace exactly as
+        // `enter_workspace` now does.
+        wylde_gui_pipe::publish_active_workspace(Some("ws-alpha".to_owned()));
+
+        // The dock seeds synchronously from the latch on mount (the path
+        // `spawn_workspace_scope_drain` runs before draining the receiver).
+        let seeded = wylde_gui_pipe::current_active_workspace();
+        assert_eq!(
+            ChatScope::Docked.resolve_workspace_id(seeded.clone()),
+            Some("ws-alpha".to_owned()),
+            "docked dock adopts the entered workspace → its turn carries the id",
+        );
+        // D1 holds on the same value: the Global slot can never become bound.
+        assert_eq!(
+            ChatScope::Global.resolve_workspace_id(seeded),
+            None,
+            "global Chat stays unbound even off the scope bus",
+        );
+
+        // The dock then drains the receiver; the buffered enter is delivered.
+        let mut rx =
+            wylde_gui_pipe::take_workspace_scope_receiver().expect("dock takes the receiver once");
+        assert_eq!(
+            ChatScope::Docked.resolve_workspace_id(rx.try_recv().expect("buffered enter")),
+            Some("ws-alpha".to_owned()),
+        );
+
+        // Leave: `leave_workspace` publishes `None`; the dock clears to unbound.
+        wylde_gui_pipe::publish_active_workspace(None);
+        assert_eq!(
+            ChatScope::Docked.resolve_workspace_id(rx.try_recv().expect("buffered leave")),
+            None,
+            "leaving a workspace clears the dock's scope",
+        );
     }
 
     #[test]
