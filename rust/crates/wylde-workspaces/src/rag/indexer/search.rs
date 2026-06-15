@@ -63,7 +63,14 @@ pub async fn query(workspace_id: &str, query_text: &str, k: usize) -> Vec<Search
             return Vec::new();
         }
     };
-    rank(&query_vec, chunks, k)
+    // 2.4 (anchor-biased retrieval): the harness folds the turn's already-
+    // resolved anchor/symbol identifiers into the query behind a marker (see
+    // [`extract_anchor_terms`]); chunks whose path/body literally contain one
+    // get a scoring boost so the deterministic anchor layer and the fuzzy
+    // cosine layer agree. The same `query_text` is still embedded whole, so the
+    // anchor names also bias the embedding (query expansion).
+    let anchors = extract_anchor_terms(query_text);
+    rank(&query_vec, chunks, k, &anchors)
 }
 
 /// MMR relevance/diversity trade-off (the `λ` in the standard formula):
@@ -101,6 +108,84 @@ const MIN_ABSOLUTE_SCORE: f64 = 0.55;
 /// top they all clear it and the full budget is used.
 const RELATIVE_FLOOR: f64 = 0.6;
 
+/// Marker the harness wraps the turn's resolved anchor/symbol identifiers in
+/// when it appends them to the retrieval query (2.4). It mirrors the format
+/// produced by `wylde-harness/.../turn/context_gather.rs::compose_retrieval_query`
+/// — **keep the two in sync**; the integration is covered by the live-index
+/// real-path check, not by the type system (cross-crate string protocol).
+/// Form: `[anchors: term1 term2 ...]`.
+const ANCHOR_QUERY_MARKER: &str = "[anchors:";
+
+/// Score lift for a chunk whose **path** contains a resolved anchor term — the
+/// strongest signal (the symbol's defining file), so "ask about a known symbol
+/// → its defining file ranks top". Additive on the cosine, capped below.
+const ANCHOR_PATH_BOOST: f64 = 0.18;
+
+/// Score lift for a chunk whose **body** mentions a resolved anchor term — a
+/// weaker signal than a path hit, so it's smaller.
+const ANCHOR_BODY_BOOST: f64 = 0.08;
+
+/// Ceiling on the total anchor boost a single chunk can accrue, so the bias
+/// re-ranks *within* the relevant pool without ever dwarfing cosine (a chunk
+/// can't be dragged from noise to top on lexical hits alone).
+const ANCHOR_BOOST_CAP: f64 = 0.30;
+
+/// Minimum length of an anchor term used for the lexical boost. Short
+/// fragments make `contains` substring matches too promiscuous (e.g. `add`
+/// inside `address`); resolved symbol identifiers clearing this are
+/// distinctive enough for a substring hit to be meaningful.
+const ANCHOR_TERM_MIN_LEN: usize = 4;
+
+/// Pull the resolved anchor/symbol terms out of a retrieval query the harness
+/// augmented (2.4). The harness appends them as `[anchors: term1 term2 ...]`
+/// (see [`ANCHOR_QUERY_MARKER`]); we read everything between that marker and
+/// the closing `]`, lowercased, deduped, and length-filtered. A query with no
+/// marker (a plain turn, or a non-harness caller like `workspaces.rag_query`)
+/// yields no terms — the boost is then a no-op and ranking is pure cosine.
+fn extract_anchor_terms(query_text: &str) -> Vec<String> {
+    let Some(start) = query_text.find(ANCHOR_QUERY_MARKER) else {
+        return Vec::new();
+    };
+    let after = &query_text[start + ANCHOR_QUERY_MARKER.len()..];
+    let body = match after.find(']') {
+        Some(end) => &after[..end],
+        None => after, // tolerate a missing close bracket — take the tail
+    };
+    let mut terms: Vec<String> = Vec::new();
+    for raw in body.split_whitespace() {
+        let term = raw.to_ascii_lowercase();
+        if term.len() >= ANCHOR_TERM_MIN_LEN && !terms.contains(&term) {
+            terms.push(term);
+        }
+    }
+    terms
+}
+
+/// Lexical anchor boost for one chunk (2.4): additive lift if its path or body
+/// contains a resolved anchor term. A path hit (likely the symbol's defining
+/// file) weighs more than a body mention; the total is capped at
+/// [`ANCHOR_BOOST_CAP`] so cosine relevance stays dominant. Terms are already
+/// lowercased by [`extract_anchor_terms`]; we lowercase the chunk once.
+fn anchor_boost(chunk: &IndexedChunk, anchors: &[String]) -> f64 {
+    if anchors.is_empty() {
+        return 0.0;
+    }
+    let path = chunk.path.to_ascii_lowercase();
+    let body = chunk.content.to_ascii_lowercase();
+    let mut boost = 0.0_f64;
+    for term in anchors {
+        if path.contains(term.as_str()) {
+            boost += ANCHOR_PATH_BOOST;
+        } else if body.contains(term.as_str()) {
+            boost += ANCHOR_BODY_BOOST;
+        }
+        if boost >= ANCHOR_BOOST_CAP {
+            return ANCHOR_BOOST_CAP;
+        }
+    }
+    boost.min(ANCHOR_BOOST_CAP)
+}
+
 /// Ranking core: score every chunk by cosine against `query_vec`, then
 /// select `k` with Maximal Marginal Relevance so near-duplicate chunks
 /// don't crowd out the prompt's RAG slot. Split out for direct unit testing
@@ -113,13 +198,32 @@ const RELATIVE_FLOOR: f64 = 0.6;
 /// `k` is the *budget* (max slots), not a fixed count: a [`dynamic_k`] cutoff
 /// trims weak/dominated hits first, so an off-topic query returns few or no
 /// chunks instead of padding the slot up to `k`.
-pub fn rank(query_vec: &[f32], chunks: Vec<IndexedChunk>, k: usize) -> Vec<SearchHit> {
+///
+/// `anchors` are the turn's resolved anchor/symbol terms (2.4): a chunk whose
+/// path/body contains one gets an [`anchor_boost`] added to its cosine to form
+/// an *effective* score that drives ordering, the dynamic-k cutoff, and MMR
+/// selection — so a chunk literally about a referenced symbol survives the
+/// cutoff and ranks up. The **reported** [`SearchHit::score`] stays the true
+/// cosine relevance; the boost only governs selection. An empty `anchors` is a
+/// no-op (effective ≡ cosine), preserving the pre-2.4 behaviour exactly.
+pub fn rank(
+    query_vec: &[f32],
+    chunks: Vec<IndexedChunk>,
+    k: usize,
+    anchors: &[String],
+) -> Vec<SearchHit> {
     if k == 0 {
         return Vec::new();
     }
-    let mut scored: Vec<(f64, IndexedChunk)> = chunks
+    // `(effective, cosine, chunk)` — `effective = cosine + anchor_boost`
+    // governs ranking/cutoff/MMR; `cosine` is what each hit reports.
+    let mut scored: Vec<(f64, f64, IndexedChunk)> = chunks
         .into_iter()
-        .map(|c| (cosine(query_vec, &c.vector), c))
+        .map(|c| {
+            let cos = cosine(query_vec, &c.vector);
+            let eff = (cos + anchor_boost(&c, anchors)).min(1.0);
+            (eff, cos, c)
+        })
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     // Vary how many slots are actually warranted by the score distribution
@@ -129,17 +233,17 @@ pub fn rank(query_vec: &[f32], chunks: Vec<IndexedChunk>, k: usize) -> Vec<Searc
     if keep == 0 {
         return Vec::new();
     }
-    // Over-fetch a pool of the strongest cosine hits, then MMR-select down to
-    // the warranted count. The pool floor of `keep` keeps behaviour intact
-    // when `keep` exceeds it.
+    // Over-fetch a pool of the strongest hits, then MMR-select down to the
+    // warranted count. The pool floor of `keep` keeps behaviour intact when
+    // `keep` exceeds it.
     scored.truncate(MMR_POOL.max(keep));
     mmr_select(scored, keep)
         .into_iter()
-        .map(|(score, c)| SearchHit {
+        .map(|(_, cos, c)| SearchHit {
             file_path: c.path,
             line_range: [c.start_line, c.end_line],
             content: c.content,
-            score,
+            score: cos,
             chunk_idx: c.chunk_idx,
         })
         .collect()
@@ -156,8 +260,10 @@ pub fn rank(query_vec: &[f32], chunks: Vec<IndexedChunk>, k: usize) -> Vec<Searc
 /// * up to `k` — several hits cluster near the top: use the full budget.
 ///
 /// Because `scored` is sorted descending, the kept hits are the contiguous
-/// prefix that clears `max(MIN_ABSOLUTE_SCORE, RELATIVE_FLOOR·top)`.
-fn dynamic_k(scored: &[(f64, IndexedChunk)], k: usize) -> usize {
+/// prefix that clears `max(MIN_ABSOLUTE_SCORE, RELATIVE_FLOOR·top)`. Operates
+/// on the *effective* score (`.0`, cosine + any 2.4 anchor boost), so an
+/// anchor-matched chunk with a modest cosine can still clear the cutoff.
+fn dynamic_k(scored: &[(f64, f64, IndexedChunk)], k: usize) -> usize {
     if k == 0 || scored.is_empty() {
         return 0;
     }
@@ -170,7 +276,7 @@ fn dynamic_k(scored: &[(f64, IndexedChunk)], k: usize) -> usize {
     let kept = scored
         .iter()
         .take(k)
-        .take_while(|(score, _)| *score >= threshold)
+        .take_while(|(score, _, _)| *score >= threshold)
         .count();
     // `top` cleared `threshold` by construction, so at least the dominant
     // hit is always kept once we get here.
@@ -184,23 +290,24 @@ fn dynamic_k(scored: &[(f64, IndexedChunk)], k: usize) -> usize {
 /// identical to one already chosen is demoted in favour of a fresh-but-still-
 /// relevant one. Returns at most `k` items in selection order.
 fn mmr_select(
-    mut candidates: Vec<(f64, IndexedChunk)>,
+    mut candidates: Vec<(f64, f64, IndexedChunk)>,
     k: usize,
-) -> Vec<(f64, IndexedChunk)> {
+) -> Vec<(f64, f64, IndexedChunk)> {
     let target = k.min(candidates.len());
     if target == 0 {
         return Vec::new();
     }
-    let mut selected: Vec<(f64, IndexedChunk)> = Vec::with_capacity(target);
-    // Seed with the top cosine hit — candidates is already sorted descending.
+    let mut selected: Vec<(f64, f64, IndexedChunk)> = Vec::with_capacity(target);
+    // Seed with the top hit — candidates is already sorted descending by the
+    // effective (cosine + anchor-boost) score.
     selected.push(candidates.remove(0));
     while selected.len() < target && !candidates.is_empty() {
         let mut best_idx = 0;
         let mut best_mmr = f64::NEG_INFINITY;
-        for (i, (rel, cand)) in candidates.iter().enumerate() {
+        for (i, (rel, _, cand)) in candidates.iter().enumerate() {
             let max_sim = selected
                 .iter()
-                .map(|(_, s)| cosine(&cand.vector, &s.vector))
+                .map(|(_, _, s)| cosine(&cand.vector, &s.vector))
                 .fold(0.0_f64, f64::max);
             let mmr = MMR_LAMBDA * rel - (1.0 - MMR_LAMBDA) * max_sim;
             if mmr > best_mmr {
@@ -238,7 +345,7 @@ mod tests {
             chunk("/near.md", vec![0.9, 0.1, 0.0], "near"), // close → high
             chunk("/mid.md", vec![0.6, 0.6, 0.0], "mid"), // middling
         ];
-        let hits = rank(&query, chunks, 2);
+        let hits = rank(&query, chunks, 2, &[]);
         assert_eq!(hits.len(), 2, "truncated to k");
         assert_eq!(hits[0].file_path, "/near.md", "nearest first");
         assert_eq!(hits[1].file_path, "/mid.md");
@@ -248,13 +355,13 @@ mod tests {
 
     #[test]
     fn rank_empty_chunks_is_empty() {
-        assert!(rank(&[1.0, 0.0], Vec::new(), 5).is_empty());
+        assert!(rank(&[1.0, 0.0], Vec::new(), 5, &[]).is_empty());
     }
 
     #[test]
     fn rank_k_zero_is_empty() {
         let chunks = vec![chunk("/a.md", vec![1.0, 0.0], "a")];
-        assert!(rank(&[1.0, 0.0], chunks, 0).is_empty());
+        assert!(rank(&[1.0, 0.0], chunks, 0, &[]).is_empty());
     }
 
     #[test]
@@ -270,7 +377,7 @@ mod tests {
             chunk("/a-dup.md", vec![0.8, 0.6, 0.0, 0.0], "near-duplicate of first"),
             chunk("/b.md", vec![0.8, 0.0, 0.6, 0.0], "equally relevant but distinct"),
         ];
-        let hits = rank(&query, chunks, 2);
+        let hits = rank(&query, chunks, 2, &[]);
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].file_path, "/a.md", "top relevance kept first");
         assert_eq!(
@@ -292,19 +399,20 @@ mod tests {
             chunk("/mid.md", vec![0.6, 0.6, 0.0], "mid"),
             chunk("/orthogonal.md", vec![0.0, 1.0, 0.0], "irrelevant"),
         ];
-        let hits = rank(&query, chunks, 2);
+        let hits = rank(&query, chunks, 2, &[]);
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].file_path, "/near.md");
         assert_eq!(hits[1].file_path, "/mid.md", "relevant mid beats orthogonal");
     }
 
-    /// Build descending-cosine `(score, chunk)` pairs for direct
-    /// [`dynamic_k`] boundary tests, without an embedder.
-    fn scored(scores: &[f64]) -> Vec<(f64, IndexedChunk)> {
+    /// Build descending `(effective, cosine, chunk)` triples for direct
+    /// [`dynamic_k`] boundary tests, without an embedder. With no anchor boost
+    /// the effective score equals the cosine, so each input `s` fills both.
+    fn scored(scores: &[f64]) -> Vec<(f64, f64, IndexedChunk)> {
         scores
             .iter()
             .enumerate()
-            .map(|(i, &s)| (s, chunk(&format!("/c{i}.md"), vec![1.0, 0.0], "c")))
+            .map(|(i, &s)| (s, s, chunk(&format!("/c{i}.md"), vec![1.0, 0.0], "c")))
             .collect()
     }
 
@@ -382,7 +490,7 @@ mod tests {
             chunk("/weak-a.md", vec_with_cosine(weak), "weak a"),
             chunk("/weak-b.md", vec_with_cosine(weak), "weak b"),
         ];
-        let hits = rank(&query, chunks, 5);
+        let hits = rank(&query, chunks, 5, &[]);
         assert_eq!(hits.len(), 1, "weak tail trimmed, not padded to budget");
         assert_eq!(hits[0].file_path, "/strong.md");
     }
@@ -398,7 +506,7 @@ mod tests {
             chunk("/b.md", vec_with_cosine(noise - 0.05), "b"),
             chunk("/c.md", vec_with_cosine(noise - 0.1), "c"),
         ];
-        assert!(rank(&query, chunks, 5).is_empty());
+        assert!(rank(&query, chunks, 5, &[]).is_empty());
     }
 
     #[test]
@@ -413,8 +521,102 @@ mod tests {
             chunk("/b.md", vec_with_cosine((thr + 0.08) as f32), "b"),
             chunk("/c.md", vec_with_cosine((thr + 0.04) as f32), "c"),
         ];
-        let hits = rank(&query, chunks, 5);
+        let hits = rank(&query, chunks, 5, &[]);
         assert_eq!(hits.len(), 3, "clustered hits all warrant a slot");
+    }
+
+    // ── 2.4: anchor-biased retrieval ────────────────────────────────────
+
+    #[test]
+    fn extract_anchor_terms_reads_the_marker_section() {
+        let q = "why does it fail?\n\n[conversation context: eviction ladder]\n\n\
+                 [anchors: compose_retrieval_query GatherWith run_it]";
+        let terms = extract_anchor_terms(q);
+        // Lowercased, length-filtered, order-preserving, deduped.
+        assert_eq!(terms, vec!["compose_retrieval_query", "gatherwith", "run_it"]);
+    }
+
+    #[test]
+    fn extract_anchor_terms_empty_without_marker() {
+        // A plain query (or the rag_query verb path) has no marker → no terms,
+        // so the boost is a no-op and ranking stays pure cosine.
+        assert!(extract_anchor_terms("just a normal question about search").is_empty());
+        // Short fragments inside the marker are dropped (substring-promiscuous).
+        assert!(extract_anchor_terms("[anchors: a bc xy]").is_empty());
+    }
+
+    #[test]
+    fn anchor_boost_weights_path_over_body_and_caps() {
+        let path_hit = chunk("/src/compose_retrieval_query.rs", vec![1.0, 0.0], "fn body");
+        let body_hit = chunk("/src/other.rs", vec![1.0, 0.0], "calls compose_retrieval_query here");
+        let miss = chunk("/src/unrelated.rs", vec![1.0, 0.0], "nothing relevant");
+        let anchors = vec!["compose_retrieval_query".to_owned()];
+        assert!((anchor_boost(&path_hit, &anchors) - ANCHOR_PATH_BOOST).abs() < 1e-9);
+        assert!((anchor_boost(&body_hit, &anchors) - ANCHOR_BODY_BOOST).abs() < 1e-9);
+        assert_eq!(anchor_boost(&miss, &anchors), 0.0);
+        assert_eq!(anchor_boost(&path_hit, &[]), 0.0, "no anchors → no boost");
+        // Many path hits saturate at the cap.
+        let many: Vec<String> = (0..10).map(|_| "compose_retrieval_query".to_owned()).collect();
+        assert_eq!(anchor_boost(&path_hit, &many), ANCHOR_BOOST_CAP);
+    }
+
+    #[test]
+    fn rank_anchor_boost_promotes_the_defining_file_over_a_higher_cosine_chunk() {
+        // The defining file has a *lower* cosine than a rival chunk, but its
+        // path carries the resolved symbol — the anchor boost must lift it to
+        // the top. The reported score, however, stays the true cosine.
+        let query = vec![1.0_f32, 0.0];
+        let defining = {
+            let mut c = chunk("/src/run_it_handler.rs", vec_with_cosine(0.60), "def");
+            c.content = "fn run_it_handler() {}".into();
+            c
+        };
+        let rival = chunk("/src/notes.md", vec_with_cosine(0.70), "loosely related prose");
+        let anchors = vec!["run_it_handler".to_owned()];
+        let hits = rank(&query, vec![rival.clone(), defining.clone()], 2, &anchors);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0].file_path, "/src/run_it_handler.rs",
+            "anchor boost (0.60 + path 0.18 = 0.78) beats the rival's 0.70"
+        );
+        // Reported score is the true cosine, not the boosted effective score.
+        assert!(
+            (hits[0].score - 0.60).abs() < 1e-3,
+            "reported score stays cosine, got {}",
+            hits[0].score
+        );
+    }
+
+    #[test]
+    fn rank_anchor_match_survives_the_dynamic_k_cutoff() {
+        // A chunk whose cosine alone sits just below the absolute noise floor
+        // (so dynamic-k would drop it) is rescued because its path carries the
+        // resolved symbol — the effective score clears the floor.
+        let query = vec![1.0_f32, 0.0];
+        let just_below = (MIN_ABSOLUTE_SCORE - 0.05) as f32;
+        let defining = chunk("/src/run_it_handler.rs", vec_with_cosine(just_below), "x");
+        let anchors = vec!["run_it_handler".to_owned()];
+        // Without the anchor boost this query injects nothing.
+        assert!(rank(&query, vec![defining.clone()], 5, &[]).is_empty());
+        // With it, the anchor-matched chunk is retrieved.
+        let hits = rank(&query, vec![defining], 5, &anchors);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].file_path, "/src/run_it_handler.rs");
+    }
+
+    #[test]
+    fn rank_empty_anchors_is_identical_to_pre_2_4() {
+        // Belt-and-braces: with no anchor terms the effective score equals the
+        // cosine, so ordering matches the pure-cosine path.
+        let query = vec![1.0_f32, 0.0, 0.0];
+        let chunks = vec![
+            chunk("/far.md", vec![0.0, 1.0, 0.0], "far"),
+            chunk("/near.md", vec![0.9, 0.1, 0.0], "near"),
+            chunk("/mid.md", vec![0.6, 0.6, 0.0], "mid"),
+        ];
+        let hits = rank(&query, chunks, 2, &[]);
+        assert_eq!(hits[0].file_path, "/near.md");
+        assert_eq!(hits[1].file_path, "/mid.md");
     }
 
     #[test]

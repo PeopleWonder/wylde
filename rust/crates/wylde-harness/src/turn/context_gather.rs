@@ -519,43 +519,11 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     let mut degraded = false;
 
     if let Some(ws) = active_ws {
-        // 2.3 (conversation-aware query construction): embed an *augmented*
-        // retrieval query — the live message plus a bounded keyword tail
-        // drawn from the conversation's recent turns / auto-summary /
-        // working memory — instead of just the last message, so a terse
-        // follow-up ("why?") still retrieves chunks about the thread's topic.
-        // The live message leads and stays dominant (the tail is capped) to
-        // avoid history drifting retrieval off the current question. Composed
-        // here from the already-gathered in-process context slots; only the
-        // RAG/notes embed query is affected (symbol/anchor lookups below keep
-        // the literal message tokens).
-        let retrieval_query = compose_retrieval_query(
-            user_message,
-            ctx.conversation_summary.as_deref(),
-            &ctx.conversation_short_term,
-            &ctx.history,
-        );
-
-        // The workspace prompt parts (persona / notes / RAG — B6 split).
-        // An unreachable service here is the degrade signal (Slice 0d
-        // semantics).
-        match source.gather_prompt(ws, &retrieval_query).await {
-            Ok(Some(block)) => {
-                ctx.workspace_persona = block.persona;
-                ctx.workspace_notes = block.notes;
-                ctx.workspace_rag = block.rag;
-            }
-            Ok(None) => {}
-            Err(SourceStatus::Unavailable) => degraded = true,
-            Err(SourceStatus::Empty) => {}
-        }
-
-        // M2 (option B): the workspace memory records tier — in-process
-        // like short-term/long-term (the store is harness-local), so it
-        // doesn't ride the WorkspaceSource trait and never degrades the
-        // turn.
-        ctx.workspace_memory = gather_workspace_memory(ws, user_message);
-
+        // Bare candidate tokens from the live message, then the Slice M / F
+        // ignore-tier filter. Computed *before* the RAG query (2.4 reorder):
+        // resolving anchors first lets their identifiers bias retrieval. This
+        // is the literal-message token set — the symbol/anchor lookups below
+        // keep using it verbatim; only the RAG/notes embed query is augmented.
         let mut tokens = candidate_tokens(user_message);
 
         // Slice M (Plan §5.8): durable ignores (global + workspace +
@@ -579,9 +547,49 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
             !ignored || overrides.reactivated.iter().any(|x| x == t)
         });
 
-        // Anchors + the symbol ids their code-symbol targets point at.
+        // Anchors + the symbol ids their code-symbol targets point at. Resolved
+        // up front (deterministic, high-precision) so 2.4 can fold the resolved
+        // anchor identifiers into the RAG query below.
         let (anchors, anchor_symbol_ids) = gather_anchors(source, ws, &tokens).await;
+        let anchor_terms: Vec<String> =
+            anchors.iter().map(|a| a.identifier.clone()).collect();
         ctx.vocabulary_anchors = anchors;
+
+        // 2.3 (conversation-aware query construction) + 2.4 (anchor-biased
+        // retrieval): embed an *augmented* retrieval query — the live message
+        // plus a bounded keyword tail (recent turns / auto-summary / working
+        // memory) plus the turn's resolved anchor identifiers — instead of just
+        // the last message, so a terse follow-up ("why?") still retrieves the
+        // thread's topic, and a question about a known symbol biases toward its
+        // defining file. The live message leads and stays dominant (both tails
+        // are capped) to avoid drifting retrieval off the current question.
+        let retrieval_query = compose_retrieval_query(
+            user_message,
+            ctx.conversation_summary.as_deref(),
+            &ctx.conversation_short_term,
+            &ctx.history,
+            &anchor_terms,
+        );
+
+        // The workspace prompt parts (persona / notes / RAG — B6 split).
+        // An unreachable service here is the degrade signal (Slice 0d
+        // semantics).
+        match source.gather_prompt(ws, &retrieval_query).await {
+            Ok(Some(block)) => {
+                ctx.workspace_persona = block.persona;
+                ctx.workspace_notes = block.notes;
+                ctx.workspace_rag = block.rag;
+            }
+            Ok(None) => {}
+            Err(SourceStatus::Unavailable) => degraded = true,
+            Err(SourceStatus::Empty) => {}
+        }
+
+        // M2 (option B): the workspace memory records tier — in-process
+        // like short-term/long-term (the store is harness-local), so it
+        // doesn't ride the WorkspaceSource trait and never degrades the
+        // turn.
+        ctx.workspace_memory = gather_workspace_memory(ws, user_message);
 
         // Unambiguous symbol references from the prompt's bare tokens, plus the
         // anchor-target symbols, deduped and capped.
@@ -977,6 +985,12 @@ const RETRIEVAL_CONTEXT_TERMS_MAX: usize = 24;
 /// fragments are noise that only dilutes the query embedding.
 const RETRIEVAL_KEYWORD_MIN_LEN: usize = MIN_TOKEN_LEN;
 
+/// Cap on resolved anchor identifiers folded into the RAG query (2.4). Anchors
+/// are already few (one workspace turn references a handful of symbols); the
+/// cap is a guard so a pathological turn can't swamp the embedding or the
+/// search layer's boost loop.
+const RETRIEVAL_ANCHOR_TERMS_MAX: usize = 12;
+
 /// How many of the most-recent prior turns we mine for context keywords.
 /// One exchange (the immediately preceding user+assistant pair) is the
 /// thread topic a terse follow-up refers to; older turns are covered by the
@@ -1010,13 +1024,23 @@ const RETRIEVAL_STOPWORDS: &[&str] = &[
 /// the message.
 ///
 /// When the conversation contributes no fresh keyword (a first / plain turn,
-/// or the message already names everything), the original message is returned
-/// unchanged — that turn embeds byte-identically to before.
+/// or the message already names everything) **and** no anchor resolved, the
+/// original message is returned unchanged — that turn embeds byte-identically
+/// to before.
+///
+/// 2.4 (anchor-biased retrieval): `anchor_terms` are the turn's already-
+/// resolved anchor identifiers ([`gather_anchors`]). They are appended behind
+/// their own `[anchors: …]` marker so (a) the embedding sees the symbol names
+/// (query expansion) and (b) the workspace search layer can parse the exact
+/// resolved set out of the query and lexically boost chunks in the symbol's
+/// defining file (`wylde-workspaces/.../rag/indexer/search.rs::extract_anchor_terms`
+/// — the marker string is a shared cross-crate protocol; keep them in sync).
 fn compose_retrieval_query(
     user_message: &str,
     summary: Option<&str>,
     short_term: &[String],
     history: &[HistoryMessage],
+    anchor_terms: &[String],
 ) -> String {
     let msg = user_message.trim();
 
@@ -1050,12 +1074,34 @@ fn compose_retrieval_query(
     }
     terms.truncate(RETRIEVAL_CONTEXT_TERMS_MAX);
 
-    if terms.is_empty() {
+    // 2.4: distinct resolved anchor identifiers, capped, first-seen order
+    // (case-insensitive dedupe). These bias the embedding *and* are parsed back
+    // out by the search layer for the lexical boost — so they ride a dedicated
+    // marker, kept verbatim (not stopword/length filtered like conversation
+    // keywords): a resolved symbol id is high-signal regardless of its shape.
+    let mut anchor_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let anchors: Vec<&str> = anchor_terms
+        .iter()
+        .map(|a| a.trim())
+        .filter(|a| !a.is_empty() && anchor_seen.insert(a.to_ascii_lowercase()))
+        .take(RETRIEVAL_ANCHOR_TERMS_MAX)
+        .collect();
+
+    if terms.is_empty() && anchors.is_empty() {
         return user_message.to_owned();
     }
-    // Live message leads; the bounded keyword tail trails behind a visible
-    // marker so it reads as retrieval scaffolding, not part of the question.
-    format!("{msg}\n\n[conversation context: {}]", terms.join(" "))
+
+    // Live message leads; each context source trails behind a visible marker so
+    // it reads as retrieval scaffolding, not part of the question. The
+    // `[anchors: …]` marker is the cross-crate protocol the search layer parses.
+    let mut out = msg.to_owned();
+    if !terms.is_empty() {
+        out.push_str(&format!("\n\n[conversation context: {}]", terms.join(" ")));
+    }
+    if !anchors.is_empty() {
+        out.push_str(&format!("\n\n[anchors: {}]", anchors.join(" ")));
+    }
+    out
 }
 
 /// Collect identifier-ish words (alnum + `_`) of any length, lowercased, into
@@ -1513,7 +1559,7 @@ mod tests {
         let short_term = vec!["- focus: tokenizer internals".to_owned()];
         let summary = Some("Discussing the eviction ladder and token budget.");
 
-        let q = compose_retrieval_query("why?", summary, &short_term, &history);
+        let q = compose_retrieval_query("why?", summary, &short_term, &history, &[]);
         // Live message leads (dominant) ...
         assert!(q.starts_with("why?"), "live message must lead: {q}");
         // ... and the thread topic is folded in from each source.
@@ -1525,9 +1571,10 @@ mod tests {
         // Stopwords + message-words are excluded from the tail.
         assert!(!q.contains("[conversation context: why"), "no message echo");
 
-        // No conversation context → byte-identical passthrough (plain turn).
+        // No conversation context and no anchors → byte-identical passthrough
+        // (plain turn).
         assert_eq!(
-            compose_retrieval_query("brand new question", None, &[], &[]),
+            compose_retrieval_query("brand new question", None, &[], &[], &[]),
             "brand new question"
         );
     }
@@ -1537,7 +1584,7 @@ mod tests {
         // 60 distinct long keywords across working memory — the tail is
         // bounded so a long thread can't swamp the live message.
         let wm: Vec<String> = (0..60).map(|i| format!("- keyword{i:03}xyz")).collect();
-        let q = compose_retrieval_query("ok", None, &wm, &[]);
+        let q = compose_retrieval_query("ok", None, &wm, &[], &[]);
         let tail = q
             .split_once("[conversation context: ")
             .and_then(|(_, t)| t.strip_suffix(']'))
@@ -1595,6 +1642,99 @@ mod tests {
         // Sanity: a query that is *just* the bare message would not contain
         // any of the prior-turn vocabulary.
         assert_ne!(forwarded, "why?", "the query must be augmented, not bare");
+    }
+
+    // ── 2.4: anchor-biased retrieval query construction ─────────────────
+
+    #[test]
+    fn compose_query_appends_resolved_anchors_behind_marker() {
+        // Anchors ride a dedicated marker, deduped (case-insensitive), capped,
+        // kept verbatim; the live message still leads.
+        let anchors = vec![
+            "compose_retrieval_query".to_owned(),
+            "Compose_Retrieval_Query".to_owned(), // dup (case-insensitive)
+            "gather_with".to_owned(),
+        ];
+        let q = compose_retrieval_query("how is the query built?", None, &[], &[], &anchors);
+        assert!(q.starts_with("how is the query built?"), "message leads: {q}");
+        let tail = q
+            .split_once("[anchors: ")
+            .and_then(|(_, t)| t.strip_suffix(']'))
+            .expect("anchor marker present");
+        assert_eq!(
+            tail, "compose_retrieval_query gather_with",
+            "anchors deduped, order-preserved, verbatim"
+        );
+
+        // Anchors augment even when there is *no* conversation context.
+        let q2 = compose_retrieval_query("plain", None, &[], &[], &["run_it".to_owned()]);
+        assert_eq!(q2, "plain\n\n[anchors: run_it]");
+
+        // Still byte-identical when neither context nor anchors contribute.
+        assert_eq!(
+            compose_retrieval_query("bare", None, &[], &[], &[]),
+            "bare"
+        );
+    }
+
+    #[test]
+    fn compose_query_caps_the_anchor_tail() {
+        let many: Vec<String> = (0..40).map(|i| format!("symbol_{i:03}")).collect();
+        let q = compose_retrieval_query("q", None, &[], &[], &many);
+        let tail = q
+            .split_once("[anchors: ")
+            .and_then(|(_, t)| t.strip_suffix(']'))
+            .expect("anchor tail present");
+        assert_eq!(
+            tail.split_whitespace().count(),
+            RETRIEVAL_ANCHOR_TERMS_MAX,
+            "anchor tail is capped"
+        );
+    }
+
+    #[tokio::test]
+    async fn gather_forwards_resolved_anchors_to_the_workspace_source() {
+        // The REAL gather path must resolve anchors *before* the RAG query and
+        // fold the resolved identifier into it behind the `[anchors: …]` marker
+        // the search layer parses — proving the producer half of 2.4 reaches
+        // the embed/search boundary.
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let mut src = MockSource::default();
+        let anchor = Anchor::new(
+            "compose_retrieval_query",
+            AnchorKind::CodeSymbol,
+            AnchorTarget::CodeSymbol {
+                symbol_id: "compose_retrieval_query".into(),
+            },
+            AnchorScope::Workspace {
+                workspace_id: "ws".into(),
+            },
+            "builds the augmented RAG query",
+        );
+        // The token the user typed resolves to the anchor.
+        src.anchors
+            .insert("compose_retrieval_query".into(), vec![anchor]);
+
+        let _ = gather_with(
+            &src,
+            Some("ws"),
+            "what does compose_retrieval_query do?",
+            "conv-2-4",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+
+        let queries = src.gather_prompt_queries.lock().unwrap().clone();
+        let forwarded = queries.first().expect("gather_prompt was called");
+        assert!(
+            forwarded.contains("[anchors: compose_retrieval_query]"),
+            "resolved anchor folded into the forwarded query: {forwarded}"
+        );
+        assert!(
+            forwarded.starts_with("what does compose_retrieval_query do?"),
+            "live message still leads: {forwarded}"
+        );
     }
 
     // ── M2 (option B): workspace memory records → the insights slot ────
