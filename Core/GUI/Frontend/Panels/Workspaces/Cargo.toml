@@ -15,6 +15,12 @@ path = "src/lib.rs"
 # Wylde-wide colour change touches one file.
 wylde-theme = { path = "../../Theme" }
 
+# Chat panel — the docked InferenceBar (UX rework decision 6) renders the
+# SHARED ChatPanel singleton's bar (`InferenceBarDock`) at the bottom of the
+# in-workspace view, so the conversation is shared with the main Chat panel.
+# One-way dep: Chat does NOT depend on this crate, so no cycle.
+wylde-panel-chat = { path = "../Chat" }
+
 # Pipe surface — workspaces lives behind `workspaces.*` verbs on
 # `\\.\pipe\wylde-harness`; the panel reaches it through the shared
 # wire client.
