@@ -75,6 +75,11 @@ pub struct ServiceInfo {
     pub started_at: Option<String>,
     pub heartbeat: Option<String>,
     pub manifest_path: Option<String>,
+    /// F1 staleness guard: set when the service is running but its on-disk
+    /// binary was rebuilt *after* the process started (the live process
+    /// predates its own binary). Computed in [`crate::control`] at list time —
+    /// not from any manifest — so it defaults to `false` on construction.
+    pub stale_binary: bool,
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -422,6 +427,7 @@ fn build_info(
         started_at: None,
         heartbeat: None,
         manifest_path: None,
+        stale_binary: false,
     };
 
     if let Some(rt) = runtime_doc {
@@ -500,6 +506,7 @@ fn runtime_only_info(name: &str, runtime_doc: &Value) -> ServiceInfo {
         started_at: None,
         heartbeat: None,
         manifest_path: None,
+        stale_binary: false,
     };
 
     if let Some(status) = runtime_doc.get("status").and_then(Value::as_object) {

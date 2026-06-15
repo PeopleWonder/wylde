@@ -64,11 +64,11 @@ use wylde_shared::ipc::{register_action, send_with_verb, IpcError, Reply, ACTION
 
 use crate::registry::{self, ServiceInfo};
 use crate::state::services::{
-    impl_for, start_device_gate, start_extension_bridge, start_gateway, start_harness,
-    start_memgraph, start_n8n, start_ollama, start_treesitter, start_voice, start_vpn,
-    start_vram_broker, start_workspaces, stop_device_gate, stop_extension_bridge, stop_gateway,
-    stop_harness, stop_memgraph, stop_n8n, stop_ollama, stop_treesitter, stop_voice, stop_vpn,
-    stop_vram_broker, stop_workspaces,
+    impl_for, rust_binary_path, start_device_gate, start_extension_bridge, start_gateway,
+    start_harness, start_memgraph, start_n8n, start_ollama, start_treesitter, start_voice,
+    start_vpn, start_vram_broker, start_workspaces, stop_device_gate, stop_extension_bridge,
+    stop_gateway, stop_harness, stop_memgraph, stop_n8n, stop_ollama, stop_treesitter, stop_voice,
+    stop_vpn, stop_vram_broker, stop_workspaces,
 };
 use crate::state::{
     is_service_alive, nospawn_enabled, nospawn_record, nospawn_snapshot, request_daemon_exit,
@@ -105,6 +105,12 @@ const DAEMON_MANAGED_SERVICES: [&str; 12] = [
 /// `deriveStatus` (`Core/GUI/src/lib/manifests.js`).
 const ACTIVE_MAX_AGE_S: f64 = 90.0;
 const STALE_MAX_AGE_S: f64 = 300.0;
+
+/// Grace window for the F1 staleness guard. A service is only flagged as
+/// running a stale binary when its on-disk binary is clearly newer than the
+/// live process (by more than this many seconds), so clock jitter or a
+/// rebuild-then-start within the same window never false-positives.
+const STALE_BINARY_GRACE_S: f64 = 30.0;
 
 /// Per-call timeout for the `service.health` pipe probe. Matches the
 /// `timeout=5.0` in Python's `health_action`.
@@ -499,6 +505,52 @@ fn classify(info: &ServiceInfo) -> &'static str {
     }
 }
 
+/// File-modification age in seconds (now − mtime) of the binary at `path`,
+/// or `None` when the path is missing / unreadable. Mirrors `heartbeat_age`'s
+/// "now minus timestamp" shape so it composes with [`binary_predates_process`].
+/// A binary stamped in the future clamps to age 0 (treated as brand new).
+fn binary_age_secs(path: &Path) -> Option<f64> {
+    let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
+    let age = std::time::SystemTime::now()
+        .duration_since(mtime)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    Some(age)
+}
+
+/// F1 staleness guard (pure core): a running service is on a STALE binary when
+/// the live process has been up *longer* than its on-disk binary has existed —
+/// i.e. the binary was rebuilt after the process started. Both inputs are ages
+/// in seconds (now − timestamp); the grace window absorbs clock jitter. A
+/// non-finite age (missing/garbled `started_at`, unreadable binary) is never
+/// stale.
+fn binary_predates_process(binary_age_s: f64, process_age_s: f64) -> bool {
+    binary_age_s.is_finite()
+        && process_age_s.is_finite()
+        && process_age_s > binary_age_s + STALE_BINARY_GRACE_S
+}
+
+/// Flag each *running* service whose on-disk binary is newer than the live
+/// process (F1). Impure — stats the resolved binary and reads the clock — so
+/// it is kept out of the pure, filesystem-free [`shape_service_list`]. The
+/// process age comes from `started_at` (process uptime), compared against the
+/// age of the binary [`rust_binary_path`] would spawn today.
+fn annotate_staleness(infos: &mut [ServiceInfo]) {
+    for info in infos.iter_mut() {
+        if !info.running {
+            continue;
+        }
+        let process_age = heartbeat_age(info.started_at.as_deref());
+        let Some(path) = rust_binary_path(&info.name) else {
+            continue;
+        };
+        let Some(binary_age) = binary_age_secs(&path) else {
+            continue;
+        };
+        info.stale_binary = binary_predates_process(binary_age, process_age);
+    }
+}
+
 /// Shape a `Vec<ServiceInfo>` into the GUI's `{services, counts}`
 /// envelope. Pure function — extracted so unit tests can drive it with
 /// hand-built `ServiceInfo`s without touching the filesystem.
@@ -530,6 +582,10 @@ fn shape_service_list(infos: Vec<ServiceInfo>) -> Value {
             "pipe": pipe,
             "status": bucket,
             "running": info.running,
+            // F1: the live process is running an out-of-date binary (rebuilt
+            // after it started). Distinct from down/inactive — the service is
+            // up but predates code it may be asked to serve.
+            "stale": info.stale_binary,
             "pid": pid,
             "started_at": info.started_at.unwrap_or_default(),
             "heartbeat": info.heartbeat.unwrap_or_default(),
@@ -594,7 +650,8 @@ async fn dispatch_stop(name: &str) -> anyhow::Result<()> {
 /// Walk the service registry and return the dashboard's expected
 /// envelope. Mirrors Python's `list_services_action` envelope shape.
 async fn service_list_action(_payload: Value) -> Reply {
-    let infos = registry::list_services();
+    let mut infos = registry::list_services();
+    annotate_staleness(&mut infos);
     Reply::ok(shape_service_list(infos))
 }
 
@@ -1203,6 +1260,37 @@ mod tests {
         let s = ts.format("%Y-%m-%dT%H:%M:%SZ").to_string();
         let age = heartbeat_age(Some(&s));
         assert!(age.is_finite() && (20.0..=60.0).contains(&age), "age={age}");
+    }
+
+    #[test]
+    fn binary_predates_process_flags_rebuild_after_start() {
+        // Process up for 1h, binary built 1m ago ⇒ binary rebuilt after the
+        // process started ⇒ STALE (the §0/§7 wylde-workspaces situation).
+        assert!(binary_predates_process(60.0, 3600.0));
+        // Binary older than the process (normal: built, then started) ⇒ fresh.
+        assert!(!binary_predates_process(3600.0, 60.0));
+        // Within the grace window ⇒ not flagged (rebuild-then-start jitter).
+        assert!(!binary_predates_process(100.0, 100.0 + STALE_BINARY_GRACE_S - 1.0));
+        // Just past grace ⇒ flagged.
+        assert!(binary_predates_process(100.0, 100.0 + STALE_BINARY_GRACE_S + 1.0));
+        // Missing started_at (infinite process age) is never stale, and an
+        // unreadable binary (infinite age) likewise.
+        assert!(!binary_predates_process(60.0, f64::INFINITY));
+        assert!(!binary_predates_process(f64::INFINITY, 3600.0));
+    }
+
+    #[test]
+    fn shape_service_list_carries_stale_flag() {
+        let mut info = fresh_info("wylde-x", "standard");
+        info.running = true;
+        info.stale_binary = true;
+        let v = shape_service_list(vec![info]);
+        assert_eq!(v["services"][0]["stale"], true);
+        // A fresh service reports stale=false (default).
+        let mut ok = fresh_info("wylde-y", "standard");
+        ok.running = true;
+        let v = shape_service_list(vec![ok]);
+        assert_eq!(v["services"][0]["stale"], false);
     }
 
     #[test]
