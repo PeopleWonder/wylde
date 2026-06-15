@@ -47,7 +47,15 @@ pub struct WorkspacesPanel {
     pub active_id: Option<String>,
     pub error: Option<String>,
     pub loading: bool,
-    /// The selected tab.
+    /// Panel navigation state (UX rework). `None` ⇒ the **Registry** landing
+    /// view (the recency list of workspace cards — the home you land on).
+    /// `Some(id)` ⇒ you've **entered** that workspace, so the in-workspace
+    /// view is shown: a back arrow + the scoped tab bar (Files/Editor/Graph/
+    /// Vocabulary/Settings) + body. Entering a card sets this (and activates
+    /// the workspace); the back arrow clears it.
+    pub entered: Option<String>,
+    /// The selected tab *within* the entered workspace. Only meaningful while
+    /// [`Self::entered`] is `Some`; ignored in the Registry view.
     pub tab: WorkspacesTab,
     /// The Graph tab's view, created once at mount (loads the active
     /// workspace's code graph). `None` only in unit-test construction, where
@@ -104,6 +112,7 @@ impl WorkspacesPanel {
             active_id: None,
             error: None,
             loading: true,
+            entered: None,
             tab: WorkspacesTab::Registry,
             graph: None,
             settings: None,
@@ -164,6 +173,26 @@ impl WorkspacesPanel {
         .into()
     }
 
+    /// Enter a workspace (UX rework): the Registry-card click handler. Marks
+    /// the workspace active (same `set_active` path "Switch" used, so the rest
+    /// of the system follows the MRU), flips the panel into the in-workspace
+    /// view landing on the Files tab, and re-roots the file tree. The back
+    /// arrow ([`Self::leave_workspace`]) returns to the Registry.
+    pub fn enter_workspace(&mut self, id: String, cx: &mut Context<Self>) {
+        self.entered = Some(id.clone());
+        self.tab = WorkspacesTab::Files;
+        Self::spawn_set_active(id, cx);
+        cx.notify();
+    }
+
+    /// Leave the entered workspace and return to the Registry landing view
+    /// (the back arrow). Keeps `active_id` — leaving the IDE view doesn't
+    /// deactivate the workspace, it just stops scoping the panel to it.
+    pub fn leave_workspace(&mut self, cx: &mut Context<Self>) {
+        self.entered = None;
+        cx.notify();
+    }
+
     /// Open a workspace-relative `path` in the Editor tab (optionally at a
     /// 1-based `line`) and switch to it. The shared cross-tab "open this file"
     /// affordance (IDE S2/S4): the Files tab calls it on a row click, and later
@@ -186,6 +215,11 @@ impl WorkspacesPanel {
             .unwrap_or_default();
         if let Some(editor) = &self.editor {
             editor.update(cx, |e, ecx| e.open(workspace_id, folder, path, line, ecx));
+        }
+        // Editor is an in-workspace tab; ensure we're entered (a graph/composer
+        // deep-link could open a file from the Registry landing).
+        if self.entered.is_none() {
+            self.entered = self.active_id.clone();
         }
         self.tab = WorkspacesTab::Editor;
         cx.notify();
@@ -218,15 +252,20 @@ impl WorkspacesPanel {
         cx: &mut Context<Self>,
     ) {
         if let Some(tab) = focus.tab.as_deref() {
-            self.tab = match tab {
-                "files" => WorkspacesTab::Files,
-                "editor" => WorkspacesTab::Editor,
-                "graph" => WorkspacesTab::Graph,
-                "registry" => WorkspacesTab::Registry,
-                "vocabulary" => WorkspacesTab::Vocabulary,
-                "settings" => WorkspacesTab::Settings,
-                _ => self.tab,
-            };
+            // "registry" is the home, not an in-workspace tab — route it to the
+            // back arrow (leave the workspace).
+            if tab == "registry" {
+                self.entered = None;
+            } else if let Some(t) = WorkspacesTab::from_focus_key(tab) {
+                // A deep-link into a scoped tab (e.g. composer "view in graph")
+                // must first ENTER a workspace, since tabs only exist
+                // in-workspace. Adopt the active workspace if we're still on
+                // the Registry landing.
+                if self.entered.is_none() {
+                    self.entered = self.active_id.clone();
+                }
+                self.tab = t;
+            }
         }
         if let Some(node) = focus.node_id {
             self.spawn_focus_node(node, cx);
@@ -546,62 +585,86 @@ impl Default for WorkspacesPanel {
 
 impl Render for WorkspacesPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body: AnyElement = match self.tab {
-            WorkspacesTab::Files => match self.files.clone() {
-                Some(view) => view.into_any_element(),
-                // No child entity (test-only construction) — render nothing.
-                None => div().into_any_element(),
-            },
-            WorkspacesTab::Editor => match self.editor.clone() {
-                Some(view) => view.into_any_element(),
-                None => div().into_any_element(),
-            },
-            WorkspacesTab::Graph => match self.graph.clone() {
-                Some(view) => view.into_any_element(),
-                // No child entity (test-only construction) — render nothing.
-                None => div().into_any_element(),
-            },
-            WorkspacesTab::Settings => match self.settings.clone() {
-                Some(view) => view.into_any_element(),
-                None => div().into_any_element(),
-            },
-            WorkspacesTab::Vocabulary => match self.vocabulary.clone() {
-                Some(view) => view.into_any_element(),
-                None => div().into_any_element(),
-            },
-            // Registry is the default; any not-yet-wired tab also falls back
-            // here (the tab bar only offers WIRED tabs, so this is the
-            // Registry body).
-            _ => self.registry_body(cx).into_any_element(),
-        };
-
-        div()
-            .size_full()
-            .bg(rgb(pack(SURFACE_900)))
-            .flex()
-            .flex_col()
-            .child(self.tab_bar(cx))
-            .child(
-                // The body fills the remaining height; `min_h_0` lets the
-                // graph canvas size to the slot instead of overflowing.
-                div().flex_1().min_h(px(0.0)).overflow_hidden().child(body),
-            )
+        // UX rework state machine: the Registry landing (a list of workspace
+        // cards you land on) ⇄ the in-workspace view (back arrow + scoped tab
+        // bar + body), keyed off `entered`.
+        let root = div().size_full().bg(rgb(pack(SURFACE_900))).flex().flex_col();
+        match &self.entered {
+            None => root.child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(
+                self.registry_body(cx),
+            )),
+            Some(_) => {
+                let body: AnyElement = match self.tab {
+                    WorkspacesTab::Editor => match self.editor.clone() {
+                        Some(view) => view.into_any_element(),
+                        None => div().into_any_element(),
+                    },
+                    WorkspacesTab::Graph => match self.graph.clone() {
+                        Some(view) => view.into_any_element(),
+                        // No child entity (test-only construction) — render nothing.
+                        None => div().into_any_element(),
+                    },
+                    WorkspacesTab::Settings => match self.settings.clone() {
+                        Some(view) => view.into_any_element(),
+                        None => div().into_any_element(),
+                    },
+                    WorkspacesTab::Vocabulary => match self.vocabulary.clone() {
+                        Some(view) => view.into_any_element(),
+                        None => div().into_any_element(),
+                    },
+                    // Files is the in-workspace landing; any non-IDE tab also
+                    // falls back here.
+                    _ => match self.files.clone() {
+                        Some(view) => view.into_any_element(),
+                        None => div().into_any_element(),
+                    },
+                };
+                root.child(self.in_workspace_bar(cx)).child(
+                    // The body fills the remaining height; `min_h_0` lets the
+                    // graph canvas size to the slot instead of overflowing.
+                    div().flex_1().min_h(px(0.0)).overflow_hidden().child(body),
+                )
+            }
+        }
     }
 }
 
 impl WorkspacesPanel {
-    /// The tab bar — one button per [`WorkspacesTab::WIRED`] tab; the active
-    /// one is accented.
-    fn tab_bar(&self, cx: &mut Context<Self>) -> gpui::Div {
+    /// The in-workspace top bar: a back arrow returning to the Registry, the
+    /// entered workspace's name, then the scoped tab bar (one button per
+    /// [`WorkspacesTab::WIRED`] tab; the active one accented).
+    fn in_workspace_bar(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let name = self.entered.clone().unwrap_or_default();
         let mut bar = div()
             .flex()
             .flex_row()
             .items_center()
-            .gap_1()
+            .gap_2()
             .px_4()
             .py_2()
             .border_b_1()
-            .border_color(rgb(pack(BORDER_SUBTLE)));
+            .border_color(rgb(pack(BORDER_SUBTLE)))
+            // The back arrow — returns to the Registry landing.
+            .child(back_button(cx))
+            .child(
+                div()
+                    // Clip a long workspace id rather than pushing the tabs off.
+                    .max_w(px(220.0))
+                    .overflow_hidden()
+                    .font_family(FAMILY_INTER)
+                    .text_size(px(size::SM))
+                    .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                    .text_color(rgb(pack(TEXT_PRIMARY)))
+                    .child(SharedString::from(name)),
+            )
+            // A thin separator between the workspace identity and its tabs.
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(16.0))
+                    .bg(rgb(pack(BORDER_SUBTLE)))
+                    .mx_1(),
+            );
         for tab in WorkspacesTab::WIRED.iter().copied() {
             bar = bar.child(tab_button(tab, self.tab == tab, cx));
         }
@@ -685,6 +748,29 @@ fn tab_button(
         btn = btn.bg(rgb(pack(c)));
     }
     btn
+}
+
+/// The back arrow at the top-left of the in-workspace view — returns to the
+/// Registry landing (clears `entered`).
+fn back_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
+    div()
+        .id(ElementId::Name("ws-back".into()))
+        .flex_shrink_0()
+        .px_2()
+        .py_1()
+        .rounded(px(4.0))
+        .cursor_pointer()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::SM))
+        .text_color(rgb(pack(TEXT_SECONDARY)))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|this: &mut WorkspacesPanel, _ev, _window, cx| {
+                this.leave_workspace(cx);
+            }),
+        )
+        // "← Workspaces" reads as "back to the workspace list".
+        .child(SharedString::from("← Workspaces"))
 }
 
 fn header_row(cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
@@ -818,7 +904,7 @@ fn workspace_card(
     ws: &WorkspaceSummary,
     is_active: bool,
     cx: &mut Context<WorkspacesPanel>,
-) -> gpui::Div {
+) -> Stateful<gpui::Div> {
     let border = if is_active {
         BORDER_DEFAULT
     } else {
@@ -830,13 +916,15 @@ fn workspace_card(
         TEXT_SECONDARY
     };
 
-    let id_for_switch = ws.id.clone();
+    let id_for_enter = ws.id.clone();
     let id_for_reindex = ws.id.clone();
     let id_for_remove = ws.id.clone();
     let label_active = SharedString::from(ws.id.clone());
     let label_path = SharedString::from(ws.path.clone());
 
+    // The whole card is clickable → ENTER the workspace (UX rework decision 2).
     let mut row = div()
+        .id(ElementId::Name(format!("ws-card::{}", ws.id).into()))
         .bg(rgb(pack(SURFACE_800)))
         .border_1()
         .border_color(rgb(pack(border)))
@@ -846,6 +934,13 @@ fn workspace_card(
         .flex_row()
         .items_start()
         .gap_3()
+        .cursor_pointer()
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut WorkspacesPanel, _ev, _window, cx| {
+                this.enter_workspace(id_for_enter.clone(), cx);
+            }),
+        )
         .child(
             div()
                 .flex_1()
@@ -879,16 +974,10 @@ fn workspace_card(
                 .child(meta_strip(ws)),
         );
 
-    // Action buttons.
-    if !is_active {
-        row = row.child(action_button(
-            ElementId::Name(format!("ws-switch::{}", ws.id).into()),
-            "Switch",
-            cx.listener(move |_this: &mut WorkspacesPanel, _ev, _window, cx| {
-                WorkspacesPanel::spawn_set_active(id_for_switch.clone(), cx);
-            }),
-        ));
-    }
+    // Action buttons. (The old per-row "Switch" is gone — clicking the card
+    // ENTERS the workspace, which activates it, so a separate Switch was
+    // redundant.) Each button calls `stop_propagation` so it acts without
+    // also entering the card underneath it.
     row = row.child(action_button(
         ElementId::Name(format!("ws-reindex::{}", ws.id).into()),
         if ws.indexing {
@@ -897,6 +986,7 @@ fn workspace_card(
             "Re-index"
         },
         cx.listener(move |this: &mut WorkspacesPanel, _ev, _window, cx| {
+            cx.stop_propagation();
             // Optimistic in-progress flip so the button reads "Indexing…"
             // the instant it's clicked; `spawn_reindex` clears it on reply.
             if let Some(ws) = this.workspaces.iter_mut().find(|w| w.id == id_for_reindex) {
@@ -910,6 +1000,7 @@ fn workspace_card(
         ElementId::Name(format!("ws-remove::{}", ws.id).into()),
         "Remove",
         cx.listener(move |_this: &mut WorkspacesPanel, _ev, _window, cx| {
+            cx.stop_propagation();
             WorkspacesPanel::spawn_remove(id_for_remove.clone(), cx);
         }),
     ));
@@ -1208,6 +1299,17 @@ mod tests {
         assert!(p.active_id.is_none());
         assert!(p.error.is_none());
         assert!(p.loading);
+    }
+
+    #[test]
+    fn new_lands_on_the_registry_not_in_a_workspace() {
+        // UX rework: the panel lands on the Registry home (`entered == None`);
+        // the in-workspace tab view only appears after a card is entered.
+        let p = WorkspacesPanel::new();
+        assert!(
+            p.entered.is_none(),
+            "fresh panel must land on the Registry, not inside a workspace"
+        );
     }
 
     #[test]
