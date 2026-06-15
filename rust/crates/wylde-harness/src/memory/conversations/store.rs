@@ -297,6 +297,70 @@ pub fn delete_conversation(conv_id: &str) -> Result<bool, InvalidConversationId>
     Ok(std::fs::remove_file(&path).is_ok())
 }
 
+/// Sweep every flat-store conversation **bound** to `workspace_id` and
+/// delete its document. Returns the number of files actually removed.
+///
+/// This is the Route-1 complement to the workspaces service-store cascade
+/// (`registry::delete` → `delete_workspace_dir`): under Route 1 the harness
+/// flat store at `<data_dir>/conversations/` is canonical for live turns, so
+/// a workspace's *bound* conversations (`workspace_id == <id>`) live here,
+/// **not** in the workspace bundle dir the cascade removes. Deleting the
+/// workspace must therefore explicitly sweep these or they orphan — a flat
+/// doc whose `workspace_id` points at a workspace that no longer exists, and
+/// which would otherwise linger forever in the global list.
+///
+/// Matching is by the **trimmed** `workspace_id` field, exactly the value
+/// [`set_workspace`] writes. A blank / empty `workspace_id` argument is a
+/// **no-op returning 0** — unbound (global) conversations carry an empty
+/// `workspace_id`, and we must never let a blank sweep nuke every standalone
+/// chat. Best-effort per file (a torn read or a failed unlink is skipped,
+/// not fatal); the caller treats the count as advisory.
+pub fn delete_by_workspace(workspace_id: &str) -> usize {
+    let target = workspace_id.trim();
+    if target.is_empty() {
+        // Never mass-delete unbound conversations on a blank id.
+        return 0;
+    }
+    let dir = conversations_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return 0;
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(raw) = wylde_shared::encryption::read_to_string_at_rest(&path) else {
+            continue;
+        };
+        let Ok(Value::Object(doc)) = serde_json::from_str::<Value>(&raw) else {
+            continue;
+        };
+        // Same id guard the listing path uses — drops the active pointer and
+        // any stray id-less object so we only ever unlink real conversations.
+        match doc.get("id").and_then(Value::as_str) {
+            Some(s) if !s.is_empty() => {}
+            _ => continue,
+        }
+        let bound = doc
+            .get("workspace_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .unwrap_or("");
+        if bound != target {
+            continue;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Lightweight per-conversation metadata, newest-first. Mirrors Python's
 /// `list_conversations` field-for-field, plus one additive field the
 /// Slice B switcher renders: `working_memory_count` (the size of the
@@ -572,6 +636,70 @@ mod tests {
     fn delete_rejects_invalid_id() {
         let _env = TestEnv::new();
         assert!(delete_conversation("../escape").is_err());
+    }
+
+    #[test]
+    fn delete_by_workspace_sweeps_only_matching_bound_docs() {
+        let _env = TestEnv::new();
+        // Two bound to ws-a, one bound to ws-b, one unbound (empty), one
+        // unbound (field absent entirely).
+        seed_conversation(
+            "a1",
+            json!({"id": "a1", "messages": [], "workspace_id": "ws-a"}),
+        );
+        seed_conversation(
+            "a2",
+            json!({"id": "a2", "messages": [], "workspace_id": "ws-a"}),
+        );
+        seed_conversation(
+            "b1",
+            json!({"id": "b1", "messages": [], "workspace_id": "ws-b"}),
+        );
+        seed_conversation(
+            "g1",
+            json!({"id": "g1", "messages": [], "workspace_id": ""}),
+        );
+        seed_conversation("g2", json!({"id": "g2", "messages": []}));
+
+        let removed = delete_by_workspace("ws-a");
+        assert_eq!(removed, 2, "both ws-a docs swept");
+        assert!(read_conversation("a1").is_err(), "a1 gone");
+        assert!(read_conversation("a2").is_err(), "a2 gone");
+        // Everything else survives — other workspace + both unbound shapes.
+        assert!(read_conversation("b1").is_ok(), "ws-b untouched");
+        assert!(read_conversation("g1").is_ok(), "empty-id-bound untouched");
+        assert!(read_conversation("g2").is_ok(), "unbound untouched");
+        // Idempotent: a second sweep finds nothing.
+        assert_eq!(delete_by_workspace("ws-a"), 0);
+    }
+
+    #[test]
+    fn delete_by_workspace_blank_id_is_a_no_op() {
+        let _env = TestEnv::new();
+        // A blank target must NEVER mass-delete unbound (empty-id) chats.
+        seed_conversation(
+            "g1",
+            json!({"id": "g1", "messages": [], "workspace_id": ""}),
+        );
+        seed_conversation("g2", json!({"id": "g2", "messages": []}));
+        assert_eq!(delete_by_workspace(""), 0, "empty target no-ops");
+        assert_eq!(delete_by_workspace("   "), 0, "whitespace target no-ops");
+        assert!(read_conversation("g1").is_ok());
+        assert!(read_conversation("g2").is_ok());
+    }
+
+    #[test]
+    fn delete_by_workspace_trims_and_handles_absent_dir() {
+        let _env = TestEnv::new();
+        // No conversations dir yet → 0, no panic.
+        assert_eq!(delete_by_workspace("ws-x"), 0);
+        // Stored value matches a whitespace-padded argument (both trimmed).
+        seed_conversation(
+            "x1",
+            json!({"id": "x1", "messages": [], "workspace_id": "ws-x"}),
+        );
+        assert_eq!(delete_by_workspace("  ws-x  "), 1, "argument is trimmed");
+        assert!(read_conversation("x1").is_err());
     }
 
     #[test]

@@ -69,6 +69,21 @@ pub(super) fn install(api: &Arc<dyn HarnessApi>) {
 
     let a = Arc::clone(api);
     register_action_with_meta(
+        "conversations.delete_by_workspace",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.conversations_delete_by_workspace(p).await }
+        },
+        "Sweep every flat-store conversation bound to a workspace (Route 1 \
+         deletion complement to the workspaces service-store cascade). \
+         Payload {workspace_id}. Returns {ok, workspace_id, deleted} where \
+         deleted is the count of swept docs. bad_request for a blank \
+         workspace_id (so it can never mass-delete unbound/global chats).",
+        HANDLER_MODULE_CONVERSATIONS,
+    );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
         "conversations.get_active",
         move |p: Value| {
             let a = Arc::clone(&a);

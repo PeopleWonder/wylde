@@ -179,6 +179,7 @@ pub trait HarnessApi: Send + Sync {
     async fn conversations_list(&self, payload: Value) -> Reply;
     async fn conversations_get(&self, payload: Value) -> Reply;
     async fn conversations_delete(&self, payload: Value) -> Reply;
+    async fn conversations_delete_by_workspace(&self, payload: Value) -> Reply;
     async fn conversations_get_active(&self, payload: Value) -> Reply;
     async fn conversations_set_active(&self, payload: Value) -> Reply;
     async fn conversations_set_workspace(&self, payload: Value) -> Reply;
@@ -577,6 +578,10 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn conversations_delete(&self, payload: Value) -> Reply {
         conversations_actions::handle_delete(payload).await
+    }
+
+    async fn conversations_delete_by_workspace(&self, payload: Value) -> Reply {
+        conversations_actions::handle_delete_by_workspace(payload).await
     }
 
     async fn conversations_get_active(&self, payload: Value) -> Reply {
