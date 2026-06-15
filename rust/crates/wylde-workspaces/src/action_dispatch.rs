@@ -686,4 +686,32 @@ mod tests {
         install();
         reset_for_tests();
     }
+
+    #[tokio::test]
+    async fn install_serves_graph_verb_not_no_action() {
+        // F5: a freshly-built binary REGISTERS workspaces.graph and serves it
+        // through the real production dispatcher (the same path the pipe server
+        // routes /__action__ frames through). The live failure was purely the
+        // stale (pre-6/8) binary, which lacked the verb and returned
+        // `no_action: unknown action`. Here the same call is served by the
+        // handler: a blank/missing workspace_id is validated to `bad_request`
+        // BEFORE any Bolt connection — proving the verb exists without needing
+        // the (currently-down) graph backend.
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+
+        assert!(
+            list_actions().contains(&GRAPH.to_string()),
+            "a fresh binary must register workspaces.graph"
+        );
+
+        let reply = dispatch_action(json!({"action": GRAPH, "payload": {}})).await;
+        assert!(!reply.ok, "blank id must be rejected by the handler");
+        let code = reply.error.unwrap().code;
+        assert_eq!(code, "bad_request", "served by the handler, got {code:?}");
+        assert_ne!(code, "no_action", "must NOT be the unknown-action fallthrough");
+
+        reset_for_tests();
+    }
 }
