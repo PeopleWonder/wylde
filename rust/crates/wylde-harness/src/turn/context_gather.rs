@@ -488,6 +488,11 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     overrides: &TokenOverrides,
     slot_budget: usize,
 ) -> GatheredContext {
+    // A conversation is *bound* iff it carries a non-blank workspace_id
+    // (scope spec [D2]); resolve it once so the long-term read-gate and the
+    // workspace reads below agree on "is there an active workspace".
+    let active_ws = workspace_id.map(str::trim).filter(|s| !s.is_empty());
+
     // Always-on, in-process slots — never depend on the workspaces service.
     let mut ctx = ChatContext {
         user_profile: crate::user_profile::store::read().profile.to_prompt_block(),
@@ -495,16 +500,25 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         // B2: the auto-summary pipeline (chat/search/summary, regenerated
         // every 5 messages) finally feeds the tier-2 slot it was built for.
         conversation_summary: crate::chat::search::summary::auto_summary_for(conversation_id),
-        // B3: the long-term store finally reaches the prompt without the
-        // model having to think of calling memory.search.
-        long_term: gather_long_term(user_message).await,
+        // B3 + C2b-read [D2]: the long-term store reaches the prompt for
+        // *unbound* (workspace-free) conversations only. A bound (workspace)
+        // conversation excludes long-term entirely — global user identity/
+        // prefs stay confined to the global Chat surface (manual copy-in is
+        // the opt-in; the write-side complement ships in C8). Gating here
+        // skips the embed round-trip too, so a bound turn pays nothing for the
+        // slot it won't get.
+        long_term: if active_ws.is_none() {
+            gather_long_term(user_message).await
+        } else {
+            Vec::new()
+        },
         // B1: the model can finally see the previous turns.
         history: load_history(conversation_id, user_message, slot_budget),
         ..ChatContext::default()
     };
     let mut degraded = false;
 
-    if let Some(ws) = workspace_id.map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(ws) = active_ws {
         // The workspace prompt parts (persona / notes / RAG — B6 split).
         // An unreachable service here is the degrade signal (Slice 0d
         // semantics).
@@ -1597,6 +1611,67 @@ mod tests {
         assert_eq!(
             injected.last_used_at, saved[6].last_used_at,
             "core filler must NOT be re-warmed by injection (M5)"
+        );
+    }
+
+    // ── C2b-read [D2]: long-term confined to unbound conversations ──────
+
+    #[tokio::test]
+    async fn long_term_gated_by_binding_bound_excludes_unbound_includes() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        use crate::memory::long_term as entries;
+        entries::save("durable identity fact", "test", Some(9.0), Vec::new(), None)
+            .expect("save record");
+
+        // Unbound (no workspace) → long-term injected.
+        let unbound = gather_with(
+            &MockSource::default(),
+            None,
+            "what do you remember",
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(
+            unbound.system_slots.contains("### Long-term memory"),
+            "unbound conversation must receive long-term: {}",
+            unbound.system_slots
+        );
+        assert!(unbound.system_slots.contains("durable identity fact"));
+
+        // Bound (workspace set) → long-term slot absent entirely, even though
+        // the same populated store would otherwise inject it.
+        let bound = gather_with(
+            &MockSource::default(),
+            Some("ws"),
+            "what do you remember",
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(
+            !bound.system_slots.contains("### Long-term memory"),
+            "bound (workspace) conversation must NOT receive long-term: {}",
+            bound.system_slots
+        );
+        assert!(!bound.system_slots.contains("durable identity fact"));
+
+        // A blank workspace_id is unbound, not bound — long-term rides.
+        let blank = gather_with(
+            &MockSource::default(),
+            Some("   "),
+            "what do you remember",
+            "c",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        assert!(
+            blank.system_slots.contains("### Long-term memory"),
+            "a blank workspace_id is unbound and must receive long-term: {}",
+            blank.system_slots
         );
     }
 
