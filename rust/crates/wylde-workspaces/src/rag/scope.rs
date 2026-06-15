@@ -20,12 +20,17 @@ pub struct WorkspaceRagScope {
     /// Absolute workspace folder retrieval is bounded to.
     pub folder: String,
 
-    /// Max snippets to inject into the prompt.
+    /// Max snippets to inject into the prompt. This is a *budget cap*, not a
+    /// fixed count: the search layer's dynamic-k cutoff
+    /// ([`super::indexer::search::rank`]) may return fewer (down to zero) when
+    /// the score distribution doesn't warrant filling it — a weak/off-topic
+    /// query won't pad the slot up to `limit`.
     pub limit: usize,
 }
 
 impl WorkspaceRagScope {
-    /// Default snippet budget for the workspace-RAG slot.
+    /// Default snippet budget (upper bound) for the workspace-RAG slot. The
+    /// dynamic-k cutoff may inject fewer than this on weak/dominated queries.
     pub const DEFAULT_LIMIT: usize = 5;
 
     /// Build a scope from a workspace definition. Returns `None` when RAG

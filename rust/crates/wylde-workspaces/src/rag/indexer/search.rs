@@ -77,6 +77,22 @@ const MMR_LAMBDA: f64 = 0.7;
 /// on large indexes. (`pool` is always at least `k`.)
 const MMR_POOL: usize = 20;
 
+/// Absolute cosine noise floor for the dynamic-k cutoff. A query whose
+/// *best* hit scores below this retrieves nothing — the workspace index
+/// holds nothing on-topic, so injecting its strongest-but-still-weak chunks
+/// only pads the prompt with noise. Conservative: genuine hits from
+/// `nomic-embed-text` sit well above it (typically ≥0.4), while off-topic
+/// matches cluster below. The production check (off-topic query → ≤1 chunk)
+/// validates the level against the live index.
+const MIN_ABSOLUTE_SCORE: f64 = 0.25;
+
+/// Relative dominance floor for the dynamic-k cutoff: a hit is only worth a
+/// prompt slot if its cosine is at least this fraction of the *top* hit's.
+/// When one result dominates (a sharp cliff after rank 1) the weaker tail is
+/// trimmed instead of padding the slot; when several hits cluster near the
+/// top they all clear it and the full budget is used.
+const RELATIVE_FLOOR: f64 = 0.6;
+
 /// Ranking core: score every chunk by cosine against `query_vec`, then
 /// select `k` with Maximal Marginal Relevance so near-duplicate chunks
 /// don't crowd out the prompt's RAG slot. Split out for direct unit testing
@@ -85,6 +101,10 @@ const MMR_POOL: usize = 20;
 /// The pure-cosine scoring is unchanged — MMR only governs *selection*
 /// among the top [`MMR_POOL`] candidates, and each returned hit's `score`
 /// is still its true cosine relevance.
+///
+/// `k` is the *budget* (max slots), not a fixed count: a [`dynamic_k`] cutoff
+/// trims weak/dominated hits first, so an off-topic query returns few or no
+/// chunks instead of padding the slot up to `k`.
 pub fn rank(query_vec: &[f32], chunks: Vec<IndexedChunk>, k: usize) -> Vec<SearchHit> {
     if k == 0 {
         return Vec::new();
@@ -94,10 +114,18 @@ pub fn rank(query_vec: &[f32], chunks: Vec<IndexedChunk>, k: usize) -> Vec<Searc
         .map(|c| (cosine(query_vec, &c.vector), c))
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    // Over-fetch a pool of the strongest cosine hits, then MMR-select down
-    // to k. The pool floor of k keeps behaviour intact when k exceeds it.
-    scored.truncate(MMR_POOL.max(k));
-    mmr_select(scored, k)
+    // Vary how many slots are actually warranted by the score distribution
+    // before spending the MMR/diversity budget. Nothing clears the cutoff →
+    // inject nothing (the off-topic case).
+    let keep = dynamic_k(&scored, k);
+    if keep == 0 {
+        return Vec::new();
+    }
+    // Over-fetch a pool of the strongest cosine hits, then MMR-select down to
+    // the warranted count. The pool floor of `keep` keeps behaviour intact
+    // when `keep` exceeds it.
+    scored.truncate(MMR_POOL.max(keep));
+    mmr_select(scored, keep)
         .into_iter()
         .map(|(score, c)| SearchHit {
             file_path: c.path,
@@ -107,6 +135,38 @@ pub fn rank(query_vec: &[f32], chunks: Vec<IndexedChunk>, k: usize) -> Vec<Searc
             chunk_idx: c.chunk_idx,
         })
         .collect()
+}
+
+/// Decide how many of the top hits are *worth* a prompt slot, given the
+/// budget `k` and the descending-cosine `scored` candidates. Returns a count
+/// in `0..=k`:
+///
+/// * `0` — the best hit is below [`MIN_ABSOLUTE_SCORE`]: nothing on-topic, so
+///   inject nothing rather than padding with noise.
+/// * `1` — one result dominates (the rest fall below [`RELATIVE_FLOOR`]·top):
+///   don't dilute it with weak tail hits.
+/// * up to `k` — several hits cluster near the top: use the full budget.
+///
+/// Because `scored` is sorted descending, the kept hits are the contiguous
+/// prefix that clears `max(MIN_ABSOLUTE_SCORE, RELATIVE_FLOOR·top)`.
+fn dynamic_k(scored: &[(f64, IndexedChunk)], k: usize) -> usize {
+    if k == 0 || scored.is_empty() {
+        return 0;
+    }
+    let top = scored[0].0;
+    // Best hit is noise → retrieve nothing.
+    if top < MIN_ABSOLUTE_SCORE {
+        return 0;
+    }
+    let threshold = MIN_ABSOLUTE_SCORE.max(RELATIVE_FLOOR * top);
+    let kept = scored
+        .iter()
+        .take(k)
+        .take_while(|(score, _)| *score >= threshold)
+        .count();
+    // `top` cleared `threshold` by construction, so at least the dominant
+    // hit is always kept once we get here.
+    kept.max(1)
 }
 
 /// Greedy Maximal Marginal Relevance selection over `candidates`
@@ -228,6 +288,99 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].file_path, "/near.md");
         assert_eq!(hits[1].file_path, "/mid.md", "relevant mid beats orthogonal");
+    }
+
+    /// Build descending-cosine `(score, chunk)` pairs for direct
+    /// [`dynamic_k`] boundary tests, without an embedder.
+    fn scored(scores: &[f64]) -> Vec<(f64, IndexedChunk)> {
+        scores
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| (s, chunk(&format!("/c{i}.md"), vec![1.0, 0.0], "c")))
+            .collect()
+    }
+
+    #[test]
+    fn dynamic_k_zero_when_best_hit_is_noise() {
+        // Top hit below the absolute floor → nothing on-topic, inject none.
+        assert_eq!(dynamic_k(&scored(&[0.2, 0.15, 0.1]), 5), 0);
+    }
+
+    #[test]
+    fn dynamic_k_one_when_top_dominates() {
+        // Top 0.8; tail 0.4 < 0.6·0.8 = 0.48 → trimmed, don't dilute.
+        assert_eq!(dynamic_k(&scored(&[0.8, 0.4, 0.35]), 5), 1);
+    }
+
+    #[test]
+    fn dynamic_k_keeps_cluster_near_top() {
+        // 0.8 / 0.6 / 0.5 all clear the 0.48 relative floor → full count.
+        assert_eq!(dynamic_k(&scored(&[0.8, 0.6, 0.5]), 5), 3);
+    }
+
+    #[test]
+    fn dynamic_k_capped_by_budget() {
+        assert_eq!(dynamic_k(&scored(&[0.8, 0.8, 0.8, 0.8]), 2), 2);
+    }
+
+    #[test]
+    fn dynamic_k_absolute_floor_dominates_when_top_is_moderate() {
+        // Top 0.3 → relative floor 0.18, but the 0.25 absolute floor wins:
+        // 0.3 and 0.26 clear it, 0.24 is trimmed.
+        assert_eq!(dynamic_k(&scored(&[0.3, 0.26, 0.24]), 5), 2);
+    }
+
+    #[test]
+    fn dynamic_k_zero_budget_or_empty() {
+        assert_eq!(dynamic_k(&scored(&[0.9]), 0), 0);
+        assert_eq!(dynamic_k(&[], 5), 0);
+    }
+
+    /// Unit vector whose cosine against the `[1, 0]` query equals `c`.
+    fn vec_with_cosine(c: f32) -> Vec<f32> {
+        vec![c, (1.0 - c * c).max(0.0).sqrt()]
+    }
+
+    #[test]
+    fn rank_dynamic_k_trims_weak_tail_when_top_dominates() {
+        // Budget of 5, but only the strong hit warrants a slot: the two weak
+        // tail hits (cos 0.4) fall below 0.6·0.8 = 0.48 and are dropped.
+        let query = vec![1.0_f32, 0.0];
+        let chunks = vec![
+            chunk("/strong.md", vec_with_cosine(0.8), "strong"),
+            chunk("/weak-a.md", vec_with_cosine(0.4), "weak a"),
+            chunk("/weak-b.md", vec_with_cosine(0.4), "weak b"),
+        ];
+        let hits = rank(&query, chunks, 5);
+        assert_eq!(hits.len(), 1, "weak tail trimmed, not padded to budget");
+        assert_eq!(hits[0].file_path, "/strong.md");
+    }
+
+    #[test]
+    fn rank_dynamic_k_empty_for_off_topic_query() {
+        // Every hit is noise (cos ~0.2 < the 0.25 absolute floor): an
+        // off-topic query injects nothing instead of 5 weak chunks.
+        let query = vec![1.0_f32, 0.0];
+        let chunks = vec![
+            chunk("/a.md", vec_with_cosine(0.2), "a"),
+            chunk("/b.md", vec_with_cosine(0.18), "b"),
+            chunk("/c.md", vec_with_cosine(0.15), "c"),
+        ];
+        assert!(rank(&query, chunks, 5).is_empty());
+    }
+
+    #[test]
+    fn rank_dynamic_k_uses_budget_when_hits_cluster() {
+        // Three hits clustered near the top all clear the floor → all three
+        // returned (the full available budget), none trimmed.
+        let query = vec![1.0_f32, 0.0];
+        let chunks = vec![
+            chunk("/a.md", vec_with_cosine(0.80), "a"),
+            chunk("/b.md", vec_with_cosine(0.72), "b"),
+            chunk("/c.md", vec_with_cosine(0.66), "c"),
+        ];
+        let hits = rank(&query, chunks, 5);
+        assert_eq!(hits.len(), 3, "clustered hits all warrant a slot");
     }
 
     #[test]
