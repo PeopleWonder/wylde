@@ -1,0 +1,26 @@
+[package]
+name = "wylde-gui-test-support"
+description = "DEV-ONLY gpui-test helpers for the Wylde GUI: a scripted fake IPC backend that swaps the live named-pipe transport for canned responses, so windowed `#[gpui::test]`s run with no backend stack. NEVER a normal dependency — pulled in only via the panels' `dev-dependencies`, so it cannot reach the shipped Shell binary."
+# NOTE: this crate is deliberately EXCLUDED from the GUI workspace (see the
+# `exclude` list in `Core/GUI/Cargo.toml`) so a `cargo build --workspace`
+# can never feature-unify `wylde-gui-pipe/test-support` into the Shell.
+# Excluded crates can't inherit `[workspace.package]`, so the fields below
+# are spelled out to match it.
+version = "0.1.0-alpha.1"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+authors = ["Wylde User <user@example.com>"]
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The injectable seam. We enable the Pipe crate's `test-support` feature
+# here; because this crate is excluded from the workspace and only ever a
+# `dev-dependency` of the panels, resolver = "2" never unifies that feature
+# into a normal Shell build.
+wylde-gui-pipe = { path = "../Pipe", features = ["test-support"] }
+
+serde_json = "1"
