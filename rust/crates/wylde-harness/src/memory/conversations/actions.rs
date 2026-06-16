@@ -257,6 +257,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_then_set_workspace_binds_and_lists() {
+        // C5 real-path: the exact verb sequence the Docked dock's "+ New" runs
+        // over IPC — `conversations.new` mints an id, then
+        // `conversations.set_workspace` binds it — must land a document on disk
+        // that (a) carries the `workspace_id` and (b) is visible to
+        // `conversations.list` scoped to that workspace. An *unbound* mint has no
+        // file until its first turn; the bind's upsert is what makes a brand-new
+        // bound thread appear in the workspace's scoped rail immediately.
+        let _env = TestEnv::new();
+
+        // 1. Mint — no file yet, so the list is still empty.
+        let minted = handle_new(Value::Null).await;
+        assert!(minted.ok);
+        let id = minted.data["id"].as_str().unwrap().to_owned();
+        assert!(!id.is_empty());
+        let before = handle_list(Value::Null).await;
+        assert_eq!(before.data["count"], 0, "an unbound mint writes no file yet");
+
+        // 2. Bind — upserts the doc with the workspace_id.
+        let bound = handle_set_workspace(json!({"id": id, "workspace_id": "ws-c5"})).await;
+        assert!(bound.ok);
+        assert_eq!(bound.data["workspace_id"], "ws-c5");
+
+        // 3. Read-back: the persisted doc carries the binding...
+        let got = handle_get(json!({"id": id})).await;
+        assert!(got.ok);
+        assert_eq!(got.data["workspace_id"], "ws-c5");
+
+        // ...and it now appears in the list with its workspace_id projected, so
+        // the GUI's per-workspace filter (C4) will pick it up immediately.
+        let listed = handle_list(Value::Null).await;
+        assert_eq!(listed.data["count"], 1, "the bound thread is now on disk");
+        let row = &listed.data["conversations"][0];
+        assert_eq!(row["id"], id);
+        assert_eq!(
+            row["workspace_id"], "ws-c5",
+            "the scoped rail can filter this thread into workspace ws-c5",
+        );
+    }
+
+    #[tokio::test]
     async fn active_get_set_round_trips() {
         let _env = TestEnv::new();
         let unset = handle_get_active(Value::Null).await;

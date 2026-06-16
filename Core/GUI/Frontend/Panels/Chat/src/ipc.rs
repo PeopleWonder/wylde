@@ -960,6 +960,32 @@ pub async fn set_active_conversation(id: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// `conversations.set_workspace` — bind (or re-bind) a conversation to a
+/// workspace so it joins that workspace's scoped list (C4) and switches on
+/// bound-conversation memory routing (C8, write-side of D2). The harness
+/// **upserts** the document, so the binding lands even on a freshly minted
+/// conversation that has no turns (and thus no file) yet — this is what lets
+/// the Docked dock's "+ New" create a thread that shows up in the workspace's
+/// scoped list immediately, before its first message (C5). Pass an empty
+/// `workspace_id` to clear the binding (back to *unbound* / global). The Global
+/// Chat slot never calls this — it is structurally workspace-free (D1).
+pub async fn set_workspace_for_conversation(
+    conversation_id: &str,
+    workspace_id: &str,
+) -> Result<(), String> {
+    wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "conversations.set_workspace",
+            "payload": { "id": conversation_id, "workspace_id": workspace_id },
+        })),
+    )
+    .await
+    .map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1149,6 +1175,7 @@ mod tests {
         let _ = delete_conversation;
         let _ = get_active_conversation;
         let _ = set_active_conversation;
+        let _ = set_workspace_for_conversation;
         let _ = fetch_conversation_messages;
     }
 

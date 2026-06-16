@@ -50,7 +50,8 @@ use crate::ipc::{
     get_active_conversation, import_conversation, list_conversations,
     list_conversations_for_workspace, list_models,
     new_conversation, recent_workspaces, respond_consent, set_active_conversation,
-    set_active_model, set_active_workspace, start_turn_with_model, stream_consent_pending,
+    set_active_model, set_active_workspace, set_workspace_for_conversation,
+    start_turn_with_model, stream_consent_pending,
     stream_tools, stream_turn, ConsentEvent, ConversationMeta, PendingConsent, ToolChunk,
     TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
 };
@@ -778,6 +779,18 @@ impl ChatPanel {
 
     /// "+ New": mint a fresh conversation id, switch to it (blank log),
     /// persist it as active, and refresh the rail + cross-panel bus.
+    /// The workspace a freshly minted thread should bind to (C5). Routes the
+    /// current `active_workspace_id` through [`ChatScope::resolve_workspace_id`]
+    /// so a Docked dock inside workspace X mints a *bound* thread (`Some(X)`),
+    /// while the Global slot — structurally unbound (D1) — always yields `None`
+    /// and never binds, even if a stale id somehow sat in the field. A Docked
+    /// dock with no workspace entered yet also yields `None` (an unbound thread,
+    /// indistinguishable from a global one until a workspace is entered).
+    fn new_conversation_bind_target(&self) -> Option<String> {
+        self.scope
+            .resolve_workspace_id(self.active_workspace_id.clone())
+    }
+
     pub fn spawn_new_conversation(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let Ok(id) = new_conversation().await else {
@@ -787,6 +800,28 @@ impl ChatPanel {
                 });
                 return;
             };
+            // C5: minting a thread on the Docked dock binds it to the entered
+            // workspace so it joins that workspace's scoped list (C4) and routes
+            // reflection to workspace memory (C8). Resolved through `scope` off
+            // the live panel, so the Global slot can never bind (D1).
+            let bind_workspace = this
+                .update(app_cx, |panel, _cx| panel.new_conversation_bind_target())
+                .ok()
+                .flatten();
+            // Bind the fresh thread *before* announcing/selecting it: the harness
+            // upserts the doc, so this both records the `workspace_id` and lands
+            // the document on disk — which is what lets the bound thread appear in
+            // the workspace's scoped list immediately, before its first turn (an
+            // unbound thread has no file until then). A bind failure is surfaced
+            // but non-fatal: the thread is still usable, just unbound this session.
+            if let Some(ws) = bind_workspace.as_deref() {
+                if let Err(e) = set_workspace_for_conversation(&id, ws).await {
+                    let _ = this.update(app_cx, |panel, cx| {
+                        panel.error = Some(format!("Couldn't bind the new thread to this workspace: {e}"));
+                        cx.notify();
+                    });
+                }
+            }
             let _ = this.update(app_cx, |panel, cx| {
                 panel.conversation_id = id.clone();
                 panel.messages.clear();
@@ -797,9 +832,10 @@ impl ChatPanel {
                 cx.notify();
             });
             let _ = set_active_conversation(&id).await;
-            // A brand-new conversation has no file until its first turn, so
-            // it won't appear in the list yet — but announce the list change
-            // for forward-compat and refresh our own copy.
+            // An *unbound* brand-new conversation has no file until its first turn,
+            // so it won't appear in the list yet; a *bound* one was just upserted
+            // by the set_workspace above and will. Either way, announce the list
+            // change and refresh our own copy.
             wylde_gui_pipe::publish_conversation_list_changed();
             Self::reload_conversations(&this, app_cx).await;
         })
@@ -3555,6 +3591,40 @@ mod tests {
             None,
             "leaving a workspace clears the dock's scope",
         );
+    }
+
+    // ── C5: create-and-bind a new workspace conversation ─────────────────
+    // No gpui-executor harness exists here (same constraint as C1–C3), so a full
+    // `ChatPanel` can't be mounted to drive `spawn_new_conversation` end to end.
+    // What the slice newly decides is *which workspace a freshly minted thread
+    // binds to* — `new_conversation_bind_target`, which routes the live
+    // `active_workspace_id` through `ChatScope::resolve_workspace_id`. That is the
+    // exact value handed to `conversations.set_workspace` after `conversations.new`
+    // returns; the verb sequence itself is exercised against the real flat store
+    // by `wylde-harness`'s `new_then_set_workspace_binds_and_lists` action test.
+    // Here we pin the binding decision the GUI feeds that sequence.
+
+    /// C5: a Docked dock inside a workspace mints a *bound* thread (the entered
+    /// id), while the Global slot mints an *unbound* one (`None`) no matter what
+    /// sits in its field (D1), and a Docked dock with no workspace entered yet
+    /// also mints unbound. This is the predicate `spawn_new_conversation` reads
+    /// to decide whether to call `set_workspace_for_conversation` at all.
+    #[test]
+    fn new_conversation_binds_only_on_a_scoped_docked_dock() {
+        // Docked + entered workspace → bind to it.
+        assert_eq!(
+            ChatScope::Docked.resolve_workspace_id(Some("ws-alpha".into())),
+            Some("ws-alpha".to_owned()),
+            "a new thread on the dock joins the entered workspace",
+        );
+        // Global + any id → never binds (D1 — structurally workspace-free).
+        assert_eq!(
+            ChatScope::Global.resolve_workspace_id(Some("ws-alpha".into())),
+            None,
+            "the Global slot mints unbound threads even with a stale id present",
+        );
+        // Docked with nothing entered yet → unbound thread.
+        assert_eq!(ChatScope::Docked.resolve_workspace_id(None), None);
     }
 
     #[test]
