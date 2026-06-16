@@ -379,4 +379,114 @@ mod tests {
         fn assert_render<T: Render>() {}
         assert_render::<FilesTab>();
     }
+
+    // ── Windowed lazy file-tree ──────────────────────────────────────────
+    //
+    // Mount a real FilesTab and drive its reload + expand through the scripted
+    // fake backend at the `wylde_gui_pipe::call` seam. The fake routes by
+    // action only (not payload), so children are identical per level — we
+    // assert the LAZY contract via the fs.list_dir call COUNT and the `path`
+    // each call carries, which is exactly what proves "fetch on first expand,
+    // cache thereafter" without a live wylde-workspaces stack.
+
+    use gpui::TestAppContext;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    fn list_dir_calls(fake: &ScriptedBackend) -> Vec<Option<String>> {
+        fake.calls_for("workspaces.fs.list_dir")
+            .iter()
+            .map(|c| c.payload_str("path"))
+            .collect()
+    }
+
+    #[gpui::test]
+    fn reload_loads_root_then_expand_lazily_fetches_and_caches(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on("workspaces.list_mru", serde_json::json!({ "active_id": "ws-a" }))
+            .on(
+                "workspaces.fs.list_dir",
+                serde_json::json!({ "entries": [
+                    { "name": "src", "kind": "dir" },
+                    { "name": "README.md", "kind": "file" },
+                ]}),
+            );
+        let _guard = fake.clone().install();
+
+        // FilesTab::new kicks reload (active workspace → root list_dir).
+        let window = cx.add_window(|_w, cx| FilesTab::new(cx));
+        cx.run_until_parked();
+
+        window
+            .update(cx, |t, _w, _cx| {
+                assert_eq!(t.workspace_id.as_deref(), Some("ws-a"), "re-roots on the active workspace");
+                assert!(t.loaded_root, "the root listing came back");
+                assert!(t.children.contains_key(""), "root children are cached under the empty key");
+                assert!(!t.expanded.contains("src"), "nothing is expanded on first load");
+            })
+            .unwrap();
+        assert_eq!(
+            list_dir_calls(&fake),
+            vec![Some(String::new())],
+            "exactly one listing on load — the root (path \"\")"
+        );
+
+        // Expand "src": ONE lazy fetch, carrying path="src".
+        window.update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx)).unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |t, _w, _cx| {
+                assert!(t.expanded.contains("src"));
+                assert!(t.children.contains_key("src"), "expand fetched the dir's children");
+            })
+            .unwrap();
+        assert_eq!(
+            list_dir_calls(&fake),
+            vec![Some(String::new()), Some("src".to_owned())],
+            "first expand triggers exactly one fetch, scoped to that dir"
+        );
+
+        // Collapse: no fetch.
+        window.update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx)).unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |t, _w, _cx| assert!(!t.expanded.contains("src")))
+            .unwrap();
+        assert_eq!(fake.count_for("workspaces.fs.list_dir"), 2, "collapse fetches nothing");
+
+        // Re-expand: served from cache, still no new fetch.
+        window.update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx)).unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |t, _w, _cx| assert!(t.expanded.contains("src")))
+            .unwrap();
+        assert_eq!(
+            fake.count_for("workspaces.fs.list_dir"),
+            2,
+            "re-expanding a cached dir does not re-fetch"
+        );
+    }
+
+    #[gpui::test]
+    fn no_active_workspace_shows_no_tree_and_lists_nothing(cx: &mut TestAppContext) {
+        // Blank active_id → no active workspace → the tree stays empty and no
+        // directory listing is ever issued.
+        let fake = ScriptedBackend::new()
+            .on("workspaces.list_mru", serde_json::json!({ "active_id": "" }));
+        let _guard = fake.clone().install();
+
+        let window = cx.add_window(|_w, cx| FilesTab::new(cx));
+        cx.run_until_parked();
+        window
+            .update(cx, |t, _w, _cx| {
+                assert!(t.workspace_id.is_none(), "no active workspace");
+                assert!(t.loaded_root, "the empty state is settled (not stuck Loading)");
+                assert!(t.children.is_empty());
+            })
+            .unwrap();
+        assert_eq!(
+            fake.count_for("workspaces.fs.list_dir"),
+            0,
+            "no workspace → never list a directory"
+        );
+    }
 }

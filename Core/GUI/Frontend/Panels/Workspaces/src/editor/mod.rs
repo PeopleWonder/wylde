@@ -709,4 +709,178 @@ mod tests {
         fn assert_render<T: Render>() {}
         assert_render::<EditorTab>();
     }
+
+    // ── Windowed load/save flow ──────────────────────────────────────────
+    //
+    // Mount a real EditorTab (with its CodeEditor child) in a gpui test window
+    // and drive `open` / `save` through the scripted fake backend at the
+    // `wylde_gui_pipe::call` seam — asserting the buffer + status AND the
+    // fs.read / fs.write verb payloads. No live wylde-workspaces stack runs.
+
+    use gpui::TestAppContext;
+    use wylde_gui_test_support::{BackendGuard, ScriptedBackend};
+
+    fn mount(cx: &mut TestAppContext) -> gpui::WindowHandle<EditorTab> {
+        cx.add_window(|_w, cx| EditorTab::new(cx))
+    }
+
+    /// Read the live editor buffer text.
+    fn buffer_text(window: &gpui::WindowHandle<EditorTab>, cx: &mut TestAppContext) -> String {
+        window
+            .update(cx, |t, _w, cx| {
+                t.editor.as_ref().unwrap().read(cx).text().to_owned()
+            })
+            .unwrap()
+    }
+
+    #[gpui::test]
+    fn open_loads_content_and_marks_ready(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new().on(
+            "workspaces.fs.read",
+            serde_json::json!({
+                "content": "hello = 1\n", "binary": false, "truncated": false, "mtime": 100.0,
+            }),
+        );
+        let _guard: BackendGuard = fake.clone().install();
+        let window = mount(cx);
+        cx.run_until_parked();
+
+        // Use a non-Rust file so the load path doesn't fan out into the LSP.
+        window
+            .update(cx, |t, _w, cx| {
+                t.open("ws-a".into(), "C:/code/a".into(), "config.toml".into(), None, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |t, _w, _cx| {
+                assert_eq!(t.status, Status::Ready, "a clean read lands the editor in Ready");
+                assert_eq!(t.mtime, Some(100.0), "the read's mtime is retained for save concurrency");
+                assert!(!t.dirty, "a silent load must not look dirty");
+            })
+            .unwrap();
+        assert_eq!(buffer_text(&window, cx), "hello = 1\n", "the file content reaches the buffer");
+
+        let read = fake.last_call_for("workspaces.fs.read").expect("open must fs.read");
+        assert_eq!(read.payload_str("workspace_id").as_deref(), Some("ws-a"));
+        assert_eq!(read.payload_str("path").as_deref(), Some("config.toml"));
+    }
+
+    #[gpui::test]
+    fn open_binary_file_is_refused(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on("workspaces.fs.read", serde_json::json!({ "binary": true }));
+        let _guard = fake.install();
+        let window = mount(cx);
+        cx.run_until_parked();
+        window
+            .update(cx, |t, _w, cx| {
+                t.open("ws-a".into(), "C:/code/a".into(), "logo.png".into(), None, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |t, _w, _cx| {
+                assert_eq!(t.status, Status::Binary, "a binary file is refused (OQ-7)");
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn open_oversized_file_is_read_only(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new().on(
+            "workspaces.fs.read",
+            serde_json::json!({ "content": "head…", "truncated": true, "mtime": 5.0 }),
+        );
+        let _guard = fake.install();
+        let window = mount(cx);
+        cx.run_until_parked();
+        window
+            .update(cx, |t, _w, cx| {
+                t.open("ws-a".into(), "C:/code/a".into(), "huge.txt".into(), None, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |t, _w, cx| {
+                assert_eq!(t.status, Status::Oversized, "an oversized file opens read-only");
+                assert!(
+                    t.editor.as_ref().unwrap().read(cx).is_read_only(),
+                    "the editor is read-only for a truncated open"
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn save_writes_the_buffer_with_the_expected_mtime(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on(
+                "workspaces.fs.read",
+                serde_json::json!({ "content": "v1", "binary": false, "truncated": false, "mtime": 100.0 }),
+            )
+            .on("workspaces.fs.write", serde_json::json!({ "mtime": 200.0, "size_bytes": 2 }));
+        let _guard = fake.clone().install();
+        let window = mount(cx);
+        cx.run_until_parked();
+        window
+            .update(cx, |t, _w, cx| {
+                t.open("ws-a".into(), "C:/code/a".into(), "notes.txt".into(), None, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        // Ctrl/Cmd+S → SaveRequested → save().
+        window.update(cx, |t, _w, cx| t.save(cx)).unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |t, _w, _cx| {
+                assert_eq!(t.status, Status::Saved, "a clean write lands in Saved");
+                assert_eq!(t.mtime, Some(200.0), "the fresh mtime from the write is adopted");
+                assert!(!t.dirty, "a successful save clears dirty");
+            })
+            .unwrap();
+
+        let write = fake.last_call_for("workspaces.fs.write").expect("save must fs.write");
+        assert_eq!(write.payload_str("workspace_id").as_deref(), Some("ws-a"));
+        assert_eq!(write.payload_str("path").as_deref(), Some("notes.txt"));
+        assert_eq!(write.payload_str("content").as_deref(), Some("v1"), "the live buffer is written");
+        assert_eq!(
+            write.payload.get("expected_mtime").and_then(|v| v.as_f64()),
+            Some(100.0),
+            "the read's mtime rides as the optimistic-concurrency token (OQ-6)"
+        );
+    }
+
+    #[gpui::test]
+    fn save_conflict_surfaces_as_a_conflict_status(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on(
+                "workspaces.fs.read",
+                serde_json::json!({ "content": "v1", "binary": false, "truncated": false, "mtime": 100.0 }),
+            )
+            .on_err("workspaces.fs.write", "conflict: file changed on disk since read");
+        let _guard = fake.install();
+        let window = mount(cx);
+        cx.run_until_parked();
+        window
+            .update(cx, |t, _w, cx| {
+                t.open("ws-a".into(), "C:/code/a".into(), "notes.txt".into(), None, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        window.update(cx, |t, _w, cx| t.save(cx)).unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |t, _w, _cx| {
+                assert_eq!(
+                    t.status,
+                    Status::Conflict,
+                    "an optimistic-concurrency miss surfaces as Conflict, not a generic error"
+                );
+            })
+            .unwrap();
+    }
 }
