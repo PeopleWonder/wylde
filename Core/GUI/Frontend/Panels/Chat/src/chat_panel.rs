@@ -47,10 +47,11 @@ use crate::composer::{self, ComposerState, IgnoreTierTag, WordRecognition};
 use crate::ipc::{
     activate_workspace, cancel_turn, clear_working_memory, delete_conversation, eject_model,
     export_conversation, fetch_conversation_messages, fetch_working_memory,
-    get_active_conversation, import_conversation, list_conversations,
-    list_conversations_for_workspace, list_models,
+    get_active_conversation, get_active_conversation_for_workspace, import_conversation,
+    list_conversations, list_conversations_for_workspace, list_models,
     new_conversation, recent_workspaces, respond_consent, set_active_conversation,
-    set_active_model, set_active_workspace, set_workspace_for_conversation,
+    set_active_conversation_for_workspace, set_active_model, set_active_workspace,
+    set_workspace_for_conversation,
     start_turn_with_model, stream_consent_pending,
     stream_tools, stream_turn, ConsentEvent, ConversationMeta, PendingConsent, ToolChunk,
     TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
@@ -616,10 +617,13 @@ impl ChatPanel {
     }
 
     /// Docked-mode session restore (C1). Unlike [`spawn_restore_session`], the
-    /// dock does NOT adopt the process-wide active-conversation pointer — its
-    /// own per-workspace pointer lands in C7. Until then it stays on the
-    /// default conversation and just hydrates the working-memory strip + the
-    /// switcher list so the dock isn't blank on first mount.
+    /// dock does NOT adopt the process-wide active-conversation pointer. Its
+    /// per-workspace pointer (C7) is restored by the enter flow
+    /// ([`spawn_enter_workspace_flow`]) once a workspace is in scope — on a bare
+    /// mount no workspace is entered yet, so here it just hydrates the
+    /// working-memory strip + the switcher list so the dock isn't blank, and
+    /// the scope drain (seeded from the bus latch) drives the per-workspace
+    /// restore when a workspace was already entered before this dock mounted.
     pub fn spawn_restore_session_docked(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             Self::reload_working_memory(&this, app_cx).await;
@@ -717,13 +721,19 @@ impl ChatPanel {
             // Reflects the just-set `active_workspace_id`, so this is the scoped
             // list for the entered workspace (C4).
             Self::reload_conversations(&this, app_cx).await;
-            let Ok((ws, target)) = this.update(app_cx, |panel, _| {
-                // C7 will look up the per-workspace last-open pointer here.
-                let last_open: Option<&str> = None;
-                (
-                    panel.active_workspace_id.clone(),
-                    pick_enter_conversation(last_open, &panel.conversations),
-                )
+            let Ok(ws) = this.update(app_cx, |panel, _| panel.active_workspace_id.clone()) else {
+                return;
+            };
+            // C7: the thread the user last had open *in this workspace*, if any.
+            let last_open = match ws.as_deref() {
+                Some(w) => get_active_conversation_for_workspace(w)
+                    .await
+                    .ok()
+                    .flatten(),
+                None => None,
+            };
+            let Ok(target) = this.update(app_cx, |panel, _| {
+                pick_enter_conversation(last_open.as_deref(), &panel.conversations)
             }) else {
                 return;
             };
@@ -750,6 +760,10 @@ impl ChatPanel {
                     if switched {
                         Self::reload_conversation_messages(&this, app_cx).await;
                         Self::reload_working_memory(&this, app_cx).await;
+                        // C7: remember this as the workspace's last-open thread.
+                        if let Some(w) = ws.as_deref() {
+                            let _ = set_active_conversation_for_workspace(w, &id).await;
+                        }
                     }
                 }
                 EnterTarget::Empty => {
@@ -899,8 +913,22 @@ impl ChatPanel {
             return;
         }
         let cid = self.conversation_id.clone();
+        // C7: persist the selection on the *right* pointer for this surface — a
+        // Docked dock inside a workspace updates that workspace's per-workspace
+        // pointer (so re-entering restores this thread); the Global slot (and a
+        // Docked dock with no workspace) updates the single global pointer.
+        // Routing through `scope` keeps a bound workspace thread out of the
+        // Global slot's restore (D1).
+        let pointer_ws = self.scope.resolve_workspace_id(self.active_workspace_id.clone());
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
-            let _ = set_active_conversation(&cid).await;
+            match pointer_ws.as_deref() {
+                Some(ws) => {
+                    let _ = set_active_conversation_for_workspace(ws, &cid).await;
+                }
+                None => {
+                    let _ = set_active_conversation(&cid).await;
+                }
+            }
             Self::reload_conversation_messages(&this, app_cx).await;
             Self::reload_working_memory(&this, app_cx).await;
         })
@@ -964,7 +992,17 @@ impl ChatPanel {
                 wylde_gui_pipe::publish_active_conversation(&panel.conversation_id);
                 cx.notify();
             });
-            let _ = set_active_conversation(&id).await;
+            // C7: persist the new thread on the right pointer — a bound thread
+            // becomes its workspace's last-open (so re-entering restores it),
+            // an unbound one updates the global pointer.
+            match bind_workspace.as_deref() {
+                Some(ws) => {
+                    let _ = set_active_conversation_for_workspace(ws, &id).await;
+                }
+                None => {
+                    let _ = set_active_conversation(&id).await;
+                }
+            }
             // An *unbound* brand-new conversation has no file until its first turn,
             // so it won't appear in the list yet; a *bound* one was just upserted
             // by the set_workspace above and will. Either way, announce the list
@@ -1328,6 +1366,8 @@ impl ChatPanel {
                     }
                     cx.notify();
                 });
+                // C7: the just-bound thread is now this workspace's last-open.
+                let _ = set_active_conversation_for_workspace(&ws, &bound_target).await;
                 wylde_gui_pipe::publish_conversation_list_changed();
                 Self::reload_conversations(&this, app_cx).await;
             }

@@ -473,6 +473,85 @@ pub fn set_active_conversation(id: Option<&str>) -> Option<String> {
     cleaned.map(str::to_owned)
 }
 
+/// `<data_dir>/active_conversation_by_workspace.json`. The **per-workspace**
+/// last-open pointers (C7): a flat `{ "<workspace_id>": "<conversation_id>" }`
+/// map so entering a workspace restores the thread the user last had open *in
+/// that workspace*, independent of the single global pointer ([`active_path`])
+/// the Global Chat slot uses. Sits beside the global pointer in `data_dir()`
+/// (so [`list_conversations`] / [`read_all_conversations`], which scan
+/// `conversations_dir()`, never pick it up). Plaintext + best-effort, exactly
+/// mirroring the global pointer — a UI convenience, not durable user data.
+fn active_by_workspace_path() -> PathBuf {
+    data_dir().join("active_conversation_by_workspace.json")
+}
+
+/// Read the per-workspace pointer map, folding any error (missing / malformed
+/// / not an object) to an empty map — same tolerance as
+/// [`get_active_conversation`].
+fn read_active_by_workspace() -> Map<String, Value> {
+    std::fs::read_to_string(active_by_workspace_path())
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| match v {
+            Value::Object(m) => Some(m),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// The conversation the user last had open in `workspace_id`, or `None` when
+/// none is recorded / the map is missing. A blank `workspace_id` is never
+/// keyed here — the global pointer ([`get_active_conversation`]) owns the
+/// unbound surface — so it returns `None`.
+pub fn get_active_conversation_for_workspace(workspace_id: &str) -> Option<String> {
+    let key = workspace_id.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let map = read_active_by_workspace();
+    let id = map.get(key).and_then(Value::as_str)?;
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
+    }
+}
+
+/// Record (or, on an empty / `None` `id`, clear) the per-workspace last-open
+/// pointer for `workspace_id`. Best-effort write (a failure just means the
+/// selection isn't remembered, never a hard error — like
+/// [`set_active_conversation`]); returns the persisted id. A blank
+/// `workspace_id` is a no-op returning `None`: the global pointer, not this
+/// map, owns the unbound surface, and we must never key it on a blank id.
+pub fn set_active_conversation_for_workspace(
+    workspace_id: &str,
+    id: Option<&str>,
+) -> Option<String> {
+    let key = workspace_id.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let cleaned = id.map(str::trim).filter(|s| !s.is_empty());
+    let mut map = read_active_by_workspace();
+    match cleaned {
+        Some(v) => {
+            map.insert(key.to_owned(), Value::String(v.to_owned()));
+        }
+        None => {
+            map.remove(key);
+        }
+    }
+    let path = active_by_workspace_path();
+    if let Some(parent) = path.parent() {
+        let _ = ensure_dir(parent); // wylde-check: discard-result-ok
+    }
+    let serialised =
+        serde_json::to_string_pretty(&Value::Object(map)).unwrap_or_else(|_| "{}".to_owned());
+    let _ = std::fs::write(&path, serialised); // wylde-check: discard-result-ok
+    cleaned.map(str::to_owned)
+}
+
 /// Error from [`read_conversation`].
 #[derive(Debug)]
 pub enum ReadError {
@@ -717,6 +796,69 @@ mod tests {
         set_active_conversation(Some("conv-def"));
         assert_eq!(set_active_conversation(None), None);
         assert_eq!(get_active_conversation(), None);
+    }
+
+    #[test]
+    fn per_workspace_pointer_is_isolated_per_workspace() {
+        let _env = TestEnv::new();
+        // Unset everywhere on a fresh install.
+        assert_eq!(get_active_conversation_for_workspace("ws-a"), None);
+
+        // The production scenario: enter A → thread a; enter B → thread b;
+        // re-enter A → thread a is restored (B's pointer never clobbers A's).
+        assert_eq!(
+            set_active_conversation_for_workspace("ws-a", Some("thread-a")),
+            Some("thread-a".to_owned())
+        );
+        assert_eq!(
+            set_active_conversation_for_workspace("ws-b", Some("thread-b")),
+            Some("thread-b".to_owned())
+        );
+        assert_eq!(
+            get_active_conversation_for_workspace("ws-a"),
+            Some("thread-a".to_owned()),
+            "B's pointer must not overwrite A's",
+        );
+        assert_eq!(
+            get_active_conversation_for_workspace("ws-b"),
+            Some("thread-b".to_owned()),
+        );
+
+        // The per-workspace map is independent of the single global pointer.
+        set_active_conversation(Some("global-thread"));
+        assert_eq!(
+            get_active_conversation(),
+            Some("global-thread".to_owned()),
+            "global pointer is its own store",
+        );
+        assert_eq!(
+            get_active_conversation_for_workspace("ws-a"),
+            Some("thread-a".to_owned()),
+            "setting the global pointer leaves per-workspace pointers intact",
+        );
+
+        // Re-pointing one workspace leaves the other untouched.
+        set_active_conversation_for_workspace("ws-a", Some("thread-a2"));
+        assert_eq!(
+            get_active_conversation_for_workspace("ws-a"),
+            Some("thread-a2".to_owned()),
+        );
+        assert_eq!(
+            get_active_conversation_for_workspace("ws-b"),
+            Some("thread-b".to_owned()),
+        );
+
+        // Empty / whitespace / None clears just that workspace's pointer.
+        assert_eq!(set_active_conversation_for_workspace("ws-a", Some("  ")), None);
+        assert_eq!(get_active_conversation_for_workspace("ws-a"), None);
+        assert_eq!(get_active_conversation_for_workspace("ws-b"), Some("thread-b".to_owned()));
+        assert_eq!(set_active_conversation_for_workspace("ws-b", None), None);
+        assert_eq!(get_active_conversation_for_workspace("ws-b"), None);
+
+        // A blank workspace id is never keyed here — the global pointer owns
+        // the unbound surface.
+        assert_eq!(set_active_conversation_for_workspace("   ", Some("x")), None);
+        assert_eq!(get_active_conversation_for_workspace("   "), None);
     }
 
     #[test]
