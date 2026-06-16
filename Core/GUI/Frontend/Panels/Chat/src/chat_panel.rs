@@ -47,7 +47,8 @@ use crate::composer::{self, ComposerState, IgnoreTierTag, WordRecognition};
 use crate::ipc::{
     activate_workspace, cancel_turn, clear_working_memory, delete_conversation, eject_model,
     export_conversation, fetch_conversation_messages, fetch_working_memory,
-    get_active_conversation, import_conversation, list_conversations, list_models,
+    get_active_conversation, import_conversation, list_conversations,
+    list_conversations_for_workspace, list_models,
     new_conversation, recent_workspaces, respond_consent, set_active_conversation,
     set_active_model, set_active_workspace, start_turn_with_model, stream_consent_pending,
     stream_tools, stream_turn, ConsentEvent, ConversationMeta, PendingConsent, ToolChunk,
@@ -676,8 +677,28 @@ impl ChatPanel {
 
     /// Re-fetch the saved-chat list and replace the rail's copy. Soft-fail
     /// (a transport error leaves the existing list untouched).
+    ///
+    /// Source is picked by surface scope (C4): the **Docked** dock, once a
+    /// workspace is entered, shows only that workspace's bound conversations;
+    /// the **Global** slot keeps the full unbound list. The choice flows
+    /// through [`ChatScope::resolve_workspace_id`], so a Global panel always
+    /// resolves to `None` (D1) and never filters — only a Docked dock with an
+    /// active `workspace_id` gets the scoped list. A Docked dock with no
+    /// workspace yet (`None`) falls back to the full list until C6's
+    /// empty-state lands.
     async fn reload_conversations(this: &gpui::WeakEntity<Self>, app_cx: &mut AsyncApp) {
-        if let Ok(rows) = list_conversations().await {
+        let Ok(scoped_to) = this.update(app_cx, |panel, _| {
+            panel
+                .scope
+                .resolve_workspace_id(panel.active_workspace_id.clone())
+        }) else {
+            return;
+        };
+        let rows = match scoped_to {
+            Some(ws) => list_conversations_for_workspace(&ws).await,
+            None => list_conversations().await,
+        };
+        if let Ok(rows) = rows {
             let _ = this.update(app_cx, |panel, cx| {
                 panel.conversations = rows;
                 cx.notify();
@@ -3804,6 +3825,7 @@ mod tests {
             message_count: 1,
             working_memory_count: 0,
             model: String::new(),
+            workspace_id: String::new(),
         }
     }
 
