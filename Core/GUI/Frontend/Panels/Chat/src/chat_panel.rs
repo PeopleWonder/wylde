@@ -264,6 +264,16 @@ pub struct ChatPanel {
     pub show_working_memory: bool,
     pub workspaces: Vec<WorkspaceSummary>,
     pub active_workspace_id: Option<String>,
+    /// C6 empty-state *lazy* bind. When a workspace is entered with no existing
+    /// threads, the dock mints a fresh **fileless** conversation (so the
+    /// switcher stays empty and merely peeking into a workspace never litters a
+    /// bound thread) and parks the entered `workspace_id` here. The *first send*
+    /// then binds that thread to the workspace via `set_workspace_for_conversation`
+    /// so it joins the scoped list (C4) and routes reflection to workspace
+    /// memory (C8). Cleared once bound, and whenever the active thread changes
+    /// to an already-known one (select / new / delete). Only ever `Some` on a
+    /// Docked dock — Global is structurally unbound (D1).
+    pub pending_bind_workspace: Option<String>,
     pub show_ws_dropdown: bool,
     pub models: Vec<String>,
     pub active_model: Option<String>,
@@ -386,6 +396,7 @@ impl ChatPanel {
             show_working_memory: false,
             workspaces: Vec::new(),
             active_workspace_id: None,
+            pending_bind_workspace: None,
             show_ws_dropdown: false,
             models: Vec::new(),
             active_model: None,
@@ -672,8 +683,125 @@ impl ChatPanel {
         if self.active_workspace_id == resolved {
             return;
         }
-        self.active_workspace_id = resolved;
+        self.active_workspace_id = resolved.clone();
+        // A scope change abandons any not-yet-bound empty-state thread; the flow
+        // below recomputes it for the new scope (Empty case re-sets it).
+        self.pending_bind_workspace = None;
         cx.notify();
+        // C6: re-scope the dock's open thread to the entered workspace. Entering
+        // (`Some`) runs the enter flow (last-open → most-recent → empty);
+        // leaving (`None`, only reachable on Docked) resets to a clean unbound
+        // default. Global never reaches here with a non-`None` resolution (D1),
+        // and a no-op scope change short-circuited above.
+        match resolved {
+            Some(_) => Self::spawn_enter_workspace_flow(cx),
+            None => Self::spawn_leave_workspace_reset(cx),
+        }
+    }
+
+    /// C6 enter flow. Refresh the entered workspace's scoped conversation list,
+    /// then open the right thread:
+    /// - the per-workspace last-open pointer, if its thread is still in the list
+    ///   (**has-last-open**; the pointer source lands in C7 — `None` until then);
+    /// - otherwise the most-recent scoped thread (**has-threads**);
+    /// - otherwise mint a fresh fileless thread and defer its workspace bind to
+    ///   the first send (**none** — the empty state).
+    ///
+    /// The selection itself is decided by the pure [`pick_enter_conversation`]
+    /// so the three cases are unit-testable without a live panel. Opening a
+    /// thread switches the dock's view only — it does **not** persist the global
+    /// active-conversation pointer (that would leak a bound workspace thread
+    /// into the Global slot's restore); the per-workspace pointer write is C7.
+    fn spawn_enter_workspace_flow(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            // Reflects the just-set `active_workspace_id`, so this is the scoped
+            // list for the entered workspace (C4).
+            Self::reload_conversations(&this, app_cx).await;
+            let Ok((ws, target)) = this.update(app_cx, |panel, _| {
+                // C7 will look up the per-workspace last-open pointer here.
+                let last_open: Option<&str> = None;
+                (
+                    panel.active_workspace_id.clone(),
+                    pick_enter_conversation(last_open, &panel.conversations),
+                )
+            }) else {
+                return;
+            };
+            match target {
+                EnterTarget::Open(id) => {
+                    let switched = this
+                        .update(app_cx, |panel, cx| {
+                            if panel.conversation_id == id {
+                                return false;
+                            }
+                            panel.conversation_id = id.clone();
+                            wylde_gui_pipe::publish_active_conversation(&id);
+                            panel.messages.clear();
+                            panel.working_memory.clear();
+                            panel.bubbles.on_conversation_changed();
+                            panel.bubble_undo.clear();
+                            // Opening an existing thread abandons any pending
+                            // empty-state bind.
+                            panel.pending_bind_workspace = None;
+                            cx.notify();
+                            true
+                        })
+                        .unwrap_or(false);
+                    if switched {
+                        Self::reload_conversation_messages(&this, app_cx).await;
+                        Self::reload_working_memory(&this, app_cx).await;
+                    }
+                }
+                EnterTarget::Empty => {
+                    // Mint a fresh, *fileless* thread so the first send doesn't
+                    // pollute the shared "default" doc; the bind to `ws` is
+                    // deferred to that send (lazy — see `pending_bind_workspace`).
+                    let fresh = new_conversation().await.ok();
+                    let _ = this.update(app_cx, |panel, cx| {
+                        match fresh {
+                            Some(id) => {
+                                panel.conversation_id = id;
+                                // Bind on first send. Only set when the mint
+                                // succeeded — never park a workspace on "default".
+                                panel.pending_bind_workspace = ws.clone();
+                            }
+                            None => {
+                                panel.conversation_id = "default".to_owned();
+                                panel.pending_bind_workspace = None;
+                            }
+                        }
+                        panel.messages.clear();
+                        panel.working_memory.clear();
+                        panel.bubbles.on_conversation_changed();
+                        panel.bubble_undo.clear();
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// C6 leave reset (Docked only). Returns the dock to its unbound home: the
+    /// full (unscoped) conversation list and a clean default thread, dropping
+    /// any pending empty-state bind. Mirrors [`spawn_restore_session_docked`]'s
+    /// "stays on the default conversation" baseline.
+    fn spawn_leave_workspace_reset(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let _ = this.update(app_cx, |panel, cx| {
+                if panel.conversation_id != "default" {
+                    panel.conversation_id = "default".to_owned();
+                    panel.messages.clear();
+                    panel.working_memory.clear();
+                    panel.bubbles.on_conversation_changed();
+                    panel.bubble_undo.clear();
+                }
+                panel.pending_bind_workspace = None;
+                cx.notify();
+            });
+            Self::reload_conversations(&this, app_cx).await;
+        })
+        .detach();
     }
 
     /// Re-fetch the saved-chat list and replace the rail's copy. Soft-fail
@@ -751,6 +879,8 @@ impl ChatPanel {
         let switched = self.conversation_id != id;
         if switched {
             self.conversation_id = id.to_owned();
+            // Switching to an existing thread abandons any empty-state lazy bind.
+            self.pending_bind_workspace = None;
             wylde_gui_pipe::publish_active_conversation(&self.conversation_id);
             // Optimistically clear the old conversation's view; the reloads
             // below reconcile against the harness.
@@ -824,6 +954,9 @@ impl ChatPanel {
             }
             let _ = this.update(app_cx, |panel, cx| {
                 panel.conversation_id = id.clone();
+                // This path mints + binds explicitly (C5 above), so any deferred
+                // empty-state bind is moot.
+                panel.pending_bind_workspace = None;
                 panel.messages.clear();
                 panel.working_memory.clear();
                 panel.show_conversations = false;
@@ -871,6 +1004,9 @@ impl ChatPanel {
             None
         };
         if was_active {
+            // The active thread is being replaced — drop any empty-state bind so
+            // a later send can't bind the fallback/default to a stale workspace.
+            self.pending_bind_workspace = None;
             match &fallback {
                 Some(next) => {
                     self.conversation_id = next.clone();
@@ -1074,6 +1210,11 @@ impl ChatPanel {
         // of the field — the single read that guarantees a global turn never
         // rides a workspace context.
         let workspace_id = self.scope.resolve_workspace_id(self.active_workspace_id.clone());
+        // C6: a first send out of the empty state binds the fresh thread to the
+        // entered workspace so it joins the scoped list. Only ever `Some` on a
+        // Docked dock that minted a fileless thread on enter (see
+        // `pending_bind_workspace`); cleared once we've bound below.
+        let pending_bind = self.pending_bind_workspace.clone();
         let model = self.active_model.clone();
         // The composer's per-message ✕/↺ choices ride the send (Slices F+M).
         let (excluded_tokens, reactivated_tokens) = self.composer.send_overrides();
@@ -1157,6 +1298,38 @@ impl ChatPanel {
                 // Entity torn down between start and publish — `user_stream`
                 // drops here, cancelling the just-opened subscription.
                 return;
+            }
+
+            // C6: bind the freshly-minted empty-state thread now that the turn
+            // has started (the harness echoes our conversation id, so it has a
+            // doc on disk to bind). This is what makes "enter a fresh workspace,
+            // send → thread appears in its list" hold — without it the thread
+            // would persist unbound (the turn path never writes `workspace_id`).
+            // Idempotent + non-fatal: a bind failure leaves the thread usable,
+            // just unbound this session.
+            if let Some(ws) = pending_bind {
+                let bound_target = if reply_conversation_id.is_empty() {
+                    conversation_id.clone()
+                } else {
+                    reply_conversation_id.clone()
+                };
+                if let Err(e) = set_workspace_for_conversation(&bound_target, &ws).await {
+                    let _ = this.update(app_cx, |panel, cx| {
+                        panel.error =
+                            Some(format!("Couldn't bind this thread to the workspace: {e}"));
+                        cx.notify();
+                    });
+                }
+                let _ = this.update(app_cx, |panel, cx| {
+                    // Clear only if it's still this same pending bind — a newer
+                    // enter/select may have re-parked or dropped it meanwhile.
+                    if panel.pending_bind_workspace.as_deref() == Some(ws.as_str()) {
+                        panel.pending_bind_workspace = None;
+                    }
+                    cx.notify();
+                });
+                wylde_gui_pipe::publish_conversation_list_changed();
+                Self::reload_conversations(&this, app_cx).await;
             }
 
             // Drive the tool-activity strip in the background.
@@ -1692,6 +1865,40 @@ fn apply_turn_chunk(messages: &mut [ChatMessage], assistant_id: &str, event: &Tu
 /// the fallback rule is unit-testable without driving the gpui executor.
 fn pick_next_active(remaining: &[ConversationMeta], _deleted_id: &str) -> Option<String> {
     remaining.first().map(|c| c.id.clone())
+}
+
+/// What the dock should open when a workspace is entered (C6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EnterTarget {
+    /// Switch the dock's view to this existing thread.
+    Open(String),
+    /// No thread to restore — show the empty state ("How can I help?") on a
+    /// fresh fileless thread whose bind is deferred to the first send.
+    Empty,
+}
+
+/// Decide which thread the dock opens on entering a workspace, purely from the
+/// per-workspace last-open pointer (C7) and the workspace's scoped, newest-first
+/// conversation list (C4). Split out so the three enter cases are unit-testable
+/// without a live panel:
+/// - the pointer names a thread still in the list → open it (**has-last-open**);
+/// - no usable pointer but the list is non-empty → open the most-recent, i.e.
+///   the head of the newest-first list (**has-threads**);
+/// - neither → [`EnterTarget::Empty`] (**none**).
+///
+/// A pointer is only honoured when its thread is still present: a deleted thread
+/// (or one whose binding moved) falls through to most-recent / empty rather than
+/// stranding the dock on a missing id.
+fn pick_enter_conversation(last_open: Option<&str>, scoped: &[ConversationMeta]) -> EnterTarget {
+    if let Some(id) = last_open {
+        if scoped.iter().any(|m| m.id == id) {
+            return EnterTarget::Open(id.to_owned());
+        }
+    }
+    match scoped.first() {
+        Some(meta) => EnterTarget::Open(meta.id.clone()),
+        None => EnterTarget::Empty,
+    }
 }
 
 // ── Symbol-aware composer plumbing (Slice F) ─────────────────────────────
@@ -3915,6 +4122,65 @@ mod tests {
     #[test]
     fn pick_next_active_none_when_empty() {
         assert_eq!(pick_next_active(&[], "only"), None);
+    }
+
+    // ── C6: empty-state / default conversation on entering ───────────────
+    // The enter flow can't be mounted (no gpui executor here, same constraint
+    // as C1–C5), so the three enter cases are pinned on the pure selector the
+    // flow delegates to. The live switch/mint/bind plumbing is exercised by the
+    // production path (enter → send → thread in the scoped list), flagged owed.
+
+    #[test]
+    fn pick_enter_has_last_open_restores_the_pointer() {
+        // The per-workspace pointer (C7) names a thread still in the list — it
+        // wins over the most-recent fallback even when it isn't the newest.
+        let scoped = vec![meta("newest", 300), meta("pinned", 100)];
+        assert_eq!(
+            pick_enter_conversation(Some("pinned"), &scoped),
+            EnterTarget::Open("pinned".to_owned()),
+            "a live last-open pointer is restored, not the most-recent",
+        );
+    }
+
+    #[test]
+    fn pick_enter_has_threads_opens_most_recent() {
+        // No usable pointer → open the most-recent, i.e. the head of the
+        // newest-first scoped list.
+        let scoped = vec![meta("newest", 300), meta("older", 100)];
+        assert_eq!(
+            pick_enter_conversation(None, &scoped),
+            EnterTarget::Open("newest".to_owned()),
+            "no pointer → most-recent scoped thread",
+        );
+    }
+
+    #[test]
+    fn pick_enter_none_is_empty_state() {
+        // A fresh workspace with no bound threads → the empty state; the flow
+        // then mints a fileless thread and defers its bind to the first send.
+        assert_eq!(
+            pick_enter_conversation(None, &[]),
+            EnterTarget::Empty,
+            "no pointer + no threads → empty state",
+        );
+    }
+
+    #[test]
+    fn pick_enter_stale_pointer_falls_through() {
+        // A pointer whose thread is gone (deleted / re-bound) must not strand
+        // the dock on a missing id — it falls through to most-recent...
+        let scoped = vec![meta("survivor", 200)];
+        assert_eq!(
+            pick_enter_conversation(Some("deleted"), &scoped),
+            EnterTarget::Open("survivor".to_owned()),
+            "a stale pointer falls through to most-recent",
+        );
+        // ...and to the empty state when nothing remains.
+        assert_eq!(
+            pick_enter_conversation(Some("deleted"), &[]),
+            EnterTarget::Empty,
+            "a stale pointer with an empty list falls through to empty",
+        );
     }
 
     #[test]
