@@ -111,6 +111,37 @@ pub(super) fn install(api: &Arc<dyn HarnessApi>) {
 
     let a = Arc::clone(api);
     register_action_with_meta(
+        "conversations.get_active_for_workspace",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.conversations_get_active_for_workspace(p).await }
+        },
+        "Read the per-workspace last-open conversation pointer (C7), stored in \
+         <data_dir>/active_conversation_by_workspace.json, so entering a \
+         workspace restores the thread last open in *that* workspace. Payload \
+         {workspace_id}. Returns {workspace_id, id} — id is \"\" when none \
+         recorded; bad_request for a blank workspace_id (the global \
+         get_active owns the unbound surface).",
+        HANDLER_MODULE_CONVERSATIONS,
+    );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
+        "conversations.set_active_for_workspace",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.conversations_set_active_for_workspace(p).await }
+        },
+        "Persist the per-workspace last-open conversation pointer (C7) so \
+         re-entering a workspace restores the right thread. Payload \
+         {workspace_id, id?}; an empty/absent id clears that workspace's \
+         pointer. Returns {workspace_id, id} (the persisted value, \"\" when \
+         cleared); bad_request for a blank workspace_id.",
+        HANDLER_MODULE_CONVERSATIONS,
+    );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
         "conversations.set_workspace",
         move |p: Value| {
             let a = Arc::clone(&a);

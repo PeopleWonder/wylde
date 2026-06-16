@@ -174,7 +174,7 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_short_term_append(&self, payload: Value) -> Reply;
     async fn memory_short_term_clear(&self, payload: Value) -> Reply;
 
-    // ── conversations.* (7 verbs; lifecycle + active sel + workspace) ─
+    // ── conversations.* (9 verbs; lifecycle + active sel + workspace) ─
     async fn conversations_new(&self, payload: Value) -> Reply;
     async fn conversations_list(&self, payload: Value) -> Reply;
     async fn conversations_get(&self, payload: Value) -> Reply;
@@ -182,6 +182,8 @@ pub trait HarnessApi: Send + Sync {
     async fn conversations_delete_by_workspace(&self, payload: Value) -> Reply;
     async fn conversations_get_active(&self, payload: Value) -> Reply;
     async fn conversations_set_active(&self, payload: Value) -> Reply;
+    async fn conversations_get_active_for_workspace(&self, payload: Value) -> Reply;
+    async fn conversations_set_active_for_workspace(&self, payload: Value) -> Reply;
     async fn conversations_set_workspace(&self, payload: Value) -> Reply;
 
     // ── consent.* (6 verbs + 1 streaming; Phase 12.2 + 12.6) ─────────
@@ -590,6 +592,14 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn conversations_set_active(&self, payload: Value) -> Reply {
         conversations_actions::handle_set_active(payload).await
+    }
+
+    async fn conversations_get_active_for_workspace(&self, payload: Value) -> Reply {
+        conversations_actions::handle_get_active_for_workspace(payload).await
+    }
+
+    async fn conversations_set_active_for_workspace(&self, payload: Value) -> Reply {
+        conversations_actions::handle_set_active_for_workspace(payload).await
     }
 
     async fn conversations_set_workspace(&self, payload: Value) -> Reply {

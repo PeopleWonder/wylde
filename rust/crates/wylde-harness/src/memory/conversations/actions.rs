@@ -122,6 +122,40 @@ pub async fn handle_set_active(payload: Value) -> Reply {
     Reply::ok(json!({ "id": persisted }))
 }
 
+/// `conversations.get_active_for_workspace` — the per-workspace last-open
+/// pointer (C7). Payload `{ workspace_id }`. Returns `{ workspace_id, id }`
+/// with `id == ""` when none recorded. `bad_request` for a missing / blank
+/// workspace_id — the global `get_active` owns the unbound surface.
+pub async fn handle_get_active_for_workspace(payload: Value) -> Reply {
+    let Some(workspace_id) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    if workspace_id.trim().is_empty() {
+        return Reply::err_msg("bad_request", "workspace_id must not be blank");
+    }
+    let id = store::get_active_conversation_for_workspace(&workspace_id).unwrap_or_default();
+    Reply::ok(json!({ "workspace_id": workspace_id, "id": id }))
+}
+
+/// `conversations.set_active_for_workspace` — persist the per-workspace
+/// last-open pointer (C7). Payload `{ workspace_id, id? }`; an empty / absent
+/// `id` clears that workspace's pointer. Returns `{ workspace_id, id }` (the
+/// persisted value, `""` when cleared). `bad_request` for a missing / blank
+/// workspace_id.
+pub async fn handle_set_active_for_workspace(payload: Value) -> Reply {
+    let Some(workspace_id) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    if workspace_id.trim().is_empty() {
+        return Reply::err_msg("bad_request", "workspace_id must not be blank");
+    }
+    // An empty id is meaningful (clears the pointer), so read it raw.
+    let id = payload.get("id").and_then(Value::as_str);
+    let persisted =
+        store::set_active_conversation_for_workspace(&workspace_id, id).unwrap_or_default();
+    Reply::ok(json!({ "workspace_id": workspace_id, "id": persisted }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +240,45 @@ mod tests {
         let reply = handle_delete(json!({})).await;
         assert!(!reply.ok);
         assert_eq!(reply.error.unwrap().code, "bad_request");
+    }
+
+    #[tokio::test]
+    async fn per_workspace_active_round_trips_through_handlers() {
+        let _env = TestEnv::new();
+        // Unset → "".
+        let got = handle_get_active_for_workspace(json!({"workspace_id": "ws-a"})).await;
+        assert!(got.ok);
+        assert_eq!(got.data["id"], "");
+        assert_eq!(got.data["workspace_id"], "ws-a");
+
+        // Set then read back, isolated per workspace.
+        let set = handle_set_active_for_workspace(
+            json!({"workspace_id": "ws-a", "id": "thread-a"}),
+        )
+        .await;
+        assert!(set.ok);
+        assert_eq!(set.data["id"], "thread-a");
+        handle_set_active_for_workspace(json!({"workspace_id": "ws-b", "id": "thread-b"})).await;
+
+        let a = handle_get_active_for_workspace(json!({"workspace_id": "ws-a"})).await;
+        assert_eq!(a.data["id"], "thread-a", "B must not clobber A");
+
+        // Empty id clears.
+        let cleared = handle_set_active_for_workspace(json!({"workspace_id": "ws-a", "id": ""})).await;
+        assert_eq!(cleared.data["id"], "");
+        let a2 = handle_get_active_for_workspace(json!({"workspace_id": "ws-a"})).await;
+        assert_eq!(a2.data["id"], "");
+    }
+
+    #[tokio::test]
+    async fn per_workspace_active_rejects_blank_workspace() {
+        let _env = TestEnv::new();
+        let get = handle_get_active_for_workspace(json!({"workspace_id": "  "})).await;
+        assert!(!get.ok);
+        assert_eq!(get.error.unwrap().code, "bad_request");
+        let set = handle_set_active_for_workspace(json!({"id": "x"})).await;
+        assert!(!set.ok);
+        assert_eq!(set.error.unwrap().code, "bad_request");
     }
 
     #[tokio::test]

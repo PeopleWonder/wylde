@@ -960,6 +960,51 @@ pub async fn set_active_conversation(id: &str) -> Result<(), String> {
     .map(|_| ())
 }
 
+/// `conversations.get_active_for_workspace` — the per-workspace last-open
+/// pointer (C7). `Ok(None)` when none recorded for that workspace (the reply's
+/// `id` is `""`). Lets the Docked dock restore the thread the user last had
+/// open *in that workspace*, independent of the Global slot's single pointer.
+pub async fn get_active_conversation_for_workspace(
+    workspace_id: &str,
+) -> Result<Option<String>, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "conversations.get_active_for_workspace",
+            "payload": { "workspace_id": workspace_id },
+        })),
+    )
+    .await?;
+    let id = v.get("id").and_then(|x| x.as_str()).unwrap_or_default();
+    Ok(if id.is_empty() {
+        None
+    } else {
+        Some(id.to_owned())
+    })
+}
+
+/// `conversations.set_active_for_workspace` — persist the per-workspace
+/// last-open pointer (C7) so re-entering the workspace restores the right
+/// thread. An empty `id` clears that workspace's pointer.
+pub async fn set_active_conversation_for_workspace(
+    workspace_id: &str,
+    id: &str,
+) -> Result<(), String> {
+    wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "conversations.set_active_for_workspace",
+            "payload": { "workspace_id": workspace_id, "id": id },
+        })),
+    )
+    .await
+    .map(|_| ())
+}
+
 /// `conversations.set_workspace` — bind (or re-bind) a conversation to a
 /// workspace so it joins that workspace's scoped list (C4) and switches on
 /// bound-conversation memory routing (C8, write-side of D2). The harness
