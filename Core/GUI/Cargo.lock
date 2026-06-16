@@ -9143,6 +9143,7 @@ dependencies = [
  "tokio",
  "wylde-gpui-input",
  "wylde-gui-pipe",
+ "wylde-gui-test-support",
  "wylde-theme",
 ]
 
