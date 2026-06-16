@@ -9239,6 +9239,7 @@ dependencies = [
  "wylde-gpui-code-editor",
  "wylde-gpui-input",
  "wylde-gui-pipe",
+ "wylde-gui-test-support",
  "wylde-panel-chat",
  "wylde-theme",
 ]
