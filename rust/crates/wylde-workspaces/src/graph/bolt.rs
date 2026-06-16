@@ -11,10 +11,13 @@
 //!   * `GRAPH_USER` / `GRAPH_PASSWORD` — default empty (auth disabled).
 //!   * `WYLDE_BOLT_CONNECT_TIMEOUT_SECS` — default 5s per attempt.
 
+use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use neo4rs::{BoltList, BoltMap, BoltType, ConfigBuilder, Graph};
 use serde_json::{json, Value};
+use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::OnceCell;
 use wylde_shared::ipc::{IpcError, Reply};
 
@@ -72,6 +75,42 @@ async fn run_timed(
             format!("{what} timed out after {timeout:?}"),
         )),
     }
+}
+
+/// Process-wide cache of live `Graph` pools, keyed by `(uri, user)`.
+///
+/// One pool per distinct backend, shared by every [`BoltClient`] so a
+/// reindex graph-write, a `workspaces.graph` read, and a watcher delta all
+/// reuse the same keep-alive connection pool instead of each opening and
+/// dropping their own (which churned `:7687` sockets into `TIME_WAIT`).
+/// The cached `Graph` is never evicted — it lives for the process, exactly
+/// like the wylde-ollama upstream HTTP client.
+static SHARED_GRAPHS: OnceLock<TokioMutex<HashMap<String, Graph>>> = OnceLock::new();
+
+/// Return a clone of the shared `Graph` for `cfg`'s backend, connecting
+/// (once per distinct backend) on first use. The returned `Graph` is an
+/// `Arc` handle over the pool; cloning it shares the live connections.
+async fn shared_graph(cfg: &BoltConfig) -> Result<Graph, IpcError> {
+    let key = format!("{}|{}", cfg.uri, cfg.user);
+    let cache = SHARED_GRAPHS.get_or_init(|| TokioMutex::new(HashMap::new()));
+    // Hold the async mutex across the (rare) connect so two racing first
+    // callers can't open two pools for the same backend. Steady-state this
+    // is an uncontended lock + HashMap hit, never a connect.
+    let mut guard = cache.lock().await;
+    if let Some(g) = guard.get(&key) {
+        return Ok(g.clone());
+    }
+    let neo_cfg = ConfigBuilder::default()
+        .uri(cfg.uri.clone())
+        .user(cfg.user.clone())
+        .password(cfg.password.clone())
+        .build()
+        .map_err(|e| IpcError::new(error_codes::CONFIG, format!("config: {e}")))?;
+    let graph = Graph::connect(neo_cfg)
+        .await
+        .map_err(|e| IpcError::new(error_codes::CONNECT, format!("{}: {}", cfg.uri, e)))?;
+    guard.insert(key, graph.clone());
+    Ok(graph)
 }
 
 /// `bolt_*` error codes surfaced via [`Reply::err_msg`].
@@ -142,20 +181,29 @@ impl BoltClient {
         &self.config
     }
 
-    /// Acquire (or open) the underlying [`Graph`]. Pool is `OnceCell`-cached.
+    /// Acquire (or open) the underlying [`Graph`].
+    ///
+    /// The `Graph` is **not** opened fresh per [`BoltClient`]: a new client
+    /// is constructed on *every* `workspaces.graph` read, every reindex
+    /// graph-write pass, and every watcher delta, so a per-instance pool
+    /// opened then dropped on each call left a pool's worth of sockets in
+    /// `TIME_WAIT` every time the client went out of scope. Under a large
+    /// reindex with the GUI polling `workspaces.graph`, that per-call churn
+    /// piled up Bolt (`:7687`) sockets in the OS ephemeral-port table and
+    /// helped exhaust it (the embed path then failed to get a source port —
+    /// see `outputs/embed-pooling-fix-report.md`).
+    ///
+    /// Instead every client of the same (uri, user) shares ONE long-lived
+    /// `Graph` from a process-wide cache. `Graph` is a cheap `Arc` handle
+    /// over a connection pool, so the per-instance `OnceCell` just memoises
+    /// a clone of the shared pool; dropping a `BoltClient` drops the clone,
+    /// never the pooled connections. Keep-alive + reuse across thousands of
+    /// reads/writes then holds the live socket count to the pool size
+    /// regardless of OS — the same fix the wylde-ollama HTTP client already
+    /// applies to `:11434`.
     async fn graph(&self) -> Result<&Graph, IpcError> {
         self.graph
-            .get_or_try_init(|| async {
-                let cfg = ConfigBuilder::default()
-                    .uri(self.config.uri.clone())
-                    .user(self.config.user.clone())
-                    .password(self.config.password.clone())
-                    .build()
-                    .map_err(|e| IpcError::new(error_codes::CONFIG, format!("config: {e}")))?;
-                Graph::connect(cfg).await.map_err(|e| {
-                    IpcError::new(error_codes::CONNECT, format!("{}: {}", self.config.uri, e))
-                })
-            })
+            .get_or_try_init(|| shared_graph(&self.config))
             .await
     }
 

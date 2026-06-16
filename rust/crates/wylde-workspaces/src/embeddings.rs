@@ -20,9 +20,11 @@
 //! / broker-flakiness retried; 404 (model missing) and 4xx (request-shape)
 //! fail fast.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use tokio::sync::Semaphore;
 use wylde_shared::ipc::{self, IpcError};
 
 use crate::common::{embed_dim, embed_model, embed_native_dim};
@@ -30,6 +32,92 @@ use crate::config::Config;
 
 const RETRY_ATTEMPTS: usize = 3;
 const RETRY_BASE_DELAY_MS: u64 = 500;
+
+/// Max concurrent `ollama.embed` round-trips this process keeps in flight.
+///
+/// A single reindex already embeds its batches sequentially (see
+/// [`embed`]), but nothing stops several callers from driving `embed()` at
+/// once — a manual `workspaces.reindex` overlapping watcher deltas, or
+/// future multi-workspace ingest. Each round-trip makes Ollama fan a burst
+/// of short-lived connections out to its model-runner subprocess, so an
+/// unbounded number of *simultaneous* embed calls would multiply that
+/// downstream socket pressure and is exactly what helped exhaust the OS
+/// ephemeral-port pool on a large index. This semaphore caps the in-flight
+/// embed round-trips regardless of how many callers race; the sequential
+/// single-reindex path is unaffected (it never needs more than one permit).
+/// Override via `WYLDE_EMBED_MAX_CONCURRENCY` (must be > 0).
+const EMBED_MAX_CONCURRENCY: usize = 4;
+
+fn embed_max_concurrency() -> usize {
+    std::env::var("WYLDE_EMBED_MAX_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(EMBED_MAX_CONCURRENCY)
+}
+
+/// Process-wide permit pool bounding concurrent embed round-trips.
+fn embed_semaphore() -> &'static Semaphore {
+    static SEM: OnceLock<Semaphore> = OnceLock::new();
+    SEM.get_or_init(|| Semaphore::new(embed_max_concurrency()))
+}
+
+/// Minimum wall-clock period per embed batch for a LARGE index, in
+/// milliseconds. This paces the *rate* at which inputs reach Ollama and is
+/// the load-bearing half of the port-exhaustion fix.
+///
+/// ## Why this exists (measured, not assumed)
+///
+/// `wylde-ollama`'s HTTP client to Ollama on `:11434` is already a shared
+/// keep-alive pool (live `netstat` shows it flat at ~24 sockets through a
+/// whole-repo index). The exhaustion comes from a hop the client can't
+/// reach: Ollama serves `/api/embed` by opening short-lived connections
+/// from its server to its model-**runner** subprocess — empirically ~3 per
+/// input (tokenize + embed + the wrapper's own 3× retry, which *amplifies*
+/// once ports get tight). Those runner sockets sit in OS `TIME_WAIT` for
+/// ~4 minutes, so the live count is `runner_conn_rate × ~240 s`. Embedding a
+/// warm model runs at ~40-150 inputs/s, which drives the runner-socket count
+/// past ~12-16k — the Windows ephemeral-port pool (16,384) — and Ollama then
+/// can't get a source port for its own runner hop ("Only one usage of each
+/// socket address"), failing the index. No client-side connection *pooling*
+/// can fix this (the churn is inside Ollama); the only OS-agnostic,
+/// client-side lever is to cap the *rate* we feed inputs so the runner-socket
+/// equilibrium stays well under the pool — which also keeps ports loose
+/// enough that the retry amplification never engages.
+///
+/// Default 6000 ms per 64-input batch → ~10 inputs/s → runner-socket
+/// equilibrium ~5-7k (well under the 16k pool, measured). It is deliberately
+/// conservative: a one-time whole-repo re-embed that *completes* in ~25 min
+/// beats a 9-min one that dies at scale. Only a LARGE index pays it (see
+/// [`LARGE_INDEX_MIN_INPUTS`]); a query embed or a small watcher delta is
+/// never delayed. Set `WYLDE_EMBED_BATCH_MIN_PERIOD_MS=0` to disable (e.g.
+/// on a host whose ephemeral-port range / `TIME_WAIT` has been widened
+/// out-of-band, or a non-Windows host with a 28k+ ephemeral range), or lower
+/// it to trade reliability for speed.
+const EMBED_BATCH_MIN_PERIOD_MS: u64 = 6000;
+
+/// Input count above which a multi-batch embed is treated as a "large
+/// index" and paced (see [`EMBED_BATCH_MIN_PERIOD_MS`]). Below this, even an
+/// unthrottled run finishes before its runner sockets pile up enough to
+/// threaten the port pool, so small deltas and medium indexes stay fast.
+/// Override via `WYLDE_EMBED_PACE_MIN_INPUTS`.
+const LARGE_INDEX_MIN_INPUTS: usize = 1500;
+
+fn embed_batch_min_period() -> Duration {
+    let ms = std::env::var("WYLDE_EMBED_BATCH_MIN_PERIOD_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(EMBED_BATCH_MIN_PERIOD_MS);
+    Duration::from_millis(ms)
+}
+
+fn large_index_min_inputs() -> usize {
+    std::env::var("WYLDE_EMBED_PACE_MIN_INPUTS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(LARGE_INDEX_MIN_INPUTS)
+}
 
 /// Max inputs per `ollama.embed` round-trip. The bundled nomic-embed-text
 /// runner CRASHES (its `/tokenize` socket goes away → "connection refused",
@@ -80,12 +168,38 @@ pub async fn embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, EmbedError> {
     }
     let max = embed_max_batch();
     if texts.len() <= max {
+        // Single batch (the RAG-query embed path lands here too): no pacing.
         return embed_batch(texts).await;
     }
-    let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+    // Multi-batch indexing. A LARGE index (see [`large_index_min_inputs`])
+    // paces each batch to a minimum wall-clock period so Ollama's per-input
+    // runner-socket churn can't exhaust the OS ephemeral-port pool (see
+    // [`embed_batch_min_period`]); smaller indexes finish before that pile-up
+    // matters, so they run unthrottled. We sleep only the remainder after the
+    // batch's own latency, so a slow embedder is never delayed further — the
+    // cap only bites when embeds come back fast.
+    let total = texts.len();
+    let min_period = if total > large_index_min_inputs() {
+        embed_batch_min_period()
+    } else {
+        Duration::ZERO
+    };
+    let mut out: Vec<Vec<f32>> = Vec::with_capacity(total);
+    let mut done = 0usize;
     for batch in texts.chunks(max) {
+        let started = std::time::Instant::now();
+        let n = batch.len();
         let mut vectors = embed_batch(batch.to_vec()).await?;
         out.append(&mut vectors);
+        done += n;
+        // Pace between batches only — never after the final one.
+        if done < total && !min_period.is_zero() {
+            if let Some(rem) = min_period.checked_sub(started.elapsed()) {
+                if !rem.is_zero() {
+                    tokio::time::sleep(rem).await;
+                }
+            }
+        }
     }
     Ok(out)
 }
@@ -104,6 +218,15 @@ async fn embed_batch(texts: Vec<String>) -> Result<Vec<Vec<f32>>, EmbedError> {
         "model": model,
         "input": texts,
     });
+
+    // Bound how many embed round-trips this process keeps in flight at once
+    // (see [`embed_semaphore`]). Held across the retry loop so a backing-off
+    // retry still counts against the cap; retries are rare so this does not
+    // meaningfully serialise healthy traffic. The permit drops at end of fn.
+    let _permit = embed_semaphore()
+        .acquire()
+        .await
+        .expect("embed semaphore is never closed");
 
     let mut last_err: Option<String> = None;
     for attempt in 0..RETRY_ATTEMPTS {
@@ -365,6 +488,72 @@ mod tests {
         match prev {
             Some(v) => std::env::set_var("WYLDE_EMBED_MAX_BATCH", v),
             None => std::env::remove_var("WYLDE_EMBED_MAX_BATCH"),
+        }
+    }
+
+    #[test]
+    fn embed_max_concurrency_default_and_override() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("WYLDE_EMBED_MAX_CONCURRENCY").ok();
+        std::env::remove_var("WYLDE_EMBED_MAX_CONCURRENCY");
+        assert_eq!(embed_max_concurrency(), EMBED_MAX_CONCURRENCY);
+        std::env::set_var("WYLDE_EMBED_MAX_CONCURRENCY", "2");
+        assert_eq!(embed_max_concurrency(), 2);
+        // Zero / bogus falls back to the default (a zero-permit semaphore
+        // would deadlock every embed).
+        std::env::set_var("WYLDE_EMBED_MAX_CONCURRENCY", "0");
+        assert_eq!(embed_max_concurrency(), EMBED_MAX_CONCURRENCY);
+        std::env::set_var("WYLDE_EMBED_MAX_CONCURRENCY", "nope");
+        assert_eq!(embed_max_concurrency(), EMBED_MAX_CONCURRENCY);
+        match prev {
+            Some(v) => std::env::set_var("WYLDE_EMBED_MAX_CONCURRENCY", v),
+            None => std::env::remove_var("WYLDE_EMBED_MAX_CONCURRENCY"),
+        }
+    }
+
+    #[test]
+    fn embed_batch_min_period_default_override_and_disable() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("WYLDE_EMBED_BATCH_MIN_PERIOD_MS").ok();
+        std::env::remove_var("WYLDE_EMBED_BATCH_MIN_PERIOD_MS");
+        assert_eq!(
+            embed_batch_min_period(),
+            Duration::from_millis(EMBED_BATCH_MIN_PERIOD_MS)
+        );
+        std::env::set_var("WYLDE_EMBED_BATCH_MIN_PERIOD_MS", "1500");
+        assert_eq!(embed_batch_min_period(), Duration::from_millis(1500));
+        // Explicit 0 DISABLES pacing (distinct from a bogus value, which
+        // keeps the protective default).
+        std::env::set_var("WYLDE_EMBED_BATCH_MIN_PERIOD_MS", "0");
+        assert!(embed_batch_min_period().is_zero());
+        std::env::set_var("WYLDE_EMBED_BATCH_MIN_PERIOD_MS", "bogus");
+        assert_eq!(
+            embed_batch_min_period(),
+            Duration::from_millis(EMBED_BATCH_MIN_PERIOD_MS)
+        );
+        match prev {
+            Some(v) => std::env::set_var("WYLDE_EMBED_BATCH_MIN_PERIOD_MS", v),
+            None => std::env::remove_var("WYLDE_EMBED_BATCH_MIN_PERIOD_MS"),
+        }
+    }
+
+    #[test]
+    fn large_index_min_inputs_default_and_override() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("WYLDE_EMBED_PACE_MIN_INPUTS").ok();
+        std::env::remove_var("WYLDE_EMBED_PACE_MIN_INPUTS");
+        assert_eq!(large_index_min_inputs(), LARGE_INDEX_MIN_INPUTS);
+        std::env::set_var("WYLDE_EMBED_PACE_MIN_INPUTS", "500");
+        assert_eq!(large_index_min_inputs(), 500);
+        // Zero / bogus keeps the default (0 would pace even single-input
+        // query embeds).
+        std::env::set_var("WYLDE_EMBED_PACE_MIN_INPUTS", "0");
+        assert_eq!(large_index_min_inputs(), LARGE_INDEX_MIN_INPUTS);
+        std::env::set_var("WYLDE_EMBED_PACE_MIN_INPUTS", "x");
+        assert_eq!(large_index_min_inputs(), LARGE_INDEX_MIN_INPUTS);
+        match prev {
+            Some(v) => std::env::set_var("WYLDE_EMBED_PACE_MIN_INPUTS", v),
+            None => std::env::remove_var("WYLDE_EMBED_PACE_MIN_INPUTS"),
         }
     }
 }
