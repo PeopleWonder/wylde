@@ -749,6 +749,11 @@ pub struct ConversationMeta {
     pub message_count: u64,
     pub working_memory_count: u64,
     pub model: String,
+    /// The bound workspace (empty = *unbound*, i.e. a global conversation).
+    /// Projected straight from the flat-store doc (the harness already emits
+    /// it); the Docked switcher filters on this so a workspace's rail shows
+    /// only its own threads (C4). Existing readers ignore the field.
+    pub workspace_id: String,
 }
 
 impl ConversationMeta {
@@ -777,6 +782,11 @@ impl ConversationMeta {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
+            workspace_id: v
+                .get("workspace_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
         }
     }
 }
@@ -794,6 +804,38 @@ pub async fn list_conversations() -> Result<Vec<ConversationMeta>, String> {
         return Ok(Vec::new());
     };
     Ok(arr.iter().map(ConversationMeta::from_value).collect())
+}
+
+/// `conversations.list` scoped to a single workspace — the Docked dock's
+/// switcher (C4) shows only conversations *bound* to the entered workspace.
+/// This is a client-side filter over the already-projected `workspace_id`
+/// (no new harness verb): it drops both other workspaces' threads and every
+/// *unbound* (empty `workspace_id`) conversation, so a workspace's rail can
+/// never leak the global list. A blank `workspace_id` here means "no scope"
+/// and yields an empty list — callers route the unscoped case to
+/// [`list_conversations`] instead, never silently widening to the full list.
+pub async fn list_conversations_for_workspace(
+    workspace_id: &str,
+) -> Result<Vec<ConversationMeta>, String> {
+    let all = list_conversations().await?;
+    Ok(filter_conversations_for_workspace(all, workspace_id))
+}
+
+/// Pure scope filter behind [`list_conversations_for_workspace`] (split out so
+/// the C4 cross-contamination invariant is unit-testable without IPC). Keeps
+/// only rows whose `workspace_id` matches `workspace_id` exactly; a blank
+/// target yields an empty list (never the full set — see the wrapper's note).
+fn filter_conversations_for_workspace(
+    all: Vec<ConversationMeta>,
+    workspace_id: &str,
+) -> Vec<ConversationMeta> {
+    let target = workspace_id.trim();
+    if target.is_empty() {
+        return Vec::new();
+    }
+    all.into_iter()
+        .filter(|c| c.workspace_id.trim() == target)
+        .collect()
 }
 
 /// One persisted chat message projected from a `conversations.get`
@@ -946,6 +988,58 @@ mod tests {
         // Legacy `path` key still parses via fallback.
         let legacy = WorkspaceSummary::from_value(&json!({ "id": "x", "path": "/p" }));
         assert_eq!(legacy.path, "/p");
+    }
+
+    // ── Per-workspace conversation list (C4) ─────────────────────────
+
+    #[test]
+    fn conversation_meta_projects_workspace_id() {
+        let bound = ConversationMeta::from_value(&json!({
+            "id": "c1",
+            "title": "t",
+            "workspace_id": "wylde-ab12cd",
+        }));
+        assert_eq!(bound.workspace_id, "wylde-ab12cd");
+        // Absent key → unbound (empty), the global-conversation case.
+        let unbound = ConversationMeta::from_value(&json!({ "id": "c2", "title": "t" }));
+        assert_eq!(unbound.workspace_id, "");
+    }
+
+    fn meta_ws(id: &str, workspace_id: &str) -> ConversationMeta {
+        ConversationMeta {
+            id: id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn scoped_list_excludes_other_workspaces_and_unbound() {
+        // The dock for workspace A must show A's threads only — never B's,
+        // and never an unbound (global) conversation. This is the C4
+        // cross-contamination invariant.
+        let all = vec![
+            meta_ws("a1", "ws-a"),
+            meta_ws("b1", "ws-b"),
+            meta_ws("g1", ""), // unbound / global
+            meta_ws("a2", "ws-a"),
+        ];
+        let scoped = filter_conversations_for_workspace(all, "ws-a");
+        let ids: Vec<&str> = scoped.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, vec!["a1", "a2"], "only ws-a threads survive");
+    }
+
+    #[test]
+    fn scoped_list_trims_and_blank_target_is_empty() {
+        let all = vec![meta_ws("a1", " ws-a "), meta_ws("b1", "ws-b")];
+        // Whitespace around either side still matches.
+        assert_eq!(
+            filter_conversations_for_workspace(all.clone(), "ws-a").len(),
+            1,
+        );
+        // A blank target never widens to the full list (callers route the
+        // unscoped case to `list_conversations` instead).
+        assert!(filter_conversations_for_workspace(all, "   ").is_empty());
     }
 
     #[test]
