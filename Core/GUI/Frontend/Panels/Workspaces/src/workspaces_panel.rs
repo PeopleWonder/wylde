@@ -1686,4 +1686,107 @@ mod tests {
         assert!(p.pull.is_none(), "a clean reindex retires the download offer");
         assert!(p.error.is_none());
     }
+
+    // ── Windowed readiness-chip tests ────────────────────────────────────
+    //
+    // The pure `Readiness::compute` cases above test the state machine in
+    // isolation. These mount a real `WorkspacesPanel` in a gpui test window,
+    // load a scripted MRU list, ENTER a workspace, and assert the chip the
+    // in-workspace tab bar renders — proving the `readiness()` *selection*
+    // wiring (it picks the entered workspace out of the live list and folds
+    // the current service error), not just `compute` in a vacuum.
+
+    use gpui::TestAppContext;
+    use wylde_gui_test_support::{BackendGuard, ScriptedBackend};
+
+    /// Mount + first-load the panel against a scripted list (mirrors the
+    /// factory's `view()` kick of `spawn_refresh`). Returns the window AND the
+    /// install guard — keep the guard alive for the body of the test so the
+    /// fake backend stays installed (dropping it clears the thread-local).
+    fn mount_with_rows(
+        cx: &mut TestAppContext,
+        rows: serde_json::Value,
+    ) -> (gpui::WindowHandle<WorkspacesPanel>, BackendGuard) {
+        let fake = ScriptedBackend::new().on("workspaces.list_mru", rows);
+        let guard = fake.install();
+        let window = cx.add_window(|_w, cx| {
+            let p = WorkspacesPanel::new();
+            WorkspacesPanel::spawn_refresh(cx);
+            p
+        });
+        cx.run_until_parked();
+        (window, guard)
+    }
+
+    #[gpui::test]
+    fn readiness_chip_tracks_the_entered_workspace(cx: &mut TestAppContext) {
+        let (window, _guard) = mount_with_rows(
+            cx,
+            serde_json::json!({ "workspaces": [
+                {"id":"ws-indexed","folder":"C:/i","file_count":12,"last_indexed_at":1.0,"indexing":false},
+                {"id":"ws-fresh","folder":"C:/f","file_count":0,"last_indexed_at":0.0,"indexing":false},
+            ]}),
+        );
+
+        // Enter the indexed workspace → Ready (green).
+        window
+            .update(cx, |p, _w, cx| p.enter_workspace("ws-indexed".to_owned(), cx))
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |p, _w, _cx| {
+                assert_eq!(
+                    p.readiness(),
+                    Readiness::Ready,
+                    "an indexed entered workspace reads Ready"
+                );
+            })
+            .unwrap();
+
+        // Switch to the never-indexed one → NotIndexed (amber). The chip
+        // follows the entered workspace, not a fixed row.
+        window
+            .update(cx, |p, _w, cx| p.enter_workspace("ws-fresh".to_owned(), cx))
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(cx, |p, _w, _cx| {
+                assert_eq!(
+                    p.readiness(),
+                    Readiness::NotIndexed,
+                    "a never-indexed entered workspace reads Not indexed"
+                );
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn readiness_chip_goes_red_on_a_service_error(cx: &mut TestAppContext) {
+        let (window, _guard) = mount_with_rows(
+            cx,
+            serde_json::json!({ "workspaces": [
+                {"id":"ws-a","folder":"C:/a","file_count":9,"last_indexed_at":1.0,"indexing":false},
+            ]}),
+        );
+        window
+            .update(cx, |p, _w, cx| p.enter_workspace("ws-a".to_owned(), cx))
+            .unwrap();
+        cx.run_until_parked();
+
+        // A live pipe-down error dominates the (now untrustworthy) index state.
+        window
+            .update(cx, |p, _w, _cx| {
+                p.error = Some("pipe_unavailable: service not running".to_owned());
+                assert_eq!(p.readiness(), Readiness::ServiceDown, "pipe down ⇒ red");
+            })
+            .unwrap();
+
+        // An out-of-date (no_action) service is red too, but distinctly.
+        window
+            .update(cx, |p, _w, _cx| {
+                p.error = Some("no_action: unknown action workspaces.x".to_owned());
+                assert_eq!(p.readiness(), Readiness::OutOfDate, "no_action ⇒ out of date");
+            })
+            .unwrap();
+    }
 }

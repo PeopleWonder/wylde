@@ -69,3 +69,17 @@ serde_yaml.workspace = true
 # — exercises the data → panel-state path without a live service or memgraph.
 rmp-serde.workspace = true
 tokio = { workspace = true }
+
+# ── DEV-ONLY (windowed gpui tests) ───────────────────────────────────
+# Same seam the Chat panel adopts (see Core/GUI/docs/gui-testing.md). These
+# are `dev-dependencies`, so with resolver = "2" their features are NOT
+# unified into the panel's normal lib (which the Shell links): the shipped
+# binary gets `gpui` and `wylde-gui-pipe` WITHOUT `test-support`. Verified
+# via `cargo tree -p wylde-gui`.
+# The scripted fake IPC backend + RAII install guard.
+wylde-gui-test-support = { path = "../../test-support" }
+# gpui's test harness: `#[gpui::test]`, `TestAppContext`, windows, etc.
+gpui = { workspace = true, features = ["test-support"] }
+# Compile the Pipe crate's injectable seam into the test binary.
+wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
+serde_json.workspace = true
