@@ -333,13 +333,27 @@ pub fn auto_summary_enabled() -> bool {
 /// caller `needs_regen`'s module docs always promised. The turn driver
 /// spawns this fire-and-forget after every naturally-completed turn;
 /// when the conversation has crossed another
-/// [`SUMMARY_EVERY_N_MESSAGES`] boundary it regenerates via the right
-/// pipeline for where the doc lives ([`refresh_standalone`] /
-/// [`refresh_workspace`]).
+/// [`SUMMARY_EVERY_N_MESSAGES`] boundary it regenerates the conversation
+/// doc's derived fields via [`refresh_standalone`].
+///
+/// **Store routing (C8 / Route 1).** The harness flat store
+/// (`<data_dir>/conversations/<id>.json`) is canonical for live turns —
+/// a *bound* conversation is just a flat doc carrying a `workspace_id`,
+/// not a separate document in the legacy per-workspace service store. The
+/// tier-2 gather slot reads the summary back off that same flat doc
+/// ([`auto_summary_for`], called unconditionally by `context_gather`), so
+/// the summary MUST land there for both bound and unbound conversations.
+/// Writing a bound summary to the service store instead (the prior
+/// behaviour) left every bound conversation's tier-2 slot permanently
+/// empty and diverged from conversation reflection, which already writes
+/// a bound conversation's output to a harness-side, prompt-visible tier
+/// and never to a second live store. Binding therefore does **not** change
+/// where the summary is stored; `workspace_id` is accepted only so the
+/// caller need not special-case it (and for the trace breadcrumb).
 ///
 /// Fail-soft end to end, never on the hot path: a disabled switch, a
 /// missing default model (the extractor's skip rule), an unknown or
-/// unreachable conversation, and any LLM/embedder error all reduce to a
+/// unreadable conversation, and any LLM/embedder error all reduce to a
 /// trace log. Regeneration is idempotent per N-boundary (the
 /// `summary_msg_count` bucket check), so a double-fire wastes at most
 /// one call.
@@ -351,35 +365,21 @@ pub async fn maybe_refresh(conversation_id: &str, workspace_id: Option<&str>) {
         tracing::trace!("auto-summary: skipped (no default model)");
         return;
     }
-    match workspace_id.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(ws) => {
-            use wylde_workspaces_client::WorkspacesClient;
-            let client = WorkspacesClient::for_service(super::api::workspaces_service());
-            let doc = match client.conversations_get(ws, conversation_id).await {
-                Ok(d) => d,
-                Err(e) => {
-                    tracing::trace!("auto-summary: workspace doc unreadable: {e}");
-                    return;
-                }
-            };
-            if !needs_regen(&doc) {
-                return;
-            }
-            if let Err(e) = refresh_workspace(ws, conversation_id).await {
-                tracing::debug!("auto-summary: workspace refresh failed: {e}");
-            }
-        }
-        None => {
-            let Ok(doc) = conv_store::read_conversation(conversation_id) else {
-                return; // unknown id — nothing to summarise
-            };
-            if !needs_regen(&doc) {
-                return;
-            }
-            if let Err(e) = refresh_standalone(conversation_id).await {
-                tracing::debug!("auto-summary: refresh failed: {e}");
-            }
-        }
+    // Route 1: bound or not, the doc lives in the flat store keyed by
+    // conversation_id; the summary is a field on that doc.
+    let Ok(doc) = conv_store::read_conversation(conversation_id) else {
+        return; // unknown id — nothing to summarise
+    };
+    if !needs_regen(&doc) {
+        return;
+    }
+    tracing::trace!(
+        conversation_id,
+        bound = workspace_id.is_some(),
+        "auto-summary: refreshing flat-store doc (Route 1)"
+    );
+    if let Err(e) = refresh_standalone(conversation_id).await {
+        tracing::debug!("auto-summary: refresh failed: {e}");
     }
 }
 
@@ -433,9 +433,13 @@ pub async fn embed_query(query: &str) -> Option<Vec<f32>> {
     }
 }
 
-/// Regenerate the summary + embedding for one **standalone** conversation
-/// and persist them. Fail-soft: any error leaves the stored fields
-/// untouched and is returned for the caller to log/ignore.
+/// Regenerate the summary + embedding for one conversation in the harness
+/// **flat store** and persist them. Under Route 1 (C8) this is the single
+/// summary write path for both unbound and workspace-*bound* conversations
+/// — a bound conversation is a flat doc carrying a `workspace_id`, and its
+/// summary belongs on that same doc the tier-2 gather slot reads.
+/// Fail-soft: any error leaves the stored fields untouched and is returned
+/// for the caller to log/ignore.
 pub async fn refresh_standalone(conv_id: &str) -> Result<Value, SummaryError> {
     let doc = conv_store::read_conversation(conv_id).map_err(|_| {
         SummaryError::NotFound(format!("standalone conversation {conv_id:?} not found"))
@@ -456,57 +460,6 @@ pub async fn refresh_standalone(conv_id: &str) -> Result<Value, SummaryError> {
     let fields = summary_fields(&summary, &tags, &embedding, count);
     conv_store::merge_fields(conv_id, fields)
         .map_err(|_| SummaryError::NotFound(format!("conversation {conv_id:?} vanished mid-write")))
-}
-
-/// Regenerate the summary + embedding for one **workspace** conversation —
-/// the parity twin of [`refresh_standalone`] (Phase 2 polish, Item 1).
-///
-/// Workspace conversations live in the `wylde-workspaces` service, so the
-/// harness fetches the doc over the pipe, runs the **same** LLM + embedder
-/// pipeline locally (the service has no Ollama client), then pushes the
-/// derived fields back via `workspaces.conversations.refresh_summary`. After
-/// that, [`super::api::search_history`] ranks workspace conversations by the
-/// same cosine path it already uses for standalone ones (their fetched docs
-/// now carry `auto_summary` / `topic_tags` / `embedding`).
-///
-/// Fail-soft like its twin: a slow/unreachable service or embedder error is
-/// returned for the caller to log; the stored doc keeps its prior fields.
-pub async fn refresh_workspace(workspace_id: &str, conv_id: &str) -> Result<Value, SummaryError> {
-    use wylde_workspaces_client::WorkspacesClient;
-
-    let client = WorkspacesClient::for_service(super::api::workspaces_service());
-    let doc = client
-        .conversations_get(workspace_id, conv_id)
-        .await
-        .map_err(|e| {
-            SummaryError::NotFound(format!(
-                "workspace conversation {conv_id:?} unreadable: {e}"
-            ))
-        })?;
-    let count = message_count(&doc);
-    let input = summary_input_text(&doc);
-    if input.trim().is_empty() {
-        return Err(SummaryError::Llm(
-            "conversation has no text to summarise".to_owned(),
-        ));
-    }
-
-    let (summary, tags) = generate_summary(&input).await?;
-    let embedding = embeddings::embed_one(summary.clone())
-        .await
-        .map_err(|e| SummaryError::Embed(e.to_string()))?;
-
-    client
-        .conversations_refresh_summary(
-            workspace_id,
-            conv_id,
-            &summary,
-            &tags,
-            &embedding,
-            count as u64,
-        )
-        .await
-        .map_err(|e| SummaryError::Llm(format!("persist workspace summary: {e}")))
 }
 
 #[cfg(test)]

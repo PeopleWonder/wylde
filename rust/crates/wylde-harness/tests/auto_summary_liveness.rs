@@ -125,6 +125,37 @@ async fn producer_attaches_summary_fields_to_standalone_conversation() {
     assert!(!summary::needs_regen(&doc));
 }
 
+/// C8 write-side complement to D2. A workspace-*bound* conversation is a
+/// flat doc carrying `workspace_id` (Route 1). Its auto-summary must land
+/// on that same flat doc — the tier-2 gather slot reads it back from the
+/// flat store regardless of binding — and never the legacy per-workspace
+/// service store. Before C8, `maybe_refresh` routed a bound summary to the
+/// service store, leaving the bound conversation's tier-2 slot permanently
+/// empty and diverging from conversation reflection (which already writes
+/// bound output harness-side, prompt-visible, never long-term / never a
+/// second live store). This pins the reconciliation: bound → flat store.
+#[tokio::test]
+async fn producer_writes_bound_conversation_summary_to_flat_store() {
+    let (_g, _dir) = test_guard().await;
+    seed_conversation("as-bound", 6);
+    conv_store::set_workspace("as-bound", Some("ws-bound")).expect("bind to workspace");
+
+    summary::maybe_refresh("as-bound", Some("ws-bound")).await;
+
+    let doc = conv_store::read_conversation("as-bound").expect("flat doc");
+    assert_eq!(
+        doc["auto_summary"], "A neat summary of the chat.",
+        "a bound conversation's summary must land on its flat doc, not the service store"
+    );
+    assert_eq!(doc["topic_tags"], json!(["alpha", "beta"]));
+    assert_eq!(doc["summary_msg_count"], 6);
+    assert_eq!(doc["embedding"].as_array().expect("embedding").len(), 4);
+    // The binding survives the summary merge (it is a field on the same doc).
+    assert_eq!(doc["workspace_id"], "ws-bound");
+    // Freshly stamped bucket → next call is a no-op.
+    assert!(!summary::needs_regen(&doc));
+}
+
 #[tokio::test]
 async fn kill_switch_disables_producer() {
     let (_g, _dir) = test_guard().await;
