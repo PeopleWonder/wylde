@@ -256,13 +256,27 @@ pub async fn start_turn(
     conversation_id: &str,
     workspace_id: Option<&str>,
 ) -> Result<StartTurnReply, String> {
-    start_turn_with_model(user_message, conversation_id, workspace_id, None, &[], &[]).await
+    start_turn_with_model(
+        user_message,
+        conversation_id,
+        workspace_id,
+        None,
+        &[],
+        &[],
+        None,
+    )
+    .await
 }
 
 /// `chat.start_turn` with an optional `model` override (empty / None falls
-/// back to the harness's `default_model` config) and the composer's
-/// per-message token overrides (Slices F + M): `excluded_tokens` never
-/// gather this turn, `reactivated_tokens` gather despite a durable ignore.
+/// back to the harness's `default_model` config), the composer's per-message
+/// token overrides (Slices F + M): `excluded_tokens` never gather this turn,
+/// `reactivated_tokens` gather despite a durable ignore — and the Workspaces
+/// `active_file` (2.5): the workspace-relative path of the file open in the
+/// editor, which biases RAG toward the user's current focus (`None` on the
+/// Global slot / when no file is open).
+#[allow(clippy::too_many_arguments)] // turn-start payload fan-out; each arg is a
+                                     // distinct optional payload field.
 pub async fn start_turn_with_model(
     user_message: &str,
     conversation_id: &str,
@@ -270,6 +284,7 @@ pub async fn start_turn_with_model(
     model: Option<&str>,
     excluded_tokens: &[String],
     reactivated_tokens: &[String],
+    active_file: Option<&str>,
 ) -> Result<StartTurnReply, String> {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -291,6 +306,9 @@ pub async fn start_turn_with_model(
     }
     if !reactivated_tokens.is_empty() {
         payload.insert("reactivated_tokens".into(), json!(reactivated_tokens));
+    }
+    if let Some(af) = active_file.filter(|s| !s.is_empty()) {
+        payload.insert("active_file".into(), Value::String(af.to_owned()));
     }
     let v = wylde_gui_pipe::call(
         SVC_HARNESS,

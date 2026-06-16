@@ -417,18 +417,27 @@ fn parse_symbol_ids(v: &Value) -> Vec<String> {
 
 // ── public entry point ────────────────────────────────────────────────────
 
-/// Per-message token overrides from the composer (Slices F + M):
-/// `excluded` tokens never gather this message (the ✕ exclude);
-/// `reactivated` tokens gather even when an ignore tier covers them (the ↺).
+/// Per-message GUI signals carried on the turn payload. The composer's token
+/// choices (Slices F + M): `excluded` tokens never gather this message (the ✕
+/// exclude); `reactivated` tokens gather even when an ignore tier covers them
+/// (the ↺). Plus the Workspaces signal `active_file` (2.5): the workspace-
+/// relative path of the file open in the editor when the turn was sent, used to
+/// bias RAG toward the user's current focus.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct TokenOverrides {
     pub excluded: Vec<String>,
     pub reactivated: Vec<String>,
+    /// 2.5 (active-file boost): the file open in the Workspaces editor at send
+    /// time (workspace-relative path), or `None`. Folded into the retrieval
+    /// query behind the `[active_file: …]` marker so the workspace search layer
+    /// can lexically boost chunks from that file / its directory.
+    pub active_file: Option<String>,
 }
 
 impl TokenOverrides {
-    /// Parse `excluded_tokens` / `reactivated_tokens` arrays off a
-    /// `chat.run_turn` / `chat.start_turn` payload (absent → empty).
+    /// Parse `excluded_tokens` / `reactivated_tokens` arrays and the
+    /// `active_file` string off a `chat.run_turn` / `chat.start_turn` payload
+    /// (absent → empty / `None`).
     pub fn from_payload(payload: &Value) -> TokenOverrides {
         let list = |key: &str| {
             payload
@@ -447,6 +456,12 @@ impl TokenOverrides {
         TokenOverrides {
             excluded: list("excluded_tokens"),
             reactivated: list("reactivated_tokens"),
+            active_file: payload
+                .get("active_file")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned),
         }
     }
 }
@@ -563,13 +578,29 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         // thread's topic, and a question about a known symbol biases toward its
         // defining file. The live message leads and stays dominant (both tails
         // are capped) to avoid drifting retrieval off the current question.
-        let retrieval_query = compose_retrieval_query(
+        let mut retrieval_query = compose_retrieval_query(
             user_message,
             ctx.conversation_summary.as_deref(),
             &ctx.conversation_short_term,
             &ctx.history,
             &anchor_terms,
         );
+
+        // 2.5 (active-file boost): append the editor's open file behind its own
+        // marker so the workspace search layer can lexically boost chunks from
+        // that file / its directory ("focus on this service" without
+        // partitioning RAG). Mirrors the `[anchors: …]` cross-crate protocol
+        // (`wylde-workspaces/.../rag/indexer/search.rs::extract_active_file` —
+        // keep the marker strings in sync). Appended after the query is composed
+        // so it rides even a plain turn that contributed no other terms.
+        if let Some(active_file) = overrides
+            .active_file
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            retrieval_query.push_str(&format!("\n\n[active_file: {active_file}]"));
+        }
 
         // The workspace prompt parts (persona / notes / RAG — B6 split).
         // An unreachable service here is the degrade signal (Slice 0d
@@ -1483,6 +1514,7 @@ mod tests {
         let ex = TokenOverrides {
             excluded: vec!["foo".into()],
             reactivated: vec!["foo".into()],
+            ..Default::default()
         };
         let out = gather_with(
             &src,
@@ -1734,6 +1766,76 @@ mod tests {
         assert!(
             forwarded.starts_with("what does compose_retrieval_query do?"),
             "live message still leads: {forwarded}"
+        );
+    }
+
+    // ── 2.5: active-file boost — GUI signal → forwarded query marker ─────
+
+    #[test]
+    fn from_payload_parses_active_file() {
+        let o = TokenOverrides::from_payload(&json!({
+            "active_file": "  services/x/foo.rs  "
+        }));
+        assert_eq!(o.active_file.as_deref(), Some("services/x/foo.rs"), "trimmed");
+        // Absent / blank → None.
+        assert_eq!(TokenOverrides::from_payload(&json!({})).active_file, None);
+        assert_eq!(
+            TokenOverrides::from_payload(&json!({"active_file": "   "})).active_file,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn gather_folds_active_file_into_the_forwarded_query() {
+        // The REAL gather path must append the editor's open file behind the
+        // `[active_file: …]` marker the search layer parses — the producer half
+        // of 2.5 reaching the embed/search boundary.
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let src = MockSource::default();
+        let overrides = TokenOverrides {
+            active_file: Some("services/x/foo.rs".to_owned()),
+            ..Default::default()
+        };
+        let _ = gather_with(
+            &src,
+            Some("ws"),
+            "how does the dispatcher work?",
+            "conv-2-5",
+            &overrides,
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+
+        let queries = src.gather_prompt_queries.lock().unwrap().clone();
+        let forwarded = queries.first().expect("gather_prompt was called");
+        assert!(
+            forwarded.contains("[active_file: services/x/foo.rs]"),
+            "active file folded into the forwarded query: {forwarded}"
+        );
+        assert!(
+            forwarded.starts_with("how does the dispatcher work?"),
+            "live message still leads: {forwarded}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gather_omits_active_file_marker_when_unset() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        let src = MockSource::default();
+        let _ = gather_with(
+            &src,
+            Some("ws"),
+            "plain question",
+            "conv-2-5b",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+        let queries = src.gather_prompt_queries.lock().unwrap().clone();
+        let forwarded = queries.first().expect("gather_prompt was called");
+        assert!(
+            !forwarded.contains("[active_file:"),
+            "no marker when no active file: {forwarded}"
         );
     }
 
