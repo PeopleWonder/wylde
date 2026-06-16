@@ -10,6 +10,16 @@ authors.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[features]
+# DEV-ONLY. Enables the injectable fake IPC transport (`test_backend`) and
+# the two hook sites in `call` / `stream_call` that consult it. Pulled in
+# *only* through the panels' `dev-dependencies` (directly or via
+# `wylde-gui-test-support`), so a normal Shell build — which never requests
+# this feature — compiles none of it. With resolver = "2", dev-dependency
+# features do not unify into normal builds, so the shipped binary is
+# byte-unaffected. See `Core/GUI/docs/gui-testing.md`.
+test-support = []
+
 [dependencies]
 wylde-harness.workspace = true
 wylde-shared.workspace = true

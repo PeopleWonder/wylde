@@ -38,6 +38,10 @@ pub mod model_bus;
 pub mod model_pull;
 pub mod nav_bus;
 pub mod privacy_prefs;
+/// Dev-only injectable IPC backend (the windowed-test seam). Gated behind
+/// the `test-support` feature — absent from any normal Shell build.
+#[cfg(feature = "test-support")]
+pub mod test_backend;
 pub mod tools;
 pub mod updater_state;
 pub mod workspace_scope_bus;
@@ -199,6 +203,13 @@ pub async fn call(
     path: &str,
     body: Option<Value>,
 ) -> Result<Value, String> {
+    // Test seam (dev-only): a windowed test installs a fake backend on this
+    // thread; intercept *before* the tokio hop so the canned reply resolves
+    // inline under `run_until_parked` with no runtime and no live pipe.
+    #[cfg(feature = "test-support")]
+    if let Some(backend) = test_backend::current() {
+        return backend.call(service, http_verb, path, body.as_ref());
+    }
     // If the caller is already inside a tokio runtime, run inline.
     // Otherwise hop to the stashed Handle so the gpui dispatcher
     // threads (which have no current runtime) work transparently.
@@ -354,6 +365,12 @@ pub async fn call(
     _path: &str,
     _body: Option<Value>,
 ) -> Result<Value, String> {
+    // Test seam (dev-only) — mirrors the Windows path so windowed tests run
+    // on any host even though the real transport is Windows-only.
+    #[cfg(feature = "test-support")]
+    if let Some(backend) = test_backend::current() {
+        return backend.call(service, _http_verb, _path, _body.as_ref());
+    }
     Err(format!(
         "pipe_unavailable: named pipes are Windows-only (service '{}')",
         service
@@ -409,6 +426,24 @@ impl Drop for PipeStream {
     }
 }
 
+#[cfg(feature = "test-support")]
+impl PipeStream {
+    /// Build a stream that yields `chunks` in order, then ends — the
+    /// dev-only fake-backend path (see [`crate::test_backend`]). No abort
+    /// handle (there's no background reader to cancel); the `tokio::mpsc`
+    /// receiver resolves each item synchronously under the gpui test
+    /// executor without a runtime.
+    pub fn from_canned(chunks: Vec<Result<Value, String>>) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel(chunks.len().max(1));
+        for chunk in chunks {
+            // Capacity == len, so `try_send` never fails here.
+            let _ = tx.try_send(chunk);
+        }
+        // `tx` drops at end of scope → `recv` returns `None` after draining.
+        PipeStream { rx, abort: None }
+    }
+}
+
 /// Open a streaming action against `service` and return a [`PipeStream`].
 ///
 /// `service` is the bare or `wylde-`-prefixed pipe name; `action` is the
@@ -426,6 +461,13 @@ impl Drop for PipeStream {
 /// **Non-Windows**: the returned stream surfaces a single
 /// `pipe_unavailable` error and ends.  Mirrors the unary path.
 pub fn stream_call(service: &str, action: &str, payload: Value) -> Result<PipeStream, String> {
+    // Test seam (dev-only): replay a canned chunk list as a finished stream,
+    // no runtime or live pipe required. See `call`.
+    #[cfg(feature = "test-support")]
+    if let Some(backend) = test_backend::current() {
+        let chunks = backend.stream(service, action, &payload)?;
+        return Ok(PipeStream::from_canned(chunks));
+    }
     let handle = if let Ok(h) = tokio::runtime::Handle::try_current() {
         h
     } else if let Some(h) = TOKIO_HANDLE.get().cloned() {

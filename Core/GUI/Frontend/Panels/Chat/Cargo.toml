@@ -55,3 +55,16 @@ serde_yaml.workspace = true
 # Open a URL in the OS default handler — for markdown link clicks in
 # the message log.  cross-platform; the Windows backend uses ShellExecute.
 opener.workspace = true
+
+# ── DEV-ONLY (windowed gpui tests) ───────────────────────────────────
+# These are `dev-dependencies`, so with resolver = "2" their features are
+# NOT unified into the panel's normal lib (which the Shell links): the
+# shipped binary gets `gpui` and `wylde-gui-pipe` WITHOUT `test-support`.
+# Verified via `cargo tree -p wylde-gui` (see docs/gui-testing.md).
+[dev-dependencies]
+# The scripted fake IPC backend + RAII install guard.
+wylde-gui-test-support = { path = "../../test-support" }
+# gpui's test harness: `#[gpui::test]`, `TestAppContext`, windows, etc.
+gpui = { workspace = true, features = ["test-support"] }
+# Compile the Pipe crate's injectable seam into the test binary.
+wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }

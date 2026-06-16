@@ -41,7 +41,13 @@ members = [
 # npm/Vite tooling that only ever built the deleted Svelte `src/` →
 # `dist/` was deleted in slice-11.1.  Nothing non-crate remains under
 # this root, so there is nothing left to exclude.
-exclude = []
+# `Frontend/test-support` is a DEV-ONLY helper crate (a scripted fake IPC
+# backend for windowed gpui tests). It is EXCLUDED on purpose: as a
+# non-member it can enable `wylde-gui-pipe/test-support` for the panels'
+# test builds (via their `dev-dependencies`) without a `cargo build
+# --workspace` ever feature-unifying that dev-only seam into the shipped
+# Shell binary. See `docs/gui-testing.md`.
+exclude = ["Frontend/test-support"]
 
 [workspace.package]
 version = "0.1.0-alpha.1"
