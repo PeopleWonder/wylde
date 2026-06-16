@@ -1253,6 +1253,15 @@ impl ChatPanel {
         // Docked dock that minted a fileless thread on enter (see
         // `pending_bind_workspace`); cleared once we've bound below.
         let pending_bind = self.pending_bind_workspace.clone();
+        // 2.5 (active-file boost): on a bound (workspace) turn, ride the file
+        // open in the Workspaces editor so the harness biases RAG toward it.
+        // Only when bound — D1 keeps the Global slot workspace-free, and the
+        // boost is meaningless without a workspace index.
+        let active_file = if workspace_id.is_some() {
+            wylde_gui_pipe::current_active_file()
+        } else {
+            None
+        };
         let model = self.active_model.clone();
         // The composer's per-message ✕/↺ choices ride the send (Slices F+M).
         let (excluded_tokens, reactivated_tokens) = self.composer.send_overrides();
@@ -1265,6 +1274,7 @@ impl ChatPanel {
                 model.as_deref(),
                 &excluded_tokens,
                 &reactivated_tokens,
+                active_file.as_deref(),
             )
             .await;
             let (turn_id, reply_conversation_id) = match start {

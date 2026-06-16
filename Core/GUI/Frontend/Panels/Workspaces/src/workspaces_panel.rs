@@ -208,6 +208,9 @@ impl WorkspacesPanel {
         // `workspace_id` (`apply_workspace_scope`), so the next dock turn
         // carries the workspace's context.
         wylde_gui_pipe::publish_active_workspace(Some(id));
+        // 2.5: a fresh workspace has no file open until one is clicked; clear any
+        // file left over from a previous workspace so it can't bias this one.
+        wylde_gui_pipe::publish_active_file(None);
         cx.notify();
     }
 
@@ -220,6 +223,8 @@ impl WorkspacesPanel {
         // unbound (the dock applies `None`), the mirror of `enter_workspace`'s
         // publish above.
         wylde_gui_pipe::publish_active_workspace(None);
+        // 2.5: no workspace entered → no active file.
+        wylde_gui_pipe::publish_active_file(None);
         cx.notify();
     }
 
@@ -244,8 +249,15 @@ impl WorkspacesPanel {
             .map(|w| w.path.clone())
             .unwrap_or_default();
         if let Some(editor) = &self.editor {
-            editor.update(cx, |e, ecx| e.open(workspace_id, folder, path, line, ecx));
+            editor.update(cx, |e, ecx| {
+                e.open(workspace_id, folder, path.clone(), line, ecx)
+            });
         }
+        // 2.5 (active-file boost): publish the now-open file so a turn sent on
+        // the docked chat biases RAG toward it. Workspace-relative path, exactly
+        // what the index stores; cleared on enter/leave so it never crosses
+        // workspaces.
+        wylde_gui_pipe::publish_active_file(Some(path));
         // Editor is an in-workspace tab; ensure we're entered (a graph/composer
         // deep-link could open a file from the Registry landing).
         if self.entered.is_none() {

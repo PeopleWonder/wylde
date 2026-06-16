@@ -29,6 +29,7 @@
 //!     crate will ship its own `ipc.rs` per the plan §3 layout when
 //!     it lands.
 
+pub mod active_file_bus;
 pub mod chat;
 pub mod conversation_bus;
 pub mod focus_bus;
@@ -49,6 +50,7 @@ pub use model_bus::{
     current_active_model, publish_active_model, publish_starred_default,
     subscribe as subscribe_model_bus, ModelEvent,
 };
+pub use active_file_bus::{current_active_file, publish_active_file, ActiveFile};
 pub use focus_bus::{request_workspace_focus, take_workspace_focus_receiver, WorkspaceFocus};
 pub use workspace_scope_bus::{
     current_active_workspace, publish_active_workspace, take_workspace_scope_receiver,

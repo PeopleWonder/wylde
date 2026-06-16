@@ -70,7 +70,12 @@ pub async fn query(workspace_id: &str, query_text: &str, k: usize) -> Vec<Search
     // cosine layer agree. The same `query_text` is still embedded whole, so the
     // anchor names also bias the embedding (query expansion).
     let anchors = extract_anchor_terms(query_text);
-    rank(&query_vec, chunks, k, &anchors)
+    // 2.5 (active-file boost): the harness folds the editor's open file behind
+    // the `[active_file: …]` marker; chunks from that file (or its directory)
+    // get a scoring boost so a generic question while a file is open biases
+    // toward the user's current focus, without partitioning the index.
+    let active_file = extract_active_file(query_text);
+    rank_with(&query_vec, chunks, k, &anchors, active_file.as_deref())
 }
 
 /// MMR relevance/diversity trade-off (the `λ` in the standard formula):
@@ -186,6 +191,75 @@ fn anchor_boost(chunk: &IndexedChunk, anchors: &[String]) -> f64 {
     boost.min(ANCHOR_BOOST_CAP)
 }
 
+/// Marker the harness wraps the editor's open file in when it appends it to the
+/// retrieval query (2.5). Mirrors the format produced by
+/// `wylde-harness/.../turn/context_gather.rs::gather_with` (the `[active_file:
+/// …]` append) — **keep the two in sync**; like the anchor marker it is a
+/// cross-crate string protocol, covered by the live-index real-path check.
+/// Form: `[active_file: workspace/relative/path.rs]`.
+const ACTIVE_FILE_QUERY_MARKER: &str = "[active_file:";
+
+/// Score lift for a chunk from the **exact file** open in the Workspaces editor
+/// (2.5) — the strongest current-focus signal. Additive on the cosine, smaller
+/// than [`ANCHOR_PATH_BOOST`] so an explicitly-referenced symbol still outranks
+/// "merely the file I'm looking at".
+const ACTIVE_FILE_PATH_BOOST: f64 = 0.15;
+
+/// Score lift for a chunk that merely **shares the directory** of the open file
+/// — a weaker "same area / same service" signal, so a generic question while
+/// `services/x/foo.rs` is open nudges the rest of `services/x` up too.
+const ACTIVE_FILE_DIR_BOOST: f64 = 0.06;
+
+/// Normalise a path for cross-platform comparison: trim, fold `\` to `/`, and
+/// lowercase. Both the marker payload and the chunk path run through this so a
+/// Windows-relative `services\x\foo.rs` matches an index that stored `/`.
+fn normalize_path(p: &str) -> String {
+    p.trim().replace('\\', "/").to_ascii_lowercase()
+}
+
+/// The directory portion of a `/`-separated, already-[`normalize_path`]d path
+/// (everything before the last `/`), or `None` for a root-level file with no
+/// directory — a root file must never dir-match every other root file.
+fn dir_of(path: &str) -> Option<&str> {
+    path.rfind('/').map(|i| &path[..i])
+}
+
+/// Pull the editor's open file out of a retrieval query the harness augmented
+/// (2.5), already [`normalize_path`]d. A query with no marker (a plain turn, or
+/// a non-harness caller) yields `None` — the boost is then a no-op.
+fn extract_active_file(query_text: &str) -> Option<String> {
+    let start = query_text.find(ACTIVE_FILE_QUERY_MARKER)?;
+    let after = &query_text[start + ACTIVE_FILE_QUERY_MARKER.len()..];
+    let body = match after.find(']') {
+        Some(end) => &after[..end],
+        None => after, // tolerate a missing close bracket — take the tail
+    };
+    let path = normalize_path(body);
+    if path.is_empty() {
+        None
+    } else {
+        Some(path)
+    }
+}
+
+/// Active-file boost for one chunk (2.5): the exact open file gets
+/// [`ACTIVE_FILE_PATH_BOOST`], a sibling in the same directory gets the smaller
+/// [`ACTIVE_FILE_DIR_BOOST`], everything else nothing. `active_file` is already
+/// normalised by [`extract_active_file`]; the chunk path is normalised here.
+fn active_file_boost(chunk: &IndexedChunk, active_file: Option<&str>) -> f64 {
+    let Some(active) = active_file else {
+        return 0.0;
+    };
+    let path = normalize_path(&chunk.path);
+    if path == active {
+        return ACTIVE_FILE_PATH_BOOST;
+    }
+    match (dir_of(active), dir_of(&path)) {
+        (Some(ad), Some(pd)) if !ad.is_empty() && ad == pd => ACTIVE_FILE_DIR_BOOST,
+        _ => 0.0,
+    }
+}
+
 /// Ranking core: score every chunk by cosine against `query_vec`, then
 /// select `k` with Maximal Marginal Relevance so near-duplicate chunks
 /// don't crowd out the prompt's RAG slot. Split out for direct unit testing
@@ -212,16 +286,33 @@ pub fn rank(
     k: usize,
     anchors: &[String],
 ) -> Vec<SearchHit> {
+    rank_with(query_vec, chunks, k, anchors, None)
+}
+
+/// [`rank`] plus the 2.5 active-file boost: `active_file` is the editor's open
+/// file (workspace-relative, already normalised by [`extract_active_file`]). A
+/// chunk from that file (or its directory) gets an [`active_file_boost`] added
+/// to its effective score alongside the 2.4 anchor boost, so it survives the
+/// dynamic-k cutoff and ranks up — the **reported** [`SearchHit::score`] stays
+/// the true cosine. `None` is a no-op (identical to [`rank`]).
+pub fn rank_with(
+    query_vec: &[f32],
+    chunks: Vec<IndexedChunk>,
+    k: usize,
+    anchors: &[String],
+    active_file: Option<&str>,
+) -> Vec<SearchHit> {
     if k == 0 {
         return Vec::new();
     }
-    // `(effective, cosine, chunk)` — `effective = cosine + anchor_boost`
-    // governs ranking/cutoff/MMR; `cosine` is what each hit reports.
+    // `(effective, cosine, chunk)` — `effective = cosine + anchor_boost +
+    // active_file_boost` governs ranking/cutoff/MMR; `cosine` is what each hit
+    // reports.
     let mut scored: Vec<(f64, f64, IndexedChunk)> = chunks
         .into_iter()
         .map(|c| {
             let cos = cosine(query_vec, &c.vector);
-            let eff = (cos + anchor_boost(&c, anchors)).min(1.0);
+            let eff = (cos + anchor_boost(&c, anchors) + active_file_boost(&c, active_file)).min(1.0);
             (eff, cos, c)
         })
         .collect();
@@ -617,6 +708,107 @@ mod tests {
         let hits = rank(&query, chunks, 2, &[]);
         assert_eq!(hits[0].file_path, "/near.md");
         assert_eq!(hits[1].file_path, "/mid.md");
+    }
+
+    // ── 2.5: active-file boost ──────────────────────────────────────────
+
+    #[test]
+    fn extract_active_file_reads_and_normalises_the_marker() {
+        assert_eq!(
+            extract_active_file("how does this work?\n\n[active_file: services/X/Foo.rs]")
+                .as_deref(),
+            Some("services/x/foo.rs"),
+            "lowercased; marker payload extracted",
+        );
+        // Windows separators fold to '/'.
+        assert_eq!(
+            extract_active_file("[active_file: services\\x\\foo.rs]").as_deref(),
+            Some("services/x/foo.rs"),
+        );
+        // No marker / blank → None (boost is then a no-op).
+        assert_eq!(extract_active_file("a plain question"), None);
+        assert_eq!(extract_active_file("[active_file:   ]"), None);
+    }
+
+    #[test]
+    fn active_file_boost_weights_exact_over_directory_and_misses() {
+        let exact = chunk("services/x/foo.rs", vec![1.0, 0.0], "body");
+        let sibling = chunk("services/x/bar.rs", vec![1.0, 0.0], "body");
+        let elsewhere = chunk("services/y/baz.rs", vec![1.0, 0.0], "body");
+        let active = Some("services/x/foo.rs");
+        assert!((active_file_boost(&exact, active) - ACTIVE_FILE_PATH_BOOST).abs() < 1e-9);
+        assert!((active_file_boost(&sibling, active) - ACTIVE_FILE_DIR_BOOST).abs() < 1e-9);
+        assert_eq!(active_file_boost(&elsewhere, active), 0.0);
+        assert_eq!(active_file_boost(&exact, None), 0.0, "no active file → no boost");
+        // A root-level open file never dir-matches every other root file.
+        let root_a = chunk("a.rs", vec![1.0, 0.0], "");
+        let root_b = chunk("b.rs", vec![1.0, 0.0], "");
+        assert_eq!(active_file_boost(&root_b, Some("a.rs")), 0.0);
+        assert!((active_file_boost(&root_a, Some("a.rs")) - ACTIVE_FILE_PATH_BOOST).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rank_with_active_file_promotes_the_open_file_keeping_reported_cosine() {
+        // The open file has a lower cosine than a rival, but the active-file
+        // boost lifts it to the top; the reported score stays the true cosine.
+        let query = vec![1.0_f32, 0.0];
+        let open = chunk("services/x/foo.rs", vec_with_cosine(0.60), "the file in the editor");
+        let rival = chunk("services/y/other.rs", vec_with_cosine(0.70), "a higher-cosine rival");
+        let hits = rank_with(
+            &query,
+            vec![rival.clone(), open.clone()],
+            2,
+            &[],
+            Some("services/x/foo.rs"),
+        );
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0].file_path, "services/x/foo.rs",
+            "active-file boost (0.60 + 0.15 = 0.75) beats the rival's 0.70",
+        );
+        assert!(
+            (hits[0].score - 0.60).abs() < 1e-3,
+            "reported score stays cosine, got {}",
+            hits[0].score
+        );
+    }
+
+    #[test]
+    fn rank_with_directory_boost_lifts_siblings_of_the_open_file() {
+        // A generic question while services/x/foo.rs is open: a sibling in
+        // services/x is nudged above an equally-cosine chunk elsewhere.
+        let query = vec![1.0_f32, 0.0];
+        let sibling = chunk("services/x/bar.rs", vec_with_cosine(0.60), "sibling");
+        let elsewhere = chunk("services/y/baz.rs", vec_with_cosine(0.60), "elsewhere");
+        let hits = rank_with(
+            &query,
+            vec![elsewhere.clone(), sibling.clone()],
+            2,
+            &[],
+            Some("services/x/foo.rs"),
+        );
+        assert_eq!(
+            hits[0].file_path, "services/x/bar.rs",
+            "same-directory sibling ranks up",
+        );
+    }
+
+    #[test]
+    fn rank_with_none_active_file_is_identical_to_rank() {
+        let query = vec![1.0_f32, 0.0, 0.0];
+        let chunks = || {
+            vec![
+                chunk("/far.md", vec![0.0, 1.0, 0.0], "far"),
+                chunk("/near.md", vec![0.9, 0.1, 0.0], "near"),
+                chunk("/mid.md", vec![0.6, 0.6, 0.0], "mid"),
+            ]
+        };
+        let via_rank = rank(&query, chunks(), 2, &[]);
+        let via_with = rank_with(&query, chunks(), 2, &[], None);
+        assert_eq!(via_rank.len(), via_with.len());
+        for (a, b) in via_rank.iter().zip(via_with.iter()) {
+            assert_eq!(a.file_path, b.file_path);
+        }
     }
 
     #[test]
