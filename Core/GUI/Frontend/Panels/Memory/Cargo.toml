@@ -34,3 +34,15 @@ gpui.workspace = true
 serde.workspace      = true
 serde_json.workspace = true
 anyhow.workspace     = true
+
+# ── DEV-ONLY (windowed gpui tests) ───────────────────────────────────
+# Same seam the Chat/Workspaces panels adopt (see docs/gui-testing.md).
+# dev-dependencies only, so resolver = "2" never unifies `test-support`
+# into the shipped Shell's normal lib (verified via cargo tree).
+[dev-dependencies]
+# The scripted fake IPC backend + RAII install guard.
+wylde-gui-test-support = { path = "../../test-support" }
+# gpui's test harness: `#[gpui::test]`, `TestAppContext`, windows, etc.
+gpui = { workspace = true, features = ["test-support"] }
+# Compile the Pipe crate's injectable seam into the test binary.
+wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
