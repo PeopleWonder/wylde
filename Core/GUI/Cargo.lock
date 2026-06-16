@@ -9114,6 +9114,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "wylde-gui-pipe",
+ "wylde-gui-test-support",
  "wylde-theme",
 ]
 
@@ -9129,6 +9130,7 @@ dependencies = [
  "tokio",
  "wylde-gpui-input",
  "wylde-gui-pipe",
+ "wylde-gui-test-support",
  "wylde-theme",
 ]
 
@@ -9208,6 +9210,7 @@ dependencies = [
  "tokio",
  "wylde-gpui-input",
  "wylde-gui-pipe",
+ "wylde-gui-test-support",
  "wylde-theme",
  "wylde-updater",
 ]

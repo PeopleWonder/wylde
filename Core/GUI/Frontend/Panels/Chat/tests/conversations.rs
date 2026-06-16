@@ -353,3 +353,34 @@ fn a_global_turn_carries_no_workspace_including_long_term(cx: &mut TestAppContex
         "a global turn carries no workspace_id → harness includes long-term (mirror of [D2])"
     );
 }
+
+// ── (f) a failed delete is surfaced, not swallowed (GUI-responsiveness) ───
+
+#[gpui::test]
+fn a_failed_delete_surfaces_an_error(cx: &mut TestAppContext) {
+    // GUI-responsiveness pass (category c): the row is dropped optimistically,
+    // so a swallowed delete failure would vanish-then-flicker with no
+    // explanation. The failure must reach the error strip.
+    let fake = ScriptedBackend::new().on_err("conversations.delete", "pipe_unavailable: harness down");
+    let (window, _guard) = docked_in_workspace(
+        cx,
+        "ws-a",
+        vec![conv("c1", "ws-a", 300), conv("c2", "ws-a", 100)],
+        fake.clone(),
+    );
+
+    window
+        .update(cx, |panel, _w, cx| panel.confirm_delete_conversation("c1", cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    window
+        .update(cx, |panel, _w, _cx| {
+            let e = panel.error.as_deref().unwrap_or_default();
+            assert!(
+                e.contains("delete conversation"),
+                "a failed delete is surfaced, not swallowed: {e:?}"
+            );
+        })
+        .unwrap();
+}

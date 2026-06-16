@@ -2059,4 +2059,45 @@ mod tests {
             })
             .unwrap();
     }
+
+    // ── Windowed graph "click to retry" recovery ─────────────────────────
+    //
+    // GUI-responsiveness pass (category a): the service-down overlay advertised
+    // "…then click to retry" but the only mouse handler started a pan — the
+    // click was dead and the graph never recovered until remount. The fix wires
+    // the banner to `spawn_load`. This pins the handler's EFFECT: re-running
+    // spawn_load over the seam re-dispatches the workspace+graph fetch and
+    // clears the down-state error (with no active workspace, fetch returns an
+    // empty Ok load — recovery without a graph-DB).
+    #[gpui::test]
+    fn retry_reloads_the_graph_and_clears_the_down_state(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new().on("workspaces.list_mru", serde_json::json!({ "active_id": "" }));
+        let _guard = fake.clone().install();
+
+        let window = cx.add_window(|_w, _cx| {
+            let mut v = GraphView::new();
+            // Simulate the service-down banner state the retry chip lives on.
+            v.loading = false;
+            v.error = Some(GraphFetchError::ServiceUnavailable(
+                "workspaces service unavailable".to_owned(),
+            ));
+            v
+        });
+        cx.run_until_parked();
+
+        // The retry chip calls spawn_load (mirrors the Registry tab's Retry).
+        window.update(cx, |_gv, _w, cx| GraphView::spawn_load(cx)).unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(cx, |gv, _w, _cx| {
+                assert!(gv.error.is_none(), "retry re-loaded and cleared the down-state error");
+                assert!(!gv.loading, "the reload settled");
+            })
+            .unwrap();
+        assert!(
+            fake.count_for("workspaces.list_mru") >= 1,
+            "retry actually re-dispatched the load over the wire"
+        );
+    }
 }

@@ -48,3 +48,13 @@ anyhow.workspace     = true
 # Async primitives for the model-bus drain (broadcast `RecvError`) + the
 # field-edit debounce. Same workspace pin every panel uses.
 tokio.workspace = true
+
+# ── DEV-ONLY (windowed gpui tests) ───────────────────────────────────
+# Same seam the Chat/Workspaces/Memory panels adopt (see docs/gui-testing.md).
+# dev-dependencies only, so resolver = "2" never unifies `test-support` into
+# the shipped Shell's normal lib (verified via cargo tree).
+[dev-dependencies]
+wylde-gui-test-support = { path = "../../test-support" }
+gpui = { workspace = true, features = ["test-support"] }
+wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
+serde_json.workspace = true
