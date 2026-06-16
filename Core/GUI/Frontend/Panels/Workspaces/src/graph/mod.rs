@@ -2003,4 +2003,60 @@ mod tests {
         v.pending_enter = None;
         assert!(!v.navigator.is_scoped() && v.navigator.members().is_none());
     }
+
+    // ── Windowed graph deep-link (focus_node) ────────────────────────────
+    //
+    // The terminal of the cross-panel focus bus (S7): a vocab word in the
+    // InferenceBar pushes a `WorkspaceFocus { node_id }`; the Workspaces panel
+    // drains it and calls `GraphView::focus_node`. The bus push/drain has its
+    // own unit test (`focus_bus`), and the panel's tab routing is covered in
+    // `tests/registry_nav.rs`; this pins the GraphView end — that a present
+    // node is found + centred (selected as last-clicked) and an absent one is
+    // a clean no-op. Driven in a real window because focus_node tweens the
+    // camera + opens the file outline (both spawn async effects).
+
+    use gpui::TestAppContext;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    #[gpui::test]
+    fn focus_node_centres_a_present_node_and_ignores_absent(cx: &mut TestAppContext) {
+        // Absorb the outline IPC focus_node fires for a node with a file.
+        let _guard = ScriptedBackend::new().install();
+
+        let g = WorkspaceGraph {
+            nodes: vec![node("sym::foo", "src/foo.rs"), node("sym::bar", "src/bar.rs")],
+            edges: vec![],
+            clusters: vec![],
+        };
+        let window = cx.add_window(|_w, _cx| view_with_graph(g));
+        cx.run_until_parked();
+
+        // A present deep-link target is focused (true) and recorded as the
+        // selected node — the same surface a click produces.
+        let hit = window
+            .update(cx, |gv, _w, cx| gv.focus_node("sym::foo", cx))
+            .unwrap();
+        assert!(hit, "a present node is focused — the vocab-word deep-link terminal");
+        cx.run_until_parked();
+        window
+            .update(cx, |gv, _w, _cx| {
+                assert_eq!(
+                    gv.last_clicked.as_deref(),
+                    Some("sym::foo"),
+                    "focusing selects the node (mirrors a click)"
+                );
+            })
+            .unwrap();
+
+        // An absent target is a no-op (false), leaving the prior selection.
+        let miss = window
+            .update(cx, |gv, _w, cx| gv.focus_node("sym::missing", cx))
+            .unwrap();
+        assert!(!miss, "a deep-link to a node not in the loaded graph is a no-op");
+        window
+            .update(cx, |gv, _w, _cx| {
+                assert_eq!(gv.last_clicked.as_deref(), Some("sym::foo"), "selection unchanged");
+            })
+            .unwrap();
+    }
 }
