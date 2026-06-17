@@ -13,7 +13,7 @@ pub mod ipc;
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    div, prelude::*, px, rgb, Context, EventEmitter, FontWeight, IntoElement, MouseButton,
+    div, prelude::*, px, rgb, svg, Context, EventEmitter, FontWeight, IntoElement, MouseButton,
     MouseDownEvent, Render, SharedString, Window,
 };
 use wylde_theme::colors::{BORDER_SUBTLE, BRAND, SURFACE_800, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY};
@@ -316,7 +316,10 @@ impl Render for FilesTab {
 /// ignored. Dirs toggle; files emit an open event.
 fn file_row(i: usize, row: Row, cx: &mut Context<FilesTab>) -> impl IntoElement {
     let is_dir = row.entry.kind == Kind::Dir;
-    let glyph = if is_dir {
+    // The chevron stays the *expand affordance* (dirs only). Files no longer
+    // need a bullet — the type icon (F2) carries that — so their chevron slot
+    // is blank, keeping every row's indent aligned.
+    let chevron = if is_dir {
         if row.loading {
             "…"
         } else if row.expanded {
@@ -324,10 +327,8 @@ fn file_row(i: usize, row: Row, cx: &mut Context<FilesTab>) -> impl IntoElement 
         } else {
             "▸"
         }
-    } else if row.entry.kind == Kind::Symlink {
-        "↳"
     } else {
-        "·"
+        ""
     };
     let color = if row.entry.ignored {
         TEXT_MUTED
@@ -336,10 +337,19 @@ fn file_row(i: usize, row: Row, cx: &mut Context<FilesTab>) -> impl IntoElement 
     } else {
         TEXT_SECONDARY
     };
+
+    // F2: resolve the type icon (svg() paints a mask tinted by text_color).
+    // An explicit config tint wins; otherwise the icon inherits the row's
+    // colour so it tracks the white-font hierarchy + the W2 ignored dimming.
+    let spec = icon_map::config().resolve(&row.entry, row.expanded);
+    let icon_color = spec.tint.map(|t| rgb(pack(t))).unwrap_or_else(|| rgb(pack(color)));
+    let icon_path = SharedString::from(spec.asset_path());
+
     let rel = row.entry.rel_path.clone();
     let indent = px(8.0 + INDENT * row.depth as f32);
+    let ignored = row.entry.ignored;
 
-    div()
+    let mut el = div()
         .id(("file-row", i))
         .flex()
         .flex_row()
@@ -355,20 +365,36 @@ fn file_row(i: usize, row: Row, cx: &mut Context<FilesTab>) -> impl IntoElement 
         .child(
             div()
                 .w(px(12.0))
+                .flex_none()
                 .text_color(rgb(pack(TEXT_MUTED)))
-                .child(SharedString::from(glyph)),
+                .child(SharedString::from(chevron)),
         )
-        .child(SharedString::from(row.entry.name.clone()))
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| {
-                if is_dir {
-                    this.toggle_dir(rel.clone(), cx);
-                } else {
-                    cx.emit(FileOpenEvent::Open(rel.clone()));
-                }
-            }),
+        .child(
+            svg()
+                .path(icon_path)
+                .size(px(14.0))
+                .flex_none()
+                .text_color(icon_color),
         )
+        .child(SharedString::from(row.entry.name.clone()));
+
+    // W2: with TEXT_MUTED lifted toward white, the ignored/hidden signal can't
+    // ride on colour alone. Carry it by NON-colour means — italic + reduced
+    // opacity — so gitignored rows recede without flattening the hierarchy.
+    if ignored {
+        el = el.italic().opacity(0.6);
+    }
+
+    el.on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| {
+            if is_dir {
+                this.toggle_dir(rel.clone(), cx);
+            } else {
+                cx.emit(FileOpenEvent::Open(rel.clone()));
+            }
+        }),
+    )
 }
 
 #[cfg(test)]
@@ -489,5 +515,59 @@ mod tests {
             0,
             "no workspace → never list a directory"
         );
+    }
+
+    // ── F2/W2: icon + ignored cue render path ────────────────────────────
+    //
+    // A row mix that hits every render branch: an ignored container dir
+    // (`target` → italic+opacity, package icon), a normal dir (folder icon),
+    // and a code file (code icon). The icon mapping itself is unit-tested in
+    // `icon_map`; this drives the *render* — that the new svg() icon column
+    // and the W2 italic/opacity branch paint without panicking. (Icons won't
+    // resolve here — no AssetSource is registered in tests — which is exactly
+    // the missing-asset path we want to prove is non-fatal.)
+    #[gpui::test]
+    fn rows_with_ignored_and_typed_entries_render(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on("workspaces.list_mru", serde_json::json!({ "active_id": "ws-a" }))
+            .on(
+                "workspaces.fs.list_dir",
+                serde_json::json!({ "entries": [
+                    { "name": "target", "kind": "dir", "ignored": true },
+                    { "name": "src", "kind": "dir" },
+                    { "name": "main.rs", "kind": "file" },
+                ]}),
+            );
+        let _guard = fake.clone().install();
+
+        let window = cx.add_window(|_w, cx| FilesTab::new(cx));
+        cx.run_until_parked(); // mounts + renders the rows through file_row
+
+        window
+            .update(cx, |t, _w, _cx| {
+                let root = t.children.get("").expect("root listed");
+                assert_eq!(root.len(), 3);
+                assert!(root.iter().any(|e| e.name == "target" && e.ignored));
+            })
+            .unwrap();
+
+        // The icon config resolves each row's kind as expected (the values the
+        // render path feeds svg() / the W2 branch).
+        let cfg = icon_map::config();
+        let spec = |name: &str, kind: Kind, open: bool| {
+            cfg.resolve(
+                &Entry {
+                    name: name.to_owned(),
+                    kind,
+                    rel_path: name.to_owned(),
+                    ignored: false,
+                },
+                open,
+            )
+            .icon
+        };
+        assert_eq!(spec("target", Kind::Dir, false), "package");
+        assert_eq!(spec("src", Kind::Dir, false), "folder");
+        assert_eq!(spec("main.rs", Kind::File, false), "code");
     }
 }
