@@ -14,6 +14,8 @@
 //! shared `wylde-anchor-actions` crate (Plan §6) — the same rules the graph
 //! overlay and the future bubble layer consume.
 
+pub mod concepts_ipc;
+pub mod concepts_view;
 pub mod editor;
 pub mod ipc;
 pub mod list_view;
@@ -33,9 +35,19 @@ use std::collections::HashSet;
 use wylde_anchor_actions::{connection_edit, ConnectionDraft, UndoStack};
 
 use crate::workspaces_panel::pack;
+use concepts_view::ConceptsView;
 use editor::PromotionDialog;
 use ipc::{AnchorScopeTag, AnchorView, ProposalView};
 use list_view::{ScopeFilter, ViewFilter};
+
+/// Which sub-tab of the Vocabulary tab is showing (TBS concept-system §4.1):
+/// the curated user terms, or the system-discovered concepts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VocabSubTab {
+    #[default]
+    Vocabulary,
+    Concepts,
+}
 
 /// One undoable connection edit: apply `before` to undo, `after` to redo
 /// (the shared `UndoStack` carries the label for the "— undone." toast).
@@ -105,6 +117,12 @@ pub struct VocabularyTab {
     /// One-shot guard: take focus on the first render so the chord works
     /// without the user having to click the tab first.
     focused_once: bool,
+    /// Which sub-tab (Vocabulary terms vs. discovered Concepts) is showing.
+    sub_tab: VocabSubTab,
+    /// The Concepts sub-tab view (lazily relevant; built once).
+    concepts: Entity<ConceptsView>,
+    /// Render the vocabulary list as an indented hierarchy tree (S1.2) vs flat.
+    tree_view: bool,
 }
 
 impl VocabularyTab {
@@ -158,6 +176,9 @@ impl VocabularyTab {
             undo: UndoStack::default(),
             focus: cx.focus_handle(),
             focused_once: false,
+            sub_tab: VocabSubTab::default(),
+            concepts: cx.new(ConceptsView::new),
+            tree_view: false,
         };
         Self::spawn_load(cx);
         tab
@@ -220,6 +241,23 @@ impl VocabularyTab {
             });
         })
         .detach();
+    }
+
+    /// The active sub-tab (test/observability accessor).
+    pub fn sub_tab(&self) -> VocabSubTab {
+        self.sub_tab
+    }
+
+    /// Switch sub-tabs (the switcher buttons call this inline; public so a
+    /// windowed test can drive it without simulating a click).
+    pub fn set_sub_tab(&mut self, sub_tab: VocabSubTab, cx: &mut Context<Self>) {
+        self.sub_tab = sub_tab;
+        cx.notify();
+    }
+
+    /// The Concepts sub-tab child view (test accessor).
+    pub fn concepts_view(&self) -> &Entity<ConceptsView> {
+        &self.concepts
     }
 
     fn find(&self, scope: AnchorScopeTag, identifier: &str) -> Option<&AnchorView> {
@@ -732,6 +770,41 @@ impl Render for VocabularyTab {
             .p_4()
             .font_family(FAMILY_INTER);
 
+        // ── sub-tab switcher (Vocabulary | Concepts) ──────────────────────
+        let sub = self.sub_tab;
+        root = root.child(
+            div()
+                .flex()
+                .flex_row()
+                .gap_2()
+                .child(Self::button(
+                    ("vocab-subtab-vocab", 0),
+                    "Vocabulary",
+                    sub == VocabSubTab::Vocabulary,
+                    cx,
+                    |this, cx| {
+                        this.sub_tab = VocabSubTab::Vocabulary;
+                        cx.notify();
+                    },
+                ))
+                .child(Self::button(
+                    ("vocab-subtab-concepts", 0),
+                    "Concepts",
+                    sub == VocabSubTab::Concepts,
+                    cx,
+                    |this, cx| {
+                        this.sub_tab = VocabSubTab::Concepts;
+                        cx.notify();
+                    },
+                )),
+        );
+
+        // Concepts sub-tab: render the child view and stop (its own header,
+        // search, cards, and graph deep-link live in `ConceptsView`).
+        if self.sub_tab == VocabSubTab::Concepts {
+            return root.child(self.concepts.clone());
+        }
+
         // ── header ──────────────────────────────────────────────────────
         let ws_label = self
             .workspace_id
@@ -787,6 +860,17 @@ impl Render for VocabularyTab {
                     false,
                     cx,
                     |_this, cx| Self::spawn_load(cx),
+                ))
+                // S1.2 — toggle the hierarchical (parent→child indented) view.
+                .child(Self::button(
+                    ("vocab-tree", 0),
+                    if self.tree_view { "Tree" } else { "Flat" },
+                    self.tree_view,
+                    cx,
+                    |this, cx| {
+                        this.tree_view = !this.tree_view;
+                        cx.notify();
+                    },
                 ))
                 // §5.9 undo/redo over connection edits (buttons here; the
                 // global Ctrl+Z binding joins when the bubble layer lands).
@@ -1010,7 +1094,15 @@ impl Render for VocabularyTab {
                     .to_owned(),
             ));
         }
-        for (i, row) in rows.iter().enumerate() {
+        // S1.2: in tree view, reorder into a parent→child hierarchy with an
+        // indent depth; otherwise the flat recency order (depth 0).
+        let display: Vec<(list_view::VocabRow, usize)> = if self.tree_view {
+            list_view::hierarchy_order(&rows)
+        } else {
+            rows.iter().cloned().map(|r| (r, 0usize)).collect()
+        };
+        for (i, (row, depth)) in display.iter().enumerate() {
+            let depth = *depth;
             let a = &row.anchor;
             let is_selected = self
                 .selected
@@ -1046,6 +1138,8 @@ impl Render for VocabularyTab {
                 .flex_col()
                 .px_2()
                 .py_1()
+                // S1.2: indent nested anchors under their parent in tree view.
+                .pl(px(8.0 + depth as f32 * 16.0))
                 .rounded(px(4.0))
                 .bg(rgb(pack(bg)))
                 .cursor_pointer()

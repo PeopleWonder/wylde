@@ -57,6 +57,7 @@ pub const CONCEPTS_UPDATE: &str = "workspaces.concepts.update";
 pub const CONCEPTS_DELETE: &str = "workspaces.concepts.delete";
 pub const CONCEPTS_LIST_UNDER: &str = "workspaces.concepts.list_under";
 pub const CONCEPTS_REVERSE_LOOKUP: &str = "workspaces.concepts.reverse_lookup";
+pub const CONCEPTS_SEARCH: &str = "workspaces.concepts.search";
 
 // ── File I/O — jailed editor/file-tree surface (S1 / IDE plan P0.2) ──────
 pub const FS_READ: &str = "workspaces.fs.read";
@@ -135,6 +136,7 @@ pub const ALL_ACTIONS: &[&str] = &[
     CONCEPTS_DELETE,
     CONCEPTS_LIST_UNDER,
     CONCEPTS_REVERSE_LOOKUP,
+    CONCEPTS_SEARCH,
     // S1 (IDE plan P0.2) — jailed file I/O
     FS_READ,
     FS_WRITE,
@@ -370,6 +372,17 @@ pub fn install() {
          vocabulary it belongs to. Payload: {workspace_id, symbol_id?, file?} \
          (one of symbol_id/file required). Reply: {workspace_id, symbol_id, \
          file, concepts, vocabulary}. Pure store query; no Neo4j.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_SEARCH,
+        |p: Value| async move { crate::concepts::api::handle_search(p).await },
+        "Hybrid concept search (thesis §3.2): nucleo fuzzy + centroid-cosine \
+         (semantic half active once concepts carry centroids). Payload: \
+         {workspace_id, query, limit?}. Reply: {workspace_id, query, results: \
+         [{concept, score, fuzzy, semantic}], count}. Empty query → full set by \
+         label. Semantic embed is skipped (no Ollama round-trip) until a \
+         concept has a centroid.",
         META_MODULE,
     );
 
