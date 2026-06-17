@@ -79,19 +79,36 @@ discovery story. No manifest scan, no registry file.
 4. **Linkage table** — one `Box::new(...)` line in `installed()` in
    `rust/crates/wylde-harness/src/plugins/mod.rs`.
 
+## The bucket ships empty
+
+`Core/Plugins/` is one of the three git-ignored, out-of-tree buckets
+(`Services/`, `Extensions/`, `Core/Plugins/`). Core's tracked tree is
+just-Core, so **no plugin is wired in by default**: `installed()` returns
+an empty vec, Core builds plugin-free, and the default tool catalog
+carries zero `plugin.*` tools. This is what makes the removability
+contract hold for the Plugins bucket — with the bucket empty, Core still
+builds and boots. See `outputs/wylde-out-of-tree-runtime-plan.md`.
+
+Because plugins are **compiled in**, adding one is build-time (the
+four-step wiring above), not a runtime drop-in like a Service or
+Extension. A prebuilt Core never gains a plugin without a rebuild.
+
 ## Hello-world walkthrough
 
-`Core/Plugins/hello_wylde/` is the shipped reference plugin (and the
-authoring template — its `README.md` repeats the steps above). It
-contributes two tools to prove multi-tool registration:
+`Core/Plugins/hello_wylde/` is the reference plugin and authoring
+template (its `README.md` repeats the steps above). It stays **on disk
+under the git-ignored bucket** as the worked example — it is not wired
+into the build by default; perform the four-step install to activate it.
+It contributes two tools to prove multi-tool registration:
 
 - `plugin.hello_wylde.greet` — `{name?: string}` →
   `"Hello, <name>! — from a Wylde core plugin"`;
 - `plugin.hello_wylde.about` — no args → plugin name/version/description.
 
-Try it end-to-end: `cargo test -p wylde-harness --lib plugins` runs the
-host-side tests, including a real `dispatch_tool` round trip through
-the registry, tier gate, and consent bypass to the plugin's `call`.
+Try the host machinery end-to-end: `cargo test -p wylde-harness --lib
+plugins` runs the host-side tests against an in-test fixture plugin,
+including a real `dispatch_tool` round trip through the registry, tier
+gate, and consent bypass to the plugin's `call`.
 
 Authoring checklist distilled from it:
 

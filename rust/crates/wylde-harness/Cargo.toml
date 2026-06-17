@@ -27,13 +27,14 @@ wylde-shared = { path = "../wylde-shared" }
 # workspaces lib, no in-process fallback). When the service is unreachable the
 # chat turn driver degrades to base context (graceful degradation, scope v2 §7.5).
 wylde-workspaces-client = { path = "../wylde-workspaces-client" }
-# Core-plugin host (TX S4). The SDK trait the host registers against,
-# plus one dep line per INSTALLED plugin — the harness is the single
-# crate that links plugin crates (see src/plugins/mod.rs for the full
-# four-step install story). Plugins are compiled into the core binary;
-# this is deliberate, compile-time discovery — not the bridge path.
+# Core-plugin host (TX S4). The SDK trait the host registers against.
+# The harness is the single crate that links plugin crates (see
+# src/plugins/mod.rs for the four-step install story). Plugins are
+# compiled into the core binary — deliberate compile-time discovery, not
+# the bridge path. The `Core/Plugins/` bucket is git-ignored and ships
+# EMPTY, so NO plugin dep line is present by default (Core builds
+# plugin-free); add one line here per plugin you install.
 wylde-plugin-api = { path = "../wylde-plugin-api" }
-wylde-plugin-hello-wylde = { path = "../../../Core/Plugins/hello_wylde" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

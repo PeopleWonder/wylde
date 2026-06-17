@@ -519,13 +519,14 @@ mod tests {
         // voice device triggers only). The former 11 "awaiting-migration"
         // tools (ollama×4, time×2, diff×1, voice transcribe/synthesize×4)
         // are now resource-backed and retired. See docs/wylde-phase6-cutover.md.
-        // TX S4 adds the Core-plugin tools (group "plugins") — advertised in
-        // verb mode by design (no resource equivalent to reach them through);
-        // currently the 2 hello_wylde tools. Installing/removing a plugin
-        // tool moves this pin: 8 verbs + 4 survivors + 2 plugin tools = 14.
+        // The Core-plugin tools (group "plugins") are advertised in verb mode
+        // when installed, but the `Core/Plugins/` bucket ships EMPTY
+        // (out-of-tree runtime foundation), so Core's default catalog carries
+        // ZERO plugin tools: 8 verbs + 4 survivors = 12. Installing a plugin
+        // (the four-step wiring) moves this pin up by its tool count.
         assert_eq!(
             after.len(),
-            14,
+            12,
             "verb-mode catalog size changed: {:?}",
             after
                 .iter()
@@ -566,8 +567,8 @@ mod tests {
                 "{retired} should be retired: {names:?}"
             );
         }
-        // Only the verbs, the 4 imperative voice device tools, and the
-        // Core-plugin tools (TX S4) survive.
+        // Only the verbs and the 4 imperative voice device tools survive.
+        // (No Core-plugin tools: the `Core/Plugins/` bucket ships empty.)
         for survivor in [
             "wylde_search",
             "wylde_execute",
@@ -575,8 +576,6 @@ mod tests {
             "voice.mic.stop",
             "voice.wakeword.start",
             "voice.wakeword.stop",
-            "plugin.hello_wylde.greet",
-            "plugin.hello_wylde.about",
         ] {
             assert!(
                 names.contains(&survivor.to_owned()),

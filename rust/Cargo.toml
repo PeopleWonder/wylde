@@ -36,16 +36,18 @@ members = [
     # `lsp.*` pipe verbs. Taxonomy-clean: the editor works without it; it
     # degrades to plain text + tree-sitter when absent.
     "crates/wylde-lsp",
-    # Core-plugin SDK + the installed plugins (taxonomy reorg TX S4,
-    # 2026-06-11). PLUGINS are add-ons FOR the core, compiled into it —
+    # Core-plugin SDK. PLUGINS are add-ons FOR the core, compiled into it —
     # distinct from Extensions (leave the ecosystem, bridge/Gateway) and
-    # Services (sibling suites). Plugin crates live in the Core
-    # filesystem by design — `Core/Plugins/<name>/` — and join the
-    # workspace via these relative member paths. Installing a plugin =
-    # folder + member line here + dep line in wylde-harness/Cargo.toml +
-    # one Box::new in wylde-harness/src/plugins/mod.rs.
+    # Services (sibling suites). The `Core/Plugins/` bucket is git-ignored
+    # and ships EMPTY (out-of-tree runtime foundation), so NO plugin is a
+    # workspace member by default — Core builds plugin-free, which is what
+    # makes the removability contract hold for the Plugins bucket too.
+    # Installing a plugin is opt-in and by hand: drop the crate under
+    # `Core/Plugins/<name>/`, then re-add the four wiring lines (member line
+    # here + dep line in wylde-harness/Cargo.toml + one Box::new in
+    # wylde-harness/src/plugins/mod.rs). The `hello_wylde` seed crate stays
+    # on disk under `Core/Plugins/` (git-ignored) as the worked example.
     "crates/wylde-plugin-api",
-    "../Core/Plugins/hello_wylde",
     # `crates/wylde-memgraph` removed 2026-05-25 — the memgraph client is
     # an in-process submodule of `wylde-harness/src/memory/memgraph/` per
     # the one-crate harness convention; the bundled Neo4j JVM stays
