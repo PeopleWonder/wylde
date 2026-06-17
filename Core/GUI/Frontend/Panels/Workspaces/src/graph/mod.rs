@@ -1114,6 +1114,23 @@ fn append_boundaries(
 }
 
 impl GraphView {
+    /// Recenter + re-fit the camera to the current graph (visual-polish G5).
+    ///
+    /// Cancels any in-flight camera tween, resets the pan to the origin, and
+    /// clears the one-time `fitted` latch so the next paint recomputes the fit
+    /// zoom — exactly the path first-load uses. This is the "recenter" escape
+    /// hatch: after the user has panned/zoomed away, or after clusters fold /
+    /// expand, the overlay **Fit** button and the `F` / `Ctrl+0` keys bring
+    /// the whole graph back into frame.
+    pub(in crate::graph) fn fit_to_view(&mut self, cx: &mut Context<Self>) {
+        self.camera_transition = None;
+        self.camera.pan_x = 0.0;
+        self.camera.pan_y = 0.0;
+        self.fitted = false; // next paint re-runs the fit-zoom + recenter
+        self.push_viewport();
+        cx.notify();
+    }
+
     /// The low-level paint canvas. `prepaint` captures the canvas bounds (for
     /// hit-testing), applies the one-time camera fit, and builds the
     /// [`RenderOutput`]; `paint` translates it into gpui draw calls.
@@ -1236,15 +1253,31 @@ impl GraphView {
         );
         col = col.child(overlay_text(status, font_size::XS, weight::SEMIBOLD));
         let hint = if self.navigator.is_scoped() {
-            "Scroll — zoom · Esc — zoom out · Ctrl+Shift+L — cycle layout · V — vocabulary"
+            "Scroll — zoom · Esc — zoom out · Ctrl+Shift+L — cycle layout · V — vocabulary · F — fit"
         } else {
-            "Scroll — zoom into clusters · Ctrl+Shift+L — cycle layout · V — vocabulary"
+            "Scroll — zoom into clusters · Ctrl+Shift+L — cycle layout · V — vocabulary · F — fit"
         };
         col = col.child(overlay_text(
             hint.to_owned(),
             font_size::MICRO,
             weight::REGULAR,
         ));
+
+        // Fit/recenter control (G5): the clickable counterpart to the `F` key,
+        // for users who'd rather not hunt for a shortcut. Brings the whole
+        // graph back into frame after panning/zooming or a cluster fold.
+        col = col.child(
+            overlay_text("⤢ Fit".to_owned(), font_size::MICRO, weight::SEMIBOLD)
+                .id("workspaces-graph-fit")
+                .cursor_pointer()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this: &mut GraphView, _ev: &MouseDownEvent, _w, cx| {
+                        cx.stop_propagation();
+                        this.fit_to_view(cx);
+                    }),
+                ),
+        );
 
         if self.cluster_view.is_active() && !self.navigator.is_scoped() {
             let folded = self.cluster_view.folded_count();
@@ -2103,5 +2136,44 @@ mod tests {
             fake.count_for("workspaces.list_mru") >= 1,
             "retry actually re-dispatched the load over the wire"
         );
+    }
+
+    // ── Fit-to-view / recenter control (visual-polish G5) ────────────────
+    //
+    // The overlay Fit button and the F / Ctrl+0 keys both call fit_to_view.
+    // This pins its EFFECT: a panned-away, already-fitted camera is recentred
+    // (pan → 0) and the one-time fit latch is cleared so the next paint
+    // re-fits the zoom. Driven in a window because fit_to_view notifies +
+    // pushes the cull region.
+    #[gpui::test]
+    fn fit_to_view_recenters_and_rearms_the_fit(cx: &mut TestAppContext) {
+        let _guard = ScriptedBackend::new().install();
+
+        let g = WorkspaceGraph {
+            nodes: vec![node("sym::foo", "src/foo.rs"), node("sym::bar", "src/bar.rs")],
+            edges: vec![],
+            clusters: vec![],
+        };
+        let window = cx.add_window(|_w, _cx| {
+            let mut v = view_with_graph(g);
+            // Simulate a user who has panned away after the first-load fit.
+            v.fitted = true;
+            v.camera.pan_x = 250.0;
+            v.camera.pan_y = -130.0;
+            v
+        });
+        cx.run_until_parked();
+
+        // Assert synchronously in the same update: a later paint would re-latch
+        // `fitted` (that's the whole point — the next frame re-fits), so we
+        // observe the effect before the canvas repaints.
+        window
+            .update(cx, |gv, _w, cx| {
+                gv.fit_to_view(cx);
+                assert_eq!(gv.camera.pan_x, 0.0, "pan recentred to origin x");
+                assert_eq!(gv.camera.pan_y, 0.0, "pan recentred to origin y");
+                assert!(!gv.fitted, "fit latch cleared so next paint re-fits zoom");
+            })
+            .unwrap();
     }
 }

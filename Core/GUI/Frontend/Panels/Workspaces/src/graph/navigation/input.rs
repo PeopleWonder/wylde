@@ -37,6 +37,7 @@ const DRAG_THRESHOLD: f32 = 3.0;
 impl GraphView {
     /// `Ctrl+Shift+L` → cycle force → hierarchical → grid → force.
     /// `V` → cycle the vocabulary layer (code → overlay → vocabulary).
+    /// `F` / `Ctrl+0` → recenter + re-fit the camera to the graph (G5).
     /// `Esc` → leave the space-map scope (when scoped).
     pub(crate) fn on_key(
         &mut self,
@@ -48,6 +49,16 @@ impl GraphView {
         if ks.key.as_str() == "l" && ks.modifiers.control && ks.modifiers.shift {
             let next = self.current_layout.next();
             self.set_layout(next, cx);
+        }
+        // `F` (unmodified) or `Ctrl+0` — recenter + re-fit (visual-polish G5).
+        // `F` is bare so it can't collide with the Ctrl+Shift chords.
+        if (ks.key.as_str() == "f"
+            && !ks.modifiers.control
+            && !ks.modifiers.shift
+            && !ks.modifiers.alt)
+            || (ks.key.as_str() == "0" && ks.modifiers.control)
+        {
+            self.fit_to_view(cx);
         }
         // `V` — cycle the vocabulary layer (Slice N: CodeGraph → Overlay →
         // VocabularyGraph). Unmodified so it can't collide with the chords.
