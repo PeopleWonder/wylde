@@ -64,6 +64,9 @@ pub const CONCEPTS_PROPOSE: &str = "workspaces.concepts.propose";
 pub const CONCEPTS_LIST_PROPOSALS: &str = "workspaces.concepts.list_proposals";
 pub const CONCEPTS_ACCEPT_PROPOSAL: &str = "workspaces.concepts.accept_proposal";
 pub const CONCEPTS_REJECT_PROPOSAL: &str = "workspaces.concepts.reject_proposal";
+// Phase 3 — concept-driven retrieval (routing deferred)
+pub const CONCEPTS_LENS: &str = "workspaces.concepts.lens";
+pub const CONCEPTS_RETRIEVE: &str = "workspaces.concepts.retrieve";
 
 // ── File I/O — jailed editor/file-tree surface (S1 / IDE plan P0.2) ──────
 pub const FS_READ: &str = "workspaces.fs.read";
@@ -148,6 +151,8 @@ pub const ALL_ACTIONS: &[&str] = &[
     CONCEPTS_LIST_PROPOSALS,
     CONCEPTS_ACCEPT_PROPOSAL,
     CONCEPTS_REJECT_PROPOSAL,
+    CONCEPTS_LENS,
+    CONCEPTS_RETRIEVE,
     // S1 (IDE plan P0.2) — jailed file I/O
     FS_READ,
     FS_WRITE,
@@ -435,6 +440,26 @@ pub fn install() {
         |p: Value| async move { crate::concepts::api::handle_reject_proposal(p).await },
         "Dismiss a pending concept proposal + record a 30-day suppression. \
          Payload: {workspace_id, id}. Reply: {ok, rejected, id}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_LENS,
+        |p: Value| async move { crate::concepts::api::handle_lens(p).await },
+        "Concept-as-scoped-lens (thesis §3.1): a concept's members intersected \
+         with a scope region (path subtree). Payload: {workspace_id, id, scope?}. \
+         Reply: {concept_id, scope, files, count}. Composes with workspace \
+         scoping; pure store query.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_RETRIEVE,
+        |p: Value| async move { crate::concepts::api::handle_retrieve(p).await },
+        "Concept-driven retrieval (thesis §3.3): the concept as RAG unit — \
+         representative member chunks ranked by cosine-to-centroid + MMR, \
+         optionally lens-scoped. Payload: {workspace_id, id, scope?, k?=5}. \
+         Reply: {concept_id, scope, snippets:[{path,start_line,end_line,content,\
+         score}], count}. The retrieval MECHANISM; query→concept ROUTING is the \
+         deferred §3.4 phase.",
         META_MODULE,
     );
 

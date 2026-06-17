@@ -349,6 +349,71 @@ pub async fn handle_reverse_lookup(payload: Value) -> Reply {
     }))
 }
 
+// ── Concept-driven retrieval (Phase 3; routing deferred) ─────────────────
+
+/// `workspaces.concepts.lens` — a concept seen "within" a scope (thesis §3.1):
+/// `lens(concept, scope) = members ∩ region(scope)`. Payload: {workspace_id, id,
+/// scope?}. Reply: {concept_id, scope, files, count}. Pure store query.
+pub async fn handle_lens(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(id) = require_str(&payload, "id") else {
+        return Reply::err_msg("bad_request", "id is required");
+    };
+    let scope = require_str(&payload, "scope");
+    let Some(concept) = store::get(&ws, &id) else {
+        return Reply::err_msg("not_found", format!("no concept {id:?} in this workspace"));
+    };
+    let files: Vec<&String> = super::lens::lens(&concept.member_files, scope.as_deref());
+    Reply::ok(json!({
+        "concept_id": id,
+        "scope": scope,
+        "count": files.len(),
+        "files": files,
+    }))
+}
+
+/// `workspaces.concepts.retrieve` — concept-driven retrieval (thesis §3.3): the
+/// concept as the RAG unit. Selects representative member chunks (cosine to the
+/// concept centroid, MMR-diversified), optionally scoped by a §3.1 lens.
+/// Payload: {workspace_id, id, scope?, k?=5}. Reply: {concept_id, scope,
+/// snippets:[{path,start_line,end_line,content,score}], count}.
+///
+/// This is the retrieval *mechanism*; query→concept *routing* (which concepts
+/// to activate per turn) is the explicitly-deferred §3.4 phase.
+pub async fn handle_retrieve(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(id) = require_str(&payload, "id") else {
+        return Reply::err_msg("bad_request", "id is required");
+    };
+    let scope = require_str(&payload, "scope");
+    let k = payload
+        .get("k")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .filter(|n| *n > 0)
+        .unwrap_or(5);
+    let Some(concept) = store::get(&ws, &id) else {
+        return Reply::err_msg("not_found", format!("no concept {id:?} in this workspace"));
+    };
+    let allowed: std::collections::HashSet<String> = super::lens::lens(&concept.member_files, scope.as_deref())
+        .into_iter()
+        .cloned()
+        .collect();
+    let chunks = crate::rag::indexer::store::load_chunks(&ws);
+    let snippets =
+        super::retrieve::select_member_chunks(concept.centroid.as_deref(), &chunks, &allowed, k);
+    Reply::ok(json!({
+        "concept_id": id,
+        "scope": scope,
+        "count": snippets.len(),
+        "snippets": snippets,
+    }))
+}
+
 // ── Concept curation loop (S2.3) ─────────────────────────────────────────
 
 /// `workspaces.concepts.propose` — queue an AI-proposed concept for review
@@ -627,6 +692,58 @@ mod tests {
         // Re-proposing p2 inside the window is suppressed.
         let re = handle_propose(json!({ "workspace_id": ws, "id": "p2", "label": "P2" })).await;
         assert_eq!(re.data["outcome"], "suppressed");
+    }
+
+    #[tokio::test]
+    async fn lens_intersects_members_with_scope() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-lens-000";
+        let mut c = Concept::new("dir:services", "Services", "d", ConceptSource::DirectoryCluster);
+        c.member_files = vec![
+            "services/vpn/a.rs".into(),
+            "services/auth/b.rs".into(),
+        ];
+        store::create(ws, c).unwrap();
+        let all = handle_lens(json!({ "workspace_id": ws, "id": "dir:services" })).await;
+        assert_eq!(all.data["count"], 2);
+        let scoped =
+            handle_lens(json!({ "workspace_id": ws, "id": "dir:services", "scope": "services/vpn" }))
+                .await;
+        assert_eq!(scoped.data["count"], 1);
+        assert_eq!(scoped.data["files"][0], "services/vpn/a.rs");
+    }
+
+    #[tokio::test]
+    async fn retrieve_selects_member_chunks_by_centroid() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-ret-0000";
+        let mut c = Concept::new("sem:0000", "Theme", "d", ConceptSource::Embedding);
+        c.member_files = vec!["src/x.rs".into()];
+        c.centroid = Some(vec![1.0, 0.0]);
+        store::create(ws, c).unwrap();
+        // Two chunks in the member file; one aligned to the centroid.
+        let chunks = vec![
+            idx_chunk("x0", "src/x.rs", vec![0.0, 1.0]),
+            idx_chunk("x1", "src/x.rs", vec![1.0, 0.0]),
+        ];
+        crate::rag::indexer::store::save_chunks(ws, &chunks).unwrap();
+        let r = handle_retrieve(json!({ "workspace_id": ws, "id": "sem:0000", "k": 2 })).await;
+        assert!(r.ok);
+        assert_eq!(r.data["count"], 2);
+        // Centroid-aligned chunk ranks first.
+        assert_eq!(r.data["snippets"][0]["path"], "src/x.rs");
+        let top = r.data["snippets"][0]["score"].as_f64().unwrap();
+        let bot = r.data["snippets"][1]["score"].as_f64().unwrap();
+        assert!(top >= bot);
+    }
+
+    #[tokio::test]
+    async fn retrieve_unknown_concept_is_not_found() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-ret-nf0";
+        let r = handle_retrieve(json!({ "workspace_id": ws, "id": "ghost" })).await;
+        assert!(!r.ok);
+        assert_eq!(r.error.unwrap().code, "not_found");
     }
 
     #[tokio::test]
