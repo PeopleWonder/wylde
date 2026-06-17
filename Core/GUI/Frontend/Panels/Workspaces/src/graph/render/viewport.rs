@@ -106,9 +106,10 @@ impl Viewport {
         zx.min(zy).clamp(MIN_ZOOM, MAX_ZOOM)
     }
 
-    /// Placeholder visible-region calc (C-navigation fills in real culling /
-    /// LOD). Returns the model-space rect currently on screen as
-    /// `(min_x, min_y, max_x, max_y)`.
+    /// The model-space rect currently on screen as `(min_x, min_y, max_x,
+    /// max_y)` — the inverse-projected canvas box. The renderer (G2) culls
+    /// nodes/edges against this so per-frame cost tracks the *visible* count,
+    /// not the total.
     pub fn visible_model_rect(&self) -> (f32, f32, f32, f32) {
         let inv = if self.camera.zoom.abs() < f32::EPSILON {
             1.0
@@ -121,6 +122,35 @@ impl Viewport {
         let my = -self.camera.pan_y * inv;
         (mx - half_w, my - half_h, mx + half_w, my + half_h)
     }
+
+    /// [`visible_model_rect`](Self::visible_model_rect) grown by `margin_frac`
+    /// of its half-extent on every side. Culling uses the grown rect so a node
+    /// just past the edge (or an edge whose endpoint is) is kept — avoids
+    /// pop-in while panning, at the cost of drawing a thin border ring of
+    /// off-screen geometry.
+    pub fn visible_model_rect_expanded(&self, margin_frac: f32) -> (f32, f32, f32, f32) {
+        let (min_x, min_y, max_x, max_y) = self.visible_model_rect();
+        let mx = (max_x - min_x) * 0.5 * margin_frac;
+        let my = (max_y - min_y) * 0.5 * margin_frac;
+        (min_x - mx, min_y - my, max_x + mx, max_y + my)
+    }
+}
+
+/// Whether two axis-aligned rects (`min_x, min_y, max_x, max_y`) overlap.
+/// Edge culling uses it: an edge's endpoint-bbox that doesn't intersect the
+/// visible rect means the whole segment is off-screen and can be skipped —
+/// and because a segment that *crosses* the rect always has a bbox that
+/// overlaps it, this never drops a visible edge (only a cheap superset is
+/// kept). Used by `render_2d`.
+#[inline]
+pub fn rects_overlap(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+    a.0 <= b.2 && a.2 >= b.0 && a.1 <= b.3 && a.3 >= b.1
+}
+
+/// Whether a point lies inside a rect (`min_x, min_y, max_x, max_y`).
+#[inline]
+pub fn rect_contains(r: (f32, f32, f32, f32), x: f32, y: f32) -> bool {
+    x >= r.0 && x <= r.2 && y >= r.1 && y <= r.3
 }
 
 #[cfg(test)]
@@ -191,6 +221,36 @@ mod tests {
         let back = v.screen_to_model(sx, sy);
         assert!((back.x - p.x).abs() < 1e-3 && (back.y - p.y).abs() < 1e-3);
         assert_eq!(back.z, 0.0);
+    }
+
+    #[test]
+    fn expanded_rect_grows_symmetrically() {
+        let v = vp(1.0); // 200×100, no pan/zoom → rect (-100,-50,100,50)
+        let base = v.visible_model_rect();
+        assert_eq!(base, (-100.0, -50.0, 100.0, 50.0));
+        // +20% of half-extent: x half-extent 100 → +20 each side, y 50 → +10.
+        let grown = v.visible_model_rect_expanded(0.2);
+        assert!((grown.0 - -120.0).abs() < 1e-3);
+        assert!((grown.1 - -60.0).abs() < 1e-3);
+        assert!((grown.2 - 120.0).abs() < 1e-3);
+        assert!((grown.3 - 60.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn rect_overlap_and_contains() {
+        let r = (0.0, 0.0, 10.0, 10.0);
+        assert!(rect_contains(r, 5.0, 5.0));
+        assert!(!rect_contains(r, 11.0, 5.0));
+        // Overlapping rects.
+        assert!(rects_overlap(r, (5.0, 5.0, 20.0, 20.0)));
+        // Touching at an edge counts as overlap (inclusive bounds).
+        assert!(rects_overlap(r, (10.0, 0.0, 12.0, 5.0)));
+        // Fully disjoint.
+        assert!(!rects_overlap(r, (11.0, 11.0, 20.0, 20.0)));
+        // A segment crossing the rect has a bbox that overlaps it — the
+        // property edge-culling relies on (no visible edge dropped).
+        let crossing_bbox = (-5.0, 5.0, 15.0, 5.0); // horizontal line through r
+        assert!(rects_overlap(crossing_bbox, r));
     }
 
     #[test]

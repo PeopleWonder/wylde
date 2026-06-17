@@ -31,6 +31,7 @@ use std::collections::HashMap;
 
 use crate::graph::model::{Node, NodeKind};
 
+use super::viewport::{rect_contains, rects_overlap};
 use super::{Color, EdgeDraw, RenderOutput, Renderer, Scene, SphereDraw, SphereLayer, Viewport};
 
 /// Radial-gradient approximation geometry — the relative radii of the core and
@@ -38,6 +39,17 @@ use super::{Color, EdgeDraw, RenderOutput, Renderer, Scene, SphereDraw, SphereLa
 /// shape constants (how the fake gradient is built), not Visual Style values.
 const CORE_RADIUS_FRACTION: f32 = 0.82;
 const SPECULAR_RADIUS_FRACTION: f32 = 0.36;
+
+/// Cull margin (G2): the visible model rect is grown by this fraction of its
+/// half-extent before culling, so geometry just off-screen is still drawn and
+/// doesn't pop in while panning.
+const CULL_MARGIN_FRAC: f32 = 0.2;
+
+/// Level-of-detail (G2): below this zoom a node is drawn as a single flat disc
+/// instead of the 3-layer rim/core/specular sphere. The shading is invisible
+/// at that scale and the layer count is the dominant per-sphere draw cost, so
+/// dropping to one layer caps the work where the detail wouldn't read anyway.
+const LOD_FLAT_DISC_ZOOM: f32 = 0.18;
 
 /// The v1 2D renderer. Stateless today; holds no caches so a frame is a pure
 /// function of `(Scene, Viewport)`. (A future renderer may cache a quadtree
@@ -65,6 +77,12 @@ impl Renderer for Renderer2d {
         // become exit stubs appended by the view (see `Scene::scope`).
         let in_scope = |id: &str| scene.scope.is_none_or(|m| m.contains(id));
 
+        // Viewport culling (G2): everything is tested in model space against
+        // the on-screen rect (grown by a margin) so per-frame work tracks the
+        // *visible* count, not the 10k/43k total.
+        let view_rect = vp.visible_model_rect_expanded(CULL_MARGIN_FRAC);
+        let flat_lod = vp.camera.zoom < LOD_FLAT_DISC_ZOOM;
+
         // ── Edges first, so spheres draw on top ─────────────────────────
         let mut edges: Vec<EdgeDraw> = Vec::new();
         for e in &scene.graph.edges {
@@ -74,6 +92,14 @@ impl Renderer for Renderer2d {
             let (Some(a), Some(b)) = (scene.layout.get(&e.src), scene.layout.get(&e.dst)) else {
                 continue; // an endpoint we have no position for — skip.
             };
+            // Cull only when the *whole* segment is off-screen: an edge whose
+            // endpoint-bbox doesn't touch the view rect can't be visible. A
+            // segment that straddles or crosses the rect always has an
+            // overlapping bbox, so a visible edge is never dropped.
+            let seg_bbox = (a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y));
+            if !rects_overlap(seg_bbox, view_rect) {
+                continue;
+            }
             let (x0, y0) = vp.model_to_screen(a);
             let (x1, y1) = vp.model_to_screen(b);
 
@@ -112,6 +138,11 @@ impl Renderer for Renderer2d {
             let Some(pos) = scene.layout.get(&node.id) else {
                 continue;
             };
+            // Cull off-screen spheres (G2). The margin already covers a node
+            // whose centre is just outside but whose radius pokes in.
+            if !rect_contains(view_rect, pos.x, pos.y) {
+                continue;
+            }
             let (cx, cy) = vp.model_to_screen(pos);
 
             let degree = degrees.get(node.id.as_str()).copied().unwrap_or(0);
@@ -119,31 +150,42 @@ impl Renderer for Renderer2d {
             let radius = (diameter * 0.5 * vp.camera.zoom).max(1.0);
 
             let base = node_base_color(theme, node, dark);
-            let rim = base.scale_lightness(rim_factor);
 
-            let layers = vec![
-                // Rim — full disc, darkened.
-                SphereLayer {
-                    color: rim,
-                    dx: 0.0,
-                    dy: 0.0,
-                    radius,
-                },
-                // Core — full-strength colour, slightly inset.
-                SphereLayer {
+            let layers = if flat_lod {
+                // LOD (G2): at very low zoom the rim falloff + offset specular
+                // are sub-pixel — draw one flat disc instead of three layers.
+                vec![SphereLayer {
                     color: base,
                     dx: 0.0,
                     dy: 0.0,
-                    radius: radius * CORE_RADIUS_FRACTION,
-                },
-                // Specular — bright highlight offset toward the light.
-                SphereLayer {
-                    color: highlight.with_alpha(specular_alpha),
-                    dx: hl.x * radius,
-                    dy: hl.y * radius,
-                    radius: radius * SPECULAR_RADIUS_FRACTION,
-                },
-            ];
+                    radius,
+                }]
+            } else {
+                let rim = base.scale_lightness(rim_factor);
+                vec![
+                    // Rim — full disc, darkened.
+                    SphereLayer {
+                        color: rim,
+                        dx: 0.0,
+                        dy: 0.0,
+                        radius,
+                    },
+                    // Core — full-strength colour, slightly inset.
+                    SphereLayer {
+                        color: base,
+                        dx: 0.0,
+                        dy: 0.0,
+                        radius: radius * CORE_RADIUS_FRACTION,
+                    },
+                    // Specular — bright highlight offset toward the light.
+                    SphereLayer {
+                        color: highlight.with_alpha(specular_alpha),
+                        dx: hl.x * radius,
+                        dy: hl.y * radius,
+                        radius: radius * SPECULAR_RADIUS_FRACTION,
+                    },
+                ]
+            };
 
             spheres.push(SphereDraw {
                 id: node.id.clone(),
@@ -476,6 +518,106 @@ mod tests {
         let out = Renderer2d::new().frame(&scene, &viewport());
         assert!(out.edges.is_empty(), "edge to unplaced node dropped");
         assert_eq!(out.spheres.len(), 1);
+    }
+
+    #[test]
+    fn offscreen_node_is_culled_but_straddling_edge_survives() {
+        use crate::graph::model::Layout;
+        use std::collections::HashMap;
+        // "near" at the origin (visible), "far" way off-screen (culled).
+        let g = WorkspaceGraph {
+            nodes: vec![
+                node("near", NodeKind::Function, "src/a.rs"),
+                node("far", NodeKind::Function, "src/b.rs"),
+            ],
+            edges: vec![edge("near", "far", RelType::Calls)],
+            clusters: vec![],
+        };
+        let mut pos = HashMap::new();
+        pos.insert("near".to_owned(), Position { x: 0.0, y: 0.0, z: 0.0 });
+        pos.insert(
+            "far".to_owned(),
+            Position {
+                x: 100_000.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
+        let layout = Layout::from_positions(pos);
+        let theme = Theme::load_v1().unwrap();
+        let scene = Scene {
+            graph: &g,
+            layout: &layout,
+            theme: &theme,
+            mode: ViewMode::CodeGraph,
+            scope: None,
+        };
+        // Default viewport (800×600, zoom 1) sees roughly ±480/±360 model px.
+        let out = Renderer2d::new().frame(&scene, &viewport());
+        let ids: Vec<&str> = out.spheres.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["near"], "far sphere culled, near kept");
+        // The edge straddles the viewport (one endpoint inside) — its bbox
+        // overlaps the view rect, so it is NOT dropped.
+        assert!(!out.edges.is_empty(), "straddling edge kept");
+    }
+
+    #[test]
+    fn fully_offscreen_edge_is_culled() {
+        use crate::graph::model::Layout;
+        use std::collections::HashMap;
+        let g = WorkspaceGraph {
+            nodes: vec![
+                node("a", NodeKind::Function, "src/a.rs"),
+                node("b", NodeKind::Function, "src/b.rs"),
+            ],
+            edges: vec![edge("a", "b", RelType::Calls)],
+            clusters: vec![],
+        };
+        let mut pos = HashMap::new();
+        // Both endpoints far off to the same side → segment never crosses view.
+        pos.insert(
+            "a".to_owned(),
+            Position { x: 50_000.0, y: 0.0, z: 0.0 },
+        );
+        pos.insert(
+            "b".to_owned(),
+            Position { x: 60_000.0, y: 0.0, z: 0.0 },
+        );
+        let layout = Layout::from_positions(pos);
+        let theme = Theme::load_v1().unwrap();
+        let scene = Scene {
+            graph: &g,
+            layout: &layout,
+            theme: &theme,
+            mode: ViewMode::CodeGraph,
+            scope: None,
+        };
+        let out = Renderer2d::new().frame(&scene, &viewport());
+        assert!(out.spheres.is_empty(), "both spheres off-screen, culled");
+        assert!(out.edges.is_empty(), "off-screen edge culled");
+    }
+
+    #[test]
+    fn low_zoom_collapses_spheres_to_one_flat_layer() {
+        let g = sample();
+        let layout = g.scaffold_layout(); // tiny spiral near origin
+        let theme = Theme::load_v1().unwrap();
+        let scene = Scene {
+            graph: &g,
+            layout: &layout,
+            theme: &theme,
+            mode: ViewMode::CodeGraph,
+            scope: None,
+        };
+        // Zoom well below the LOD threshold; the wide view keeps every node
+        // on-screen so we're testing LOD, not culling.
+        let mut vp = viewport();
+        vp.camera.zoom = 0.1;
+        let out = Renderer2d::new().frame(&scene, &vp);
+        assert_eq!(out.spheres.len(), 4, "all nodes still on-screen at low zoom");
+        for s in &out.spheres {
+            assert_eq!(s.layers.len(), 1, "flat-disc LOD = single layer");
+        }
     }
 
     #[test]
