@@ -16,6 +16,32 @@ pub fn gravity(y: f32, y_target: f32, k: f32, max: f32) -> f32 {
     (k * (y_target - y)).clamp(-max, max)
 }
 
+/// **Radial-by-depth attraction** toward a ring of radius `r_target` centred at
+/// the origin — the center-anchor structural force (viz-fix; replaces the y-only
+/// [`gravity`] in the default layout).
+///
+/// Returns the 2D force `(fx, fy)` pulling `(x, y)` toward its ring along the
+/// radial direction: `F = k · (r_target − r)` projected onto the unit radius
+/// vector `(x, y)/r`, clamped to `±max` (the same bounded-spring rationale as
+/// `gravity`). Depth-0 roots (`r_target == 0`) are pulled to the centre; deeper
+/// nodes fan out in concentric rings. Because the target is anchored to a
+/// **fixed** origin, every node — including a disconnected island, which is
+/// depth-0 and so targets `r = 0` — is tethered to the centre and can never be
+/// flung off-screen by repulsion.
+///
+/// At the origin (`r ≈ 0`) the radial direction is undefined, so the force is
+/// zero — repulsion nudges a coincident node off-centre first, then the radial
+/// pull engages.
+#[inline]
+pub fn radial(x: f32, y: f32, r_target: f32, k: f32, max: f32) -> (f32, f32) {
+    let r = (x * x + y * y).sqrt();
+    if r < 1e-3 {
+        return (0.0, 0.0);
+    }
+    let mag = (k * (r_target - r)).clamp(-max, max);
+    (x / r * mag, y / r * mag)
+}
+
 /// **Coulomb repulsion** between two bodies: `F = k / d²` directed from
 /// `other` toward `self` (push apart). Returns the force on the *self* body.
 ///
@@ -77,6 +103,33 @@ mod tests {
         // Bounded: a huge offset is clamped to ±max, not k·offset.
         assert_eq!(gravity(0.0, 1_000_000.0, 0.03, 4.0), 4.0);
         assert_eq!(gravity(1_000_000.0, 0.0, 0.03, 4.0), -4.0);
+    }
+
+    #[test]
+    fn radial_pulls_toward_its_ring_and_is_bounded() {
+        // Node inside its ring (r=50 < r_target=120) → pushed outward (+x).
+        let (fx, fy) = radial(50.0, 0.0, 120.0, 0.05, 50.0);
+        assert!(fx > 0.0 && fy.abs() < 1e-6, "inside the ring → outward");
+        // Node outside its ring (r=300 > r_target=120) → pulled inward (−x).
+        let (fx, _) = radial(300.0, 0.0, 120.0, 0.05, 50.0);
+        assert!(fx < 0.0, "outside the ring → inward");
+        // A depth-0 root (r_target 0) is always pulled toward the centre.
+        let (fx, fy) = radial(80.0, 60.0, 0.0, 0.05, 50.0);
+        assert!(fx < 0.0 && fy < 0.0, "root pulled toward origin");
+        // Bounded: a huge offset clamps to ±max along the radial direction.
+        let (fx, _) = radial(1_000_000.0, 0.0, 0.0, 0.05, 4.0);
+        assert!((fx + 4.0).abs() < 1e-4, "clamped to −max inward, got {fx}");
+        // Direction is purely radial (force is parallel to position vector).
+        let (fx, fy) = radial(30.0, 40.0, 200.0, 0.05, 50.0);
+        // (fx,fy) ∝ (30,40) → fx/fy == 30/40.
+        assert!((fx / fy - 30.0 / 40.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn radial_is_zero_at_the_origin() {
+        // Undefined direction at r≈0 → no force (avoids NaN/inf).
+        let (fx, fy) = radial(0.0, 0.0, 120.0, 0.05, 50.0);
+        assert_eq!((fx, fy), (0.0, 0.0));
     }
 
     #[test]

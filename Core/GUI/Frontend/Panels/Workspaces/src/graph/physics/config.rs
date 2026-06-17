@@ -50,11 +50,50 @@ pub struct PhysicsConfig {
     /// (bounded by construction, unlike a 1/d² law); the clamp is a high safety
     /// rail, kept well above the natural restoring force so it never turns the
     /// spring into a force-saturated limit cycle.
+    ///
+    /// Only applied when [`Self::use_radial`] is `false` (the legacy banded
+    /// layout). In the default center-anchor layout the [`Self::radial_strength`]
+    /// force replaces it.
     pub gravity_strength: f32,
-    /// Safety cap on the per-frame gravity force magnitude. High by design (see
-    /// `gravity_strength`): a clamp near the working force range would make the
-    /// y-spring oscillate instead of settle.
+    /// Safety cap on the per-frame gravity / radial force magnitude. High by
+    /// design (see `gravity_strength`): a clamp near the working force range
+    /// would make the restoring spring oscillate instead of settle.
     pub max_gravity_force: f32,
+
+    // ── Center-anchor layout (viz-fix: centre-of-mass + radial-by-depth) ──
+    /// **Centre-of-mass centering** (d3 `forceCenter` style). Each frame the
+    /// mean position of the active, non-pinned nodes is computed and a uniform
+    /// force `−center_strength · mean` is applied to every such node, pinning
+    /// the whole graph's centroid at the origin and killing the global drift
+    /// the old y-only model suffered (nothing constrained x). It is a *uniform
+    /// translation* — it never changes nodes' relative positions, so it can't
+    /// fight the structural forces; it only stops the cloud from wandering.
+    /// `0.0` disables it. One mean pass + one apply pass per frame — O(N), no
+    /// allocation.
+    pub center_strength: f32,
+    /// **Radial-by-depth attraction**. When [`Self::use_radial`] is `true`
+    /// (default), each node is pulled toward the circle of radius
+    /// `depth · ring_spacing` centred at the origin
+    /// (`F_r = radial_strength · (r_target − r)` along the radial unit vector,
+    /// clamped to [`Self::max_gravity_force`]). Depth-0 roots collapse to the
+    /// centre; dependencies fan out in concentric rings — the "everything
+    /// derives from a centre" structure. Crucially this is also the **island
+    /// tether**: every node (connected or not) has an *absolute* radial target
+    /// at a fixed origin, so a disconnected component can no longer be flung to
+    /// infinity by repulsion — it orbits the centre instead. This subsumes the
+    /// separate "pinned hub + springs from component roots" mechanism (a hub at
+    /// the origin is exactly what r_target = 0 anchors the roots to) without a
+    /// synthetic render node. `0.0` disables it.
+    pub radial_strength: f32,
+    /// Radius (model px) added per dependency level for the radial force
+    /// (`r_target = depth · ring_spacing`). Mirrors the layout `level_spacing`.
+    pub ring_spacing: f32,
+    /// Use the radial-by-depth force (concentric rings around the origin,
+    /// [`Self::radial_strength`]) instead of the y-only bounded gravity
+    /// (top-down depth bands, [`Self::gravity_strength`]). Default `true` — the
+    /// center-anchor layout Aaron's directive calls for. Set `false` for the
+    /// legacy banded layout.
+    pub use_radial: bool,
 
     // ── Integration / damping ───────────────────────────────────────────
     /// `velocity *= (1 − damping_factor)` each frame. Default `0.08` settles a
@@ -93,16 +132,26 @@ pub struct PhysicsConfig {
 impl Default for PhysicsConfig {
     fn default() -> Self {
         Self {
-            repulsion_strength: 1_000.0,
+            // Rebalanced for the center-anchor layout (viz-fix): the old
+            // repulsion `1000` with springs at only `0.04` let repulsion
+            // dominate and sprawl the graph the (absent) centering couldn't
+            // counter. Lower repulsion + stiffer springs let the new centering
+            // / radial forces win, settling a compact, centred map.
+            repulsion_strength: 450.0, // was 1000
             cutoff_radius: 200.0,
             theta: 0.85,
             min_distance: 2.0,
 
-            spring_stiffness: 0.04,
+            spring_stiffness: 0.08, // was 0.04
             spring_compression_factor: 3.0,
 
             gravity_strength: 0.04,
             max_gravity_force: 50.0,
+
+            center_strength: 0.03,
+            radial_strength: 0.05,
+            ring_spacing: 120.0,
+            use_radial: true,
 
             damping_factor: 0.08,
             max_speed: 60.0,
@@ -140,11 +189,12 @@ impl PhysicsConfig {
             return base;
         }
         Self {
-            repulsion_strength: 600.0,     // 1000 → 600: softer push at scale
-            cutoff_radius: 300.0,          // 200 → 300: spread the push wider
-            damping_factor: 0.14,          // 0.08 → 0.14: bleed motion faster
-            equilibrium_threshold: 0.10,   // 0.05 → 0.10: accept a calmer settle
-            alpha_decay: 0.045,            // 0.025 → 0.045: cool to a stop sooner
+            repulsion_strength: 300.0,   // 450 → 300: softer push at scale
+            cutoff_radius: 300.0,        // 200 → 300: spread the push wider
+            ring_spacing: 160.0,         // 120 → 160: more room between rings
+            damping_factor: 0.14,        // 0.08 → 0.14: bleed motion faster
+            equilibrium_threshold: 0.10, // 0.05 → 0.10: accept a calmer settle
+            alpha_decay: 0.045,          // 0.025 → 0.045: cool to a stop sooner
             ..base
         }
     }
@@ -197,5 +247,23 @@ mod tests {
         assert_eq!(c.frame_interval, Duration::from_millis(16));
         // No artificial delay in prod.
         assert_eq!(c.step_delay, Duration::ZERO);
+    }
+
+    #[test]
+    fn center_anchor_layout_is_the_default() {
+        let c = PhysicsConfig::default();
+        // Radial-by-depth is the default layout (Aaron's center-anchor
+        // directive); the centering + radial pulls are both armed.
+        assert!(c.use_radial);
+        assert!(c.center_strength > 0.0, "centering force armed");
+        assert!(c.radial_strength > 0.0, "radial force armed");
+        assert!(c.ring_spacing > 0.0);
+        // The charge/link rebalance: repulsion dropped and springs stiffened so
+        // centering can win over the old repulsion-dominated sprawl.
+        assert!(
+            c.repulsion_strength < 1_000.0,
+            "repulsion lowered from 1000"
+        );
+        assert!(c.spring_stiffness > 0.04, "springs stiffened from 0.04");
     }
 }
