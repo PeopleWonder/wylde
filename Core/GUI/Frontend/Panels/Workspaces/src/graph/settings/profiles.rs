@@ -25,7 +25,10 @@ pub struct GraphSettings {
     /// Layout backend by persisted name (`LayoutKind::name`); unknown names
     /// fall back to the default backend.
     pub layout: String,
-    /// Auto-clustering knobs (C-cluster).
+    /// Auto-clustering knobs (C-cluster) — including the clusters-first
+    /// `clusters_first_zoom` band (visual-polish G1/G6). Because the whole
+    /// `ClusterConfig` is snapshotted here, that keystone threshold is
+    /// already profile-tunable without a rebuild.
     pub cluster: ClusterConfig,
 }
 
@@ -197,6 +200,31 @@ mod tests {
         assert_eq!(back.graph.cluster.auto_threshold_nodes, 100);
         assert!((back.interaction.navigation.zoom_step_factor - 1.25).abs() < 1e-6);
         assert!(!back.theme.dark);
+    }
+
+    #[test]
+    fn clusters_first_zoom_round_trips_through_a_profile() {
+        // G6: the clusters-first band (G1) is config-driven via the profile —
+        // a tuned value persists and reloads, so it's adjustable without a
+        // rebuild (the keystone knob's feel-test caveat is addressable).
+        let p = GraphProfile::capture(
+            "Galaxy",
+            LayoutKind::default(),
+            ClusterConfig {
+                clusters_first_zoom: 0.5,
+                ..ClusterConfig::default()
+            },
+            NavConfig::default(),
+            true,
+        );
+        let back: GraphProfile = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        assert!((back.graph.cluster.clusters_first_zoom - 0.5).abs() < 1e-6);
+        // An old profile that predates the knob loads it at the code default.
+        let old: GraphSettings = serde_json::from_str(r#"{ "layout": "force" }"#).unwrap();
+        assert_eq!(
+            old.cluster.clusters_first_zoom,
+            ClusterConfig::default().clusters_first_zoom
+        );
     }
 
     #[test]
