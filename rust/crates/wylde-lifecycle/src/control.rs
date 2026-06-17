@@ -632,14 +632,34 @@ fn binary_predates_process(binary_age_s: f64, process_age_s: f64) -> bool {
 /// process (F1). Impure — stats the resolved binary and reads the clock — so
 /// it is kept out of the pure, filesystem-free [`shape_service_list`]. The
 /// process age comes from `started_at` (process uptime), compared against the
-/// age of the binary [`rust_binary_path`] would spawn today.
+/// age of the binary that would spawn today.
+///
+/// Covers **both** build roots: a core in-tree binary
+/// ([`rust_binary_path`], under `rust/`) and a discovered out-of-tree
+/// sibling's dropped artifact ([`crate::state::services::sibling_binary_path`],
+/// beside `Services/<svc>/manifest.json`). This is the F1 tie for the
+/// out-of-tree model — `cargo xtask build-all` stages a fresh sibling
+/// artifact, and `service.list` then reports `stale:true` until the sibling
+/// is bounced, exactly the deploy-gap gate W0 uses for core services.
 fn annotate_staleness(infos: &mut [ServiceInfo]) {
+    // Resolved once so a sibling's beside-manifest binary can be located
+    // when the in-tree resolver misses (siblings don't live under rust/).
+    let siblings = registry::discovered_bucket_services();
     for info in infos.iter_mut() {
         if !info.running {
             continue;
         }
         let process_age = heartbeat_age(info.started_at.as_deref());
-        let Some(path) = rust_binary_path(&info.name) else {
+        let path = match rust_binary_path(&info.name) {
+            Some(p) => Some(p),
+            None => siblings
+                .iter()
+                .find(|d| d.name == info.name)
+                .and_then(|d| {
+                    crate::state::services::sibling_binary_path(&d.folder, &info.name)
+                }),
+        };
+        let Some(path) = path else {
             continue;
         };
         let Some(binary_age) = binary_age_secs(&path) else {

@@ -1,0 +1,13 @@
+# Repo-root cargo config. Only an alias for the all-Rust multi-workspace
+# build orchestrator (out-of-tree runtime foundation, plan §4):
+#
+#   cargo xtask build-all
+#
+# expands to `cargo run --manifest-path tools/xtask/Cargo.toml -- build-all`.
+# The --manifest-path is relative to the invocation dir, so run `cargo
+# xtask ...` from the repo root (this directory). tools/build-all.ps1 is a
+# thin wrapper that cd's here first. The [alias] table is inert for the
+# rust/ and Core/GUI/ workspace builds (cargo merges config upward but an
+# alias never affects `cargo build`).
+[alias]
+xtask = "run --manifest-path tools/xtask/Cargo.toml --"
