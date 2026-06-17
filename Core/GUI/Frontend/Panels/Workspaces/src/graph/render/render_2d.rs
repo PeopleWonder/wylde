@@ -106,7 +106,12 @@ impl Renderer for Renderer2d {
             let style = theme.edge_style(e.rel_type.theme_key());
             let color = style.map(|s| s.color(dark)).unwrap_or(Color::FALLBACK);
             let base_thickness = style.map(|s| s.thickness_px).unwrap_or(1.5);
-            let thickness = (base_thickness * vp.camera.zoom).clamp(0.6, 6.0);
+            // Aggregate cluster→cluster edges (G1) carry the crossing count as
+            // weight; scale thickness by its log so a heavily-connected galaxy
+            // link reads heavier without a 1000-crossing edge swallowing the
+            // canvas. A plain edge (weight 1) is unaffected (ln 1 = 0).
+            let weight_factor = 1.0 + e.weight.max(1.0).ln() * 0.35;
+            let thickness = (base_thickness * weight_factor * vp.camera.zoom).clamp(0.6, 6.0);
             let line_style = style.map(|s| s.line_style.as_str()).unwrap_or("solid");
 
             push_line(

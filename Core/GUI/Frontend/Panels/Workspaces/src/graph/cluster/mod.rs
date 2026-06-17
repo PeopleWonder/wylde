@@ -105,6 +105,19 @@ impl ClusterView {
         self.index.assignment.get(node_id).map(String::as_str)
     }
 
+    /// The desired fold set for `zoom`, including the clusters-first galaxy
+    /// tier (G1). The one place the three drivers (rebuild / snap_to / sync)
+    /// agree on what should be folded.
+    fn desired_folds_at(&self, zoom: f32) -> HashSet<String> {
+        expand::desired_folds_at_zoom(
+            &self.auto_folds,
+            &self.thresholds,
+            zoom,
+            &self.overrides,
+            self.config.clusters_first_zoom,
+        )
+    }
+
     /// Rebuild for a freshly loaded graph: one-time assignment, auto-fold
     /// selection, thresholds. The initial fold set snaps into place without
     /// animation (the galaxy view IS the first paint); overrides reset.
@@ -118,7 +131,7 @@ impl ClusterView {
         self.auto_folds = strategy::select_folds(graph.nodes.len(), &self.index, &self.config);
         self.overrides.clear();
         self.states.clear();
-        for id in expand::desired_folds(&self.auto_folds, &self.thresholds, zoom, &self.overrides) {
+        for id in self.desired_folds_at(zoom) {
             self.states.insert(
                 id,
                 FoldState {
@@ -133,8 +146,7 @@ impl ClusterView {
     /// paint's camera fit (the galaxy view IS the initial frame; nothing to
     /// animate from).
     pub fn snap_to(&mut self, zoom: f32) {
-        let desired =
-            expand::desired_folds(&self.auto_folds, &self.thresholds, zoom, &self.overrides);
+        let desired = self.desired_folds_at(zoom);
         self.states.clear();
         for id in desired {
             self.states.insert(
@@ -153,8 +165,7 @@ impl ClusterView {
     /// Returns true when at least one tween was armed.
     pub fn sync(&mut self, zoom: f32, now: Instant, anim: (f32, CubicBezier)) -> bool {
         expand::prune_overrides(&mut self.overrides, &self.thresholds, zoom);
-        let desired =
-            expand::desired_folds(&self.auto_folds, &self.thresholds, zoom, &self.overrides);
+        let desired = self.desired_folds_at(zoom);
         let mut armed = false;
 
         // Clusters that should be folded: collapse them from wherever they are.
@@ -307,8 +318,12 @@ impl ClusterView {
             .collect();
         nodes.extend(synthetic_nodes);
 
-        // Re-routed, deduped edges.
-        let mut seen: HashSet<(String, String, &'static str)> = HashSet::new();
+        // Re-routed edges, deduped by (src, dst, rel-class) but with their
+        // weights SUMMED — so an aggregate cluster→cluster edge carries the
+        // count of underlying crossings it stands for (G1). The renderer
+        // scales thickness by that weight, making heavily-connected galaxies
+        // read as thicker links.
+        let mut idx: HashMap<(String, String, &'static str), usize> = HashMap::new();
         let mut edges: Vec<Edge> = Vec::new();
         for e in &graph.edges {
             let src = reroute.get(e.src.as_str()).unwrap_or(&e.src);
@@ -316,15 +331,19 @@ impl ClusterView {
             if src == dst {
                 continue; // collapsed into one sphere (or a self-loop)
             }
-            if !seen.insert((src.clone(), dst.clone(), e.rel_type.theme_key())) {
-                continue;
+            let key = (src.clone(), dst.clone(), e.rel_type.theme_key());
+            match idx.get(&key) {
+                Some(&i) => edges[i].weight += e.weight,
+                None => {
+                    idx.insert(key, edges.len());
+                    edges.push(Edge {
+                        src: src.clone(),
+                        dst: dst.clone(),
+                        rel_type: e.rel_type,
+                        weight: e.weight,
+                    });
+                }
             }
-            edges.push(Edge {
-                src: src.clone(),
-                dst: dst.clone(),
-                rel_type: e.rel_type,
-                weight: e.weight,
-            });
         }
 
         Some((
@@ -474,6 +493,7 @@ mod tests {
                 target_visible_nodes: 8,
                 min_fold_size: 3,
                 boundary_pad_px: 18.0,
+                clusters_first_zoom: 0.35,
             },
             ..Default::default()
         };
@@ -527,6 +547,46 @@ mod tests {
             .edges
             .iter()
             .any(|e| e.src == "loose1" && e.dst == "cluster::ws/cold"));
+    }
+
+    #[test]
+    fn clusters_first_folds_every_cluster_at_low_zoom() {
+        // At zoom 1.0 only the cold tail folds (the existing selective tier).
+        let (mut cv, _, _) = test_view();
+        assert_eq!(cv.folded_count(), 1);
+        assert!(cv.is_folded("ws/cold") && !cv.is_folded("ws/hot"));
+
+        // Zoom out into the clusters-first band (≤ 0.35): the galaxy view folds
+        // EVERY cluster, not just the auto-selected one.
+        cv.snap_to(0.2);
+        assert_eq!(cv.folded_count(), 2, "every cluster folds in the galaxy view");
+        assert!(cv.is_folded("ws/cold") && cv.is_folded("ws/hot"));
+
+        // Zooming back to a mid zoom restores the selective tier (cold only).
+        cv.snap_to(1.0);
+        assert!(cv.is_folded("ws/cold") && !cv.is_folded("ws/hot"));
+    }
+
+    #[test]
+    fn aggregate_edge_weight_sums_crossings() {
+        // c2→h0 and c3→h0 both re-route to cluster::ws/cold→h0; the aggregate
+        // edge carries their summed weight (the crossing count), so the
+        // renderer can draw it heavier (G1).
+        let (cv, g, l) = test_view();
+        let (dg, _) = cv.apply(&g, &l).expect("folded");
+        let agg = dg
+            .edges
+            .iter()
+            .find(|e| e.src == "cluster::ws/cold" && e.dst == "h0")
+            .expect("aggregate edge to h0");
+        assert_eq!(agg.weight, 2.0, "two crossings (c2,c3 → h0) summed");
+        // A single-crossing re-route keeps weight 1.
+        let loose = dg
+            .edges
+            .iter()
+            .find(|e| e.src == "loose1" && e.dst == "cluster::ws/cold")
+            .expect("re-routed loose edge");
+        assert_eq!(loose.weight, 1.0);
     }
 
     #[test]
