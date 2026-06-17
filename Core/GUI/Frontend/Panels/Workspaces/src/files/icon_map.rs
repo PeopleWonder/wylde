@@ -22,11 +22,20 @@
 //! white-font hierarchy and the ignored/secondary dimming.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use gpui::Rgba;
 use serde::Deserialize;
 
 use super::ipc::{Entry, Kind};
+
+/// The process-wide icon config, parsed once from the embedded Visual Style
+/// YAML (defaults overlaid with any `file_tree_icons:` overrides). The render
+/// path calls this per row, so the parse must happen exactly once.
+pub fn config() -> &'static IconConfig {
+    static CFG: OnceLock<IconConfig> = OnceLock::new();
+    CFG.get_or_init(IconConfig::load)
+}
 
 /// A resolved icon to render: the asset key for `svg().path(...)` and an
 /// optional explicit tint (`None` → inherit the row's text colour).
