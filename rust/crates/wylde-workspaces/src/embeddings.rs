@@ -477,7 +477,12 @@ mod tests {
         std::env::remove_var("WYLDE_EMBED_MAX_BATCH");
         assert_eq!(embed_max_batch(), EMBED_MAX_BATCH);
         // The default must stay safely under the runner's batch-count cliff.
-        assert!(EMBED_MAX_BATCH <= 200, "default batch must stay under the ~255 crash threshold");
+        const {
+            assert!(
+                EMBED_MAX_BATCH <= 200,
+                "default batch must stay under the ~255 crash threshold"
+            )
+        };
         std::env::set_var("WYLDE_EMBED_MAX_BATCH", "16");
         assert_eq!(embed_max_batch(), 16);
         // A bogus / zero value falls back to the default rather than dividing by zero.

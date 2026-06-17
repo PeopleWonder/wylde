@@ -24,6 +24,22 @@ pub const NODE_ENTITY: &str = "Entity";
 /// Indexed text chunks (source-file fragments).
 pub const NODE_CHUNK: &str = "Chunk";
 
+// ── Concept layer (TBS concept-system, thesis §2.2) ───────────────────────
+// The concept graph projection. The JSON store ([`crate::concepts::store`]) is
+// authoritative; these node/edge types let the build pass additively project
+// concepts into Neo4j so the graph panel can render concept nodes. Never the
+// read path for the browse surface.
+
+/// A discovered semantic theme (the **Concepts** layer).
+pub const NODE_CONCEPT: &str = "Concept";
+
+/// Concept → Entity|Chunk: the concept's member code (many-to-many ⇒ overlap).
+pub const REL_MEMBER: &str = "MEMBER";
+/// Concept → Concept | Term → Term: hierarchy (a DAG for concepts).
+pub const REL_CHILD_OF: &str = "CHILD_OF";
+/// Concept → Term: vocabulary that names a concept.
+pub const REL_DESCRIBED_BY: &str = "DESCRIBED_BY";
+
 /// True iff `rel` is one of the five Entity→Entity relation types the graph
 /// accepts on a `relate` write.
 pub fn relation_type_is_valid(rel: &str) -> bool {
@@ -51,5 +67,13 @@ mod tests {
     fn node_labels_stable() {
         assert_eq!(NODE_ENTITY, "Entity");
         assert_eq!(NODE_CHUNK, "Chunk");
+    }
+
+    #[test]
+    fn concept_layer_labels_stable() {
+        assert_eq!(NODE_CONCEPT, "Concept");
+        assert_eq!(REL_MEMBER, "MEMBER");
+        assert_eq!(REL_CHILD_OF, "CHILD_OF");
+        assert_eq!(REL_DESCRIBED_BY, "DESCRIBED_BY");
     }
 }

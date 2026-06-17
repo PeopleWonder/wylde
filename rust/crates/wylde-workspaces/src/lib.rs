@@ -37,6 +37,7 @@ pub mod action_dispatch;
 pub mod anchors;
 pub mod api;
 pub mod common;
+pub mod concepts;
 pub mod config;
 pub mod conversations;
 pub mod embeddings;

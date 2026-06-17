@@ -319,6 +319,56 @@ impl BoltClient {
         }
     }
 
+    /// `project_concepts` (TBS concept-system, thesis §2.2) — additively sync a
+    /// workspace's authoritative concept set into the graph as `Concept` nodes +
+    /// `MEMBER`/`CHILD_OF` edges, so the graph panel can render them. Replaces
+    /// the workspace's prior projection (delete-then-upsert) to stay in step
+    /// with the JSON store. Best-effort enrichment: the JSON store is the read
+    /// path, so a failure here never blocks the build verb — callers log and
+    /// move on. Returns `{ok, projected}`.
+    ///
+    /// `rows` are caller-built `{id, label, description, source, members:[name],
+    /// parents:[id]}` maps (one per concept).
+    pub async fn project_concepts(&self, workspace: &str, rows: Vec<Value>) -> Reply {
+        let ws = workspace.trim().to_owned();
+        if ws.is_empty() {
+            return Reply::err_msg("bad_request", "'workspace' required");
+        }
+        let count = rows.len();
+        let write_timeout = self.config.write_timeout;
+        let bs = write_batch_size();
+        let batch = concepts_to_boltlist(&ws, &rows);
+        let fut = async {
+            let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
+            // Clear the prior projection for this workspace, then re-upsert.
+            run_timed(
+                graph,
+                neo4rs::query(cypher::DELETE_WORKSPACE_CONCEPTS).param("ws", ws.clone()),
+                write_timeout,
+                "project_concepts.delete",
+            )
+            .await?;
+            for sub in batch.iter().collect::<Vec<_>>().chunks(bs) {
+                let mut list = BoltList::new();
+                for item in sub {
+                    list.push((*item).clone());
+                }
+                run_timed(
+                    graph,
+                    neo4rs::query(cypher::UPSERT_CONCEPTS).param("batch", BoltType::List(list)),
+                    write_timeout,
+                    "project_concepts.upsert",
+                )
+                .await?;
+            }
+            Ok::<_, (String, String)>(())
+        };
+        match fut.await {
+            Ok(()) => Reply::ok(json!({"ok": true, "projected": count})),
+            Err((code, message)) => Reply::err_msg(code, message),
+        }
+    }
+
     /// `delete_workspace` — drop every Chunk in a workspace, then prune
     /// now-orphaned Entity nodes. Returns counts so callers can confirm the
     /// cleanup landed.
@@ -644,6 +694,54 @@ fn batch_to_boltlist(batch: &[UpsertRow]) -> BoltList {
     list
 }
 
+/// Coerce caller-built concept rows (`{id,label,description,source,members,
+/// parents}` JSON) into the `$batch` BoltList [`cypher::UPSERT_CONCEPTS`] reads.
+/// Pure — unit-tested without a live Neo4j.
+fn concepts_to_boltlist(workspace: &str, rows: &[Value]) -> BoltList {
+    let mut list = BoltList::new();
+    for r in rows {
+        let id = r.get("id").and_then(Value::as_str).unwrap_or("");
+        if id.is_empty() {
+            continue;
+        }
+        let mut m = BoltMap::new();
+        m.put("workspace".into(), BoltType::from(workspace.to_owned()));
+        m.put("id".into(), BoltType::from(id.to_owned()));
+        m.put(
+            "label".into(),
+            BoltType::from(r.get("label").and_then(Value::as_str).unwrap_or("").to_owned()),
+        );
+        m.put(
+            "description".into(),
+            BoltType::from(
+                r.get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+            ),
+        );
+        m.put(
+            "source".into(),
+            BoltType::from(r.get("source").and_then(Value::as_str).unwrap_or("").to_owned()),
+        );
+        m.put("members".into(), BoltType::List(str_array_to_boltlist(r.get("members"))));
+        m.put("parents".into(), BoltType::List(str_array_to_boltlist(r.get("parents"))));
+        list.push(BoltType::Map(m));
+    }
+    list
+}
+
+/// A JSON string-array `Value` → `BoltList` of strings (empty for absent/non-array).
+fn str_array_to_boltlist(v: Option<&Value>) -> BoltList {
+    let mut list = BoltList::new();
+    if let Some(arr) = v.and_then(Value::as_array) {
+        for s in arr.iter().filter_map(Value::as_str) {
+            list.push(BoltType::from(s.to_owned()));
+        }
+    }
+    list
+}
+
 fn pairs_to_boltlist(pairs: &[EntityEdge]) -> BoltList {
     let mut list = BoltList::new();
     for p in pairs {
@@ -705,7 +803,7 @@ mod tests {
         assert_eq!(write_batch_size(), WRITE_BATCH);
         // Must keep each UNWIND well under the size that times a real upsert
         // out — a whole-repo single batch is exactly the bug this fixes.
-        assert!(WRITE_BATCH <= 1000);
+        const { assert!(WRITE_BATCH <= 1000) };
         // The default write budget must exceed the connect budget — the old
         // code conflated them and capped bulk writes at 5s.
         assert!(DEFAULT_WRITE_TIMEOUT > DEFAULT_CONNECT_TIMEOUT);
@@ -740,6 +838,27 @@ mod tests {
         assert_eq!(batch[0].workspace, "route-default");
         assert_eq!(batch[1].workspace, "ws-explicit");
         assert_eq!(batch[2].workspace, "route-default");
+    }
+
+    #[test]
+    fn concepts_to_boltlist_skips_idless_and_carries_fields() {
+        let rows = vec![
+            json!({
+                "id": "dir:src/graph", "label": "Graph", "description": "d",
+                "source": "directory_cluster",
+                "members": ["alpha", "beta"], "parents": ["dir:src"]
+            }),
+            json!({ "label": "no id row" }), // dropped — no id
+        ];
+        let list = concepts_to_boltlist("ws-1", &rows);
+        assert_eq!(list.len(), 1, "idless row dropped");
+        // The surviving row is a Map carrying workspace + members list.
+        let BoltType::Map(m) = list.iter().next().unwrap() else {
+            panic!("expected a Map row");
+        };
+        assert!(matches!(m.get("workspace"), Ok(Some(BoltType::String(_)))));
+        assert!(matches!(m.get("members"), Ok(Some(BoltType::List(l))) if l.len() == 2));
+        assert!(matches!(m.get("parents"), Ok(Some(BoltType::List(l))) if l.len() == 1));
     }
 
     #[test]
