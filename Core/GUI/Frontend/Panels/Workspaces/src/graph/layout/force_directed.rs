@@ -121,6 +121,7 @@ impl ForceDirected {
                 x: warm[i].x,
                 y: warm[i].y,
                 y_target: self.layout.y_target(depths[i]),
+                depth: depths[i],
                 pinned: false,
             })
             .collect();
@@ -162,6 +163,7 @@ impl ForceDirected {
                     x: p.x,
                     y: p.y,
                     y_target: self.layout.y_target(depths[i]),
+                    depth: depths[i],
                     pinned: false,
                 }
             })
