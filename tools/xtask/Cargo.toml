@@ -1,0 +1,45 @@
+# `xtask` — the all-Rust multi-workspace build orchestrator
+# (`cargo xtask build-all`) for Wylde's out-of-tree runtime model.
+#
+# DELIBERATELY STANDALONE — same rationale as tools/wylde-release:
+#
+#   * It is a dev/release-machine tool, never shipped in the dependency
+#     graph of any service, so it has no place in the backend (rust/) or
+#     GUI (Core/GUI/) workspaces.
+#   * It shells out to `cargo` via std::process::Command to build each
+#     workspace + populated bucket repo. The repo's
+#     `no_external_process_spawn_rust` linter only walks
+#     `rust/crates/<crate>/src/`, so living under `tools/` keeps these
+#     spawn calls out of its path — the same reasoning behind
+#     `tools/wylde-release` and `rust/build-support/wylde-prebuild-guard`.
+#
+# The empty `[workspace]` table makes the standalone status explicit:
+# cargo stops walking up for a parent workspace here, so this crate has its
+# own lock file and `cargo build`/`test` over rust/ + Core/GUI/ never tries
+# to build it.
+[workspace]
+
+[package]
+name = "xtask"
+description = "All-Rust multi-workspace build orchestrator (`cargo xtask build-all`): builds Core (rust/ + Core/GUI/) plus every populated out-of-tree bucket repo (Services/*, Extensions/*) and stages each bucket binary beside its manifest.json. Dev/release tool; not shipped."
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+authors = ["Wylde User"]
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+# Subcommand table (build-all today; room for more orchestration verbs).
+clap = { version = "4", features = ["derive"] }
+# Coarse error type; main prints the chain.
+anyhow = "1"
+# Read each bucket repo's manifest.json `name` to pick the staged binary.
+serde_json = "1"
+
+[dev-dependencies]
+# Tempdirs for the pure discovery/staging unit tests.
+tempfile = "3"

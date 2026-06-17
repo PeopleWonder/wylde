@@ -235,6 +235,37 @@ pub async fn serve_forever() -> Result<i32> {
         tracing::error!("daemon: start_n8n raised: {:#}", e);
     }
 
+    // Phase 2c-bucket — dynamic out-of-tree sibling supervision. Nothing
+    // here is hardcoded: the daemon discovers whatever is dropped into the
+    // `Services/*` bucket (the registry walk) and starts every enabled
+    // sibling via the generic `start_discovered` path. Runs AFTER the core
+    // tier so a sibling that consumes a core service finds it up; each
+    // start is non-fatal (mirrors the core tier) so a broken sibling never
+    // blocks the rest of the stack. CLEAN NO-OP when the bucket is
+    // absent/empty — discovery returns nothing and the loop iterates zero
+    // times ("core works without"). Skipped under no-spawn (the parity
+    // surface supervises the core set only).
+    if !nospawn {
+        let siblings = crate::registry::discovered_bucket_services();
+        if siblings.is_empty() {
+            tracing::info!(
+                "daemon: no out-of-tree sibling services discovered (Services/ absent or empty)"
+            );
+        }
+        for svc in &siblings {
+            if !svc.enabled {
+                tracing::info!(
+                    "daemon: sibling {} discovered but enabled:false — skipping spawn",
+                    svc.name
+                );
+                continue;
+            }
+            if let Err(e) = services::start_discovered(svc).await {
+                tracing::error!("daemon: start_discovered({}) raised: {:#}", svc.name, e);
+            }
+        }
+    }
+
     if nospawn {
         tracing::info!(
             "daemon: NO-SPAWN — would-have-spawned: {:?}",

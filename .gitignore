@@ -30,6 +30,21 @@ release-artifacts/
 # Any other Cargo target dirs (catch-all)
 target/
 
+# Out-of-tree runtime buckets (container-of-repos). Core's tracked tree
+# stays just-Core: the three buckets ship EMPTY and are populated
+# out-of-band, each item keeping its own independent .git. The lifecycle
+# registry + extension bridge discover whatever is dropped in at runtime,
+# and the boot/shutdown paths cleanly no-op when a bucket is absent or
+# empty ("core works without"). See outputs/wylde-out-of-tree-runtime-plan.md.
+#   * Services/      — sibling full-tier service repos (lifecycle-supervised)
+#   * Extensions/    — leave-the-ecosystem extensions (extension-bridge)
+#   * Core/Plugins/  — compiled-in plugin crates (opt-in; wired into the
+#                      rust/ workspace by hand when present — see
+#                      rust/crates/wylde-harness/src/plugins/mod.rs)
+/Services/
+/Extensions/
+/Core/Plugins/
+
 # Local data (runtime state — never committed)
 data/
 logs/

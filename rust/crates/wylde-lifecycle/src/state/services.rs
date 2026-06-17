@@ -147,6 +147,100 @@ fn wylde_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// Resolve the binary for a **discovered out-of-tree sibling** under a
+/// bucket (`Services/<name>/`). Unlike [`rust_binary_path`] (which only
+/// looks under `rust/`), this resolves the binary the sibling drops *next
+/// to its own manifest* — the release artifact `cargo xtask build-all`
+/// stages there (plan §4.3).
+///
+/// Resolution order (mirrors [`rust_binary_path`]'s override-first shape):
+///   1. `WYLDE_<NAME>_BIN` override (dev staging) — must point at a file.
+///   2. Beside the manifest: `Services/<name>/{wylde-<stripped>,<stripped>}.exe`.
+///   3. The sibling's own Cargo target: `Services/<name>/target/{release,debug}/…`
+///      (dev convenience before staging).
+///
+/// `None` when nothing resolves — the caller treats that as a non-fatal
+/// "sibling stays down" (core is unaffected).
+pub fn sibling_binary_path(folder: &Path, service: &str) -> Option<PathBuf> {
+    let override_var = format!("WYLDE_{}_BIN", service.to_uppercase().replace('-', "_"));
+    if let Ok(over) = std::env::var(&override_var) {
+        let p = PathBuf::from(over);
+        return p.exists().then_some(p);
+    }
+    let stripped = service.strip_prefix("wylde-").unwrap_or(service);
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let names = [
+        format!("wylde-{stripped}{suffix}"),
+        format!("{stripped}{suffix}"),
+    ];
+    let dirs = [
+        folder.to_path_buf(),
+        folder.join("target").join("release"),
+        folder.join("target").join("debug"),
+    ];
+    for dir in &dirs {
+        for name in &names {
+            let cand = dir.join(name);
+            if cand.exists() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// Start a **discovered out-of-tree sibling** service (`Services/<name>/`).
+///
+/// A thin generalization of [`start_strangler`]: already-alive guard →
+/// no-spawn record → resolve the binary beside the manifest
+/// ([`sibling_binary_path`]) → [`spawn_rust_binary`] (verbatim: same
+/// `WYLDE_ROOT` / `WYLDE_SERVICE_NAME` / data-dir env + `kill_on_drop` +
+/// process-group as every core service) → [`record_spawn`] +
+/// [`set_service_proc`]. Nothing about the bucket is hardcoded — the
+/// daemon supervises whatever discovery returns.
+///
+/// **Non-fatal:** a missing binary leaves the sibling down with a build
+/// hint and returns `Ok` so the rest of the stack is unaffected (the
+/// `wylde-workspaces` precedent).
+pub async fn start_discovered(svc: &crate::registry::DiscoveredService) -> Result<()> {
+    let name = svc.name.as_str();
+    if is_service_alive(name) {
+        let pid = manifest_pid(name).or_else(|| service_pid(name)).unwrap_or(0);
+        tracing::info!("{name}: already alive (manifest pid={pid}); skipping spawn");
+        return Ok(());
+    }
+    if nospawn_enabled() {
+        nospawn_record(name, ImplLang::Rust.as_str());
+        tracing::info!("{name}: NO-SPAWN — would-have-spawned recorded; no child forked");
+        return Ok(());
+    }
+    let Some(bin) = sibling_binary_path(&svc.folder, name) else {
+        tracing::warn!(
+            "{name}: no binary found beside its manifest ({}); the sibling will not start — \
+             core is unaffected. Build it with `cargo build --release` in its own repo and \
+             stage the artifact beside manifest.json (or run `cargo xtask build-all`), or set \
+             WYLDE_{}_BIN.",
+            svc.folder.display(),
+            name.to_uppercase().replace('-', "_"),
+        );
+        return Ok(());
+    };
+    let child = spawn_rust_binary(name, &bin)?;
+    let pid = child.id().unwrap_or(0);
+    tracing::info!("daemon: spawned discovered sibling {name} impl=rust pid={pid}");
+    record_spawn(name, pid, ImplLang::Rust.as_str());
+    set_service_proc(name, child);
+    Ok(())
+}
+
+/// Stop a discovered sibling — the generic graceful teardown (the same
+/// CTRL_BREAK + wait + force-kill path every other service uses). Keyed on
+/// the service name, so the supervision bookkeeping needs no change.
+/// Idempotent: an untracked/never-started name is a no-op `Ok`.
+pub async fn stop_discovered(name: &str) -> Result<()> {
+    stop_service(name, Duration::from_secs(10)).await
+}
+
 /// Spawn helper for a Rust service binary. Null Stdio +
 /// `CREATE_NEW_PROCESS_GROUP` so signal handling stays uniform across
 /// every daemon-managed service.
@@ -156,10 +250,20 @@ fn spawn_rust_binary(service_name: &str, rust_bin: &Path) -> Result<Child> {
         service_name,
         rust_bin.display()
     );
+    // Per-service user-data dir (out-of-tree foundation, plan §3): the
+    // persisted override else the default WyldeData/<svc>/ sibling of the
+    // repo. Injected as WYLDE_<SVC>_DATA_DIR on EVERY child — the generic
+    // contract; a service that owns no library simply ignores it. The path
+    // lives in Core config, so it outlives a binary swap, and a change
+    // takes effect on the next bounce.
+    let data_env = crate::paths::data_dir_env_name(service_name);
+    let data_dir = crate::paths::resolve_data_dir(service_name);
+
     let mut cmd = Command::new(rust_bin);
     cmd.current_dir(wylde_root())
         .env("WYLDE_SERVICE_NAME", service_name)
         .env("WYLDE_ROOT", wylde_root())
+        .env(&data_env, &data_dir)
         // Default to `info` so dropped-tracing-subscribers see something.
         .env(
             "RUST_LOG",
@@ -1508,5 +1612,55 @@ mod tests {
         for def in STRANGLER_SERVICES {
             assert_eq!(strangler_def(def.name).name, def.name);
         }
+    }
+
+    // ── Discovered out-of-tree sibling supervision ─────────────────────
+
+    #[test]
+    fn sibling_binary_path_honours_override() {
+        // The WYLDE_<NAME>_BIN override (dev staging) wins and must point at
+        // an existing file; a missing override path resolves to None.
+        let me = std::env::current_exe().unwrap();
+        std::env::set_var("WYLDE_WYLDE_IMAGES_BIN", &me);
+        let folder = std::path::Path::new("Services/wylde-images");
+        assert_eq!(sibling_binary_path(folder, "wylde-images"), Some(me));
+        std::env::set_var("WYLDE_WYLDE_IMAGES_BIN", "/no/such/sibling/bin");
+        assert_eq!(sibling_binary_path(folder, "wylde-images"), None);
+        std::env::remove_var("WYLDE_WYLDE_IMAGES_BIN");
+    }
+
+    #[test]
+    fn sibling_binary_path_finds_beside_manifest() {
+        // The release drop location: Services/<name>/<bin>.exe (next to the
+        // manifest), where `cargo xtask build-all` stages the artifact.
+        std::env::remove_var("WYLDE_WYLDE_GALLERY_BIN");
+        let dir = tempfile::tempdir().unwrap();
+        let bin_name = format!("wylde-gallery{}", if cfg!(windows) { ".exe" } else { "" });
+        let bin = dir.path().join(&bin_name);
+        std::fs::write(&bin, b"#!stub").unwrap();
+        assert_eq!(
+            sibling_binary_path(dir.path(), "wylde-gallery"),
+            Some(bin)
+        );
+    }
+
+    #[tokio::test]
+    async fn start_discovered_without_binary_is_non_fatal() {
+        // A discovered sibling with no resolvable binary must NOT bail —
+        // the sibling stays down but core boot continues. Point the BIN
+        // override at a missing path so resolution is deterministically None
+        // regardless of any artifact on disk.
+        std::env::set_var("WYLDE_WYLDE_PHANTOM_BIN", "/no/such/phantom/binary");
+        let svc = crate::registry::DiscoveredService {
+            name: "wylde-phantom".to_string(),
+            folder: std::path::PathBuf::from("Services/wylde-phantom"),
+            enabled: true,
+        };
+        let result = start_discovered(&svc).await;
+        std::env::remove_var("WYLDE_WYLDE_PHANTOM_BIN");
+        assert!(
+            result.is_ok(),
+            "start_discovered with no binary must be a non-fatal no-op, got {result:?}"
+        );
     }
 }

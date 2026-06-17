@@ -14,6 +14,17 @@
 //!   working without (`wylde-workspaces`, `wylde-n8n`, …). Not this
 //!   module either.
 //!
+//! ## The `Core/Plugins/` bucket ships EMPTY
+//!
+//! `Core/Plugins/` is one of the three git-ignored out-of-tree buckets
+//! (the others are `Services/` and `Extensions/`). Core's tracked tree is
+//! just-Core, so NO plugin is wired in by default: [`installed`] returns
+//! an empty vec and Core builds plugin-free. This is what makes the
+//! removability contract hold for the Plugins bucket — with the bucket
+//! empty, Core still builds and boots, with no plugin tools in the
+//! catalog. The `hello_wylde` seed crate stays on disk under
+//! `Core/Plugins/hello_wylde/` (git-ignored) as the worked example.
+//!
 //! ## Installing a plugin — the four steps
 //!
 //! Discovery is compile-time and deliberate: in-process code is trusted
@@ -49,11 +60,14 @@ use wylde_plugin_api::CorePlugin;
 
 use crate::tooling::registry::{entry_active, Registry};
 
-/// The explicit linkage table: every installed Core plugin. Installing
-/// a plugin = the four steps in the module header, the last of which is
-/// one `Box::new(...)` line here.
+/// The explicit linkage table: every installed Core plugin. Empty by
+/// default — the `Core/Plugins/` bucket ships empty (out-of-tree runtime
+/// foundation), so Core builds plugin-free. Installing a plugin = the
+/// four steps in the module header, the last of which is one
+/// `Box::new(...)` line here, e.g.
+/// `vec![Box::new(wylde_plugin_hello_wylde::HelloWylde)]`.
 pub fn installed() -> Vec<Box<dyn CorePlugin>> {
-    vec![Box::new(wylde_plugin_hello_wylde::HelloWylde)]
+    Vec::new()
 }
 
 /// Register every installed plugin's tools into the catalog. Called
@@ -110,60 +124,71 @@ mod tests {
     use crate::tooling::runner::{catalog_payload, dispatch_tool};
     use crate::turn::tool_round::TIER_TOOL_USE;
 
-    // ── the real linkage table ───────────────────────────────────────
+    // ── the empty default linkage table ──────────────────────────────
 
     #[test]
-    fn installed_includes_hello_wylde() {
-        let plugins = installed();
+    fn installed_is_empty_by_default() {
+        // The `Core/Plugins/` bucket ships EMPTY (out-of-tree runtime
+        // foundation): Core builds plugin-free. Installing a plugin is the
+        // opt-in four-step wiring in the module header.
         assert!(
-            plugins.iter().any(|p| p.name() == "hello_wylde"),
-            "hello_wylde missing from the linkage table"
+            installed().is_empty(),
+            "no plugin should be compiled into Core by default"
         );
     }
 
     #[test]
-    fn register_namespaces_hello_wylde_tools() {
-        let mut reg = Registry::empty();
-        register(&mut reg);
-        // Canonical id + dotted name + alias forms all resolve.
-        let hit = reg
-            .lookup("plugin.hello_wylde.greet")
-            .expect("dotted name resolves");
-        assert_eq!(hit.id, "plugin_hello_wylde_greet");
-        assert_eq!(hit.group, "plugins");
-        assert!(!hit.destructive);
-        assert!(reg.lookup("plugin_hello_wylde_greet").is_some());
-        assert!(reg.lookup("plugin.hello_wylde.about").is_some());
+    fn default_registry_has_no_compiled_in_plugins() {
+        // With the bucket empty, Registry::default registers zero plugin
+        // tools next to the built-in groups — none in the `plugins` group.
+        let reg = Registry::default();
+        let rows = catalog_payload(&reg);
+        assert!(
+            !rows.iter().any(|r| r["group"] == "plugins"),
+            "default registry must carry no plugin-group tools when the bucket is empty"
+        );
     }
 
+    // ── host behavior against a fixture plugin ──────────────────────
+    //
+    // The plugin-host machinery (register / namespacing / catalog rows /
+    // end-to-end dispatch) is exercised against the in-test `Fixture`
+    // below — coverage that no longer depends on a shipped plugin now that
+    // the bucket ships empty.
+
     #[test]
-    fn default_registry_contains_plugin_tools() {
-        // The real wiring: Registry::default registers plugins next to
-        // the built-in groups.
-        let reg = Registry::default();
-        assert!(reg.lookup("plugin.hello_wylde.greet").is_some());
-        assert!(reg.lookup("plugin.hello_wylde.about").is_some());
+    fn register_namespaces_plugin_tools() {
+        let mut reg = Registry::empty();
+        register_plugin(&mut reg, Arc::new(Fixture));
+        // Canonical id + dotted name forms both resolve.
+        let hit = reg
+            .lookup("plugin.fixture.ping")
+            .expect("dotted name resolves");
+        assert_eq!(hit.id, "plugin_fixture_ping");
+        assert_eq!(hit.group, "plugins");
+        assert!(!hit.destructive);
+        assert!(reg.lookup("plugin_fixture_ping").is_some());
     }
 
     #[test]
     fn catalog_rows_carry_plugin_group_and_active_status() {
         let mut reg = Registry::empty();
-        register(&mut reg);
+        register_plugin(&mut reg, Arc::new(Fixture));
         let rows = catalog_payload(&reg);
-        let greet = rows
+        let ping = rows
             .iter()
-            .find(|r| r["id"] == "plugin_hello_wylde_greet")
-            .expect("greet in catalog");
-        assert_eq!(greet["name"], "plugin.hello_wylde.greet");
-        assert_eq!(greet["group"], "plugins");
-        assert_eq!(greet["status"], "active");
+            .find(|r| r["id"] == "plugin_fixture_ping")
+            .expect("ping in catalog");
+        assert_eq!(ping["name"], "plugin.fixture.ping");
+        assert_eq!(ping["group"], "plugins");
+        assert_eq!(ping["status"], "active");
         // The optional `name` param survives namespacing untouched.
-        assert_eq!(greet["parameters"][0]["name"], "name");
-        assert_eq!(greet["parameters"][0]["required"], false);
+        assert_eq!(ping["parameters"][0]["name"], "name");
+        assert_eq!(ping["parameters"][0]["required"], false);
     }
 
     #[tokio::test]
-    async fn dispatch_reaches_hello_wylde_end_to_end() {
+    async fn dispatch_reaches_plugin_end_to_end() {
         // Same harness the built-in dispatch tests use: consent bypass
         // under the serial guard so the gate doesn't intercept.
         let _g = consent::serial_test_guard().await;
@@ -171,22 +196,22 @@ mod tests {
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let mut reg = Registry::empty();
-        register(&mut reg);
+        register_plugin(&mut reg, Arc::new(Fixture));
         let outcome = dispatch_tool(
             &reg,
             cfg,
-            "plugin.hello_wylde.greet",
+            "plugin.fixture.ping",
             TIER_TOOL_USE,
             json!({"name": "Aaron"}),
         )
         .await;
-        assert_eq!(outcome.canonical_id, "plugin_hello_wylde_greet");
+        assert_eq!(outcome.canonical_id, "plugin_fixture_ping");
         let ok = outcome.result.expect("plugin handler runs");
         assert_eq!(ok["status"], "success");
-        assert_eq!(ok["greeting"], "Hello, Aaron! — from a Wylde core plugin");
+        assert_eq!(ok["pong"], "Aaron");
     }
 
-    // ── host behavior against a fixture plugin ──────────────────────
+    // ── more host behavior against the fixture plugin ───────────────
 
     struct Fixture;
 
@@ -203,6 +228,12 @@ mod tests {
         fn tools(&self) -> Vec<PluginTool> {
             vec![
                 PluginTool {
+                    name: "ping",
+                    description: "Non-destructive sample tool.",
+                    parameters: json!([param("name", "string", false, "Optional name")]),
+                    destructive: false,
+                },
+                PluginTool {
                     name: "wipe",
                     description: "Pretend-destructive tool.",
                     parameters: json!([param("target", "string", true, "What to wipe")]),
@@ -216,7 +247,11 @@ mod tests {
                 },
             ]
         }
-        fn call(&self, tool: &str, _args: &Value) -> Value {
+        fn call(&self, tool: &str, args: &Value) -> Value {
+            if tool == "ping" {
+                let who = args.get("name").and_then(Value::as_str).unwrap_or("world");
+                return json!({"status": "success", "tool": tool, "pong": who});
+            }
             json!({"status": "success", "tool": tool})
         }
     }

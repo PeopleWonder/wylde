@@ -43,6 +43,19 @@ const EXCLUDED_TOP_LEVEL: &[&str] = &["Core", "data", "logs", "docs"];
 /// `_` for private). Matches Python's `EXCLUDED_PREFIXES`.
 const EXCLUDED_PREFIXES: &[char] = &['_', '.'];
 
+/// Out-of-tree sibling buckets the registry descends into, one level
+/// deep, on top of the flat top-level walk. Each immediate child of
+/// `<root>/<bucket>/` with a `manifest.json` is a discovered sibling
+/// service (the locked single-root model — see
+/// `outputs/wylde-out-of-tree-runtime-plan.md` §1). Currently just
+/// `Services/`; the `Extensions/` bucket is walked separately by the
+/// extension bridge (`wylde-extension-bridge`), and `Core/Plugins/` is
+/// compiled in, not discovered. A missing/empty bucket is a clean no-op:
+/// [`list_bucket_folders`]'s `read_dir` guard yields zero folders, so the
+/// output is byte-identical to a tree without the bucket ("core works
+/// without").
+const SERVICE_BUCKETS: &[&str] = &["Services"];
+
 /// TCP probe timeout — anything slower isn't "really listening" for
 /// dashboard purposes. Matches Python's `_PROBE_TIMEOUT_S = 0.25`.
 const PROBE_TIMEOUT: Duration = Duration::from_millis(250);
@@ -145,6 +158,75 @@ pub fn list_services_in(root: &Path) -> Vec<ServiceInfo> {
 
     let mut out: Vec<ServiceInfo> = by_name.into_values().collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+// ── Out-of-tree sibling discovery (lifecycle supervision) ─────────────
+
+/// A sibling service discovered under an out-of-tree bucket
+/// (`Services/<name>/`). The single source of truth both the dynamic boot
+/// loop ([`crate::state::services::start_discovered`]) and the symmetric
+/// dynamic shutdown read, plus the control plane's "is this name
+/// manageable?" predicate. Distinct from [`ServiceInfo`]: this is the
+/// *spawn-side* view (where the binary lives + whether to start it),
+/// whereas `ServiceInfo` is the *dashboard* view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredService {
+    /// Canonical, `wylde-`-prefixed service name — matches
+    /// [`ServiceInfo::name`], the manifest filename, and the
+    /// `WYLDE_<NAME>_BIN` / binary-resolution convention.
+    pub name: String,
+    /// The `Services/<name>/` folder the manifest + dropped binary live in.
+    pub folder: PathBuf,
+    /// The manifest's `enabled` flag (default `false` when absent) — the
+    /// boot loop only auto-starts enabled siblings.
+    pub enabled: bool,
+}
+
+/// Walk the out-of-tree [`SERVICE_BUCKETS`] and return every child folder
+/// that carries a readable `manifest.json`, as canonical
+/// [`DiscoveredService`] rows. Resolves `WYLDE_ROOT` from the env.
+///
+/// **Clean no-op** when a bucket is absent/empty (the locked "core works
+/// without" contract): with no `Services/`, this returns an empty `Vec`,
+/// so the dynamic boot/shutdown loops iterate zero times and behave
+/// exactly as a tree without the bucket.
+pub fn discovered_bucket_services() -> Vec<DiscoveredService> {
+    discovered_bucket_services_in(&wylde_root())
+}
+
+/// [`discovered_bucket_services`] rooted at an explicit `root` — the
+/// tempdir-testable entry point (same split rationale as
+/// [`list_services_in`]).
+pub fn discovered_bucket_services_in(root: &Path) -> Vec<DiscoveredService> {
+    let mut out: Vec<DiscoveredService> = Vec::new();
+    for bucket in SERVICE_BUCKETS {
+        for folder in list_bucket_folders(root, bucket) {
+            let Some(manifest) = load_folder_manifest(&folder) else {
+                continue;
+            };
+            let folder_name = folder
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            let declared = manifest
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(folder_name);
+            let enabled = manifest
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            out.push(DiscoveredService {
+                name: name_with_wylde_prefix(declared),
+                folder,
+                enabled,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.dedup_by(|a, b| a.name == b.name);
     out
 }
 
@@ -270,21 +352,62 @@ fn load_folder_manifest(folder: &Path) -> Option<Value> {
 /// the folder name; the manifest's `name` field may override. Adds
 /// `Core/` explicitly (the `list_service_folders` exclusion drops it).
 fn service_folders(root: &Path) -> Vec<(String, PathBuf)> {
+    let folder_tuple = |p: PathBuf| {
+        let name = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_owned();
+        (name, p)
+    };
+    // Top-level (in-tree) folders — unchanged back-compat walk.
     let mut out: Vec<(String, PathBuf)> = list_service_folders(root)
         .into_iter()
-        .map(|p| {
-            let name = p
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_owned();
-            (name, p)
-        })
+        .map(folder_tuple)
         .collect();
+    // Out-of-tree sibling buckets — one level under each bucket. Absent or
+    // empty bucket ⇒ zero extra folders (clean no-op).
+    for bucket in SERVICE_BUCKETS {
+        out.extend(list_bucket_folders(root, bucket).into_iter().map(folder_tuple));
+    }
     let core_path = root.join("Core");
     if core_path.join("manifest.json").exists() {
         out.push(("Core".to_owned(), core_path));
     }
+    out
+}
+
+/// Immediate child folders of an out-of-tree bucket (`<root>/<bucket>/`)
+/// that count as services. Same `is_dir` + `_`/`.`-prefix filter as
+/// [`list_service_folders`], but without the top-level `EXCLUDED_TOP_LEVEL`
+/// set (those names only matter at the repo root). **Clean no-op when the
+/// bucket is absent:** the `read_dir` guard returns an empty `Vec`, so a
+/// missing/empty `Services/` yields nothing and discovery is identical to
+/// a tree without the bucket. Sorted alphabetically.
+fn list_bucket_folders(root: &Path, bucket: &str) -> Vec<PathBuf> {
+    let dir = root.join(bucket);
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<PathBuf> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let name = path.file_name().and_then(|s| s.to_str())?;
+            if name.starts_with(EXCLUDED_PREFIXES) {
+                return None;
+            }
+            Some(path)
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        a.file_name()
+            .unwrap_or_default()
+            .cmp(b.file_name().unwrap_or_default())
+    });
     out
 }
 
@@ -827,6 +950,112 @@ mod tests {
                 "wylde-mike".to_string(),
                 "wylde-zeta".to_string(),
             ]
+        );
+    }
+
+    // ── Out-of-tree Services/ bucket discovery ─────────────────────────
+
+    #[test]
+    fn services_bucket_child_surfaces_in_list() {
+        // A sibling under Services/<name>/ with a manifest is discovered by
+        // the same flat list walk as an in-tree folder — no special-casing
+        // in build_info.
+        let tmp = TempDir::new().unwrap();
+        write_json(
+            &tmp.path()
+                .join("Services")
+                .join("wylde-images")
+                .join("manifest.json"),
+            &json!({
+                "name": "wylde-images",
+                "description": "image gallery",
+                "version": "0.1.0",
+                "enabled": true,
+                "tier": "standard",
+                "pipe": "wylde-images",
+            }),
+        );
+        let infos = list_services_in(tmp.path());
+        let img = infos
+            .iter()
+            .find(|s| s.name == "wylde-images")
+            .expect("Services/ child must surface in the registry");
+        assert_eq!(img.description, "image gallery");
+        assert!(img.enabled);
+        assert_eq!(img.source, "manifest");
+    }
+
+    #[test]
+    fn absent_services_bucket_is_a_clean_noop() {
+        // The removability contract: with no Services/ bucket the output is
+        // identical to a plain tree (here, just Core). Discovery must not
+        // invent entries or error.
+        let tmp = TempDir::new().unwrap();
+        write_json(
+            &tmp.path().join("Core").join("manifest.json"),
+            &json!({ "name": "Core", "tier": "core" }),
+        );
+        let names: Vec<String> = list_services_in(tmp.path())
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(names, vec!["wylde-core".to_string()]);
+        assert!(discovered_bucket_services_in(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn empty_services_bucket_is_a_clean_noop() {
+        // An empty Services/ dir (the shipped state) discovers nothing.
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("Services")).unwrap();
+        assert!(discovered_bucket_services_in(tmp.path()).is_empty());
+        assert!(list_services_in(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn discovered_bucket_services_reports_name_folder_enabled() {
+        let tmp = TempDir::new().unwrap();
+        let folder = tmp.path().join("Services").join("Images");
+        write_json(
+            &folder.join("manifest.json"),
+            &json!({ "name": "Images", "enabled": true }),
+        );
+        // A disabled sibling is still discovered (visible) — the boot loop,
+        // not discovery, gates on `enabled`.
+        write_json(
+            &tmp.path()
+                .join("Services")
+                .join("wylde-notes")
+                .join("manifest.json"),
+            &json!({ "name": "wylde-notes", "enabled": false }),
+        );
+        let found = discovered_bucket_services_in(tmp.path());
+        assert_eq!(found.len(), 2);
+        let images = found.iter().find(|d| d.name == "wylde-images").unwrap();
+        assert!(images.enabled);
+        assert_eq!(images.folder, folder);
+        let notes = found.iter().find(|d| d.name == "wylde-notes").unwrap();
+        assert!(!notes.enabled);
+    }
+
+    #[test]
+    fn services_bucket_skips_underscore_and_manifestless() {
+        // `_`/`.`-prefixed children and folders without a manifest are not
+        // services.
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("Services").join("_scratch")).unwrap();
+        fs::create_dir_all(tmp.path().join("Services").join("no_manifest")).unwrap();
+        write_json(
+            &tmp.path()
+                .join("Services")
+                .join("_scratch")
+                .join("manifest.json"),
+            &json!({ "name": "scratch", "enabled": true }),
+        );
+        let found = discovered_bucket_services_in(tmp.path());
+        assert!(
+            found.is_empty(),
+            "underscore + manifestless folders must not surface, got {found:?}"
         );
     }
 }
