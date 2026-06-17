@@ -33,11 +33,19 @@ pub const RING: Rgba = BRAND;
 pub const ACCENT_CYAN: Rgba = rgb_const(0x0891b2);
 
 // ── Text scale ───────────────────────────────────────────────────────
-
-pub const TEXT_PRIMARY: Rgba = rgb_const(0xe2e8f0);
-pub const TEXT_SECONDARY: Rgba = rgb_const(0x94a3b8);
-pub const TEXT_MUTED: Rgba = rgb_const(0x4a5568);
-pub const TEXT_DIM: Rgba = rgb_const(0x334155);
+//
+// White-font pass (visual-polish W1): the floor was lifted toward white so
+// nothing is hard to read on the deep-navy surfaces, while the *relative*
+// ladder (primary > secondary > muted > dim) is preserved so the hierarchy
+// doesn't flatten. The "ignored / disabled / placeholder" signal that used
+// to ride on the dark `TEXT_MUTED` hue alone is now carried by a NON-colour
+// means (italic + opacity + badge) at the consuming sites — see
+// `files/mod.rs` (ignored rows) and the Input placeholder/disabled cues —
+// so brightening these tokens does not erase it.
+pub const TEXT_PRIMARY: Rgba = rgb_const(0xffffff); // body / headings / active — true white
+pub const TEXT_SECONDARY: Rgba = rgb_const(0xd6deea); // regular files, metadata — a notch below primary
+pub const TEXT_MUTED: Rgba = rgb_const(0x9aa7b8); // muted-but-light — readable, visibly secondary
+pub const TEXT_DIM: Rgba = rgb_const(0x7c8aa0); // genuinely de-emphasized
 
 // ── Semantic status ──────────────────────────────────────────────────
 //
@@ -162,6 +170,32 @@ mod tests {
         assert_eq!(RING.g, BRAND.g);
         assert_eq!(RING.b, BRAND.b);
         assert_eq!(RING.a, BRAND.a);
+    }
+
+    /// White-font pass (W1): the four text tokens were lifted toward white.
+    /// Pin the new values so an accidental revert or fat-finger is caught.
+    #[test]
+    fn text_tokens_lifted_toward_white() {
+        let expect = |c: Rgba, hex: u32| {
+            assert!((c.r - ((hex >> 16) & 0xff) as f32 / 255.0).abs() < 1e-6);
+            assert!((c.g - ((hex >> 8) & 0xff) as f32 / 255.0).abs() < 1e-6);
+            assert!((c.b - (hex & 0xff) as f32 / 255.0).abs() < 1e-6);
+        };
+        expect(TEXT_PRIMARY, 0xffffff);
+        expect(TEXT_SECONDARY, 0xd6deea);
+        expect(TEXT_MUTED, 0x9aa7b8);
+        expect(TEXT_DIM, 0x7c8aa0);
+    }
+
+    /// The text ladder must keep its *relative* steps (primary brightest,
+    /// dim darkest) so the hierarchy survives the white-font lift — the
+    /// whole point of W1 is "lift the floor, keep the ladder".
+    #[test]
+    fn text_ladder_is_monotone() {
+        let lightness = |c: Rgba| c.r + c.g + c.b;
+        assert!(lightness(TEXT_PRIMARY) > lightness(TEXT_SECONDARY));
+        assert!(lightness(TEXT_SECONDARY) > lightness(TEXT_MUTED));
+        assert!(lightness(TEXT_MUTED) > lightness(TEXT_DIM));
     }
 
     /// Defensive: the entire surface ladder is monotonically darkening
