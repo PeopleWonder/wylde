@@ -781,6 +781,15 @@ impl Render for TextInput {
             root = root.max_h(px(max_h)).overflow_y_scroll();
         }
 
+        // White-font pass (W3): disabled inputs got a darker bg (SURFACE_700)
+        // but, with the text tokens lifted toward white, that alone risks
+        // reading as merely-secondary rather than inert. Add a NON-colour cue
+        // — reduced opacity over the whole control — so disabled is
+        // unambiguous and the brightened tokens don't flatten the state.
+        if self.disabled {
+            root = root.opacity(0.55);
+        }
+
         root
     }
 }

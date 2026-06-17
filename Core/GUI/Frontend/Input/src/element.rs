@@ -27,8 +27,8 @@ use std::ops::Range;
 
 use gpui::{
     fill, point, px, relative, size, App, AvailableSpace, Bounds, Element, ElementId, Entity,
-    GlobalElementId, IntoElement, LayoutId, PaintQuad, Pixels, Point, SharedString, Style,
-    TextAlign, TextRun, TextStyle, UnderlineStyle, Window, WrappedLine,
+    FontStyle, GlobalElementId, IntoElement, LayoutId, PaintQuad, Pixels, Point, SharedString,
+    Style, TextAlign, TextRun, TextStyle, UnderlineStyle, Window, WrappedLine,
 };
 use wylde_theme::colors::{BORDER_EMPHASIS, TEXT_MUTED, TEXT_PRIMARY};
 
@@ -291,7 +291,13 @@ fn shape(
 
     let mut style = style.clone();
     if placeholder {
+        // White-font pass (W3): TEXT_MUTED was lifted toward white, so colour
+        // alone no longer reads as "this is a placeholder, not typed text".
+        // Carry the distinction by a NON-colour means too — italic — so the
+        // placeholder stays clearly differentiated from real input once the
+        // muted hue is bright.
         style.color = TEXT_MUTED.into();
+        style.font_style = FontStyle::Italic;
     }
 
     let font_size = style.font_size.to_pixels(window.rem_size());
