@@ -35,6 +35,37 @@ pub enum HighlightState {
     Excluded,
 }
 
+/// The **category** of a recognized span (TBS concept-system Phase 4, thesis
+/// §4.3): the four-colour highlight dimension, orthogonal to [`HighlightState`].
+/// Each maps to its own theme colour token ([`ConceptHighlight`]) — added
+/// *additively* so it doesn't disturb the existing state-coloured underline or
+/// the visual session's text tokens.
+///
+/// Today's composer recognition produces three of the four ([`categorize`]):
+/// an explicit `{{token}}` is an `Anchor`, a bare word resolving to a curated
+/// term is `Vocabulary`, a resolved code symbol is `Symbol`. `Concept` is
+/// reserved for when composer concept-recognition wires in (the colour token
+/// already exists).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HighlightCategory {
+    Concept,
+    Vocabulary,
+    Anchor,
+    Symbol,
+}
+
+/// Categorise a recognized word. Only meaningful for recognized words (callers
+/// filter with [`WordRecognition::is_recognized`]).
+pub fn categorize(w: &WordRecognition) -> HighlightCategory {
+    if w.token.kind == super::tokenizer::TokenKind::AnchorRef {
+        HighlightCategory::Anchor
+    } else if w.anchor_count > 0 {
+        HighlightCategory::Vocabulary
+    } else {
+        HighlightCategory::Symbol
+    }
+}
+
 /// One IDE-style highlight: a byte range in the composer text plus its
 /// state and tooltip.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,6 +73,9 @@ pub struct HighlightSpan {
     pub start: usize,
     pub end: usize,
     pub state: HighlightState,
+    /// The four-colour category (TBS Phase 4). Drives the underline colour;
+    /// `state` still governs the muted/excluded treatment.
+    pub category: HighlightCategory,
     pub tooltip: String,
 }
 
@@ -63,6 +97,7 @@ pub fn spans_for(words: &[WordRecognition]) -> Vec<HighlightSpan> {
                 start: w.token.start,
                 end: w.token.end,
                 state,
+                category: categorize(w),
                 tooltip: tooltip(w),
             }
         })
@@ -81,10 +116,12 @@ pub fn input_spans(words: &[WordRecognition]) -> Vec<wylde_gpui_input::Highlight
     spans_for(words)
         .into_iter()
         .map(|s| {
-            let color = gpui::rgb(match s.state {
-                HighlightState::Recognized => hex(&t.tether_line.color_dark),
-                HighlightState::Ambiguous => hex(&t.per_word_chip.ambiguous_state.background_dark),
-                HighlightState::Excluded => hex(&t.per_word_chip.text_dark),
+            // Colour by CATEGORY (the four-colour highlight, thesis §4.3) —
+            // except an excluded span stays muted (the curation signal wins).
+            let color = gpui::rgb(if s.state == HighlightState::Excluded {
+                hex(&t.per_word_chip.text_dark)
+            } else {
+                hex(t.concept_highlight.color_for(s.category))
             });
             wylde_gpui_input::HighlightSpan {
                 range: s.start..s.end,
@@ -137,6 +174,60 @@ pub struct ComposerTheme {
     /// the in-input underline now; the bubble layer's tethers next).
     #[serde(default)]
     pub tether_line: TetherLine,
+    /// `chat_composer.concept_highlight` — the four-colour highlight tokens
+    /// (TBS Phase 4). Added additively with Rust-side defaults so the shared
+    /// Visual Style YAML needn't change (zero collision with the visual
+    /// session's text-token edits); a future YAML section overrides them.
+    #[serde(default)]
+    pub concept_highlight: ConceptHighlight,
+}
+
+/// The four category highlight colours (dark-theme `#RRGGBB`). Defaults are the
+/// locked TBS Phase-4 palette; override via a `chat_composer.concept_highlight`
+/// YAML section when the visual pass formalises them.
+#[derive(Clone, Debug, Deserialize)]
+pub struct ConceptHighlight {
+    #[serde(default = "d_hl_concept")]
+    pub concept_dark: String,
+    #[serde(default = "d_hl_vocabulary")]
+    pub vocabulary_dark: String,
+    #[serde(default = "d_hl_anchor")]
+    pub anchor_dark: String,
+    #[serde(default = "d_hl_symbol")]
+    pub symbol_dark: String,
+}
+
+impl Default for ConceptHighlight {
+    fn default() -> Self {
+        serde_yaml::from_str("{}").expect("defaults")
+    }
+}
+
+impl ConceptHighlight {
+    /// The `#RRGGBB` token for a highlight category.
+    pub fn color_for(&self, category: HighlightCategory) -> &str {
+        match category {
+            HighlightCategory::Concept => &self.concept_dark,
+            HighlightCategory::Vocabulary => &self.vocabulary_dark,
+            HighlightCategory::Anchor => &self.anchor_dark,
+            HighlightCategory::Symbol => &self.symbol_dark,
+        }
+    }
+}
+
+// The locked four-colour palette (distinct, dark-theme-friendly, not the
+// tether accent). Concept=purple, Vocabulary=teal, Anchor=orange, Symbol=blue.
+fn d_hl_concept() -> String {
+    "#B794F4".to_owned()
+}
+fn d_hl_vocabulary() -> String {
+    "#4FD1C5".to_owned()
+}
+fn d_hl_anchor() -> String {
+    "#F6AD55".to_owned()
+}
+fn d_hl_symbol() -> String {
+    "#63B3ED".to_owned()
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -254,6 +345,7 @@ pub fn composer_theme() -> ComposerTheme {
             highlight_underline: UnderlineStyle::default(),
             per_word_chip: PerWordChip::default(),
             tether_line: TetherLine::default(),
+            concept_highlight: ConceptHighlight::default(),
         })
 }
 
@@ -377,7 +469,9 @@ mod tests {
 
     #[test]
     fn input_spans_carry_themed_wavy_underlines() {
-        let words = vec![word("sym", 1, 0), word("ambig", 3, 0)];
+        // A Symbol word and a Vocabulary word (anchor-only) — different
+        // categories ⇒ different four-colour highlight tokens (thesis §4.3).
+        let words = vec![word("sym", 1, 0), word("term", 0, 1)];
         let spans = input_spans(&words);
         assert_eq!(spans.len(), 2);
         for s in &spans {
@@ -387,11 +481,45 @@ mod tests {
             assert!(s.color.is_none() && s.background.is_none());
         }
         assert_eq!((spans[0].range.start, spans[0].range.end), (4, 7));
-        // Recognized rides the tether accent; ambiguous the alert tint.
+        // Distinct categories underline in distinct colours.
         assert_ne!(
             spans[0].underline.unwrap().color,
             spans[1].underline.unwrap().color
         );
+    }
+
+    #[test]
+    fn categorize_maps_the_four_kinds() {
+        // bare word resolving to a symbol → Symbol.
+        assert_eq!(categorize(&word("sym", 1, 0)), HighlightCategory::Symbol);
+        // bare word matching a curated term → Vocabulary.
+        assert_eq!(categorize(&word("term", 0, 1)), HighlightCategory::Vocabulary);
+        // explicit {{token}} → Anchor.
+        let mut anchor = word("the_thing", 0, 1);
+        anchor.token.kind = TokenKind::AnchorRef;
+        assert_eq!(categorize(&anchor), HighlightCategory::Anchor);
+    }
+
+    #[test]
+    fn four_categories_have_four_distinct_colours() {
+        let t = composer_theme();
+        let colors: std::collections::BTreeSet<u32> = [
+            HighlightCategory::Concept,
+            HighlightCategory::Vocabulary,
+            HighlightCategory::Anchor,
+            HighlightCategory::Symbol,
+        ]
+        .into_iter()
+        .map(|c| hex(t.concept_highlight.color_for(c)))
+        .collect();
+        assert_eq!(colors.len(), 4, "each category has its own colour token");
+    }
+
+    #[test]
+    fn spans_carry_their_category() {
+        let spans = spans_for(&[word("sym", 1, 0), word("term", 0, 1)]);
+        assert_eq!(spans[0].category, HighlightCategory::Symbol);
+        assert_eq!(spans[1].category, HighlightCategory::Vocabulary);
     }
 
     #[test]
