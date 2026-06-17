@@ -414,6 +414,36 @@ pub async fn handle_retrieve(payload: Value) -> Reply {
     }))
 }
 
+/// `workspaces.concepts.freshness` — concept drift detection (thesis S4.3).
+/// Payload: {workspace_id, id?}. With `id`, one verdict; without, all concepts.
+/// Reply: {workspace_id, freshness:[{id, stale, churned_files, missing_files,
+/// built_at, newest_member_mtime}], stale_count}. Pure store + chunk query.
+pub async fn handle_freshness(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let chunks = crate::rag::indexer::store::load_chunks(&ws);
+    let mtimes = super::freshness::file_mtimes_from_chunks(&chunks);
+    let id = require_str(&payload, "id");
+    let concepts: Vec<Concept> = match &id {
+        Some(one) => match store::get(&ws, one) {
+            Some(c) => vec![c],
+            None => return Reply::err_msg("not_found", format!("no concept {one:?}")),
+        },
+        None => store::load(&ws),
+    };
+    let verdicts: Vec<_> = concepts
+        .iter()
+        .map(|c| super::freshness::assess(c, &mtimes))
+        .collect();
+    let stale_count = verdicts.iter().filter(|v| v.stale).count();
+    Reply::ok(json!({
+        "workspace_id": ws,
+        "stale_count": stale_count,
+        "freshness": verdicts,
+    }))
+}
+
 // ── Concept curation loop (S2.3) ─────────────────────────────────────────
 
 /// `workspaces.concepts.propose` — queue an AI-proposed concept for review
@@ -735,6 +765,27 @@ mod tests {
         let top = r.data["snippets"][0]["score"].as_f64().unwrap();
         let bot = r.data["snippets"][1]["score"].as_f64().unwrap();
         assert!(top >= bot);
+    }
+
+    #[tokio::test]
+    async fn freshness_reports_per_concept_verdicts() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-fresh-00";
+        let mut c = Concept::new("sem:0000", "Theme", "d", ConceptSource::Embedding);
+        c.member_files = vec!["src/x.rs".into(), "src/gone.rs".into()];
+        c.updated_at = 100.0;
+        store::create(ws, c).unwrap();
+        // x.rs present (old mtime); gone.rs absent from the index.
+        let chunks = vec![{
+            let mut k = idx_chunk("x0", "src/x.rs", vec![1.0]);
+            k.mtime = 50.0;
+            k
+        }];
+        crate::rag::indexer::store::save_chunks(ws, &chunks).unwrap();
+        let r = handle_freshness(json!({ "workspace_id": ws })).await;
+        assert!(r.ok);
+        assert_eq!(r.data["stale_count"], 1, "missing member file ⇒ stale");
+        assert_eq!(r.data["freshness"][0]["missing_files"][0], "src/gone.rs");
     }
 
     #[tokio::test]

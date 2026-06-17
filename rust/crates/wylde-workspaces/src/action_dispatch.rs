@@ -67,6 +67,8 @@ pub const CONCEPTS_REJECT_PROPOSAL: &str = "workspaces.concepts.reject_proposal"
 // Phase 3 — concept-driven retrieval (routing deferred)
 pub const CONCEPTS_LENS: &str = "workspaces.concepts.lens";
 pub const CONCEPTS_RETRIEVE: &str = "workspaces.concepts.retrieve";
+// Phase 4 — freshness / drift
+pub const CONCEPTS_FRESHNESS: &str = "workspaces.concepts.freshness";
 
 // ── File I/O — jailed editor/file-tree surface (S1 / IDE plan P0.2) ──────
 pub const FS_READ: &str = "workspaces.fs.read";
@@ -153,6 +155,7 @@ pub const ALL_ACTIONS: &[&str] = &[
     CONCEPTS_REJECT_PROPOSAL,
     CONCEPTS_LENS,
     CONCEPTS_RETRIEVE,
+    CONCEPTS_FRESHNESS,
     // S1 (IDE plan P0.2) — jailed file I/O
     FS_READ,
     FS_WRITE,
@@ -449,6 +452,16 @@ pub fn install() {
          with a scope region (path subtree). Payload: {workspace_id, id, scope?}. \
          Reply: {concept_id, scope, files, count}. Composes with workspace \
          scoping; pure store query.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_FRESHNESS,
+        |p: Value| async move { crate::concepts::api::handle_freshness(p).await },
+        "Concept drift detection (thesis S4.3): which concepts went stale — a \
+         member file changed since the concept was built, or vanished from the \
+         index. Payload: {workspace_id, id?}. Reply: {workspace_id, stale_count, \
+         freshness:[{id, stale, churned_files, missing_files, built_at, \
+         newest_member_mtime}]}.",
         META_MODULE,
     );
     register_action_with_meta(

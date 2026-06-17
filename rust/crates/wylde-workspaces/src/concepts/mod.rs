@@ -26,6 +26,7 @@ pub mod api;
 pub mod cheap;
 pub mod clustering;
 pub mod concept;
+pub mod freshness;
 pub mod lens;
 pub mod proposals;
 pub mod retrieve;

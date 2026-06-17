@@ -337,8 +337,10 @@ mod tests {
 
     #[test]
     fn resolving_clears_ambiguity_and_counts_the_pick() {
-        let mut state = ComposerState::default();
-        state.words = vec![word("ambig", 3, 0)];
+        let mut state = ComposerState {
+            words: vec![word("ambig", 3, 0)],
+            ..Default::default()
+        };
         assert!(state.words[0].is_ambiguous());
         assert!(state.resolve(0, "ambig-1"));
         assert!(!state.words[0].is_ambiguous());
@@ -363,18 +365,22 @@ mod tests {
 
     #[test]
     fn begin_scan_closes_popovers() {
-        let mut state = ComposerState::default();
-        state.words = vec![word("a", 2, 0)];
-        state.disambiguating = Some(0);
-        state.curating = true;
+        let mut state = ComposerState {
+            words: vec![word("a", 2, 0)],
+            disambiguating: Some(0),
+            curating: true,
+            ..Default::default()
+        };
         state.begin_scan();
         assert!(state.disambiguating.is_none() && !state.curating);
     }
 
     #[test]
     fn first_ambiguous_finds_the_chip_target() {
-        let mut state = ComposerState::default();
-        state.words = vec![word("clear", 1, 0), word("ambig", 2, 0)];
+        let mut state = ComposerState {
+            words: vec![word("clear", 1, 0), word("ambig", 2, 0)],
+            ..Default::default()
+        };
         assert_eq!(state.first_ambiguous(), Some(1));
         state.resolve(1, "ambig-0");
         assert_eq!(state.first_ambiguous(), None);
@@ -394,8 +400,10 @@ mod tests {
         assert!(w.is_included());
 
         // toggle_excluded on an ignored word flips ↺, not ✕.
-        let mut state = ComposerState::default();
-        state.words = vec![w];
+        let mut state = ComposerState {
+            words: vec![w],
+            ..Default::default()
+        };
         assert!(state.toggle_excluded(0));
         assert!(!state.words[0].reactivated);
         assert!(!state.words[0].excluded, "✕ untouched for ignored words");
