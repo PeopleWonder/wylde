@@ -2,6 +2,7 @@
 title: Extending Wylde — overview
 audience: the Wylde user, future Claude sessions, anyone building on top of Wylde
 authored: 2026-05-27
+updated: 2026-06-17
 status: living reference
 ---
 
@@ -104,11 +105,29 @@ new in-box service.
 
 An **extension** is an out-of-box MCP server (any language, any process) that
 the `wylde-extension-bridge` discovers, spawns, supervises, and exposes through
-a 9-action surface on `\\.\pipe\wylde-extension-bridge`. Extensions are
-sandboxed: no direct IPC into other Wylde services, no harness state access,
-no filesystem outside their declared capabilities. They speak JSON-RPC 2.0 over
-stdio (HTTP transport is reserved but not implemented) and are tier-gated by
-their declared capabilities (`egress.web`, `ingress.browser`, etc.).
+a 12-action surface on `\\.\pipe\wylde-extension-bridge`
+(`wylde-extension-bridge/src/service.rs:16`, `ALL_ACTIONS`). The bridge owns the
+extension's **spawn, supervision, and shutdown** — but "sandboxed" here means
+**lifecycle + advisory capabilities, not an OS sandbox**. Two old claims that
+this overview used to make are wrong and now corrected in
+[docs/extensions/](./extensions/):
+
+- **Extensions *do* have IPC into other Wylde services.** A Rust extension links
+  `wylde-shared` and can `ipc::call_action` over named pipes — e.g.
+  `wylde-ext-webcrawler` forwards its web fetches through the Gateway's
+  `egress.forward` rather than opening raw sockets
+  (`wylde-ext-webcrawler/src/egress.rs:79`), and the same helper reaches the
+  harness for memory/chat/tools/consent. The real guardrails are the **Gateway
+  egress allowlist** and the **per-tool consent gate**, not transport isolation.
+- **There is no filesystem sandbox.** A Rust extension runs with the process's
+  full FS access; capability declarations (`egress.web`, `ingress.browser`, …)
+  are **advisory** — they feed the gateway/consent gates, they are not
+  transport-enforced.
+
+Extensions speak JSON-RPC 2.0 over stdio (HTTP transport is reserved but not
+implemented). For the authoritative contract see
+[docs/extensions/adding-an-extension.md](./extensions/adding-an-extension.md)
+and [harness-api-reference.md](./extensions/harness-api-reference.md).
 
 Extensions are the right home for anything that leaves the enclosed system —
 web browsing, third-party SaaS connectors, the N8N integration once it ports.
@@ -210,9 +229,12 @@ the per-verb routing tables.
    blocking it on `read_only`. Don't gate at the dispatcher only.
 4. **In-box trust, out-of-box sandbox.** Services run in our address space,
    share our pipes, are linted by `wylde_check`. Extensions get spawned in
-   their own process, talk only JSON-RPC, and declare their capabilities up
-   front. When in doubt, build it as an extension first; promote to a service
-   only if you need IPC integration.
+   their own process and the LLM reaches their tools over JSON-RPC, but a Rust
+   extension can still `ipc::call_action` other Wylde services (gateway egress,
+   harness callbacks) — bounded by the gateway allowlist + consent gate, not by
+   transport isolation. They declare their capabilities up front. When in doubt,
+   build it as an extension first; promote to a service only if you need deeper
+   IPC integration.
 5. **Default deferred, ship active.** A registered-but-deferred action is fine
    — the model sees a clean `phase_N_deferred` error and chooses a different
    tool. A surprise `unknown_tool` error from the model's perspective is much

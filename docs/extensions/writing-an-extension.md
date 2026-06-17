@@ -1,8 +1,8 @@
 ---
 title: Writing a Wylde extension
 audience: developers adding a new extension — no prior Wylde internals assumed
-updated: 2026-06-02
-status: canonical quickstart; supersedes the design-era notes in docs/extending-wylde-extensions.md
+updated: 2026-06-17
+status: quickstart; the end-to-end walkthrough is docs/extensions/adding-an-extension.md. Supersedes the design-era notes in docs/extending-wylde-extensions.md.
 ---
 
 # Writing a Wylde extension
@@ -15,7 +15,11 @@ extensions are Rust binaries** (`rust/crates/wylde-ext-webcrawler/` is the
 canonical example). Python is supported only through a legacy shim
 (`Extensions/_shim/server.py`) for code not yet ported.
 
-This guide is the quickstart. Two companions cover the details:
+This guide is the quickstart. For the full start-to-finish walkthrough — the wire
+contract in detail, a buildable hello-world, the lifecycle, trust/egress, and the
+annotated Webcrawler manifest — see the canonical
+**[adding-an-extension.md](./adding-an-extension.md)**; this quickstart is the
+terse version of it, so don't duplicate it. Two companions cover the rest:
 
 - [manifest-reference.md](./manifest-reference.md) — every `mcp-server.json` field.
 - [harness-api-reference.md](./harness-api-reference.md) — how to call **back**
@@ -100,10 +104,13 @@ interpreter, `${WYLDE_ROOT}` to the repo root (substituted in
 binary if you spawn it without a shell. Full field list:
 [manifest-reference.md](./manifest-reference.md).
 
-> The shipped `Extensions/Webcrawler/mcp-server.json` still spawns the **Python
-> shim** (`${WYLDE_PYTHON} -m Extensions._shim.server --extension Webcrawler`)
-> even though `wylde-ext-webcrawler` exists — the manifest flip to `${WYLDE_BIN}`
-> is a separate slice. Use it as the template for the flip.
+> The shipped `Extensions/Webcrawler/mcp-server.json` now spawns the **native
+> Rust binary** — `"command": ["${WYLDE_BIN}/wylde-ext-webcrawler"]`
+> (`Extensions/Webcrawler/mcp-server.json:7`); the `${WYLDE_PYTHON} -m
+> Extensions._shim.server` path and `handler.py` are retired. Use it as the
+> template for a first-party Rust extension. `${WYLDE_PYTHON}` survives only for
+> the bridge integration test's `_shim` server and is deprecated
+> (`wylde-extension-bridge/src/mcp/client.rs:241`).
 
 ## 4. Implement the server
 
@@ -188,6 +195,7 @@ yet.)
 
 ## Cross-links
 
+- [adding-an-extension.md](./adding-an-extension.md) — the canonical end-to-end walkthrough this quickstart condenses.
 - [manifest-reference.md](./manifest-reference.md) — manifest field reference.
 - [harness-api-reference.md](./harness-api-reference.md) — pipe verbs + consent.
 - [../extending-wylde-extensions.md](../extending-wylde-extensions.md) — UI panels, bridge action surface, services-vs-extensions.
