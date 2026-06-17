@@ -21,7 +21,70 @@
 //! workspace now owns its own asset tree rather than borrowing the
 //! Tauri one.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
+
+use gpui::{AssetSource, SharedString};
+
+/// The file-tree icon bundle, embedded into the binary at build time.
+///
+/// Each entry is `(asset-key, bytes)`. The key is the path callers pass to
+/// `svg().path(...)` — e.g. `svg().path("icons/file-tree/rust.svg")` — so the
+/// keys are the stable contract the icon config (`file_tree_icons`) and the
+/// Files panel resolve against. gpui paints an SVG as a **monochrome mask
+/// tinted by the element's `text_color`**, so these are stroke-based
+/// monochrome glyphs and the per-file-type colour comes from the theme, not
+/// the file. See `Core/GUI/assets/LICENSES/ATTRIBUTION.md` for licensing
+/// (originals shipped today; Lucide/Seti staged as a drop-in).
+macro_rules! file_tree_icons {
+    ($($name:literal),* $(,)?) => {
+        &[ $((
+            concat!("icons/file-tree/", $name, ".svg"),
+            include_bytes!(concat!("../../assets/icons/file-tree/", $name, ".svg")) as &[u8],
+        )),* ]
+    };
+}
+
+/// The embedded icon table. Add a glyph here + its `.svg` under
+/// `assets/icons/file-tree/` to make it available to `svg().path(...)`.
+pub static FILE_TREE_ICONS: &[(&str, &[u8])] = file_tree_icons![
+    "file",
+    "folder",
+    "folder-open",
+    "code",
+    "doc",
+    "config",
+    "data",
+    "image",
+    "lock",
+    "git",
+    "package",
+    "book",
+];
+
+/// gpui [`AssetSource`] over the embedded bundle, registered at app boot
+/// (`Application::with_assets`) so `svg().path("icons/file-tree/…")` resolves.
+/// Embedding (vs. reading from disk relative to the exe) keeps icons working
+/// across every install layout — there is no asset directory to ship.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Assets;
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        Ok(FILE_TREE_ICONS
+            .iter()
+            .find(|(key, _)| *key == path)
+            .map(|(_, bytes)| Cow::Borrowed(*bytes)))
+    }
+
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        Ok(FILE_TREE_ICONS
+            .iter()
+            .filter(|(key, _)| key.starts_with(path))
+            .map(|(key, _)| SharedString::from(*key))
+            .collect())
+    }
+}
 
 /// Tray-icon asset candidates, in priority order.  On Windows the
 /// native tray glyph format is `.ico` (multi-resolution container);
@@ -100,5 +163,48 @@ mod tests {
     #[test]
     fn locate_tray_icon_handles_missing_asset_gracefully() {
         let _ = locate_tray_icon();
+    }
+
+    /// Every embedded icon resolves through the AssetSource, the bytes are a
+    /// non-empty SVG, and the keys use the `icons/file-tree/` namespace the
+    /// config resolves against. `include_bytes!` already fails the build if a
+    /// file is missing, so this guards the *contract* (key shape + payload).
+    #[test]
+    fn embedded_icons_load_through_asset_source() {
+        let assets = Assets;
+        assert!(!FILE_TREE_ICONS.is_empty());
+        for (key, _) in FILE_TREE_ICONS {
+            assert!(
+                key.starts_with("icons/file-tree/") && key.ends_with(".svg"),
+                "icon key {key:?} must live in the file-tree namespace",
+            );
+            let loaded = assets.load(key).expect("load is infallible here");
+            let bytes = loaded.unwrap_or_else(|| panic!("icon {key:?} did not resolve"));
+            assert!(!bytes.is_empty(), "icon {key:?} is empty");
+            let text = std::str::from_utf8(&bytes).expect("svg is utf-8");
+            assert!(text.contains("<svg"), "icon {key:?} is not an SVG");
+        }
+        // A miss is a clean None, never a panic.
+        assert!(assets.load("icons/file-tree/does-not-exist.svg").unwrap().is_none());
+        // `list` filters by prefix.
+        assert_eq!(
+            assets.list("icons/file-tree/").unwrap().len(),
+            FILE_TREE_ICONS.len()
+        );
+    }
+
+    /// The defaults the config falls back to (`file`, `folder`, `folder-open`)
+    /// must always be present — a file tree with no icons is the failure mode
+    /// this pins against.
+    #[test]
+    fn the_config_default_icons_are_bundled() {
+        let assets = Assets;
+        for name in ["file", "folder", "folder-open"] {
+            let key = format!("icons/file-tree/{name}.svg");
+            assert!(
+                assets.load(&key).unwrap().is_some(),
+                "default icon {name:?} must ship",
+            );
+        }
     }
 }

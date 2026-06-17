@@ -1,0 +1,15 @@
+Wylde original file-tree icons — Public Domain Dedication (CC0 1.0 Universal)
+============================================================================
+
+The monochrome line glyphs under `assets/icons/file-tree/` (file, folder,
+folder-open, code, doc, config, data, image, lock, git, package, book) are
+original works authored for Wylde and dedicated to the public domain.
+
+To the extent possible under law, the authors have waived all copyright and
+related or neighboring rights to these icons. You can copy, modify,
+distribute and perform the work, even for commercial purposes, all without
+asking permission.
+
+Full text: https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+THE WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.

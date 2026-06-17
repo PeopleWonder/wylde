@@ -322,13 +322,18 @@ async fn run_graceful_shutdown_then_quit(app_cx: &mut AsyncApp) {
 /// still runs windowed, and the X button still drains via
 /// `on_window_should_close`).
 pub fn run_app(tray_events: Option<Receiver<TrayEvent>>) {
-    gpui_platform::application().run(move |cx: &mut App| {
-        crate::assets::install_fonts();
-        let window = open_main_window(cx);
-        if let Some(rx) = tray_events {
-            spawn_tray_drain(cx, rx, window);
-        }
-    });
+    gpui_platform::application()
+        // Register the embedded file-tree icon bundle so `svg().path(...)`
+        // resolves (visual-polish F0). Without an AssetSource gpui has nothing
+        // to load path-based SVGs from.
+        .with_assets(crate::assets::Assets)
+        .run(move |cx: &mut App| {
+            crate::assets::install_fonts();
+            let window = open_main_window(cx);
+            if let Some(rx) = tray_events {
+                spawn_tray_drain(cx, rx, window);
+            }
+        });
 }
 
 #[cfg(test)]
