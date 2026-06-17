@@ -250,10 +250,20 @@ fn spawn_rust_binary(service_name: &str, rust_bin: &Path) -> Result<Child> {
         service_name,
         rust_bin.display()
     );
+    // Per-service user-data dir (out-of-tree foundation, plan §3): the
+    // persisted override else the default WyldeData/<svc>/ sibling of the
+    // repo. Injected as WYLDE_<SVC>_DATA_DIR on EVERY child — the generic
+    // contract; a service that owns no library simply ignores it. The path
+    // lives in Core config, so it outlives a binary swap, and a change
+    // takes effect on the next bounce.
+    let data_env = crate::paths::data_dir_env_name(service_name);
+    let data_dir = crate::paths::resolve_data_dir(service_name);
+
     let mut cmd = Command::new(rust_bin);
     cmd.current_dir(wylde_root())
         .env("WYLDE_SERVICE_NAME", service_name)
         .env("WYLDE_ROOT", wylde_root())
+        .env(&data_env, &data_dir)
         // Default to `info` so dropped-tracing-subscribers see something.
         .env(
             "RUST_LOG",

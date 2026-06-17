@@ -276,7 +276,18 @@ pub fn register_with_ipc() {
         updater_set_prefs_action(payload).await
     });
 
-    tracing::info!("control: registered 12 actions on wylde-lifecycle");
+    // Per-service user-data path store (out-of-tree foundation, plan §3).
+    // The first-open picker / Settings dispatch these to learn + persist
+    // where a data-owning service's library lives; the daemon injects the
+    // resolved path as WYLDE_<SVC>_DATA_DIR at spawn.
+    register_action("paths.get", |payload: Value| async move {
+        paths_get_action(payload).await
+    });
+    register_action("paths.set", |payload: Value| async move {
+        paths_set_action(payload).await
+    });
+
+    tracing::info!("control: registered 14 actions on wylde-lifecycle");
 
     // DEV-ONLY: the full-stack hot-reload restart hook. Bound ONLY when
     // `WYLDE_DEV_HOTRELOAD` is truthy — set exclusively by
@@ -423,6 +434,68 @@ async fn updater_set_prefs_action(payload: Value) -> Reply {
         return Reply::err_msg("io_error", format!("persist updater prefs: {e}"));
     }
     Reply::ok(prefs.to_value())
+}
+
+/// `paths.get` — resolve a service's user-data dir. Payload `{name}`.
+/// Returns `{name, data_dir, source}` where `source` is `"override"` (a
+/// persisted `paths.set`) or `"default"` (the computed
+/// `WyldeData/<svc>/` sibling). Never errors for an unknown service — a
+/// name with no override simply resolves to its default.
+async fn paths_get_action(payload: Value) -> Reply {
+    let name = match require_name(&payload) {
+        Ok(n) => n,
+        Err(e) => return Reply::err(e),
+    };
+    let store = crate::paths::load();
+    let (data_dir, source) = match store.get(&name) {
+        Some(over) => (PathBuf::from(over), "override"),
+        None => (crate::paths::default_data_dir(&name), "default"),
+    };
+    Reply::ok(json!({
+        "name": name,
+        "data_dir": data_dir.to_string_lossy(),
+        "source": source,
+    }))
+}
+
+/// `paths.set` — persist a service's user-data dir. Payload
+/// `{name, data_dir}`. Writes the override (atomic) and returns the
+/// resolved shape (`source: "override"`). An empty/missing `data_dir`
+/// clears the override (the service reverts to its default on next read).
+async fn paths_set_action(payload: Value) -> Reply {
+    let name = match require_name(&payload) {
+        Ok(n) => n,
+        Err(e) => return Reply::err(e),
+    };
+    let data_dir = payload
+        .get("data_dir")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+
+    let mut store = crate::paths::load();
+    if data_dir.is_empty() {
+        // Clear → revert to default.
+        store.services.remove(&name);
+        if let Err(e) = crate::paths::save(&store) {
+            return Reply::err_msg("io_error", format!("persist service paths: {e}"));
+        }
+        return Reply::ok(json!({
+            "name": name,
+            "data_dir": crate::paths::default_data_dir(&name).to_string_lossy(),
+            "source": "default",
+        }));
+    }
+    store.set(&name, &data_dir);
+    if let Err(e) = crate::paths::save(&store) {
+        return Reply::err_msg("io_error", format!("persist service paths: {e}"));
+    }
+    Reply::ok(json!({
+        "name": name,
+        "data_dir": data_dir,
+        "source": "override",
+    }))
 }
 
 /// Payload returned by `service.shutdown_all`. Matches the Python
@@ -1141,7 +1214,7 @@ mod tests {
 
     /// Every action `register_with_ipc` binds — kept in one place so the
     /// cleanup and the registration assertion can't drift apart.
-    const ALL_ACTIONS: [&str; 12] = [
+    const ALL_ACTIONS: [&str; 14] = [
         "service.shutdown_all",
         "lifecycle.shutdown_all",
         "lifecycle.status",
@@ -1154,6 +1227,8 @@ mod tests {
         "service.health",
         "updater.get_prefs",
         "updater.set_prefs",
+        "paths.get",
+        "paths.set",
     ];
 
     fn cleanup() {
@@ -1193,6 +1268,55 @@ mod tests {
             contributes: json!({}),
             ..ServiceInfo::default()
         }
+    }
+
+    #[tokio::test]
+    async fn paths_get_set_round_trip_through_actions() {
+        // paths.set persists an override; paths.get reads it back. With no
+        // override, paths.get resolves to the default WyldeData/<svc>/
+        // sibling (source "default"). Uses WYLDE_DATA_DIR to redirect the
+        // store at a tempdir, under the state/registry guards.
+        let _g = registry_guard().await;
+        let _sg = crate::state::tests::state_guard().await;
+        cleanup();
+        register_with_ipc();
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let saved = std::env::var_os("WYLDE_DATA_DIR");
+        std::env::set_var("WYLDE_DATA_DIR", tmp.path());
+
+        // Default first (no override yet).
+        let got = dispatch_action(json!({
+            "action": "paths.get",
+            "payload": {"name": "wylde-images"},
+        }))
+        .await;
+        assert!(got.ok, "paths.get must succeed");
+        assert_eq!(got.data["source"], "default");
+
+        // Set an override, then read it back.
+        let set = dispatch_action(json!({
+            "action": "paths.set",
+            "payload": {"name": "wylde-images", "data_dir": "E:/MyLib"},
+        }))
+        .await;
+        assert!(set.ok, "paths.set must succeed");
+        assert_eq!(set.data["source"], "override");
+        assert_eq!(set.data["data_dir"], "E:/MyLib");
+
+        let got2 = dispatch_action(json!({
+            "action": "paths.get",
+            "payload": {"name": "wylde-images"},
+        }))
+        .await;
+        assert_eq!(got2.data["source"], "override");
+        assert_eq!(got2.data["data_dir"], "E:/MyLib");
+
+        match saved {
+            Some(v) => std::env::set_var("WYLDE_DATA_DIR", v),
+            None => std::env::remove_var("WYLDE_DATA_DIR"),
+        }
+        cleanup();
     }
 
     #[test]
