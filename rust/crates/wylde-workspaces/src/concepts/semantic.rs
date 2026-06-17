@@ -125,7 +125,104 @@ pub fn build_semantic_concepts(chunks: &[IndexedChunk], params: &SemanticParams)
         out.push(concept);
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
+    disambiguate_labels(&mut out);
     out
+}
+
+/// Disambiguate **colliding base labels** (viz-fix A.1). k-means partitions the
+/// embedding space, which doesn't map 1:1 onto directories, so several
+/// semantically-distinct clusters can each have their plurality of files under
+/// the same folder and all humanise to the same name ("Composer ×3"). The base
+/// labeller ([`label_for_files`]) has no cross-cluster awareness, so it can't
+/// tell them apart.
+///
+/// This post-pass runs after the whole set is built: for any base label shared
+/// by more than one concept, append a distinguishing token derived from each
+/// cluster's *runner-up* directory leaf (or, failing that, a distinctive
+/// filename stem) — `Composer · models`, `Composer · ipc`, `Composer · render`.
+/// Any labels that are *still* identical afterwards (genuinely
+/// indistinguishable by directory/file signal) get the cluster-id tail so they
+/// remain individually addressable. Deterministic and offline.
+fn disambiguate_labels(concepts: &mut [Concept]) {
+    use std::collections::BTreeMap;
+
+    // How many concepts share each base label?
+    let mut base_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for c in concepts.iter() {
+        *base_counts.entry(c.label.clone()).or_default() += 1;
+    }
+
+    // First pass: append the runner-up token to every colliding base label.
+    for c in concepts.iter_mut() {
+        if base_counts.get(&c.label).copied().unwrap_or(0) <= 1 {
+            continue;
+        }
+        if let Some(tok) = distinguishing_token(&c.member_files) {
+            c.label = format!("{} · {tok}", c.label);
+        }
+    }
+
+    // Second pass: anything still duplicated (same runner-up token, or no
+    // directory/file signal at all) gets the id tail so it stays addressable.
+    let mut final_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for c in concepts.iter() {
+        *final_counts.entry(c.label.clone()).or_default() += 1;
+    }
+    for c in concepts.iter_mut() {
+        if final_counts.get(&c.label).copied().unwrap_or(0) <= 1 {
+            continue;
+        }
+        let tail = c.id.rsplit(':').next().unwrap_or(c.id.as_str());
+        c.label = format!("{} · {tail}", c.label);
+    }
+}
+
+/// A token that distinguishes one cluster from its same-named siblings: the
+/// **runner-up** parent-directory leaf (the most common dir that isn't the
+/// dominant one), else the most common filename **stem** token. Humanised.
+/// `None` only when the cluster has no usable path signal at all.
+fn distinguishing_token(files: &[String]) -> Option<String> {
+    let mut leaves: BTreeMap<String, usize> = BTreeMap::new();
+    for f in files {
+        if let Some(leaf) = parent_leaf(f) {
+            *leaves.entry(leaf).or_default() += 1;
+        }
+    }
+    // Dominant uses the same selection rule as `label_for_files`.
+    let dominant = leaves
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+        .map(|(k, _)| k.clone());
+    // Runner-up = highest-count leaf that isn't the dominant one.
+    let runner = leaves
+        .iter()
+        .filter(|(k, _)| Some(k.as_str()) != dominant.as_deref())
+        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+        .map(|(k, _)| k.clone());
+    if let Some(r) = runner {
+        return Some(humanize(&r));
+    }
+    // Single-directory cluster: fall back to the most common filename stem.
+    file_stem_token(files)
+}
+
+/// The most common filename stem across `files` (filename without its
+/// extension), humanised; ties break lexicographically. The single-directory
+/// disambiguation fallback.
+fn file_stem_token(files: &[String]) -> Option<String> {
+    let mut stems: BTreeMap<String, usize> = BTreeMap::new();
+    for f in files {
+        let norm = f.replace('\\', "/");
+        let name = norm.rsplit('/').next().unwrap_or(&norm);
+        let stem = name.split('.').next().unwrap_or(name);
+        if !stem.is_empty() {
+            *stems.entry(stem.to_owned()).or_default() += 1;
+        }
+    }
+    stems
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+        .map(|(k, _)| humanize(k))
 }
 
 /// Derive a `(label, description)` for a cluster from its files' dominant
@@ -171,7 +268,11 @@ fn parent_leaf(path: &str) -> Option<String> {
     let norm = path.replace('\\', "/");
     let mut parts: Vec<&str> = norm.split('/').collect();
     parts.pop(); // drop the filename
-    parts.into_iter().rev().find(|s| !s.is_empty()).map(str::to_owned)
+    parts
+        .into_iter()
+        .rev()
+        .find(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 /// Title-case a path segment: split on `_`/`-`/space, capitalise each word.
@@ -243,11 +344,20 @@ mod tests {
 
     #[test]
     fn clusters_into_semantic_concepts_with_centroids() {
-        let concepts = build_semantic_concepts(&corpus(), &SemanticParams { k: Some(2), ..Default::default() });
+        let concepts = build_semantic_concepts(
+            &corpus(),
+            &SemanticParams {
+                k: Some(2),
+                ..Default::default()
+            },
+        );
         assert_eq!(concepts.len(), 2, "two themes");
         for c in &concepts {
             assert_eq!(c.source, ConceptSource::Embedding);
-            assert!(c.centroid.as_ref().is_some_and(|v| v.len() == 3), "centroid carried");
+            assert!(
+                c.centroid.as_ref().is_some_and(|v| v.len() == 3),
+                "centroid carried"
+            );
             assert!(c.id.starts_with("sem:"));
             assert!(!c.member_files.is_empty());
         }
@@ -255,7 +365,14 @@ mod tests {
 
     #[test]
     fn members_are_the_clusters_files() {
-        let concepts = build_semantic_concepts(&corpus(), &SemanticParams { k: Some(2), overlap_margin: 0.0, ..Default::default() });
+        let concepts = build_semantic_concepts(
+            &corpus(),
+            &SemanticParams {
+                k: Some(2),
+                overlap_margin: 0.0,
+                ..Default::default()
+            },
+        );
         // With a hard partition, the auth files and graph files separate.
         let auth = concepts
             .iter()
@@ -267,12 +384,65 @@ mod tests {
     #[test]
     fn labels_reflect_dominant_directory() {
         let (label, desc) = label_for_files(
-            &["src/graph_writer/a.rs".into(), "src/graph_writer/b.rs".into()],
+            &[
+                "src/graph_writer/a.rs".into(),
+                "src/graph_writer/b.rs".into(),
+            ],
             4,
         );
         assert_eq!(label, "Graph Writer");
         assert!(desc.contains("mostly `graph_writer`"));
         assert!(desc.contains("2 file(s)"));
+    }
+
+    fn concept_with_files(id: &str, label: &str, files: &[&str]) -> Concept {
+        let mut c = Concept::new(id, label, "", ConceptSource::Embedding);
+        c.member_files = files.iter().map(|s| (*s).to_owned()).collect();
+        c
+    }
+
+    #[test]
+    fn collisions_disambiguated_by_runner_up_dir() {
+        let mut concepts = vec![
+            concept_with_files(
+                "sem:0000",
+                "Composer",
+                &["src/composer/a.rs", "src/composer/b.rs", "src/models/x.rs"],
+            ),
+            concept_with_files(
+                "sem:0001",
+                "Composer",
+                &["src/composer/c.rs", "src/composer/d.rs", "src/ipc/y.rs"],
+            ),
+            concept_with_files("sem:0002", "Graph", &["src/graph/g.rs"]),
+        ];
+        disambiguate_labels(&mut concepts);
+        // The lone "Graph" is left untouched.
+        assert_eq!(concepts[2].label, "Graph");
+        // Each "Composer" gets its runner-up directory appended.
+        assert_eq!(concepts[0].label, "Composer · Models");
+        assert_eq!(concepts[1].label, "Composer · Ipc");
+        // And nothing collides anymore.
+        let labels: Vec<_> = concepts.iter().map(|c| &c.label).collect();
+        let mut uniq = labels.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(labels.len(), uniq.len(), "all labels distinct");
+    }
+
+    #[test]
+    fn unresolvable_collisions_fall_back_to_id_tail() {
+        // Two clusters entirely inside the same single directory with the same
+        // filename stem — no runner-up dir, identical stem — must still end up
+        // distinct via the cluster-id tail.
+        let mut concepts = vec![
+            concept_with_files("sem:0007", "Conf", &["src/conf/mod.rs"]),
+            concept_with_files("sem:0008", "Conf", &["src/conf/mod.rs"]),
+        ];
+        disambiguate_labels(&mut concepts);
+        assert_ne!(concepts[0].label, concepts[1].label);
+        assert!(concepts[0].label.ends_with("0007"), "{}", concepts[0].label);
+        assert!(concepts[1].label.ends_with("0008"), "{}", concepts[1].label);
     }
 
     #[test]
@@ -300,7 +470,13 @@ mod tests {
     fn skips_chunks_without_vectors() {
         let mut cs = corpus();
         cs.push(chunk("empty", "src/x/none.rs", vec![]));
-        let concepts = build_semantic_concepts(&cs, &SemanticParams { k: Some(2), ..Default::default() });
+        let concepts = build_semantic_concepts(
+            &cs,
+            &SemanticParams {
+                k: Some(2),
+                ..Default::default()
+            },
+        );
         // The vector-less chunk's file never appears as a member.
         assert!(concepts
             .iter()

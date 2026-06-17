@@ -60,7 +60,11 @@ fn layered_graph() -> WorkspaceGraph {
 }
 
 #[test]
-fn small_graph_settles_into_a_layered_structure() {
+fn small_graph_settles_into_a_centred_radial_structure() {
+    // Center-anchor layout (viz-fix): the depth bands become concentric rings
+    // around the origin. Roots collapse to the centre; dependencies fan out;
+    // and — the key fix — the isolated node `z` is tethered near the centre
+    // instead of being flung off-screen by repulsion.
     let g = layered_graph();
     let fd = ForceDirected::default();
     let mut engine = fd.build_engine(&g, PhysicsConfig::default());
@@ -81,24 +85,34 @@ fn small_graph_settles_into_a_layered_structure() {
     assert!(steps < 300, "settled before the 5 s cap (took {steps})");
 
     let layout = engine.snapshot().to_layout();
-    let y = |id: &str| layout.get(id).unwrap().y;
+    let radius = |id: &str| {
+        let p = layout.get(id).unwrap();
+        (p.x * p.x + p.y * p.y).sqrt()
+    };
+    let mean_r = |ids: &[&str]| ids.iter().map(|i| radius(i)).sum::<f32>() / ids.len() as f32;
 
-    // Roots sit above their descendants (y grows downward).
-    let root = y("r");
-    let mean = |ids: &[&str]| ids.iter().map(|i| y(i)).sum::<f32>() / ids.len() as f32;
-    let level1 = mean(&["a", "b"]);
-    let level2 = mean(&["c", "d", "e", "f"]);
-    let level3 = mean(&["g", "h"]);
+    let root = radius("r");
+    let level1 = mean_r(&["a", "b"]);
+    let level3 = mean_r(&["g", "h"]);
 
-    assert!(level1 > root, "level1 below root: {level1} vs {root}");
-    assert!(level2 > level1, "level2 below level1: {level2} vs {level1}");
-    assert!(level3 > level2, "level3 below level2: {level3} vs {level2}");
-
-    // Leaves end up meaningfully lower than the root (a real layered spread,
-    // not a flat blob).
+    // The root sits near the centre; the deepest leaves orbit much farther out
+    // — a real radial spread, not a blob.
+    assert!(root < 150.0, "root near the centre, got {root}");
     assert!(
-        y("g") - root > 100.0 && y("h") - root > 100.0,
-        "deep leaves are well below the root",
+        level3 > level1,
+        "deeper nodes orbit farther out: depth3 {level3} > depth1 {level1}",
+    );
+    assert!(
+        level3 > 200.0,
+        "the graph actually spreads, depth3 r={level3}"
+    );
+
+    // The isolated node is contained near the centre, not stranded at infinity
+    // (the old y-only model left its x unconstrained → it escaped).
+    assert!(
+        radius("z") < 600.0,
+        "disconnected node tethered near centre, got {}",
+        radius("z"),
     );
 }
 

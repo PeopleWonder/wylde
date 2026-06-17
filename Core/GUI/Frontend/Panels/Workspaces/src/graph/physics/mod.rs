@@ -50,7 +50,7 @@ pub use config::PhysicsConfig;
 
 use barnes_hut::QuadTree;
 use damping::{clamp_speed, damp, Equilibrium};
-use forces::{gravity, spring};
+use forces::{gravity, radial, spring};
 
 /// One node handed to the engine at build time. The layout backend
 /// ([`crate::graph::layout::force_directed`]) fills these: a warm-start
@@ -61,6 +61,9 @@ pub struct BodyInit {
     pub x: f32,
     pub y: f32,
     pub y_target: f32,
+    /// Dependency depth (longest path from a root). Drives the radial-by-depth
+    /// force's ring radius (`r_target = depth · ring_spacing`); roots are 0.
+    pub depth: u32,
     pub pinned: bool,
 }
 
@@ -99,6 +102,8 @@ pub struct PhysicsEngine {
     vel_x: Vec<f32>,
     vel_y: Vec<f32>,
     y_target: Vec<f32>,
+    /// Dependency depth per node — the radial force's ring index.
+    depth: Vec<u32>,
     pinned: Vec<bool>,
     active: Vec<bool>,
     /// Edges as (i, j, rest_length).
@@ -134,6 +139,7 @@ impl PhysicsEngine {
         let mut id_index = HashMap::with_capacity(n);
         let (mut pos_x, mut pos_y) = (Vec::with_capacity(n), Vec::with_capacity(n));
         let mut y_target = Vec::with_capacity(n);
+        let mut depth = Vec::with_capacity(n);
         let mut pinned = Vec::with_capacity(n);
         for (i, b) in bodies.into_iter().enumerate() {
             let id: Arc<str> = Arc::from(b.id.as_str());
@@ -142,6 +148,7 @@ impl PhysicsEngine {
             pos_x.push(b.x);
             pos_y.push(b.y);
             y_target.push(b.y_target);
+            depth.push(b.depth);
             pinned.push(b.pinned);
         }
         let edges = edges
@@ -166,6 +173,7 @@ impl PhysicsEngine {
             pos_x,
             pos_y,
             y_target,
+            depth,
             pinned,
             edges,
             cfg,
@@ -281,20 +289,66 @@ impl PhysicsEngine {
         let points: Vec<(f32, f32)> = (0..n).map(|i| (self.pos_x[i], self.pos_y[i])).collect();
         let tree = QuadTree::build(&points);
 
-        // Gravity (bounded, per-level y-target) + repulsion, active nodes only.
+        // Structural attraction (radial-by-depth in the default center-anchor
+        // layout, else legacy y-only gravity) + Barnes-Hut repulsion, active
+        // nodes only.
         for i in 0..n {
             if !self.active[i] || self.pinned[i] {
                 continue;
             }
-            self.force_y[i] += gravity(
-                self.pos_y[i],
-                self.y_target[i],
-                self.cfg.gravity_strength,
-                self.cfg.max_gravity_force,
-            );
+            if self.cfg.use_radial {
+                // Pull toward the concentric ring for this node's depth. Roots
+                // (depth 0) target the centre; islands (also depth 0) are
+                // tethered there too, so they can't escape.
+                let r_target = self.depth[i] as f32 * self.cfg.ring_spacing;
+                let (rx, ry) = radial(
+                    self.pos_x[i],
+                    self.pos_y[i],
+                    r_target,
+                    self.cfg.radial_strength,
+                    self.cfg.max_gravity_force,
+                );
+                self.force_x[i] += rx;
+                self.force_y[i] += ry;
+            } else {
+                self.force_y[i] += gravity(
+                    self.pos_y[i],
+                    self.y_target[i],
+                    self.cfg.gravity_strength,
+                    self.cfg.max_gravity_force,
+                );
+            }
             let (rx, ry) = tree.force_on(self.pos_x[i], self.pos_y[i], i as u32, &self.cfg);
             self.force_x[i] += rx;
             self.force_y[i] += ry;
+        }
+
+        // Centre-of-mass centering: a uniform pull that drags the active,
+        // non-pinned centroid back to the origin (d3 forceCenter style). This
+        // kills the global drift the old y-only model allowed — x was otherwise
+        // unconstrained — without disturbing relative positions. Two O(N)
+        // passes, no allocation.
+        if self.cfg.center_strength != 0.0 {
+            let (mut sx, mut sy, mut cnt) = (0.0f32, 0.0f32, 0u32);
+            for i in 0..n {
+                if self.active[i] && !self.pinned[i] {
+                    sx += self.pos_x[i];
+                    sy += self.pos_y[i];
+                    cnt += 1;
+                }
+            }
+            if cnt > 0 {
+                let (cx, cy) = (
+                    -self.cfg.center_strength * (sx / cnt as f32),
+                    -self.cfg.center_strength * (sy / cnt as f32),
+                );
+                for i in 0..n {
+                    if self.active[i] && !self.pinned[i] {
+                        self.force_x[i] += cx;
+                        self.force_y[i] += cy;
+                    }
+                }
+            }
         }
 
         // Spring edges (asymmetric Hooke). Each endpoint is nudged independently
@@ -614,6 +668,19 @@ mod tests {
             x,
             y,
             y_target,
+            depth: 0,
+            pinned: false,
+        }
+    }
+
+    /// A body at an explicit dependency depth (for radial-force tests).
+    fn body_at_depth(id: &str, x: f32, y: f32, depth: u32) -> BodyInit {
+        BodyInit {
+            id: id.to_owned(),
+            x,
+            y,
+            y_target: 0.0,
+            depth,
             pinned: false,
         }
     }
@@ -648,8 +715,15 @@ mod tests {
 
     #[test]
     fn two_nodes_repel_apart() {
-        // Two coincident-ish nodes with no edge should push apart.
-        let cfg = PhysicsConfig::default();
+        // Two coincident-ish nodes with no edge should push apart. Isolate
+        // repulsion: the radial / centering pulls both target the origin (both
+        // are depth 0) and would otherwise reel them back through the centre —
+        // that behaviour is covered by the center-anchor tests below.
+        let cfg = PhysicsConfig {
+            radial_strength: 0.0,
+            center_strength: 0.0,
+            ..Default::default()
+        };
         let mut e = PhysicsEngine::build(
             vec![body("a", -1.0, 0.0, 0.0), body("b", 1.0, 0.0, 0.0)],
             &[],
@@ -665,11 +739,13 @@ mod tests {
 
     #[test]
     fn spring_pulls_stretched_edge_together() {
-        // Two nodes far apart, joined by a short-rest edge, with repulsion
-        // disabled so the spring dominates.
+        // Two nodes far apart, joined by a short-rest edge, with every other
+        // force disabled so the spring is the only thing acting.
         let cfg = PhysicsConfig {
             repulsion_strength: 0.0,
             gravity_strength: 0.0,
+            radial_strength: 0.0,
+            center_strength: 0.0,
             ..Default::default()
         };
         let mut e = PhysicsEngine::build(
@@ -687,8 +763,11 @@ mod tests {
 
     #[test]
     fn gravity_pulls_node_to_its_y_target() {
+        // Legacy banded layout: y-only gravity, no radial / centering.
         let cfg = PhysicsConfig {
             repulsion_strength: 0.0,
+            use_radial: false,
+            center_strength: 0.0,
             ..Default::default()
         };
         let mut e = PhysicsEngine::build(vec![body("a", 0.0, 0.0, 240.0)], &[], cfg);
@@ -768,6 +847,102 @@ mod tests {
         }
         // Off-screen node never integrated → frozen.
         assert_eq!(e.position_of("off").unwrap(), off0);
+    }
+
+    // ── Center-anchor layout (viz-fix) ──────────────────────────────────
+
+    fn radius_of(e: &PhysicsEngine, id: &str) -> f32 {
+        let p = e.position_of(id).unwrap();
+        (p.x * p.x + p.y * p.y).sqrt()
+    }
+
+    #[test]
+    fn radial_layout_orders_nodes_by_depth_ring() {
+        // Three isolated nodes at depths 0/1/2 should settle on rings of
+        // increasing radius around the origin (default radial mode).
+        let cfg = PhysicsConfig::default();
+        let mut e = PhysicsEngine::build(
+            vec![
+                body_at_depth("d0", 10.0, 0.0, 0),
+                body_at_depth("d1", -20.0, 15.0, 1),
+                body_at_depth("d2", 5.0, -30.0, 2),
+            ],
+            &[],
+            cfg,
+        );
+        for _ in 0..400 {
+            if e.step().settled {
+                break;
+            }
+        }
+        let (r0, r1, r2) = (
+            radius_of(&e, "d0"),
+            radius_of(&e, "d1"),
+            radius_of(&e, "d2"),
+        );
+        assert!(r0 < r1, "depth-0 ring inside depth-1: {r0} < {r1}");
+        assert!(r1 < r2, "depth-1 ring inside depth-2: {r1} < {r2}");
+        // Roots collapse to the centre (well inside one ring spacing).
+        assert!(r0 < cfg.ring_spacing, "root near centre: {r0}");
+    }
+
+    #[test]
+    fn disconnected_island_is_tethered_not_flung_off() {
+        // THE regression this fix targets: an isolated node parked far away no
+        // longer escapes to infinity — the radial force tethers it (depth 0 →
+        // r_target 0) so it is pulled back toward the centre. Under the old
+        // y-only model nothing constrained x, so repulsion drove it outward.
+        let cfg = PhysicsConfig::default();
+        let mut e = PhysicsEngine::build(
+            vec![
+                body_at_depth("core", 0.0, 0.0, 0),
+                body_at_depth("island", 800.0, 600.0, 0), // radius 1000
+            ],
+            &[],
+            cfg,
+        );
+        let r_start = radius_of(&e, "island");
+        for _ in 0..400 {
+            if e.step().settled {
+                break;
+            }
+        }
+        let r_end = radius_of(&e, "island");
+        assert!(
+            r_end < r_start,
+            "island pulled inward, not flung off: {r_start} → {r_end}",
+        );
+        // It ends up near the centre cluster, not stranded off-screen.
+        assert!(r_end < 300.0, "island contained near centre, got {r_end}");
+    }
+
+    #[test]
+    fn centering_drags_an_offset_cloud_back_to_the_origin() {
+        // A whole cluster warm-started far from the origin should re-centre:
+        // the centroid is pulled back toward (0,0). Use a connected pair so the
+        // structure stays put while the centring translates it home.
+        let cfg = PhysicsConfig::default();
+        let mut e = PhysicsEngine::build(
+            vec![
+                body_at_depth("a", 1000.0, 1000.0, 0),
+                body_at_depth("b", 1100.0, 1000.0, 0),
+            ],
+            &[("a".to_owned(), "b".to_owned(), 120.0)],
+            cfg,
+        );
+        for _ in 0..400 {
+            if e.step().settled {
+                break;
+            }
+        }
+        let a = e.position_of("a").unwrap();
+        let b = e.position_of("b").unwrap();
+        let (cx, cy) = ((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+        let centroid_r = (cx * cx + cy * cy).sqrt();
+        assert!(
+            centroid_r < 200.0,
+            "centroid re-centred near origin, got {centroid_r}",
+        );
     }
 
     // ── Off-thread worker ───────────────────────────────────────────────
