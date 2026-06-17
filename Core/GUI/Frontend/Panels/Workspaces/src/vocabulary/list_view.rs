@@ -146,6 +146,56 @@ pub fn rows(
     out
 }
 
+/// Re-order rows into a **hierarchy** (thesis S1.2): each root (an anchor with
+/// no `parent_anchor`, or whose parent isn't in the visible set) is followed by
+/// its descendants depth-first, and every row is paired with its indent depth.
+/// Pure + gpui-free; the tab renders the depth as left-indent. Ordering within
+/// a sibling group preserves the input order (already recency-sorted by
+/// [`rows`]). Cycles / missing parents are handled by treating an
+/// already-emitted or unresolved parent as a root, so every row appears exactly
+/// once.
+pub fn hierarchy_order(rows: &[VocabRow]) -> Vec<(VocabRow, usize)> {
+    use std::collections::BTreeMap;
+
+    // identifier → indices of its direct children, in input order.
+    let present: HashSet<&str> = rows.iter().map(|r| r.anchor.identifier.as_str()).collect();
+    let mut children: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    let mut roots: Vec<usize> = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        match r.anchor.parent_anchor.as_deref() {
+            Some(p) if present.contains(p) && p != r.anchor.identifier => {
+                children.entry(p).or_default().push(i);
+            }
+            _ => roots.push(i),
+        }
+    }
+
+    let mut out: Vec<(VocabRow, usize)> = Vec::with_capacity(rows.len());
+    let mut emitted: HashSet<usize> = HashSet::new();
+    // Iterative DFS so a pathological deep chain can't blow the stack.
+    let mut stack: Vec<(usize, usize)> = roots.iter().rev().map(|&i| (i, 0usize)).collect();
+    while let Some((i, depth)) = stack.pop() {
+        if !emitted.insert(i) {
+            continue; // guard against cycles / double-parenting
+        }
+        out.push((rows[i].clone(), depth));
+        if let Some(kids) = children.get(rows[i].anchor.identifier.as_str()) {
+            for &k in kids.iter().rev() {
+                if !emitted.contains(&k) {
+                    stack.push((k, depth + 1));
+                }
+            }
+        }
+    }
+    // Safety net: any row not reached (e.g. a parent cycle) is appended flat.
+    for (i, r) in rows.iter().enumerate() {
+        if emitted.insert(i) {
+            out.push((r.clone(), 0));
+        }
+    }
+    out
+}
+
 fn matches_query(a: &AnchorView, q: &str) -> bool {
     a.identifier.to_lowercase().contains(q)
         || a.description.to_lowercase().contains(q)
@@ -230,6 +280,55 @@ mod tests {
             );
         }
         assert!(active_rows(&ws, &[], ScopeFilter::All, "nope").is_empty());
+    }
+
+    fn row(id: &str, parent: Option<&str>) -> VocabRow {
+        let mut a = anchor(id, id, None, 0.0);
+        a.parent_anchor = parent.map(str::to_owned);
+        VocabRow {
+            anchor: a,
+            scope: AnchorScopeTag::Workspace,
+            stale: false,
+        }
+    }
+
+    #[test]
+    fn hierarchy_order_nests_children_under_parents() {
+        // root -> child -> grandchild, plus a second root.
+        let rows = vec![
+            row("root", None),
+            row("child", Some("root")),
+            row("grandchild", Some("child")),
+            row("other", None),
+        ];
+        let h = hierarchy_order(&rows);
+        let seq: Vec<(&str, usize)> = h
+            .iter()
+            .map(|(r, d)| (r.anchor.identifier.as_str(), *d))
+            .collect();
+        assert_eq!(
+            seq,
+            vec![("root", 0), ("child", 1), ("grandchild", 2), ("other", 0)]
+        );
+    }
+
+    #[test]
+    fn hierarchy_order_treats_missing_parent_as_root() {
+        let rows = vec![row("orphan", Some("not_present"))];
+        let h = hierarchy_order(&rows);
+        assert_eq!(h.len(), 1);
+        assert_eq!(h[0].1, 0, "orphaned child is rendered as a root");
+    }
+
+    #[test]
+    fn hierarchy_order_survives_a_cycle_and_emits_each_once() {
+        // a -> b -> a (cycle); every row must still appear exactly once.
+        let rows = vec![row("a", Some("b")), row("b", Some("a"))];
+        let h = hierarchy_order(&rows);
+        assert_eq!(h.len(), 2);
+        let mut ids: Vec<&str> = h.iter().map(|(r, _)| r.anchor.identifier.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["a", "b"]);
     }
 
     #[test]

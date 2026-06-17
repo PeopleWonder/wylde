@@ -25,6 +25,7 @@
 pub mod api;
 pub mod cheap;
 pub mod concept;
+pub mod search;
 pub mod store;
 
 pub use concept::{Concept, ConceptSource};

@@ -228,6 +228,34 @@ pub async fn handle_list_under(payload: Value) -> Reply {
     concepts_reply(&ws, &[("parent_id", json!(parent_id))], &kids)
 }
 
+/// `workspaces.concepts.search` — hybrid (fuzzy + semantic) search over a
+/// workspace's concepts (thesis §3.2). Payload: {workspace_id, query, limit?}.
+/// Reply: {workspace_id, query, results:[{concept, score, fuzzy, semantic}],
+/// count}. An empty query returns the full set ordered by label.
+pub async fn handle_search(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let query = payload
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let limit = payload
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .filter(|n| *n > 0)
+        .unwrap_or(50);
+    let results = super::search::search(&ws, &query, limit).await;
+    Reply::ok(json!({
+        "workspace_id": ws,
+        "query": query,
+        "count": results.len(),
+        "results": results,
+    }))
+}
+
 /// `workspaces.concepts.reverse_lookup` — from a `symbol_id` (and/or `file`) to
 /// the concepts and vocabulary it belongs to (thesis §4.2). Pure store query;
 /// no Neo4j. Reply: `{workspace_id, symbol_id?, file?, concepts, vocabulary}`
