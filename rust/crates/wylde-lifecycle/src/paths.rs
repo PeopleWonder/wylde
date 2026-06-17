@@ -142,12 +142,18 @@ pub fn save_at(store: &ServicePaths, path: &Path) -> std::io::Result<()> {
 /// pre-extraction `data/images` layout. Falls back to `<root>/WyldeData/…`
 /// only when the root has no parent (a filesystem root).
 pub fn default_data_dir(service: &str) -> PathBuf {
+    default_data_dir_under(&wylde_root_abs(), service)
+}
+
+/// Pure core of [`default_data_dir`] — `<root-parent>/WyldeData/<stripped>/`
+/// for an explicit (absolute) `root`. Split out so it is testable without
+/// mutating the process-wide `WYLDE_ROOT`.
+fn default_data_dir_under(root: &Path, service: &str) -> PathBuf {
     let stripped = service.strip_prefix("wylde-").unwrap_or(service);
-    let root = wylde_root_abs();
     let base = root
         .parent()
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| root.clone());
+        .unwrap_or_else(|| root.to_path_buf());
     base.join("WyldeData").join(stripped)
 }
 
@@ -155,10 +161,17 @@ pub fn default_data_dir(service: &str) -> PathBuf {
 /// else [`default_data_dir`]. The single resolver the spawn path and the
 /// `paths.get` action both call.
 pub fn resolve_data_dir(service: &str) -> PathBuf {
-    if let Some(over) = load().get(service) {
-        return PathBuf::from(over);
+    resolve_with(&load(), &wylde_root_abs(), service)
+}
+
+/// Pure core of [`resolve_data_dir`]: the override-else-default decision
+/// over an explicit `store` + `root`. Split out so it is testable without
+/// touching `WYLDE_DATA_DIR` / `WYLDE_ROOT`.
+fn resolve_with(store: &ServicePaths, root: &Path, service: &str) -> PathBuf {
+    match store.get(service) {
+        Some(over) => PathBuf::from(over),
+        None => default_data_dir_under(root, service),
     }
-    default_data_dir(service)
 }
 
 /// The env-var name a data-owning service reads for its library:
@@ -224,36 +237,31 @@ mod tests {
 
     #[test]
     fn default_data_dir_is_sibling_of_root() {
-        // With an absolute root, the default is <root-parent>/WyldeData/<svc>
-        // — outside the repo tree, never inside Services/<svc>/.
-        std::env::set_var("WYLDE_ROOT", r"C:\wylde\Wylde-release");
-        let d = default_data_dir("wylde-images");
-        std::env::remove_var("WYLDE_ROOT");
+        // The default is <root-parent>/WyldeData/<svc> — outside the repo
+        // tree, never inside Services/<svc>/. Pure helper, no process env.
+        let root = Path::new(r"C:\wylde\Wylde-release");
+        let d = default_data_dir_under(root, "wylde-images");
         assert!(
             d.ends_with(Path::new("WyldeData").join("images")),
             "expected .../WyldeData/images, got {d:?}"
         );
-        // The parent of the data dir's WyldeData is the root's parent.
         let wylde_data = d.parent().unwrap();
         assert_eq!(wylde_data.file_name().unwrap(), "WyldeData");
-        assert_eq!(
-            wylde_data.parent().unwrap(),
-            Path::new(r"C:\wylde")
-        );
+        assert_eq!(wylde_data.parent().unwrap(), Path::new(r"C:\wylde"));
     }
 
     #[test]
     fn resolve_prefers_override_else_default() {
-        let td = TempDir::new().unwrap();
-        // Point the store ladder at the tempdir and seed an override.
-        std::env::set_var("WYLDE_DATA_DIR", td.path());
+        // Pure composition: override wins; otherwise the default sibling.
+        // No process env, so this never races a concurrent test.
+        let root = Path::new(r"C:\wylde\Wylde-release");
         let mut s = ServicePaths::default();
         s.set("wylde-images", "E:/CustomLib");
-        save(&s).unwrap();
-        assert_eq!(resolve_data_dir("wylde-images"), PathBuf::from("E:/CustomLib"));
-        // A service with no override falls through to the default sibling.
-        let notes = resolve_data_dir("wylde-notes");
-        std::env::remove_var("WYLDE_DATA_DIR");
+        assert_eq!(
+            resolve_with(&s, root, "wylde-images"),
+            PathBuf::from("E:/CustomLib")
+        );
+        let notes = resolve_with(&s, root, "wylde-notes");
         assert!(notes.ends_with(Path::new("WyldeData").join("notes")));
     }
 
