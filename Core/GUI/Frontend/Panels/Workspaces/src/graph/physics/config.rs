@@ -116,9 +116,69 @@ impl Default for PhysicsConfig {
     }
 }
 
+/// Above this node count the default force model (tuned for ~1.5 k nodes)
+/// makes a 10 k-node body bounce hard and settle slowly — the "spiky, sprawly"
+/// feel. [`PhysicsConfig::for_node_count`] swaps in a calmer profile past this
+/// threshold. The cluster-level body (G3) stays small and keeps the default.
+pub const LARGE_GRAPH_THRESHOLD: usize = 5_000;
+
+impl PhysicsConfig {
+    /// The force profile to run for a body of `node_count` nodes.
+    ///
+    /// Small/medium graphs keep the locked default. Past
+    /// [`LARGE_GRAPH_THRESHOLD`] we tame the model (visual-polish G4): lower
+    /// repulsion + a wider cutoff spreads the push more gently over more
+    /// neighbours instead of a few hard kicks; heavier damping and a relaxed
+    /// equilibrium threshold plus a faster cool let the cloud settle quickly
+    /// into a tight map rather than creeping. Values are a starting point —
+    /// they want an empirical feel-test against the real 10 k graph and, once
+    /// happy, promotion into `GraphProfile` (G6) so they're tunable without a
+    /// rebuild.
+    pub fn for_node_count(node_count: usize) -> Self {
+        let base = Self::default();
+        if node_count <= LARGE_GRAPH_THRESHOLD {
+            return base;
+        }
+        Self {
+            repulsion_strength: 600.0,     // 1000 → 600: softer push at scale
+            cutoff_radius: 300.0,          // 200 → 300: spread the push wider
+            damping_factor: 0.14,          // 0.08 → 0.14: bleed motion faster
+            equilibrium_threshold: 0.10,   // 0.05 → 0.10: accept a calmer settle
+            alpha_decay: 0.045,            // 0.025 → 0.045: cool to a stop sooner
+            ..base
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn small_graphs_keep_the_default_profile() {
+        // At or below the threshold, nothing changes — the locked numbers hold.
+        assert_eq!(PhysicsConfig::for_node_count(0), PhysicsConfig::default());
+        assert_eq!(
+            PhysicsConfig::for_node_count(LARGE_GRAPH_THRESHOLD),
+            PhysicsConfig::default()
+        );
+    }
+
+    #[test]
+    fn large_graphs_get_a_calmer_profile() {
+        let big = PhysicsConfig::for_node_count(LARGE_GRAPH_THRESHOLD + 1);
+        let def = PhysicsConfig::default();
+        // Softer push, wider cutoff, heavier damping, relaxed equilibrium,
+        // faster cool — the whole point is "calmer at scale".
+        assert!(big.repulsion_strength < def.repulsion_strength);
+        assert!(big.cutoff_radius > def.cutoff_radius);
+        assert!(big.damping_factor > def.damping_factor);
+        assert!(big.equilibrium_threshold > def.equilibrium_threshold);
+        assert!(big.alpha_decay > def.alpha_decay);
+        // Untouched knobs stay at the locked default.
+        assert_eq!(big.spring_stiffness, def.spring_stiffness);
+        assert_eq!(big.frame_interval, def.frame_interval);
+    }
 
     #[test]
     fn defaults_match_the_locked_force_model() {
