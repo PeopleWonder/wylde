@@ -48,6 +48,16 @@ pub const SYMBOLS_FIND: &str = "workspaces.symbols.find";
 // ── Symbol context read API (Slice G-data — Phase 1) ─────────────────────
 pub const SYMBOL_CONTEXT: &str = "workspaces.symbol_context";
 
+// ── Concept system (TBS concept-system — Phase 0) ────────────────────────
+pub const CONCEPTS_LIST: &str = "workspaces.concepts.list";
+pub const CONCEPTS_GET: &str = "workspaces.concepts.get";
+pub const CONCEPTS_BUILD: &str = "workspaces.concepts.build";
+pub const CONCEPTS_CREATE: &str = "workspaces.concepts.create";
+pub const CONCEPTS_UPDATE: &str = "workspaces.concepts.update";
+pub const CONCEPTS_DELETE: &str = "workspaces.concepts.delete";
+pub const CONCEPTS_LIST_UNDER: &str = "workspaces.concepts.list_under";
+pub const CONCEPTS_REVERSE_LOOKUP: &str = "workspaces.concepts.reverse_lookup";
+
 // ── File I/O — jailed editor/file-tree surface (S1 / IDE plan P0.2) ──────
 pub const FS_READ: &str = "workspaces.fs.read";
 pub const FS_WRITE: &str = "workspaces.fs.write";
@@ -116,6 +126,15 @@ pub const ALL_ACTIONS: &[&str] = &[
     SYMBOLS_FIND,
     // Slice G-data — symbol context read API
     SYMBOL_CONTEXT,
+    // TBS concept-system — Phase 0
+    CONCEPTS_LIST,
+    CONCEPTS_GET,
+    CONCEPTS_BUILD,
+    CONCEPTS_CREATE,
+    CONCEPTS_UPDATE,
+    CONCEPTS_DELETE,
+    CONCEPTS_LIST_UNDER,
+    CONCEPTS_REVERSE_LOOKUP,
     // S1 (IDE plan P0.2) — jailed file I/O
     FS_READ,
     FS_WRITE,
@@ -284,6 +303,73 @@ pub fn install() {
          call graph (per-hop time budget 200ms+300ms×N); not_found when the \
          symbol isn't in the workspace; bolt_* codes when the backend is \
          unreachable.",
+        META_MODULE,
+    );
+
+    // ── TBS concept-system — Phase 0 ─────────────────────────────────────
+    register_action_with_meta(
+        CONCEPTS_LIST,
+        |p: Value| async move { crate::concepts::api::handle_list(p).await },
+        "Every concept for a workspace. Payload: {workspace_id}. Reply: \
+         {workspace_id, concepts, count}. Read-only; served from the \
+         authoritative concepts.json (no Neo4j needed).",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_GET,
+        |p: Value| async move { crate::concepts::api::handle_get(p).await },
+        "One concept by id (members + files + parents). Payload: {workspace_id, \
+         id}. Reply: the Concept. not_found for an unknown id.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_BUILD,
+        |p: Value| async move { crate::concepts::api::handle_build(p).await },
+        "Phase-0 cheap-concept pass: read the workspace code graph, label its \
+         directory clusters into stand-in concepts, and replace concepts.json. \
+         Idempotent. Payload: {workspace_id}. Reply: {workspace_id, built, \
+         projected, source: directory_cluster}. bolt_* codes when the graph \
+         backend is unreachable (the build needs the directory clusters).",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_CREATE,
+        |p: Value| async move { crate::concepts::api::handle_create(p).await },
+        "Hand-author one concept (curation). Payload: {workspace_id, id, label?, \
+         description?, members?, member_files?, parent_concepts?}. Reply: the \
+         Concept. already_exists on a duplicate id.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_UPDATE,
+        |p: Value| async move { crate::concepts::api::handle_update(p).await },
+        "Patch a concept's label/description/members/parent_concepts/described_by. \
+         Payload: {workspace_id, id, ...patch}. Reply: the updated Concept. \
+         not_found for an unknown id.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_DELETE,
+        |p: Value| async move { crate::concepts::api::handle_delete(p).await },
+        "Remove a concept by id. Payload: {workspace_id, id}. Reply: \
+         {ok, removed, id}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_LIST_UNDER,
+        |p: Value| async move { crate::concepts::api::handle_list_under(p).await },
+        "Concepts whose parent set contains parent_id (the CHILD_OF DAG). \
+         Payload: {workspace_id, parent_id}. Reply: {workspace_id, parent_id, \
+         concepts, count}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_REVERSE_LOOKUP,
+        |p: Value| async move { crate::concepts::api::handle_reverse_lookup(p).await },
+        "Reverse lookup (thesis §4.2): from a symbol/file to the concepts and \
+         vocabulary it belongs to. Payload: {workspace_id, symbol_id?, file?} \
+         (one of symbol_id/file required). Reply: {workspace_id, symbol_id, \
+         file, concepts, vocabulary}. Pure store query; no Neo4j.",
         META_MODULE,
     );
 

@@ -55,6 +55,46 @@ UNWIND es AS e DETACH DELETE e
 RETURN n
 ";
 
+/// Concept projection (TBS concept-system, thesis §2.2) — additive sync of the
+/// authoritative JSON concept store into the graph so the panel can render
+/// concept nodes. MERGE each `Concept` (keyed by `workspace`+`id`), refresh its
+/// label/description, clear stale `MEMBER`/`CHILD_OF` edges for that concept,
+/// then re-create them from the row. Member targets are matched by Entity name
+/// (the graph's entity key); a member with no Entity node is simply skipped
+/// (OPTIONAL MATCH). Fail-soft: the upsert is best-effort enrichment.
+pub const UPSERT_CONCEPTS: &str = "
+UNWIND $batch AS row
+MERGE (k:Concept {workspace: row.workspace, id: row.id})
+SET   k.label = row.label, k.description = row.description, k.source = row.source
+WITH  k, row
+OPTIONAL MATCH (k)-[m:MEMBER]->()
+DELETE m
+WITH  k, row
+OPTIONAL MATCH (k)-[c:CHILD_OF]->()
+DELETE c
+WITH  k, row
+CALL {
+  WITH k, row
+  UNWIND row.members AS ent_name
+  MATCH (e:Entity {name: ent_name})
+  MERGE (k)-[:MEMBER]->(e)
+}
+WITH k, row
+UNWIND (CASE WHEN size(row.parents) = 0 THEN [null] ELSE row.parents END) AS parent_id
+WITH k, row, parent_id WHERE parent_id IS NOT NULL
+MATCH (p:Concept {workspace: row.workspace, id: parent_id})
+MERGE (k)-[:CHILD_OF]->(p)
+";
+
+/// Concept projection cleanup — DETACH DELETE every `Concept` in a workspace
+/// (the build pass replaces the whole set; clear before re-projecting).
+pub const DELETE_WORKSPACE_CONCEPTS: &str = "
+MATCH (k:Concept {workspace: $ws})
+WITH count(k) AS n, collect(k) AS ks
+UNWIND ks AS k DETACH DELETE k
+RETURN n
+";
+
 /// `relate` — typed Entity→Entity edges. Built per `rel_type` because Cypher
 /// disallows `$`-substitution in relationship-type positions; the caller MUST
 /// validate `rel_type` against [`super::schema::relation_type_is_valid`].
@@ -95,5 +135,30 @@ mod tests {
         let r = relate_typed("CALLS");
         assert!(r.contains("[:CALLS]"));
         assert!(r.contains("$pairs"));
+    }
+
+    #[test]
+    fn upsert_concepts_mentions_required_shapes() {
+        for needle in [
+            "$batch",
+            "Concept",
+            "row.workspace",
+            "row.id",
+            "MEMBER",
+            "CHILD_OF",
+            "row.members",
+            "row.parents",
+        ] {
+            assert!(
+                UPSERT_CONCEPTS.contains(needle),
+                "UPSERT_CONCEPTS missing {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn delete_workspace_concepts_is_scoped() {
+        assert!(DELETE_WORKSPACE_CONCEPTS.contains("Concept {workspace: $ws}"));
+        assert!(DELETE_WORKSPACE_CONCEPTS.contains("DETACH DELETE"));
     }
 }
