@@ -493,3 +493,26 @@ icons:
   module_kind:
     svg_path: "M4 4h7v7H4zm9 0h7v7h-7zm-9 9h7v7H4zm9 0h7v7h-7z"
     description: "Composite sub-grid representing architectural organization"
+
+# 12. File-tree icons (visual-polish F1)
+# Optional override of the built-in icon config in src/files/icon_map.rs.
+# Sparse: entries here win over the rich Rust defaults; absent keys keep the
+# defaults. Icon names must reference glyphs shipped by the AssetSource
+# (Core/GUI/Shell/src/assets.rs → assets/icons/file-tree/*.svg). gpui paints
+# svg() as a mask tinted by text_color, so `color` (a $theme_token or #hex)
+# sets the per-type tint; omit it to inherit the row's text colour.
+file_tree_icons:
+  default:
+    file:   { icon: "file" }
+    folder: { icon: "folder", open_icon: "folder-open" }
+  by_extension:
+    rs:   { icon: "code" }
+    md:   { icon: "doc" }
+    toml: { icon: "config" }
+    json: { icon: "data" }
+  by_folder:
+    ".git": { icon: "git" }
+    target: { icon: "package", applies_to_children: true }
+  by_file:
+    "README.md":  { icon: "book", color: "$brand_light" }
+    "Cargo.toml": { icon: "package" }
