@@ -409,8 +409,12 @@ impl GraphView {
         if self.graph.nodes.is_empty() {
             return None;
         }
-        let fd = ForceDirected::default();
-        let cfg = PhysicsConfig::default();
+        // Visual-polish G4: tame the force model + shorten edges for large
+        // graphs so a 10 k-node body settles into a tight, calm map instead of
+        // a slow spiky sprawl. Small graphs keep the locked default profile.
+        let n = self.graph.nodes.len();
+        let fd = ForceDirected::new(layout::LayoutConfig::for_node_count(n));
+        let cfg = PhysicsConfig::for_node_count(n);
         let engine = match seed {
             Some(s) => fd.build_engine_with_seed(self.graph.as_ref(), cfg, s),
             None => fd.build_engine(self.graph.as_ref(), cfg),

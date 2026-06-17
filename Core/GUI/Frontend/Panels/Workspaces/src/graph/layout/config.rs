@@ -38,6 +38,24 @@ impl Default for LayoutConfig {
 }
 
 impl LayoutConfig {
+    /// The layout geometry to use for a body of `node_count` nodes.
+    ///
+    /// Small/medium graphs keep the locked default. Past
+    /// [`super::super::physics::config::LARGE_GRAPH_THRESHOLD`] we shorten the
+    /// spring rest length (visual-polish G4) so a dense 10 k-node graph reels
+    /// its edges in tighter instead of sprawling — paired with the calmer
+    /// force profile in `PhysicsConfig::for_node_count`.
+    pub fn for_node_count(node_count: usize) -> Self {
+        let base = Self::default();
+        if node_count <= super::super::physics::config::LARGE_GRAPH_THRESHOLD {
+            return base;
+        }
+        Self {
+            rest_length_multiplier: 0.9, // 1.2 → 0.9: shorter edges, tighter map
+            ..base
+        }
+    }
+
     /// The y-target (model px) for a node at dependency depth `depth`.
     pub fn y_target(&self, depth: u32) -> f32 {
         let d = depth as f32 * self.level_spacing;
@@ -114,6 +132,21 @@ mod tests {
         assert_eq!(c.rest_length_multiplier, 1.2);
         assert_eq!(c.rest_length(), 144.0);
         assert!(c.y_axis_down);
+    }
+
+    #[test]
+    fn large_graphs_get_shorter_edges() {
+        use super::super::super::physics::config::LARGE_GRAPH_THRESHOLD;
+        // Small graphs keep the locked geometry.
+        assert_eq!(LayoutConfig::for_node_count(0), LayoutConfig::default());
+        assert_eq!(
+            LayoutConfig::for_node_count(LARGE_GRAPH_THRESHOLD),
+            LayoutConfig::default()
+        );
+        // Large graphs shorten the rest length for a tighter map.
+        let big = LayoutConfig::for_node_count(LARGE_GRAPH_THRESHOLD + 1);
+        assert!(big.rest_length_multiplier < LayoutConfig::default().rest_length_multiplier);
+        assert!(big.rest_length() < LayoutConfig::default().rest_length());
     }
 
     #[test]
