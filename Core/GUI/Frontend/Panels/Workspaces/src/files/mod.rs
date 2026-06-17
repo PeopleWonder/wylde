@@ -7,6 +7,7 @@
 //! Ignored entries (`.git`, `target`, dotfiles, binaries) are shown but dimmed
 //! (OQ-7). Service-down surfaces a banner + Retry, preserving the last tree.
 
+pub mod icon_map;
 pub mod ipc;
 
 use std::collections::{HashMap, HashSet};
