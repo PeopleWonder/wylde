@@ -535,6 +535,13 @@ fn worker_loop(
     frame_interval: std::time::Duration,
     step_delay: std::time::Duration,
 ) {
+    // Frozen-layout cache (visual-polish G3a): true once the resting frame has
+    // been broadcast. While true the worker parks WITHOUT re-stepping,
+    // re-snapshotting, or re-sending — a settled graph then costs nothing (no
+    // per-tick N-node allocation, no render-side Rc rebuild + repaint). Any
+    // command that resumes the sim (drag pin/release, region change, nudge —
+    // all call `engine.resume()`) clears it, so the cache busts correctly.
+    let mut broadcast_settled = false;
     loop {
         // Drain every pending command first.
         loop {
@@ -547,6 +554,26 @@ fn worker_loop(
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => return,
             }
+        }
+
+        // A command may have resumed the sim — then we owe a fresh broadcast.
+        if !engine.settled() {
+            broadcast_settled = false;
+        }
+
+        if broadcast_settled {
+            // Frozen: the render side already holds the resting layout. Wait
+            // for a command, then re-evaluate — no step, snapshot, or send.
+            match cmd_rx.recv_timeout(SETTLED_POLL) {
+                Ok(cmd) => {
+                    if !apply(cmd, &mut engine) {
+                        return;
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+            continue;
         }
 
         let start = Instant::now();
@@ -563,16 +590,8 @@ fn worker_loop(
         let _ = tx.send(Arc::new(engine.snapshot()));
 
         if stats.settled {
-            // Park until a command arrives (no busy-spin) — equilibrium freeze.
-            match cmd_rx.recv_timeout(SETTLED_POLL) {
-                Ok(cmd) => {
-                    if !apply(cmd, &mut engine) {
-                        return;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            }
+            // Just broadcast the resting frame — freeze on the next iteration.
+            broadcast_settled = true;
         } else {
             // Pace to ~60 fps; the step itself already consumed some of the
             // budget.
@@ -825,6 +844,46 @@ mod tests {
         let f = handle.latest();
         let p = f.positions.iter().find(|(id, _)| &**id == "a").unwrap().1;
         assert!((p.x - 123.0).abs() < 1.0 && (p.y - 45.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn settled_worker_stops_broadcasting_until_resumed() {
+        // G3a freeze: once settled the worker must not keep emitting frames
+        // (each one is an N-node alloc + a render repaint). A resume command
+        // (here a pin) re-arms broadcasting.
+        let engine = PhysicsEngine::build(
+            vec![body("a", 0.0, 0.0, 0.0)],
+            &[],
+            PhysicsConfig::default(),
+        );
+        let handle = PhysicsHandle::spawn(engine);
+        let mut rx = handle.receiver();
+
+        // Let it settle, then consume whatever has been latched so far.
+        thread::sleep(Duration::from_millis(300));
+        assert!(handle.latest().settled, "the single node settles");
+        let _ = rx.borrow_and_update();
+
+        // Park well past several SETTLED_POLL ticks: a frozen worker sends
+        // nothing new, so the receiver sees no change.
+        thread::sleep(Duration::from_millis(400));
+        assert!(
+            !rx.has_changed().unwrap(),
+            "settled worker broadcast no further frames"
+        );
+
+        // A pin resumes it — frames flow again and the node moves.
+        handle.pin("a", 100.0, 25.0);
+        thread::sleep(Duration::from_millis(150));
+        assert!(rx.has_changed().unwrap(), "resume re-armed broadcasting");
+        let p = handle
+            .latest()
+            .positions
+            .iter()
+            .find(|(id, _)| &**id == "a")
+            .unwrap()
+            .1;
+        assert!((p.x - 100.0).abs() < 1.0 && (p.y - 25.0).abs() < 1.0);
     }
 
     #[test]
