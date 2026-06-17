@@ -9064,7 +9064,6 @@ dependencies = [
  "tracing",
  "uuid",
  "wylde-plugin-api",
- "wylde-plugin-hello-wylde",
  "wylde-prebuild-guard",
  "wylde-shared",
  "wylde-workspaces-client",
@@ -9253,14 +9252,6 @@ name = "wylde-plugin-api"
 version = "0.1.0-alpha.1"
 dependencies = [
  "serde_json",
-]
-
-[[package]]
-name = "wylde-plugin-hello-wylde"
-version = "0.1.0-alpha.1"
-dependencies = [
- "serde_json",
- "wylde-plugin-api",
 ]
 
 [[package]]
