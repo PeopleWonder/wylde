@@ -104,6 +104,33 @@ pub fn desired_folds(
     folds
 }
 
+/// The desired fold set with the clusters-first tier on top (visual-polish
+/// G1). At or below `clusters_first_zoom`, **every** known cluster
+/// (`thresholds` carries one entry per cluster) folds to a sphere — the
+/// galaxy view — except clusters the user explicitly expanded. Above it, this
+/// is exactly [`desired_folds`] (auto-fold selection + per-cluster zoom
+/// thresholds + overrides).
+pub fn desired_folds_at_zoom(
+    auto_folds: &HashSet<String>,
+    thresholds: &HashMap<String, f32>,
+    zoom: f32,
+    overrides: &HashMap<String, Override>,
+    clusters_first_zoom: f32,
+) -> HashSet<String> {
+    if zoom <= clusters_first_zoom {
+        let mut folds: HashSet<String> = thresholds.keys().cloned().collect();
+        // A user who explicitly expanded a sphere keeps it open even in the
+        // galaxy view; a Collapsed override is moot (already folded).
+        for (id, ov) in overrides {
+            if *ov == Override::Expanded {
+                folds.remove(id);
+            }
+        }
+        return folds;
+    }
+    desired_folds(auto_folds, thresholds, zoom, overrides)
+}
+
 /// Drop overrides the zoom has caught up with (an "Expand Cluster" override
 /// is satisfied once the zoom unfolds it anyway, and vice versa), so manual
 /// choices don't permanently pin clusters against the space-map's
@@ -231,6 +258,26 @@ mod tests {
         ov.insert("not-auto".to_owned(), Override::Collapsed);
         let f = desired_folds(&auto, &th, 0.5, &ov);
         assert!(!f.contains("not-auto"));
+    }
+
+    #[test]
+    fn clusters_first_folds_everything_below_threshold() {
+        let (auto, th) = setup(); // auto = {a,b}; th has a,b
+        let none = HashMap::new();
+        // Above the clusters-first zoom → ordinary per-cluster logic.
+        let f = desired_folds_at_zoom(&auto, &th, 1.5, &none, 0.35);
+        assert!(!f.contains("a") && f.contains("b"), "ordinary tier above threshold");
+        // At/below it → every cluster in `thresholds` folds (the galaxy view),
+        // even ones the auto-selector wouldn't have folded.
+        let mut th2 = th.clone();
+        th2.insert("c".to_owned(), 5.0); // a cluster NOT in auto_folds
+        let f = desired_folds_at_zoom(&auto, &th2, 0.2, &none, 0.35);
+        assert!(f.contains("a") && f.contains("b") && f.contains("c"));
+        // An explicit Expanded override stays open even in the galaxy view.
+        let mut ov = HashMap::new();
+        ov.insert("a".to_owned(), Override::Expanded);
+        let f = desired_folds_at_zoom(&auto, &th2, 0.2, &ov, 0.35);
+        assert!(!f.contains("a") && f.contains("b") && f.contains("c"));
     }
 
     #[test]

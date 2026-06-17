@@ -31,6 +31,14 @@ pub struct ClusterConfig {
     /// Padding (px at zoom 1) around an expanded-in-place cluster's members
     /// when drawing the Theme `cluster_boundary` outline.
     pub boundary_pad_px: f32,
+    /// Clusters-first tier (visual-polish G1): at or below this zoom, **every**
+    /// cluster folds to a sphere (not just the auto-selected cold tail), so a
+    /// 10k-node graph renders as ~N galaxy spheres + aggregate edges instead of
+    /// thousands of members the detail of which is invisible anyway. Above it,
+    /// the per-cluster threshold logic takes over. A 10k graph's first-load fit
+    /// zoom clamps very low, so this engages exactly when it should; small
+    /// graphs fit at a high zoom and never trip it.
+    pub clusters_first_zoom: f32,
 }
 
 impl Default for ClusterConfig {
@@ -40,6 +48,7 @@ impl Default for ClusterConfig {
             target_visible_nodes: 150,
             min_fold_size: 3,
             boundary_pad_px: 18.0,
+            clusters_first_zoom: 0.35,
         }
     }
 }
@@ -54,5 +63,7 @@ mod tests {
         assert!(c.target_visible_nodes < c.auto_threshold_nodes);
         assert!(c.min_fold_size >= 2);
         assert!(c.boundary_pad_px > 0.0);
+        // Clusters-first must engage only at a genuinely zoomed-out scale.
+        assert!(c.clusters_first_zoom > 0.0 && c.clusters_first_zoom < 1.0);
     }
 }

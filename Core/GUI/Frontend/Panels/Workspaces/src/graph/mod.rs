@@ -1838,6 +1838,7 @@ mod tests {
             target_visible_nodes: 2,
             min_fold_size: 3,
             boundary_pad_px: 18.0,
+            clusters_first_zoom: 0.35,
         };
         let zoom = v.camera.zoom;
         let graph = v.graph.clone();
