@@ -71,25 +71,70 @@ pub async fn handle_get(payload: Value) -> Reply {
     }
 }
 
-/// `workspaces.concepts.build` — the Phase-0 cheap-concept pass. Reads the
-/// workspace's live code graph, labels its directory clusters into stand-in
-/// concepts, and replaces `concepts.json` with the result. Idempotent: a
-/// re-run reproduces the same set (modulo timestamps). Returns
-/// `{workspace_id, built, source: "directory_cluster"}`.
+/// `workspaces.concepts.build` — build the concept set, **preferring semantic
+/// clustering** when the workspace has an embedding index, else falling back to
+/// the Phase-0 directory-cluster stand-ins (thesis §7: Phase 2 upgrades the
+/// concept *source* without changing the browse UI — the same Build button
+/// "instantly gets better"). Idempotent (deterministic clustering / labeling).
+/// Manually-authored concepts are preserved across a rebuild.
 ///
-/// Surfaces the `bolt_*` code unchanged when the graph backend is unreachable
-/// — building cheap concepts requires the directory clusters the graph verb
-/// produces, so a down Neo4j fails the build (the same dependency the graph
-/// tab has). The browse surface degrades to the last-built set on disk.
+/// Returns `{workspace_id, built, projected, source}` where `source` is
+/// `embedding` (semantic) or `directory_cluster` (fallback).
 pub async fn handle_build(payload: Value) -> Reply {
     let Some(ws) = require_str(&payload, "workspace_id") else {
         return Reply::err_msg("bad_request", "workspace_id is required");
     };
+
+    // Prefer semantic clustering when an embedding index exists.
+    let chunks = crate::rag::indexer::store::load_chunks(&ws);
+    let have_vectors = chunks.iter().filter(|c| !c.vector.is_empty()).count();
+    if have_vectors >= 2 {
+        let concepts =
+            super::semantic::build_semantic_concepts(&chunks, &super::semantic::SemanticParams::default());
+        return finish_build(&ws, concepts, "embedding").await;
+    }
+
+    // Fallback: label the directory clusters from the live code graph.
     let graph = match crate::graph::api::graph(&ws).await {
         Ok(g) => g,
         Err(e) => return e.to_reply(),
     };
     let concepts = cheap::build_concepts(&graph);
+    finish_build(&ws, concepts, "directory_cluster").await
+}
+
+/// `workspaces.concepts.build_semantic` — force the embedding-clustering build
+/// (thesis S2.1/S2.2), regardless of the auto-choice. Payload may carry
+/// `{k?, overlap_margin?, seed?}` overrides. Reply mirrors `build`. Returns
+/// `built: 0, source: "embedding"` when the index has too few vectors.
+pub async fn handle_build_semantic(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let mut params = super::semantic::SemanticParams::default();
+    if let Some(k) = payload.get("k").and_then(Value::as_u64) {
+        params.k = Some(k as usize);
+    }
+    if let Some(m) = payload.get("overlap_margin").and_then(Value::as_f64) {
+        params.overlap_margin = m as f32;
+    }
+    if let Some(s) = payload.get("seed").and_then(Value::as_u64) {
+        params.seed = s;
+    }
+    let chunks = crate::rag::indexer::store::load_chunks(&ws);
+    let concepts = super::semantic::build_semantic_concepts(&chunks, &params);
+    finish_build(&ws, concepts, "embedding").await
+}
+
+/// Shared tail of the build verbs: preserve manually-authored concepts, replace
+/// the rest with `built`, and additively project into the graph (fail-soft).
+async fn finish_build(ws: &str, built: Vec<Concept>, source: &str) -> Reply {
+    // Preserve curated (Manual) concepts; replace the auto-generated set.
+    let mut concepts: Vec<Concept> = store::load(ws)
+        .into_iter()
+        .filter(|c| c.source == super::concept::ConceptSource::Manual)
+        .collect();
+    concepts.extend(built);
 
     // Build the graph-projection rows before the store swap moves `concepts`.
     let rows: Vec<Value> = concepts
@@ -106,7 +151,7 @@ pub async fn handle_build(payload: Value) -> Reply {
         })
         .collect();
 
-    let built = match store::replace_all(&ws, concepts) {
+    let built = match store::replace_all(ws, concepts) {
         Ok(n) => n,
         Err(e) => return Reply::err_msg("io_error", format!("write concepts.json: {e}")),
     };
@@ -115,7 +160,7 @@ pub async fn handle_build(payload: Value) -> Reply {
     // Best-effort: the JSON store is authoritative, so a projection failure
     // (Neo4j hiccup) is logged, never fatal to the build.
     let projected = match crate::graph::BoltClient::new()
-        .project_concepts(&ws, rows)
+        .project_concepts(ws, rows)
         .await
     {
         reply if reply.ok => reply.data.get("projected").cloned().unwrap_or(json!(0)),
@@ -133,7 +178,7 @@ pub async fn handle_build(payload: Value) -> Reply {
         "workspace_id": ws,
         "built": built,
         "projected": projected,
-        "source": "directory_cluster",
+        "source": source,
     }))
 }
 
@@ -304,6 +349,98 @@ pub async fn handle_reverse_lookup(payload: Value) -> Reply {
     }))
 }
 
+// ── Concept curation loop (S2.3) ─────────────────────────────────────────
+
+/// `workspaces.concepts.propose` — queue an AI-proposed concept for review
+/// (NOT persisted to concepts.json; user-accept-always). Payload: {workspace_id,
+/// id, label?, description?, members?, confidence?, rationale?}. Reply:
+/// {queued|already_pending|suppressed}.
+pub async fn handle_propose(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(id) = require_str(&payload, "id") else {
+        return Reply::err_msg("bad_request", "id is required");
+    };
+    let label = require_str(&payload, "label").unwrap_or_else(|| id.clone());
+    let description = payload
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let mut concept = Concept::new(id, label, description, super::concept::ConceptSource::Manual);
+    if let Some(m) = opt_str_array(&payload, "members") {
+        concept.members = m;
+    }
+    let proposal = super::proposals::PendingConceptProposal {
+        concept,
+        confidence: payload.get("confidence").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+        rationale: payload
+            .get("rationale")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned(),
+        proposed_at: wylde_shared::anchor::epoch_now(),
+    };
+    use super::proposals::QueueOutcome;
+    match super::proposals::queue(&ws, proposal, wylde_shared::anchor::epoch_now()) {
+        Ok(outcome) => {
+            let s = match outcome {
+                QueueOutcome::Queued => "queued",
+                QueueOutcome::AlreadyPending => "already_pending",
+                QueueOutcome::Suppressed => "suppressed",
+            };
+            Reply::ok(json!({ "outcome": s }))
+        }
+        Err(e) => Reply::err_msg("io_error", format!("write concept_proposals.json: {e}")),
+    }
+}
+
+/// `workspaces.concepts.list_proposals` — pending concept proposals.
+pub async fn handle_list_proposals(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let file = super::proposals::load(&ws);
+    Reply::ok(json!({
+        "workspace_id": ws,
+        "count": file.pending.len(),
+        "proposals": file.pending,
+    }))
+}
+
+/// `workspaces.concepts.accept_proposal` — land a pending proposal in the store.
+pub async fn handle_accept_proposal(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(id) = require_str(&payload, "id") else {
+        return Reply::err_msg("bad_request", "id is required");
+    };
+    match super::proposals::take(&ws, &id) {
+        Ok(Some(p)) => match store::upsert(&ws, p.concept) {
+            Ok(c) => Reply::ok(json!({ "accepted": true, "concept": c })),
+            Err(e) => Reply::err_msg("io_error", format!("write concepts.json: {e}")),
+        },
+        Ok(None) => Reply::err_msg("not_found", format!("no pending proposal {id:?}")),
+        Err(e) => Reply::err_msg("io_error", format!("read concept_proposals.json: {e}")),
+    }
+}
+
+/// `workspaces.concepts.reject_proposal` — dismiss + record suppression.
+pub async fn handle_reject_proposal(payload: Value) -> Reply {
+    let Some(ws) = require_str(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(id) = require_str(&payload, "id") else {
+        return Reply::err_msg("bad_request", "id is required");
+    };
+    match super::proposals::reject(&ws, &id, wylde_shared::anchor::epoch_now()) {
+        Ok(rejected) => Reply::ok(json!({ "ok": true, "rejected": rejected, "id": id })),
+        Err(e) => Reply::err_msg("io_error", format!("write concept_proposals.json: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,5 +550,91 @@ mod tests {
         let dup = handle_create(mk()).await;
         assert!(!dup.ok);
         assert_eq!(dup.error.unwrap().code, "already_exists");
+    }
+
+    fn idx_chunk(id: &str, path: &str, v: Vec<f32>) -> crate::rag::indexer::store::IndexedChunk {
+        let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let v: Vec<f32> = if n > 0.0 { v.iter().map(|x| x / n).collect() } else { v };
+        crate::rag::indexer::store::IndexedChunk {
+            id: id.to_owned(),
+            path: path.to_owned(),
+            chunk_idx: 0,
+            content: String::new(),
+            mtime: 0.0,
+            start_line: 1,
+            end_line: 1,
+            vector: v,
+        }
+    }
+
+    #[tokio::test]
+    async fn build_semantic_clusters_chunks_and_preserves_manual() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-sem-0000";
+        // A hand-authored concept must survive a rebuild.
+        handle_create(json!({ "workspace_id": ws, "id": "manual:keep", "label": "Keep" }))
+            .await;
+        // Write a tiny two-theme index.
+        let mut chunks = Vec::new();
+        for j in 0..4 {
+            chunks.push(idx_chunk(&format!("a{j}"), "src/auth/a.rs", vec![1.0, 0.02 * j as f32, 0.0]));
+            chunks.push(idx_chunk(&format!("g{j}"), "src/graph/g.rs", vec![0.0, 0.02 * j as f32, 1.0]));
+        }
+        crate::rag::indexer::store::save_chunks(ws, &chunks).unwrap();
+
+        let r = handle_build_semantic(json!({ "workspace_id": ws, "k": 2 })).await;
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data["source"], "embedding");
+        let all = store::load(ws);
+        // manual concept preserved + semantic concepts added.
+        assert!(all.iter().any(|c| c.id == "manual:keep"));
+        assert!(all.iter().any(|c| c.id.starts_with("sem:") && c.centroid.is_some()));
+    }
+
+    #[tokio::test]
+    async fn build_auto_prefers_semantic_when_index_exists() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-auto-000";
+        let chunks: Vec<_> = (0..6)
+            .map(|j| idx_chunk(&format!("c{j}"), "src/m/x.rs", vec![1.0, 0.01 * j as f32]))
+            .collect();
+        crate::rag::indexer::store::save_chunks(ws, &chunks).unwrap();
+        let r = handle_build(json!({ "workspace_id": ws })).await;
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data["source"], "embedding", "auto-build prefers semantic");
+    }
+
+    #[tokio::test]
+    async fn proposal_loop_accept_and_reject() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-cprop-00";
+        // Propose two concepts.
+        assert!(handle_propose(json!({ "workspace_id": ws, "id": "p1", "label": "P1" })).await.ok);
+        assert!(handle_propose(json!({ "workspace_id": ws, "id": "p2", "label": "P2" })).await.ok);
+        let listed = handle_list_proposals(json!({ "workspace_id": ws })).await;
+        assert_eq!(listed.data["count"], 2);
+
+        // Accept p1 → lands in the store.
+        let acc = handle_accept_proposal(json!({ "workspace_id": ws, "id": "p1" })).await;
+        assert!(acc.ok);
+        assert!(store::get(ws, "p1").is_some());
+
+        // Reject p2 → gone from pending, suppressed.
+        let rej = handle_reject_proposal(json!({ "workspace_id": ws, "id": "p2" })).await;
+        assert!(rej.ok);
+        assert_eq!(rej.data["rejected"], true);
+        assert_eq!(handle_list_proposals(json!({ "workspace_id": ws })).await.data["count"], 0);
+        // Re-proposing p2 inside the window is suppressed.
+        let re = handle_propose(json!({ "workspace_id": ws, "id": "p2", "label": "P2" })).await;
+        assert_eq!(re.data["outcome"], "suppressed");
+    }
+
+    #[tokio::test]
+    async fn accept_missing_proposal_is_not_found() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-cprop-nf";
+        let r = handle_accept_proposal(json!({ "workspace_id": ws, "id": "ghost" })).await;
+        assert!(!r.ok);
+        assert_eq!(r.error.unwrap().code, "not_found");
     }
 }

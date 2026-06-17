@@ -58,6 +58,12 @@ pub const CONCEPTS_DELETE: &str = "workspaces.concepts.delete";
 pub const CONCEPTS_LIST_UNDER: &str = "workspaces.concepts.list_under";
 pub const CONCEPTS_REVERSE_LOOKUP: &str = "workspaces.concepts.reverse_lookup";
 pub const CONCEPTS_SEARCH: &str = "workspaces.concepts.search";
+// Phase 2 — semantic build + curation loop
+pub const CONCEPTS_BUILD_SEMANTIC: &str = "workspaces.concepts.build_semantic";
+pub const CONCEPTS_PROPOSE: &str = "workspaces.concepts.propose";
+pub const CONCEPTS_LIST_PROPOSALS: &str = "workspaces.concepts.list_proposals";
+pub const CONCEPTS_ACCEPT_PROPOSAL: &str = "workspaces.concepts.accept_proposal";
+pub const CONCEPTS_REJECT_PROPOSAL: &str = "workspaces.concepts.reject_proposal";
 
 // ── File I/O — jailed editor/file-tree surface (S1 / IDE plan P0.2) ──────
 pub const FS_READ: &str = "workspaces.fs.read";
@@ -137,6 +143,11 @@ pub const ALL_ACTIONS: &[&str] = &[
     CONCEPTS_LIST_UNDER,
     CONCEPTS_REVERSE_LOOKUP,
     CONCEPTS_SEARCH,
+    CONCEPTS_BUILD_SEMANTIC,
+    CONCEPTS_PROPOSE,
+    CONCEPTS_LIST_PROPOSALS,
+    CONCEPTS_ACCEPT_PROPOSAL,
+    CONCEPTS_REJECT_PROPOSAL,
     // S1 (IDE plan P0.2) — jailed file I/O
     FS_READ,
     FS_WRITE,
@@ -383,6 +394,47 @@ pub fn install() {
          [{concept, score, fuzzy, semantic}], count}. Empty query → full set by \
          label. Semantic embed is skipped (no Ollama round-trip) until a \
          concept has a centroid.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_BUILD_SEMANTIC,
+        |p: Value| async move { crate::concepts::api::handle_build_semantic(p).await },
+        "Force the embedding-clustering concept build (thesis S2.1/S2.2): \
+         spherical k-means over the chunk vectors + centroids + overlapping \
+         membership. Payload: {workspace_id, k?, overlap_margin?, seed?}. Reply: \
+         {workspace_id, built, projected, source: embedding}. built:0 when the \
+         index has too few vectors. (`concepts.build` auto-prefers this when an \
+         index exists.)",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_PROPOSE,
+        |p: Value| async move { crate::concepts::api::handle_propose(p).await },
+        "Queue an AI-proposed concept for review (NOT persisted; user-accept-\
+         always). Payload: {workspace_id, id, label?, description?, members?, \
+         confidence?, rationale?}. Reply: {outcome: queued|already_pending|\
+         suppressed}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_LIST_PROPOSALS,
+        |p: Value| async move { crate::concepts::api::handle_list_proposals(p).await },
+        "Pending concept proposals awaiting review. Payload: {workspace_id}. \
+         Reply: {workspace_id, proposals, count}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_ACCEPT_PROPOSAL,
+        |p: Value| async move { crate::concepts::api::handle_accept_proposal(p).await },
+        "Land a pending concept proposal in concepts.json. Payload: \
+         {workspace_id, id}. Reply: {accepted, concept}. not_found when absent.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_REJECT_PROPOSAL,
+        |p: Value| async move { crate::concepts::api::handle_reject_proposal(p).await },
+        "Dismiss a pending concept proposal + record a 30-day suppression. \
+         Payload: {workspace_id, id}. Reply: {ok, rejected, id}.",
         META_MODULE,
     );
 

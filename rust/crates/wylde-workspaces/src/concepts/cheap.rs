@@ -266,6 +266,13 @@ mod tests {
         let mut sorted = ids.clone();
         sorted.sort();
         assert_eq!(ids, sorted);
-        assert_eq!(a, b);
+        // Structural determinism (timestamps from `Concept::new` are expected to
+        // differ across calls, so compare everything *but* the stamps).
+        let strip = |cs: &[Concept]| -> Vec<(String, String, Vec<String>, Vec<String>)> {
+            cs.iter()
+                .map(|c| (c.id.clone(), c.label.clone(), c.members.clone(), c.parent_concepts.clone()))
+                .collect()
+        };
+        assert_eq!(strip(&a), strip(&b));
     }
 }

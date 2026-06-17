@@ -24,8 +24,11 @@
 
 pub mod api;
 pub mod cheap;
+pub mod clustering;
 pub mod concept;
+pub mod proposals;
 pub mod search;
+pub mod semantic;
 pub mod store;
 
 pub use concept::{Concept, ConceptSource};
