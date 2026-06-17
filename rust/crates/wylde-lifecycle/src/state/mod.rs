@@ -459,6 +459,27 @@ pub async fn stop_all_daemon_managed() -> ShutdownSummary {
 
     let nospawn = nospawn_enabled();
 
+    // Dynamic out-of-tree sibling teardown — symmetric with the daemon's
+    // boot discovery loop. Discovered `Services/*` siblings are leaf
+    // consumers of the core tier, so they drain FIRST (before the core
+    // teardown below) via the generic `stop_discovered` path — nothing
+    // hardcoded. CLEAN NO-OP when the bucket is absent/empty: discovery
+    // returns nothing and the loop iterates zero times. Skipped under
+    // no-spawn (the parity set is the core services only — see the boot
+    // loop in `daemon.rs`).
+    if !nospawn {
+        for svc in crate::registry::discovered_bucket_services() {
+            match run_step(&svc.name, services::stop_discovered(&svc.name).await).await {
+                Ok(()) => {
+                    if is_or_was_tracked(&svc.name) {
+                        stopped.push(svc.name);
+                    }
+                }
+                Err(failure) => failed.push(failure),
+            }
+        }
+    }
+
     // Each tuple captures `was_alive` BEFORE its stop runs — tuple elements
     // evaluate left-to-right, so `is_service_alive` is read before the
     // adjacent `stop_<service>` future is awaited. This mirrors the Python
