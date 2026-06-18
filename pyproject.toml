@@ -77,7 +77,7 @@ memgraph = [
 # VPN — WyldeLink management API + mDNS pairing.
 vpn = [
     "qrcode==8.0",
-    "zeroconf>=0.131.0",
+    "zeroconf>=0.149.12",
 ]
 
 # Voice — STT (faster-whisper) + TTS (kokoro-onnx).
