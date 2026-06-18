@@ -9118,22 +9118,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wylde-panel-images"
-version = "0.1.0-alpha.1"
-dependencies = [
- "anyhow",
- "base64",
- "gpui",
- "serde",
- "serde_json",
- "tokio",
- "wylde-gpui-input",
- "wylde-gui-pipe",
- "wylde-gui-test-support",
- "wylde-theme",
-]
-
-[[package]]
 name = "wylde-panel-memory"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -9175,7 +9159,6 @@ dependencies = [
  "wylde-panel-chat",
  "wylde-panel-dashboard",
  "wylde-panel-devices",
- "wylde-panel-images",
  "wylde-panel-memory",
  "wylde-panel-models",
  "wylde-panel-remote-access",
