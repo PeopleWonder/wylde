@@ -150,11 +150,20 @@ pub async fn set_active_workspace(workspace_id: &str) -> Result<Value, String> {
     .await
 }
 
+/// Generous response budget for `workspaces.reindex`. Embedding a large
+/// tree (read → chunk → `ollama.embed` every chunk → graph upsert) easily
+/// runs minutes, well past the pipe's default 30 s `RESPONSE_TIMEOUT`, so
+/// the Re-index button must wait longer or it spuriously reports
+/// `pipe_timeout` while the backend is still working.
+const REINDEX_DEADLINE: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Force a full re-index of a workspace's folder — the "Re-index"
 /// button. Drives the Rust file-indexer ported in PR #18 via the
-/// `workspaces.reindex` verb.
+/// `workspaces.reindex` verb. Uses [`call_with_deadline`] with
+/// [`REINDEX_DEADLINE`] because a full embed pass outlives the default
+/// 30 s pipe deadline.
 pub async fn reindex_workspace(workspace_id: &str) -> Result<Value, String> {
-    wylde_gui_pipe::call(
+    wylde_gui_pipe::call_with_deadline(
         "wylde-workspaces",
         "POST",
         "/__action__",
@@ -162,6 +171,7 @@ pub async fn reindex_workspace(workspace_id: &str) -> Result<Value, String> {
             "action": "workspaces.reindex",
             "payload": { "workspace_id": workspace_id },
         })),
+        REINDEX_DEADLINE,
     )
     .await
 }
@@ -336,5 +346,19 @@ mod tests {
         let _ = set_active_workspace;
         let _ = reindex_workspace;
         let _ = delete_workspace;
+    }
+
+    /// Re-index drives a full embed pass over the folder, which routinely
+    /// outlives the pipe's default 30s `RESPONSE_TIMEOUT`; it must use a
+    /// generous `call_with_deadline` budget or a clean reindex spuriously
+    /// surfaces `pipe_timeout` while the backend is still working. Lock the
+    /// budget well past the 30s default so a future tweak can't re-cap it.
+    #[test]
+    fn reindex_deadline_is_generous() {
+        assert!(
+            REINDEX_DEADLINE.as_secs() >= 300,
+            "reindex budget should be minutes, got {}s",
+            REINDEX_DEADLINE.as_secs()
+        );
     }
 }
