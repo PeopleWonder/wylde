@@ -7,7 +7,6 @@
 //!   - Core/GUI/Frontend/Panels/Chat/manifest.json
 //!   - Core/GUI/Frontend/Panels/Dashboard/manifest.json
 //!   - Core/GUI/Frontend/Panels/Devices/manifest.json
-//!   - Core/GUI/Frontend/Panels/Images/manifest.json
 //!   - Core/GUI/Frontend/Panels/Memory/manifest.json
 //!   - Core/GUI/Frontend/Panels/Models/manifest.json
 //!   - Core/GUI/Frontend/Panels/RemoteAccess/manifest.json
@@ -101,31 +100,6 @@ pub fn register_all(
                 order: 60,
                 version: "0.1.0".into(),
                 required_services: vec!["wylde-device-gate".into()],
-                source: PanelSource::GpuiView {
-                    factory: factory_key.into(),
-                },
-            },
-            factory: Some(factory),
-        })?;
-    }
-
-    // ── core / images  (from Core/GUI/Frontend/Panels/Images/manifest.json) ──
-    {
-        let factory_key = "wylde_panel_images::ImagesPanel::view";
-        let factory = factories
-            .take(factory_key)
-            .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
-        registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty {
-                service: "core".into(),
-            },
-            entry: PanelEntry {
-                id: "images".into(),
-                title: "Images".into(),
-                icon: Some("image".into()),
-                order: 80,
-                version: "0.1.0".into(),
-                required_services: vec!["wylde-gateway".into()],
                 source: PanelSource::GpuiView {
                     factory: factory_key.into(),
                 },

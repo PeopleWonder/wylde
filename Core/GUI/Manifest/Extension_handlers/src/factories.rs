@@ -127,13 +127,9 @@ pub fn default_first_party() -> FactoryMap {
         Box::new(wylde_panel_remote_access::RemoteAccessPanel::view),
     );
 
-    // Images panel — slice 8 (gallery + filters + metadata pane +
-    // inline delete + generate-new bar talking to ComfyUI via the
-    // wylde-gateway proxy).
-    m.register(
-        "wylde_panel_images::ImagesPanel::view",
-        Box::new(wylde_panel_images::ImagesPanel::view),
-    );
+    // (The Images panel was extracted to the standalone `wylde-images`
+    // Service — it now surfaces as a loopback iframe via the
+    // Extensions/wylde-images stub, so there is no compiled-in factory.)
 
     m
 }
@@ -194,12 +190,6 @@ mod tests {
     fn default_map_contains_remote_access_panel() {
         let m = default_first_party();
         assert!(m.contains("wylde_panel_remote_access::RemoteAccessPanel::view"));
-    }
-
-    #[test]
-    fn default_map_contains_images_panel() {
-        let m = default_first_party();
-        assert!(m.contains("wylde_panel_images::ImagesPanel::view"));
     }
 
     #[test]

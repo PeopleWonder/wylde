@@ -55,10 +55,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 # CIDR matching for the auth.local tier — equivalent to Python ipaddress.
 ipnet = "2"
 
-# Base64 — `/api/images/library/:id` returns image bytes inline as
-# `data_b64`. Already in the workspace lockfile via reqwest's tls
-# deps; declared explicitly so the gateway can use the public API.
-base64 = "0.22"
+# (base64 dep removed with the `/api/images` extraction to the
+# wylde-images Service — it was the gateway's only base64 consumer.)
 
 # Per-bucket rate-limit timestamps — chrono is overkill for monotonic
 # windowing; std::time::Instant is the right tool.

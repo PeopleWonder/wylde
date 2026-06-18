@@ -8,6 +8,14 @@ realizes lives (untracked) at `outputs/wylde-out-of-tree-runtime-plan.md`.
 > supervision, build orchestration, and data-path contract. The Images
 > service extraction and the WyldeStudy extension build ride on top of it
 > later; neither is done here.
+>
+> **Update (2026-06-17):** the Images extraction is now **done** — it is
+> the first inhabitant of the `Services/` bucket. `wylde-images` is its own
+> GPL-3.0-or-later repo under `Services/wylde-images/`, discovered/spawned
+> by this foundation with **zero new Core code**, and surfaced as a
+> loopback iframe (no compiled-in panel). See
+> [`docs/services/wylde-images.md`](services/wylde-images.md) — the worked
+> example for the Services tier. WyldeStudy is still pending.
 
 ## 1. The single-root, git-ignored buckets
 

@@ -30,7 +30,9 @@ pub mod devices;
 pub mod egress;
 pub mod extensions;
 pub mod health;
-pub mod images;
+// `/api/images` was extracted to the standalone `wylde-images` Service
+// (Services/wylde-images/) — generate proxy + library now speak action
+// verbs on `\\.\pipe\wylde-images` and serve their own loopback gallery.
 pub mod link;
 pub mod mcp;
 pub mod memory;
@@ -57,7 +59,6 @@ pub fn include_all(router: Router) -> Router {
         .merge(models::router())
         .merge(devices::router())
         .merge(link::router())
-        .merge(images::router())
         .merge(settings::router())
         .merge(egress::router())
         .merge(extensions::router())
