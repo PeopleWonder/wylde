@@ -203,6 +203,22 @@ pub async fn call(
     path: &str,
     body: Option<Value>,
 ) -> Result<Value, String> {
+    call_with_deadline(service, http_verb, path, body, RESPONSE_TIMEOUT).await
+}
+
+/// `call` with a caller-chosen response deadline, for verbs whose
+/// legitimate latency exceeds the default 30 s `RESPONSE_TIMEOUT`
+/// (e.g. `workspaces.reindex` on a large tree, image generation).
+/// The deadline is also forwarded in the envelope's `meta.deadline_ms`
+/// so the server side sees the same budget.
+#[cfg(target_os = "windows")]
+pub async fn call_with_deadline(
+    service: &str,
+    http_verb: &str,
+    path: &str,
+    body: Option<Value>,
+    deadline: Duration,
+) -> Result<Value, String> {
     // Test seam (dev-only): a windowed test installs a fake backend on this
     // thread; intercept *before* the tokio hop so the canned reply resolves
     // inline under `run_until_parked` with no runtime and no live pipe.
@@ -214,14 +230,14 @@ pub async fn call(
     // Otherwise hop to the stashed Handle so the gpui dispatcher
     // threads (which have no current runtime) work transparently.
     if tokio::runtime::Handle::try_current().is_ok() {
-        return call_inner(service, http_verb, path, body).await;
+        return call_inner(service, http_verb, path, body, deadline).await;
     }
     if let Some(handle) = TOKIO_HANDLE.get() {
         let svc = service.to_string();
         let verb = http_verb.to_string();
         let p = path.to_string();
         return handle
-            .spawn(async move { call_inner(&svc, &verb, &p, body).await })
+            .spawn(async move { call_inner(&svc, &verb, &p, body, deadline).await })
             .await
             .map_err(|e| format!("join: {e}"))?;
     }
@@ -237,6 +253,7 @@ async fn call_inner(
     http_verb: &str,
     path: &str,
     body: Option<Value>,
+    deadline: Duration,
 ) -> Result<Value, String> {
     let name = pipe_name(service);
 
@@ -285,7 +302,7 @@ async fn call_inner(
     let mut meta = Map::new();
     meta.insert(
         "deadline_ms".into(),
-        Value::from(RESPONSE_TIMEOUT.as_millis() as u64),
+        Value::from(deadline.as_millis() as u64),
     );
     meta.insert("caller".into(), Value::from(CALLER_NAME));
 
@@ -331,11 +348,11 @@ async fn call_inner(
         Ok::<Vec<u8>, String>(buf)
     };
 
-    let body_bytes = timeout(RESPONSE_TIMEOUT, io_fut).await.map_err(|_| {
+    let body_bytes = timeout(deadline, io_fut).await.map_err(|_| {
         format!(
             "pipe_timeout: no response from '{}' within {}s",
             service,
-            RESPONSE_TIMEOUT.as_secs()
+            deadline.as_secs()
         )
     })??;
 
@@ -361,9 +378,23 @@ async fn call_inner(
 #[cfg(not(target_os = "windows"))]
 pub async fn call(
     service: &str,
+    http_verb: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    call_with_deadline(service, http_verb, path, body, RESPONSE_TIMEOUT).await
+}
+
+/// Non-Windows stub mirroring [`call_with_deadline`] so deadline-aware
+/// callers (e.g. `workspaces.reindex`, image generation) compile on any
+/// host even though the real named-pipe transport is Windows-only.
+#[cfg(not(target_os = "windows"))]
+pub async fn call_with_deadline(
+    service: &str,
     _http_verb: &str,
     _path: &str,
     _body: Option<Value>,
+    _deadline: Duration,
 ) -> Result<Value, String> {
     // Test seam (dev-only) — mirrors the Windows path so windowed tests run
     // on any host even though the real transport is Windows-only.
