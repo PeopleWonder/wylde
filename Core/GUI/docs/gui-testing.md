@@ -16,8 +16,12 @@ Three pieces, all **dev-only** — none of them reach the shipped Shell binary:
 
 1. **`wylde-gui-pipe`'s `test-support` feature** — adds a thread-local
    injectable backend (`wylde_gui_pipe::test_backend`) and two hook sites at
-   the top of `call` / `stream_call`. With the feature off (every normal
-   build) the module and hooks don't exist.
+   the top of `call_with_deadline` / `stream_call`. With the feature off
+   (every normal build) the module and hooks don't exist. (`call` is a thin
+   wrapper that forwards the default `RESPONSE_TIMEOUT` to
+   `call_with_deadline`, so calls made through either entry point hit the
+   same seam; deadline-tuned callers like `workspaces.reindex` use
+   `call_with_deadline` directly.)
 
 2. **`wylde-gui-test-support`** (`Frontend/test-support/`, EXCLUDED from the
    workspace) — a `ScriptedBackend` that answers calls with canned JSON and
