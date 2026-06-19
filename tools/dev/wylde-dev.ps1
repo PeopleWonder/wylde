@@ -124,8 +124,17 @@ if ($HotReload) {
         # than every source is left untouched.
         $stageItem = if (Test-Path $stage) { Get-Item $stage } else { $null }
         if (-not $stageItem -or (Get-Item $src).LastWriteTime -gt $stageItem.LastWriteTime) {
-            Copy-Item $src $stage -Force
-            $reSeeded++
+            # Fail-soft: a stage copy can be LOCKED when a dev daemon is already
+            # running it (the "reuse a running stack" path). Don't let a copy
+            # failure abort the launcher under ErrorActionPreference='Stop' --
+            # warn and keep the existing copy (the watcher will swap it on the
+            # next rebuild via dev.restart_service, which stops the service first).
+            try {
+                Copy-Item $src $stage -Force -ErrorAction Stop
+                $reSeeded++
+            } catch {
+                Write-Warning "  could not refresh staged $svc (in use by a running daemon?) -- keeping current copy: $($_.Exception.Message)"
+            }
         }
     }
     if ($reSeeded -gt 0) {
