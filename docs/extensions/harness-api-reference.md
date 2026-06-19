@@ -60,6 +60,53 @@ retry with a direct request. Only a *transport* failure (gateway pipe down)
 justifies a fallback, and log it loudly. `egress.rs` is the reference for this
 classification.
 
+## Bridge inference gate — `wylde-extension-bridge`
+
+Don't POST to Ollama's `127.0.0.1:11434` directly. Route inference through the
+**bridge**, which forwards — capability-checked, rate-limited, and audited — to
+`wylde-ollama` (VRAM-broker lease + resident keep-alive'd model reuse +
+per-request model swap). A direct Ollama call bypasses the broker lease, the
+suspend/resume connection-resilience layer, and the policy gate.
+
+**Capability:** declare `inference.local` in your `mcp-server.json`
+`capabilities[]` (see [manifest-reference.md](./manifest-reference.md#inferencelocal--the-bridge-inference-gate)).
+Without it, these calls return `capability_denied`.
+
+```rust
+// Embed — {extension, model?, input} -> {embeddings, model}
+let payload = json!({
+    "extension": "Wylde_Study",      // self-asserted; MUST be your extension name
+    "model": "nomic-embed-text",     // omit to use the bridge's configured default
+    "input": ["text to embed", "..."] // string or array of strings
+});
+let resp = ipc::call_action("wylde-extension-bridge", "inference.embed", payload).await?;
+// resp: { embeddings: [[f32, ...], ...], model }
+
+// Chat — {extension, model?, messages, options?, format?, keep_alive?}
+let payload = json!({
+    "extension": "Wylde_Study",
+    "model": "llama3.2",
+    "messages": [{"role": "user", "content": "..."}],
+    "options": { "temperature": 0.2 },
+    "format": "json"                 // optional; pass-through to Ollama
+});
+let resp = ipc::call_action("wylde-extension-bridge", "inference.chat", payload).await?;
+// resp: { message: { role, content }, model, done, ... }
+```
+
+**Model selection / swap:** pass `model` per call. The bridge forwards it
+verbatim; Ollama's keep-alive keeps the model resident and the broker accounts
+for the lease, so swapping is just "ask for a different `model`". Omit `model`
+to fall back to the bridge default (`WYLDE_BRIDGE_INFERENCE_{EMBED,CHAT}_MODEL`).
+
+**Errors:** `capability_denied` (no `inference.local`), `inference_rate_limited`
+(`details.retry_after_ms` says when to retry), `bad_request` (missing
+`extension` / `input` / `messages`). Upstream errors pass through with their
+original codes (`model_not_found`, `ollama_unreachable`, `vram_admission_denied`).
+
+**Rate limit:** per-extension token bucket — `WYLDE_BRIDGE_INFERENCE_BURST`
+(capacity, default 30) and `WYLDE_BRIDGE_INFERENCE_RPS` (refill/sec, default 5).
+
 ## Harness verbs — `wylde-harness`
 
 The full set the harness pipe accepts (`rust/crates/wylde-harness/src/pipe.rs`,

@@ -311,6 +311,42 @@ impl Host {
         state.insert(s.record.manifest.name.clone(), Mutex::new(s));
     }
 
+    /// Test-only: seed a minimal, never-spawned extension record that
+    /// only carries a name + capability list. Lets the inference-gate
+    /// tests assert the capability check without building a full manifest
+    /// or spawning a child.
+    #[doc(hidden)]
+    #[cfg(test)]
+    pub async fn seed_capabilities_for_tests(&self, name: &str, capabilities: Vec<String>) {
+        use crate::manifest::{McpServerManifest, Transport};
+        let manifest = McpServerManifest {
+            name: name.to_owned(),
+            description: String::new(),
+            version: "1.0".into(),
+            enabled: false,
+            transport: Transport::Stdio,
+            command: vec!["noop".into()],
+            cwd: None,
+            env: Default::default(),
+            url: None,
+            capabilities: capabilities.clone(),
+            tools: Vec::new(),
+            ui_panels: Vec::new(),
+            resources: Vec::new(),
+            health: Default::default(),
+        };
+        let record = ExtensionRecord {
+            manifest_path: format!("/tmp/{name}/mcp-server.json").into(),
+            root: format!("/tmp/{name}").into(),
+            manifest,
+            browser_extension_path: None,
+            capabilities,
+            ui_panels: Vec::new(),
+        };
+        self.seed_record_for_tests(record, LifecycleStatus::Disabled)
+            .await;
+    }
+
     pub async fn shutdown_all(&self) {
         let names: Vec<String> = {
             let g = self.extensions.read().await;
@@ -338,6 +374,29 @@ impl Host {
             });
         }
         out
+    }
+
+    /// Does extension `name` declare capability `cap`?
+    ///
+    /// Reads the resolved `ExtensionRecord.capabilities` (merged from
+    /// `mcp-server.json` `capabilities[]` + the legacy `manifest.json`
+    /// fallback). Pure read; never spawns. Answers for *disabled*
+    /// extensions too — the capability is a static manifest property,
+    /// independent of lifecycle. Returns `false` for an unknown
+    /// extension.
+    ///
+    /// This is the enforcement seam for the inference gate
+    /// (`actions::inference`): `capabilities[]` graduates from decorative
+    /// metadata to the authorization check. The identity is the
+    /// self-asserted `extension` field in the request payload — adequate
+    /// on the loopback first-party pipe against bugs/misconfig, the same
+    /// soft trust model egress already uses (see the security-boundary
+    /// design §1.2 / §5.3 for the authenticated-caller stretch upgrade).
+    pub async fn extension_has_capability(&self, name: &str, cap: &str) -> bool {
+        let g = self.extensions.read().await;
+        let Some(mu) = g.get(name) else { return false };
+        let s = mu.lock().await;
+        s.record.capabilities.iter().any(|c| c == cap)
     }
 
     pub async fn get_status(&self, name: &str) -> Option<ExtensionStatus> {

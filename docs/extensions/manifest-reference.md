@@ -50,11 +50,28 @@ Declared, not transport-enforced — consumed by the gateway egress allowlist an
 tier/consent gates (`Extensions/extension_bridge/contract.py` `LeavesSystem`):
 
 `egress.web` · `egress.browser` · `egress.native` · `ingress.http` ·
-`ingress.browser`
+`ingress.browser` · `inference.local`
 
 Webcrawler declares `egress.web`; Wylde_Study declares
 `ingress.browser`, `egress.browser`. Declare honestly — see
 [harness-api-reference.md](./harness-api-reference.md) for what they actually gate.
+
+#### `inference.local` — the bridge inference gate
+
+`inference.local` is **enforced** (not just metadata): it is the capability the
+extension-bridge checks before it will broker an inference call for your
+extension. An extension that declares it may call the bridge's
+`inference.embed` / `inference.chat` verbs, which forward — capability-checked,
+rate-limited, and audited — to `wylde-ollama` (VRAM-broker lease + resident
+keep-alive'd model reuse + per-request model swap). An extension **without**
+`inference.local` calling those verbs is rejected with `capability_denied`.
+
+This is the supported path for extension inference — do **not** POST directly to
+Ollama's `127.0.0.1:11434`: a direct call bypasses the VRAM broker lease, the
+connection-resilience layer, and the policy gate. See
+[harness-api-reference.md](./harness-api-reference.md#bridge-inference-gate) for
+the request/response shapes and rate-limit knobs. (The short form `inference`
+is also accepted for back-compat, but `inference.local` is canonical.)
 
 ## `DeclaredTool` (entries in `tools[]`)
 

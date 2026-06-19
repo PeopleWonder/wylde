@@ -147,12 +147,10 @@ async fn shim_roundtrip_via_synth_extension() {
     // resolves manifest paths from disk and would need extensions_dir
     // wired up; cleaner here to drive the MCP client directly).
     let extensions_root = tmp.path().join("Extensions");
-    let env_overrides: BTreeMap<String, String> = [
-        (
-            "PYTHONPATH".to_string(),
-            tmp.path().to_string_lossy().to_string(),
-        ),
-    ]
+    let env_overrides: BTreeMap<String, String> = [(
+        "PYTHONPATH".to_string(),
+        tmp.path().to_string_lossy().to_string(),
+    )]
     .into_iter()
     .collect();
     let command: Vec<String> = vec![
@@ -191,20 +189,65 @@ async fn shim_roundtrip_via_synth_extension() {
     assert!(tools.iter().any(|t| t.name == "echo"));
 
     let result = client
-        .call_tool(
-            "echo",
-            json!({"msg": "hello"}),
-            Duration::from_secs(5),
-        )
+        .call_tool("echo", json!({"msg": "hello"}), Duration::from_secs(5))
         .await
         .expect("tools/call");
-    let body = result
-        .get("structuredContent")
-        .expect("structuredContent");
+    let body = result.get("structuredContent").expect("structuredContent");
     assert_eq!(body["got"]["msg"], "hello");
 
     client.ping(Duration::from_secs(3)).await.expect("ping");
     client.shutdown().await;
+}
+
+/// Wire-level: drive the inference gate through the *public action
+/// registry* (`dispatch_action`) — the exact path the pipe server uses.
+/// Proves `inference.embed` / `inference.chat` are registered by
+/// `install()` and that a call from an extension lacking the inference
+/// capability is rejected with `capability_denied` before any forward to
+/// wylde-ollama. No live service required (the capability gate short-
+/// circuits first).
+#[tokio::test]
+async fn inference_verbs_registered_and_capability_gated_via_registry() {
+    use wylde_shared::ipc::{dispatch_action, list_actions};
+
+    // Fresh registry for this process: reset + install.
+    wylde_extension_bridge::reset_for_tests();
+    wylde_extension_bridge::install();
+
+    let actions = list_actions();
+    assert!(
+        actions.iter().any(|a| a == "inference.embed"),
+        "inference.embed must be registered"
+    );
+    assert!(
+        actions.iter().any(|a| a == "inference.chat"),
+        "inference.chat must be registered"
+    );
+
+    // An extension the catalog has never seen has no declared
+    // capability → capability_denied (the gate runs before any forward).
+    let reply = dispatch_action(json!({
+        "action": "inference.embed",
+        "payload": {
+            "extension": "DefinitelyNotAllowed",
+            "model": "nomic-embed-text",
+            "input": ["hello"]
+        }
+    }))
+    .await;
+    assert!(!reply.ok, "uncapable extension must be denied");
+    assert_eq!(reply.error.unwrap().code, "capability_denied");
+
+    // Missing the `extension` selector is a clean bad_request.
+    let reply = dispatch_action(json!({
+        "action": "inference.chat",
+        "payload": { "messages": [] }
+    }))
+    .await;
+    assert!(!reply.ok);
+    assert_eq!(reply.error.unwrap().code, "bad_request");
+
+    wylde_extension_bridge::reset_for_tests();
 }
 
 #[test]

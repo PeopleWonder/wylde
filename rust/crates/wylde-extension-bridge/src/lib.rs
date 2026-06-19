@@ -3,11 +3,14 @@
 //! Replaces the Python `Extensions.extension_bridge.*` importlib-driven
 //! dispatcher. Extensions are now MCP servers (separate processes); this
 //! crate spawns each one, performs the MCP `initialize` handshake,
-//! supervises it, and exposes a 9-action surface on
-//! `\\.\pipe\wylde-extension-bridge`.
+//! supervises it, and exposes its action surface on
+//! `\\.\pipe\wylde-extension-bridge` — the lifecycle/tool/resource
+//! `ext.*` verbs plus the Phase-2 `inference.embed` / `inference.chat`
+//! gate (capability-checked, rate-limited, audited forwarders to
+//! `wylde-ollama`; see [`actions::inference`]).
 //!
 //! Public entry points:
-//!   * [`service::install`] — register the 9 + 1 alias action surface.
+//!   * [`service::install`] — register the full action surface.
 //!   * [`service::stop`]   — drain background workers + reap children.
 //!   * [`host::Host`]      — supervisor for a set of MCP-server children.
 

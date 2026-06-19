@@ -13,7 +13,7 @@ use crate::actions;
 use crate::config::Config;
 use crate::host::Host;
 
-pub const ALL_ACTIONS: [&str; 12] = [
+pub const ALL_ACTIONS: [&str; 14] = [
     "ext.list",
     "ext.get",
     "ext.enable",
@@ -25,6 +25,11 @@ pub const ALL_ACTIONS: [&str; 12] = [
     "ext.restart",
     "extensions.list_panels",
     "ext.events",
+    // Inference gate (Phase 2 security boundary): capability-checked,
+    // rate-limited, audited forwarders to wylde-ollama. See
+    // actions::inference.
+    "inference.embed",
+    "inference.chat",
     // Back-compat alias kept for the Gateway's existing pipe call
     // shape; deleted after the Gateway switches to ext.tools.call.
     "extensions.dispatch",
@@ -35,7 +40,8 @@ static HOST: OnceLock<Arc<Host>> = OnceLock::new();
 
 /// Build (or fetch) the process-wide [`Host`].
 fn host() -> Arc<Host> {
-    HOST.get_or_init(|| Arc::new(Host::new(Config::get()))).clone()
+    HOST.get_or_init(|| Arc::new(Host::new(Config::get())))
+        .clone()
 }
 
 /// Register every action handler. Idempotent.
@@ -155,13 +161,39 @@ pub fn install() {
         "wylde_extension_bridge::actions::surface",
     );
 
+    // ── inference gate (Phase 2 security boundary) ──────────────────
+    let hc = h.clone();
+    register_action_with_meta(
+        "inference.embed",
+        move |payload: Value| {
+            let hc = hc.clone();
+            async move { actions::inference::handle_inference_embed(hc, payload).await }
+        },
+        "{extension, model?, input} — capability-checked, rate-limited, audited \
+         forward to wylde-ollama `ollama.embed`. -> {embeddings, model}.",
+        "wylde_extension_bridge::actions::inference",
+    );
+    let hc = h.clone();
+    register_action_with_meta(
+        "inference.chat",
+        move |payload: Value| {
+            let hc = hc.clone();
+            async move { actions::inference::handle_inference_chat(hc, payload).await }
+        },
+        "{extension, model?, messages, options?, format?, keep_alive?} — capability-checked, \
+         rate-limited, audited forward to wylde-ollama `ollama.chat`. -> {message, model, done}.",
+        "wylde_extension_bridge::actions::inference",
+    );
+
     // ── streaming ───────────────────────────────────────────────────
     let hc = h.clone();
     register_streaming_action_with_meta(
         "ext.events",
         move |payload: Value, sender| {
             let hc = hc.clone();
-            async move { actions::handle_events(hc, payload, sender).await; }
+            async move {
+                actions::handle_events(hc, payload, sender).await;
+            }
         },
         "Stream extension lifecycle events: spawn / exit / restart / crash / enabled / disabled.",
         "wylde_extension_bridge::actions::surface",
@@ -181,7 +213,7 @@ pub fn install() {
     );
 
     tracing::info!(
-        "wylde-extension-bridge: registered 12 actions (10 native unary incl. ext.resources.list + extensions.list_panels + ext.events streaming + extensions.dispatch alias)"
+        "wylde-extension-bridge: registered 14 actions (12 native unary incl. ext.resources.list + extensions.list_panels + inference.embed/inference.chat + ext.events streaming + extensions.dispatch alias)"
     );
 }
 
@@ -243,6 +275,8 @@ mod tests {
             "ext.health",
             "ext.restart",
             "extensions.list_panels",
+            "inference.embed",
+            "inference.chat",
             "extensions.dispatch",
         ] {
             assert!(actions.contains(&n.to_string()), "missing {n}");
