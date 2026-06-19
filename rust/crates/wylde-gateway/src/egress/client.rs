@@ -29,6 +29,7 @@ use super::destinations::{
     build_target_url, resolve, validate_path, Destination, EgressDestinationError,
 };
 use super::kill_switch::is_blocked;
+use super::ssrf::{self, SsrfError};
 use crate::middleware::audit_log::emit_egress;
 use crate::secrets::get_secrets;
 
@@ -49,6 +50,14 @@ pub enum EgressError {
     /// Transport / upstream failure.
     #[error("{0}")]
     Upstream(String),
+    /// SSRF guard rejected the (resolved) destination — loopback, private,
+    /// link-local/metadata, etc. Folds to `egress_denied` on the wire.
+    #[error("{0}")]
+    Ssrf(String),
+}
+
+fn into_ssrf(e: SsrfError) -> EgressError {
+    EgressError::Ssrf(format!("SSRF guard blocked egress: {e}"))
 }
 
 #[derive(Debug, Clone)]
@@ -100,10 +109,32 @@ pub async fn forward(
     let out_headers = compose_headers(&dest, headers);
     let payload_bytes = coerce_body_size(body);
 
-    let client = match reqwest::Client::builder()
-        .danger_accept_invalid_certs(!dest.verify_tls)
-        .timeout(timeout)
-        .build()
+    // SSRF guard: resolve the host *here* and classify every resolved
+    // address against the deny-list, then pin the connection to those
+    // addresses so a re-resolve can't swap in an internal IP (rebinding).
+    let pin = match ssrf::guard_target(&target, &dest.host_allowlist, dest.allow_private).await {
+        Ok(p) => p,
+        Err(e) => {
+            emit_egress(serde_json::json!({
+                "caller": caller,
+                "dest": dest.key,
+                "method": method_norm,
+                "path": safe_path,
+                "blocked": true,
+                "reason": "ssrf",
+                "error": format!("{e}"),
+            }));
+            return Err(into_ssrf(e));
+        }
+    };
+
+    let client = match apply_pin(
+        reqwest::Client::builder()
+            .danger_accept_invalid_certs(!dest.verify_tls)
+            .timeout(timeout),
+        &pin,
+    )
+    .build()
     {
         Ok(c) => c,
         Err(e) => {
@@ -261,11 +292,32 @@ pub async fn forward_stream(
     let target = build_target_url(&dest, &safe_path);
     let out_headers = compose_headers(&dest, headers);
 
-    let client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(!dest.verify_tls)
-        .connect_timeout(connect_timeout)
-        .build()
-        .map_err(|e| EgressError::Upstream(format!("client build failed: {e}")))?;
+    // SSRF guard + connection pin (see `forward`).
+    let pin = match ssrf::guard_target(&target, &dest.host_allowlist, dest.allow_private).await {
+        Ok(p) => p,
+        Err(e) => {
+            emit_egress(serde_json::json!({
+                "caller": caller,
+                "dest": dest.key,
+                "method": method_norm,
+                "path": safe_path,
+                "stream": true,
+                "blocked": true,
+                "reason": "ssrf",
+                "error": format!("{e}"),
+            }));
+            return Err(into_ssrf(e));
+        }
+    };
+
+    let client = apply_pin(
+        reqwest::Client::builder()
+            .danger_accept_invalid_certs(!dest.verify_tls)
+            .connect_timeout(connect_timeout),
+        &pin,
+    )
+    .build()
+    .map_err(|e| EgressError::Upstream(format!("client build failed: {e}")))?;
 
     let method_for_req = match method_norm.as_str() {
         "GET" => reqwest::Method::GET,
@@ -359,6 +411,20 @@ pub async fn forward_stream(
         },
     );
     Ok((status, resp_headers, Box::pin(logged)))
+}
+
+// ── SSRF pinning ──────────────────────────────────────────────────────
+
+/// Pin `reqwest`'s DNS for the target host to the addresses the SSRF guard
+/// already resolved + approved. This is the rebinding defence: `reqwest`
+/// connects only to these addresses and never re-resolves, so the address
+/// validated by the guard is the address actually dialled. (`reqwest`
+/// ignores the port in the override and uses the URL's port.)
+fn apply_pin(builder: reqwest::ClientBuilder, pin: &ssrf::PinnedHost) -> reqwest::ClientBuilder {
+    if pin.addrs.is_empty() {
+        return builder;
+    }
+    builder.resolve_to_addrs(&pin.host, &pin.addrs)
 }
 
 // ── Header composition ────────────────────────────────────────────────
@@ -462,6 +528,8 @@ mod tests {
             verify_tls: true,
             purpose: String::new(),
             path_allowlist: vec![],
+            host_allowlist: vec![],
+            allow_private: false,
         };
         let out = compose_headers(&d, Some(&h));
         assert!(out.contains_key("Accept"));
@@ -557,5 +625,81 @@ mod tests {
         .await
         .expect_err("must reject method");
         assert!(matches!(err, EgressError::Policy(_)));
+    }
+
+    /// Register a single wildcard `web` destination for `Caller` so the
+    /// forward path reaches the SSRF guard.
+    fn register_wildcard_web() -> tempfile::TempDir {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let comp = tmp.path().join("Caller");
+        std::fs::create_dir_all(&comp).unwrap();
+        std::fs::write(
+            comp.join("manifest.json"),
+            r#"{"name":"Caller","egress":[{"key":"web","url_prefix":"https://","purpose":"wildcard"}]}"#,
+        )
+        .unwrap();
+        destinations::reload(Some(tmp.path()));
+        tmp
+    }
+
+    async fn forward_web(url: &str) -> Result<EgressResult, EgressError> {
+        forward(
+            "Caller",
+            "web",
+            "GET",
+            url,
+            None,
+            None,
+            Duration::from_secs(2),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn forward_ssrf_blocks_loopback() {
+        let _g = EGRESS_TEST_LOCK.lock().await;
+        kill_switch::set_blocked(false);
+        let _tmp = register_wildcard_web();
+        let err = forward_web("https://127.0.0.1/secret")
+            .await
+            .expect_err("loopback must be blocked");
+        assert!(matches!(err, EgressError::Ssrf(_)), "got {err:?}");
+        destinations::reset_for_test();
+    }
+
+    #[tokio::test]
+    async fn forward_ssrf_blocks_metadata() {
+        let _g = EGRESS_TEST_LOCK.lock().await;
+        kill_switch::set_blocked(false);
+        let _tmp = register_wildcard_web();
+        let err = forward_web("https://169.254.169.254/latest/meta-data/")
+            .await
+            .expect_err("cloud metadata must be blocked");
+        assert!(matches!(err, EgressError::Ssrf(_)), "got {err:?}");
+        destinations::reset_for_test();
+    }
+
+    #[tokio::test]
+    async fn forward_ssrf_blocks_private() {
+        let _g = EGRESS_TEST_LOCK.lock().await;
+        kill_switch::set_blocked(false);
+        let _tmp = register_wildcard_web();
+        let err = forward_web("https://10.0.0.5/")
+            .await
+            .expect_err("private must be blocked");
+        assert!(matches!(err, EgressError::Ssrf(_)), "got {err:?}");
+        destinations::reset_for_test();
+    }
+
+    #[tokio::test]
+    async fn forward_ssrf_blocks_localhost_name() {
+        let _g = EGRESS_TEST_LOCK.lock().await;
+        kill_switch::set_blocked(false);
+        let _tmp = register_wildcard_web();
+        let err = forward_web("https://localhost/admin")
+            .await
+            .expect_err("localhost must be blocked");
+        assert!(matches!(err, EgressError::Ssrf(_)), "got {err:?}");
+        destinations::reset_for_test();
     }
 }
