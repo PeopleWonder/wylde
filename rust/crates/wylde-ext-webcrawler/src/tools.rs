@@ -7,7 +7,7 @@
 
 use serde_json::{json, Value};
 
-use crate::egress::fetch_via_gateway_or_fallback;
+use crate::egress::fetch_via_gateway;
 use crate::{extract, scrape, ssrf};
 
 /// `fetch` — GET a URL, return the body as text or parsed JSON.
@@ -31,7 +31,7 @@ pub async fn run_fetch(params: Value) -> Value {
         return invalid_url(&err, &url);
     }
 
-    let result = match fetch_via_gateway_or_fallback(&url, timeout).await {
+    let result = match fetch_via_gateway(&url, timeout).await {
         Ok(r) => r,
         Err(e) => return fetch_error("FETCH_ERROR", &e, &url),
     };
@@ -84,7 +84,7 @@ pub async fn run_scrape(params: Value) -> Value {
         return invalid_url(&err, &url);
     }
 
-    let fetched = match fetch_via_gateway_or_fallback(&url, timeout).await {
+    let fetched = match fetch_via_gateway(&url, timeout).await {
         Ok(r) => r,
         Err(e) => return fetch_error("SCRAPE_ERROR", &e, &url),
     };
@@ -135,7 +135,7 @@ pub async fn run_extract(params: Value) -> Value {
             if let Some(err) = ssrf::validate_external_url(url) {
                 return invalid_url(&err, url);
             }
-            match fetch_via_gateway_or_fallback(url, 10.0).await {
+            match fetch_via_gateway(url, 10.0).await {
                 Ok(r) => r.content,
                 Err(e) => return fetch_error("FETCH_ERROR", &e, url),
             }

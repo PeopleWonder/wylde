@@ -1,17 +1,19 @@
-//! Egress — Gateway-pipe-first with a loud direct-`reqwest` fallback.
+//! Egress — Gateway-only. **No direct-`reqwest` bypass.**
 //!
-//! Port of the Python handler's `_fetch_via_gateway_or_fallback`. The
-//! canonical path forwards through the Rust Gateway's `egress.forward` action
-//! over the pipe (`wylde-gateway`), so the Gateway's allowlist, kill switch,
-//! and audit log apply. If the Gateway pipe is unreachable (e.g. not running
-//! in dev) we fall back to a direct `reqwest` GET — logging at WARNING each
-//! time so the bypass can't go unnoticed in production.
+//! Every outbound fetch forwards through the Rust Gateway's `egress.forward`
+//! action over the pipe (`wylde-gateway`), so the Gateway's allowlist, kill
+//! switch, and audit log are the single chokepoint. There is deliberately **no
+//! fallback** to a direct request: a fallback would let the extension reach the
+//! network whenever the Gateway was denied or simply unreachable, exactly the
+//! hole the security boundary (WyldeStudy P3) closed elsewhere. If the Gateway
+//! says no — or isn't there — the fetch hard-fails.
 //!
-//! Policy rejections (`egress_blocked`, `egress_denied`) and upstream failures
-//! reported by a *reachable* Gateway must **not** fall back — they surface as
-//! errors, exactly as the Python re-raises `GatewayBlocked`/`GatewayDenied`.
-
-use std::time::Duration;
+//! Failure taxonomy (all terminal, none bypassable):
+//!   * `egress_blocked` / `egress_denied` — policy rejection from a reachable
+//!     Gateway.
+//!   * `egress_upstream_error` — the Gateway reached the target and it failed.
+//!   * anything else (`pipe_unavailable`, `pipe_timeout`, …) — the Gateway
+//!     itself was unreachable; the fetch still fails rather than going direct.
 
 use serde_json::{json, Value};
 use wylde_shared::ipc;
@@ -28,38 +30,38 @@ pub struct FetchOutcome {
     pub headers: Value,
 }
 
-/// Why a Gateway forward did not yield a usable response.
+/// Why a Gateway forward did not yield a usable response. Every variant is
+/// terminal — there is no direct-request bypass.
 enum GatewayCallError {
-    /// Policy denial from a reachable Gateway — surface, do NOT fall back.
+    /// Policy denial from a reachable Gateway.
     Policy(String),
-    /// Upstream/target failure from a reachable Gateway — surface, do NOT
-    /// fall back (a direct request would hit the same dead target).
+    /// Upstream/target failure from a reachable Gateway.
     Upstream(String),
-    /// The Gateway itself was unreachable (pipe down / transport error) —
-    /// fall back to a direct request.
+    /// The Gateway itself was unreachable (pipe down / transport error).
     Transport(String),
 }
 
-/// Fetch `url` via the Gateway, falling back to a direct request only when the
-/// Gateway is unreachable. Returns the body + status on success, or a short
-/// error string on failure (the caller wraps it as the tool's error result).
-pub async fn fetch_via_gateway_or_fallback(
-    url: &str,
-    timeout_secs: f64,
-) -> Result<FetchOutcome, String> {
-    match gateway_forward(url, timeout_secs).await {
-        Ok(outcome) => Ok(outcome),
-        Err(GatewayCallError::Policy(msg)) => Err(msg),
-        Err(GatewayCallError::Upstream(msg)) => Err(msg),
-        Err(GatewayCallError::Transport(msg)) => {
-            tracing::warn!(
-                "webcrawler: Gateway egress failed ({msg}); falling back to \
-                 direct reqwest. TODO: remove fallback once the Rust Gateway \
-                 egress is always reachable in this deployment."
-            );
-            direct_get(url, timeout_secs).await
+impl GatewayCallError {
+    /// Collapse to the terminal error string the tool surfaces. All variants
+    /// are terminal: the Gateway is the only egress path, so a denial or an
+    /// unreachable Gateway both mean "no fetch".
+    fn into_error(self) -> String {
+        match self {
+            GatewayCallError::Policy(msg)
+            | GatewayCallError::Upstream(msg)
+            | GatewayCallError::Transport(msg) => msg,
         }
     }
+}
+
+/// Fetch `url` through the Gateway. Returns the body + status on success, or a
+/// terminal error string on any failure (policy denial, upstream error, or an
+/// unreachable Gateway). There is **no** direct-request fallback: the Gateway
+/// is the sole egress chokepoint.
+pub async fn fetch_via_gateway(url: &str, timeout_secs: f64) -> Result<FetchOutcome, String> {
+    gateway_forward(url, timeout_secs)
+        .await
+        .map_err(GatewayCallError::into_error)
 }
 
 /// Single GET through the Gateway's `egress.forward` action.
@@ -95,9 +97,10 @@ async fn gateway_forward(url: &str, timeout_secs: f64) -> Result<FetchOutcome, G
     }
 }
 
-/// Map an `ipc` error code to the fall-back decision. Policy / upstream codes
-/// come from a *reachable* Gateway and must surface; everything else means the
-/// pipe/transport failed and we fall back.
+/// Classify an `ipc` error code. The variant only shapes the error *message*
+/// now — all of them are terminal (no fall-back path exists). Policy / upstream
+/// codes come from a reachable Gateway; everything else means the pipe/transport
+/// itself failed and the fetch fails with it.
 fn classify_ipc_error(code: &str, message: &str) -> GatewayCallError {
     match code {
         "egress_blocked" | "egress_denied" => {
@@ -121,39 +124,6 @@ fn body_to_string(body: &Value) -> String {
     }
 }
 
-/// Direct `reqwest` GET — the dev fallback used only when the Gateway pipe is
-/// unreachable. The caller has already run the SSRF guard, so this cannot be
-/// pointed at a private address.
-async fn direct_get(url: &str, timeout_secs: f64) -> Result<FetchOutcome, String> {
-    let cfg = Config::get();
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs_f64(timeout_secs.max(0.001)))
-        .build()
-        .map_err(|e| format!("client build failed: {e}"))?;
-
-    let resp = client
-        .get(url)
-        .header("User-Agent", &cfg.user_agent)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let status = resp.status().as_u16();
-    let headers: serde_json::Map<String, Value> = resp
-        .headers()
-        .iter()
-        .filter_map(|(k, v)| v.to_str().ok().map(|s| (k.as_str().to_owned(), Value::String(s.to_owned()))))
-        .collect();
-    let content = resp.text().await.map_err(|e| e.to_string())?;
-
-    Ok(FetchOutcome {
-        ok: (200..300).contains(&status),
-        status,
-        content,
-        headers: Value::Object(headers),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_policy_codes_do_not_fall_back() {
+    fn classify_policy_codes_are_policy() {
         assert!(matches!(
             classify_ipc_error("egress_blocked", "x"),
             GatewayCallError::Policy(_)
@@ -194,12 +164,33 @@ mod tests {
     }
 
     #[test]
-    fn classify_transport_codes_fall_back() {
+    fn classify_transport_codes_are_transport() {
         for code in ["pipe_connect", "pipe_unavailable", "pipe_timeout", "decode", "unknown"] {
             assert!(
                 matches!(classify_ipc_error(code, "x"), GatewayCallError::Transport(_)),
-                "{code} should fall back"
+                "{code} should classify as transport"
             );
+        }
+    }
+
+    // ── no direct bypass: EVERY failure is terminal ─────────────────────────
+
+    #[test]
+    fn denied_egress_is_terminal() {
+        // A reachable Gateway that denies the request must surface as a
+        // terminal error — there is no direct-reqwest path to fall through to.
+        let err = classify_ipc_error("egress_denied", "blocked by allowlist").into_error();
+        assert!(err.contains("egress_denied"), "got: {err}");
+    }
+
+    #[test]
+    fn unreachable_gateway_is_terminal_not_bypassed() {
+        // The old hole: a pipe-down Gateway used to fall back to a direct GET,
+        // bypassing the allowlist entirely. Now it is just as terminal as a
+        // denial — the only egress path is the Gateway.
+        for code in ["pipe_unavailable", "pipe_timeout", "pipe_connect"] {
+            let err = classify_ipc_error(code, "gateway down").into_error();
+            assert!(err.contains(code), "{code} must be terminal, got: {err}");
         }
     }
 }

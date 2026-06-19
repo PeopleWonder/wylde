@@ -227,9 +227,19 @@ impl Host {
             return Ok(());
         }
         state.status = LifecycleStatus::Starting;
+        // Resolve the working directory (placeholder-substituted) up front so a
+        // bad `cwd` fails loud here instead of spawning into a bogus dir.
+        let cwd = match state.record.resolved_cwd() {
+            Ok(c) => c,
+            Err(e) => {
+                state.status = LifecycleStatus::Crashed;
+                state.last_error = Some(e.clone());
+                return Err(McpError::Transport(format!("cwd resolution failed: {e}")));
+            }
+        };
         let spec = SpawnSpec {
             command: &state.record.manifest.command,
-            cwd: Some(&state.record.resolved_cwd()),
+            cwd: Some(&cwd),
             env: &state.record.manifest.env,
         };
         let init_timeout = Duration::from_secs(self.cfg.init_timeout_s);

@@ -274,7 +274,7 @@ impl McpClient {
 /// Webcrawler manifest to use it); see
 /// `docs/plans/legacy-extensions-rust-rewrite.md`. If `WYLDE_BIN` is unset it
 /// falls back to `<WYLDE_ROOT>/rust/target/release`.
-fn resolve_placeholders(s: &str) -> String {
+pub(crate) fn resolve_placeholders(s: &str) -> String {
     let mut out = s.to_owned();
     if out.contains("${WYLDE_PYTHON}") {
         let py = std::env::var("WYLDE_PYTHON").unwrap_or_else(|_| default_python());
@@ -289,6 +289,39 @@ fn resolve_placeholders(s: &str) -> String {
         out = out.replace("${WYLDE_ROOT}", &root);
     }
     out
+}
+
+/// Resolve placeholders in a manifest `cwd` *strictly*.
+///
+/// The argv slots go through [`resolve_placeholders`] at spawn time
+/// ([`McpClient::connect_stdio`]), but the working directory historically did
+/// **not** — so a manifest `"cwd": "${WYLDE_ROOT}"` was joined to the extension
+/// root verbatim and `current_dir`'d into a literal `…/${WYLDE_ROOT}`, failing
+/// on Windows with OS error 267 (the directory name is invalid). This routes
+/// the cwd through the same substitution.
+///
+/// Unlike argv (where a stray token would surface as a spawn-time "program not
+/// found"), an unresolved cwd token would silently become a bogus relative
+/// path. So this is strict: if any `${…}` placeholder survives substitution we
+/// return an error rather than letting the spawn `current_dir` into garbage.
+pub(crate) fn resolve_cwd_placeholders(raw: &str) -> Result<String, String> {
+    let resolved = resolve_placeholders(raw);
+    if let Some(tok) = unresolved_placeholder(&resolved) {
+        return Err(format!(
+            "manifest cwd `{raw}` contains unresolvable placeholder `{tok}` \
+             (known: ${{WYLDE_ROOT}}, ${{WYLDE_BIN}}, ${{WYLDE_PYTHON}})"
+        ));
+    }
+    Ok(resolved)
+}
+
+/// Return the first surviving `${…}` placeholder in `s`, if any. Used to detect
+/// an unknown/unresolved token after [`resolve_placeholders`] has run.
+fn unresolved_placeholder(s: &str) -> Option<String> {
+    let start = s.find("${")?;
+    let rest = &s[start + 2..];
+    let end = rest.find('}')?;
+    Some(s[start..start + 2 + end + 1].to_owned())
 }
 
 fn default_python() -> String {
@@ -450,6 +483,34 @@ mod tests {
     #[test]
     fn argv_without_tokens_is_unchanged() {
         assert_eq!(resolve_placeholders("plain/arg --flag"), "plain/arg --flag");
+    }
+
+    // ── strict cwd placeholder resolution (Windows OS-err-267 fix) ───────
+    use super::resolve_cwd_placeholders;
+
+    #[test]
+    fn cwd_wylde_root_token_resolves_to_real_root() {
+        // The bug: a `cwd` of "${WYLDE_ROOT}" used to be passed through
+        // verbatim, so the spawn cd'd into a literal "…/${WYLDE_ROOT}".
+        std::env::set_var("WYLDE_ROOT", "/the/real/root");
+        let out = resolve_cwd_placeholders("${WYLDE_ROOT}").expect("known token resolves");
+        assert_eq!(out, "/the/real/root");
+        std::env::remove_var("WYLDE_ROOT");
+    }
+
+    #[test]
+    fn cwd_unknown_placeholder_is_an_error() {
+        let err = resolve_cwd_placeholders("${WYLDE_BOGUS}/sub")
+            .expect_err("an unknown placeholder must not silently pass through");
+        assert!(err.contains("${WYLDE_BOGUS}"), "error names the bad token: {err}");
+    }
+
+    #[test]
+    fn cwd_without_tokens_passes_through() {
+        assert_eq!(
+            resolve_cwd_placeholders("C:/abs/path").unwrap(),
+            "C:/abs/path"
+        );
     }
 
     // ── least-privilege env scrub ────────────────────────────────────────
