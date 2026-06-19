@@ -29,19 +29,17 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 
-# HTTP egress (direct-reqwest dev fallback only — the canonical path routes
-# through the Rust Gateway over its pipe via `wylde_shared::ipc`). Mirror the
-# feature set `wylde-gateway` uses so there's a single reqwest build in the
-# tree: rustls (no system OpenSSL), JSON helpers.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# NB: no direct HTTP client. All egress routes through the Rust Gateway over
+# its pipe (`wylde_shared::ipc` → `egress.forward`); the old direct-`reqwest`
+# fallback was removed (security boundary, audit item B2) so the Gateway is the
+# sole egress chokepoint. The crate has no `reqwest` dep as a result.
 
 # HTML parse + CSS selection — the `scraper` crate (html5ever + selectors),
 # the pure-Rust replacement for the Python `beautifulsoup4` (`soup.select`).
 # New workspace dep (plan risk #7); well-trodden, no C deps.
 scraper = "0.20"
 
-# URL parsing for the SSRF guard — re-exported by reqwest but pinned
-# explicitly so the host-extraction logic doesn't depend on a transitive.
+# URL parsing for the SSRF guard (host-extraction logic). A direct dep.
 url = "2"
 
 [dev-dependencies]

@@ -338,17 +338,26 @@ pub struct ExtensionRecord {
 
 impl ExtensionRecord {
     /// Resolve the child-process working directory.
-    pub fn resolved_cwd(&self) -> PathBuf {
+    ///
+    /// The manifest `cwd` is substituted through the same `${WYLDE_ROOT}` /
+    /// `${WYLDE_BIN}` / `${WYLDE_PYTHON}` path the command argv uses (see
+    /// [`crate::mcp::client::resolve_cwd_placeholders`]) *before* the
+    /// absolute/relative decision — otherwise a `"cwd": "${WYLDE_ROOT}"` would
+    /// be joined to the extension root verbatim and the spawn would
+    /// `current_dir` into a literal `…/${WYLDE_ROOT}` (Windows OS error 267).
+    /// An unresolvable placeholder is a hard error rather than a bogus path.
+    pub fn resolved_cwd(&self) -> Result<PathBuf, String> {
         match &self.manifest.cwd {
             Some(c) => {
-                let p = PathBuf::from(c);
-                if p.is_absolute() {
+                let resolved = crate::mcp::client::resolve_cwd_placeholders(c)?;
+                let p = PathBuf::from(resolved);
+                Ok(if p.is_absolute() {
                     p
                 } else {
                     self.root.join(p)
-                }
+                })
             }
-            None => self.root.clone(),
+            None => Ok(self.root.clone()),
         }
     }
 }

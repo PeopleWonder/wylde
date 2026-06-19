@@ -11,13 +11,14 @@
 //!   * `extract` — apply a `{field:{selector,attribute,multiple}}` rule set to HTML (fetched from `url` or passed inline as `html`).
 //!
 //! Greenfield Rust (NOT a line-by-line transpile) following the
-//! `wylde-ollama` / `wylde-treesitter` sidecar precedent: `reqwest` for HTTP,
-//! `scraper` for HTML/CSS, no headless browser (single-page static fetch only,
-//! exactly as the Python does). External HTTP egress routes through the Rust
-//! Gateway's `egress.forward` action over the pipe — with a *loud* direct
-//! `reqwest` fallback when the Gateway isn't reachable (dev), mirroring the
-//! Python handler's Gateway-first / requests-fallback shape. The
-//! `_validate_external_url` SSRF guard is ported branch-for-branch.
+//! `wylde-ollama` / `wylde-treesitter` sidecar precedent: `scraper` for
+//! HTML/CSS, no headless browser (single-page static fetch only, exactly as
+//! the Python does). External HTTP egress routes **only** through the Rust
+//! Gateway's `egress.forward` action over the pipe — there is no direct-HTTP
+//! bypass (the old `reqwest` fallback was removed under the security boundary,
+//! audit item B2), so the Gateway's allowlist is the sole egress chokepoint.
+//! The `_validate_external_url` SSRF guard is ported branch-for-branch as a
+//! defence-in-depth pre-check before the request reaches the Gateway.
 //!
 //! See `docs/plans/legacy-extensions-rust-rewrite.md` (Slice 1, "W1 + W2").
 //!
