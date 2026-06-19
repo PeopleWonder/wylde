@@ -90,18 +90,46 @@ if ($HotReload) {
 
     $allSvc = $DaemonServices + $StageOnlyServices
     $needBuild = @()
+    $reSeeded  = 0
     foreach ($svc in $allSvc) {
         $stage = Join-Path $StageDir "$svc.exe"
-        if (Test-Path $stage) { continue }
-        # Seed from the best already-built binary (fast path).
+        # Pick the FRESHEST already-built binary across the source dirs --
+        # NOT merely the first that exists. A rebuilt service lands in
+        # target/release (a plain `cargo build --release` or `cargo xtask
+        # build-all`); the watcher's hot-reload build lands in target-dev/
+        # debug. Whichever is newest must win over an older staged copy.
         $src = @(
             (Join-Path $RustRoot "bin\$svc.exe"),
             (Join-Path $RustRoot "target\release\$svc.exe"),
             (Join-Path $RustRoot "target\debug\$svc.exe"),
             (Join-Path $DevDebug "$svc.exe")
-        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-        if ($src) { Copy-Item $src $stage -Force }
-        else { $needBuild += $svc }
+        ) | Where-Object { Test-Path $_ } |
+            Sort-Object { (Get-Item $_).LastWriteTime } -Descending |
+            Select-Object -First 1
+        if (-not $src) {
+            # No binary anywhere yet -> cold-build it once (below). An
+            # existing stage copy with no source is left as-is (best we have).
+            if (-not (Test-Path $stage)) { $needBuild += $svc }
+            continue
+        }
+        # Re-seed when the stage copy is MISSING or OLDER than the freshest
+        # source build. THE DEPLOY-GAP FIX (2026-06-18): the old guard seeded
+        # only "if the stage file is absent", so once a service was staged it
+        # was never refreshed -- a later `cargo build`/`build-all` updated
+        # target/release while the daemon kept spawning the stale staged
+        # binary, which `no_action`ed every verb minted after that stale build
+        # (the wylde-workspaces fs/graph/vocabulary break). Copy-Item PRESERVES
+        # LastWriteTime, so after a re-seed stage == source and the next launch
+        # is a clean no-op; a watcher-built stage copy that is already newer
+        # than every source is left untouched.
+        $stageItem = if (Test-Path $stage) { Get-Item $stage } else { $null }
+        if (-not $stageItem -or (Get-Item $src).LastWriteTime -gt $stageItem.LastWriteTime) {
+            Copy-Item $src $stage -Force
+            $reSeeded++
+        }
+    }
+    if ($reSeeded -gt 0) {
+        Write-Host "  re-seeded $reSeeded stale/missing stage binary(ies) from the freshest build"
     }
 
     # Any service with no binary anywhere: build it once into target-dev
