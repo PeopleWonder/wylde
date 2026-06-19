@@ -140,28 +140,99 @@ pub struct IconConfig {
 
 impl Default for IconConfig {
     fn default() -> Self {
-        // Category icons shipped by F0: file, folder, folder-open, code, doc,
-        // config, data, image, lock, git, package, book.
+        // Two upstream glyph sets back these names (see the assets `ATTRIBUTION`
+        // and `Core/GUI/Shell/src/assets.rs::FILE_TREE_ICONS`):
+        //   • Lucide (ISC)  — category / UI / generic: file, folder,
+        //     folder-open, code, doc, config, data, image, lock, git, package,
+        //     book.
+        //   • Seti-UI (MIT) — per-language: rust, python, typescript, react,
+        //     javascript, go, c, cpp, c-sharp, java, kotlin, swift, ruby, php,
+        //     scala, clojure, elixir, haskell, lua, dart, r, vue, svelte, html,
+        //     css, sass, shell, powershell, json, yaml, markdown, xml, zig,
+        //     perl, ocaml, julia, nim, elm, graphql, terraform, docker,
+        //     makefile.
+        // Extensions resolve to a per-language glyph where Seti ships one, and
+        // fall through to a Lucide category otherwise; `code` is the generic
+        // source-file fallback.
         let mut by_extension: HashMap<String, IconRule> = HashMap::new();
-        let code = [
-            "rs", "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go", "c", "cc", "cpp", "cxx",
-            "h", "hpp", "rb", "java", "kt", "kts", "swift", "cs", "php", "sh", "bash", "zsh",
-            "lua", "sql", "r", "scala", "clj", "ex", "exs", "dart", "vue", "svelte",
+
+        // ── Per-language (Seti) — one glyph per language family ──
+        let lang: &[(&str, &[&str])] = &[
+            ("rust", &["rs"]),
+            ("python", &["py", "pyi", "pyw"]),
+            ("typescript", &["ts", "mts", "cts"]),
+            ("react", &["tsx", "jsx"]),
+            ("javascript", &["js", "mjs", "cjs"]),
+            ("go", &["go"]),
+            ("c", &["c", "h"]),
+            ("cpp", &["cc", "cpp", "cxx", "hpp", "hh", "hxx"]),
+            ("c-sharp", &["cs"]),
+            ("java", &["java"]),
+            ("kotlin", &["kt", "kts"]),
+            ("swift", &["swift"]),
+            ("ruby", &["rb"]),
+            ("php", &["php"]),
+            ("scala", &["scala", "sc", "sbt"]),
+            ("clojure", &["clj", "cljs", "cljc", "edn"]),
+            ("elixir", &["ex", "exs"]),
+            ("haskell", &["hs", "lhs"]),
+            ("lua", &["lua"]),
+            ("dart", &["dart"]),
+            ("r", &["r"]),
+            ("vue", &["vue"]),
+            ("svelte", &["svelte"]),
+            ("html", &["html", "htm", "xhtml"]),
+            ("css", &["css"]),
+            ("sass", &["scss", "sass"]),
+            ("shell", &["sh", "bash", "zsh", "fish"]),
+            ("powershell", &["ps1", "psm1", "psd1"]),
+            ("json", &["json", "jsonc", "ndjson", "json5"]),
+            ("yaml", &["yaml", "yml"]),
+            ("markdown", &["md", "markdown", "mdx"]),
+            ("xml", &["xml", "xsd", "xsl", "xslt"]),
+            ("zig", &["zig"]),
+            ("perl", &["pl", "pm", "perl"]),
+            ("ocaml", &["ml", "mli"]),
+            ("julia", &["jl"]),
+            ("nim", &["nim", "nims"]),
+            ("elm", &["elm"]),
+            ("graphql", &["graphql", "gql"]),
+            ("terraform", &["tf", "tfvars", "hcl"]),
         ];
-        for e in code {
-            by_extension.insert(e.to_owned(), IconRule::new("code"));
+        for (icon, exts) in lang {
+            for e in *exts {
+                by_extension.insert((*e).to_owned(), IconRule::new(icon));
+            }
         }
-        for e in ["md", "markdown", "txt", "text", "rst", "adoc", "org"] {
+
+        // ── Category fallbacks (Lucide) for everything without a language glyph ──
+        for e in ["txt", "text", "rst", "adoc", "asciidoc", "org", "rtf", "log"] {
             by_extension.insert(e.to_owned(), IconRule::new("doc"));
         }
-        for e in ["toml", "yaml", "yml", "ini", "cfg", "conf", "env", "properties"] {
+        for e in [
+            "toml",
+            "ini",
+            "cfg",
+            "conf",
+            "config",
+            "env",
+            "properties",
+            "editorconfig",
+        ] {
             by_extension.insert(e.to_owned(), IconRule::new("config"));
         }
-        for e in ["json", "jsonc", "ndjson", "csv", "tsv", "xml", "parquet"] {
+        for e in ["csv", "tsv", "parquet", "sql", "db", "sqlite", "sqlite3", "arrow"] {
             by_extension.insert(e.to_owned(), IconRule::new("data"));
         }
-        for e in ["png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp", "avif"] {
+        for e in ["png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp", "avif", "tiff"] {
             by_extension.insert(e.to_owned(), IconRule::new("image"));
+        }
+        // Remaining source-ish extensions with no dedicated Seti glyph → generic `code`.
+        for e in [
+            "vala", "groovy", "gradle", "cmake", "asm", "s", "v", "sv", "vhdl", "coffee", "d",
+            "f90", "f95", "fs", "fsx", "pas", "rkt", "scm", "lisp", "el", "tcl", "awk",
+        ] {
+            by_extension.insert(e.to_owned(), IconRule::new("code"));
         }
         by_extension.insert("lock".to_owned(), IconRule::new("lock"));
 
@@ -176,6 +247,8 @@ impl Default for IconConfig {
             "venv",
             "__pycache__",
             "vendor",
+            ".cargo",
+            "out",
         ] {
             by_folder.insert(f.to_owned(), FolderRule::container("package"));
         }
@@ -187,13 +260,31 @@ impl Default for IconConfig {
             "yarn.lock",
             "poetry.lock",
             "Pipfile.lock",
+            "pnpm-lock.yaml",
+            "Gemfile.lock",
+            "composer.lock",
         ] {
             by_file.insert(f.to_owned(), IconRule::new("lock"));
         }
-        by_file.insert("README.md".to_owned(), IconRule::colored("book", "$brand_light"));
-        by_file.insert("README".to_owned(), IconRule::colored("book", "$brand_light"));
-        for f in ["Cargo.toml", "package.json", "pyproject.toml"] {
+        for f in ["README.md", "README", "README.txt", "README.rst"] {
+            by_file.insert(f.to_owned(), IconRule::colored("book", "$brand_light"));
+        }
+        for f in [
+            "Cargo.toml",
+            "package.json",
+            "pyproject.toml",
+            "Gemfile",
+            "go.mod",
+            "pom.xml",
+        ] {
             by_file.insert(f.to_owned(), IconRule::new("package"));
+        }
+        // Exact-name tool files that carry their own per-tool Seti glyph.
+        for f in ["Dockerfile", ".dockerignore"] {
+            by_file.insert(f.to_owned(), IconRule::new("docker"));
+        }
+        for f in ["Makefile", "makefile", "GNUmakefile"] {
+            by_file.insert(f.to_owned(), IconRule::new("makefile"));
         }
 
         IconConfig {
@@ -422,12 +513,31 @@ mod tests {
     }
 
     #[test]
-    fn extension_maps_to_category() {
+    fn extension_maps_to_per_language_glyph() {
         let cfg = IconConfig::default();
-        assert_eq!(cfg.resolve(&entry("main.rs", Kind::File, "src/main.rs"), false).icon, "code");
-        assert_eq!(cfg.resolve(&entry("notes.md", Kind::File, "notes.md"), false).icon, "doc");
-        assert_eq!(cfg.resolve(&entry("data.json", Kind::File, "data.json"), false).icon, "data");
+        // Languages with a dedicated Seti glyph resolve to it (not the generic
+        // `code` category).
+        assert_eq!(cfg.resolve(&entry("main.rs", Kind::File, "src/main.rs"), false).icon, "rust");
+        assert_eq!(cfg.resolve(&entry("app.py", Kind::File, "app.py"), false).icon, "python");
+        assert_eq!(cfg.resolve(&entry("index.ts", Kind::File, "index.ts"), false).icon, "typescript");
+        assert_eq!(cfg.resolve(&entry("App.tsx", Kind::File, "App.tsx"), false).icon, "react");
+        assert_eq!(cfg.resolve(&entry("main.go", Kind::File, "main.go"), false).icon, "go");
+        assert_eq!(cfg.resolve(&entry("notes.md", Kind::File, "notes.md"), false).icon, "markdown");
+        assert_eq!(cfg.resolve(&entry("data.json", Kind::File, "data.json"), false).icon, "json");
+        assert_eq!(cfg.resolve(&entry("Lib.hs", Kind::File, "Lib.hs"), false).icon, "haskell");
+    }
+
+    #[test]
+    fn extension_maps_to_lucide_category_when_no_language_glyph() {
+        let cfg = IconConfig::default();
+        // No per-language Seti glyph → fall through to a Lucide category.
         assert_eq!(cfg.resolve(&entry("logo.png", Kind::File, "logo.png"), false).icon, "image");
+        assert_eq!(cfg.resolve(&entry("notes.txt", Kind::File, "notes.txt"), false).icon, "doc");
+        assert_eq!(cfg.resolve(&entry("ruff.toml", Kind::File, "ruff.toml"), false).icon, "config");
+        assert_eq!(cfg.resolve(&entry("rows.csv", Kind::File, "rows.csv"), false).icon, "data");
+        assert_eq!(cfg.resolve(&entry("q.sql", Kind::File, "q.sql"), false).icon, "data");
+        // A source language with no dedicated glyph → generic `code`.
+        assert_eq!(cfg.resolve(&entry("build.gradle", Kind::File, "build.gradle"), false).icon, "code");
     }
 
     #[test]
@@ -467,7 +577,47 @@ mod tests {
             &entry("build.rs", Kind::File, "target/build.rs"),
             false,
         );
-        assert_eq!(rs.icon, "code");
+        assert_eq!(rs.icon, "rust");
+    }
+
+    #[test]
+    fn exact_name_tool_files_get_their_glyph() {
+        let cfg = IconConfig::default();
+        assert_eq!(cfg.resolve(&entry("Dockerfile", Kind::File, "Dockerfile"), false).icon, "docker");
+        assert_eq!(cfg.resolve(&entry("Makefile", Kind::File, "Makefile"), false).icon, "makefile");
+        // Manifests stay on `package`; the exact-name rule beats the extension.
+        assert_eq!(cfg.resolve(&entry("go.mod", Kind::File, "go.mod"), false).icon, "package");
+    }
+
+    #[test]
+    fn every_mapped_icon_name_has_an_svg_asset() {
+        // The config must never name a glyph with no `.svg` on disk (that would
+        // render a blank icon and — once added to the embed list — fail the
+        // `include_bytes!` build). Cross-check every name the defaults can emit
+        // against the asset directory. The Shell crate's `FILE_TREE_ICONS`
+        // embed list is separately guarded at build time by `include_bytes!`.
+        let icons_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../assets/icons/file-tree");
+        let cfg = IconConfig::default();
+        let mut names: Vec<String> = vec![
+            cfg.default.file.icon.clone(),
+            cfg.default.folder.icon.clone(),
+        ];
+        if let Some(o) = &cfg.default.folder.open_icon {
+            names.push(o.clone());
+        }
+        names.extend(cfg.by_extension.values().map(|r| r.icon.clone()));
+        names.extend(cfg.by_file.values().map(|r| r.icon.clone()));
+        for r in cfg.by_folder.values() {
+            names.push(r.icon.clone());
+            if let Some(o) = &r.open_icon {
+                names.push(o.clone());
+            }
+        }
+        for n in names {
+            let p = icons_dir.join(format!("{n}.svg"));
+            assert!(p.exists(), "mapped icon {n:?} has no asset at {}", p.display());
+        }
     }
 
     #[test]
@@ -508,7 +658,7 @@ mod tests {
         // built-in defaults intact (the YAML block is sparse/optional).
         let cfg = IconConfig::load();
         assert_eq!(cfg.default.file.icon, "file");
-        assert_eq!(cfg.resolve(&entry("main.rs", Kind::File, "main.rs"), false).icon, "code");
+        assert_eq!(cfg.resolve(&entry("main.rs", Kind::File, "main.rs"), false).icon, "rust");
     }
 
     #[test]
@@ -524,6 +674,6 @@ file_tree_icons:
         // The override wins; other defaults are untouched.
         let rs = cfg.resolve(&entry("main.rs", Kind::File, "main.rs"), false);
         assert_eq!(rs.icon, "package");
-        assert_eq!(cfg.resolve(&entry("a.py", Kind::File, "a.py"), false).icon, "code");
+        assert_eq!(cfg.resolve(&entry("a.py", Kind::File, "a.py"), false).icon, "python");
     }
 }

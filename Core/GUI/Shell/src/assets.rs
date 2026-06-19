@@ -47,7 +47,13 @@ macro_rules! file_tree_icons {
 
 /// The embedded icon table. Add a glyph here + its `.svg` under
 /// `assets/icons/file-tree/` to make it available to `svg().path(...)`.
+///
+/// Two upstream sets, both permissive / commercial-OK (see
+/// `Core/GUI/assets/LICENSES/ATTRIBUTION.md`): **Lucide (ISC)** supplies the
+/// category / UI / folder / generic glyphs; **Seti-UI (MIT)** supplies the
+/// per-language file-type glyphs. Both tint cleanly through `svg()`'s mask.
 pub static FILE_TREE_ICONS: &[(&str, &[u8])] = file_tree_icons![
+    // ── Lucide (ISC): category / UI / folder / generic ──
     "file",
     "folder",
     "folder-open",
@@ -60,6 +66,49 @@ pub static FILE_TREE_ICONS: &[(&str, &[u8])] = file_tree_icons![
     "git",
     "package",
     "book",
+    // ── Seti-UI (MIT): per-language file-type ──
+    "rust",
+    "python",
+    "typescript",
+    "react",
+    "javascript",
+    "go",
+    "c",
+    "cpp",
+    "c-sharp",
+    "java",
+    "kotlin",
+    "swift",
+    "ruby",
+    "php",
+    "scala",
+    "clojure",
+    "elixir",
+    "haskell",
+    "lua",
+    "dart",
+    "r",
+    "vue",
+    "svelte",
+    "html",
+    "css",
+    "sass",
+    "shell",
+    "powershell",
+    "json",
+    "yaml",
+    "markdown",
+    "xml",
+    "zig",
+    "perl",
+    "ocaml",
+    "julia",
+    "nim",
+    "elm",
+    "graphql",
+    "terraform",
+    "docker",
+    "makefile",
 ];
 
 /// gpui [`AssetSource`] over the embedded bundle, registered at app boot
