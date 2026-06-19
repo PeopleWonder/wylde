@@ -42,6 +42,8 @@ async fn main() -> Result<()> {
                     "ext.health",
                     "ext.restart",
                     "ext.events",
+                    "inference.embed",
+                    "inference.chat",
                     "extensions.dispatch",
                 ],
                 "mcp_spec_version": wylde_extension_bridge::config::MCP_SPEC_VERSION,
