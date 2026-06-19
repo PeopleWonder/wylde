@@ -107,6 +107,29 @@ artifact post-dates its running process shows `stale:true` — the same
 reminder; the authoritative live `stale:0` assertion stays with the
 redeploy/preflight step that queries a running daemon.
 
+**Dev-stack stage refresh (deploy-gap, in-tree).** Two launch paths resolve
+*in-tree* core binaries differently:
+
+- **Live** (`launch_wylde.ps1`): the daemon reads `rust/target/release`
+  directly (`rust_binary_path` order: `rust/bin` → `target/release` →
+  `target/debug`). `build-all` rebuilds in-tree crates there, so Live is
+  fresh after a build + bounce — there is no staging step for in-tree
+  services, and nothing for `build-all` to stage into the launch dir.
+- **Dev hot-reload** (`tools/dev/wylde-dev.ps1`): the daemon spawns each
+  service from `rust/target-dev/stage/<svc>.exe` via `WYLDE_<NAME>_BIN`
+  overrides, so the backend watcher can rebuild into `rust/target-dev/debug`
+  without fighting the running `.exe`'s lock, then swap. The launcher
+  **seeds** that stage dir. The original seed ran only when the stage file
+  was *absent*, so a later `cargo build`/`build-all` updated `target/release`
+  while the dev daemon kept spawning the stale staged binary — which
+  `no_action`ed every verb minted after the stale build (the 2026-06-18
+  `wylde-workspaces` fs/graph/vocabulary break). Fixed: `wylde-dev.ps1` now
+  re-seeds a stage binary whenever the *freshest* source build is newer than
+  the staged copy (`Copy-Item` preserves mtime, so it is idempotent), and
+  leaves a newer watcher-built stage copy untouched. `build-all` is **not**
+  the fix site: it is the release/Live build tool and deliberately never
+  writes the dev-only `target-dev/` scratch tree.
+
 ## 5. Per-service user-data paths
 
 User data never lives inside a service folder and must outlive the binary,
