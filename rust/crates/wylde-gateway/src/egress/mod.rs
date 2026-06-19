@@ -19,6 +19,7 @@
 pub mod client;
 pub mod destinations;
 pub mod kill_switch;
+pub mod ssrf;
 
 pub use client::{EgressError, EgressResult};
 pub use destinations::{list_destinations, reload, Destination, EgressDestinationError};

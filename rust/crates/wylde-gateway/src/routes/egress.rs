@@ -223,6 +223,7 @@ fn egress_error_to_response(e: crate::egress::client::EgressError) -> Response {
         ),
         EgressError::Denied(msg) => failure("egress_denied", &msg, StatusCode::FORBIDDEN),
         EgressError::Policy(msg) => failure("egress_denied", &msg, StatusCode::FORBIDDEN),
+        EgressError::Ssrf(msg) => failure("egress_denied", &msg, StatusCode::FORBIDDEN),
         EgressError::Upstream(msg) => {
             failure("egress_upstream_error", &msg, StatusCode::BAD_GATEWAY)
         }

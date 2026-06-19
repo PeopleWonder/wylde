@@ -42,7 +42,7 @@ pub enum EgressDestinationError {
     Invalid(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Destination {
     pub key: String,
     pub component: String,
@@ -51,6 +51,16 @@ pub struct Destination {
     pub verify_tls: bool,
     pub purpose: String,
     pub path_allowlist: Vec<String>,
+    /// Optional SSRF host pinning — when non-empty, the resolved host must
+    /// match one entry (exact, or suffix via a leading `*.`/`.`). Empty ⇒
+    /// any public host (the SSRF deny-list still applies). See
+    /// [`super::ssrf`].
+    pub host_allowlist: Vec<String>,
+    /// Escape hatch for a destination that legitimately reaches a
+    /// private/loopback host. Off by default; the SSRF deny-list is only
+    /// skipped when this is `true`. Must never be set on a wildcard
+    /// destination.
+    pub allow_private: bool,
 }
 
 impl Destination {
@@ -285,6 +295,35 @@ fn entry_to_destination(component: &str, raw: &Value, label: &str) -> Option<Des
             .collect(),
         _ => Vec::new(),
     };
+    let host_allowlist = match obj.get("host_allowlist") {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.trim().to_owned()))
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    };
+    let allow_private = obj
+        .get("allow_private")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    // Guard-rail: a wildcard destination (`url_prefix` is just a scheme)
+    // must never carry `allow_private` — that would re-open SSRF to the
+    // whole internal network for any URL the caller supplies. Drop the
+    // flag with a loud warning rather than honour it.
+    let is_wildcard = split_scheme(&url_prefix)
+        .map(|(_, r)| r.is_empty())
+        .unwrap_or(false);
+    let allow_private = if allow_private && is_wildcard {
+        tracing::warn!(
+            "egress: {}/{}: 'allow_private' ignored on a wildcard destination (SSRF risk)",
+            label,
+            key
+        );
+        false
+    } else {
+        allow_private
+    };
     Some(Destination {
         key,
         component: component.to_owned(),
@@ -293,6 +332,8 @@ fn entry_to_destination(component: &str, raw: &Value, label: &str) -> Option<Des
         verify_tls,
         purpose,
         path_allowlist,
+        host_allowlist,
+        allow_private,
     })
 }
 
@@ -415,6 +456,8 @@ pub fn list_destinations() -> serde_json::Map<String, Value> {
                 "verify_tls": d.verify_tls,
                 "purpose": d.purpose,
                 "path_allowlist": d.path_allowlist,
+                "host_allowlist": d.host_allowlist,
+                "allow_private": d.allow_private,
             }));
         }
         out.insert(component.clone(), Value::Array(arr));
@@ -511,6 +554,8 @@ mod tests {
             verify_tls: true,
             purpose: String::new(),
             path_allowlist: vec![],
+            host_allowlist: vec![],
+            allow_private: false,
         };
         assert!(validate_path(&d, "no-slash").is_err());
         assert!(validate_path(&d, "/ok").is_ok());
@@ -526,6 +571,8 @@ mod tests {
             verify_tls: true,
             purpose: String::new(),
             path_allowlist: vec![],
+            host_allowlist: vec![],
+            allow_private: false,
         };
         assert!(validate_path(&d, "https://attacker.com/x").is_err());
     }
@@ -540,6 +587,8 @@ mod tests {
             verify_tls: true,
             purpose: String::new(),
             path_allowlist: vec!["/v1/foo".into()],
+            host_allowlist: vec![],
+            allow_private: false,
         };
         assert!(validate_path(&d, "/v1/foo").is_ok());
         assert!(validate_path(&d, "/v1/foo/bar").is_ok());
@@ -556,6 +605,8 @@ mod tests {
             verify_tls: true,
             purpose: String::new(),
             path_allowlist: vec![],
+            host_allowlist: vec![],
+            allow_private: false,
         };
         assert!(validate_path(&d, "/no-host").is_err());
         assert!(validate_path(&d, "https://example.com/").is_ok());
@@ -571,6 +622,8 @@ mod tests {
             verify_tls: true,
             purpose: String::new(),
             path_allowlist: vec![],
+            host_allowlist: vec![],
+            allow_private: false,
         };
         // http:// when https:// declared — rejected.
         assert!(validate_path(&d, "http://example.com/").is_err());
@@ -586,6 +639,8 @@ mod tests {
             verify_tls: true,
             purpose: String::new(),
             path_allowlist: vec![],
+            host_allowlist: vec![],
+            allow_private: false,
         };
         assert_eq!(
             build_target_url(&d, "https://example.com/foo"),
@@ -603,6 +658,8 @@ mod tests {
             verify_tls: true,
             purpose: String::new(),
             path_allowlist: vec![],
+            host_allowlist: vec![],
+            allow_private: false,
         };
         assert_eq!(
             build_target_url(&d, "/v1/x"),
@@ -620,6 +677,8 @@ mod tests {
             verify_tls: true,
             purpose: String::new(),
             path_allowlist: vec![],
+            host_allowlist: vec![],
+            allow_private: false,
         };
         let pinned = Destination {
             key: "x".into(),
@@ -629,8 +688,50 @@ mod tests {
             verify_tls: true,
             purpose: String::new(),
             path_allowlist: vec![],
+            host_allowlist: vec![],
+            allow_private: false,
         };
         assert!(wild.is_wildcard());
         assert!(!pinned.is_wildcard());
+    }
+
+    #[test]
+    fn entry_parses_host_allowlist_and_allow_private() {
+        let raw = serde_json::json!({
+            "key": "api",
+            "url_prefix": "https://api.internal.example.com",
+            "host_allowlist": ["api.internal.example.com", "*.example.com"],
+            "allow_private": true
+        });
+        let d = entry_to_destination("X", &raw, "test").expect("parses");
+        assert_eq!(
+            d.host_allowlist,
+            vec!["api.internal.example.com", "*.example.com"]
+        );
+        // pinned destination → allow_private is honoured
+        assert!(d.allow_private);
+    }
+
+    #[test]
+    fn entry_drops_allow_private_on_wildcard() {
+        let raw = serde_json::json!({
+            "key": "web",
+            "url_prefix": "https://",
+            "allow_private": true
+        });
+        let d = entry_to_destination("X", &raw, "test").expect("parses");
+        // A wildcard must never carry allow_private — it is forced off.
+        assert!(!d.allow_private);
+    }
+
+    #[test]
+    fn entry_defaults_new_fields() {
+        let raw = serde_json::json!({
+            "key": "web",
+            "url_prefix": "https://"
+        });
+        let d = entry_to_destination("X", &raw, "test").expect("parses");
+        assert!(d.host_allowlist.is_empty());
+        assert!(!d.allow_private);
     }
 }

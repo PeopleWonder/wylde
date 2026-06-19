@@ -234,6 +234,7 @@ fn egress_error_to_reply(e: EgressError) -> Reply {
         )),
         EgressError::Denied(msg) => Reply::err(IpcError::new("egress_denied", msg)),
         EgressError::Policy(msg) => Reply::err(IpcError::new("egress_denied", msg)),
+        EgressError::Ssrf(msg) => Reply::err(IpcError::new("egress_denied", msg)),
         EgressError::Upstream(msg) => Reply::err(IpcError::new("egress_upstream_error", msg)),
     }
 }
@@ -263,9 +264,7 @@ async fn handle_extensions_dispatch(payload: Value) -> Reply {
         .to_owned();
     let params = obj.get("params").cloned().unwrap_or_else(|| json!({}));
 
-    match crate::routes::extensions::dispatch_through_bridge(&extension, &endpoint, params)
-        .await
-    {
+    match crate::routes::extensions::dispatch_through_bridge(&extension, &endpoint, params).await {
         Ok(data) => Reply::ok(data),
         Err(f) => Reply::err(IpcError::new(f.code, f.message)),
     }
