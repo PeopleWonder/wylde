@@ -5252,6 +5252,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
+name = "wylde-concept-routing"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "tracing",
+ "wylde-shared",
+]
+
+[[package]]
 name = "wylde-device-gate"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -5364,6 +5376,7 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
+ "wylde-concept-routing",
  "wylde-plugin-api",
  "wylde-prebuild-guard",
  "wylde-shared",
@@ -5624,6 +5637,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wylde-concept-routing",
  "wylde-prebuild-guard",
  "wylde-shared",
  "wylde-treesitter",

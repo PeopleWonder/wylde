@@ -60,6 +60,20 @@ pub async fn retrieve(scope: &WorkspaceRagScope, user_message: &str) -> Vec<Stri
     hits.into_iter().map(|h| render_hit(scope, &h)).collect()
 }
 
+/// [`retrieve`] with a pre-computed query embedding — identical output for the
+/// same `(query_vec, user_message)`, but skips the embed so the caller can
+/// share one embedding across RAG **and** concept routing (concept-routing plan
+/// §6.1 "no extra round-trip"). `user_message` is still passed for the
+/// anchor/active-file markers it carries.
+pub fn retrieve_with_vec(
+    scope: &WorkspaceRagScope,
+    query_vec: &[f32],
+    user_message: &str,
+) -> Vec<String> {
+    let hits = search::query_with_vec(&scope.workspace_id, query_vec, user_message, scope.limit);
+    hits.into_iter().map(|h| render_hit(scope, &h)).collect()
+}
+
 /// Format one search hit into a prompt snippet. The path is shown relative
 /// to the workspace folder when it sits under it (shorter + less leaky),
 /// falling back to the absolute path otherwise.

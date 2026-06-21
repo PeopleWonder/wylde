@@ -30,6 +30,10 @@ pub mod freshness;
 pub mod lens;
 pub mod proposals;
 pub mod retrieve;
+// Concept-routing plan R0/R1 — the deletable seam to the isolated
+// `wylde-concept-routing` crate (load store + match vocab + call the pure
+// router with the shared RAG embed). Remove with the crate to revert routing.
+pub mod routing_bridge;
 pub mod search;
 pub mod semantic;
 pub mod store;

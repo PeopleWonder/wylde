@@ -28,6 +28,13 @@ pub struct WorkspaceContext {
 
     /// RAG snippets scoped to the workspace folder.
     pub rag_snippets: Vec<String>,
+
+    /// Concept-routing candidate set (concept-routing plan R1) — present only
+    /// when the caller asked to route (`route == true`) and the workspace has
+    /// centroid-bearing concepts. **R1: logged, never injected** — it does NOT
+    /// feed any prompt slot, so it leaves [`is_empty`](Self::is_empty) and the
+    /// rendered output untouched (injection is R2).
+    pub route_candidates: Option<wylde_concept_routing::CandidateSet>,
 }
 
 impl WorkspaceContext {
@@ -46,7 +53,15 @@ impl WorkspaceContext {
 /// Loads the definition from [`registry`]; gathers persona / notes /
 /// RAG per the `*_enabled` toggles; returns an empty context for an
 /// unknown (or empty) `workspace_id` so a plain chat turn is unaffected.
-pub async fn gather(workspace_id: &str, user_message: &str) -> WorkspaceContext {
+///
+/// `route` is the concept-routing master toggle, forwarded from the harness
+/// (concept-routing plan R0/R1). When `false` the function is **byte-identical
+/// to before** — it never touches the routing crate. When `true`, on the
+/// RAG-enabled path, it embeds the query **once** and shares that vector
+/// between RAG and the router, so routing costs **no extra embed and no extra
+/// round-trip** (plan §6.1). R1 only *logs* the resulting candidate set; it
+/// feeds no slot.
+pub async fn gather(workspace_id: &str, user_message: &str, route: bool) -> WorkspaceContext {
     if workspace_id.trim().is_empty() {
         return WorkspaceContext::default();
     }
@@ -78,15 +93,40 @@ pub async fn gather(workspace_id: &str, user_message: &str) -> WorkspaceContext 
             .collect()
     };
 
-    let rag_snippets = match WorkspaceRagScope::from_definition(&def) {
-        Some(scope) => rag::scope::retrieve(&scope, user_message).await,
-        None => Vec::new(),
+    let (rag_snippets, route_candidates) = match WorkspaceRagScope::from_definition(&def) {
+        // Routing ON + RAG enabled: share ONE embed across RAG and the router.
+        // This is the only path that reaches the routing crate.
+        Some(scope) if route => match rag::indexer::search::embed_query(&def.id, user_message).await
+        {
+            Some(query_vec) => {
+                let rag = rag::scope::retrieve_with_vec(&scope, &query_vec, user_message);
+                // R1: compute the candidate set and LOG it (calibration data).
+                let candidates =
+                    crate::concepts::routing_bridge::route_with_vec(&def.id, &query_vec, user_message);
+                match &candidates {
+                    Some(set) => tracing::info!(target: "concept_routing", "{}", set.log_line()),
+                    None => tracing::debug!(
+                        target: "concept_routing",
+                        "concept-routing: skipped for {} — no centroid-bearing concepts yet",
+                        def.id
+                    ),
+                }
+                (rag, candidates)
+            }
+            // Blank query / embed unreachable → same empty RAG as today; no
+            // routing (nothing to share an embed with).
+            None => (Vec::new(), None),
+        },
+        // Routing OFF (or RAG disabled): the exact pre-routing path, untouched.
+        Some(scope) => (rag::scope::retrieve(&scope, user_message).await, None),
+        None => (Vec::new(), None),
     };
 
     WorkspaceContext {
         persona,
         memory_snippets,
         rag_snippets,
+        route_candidates,
     }
 }
 
@@ -160,6 +200,7 @@ mod tests {
             persona: "Be terse.".into(),
             memory_snippets: vec!["uses pytest".into(), "prefers Rust".into()],
             rag_snippets: vec!["fn main() {}".into()],
+            ..Default::default()
         };
         let s = render_slots(&ctx);
         assert!(s.contains("# Workspace context"));
@@ -177,6 +218,7 @@ mod tests {
             persona: "p".repeat(PERSONA_MAX_CHARS + 500),
             memory_snippets: Vec::new(),
             rag_snippets: Vec::new(),
+            ..Default::default()
         };
         let s = render_slots(&ctx);
         assert!(s.contains("[persona truncated at"), "marker present: {s}");
@@ -192,6 +234,7 @@ mod tests {
             persona: "p".repeat(100),
             memory_snippets: Vec::new(),
             rag_snippets: Vec::new(),
+            ..Default::default()
         };
         assert!(!render_slots(&ctx).contains("truncated"));
     }
@@ -202,6 +245,7 @@ mod tests {
             persona: String::new(),
             memory_snippets: vec!["only memory".into()],
             rag_snippets: Vec::new(),
+            ..Default::default()
         };
         let s = render_slots(&ctx);
         assert!(!s.contains("## Persona"));
@@ -212,8 +256,8 @@ mod tests {
     #[tokio::test]
     async fn gather_is_empty_for_unknown_or_blank_workspace() {
         let _env = TestEnv::new();
-        assert!(gather("", "hi").await.is_empty());
-        assert!(gather("nope-000000", "hi").await.is_empty());
+        assert!(gather("", "hi", false).await.is_empty());
+        assert!(gather("nope-000000", "hi", false).await.is_empty());
     }
 
     #[tokio::test]
@@ -222,9 +266,24 @@ mod tests {
         let def = registry::create("/tmp/gather-persona", None);
         registry::update(&def.id, None, Some(true), Some(false)).unwrap();
         persona::save(&def.id, "Answer in haiku.").unwrap();
-        let ctx = gather(&def.id, "hello").await;
+        let ctx = gather(&def.id, "hello", false).await;
         assert_eq!(ctx.persona, "Answer in haiku.");
         // RAG disabled → no rag snippets; notes empty → none.
         assert!(ctx.rag_snippets.is_empty());
+        assert!(ctx.route_candidates.is_none(), "routing off ⇒ no candidates");
+    }
+
+    #[tokio::test]
+    async fn gather_route_flag_skips_routing_when_rag_disabled() {
+        // Routing only engages on the RAG-enabled path (where the embed is
+        // shared); RAG-disabled means no shared embed, so routing is skipped
+        // even with the flag on — and the rendered output is unchanged.
+        let _env = TestEnv::new();
+        let def = registry::create("/tmp/gather-route-no-rag", None);
+        registry::update(&def.id, None, Some(true), Some(false)).unwrap();
+        persona::save(&def.id, "Hi.").unwrap();
+        let ctx = gather(&def.id, "hello", true).await;
+        assert_eq!(ctx.persona, "Hi.");
+        assert!(ctx.route_candidates.is_none(), "no shared embed ⇒ no routing");
     }
 }

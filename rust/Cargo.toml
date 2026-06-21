@@ -31,6 +31,13 @@ members = [
     # build-order doc on the Nextcloud Wylde collective.
     "crates/wylde-workspaces",
     "crates/wylde-workspaces-client",
+    # Concept-routing decision layer (concept-routing plan, R0/R1). An
+    # ISOLATED, removable pure-library crate holding the query→concept
+    # routing policy + the master toggle, behind a default-off gate.
+    # Depended on by `wylde-workspaces` (server-side routing bridge) and the
+    # harness (toggle + facade verbs). Deleting it + reverting the two gated
+    # seams restores pre-routing behaviour — the removal test (plan §2).
+    "crates/wylde-concept-routing",
     # Optional rust-analyzer LSP host (IDE S8, OQ-1). Supervises a single
     # rust-analyzer child and exposes diagnostics/completions/hover over
     # `lsp.*` pipe verbs. Taxonomy-clean: the editor works without it; it

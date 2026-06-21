@@ -62,6 +62,11 @@ pub(crate) struct WorkspacePrompt {
     /// True when a workspace was requested but the service was unreachable
     /// (Broken / breaker open) — the caller surfaces the inline notice.
     pub degraded: bool,
+    /// Concept-routing candidate set (concept-routing plan R1) — `Some` only
+    /// when the master toggle was on and the service routed something. **R1:
+    /// logged, never injected**; carrying it here lets the harness log it from
+    /// its single gather site. Does not affect [`is_empty`](Self::is_empty).
+    pub route_candidates: Option<wylde_concept_routing::CandidateSet>,
 }
 
 impl WorkspacePrompt {
@@ -98,11 +103,19 @@ fn parse_prompt_reply(v: &Value) -> WorkspacePrompt {
             })
             .unwrap_or_default()
     };
+    // Concept-routing R1: deserialize the candidate set when present. A
+    // null/absent/garbage field ⇒ None (routing off or nothing routed) — never
+    // an error, so a malformed field can't break a turn.
+    let route_candidates = v
+        .get("route_candidates")
+        .filter(|c| !c.is_null())
+        .and_then(|c| serde_json::from_value(c.clone()).ok());
     WorkspacePrompt {
         persona,
         notes: list("memory_snippets"),
         rag: list("rag_snippets"),
         degraded: false,
+        route_candidates,
     }
 }
 
@@ -132,13 +145,17 @@ fn is_unavailable(e: &ClientError) -> bool {
 /// An absent / empty `workspace_id` yields base context (no pipe call), so
 /// a plain chat turn is byte-identical to before. A reachable service
 /// returns the structured parts (B6); an unreachable one degrades.
-pub(crate) async fn gather(workspace_id: Option<&str>, user_message: &str) -> WorkspacePrompt {
+pub(crate) async fn gather(
+    workspace_id: Option<&str>,
+    user_message: &str,
+    route: bool,
+) -> WorkspacePrompt {
     let Some(ws_id) = workspace_id.map(str::trim).filter(|s| !s.is_empty()) else {
         return WorkspacePrompt::base();
     };
 
     let client = WorkspacesClient::for_service(workspaces_service());
-    match client.gather_prompt_raw(ws_id, user_message).await {
+    match client.gather_prompt_raw(ws_id, user_message, route).await {
         Ok(reply) => parse_prompt_reply(&reply),
         // Service unreachable / breaker open → base context + notice.
         Err(e) if is_unavailable(&e) => WorkspacePrompt {
@@ -180,11 +197,11 @@ mod tests {
 
     #[tokio::test]
     async fn no_workspace_is_base_context() {
-        let out = gather(None, "hello").await;
+        let out = gather(None, "hello", false).await;
         assert!(out.is_empty());
         assert!(!out.degraded);
 
-        let out = gather(Some("   "), "hello").await;
+        let out = gather(Some("   "), "hello", false).await;
         assert!(out.is_empty());
         assert!(!out.degraded);
     }
@@ -199,7 +216,7 @@ mod tests {
             format!("wylde-workspaces-dead-{}", std::process::id()),
         );
 
-        let out = gather(Some("any-workspace"), "hello").await;
+        let out = gather(Some("any-workspace"), "hello", false).await;
         assert!(out.is_empty(), "degraded gather must add nothing");
         assert!(out.degraded, "an unreachable service must degrade");
 

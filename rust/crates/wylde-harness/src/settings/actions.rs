@@ -58,6 +58,45 @@ pub async fn handle_encryption_set(payload: Value) -> Reply {
     }
 }
 
+// ── settings.concept_routing.* (the routing master toggle, concept-routing
+//    plan §3) — the GUI's write facade over the harness-owned `RoutingConfig`
+//    store, so there is ONE source of truth read in-process by the gather hot
+//    path (no TCP↔pipe drift, memory `wylde-settings-ollama-defaults-ux-scope`).
+
+/// `settings.concept_routing.get {}` — the full routing config. Reply: the
+/// serialized [`RoutingConfig`](wylde_concept_routing::RoutingConfig)
+/// (`{enabled, curate_before_inject, mode, max_concepts, abs_threshold,
+/// relative_floor, scope_to_active_region}`). Default-off on a fresh install.
+pub async fn handle_concept_routing_get(_payload: Value) -> Reply {
+    let cfg = wylde_concept_routing::RoutingConfig::current();
+    Reply::ok(cfg.to_value())
+}
+
+/// `settings.concept_routing.set {...}` — persist the routing config. Every
+/// field is optional; an omitted field keeps its current value (a partial
+/// patch), so the GUI can flip just `enabled` without resending the knobs.
+/// Reply: the persisted config. The master toggle defaults off and only ever
+/// turns on by an explicit, persisted opt-in here.
+pub async fn handle_concept_routing_set(payload: Value) -> Reply {
+    if !payload.is_object() {
+        return Reply::err_msg("bad_request", "payload must be an object");
+    }
+    // Merge the incoming patch over the current config so callers can send only
+    // the keys they're changing, then re-parse through the tolerant loader
+    // (unknown/garbage keys fall back to current values, never fail open).
+    let mut merged = wylde_concept_routing::RoutingConfig::current().to_value();
+    if let (Some(base), Some(patch)) = (merged.as_object_mut(), payload.as_object()) {
+        for (k, v) in patch {
+            base.insert(k.clone(), v.clone());
+        }
+    }
+    let next = wylde_concept_routing::RoutingConfig::from_value(&merged);
+    match wylde_concept_routing::RoutingConfig::persist(next) {
+        Ok(()) => Reply::ok(next.to_value()),
+        Err(e) => Reply::err_msg("io_error", format!("persist concept_routing: {e}")),
+    }
+}
+
 /// `settings.ollama.get_overrides {model, profile?}` — the sparse
 /// overrides stored for `model`, `{}` when none. Reply:
 /// `{model, profile, overrides}`.
@@ -228,6 +267,52 @@ mod tests {
             Some("bad_request")
         );
 
+        std::env::remove_var("WYLDE_DATA_DIR");
+    }
+
+    #[tokio::test]
+    async fn concept_routing_get_set_default_off_and_partial_patch() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("WYLDE_DATA_DIR", tmp.path());
+        wylde_concept_routing::RoutingConfig::reload_from_disk(); // fresh dir ⇒ off
+
+        // Default get: master toggle OFF, knobs at their defaults.
+        let got = handle_concept_routing_get(json!({})).await;
+        assert!(got.ok);
+        assert_eq!(got.data["enabled"], json!(false));
+        assert_eq!(got.data["max_concepts"], json!(3));
+        assert_eq!(got.data["mode"], json!("augment"));
+
+        // Partial patch: flip only `enabled`; the knobs keep their values.
+        let set = handle_concept_routing_set(json!({ "enabled": true })).await;
+        assert!(set.ok);
+        assert_eq!(set.data["enabled"], json!(true));
+        assert_eq!(set.data["max_concepts"], json!(3), "untouched knob preserved");
+
+        // It persisted: a fresh get reflects the toggle.
+        assert_eq!(
+            handle_concept_routing_get(json!({})).await.data["enabled"],
+            json!(true)
+        );
+
+        // A second partial patch changes a knob without resetting `enabled`.
+        let set2 = handle_concept_routing_set(json!({ "max_concepts": 5 })).await;
+        assert_eq!(set2.data["enabled"], json!(true), "enabled preserved");
+        assert_eq!(set2.data["max_concepts"], json!(5));
+
+        // Non-object payload → bad_request.
+        let bad = handle_concept_routing_set(json!("nope")).await;
+        assert_eq!(
+            bad.error.as_ref().map(|e| e.code.as_str()),
+            Some("bad_request")
+        );
+
+        // Reset the process-global cache to default-off for sibling tests.
+        wylde_concept_routing::RoutingConfig::persist(
+            wylde_concept_routing::RoutingConfig::default(),
+        )
+        .unwrap();
         std::env::remove_var("WYLDE_DATA_DIR");
     }
 }

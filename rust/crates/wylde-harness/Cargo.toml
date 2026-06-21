@@ -27,6 +27,12 @@ wylde-shared = { path = "../wylde-shared" }
 # workspaces lib, no in-process fallback). When the service is unreachable the
 # chat turn driver degrades to base context (graceful degradation, scope v2 §7.5).
 wylde-workspaces-client = { path = "../wylde-workspaces-client" }
+# Concept-routing decision layer (concept-routing plan R0/R1). The harness owns
+# the master toggle (`RoutingConfig`, read on the gather hot path + the
+# `settings.concept_routing.{get,set}` facade verbs) and logs the candidate set
+# the workspaces service routes. Pure-lib dep; deleting it + reverting the
+# `gather_with` branch + the facade verbs reverts the harness half of routing.
+wylde-concept-routing = { path = "../wylde-concept-routing" }
 # Core-plugin host (TX S4). The SDK trait the host registers against.
 # The harness is the single crate that links plugin crates (see
 # src/plugins/mod.rs for the four-step install story). Plugins are

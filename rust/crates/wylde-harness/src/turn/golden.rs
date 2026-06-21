@@ -251,6 +251,7 @@ mod tests {
             &self,
             _ws: &str,
             _m: &str,
+            _route: bool,
         ) -> Result<
             Option<crate::turn::context_gather::WorkspaceBlock>,
             crate::turn::context_gather::SourceStatus,
@@ -259,6 +260,7 @@ mod tests {
                 persona: Some("Be precise.".to_owned()),
                 notes: Vec::new(),
                 rag: Vec::new(),
+                route_candidates: None,
             }))
         }
         async fn find_anchors(

@@ -21,6 +21,12 @@ wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
 
 [dependencies]
 wylde-shared = { path = "../wylde-shared" }
+# Concept-routing decision layer (concept-routing plan R0/R1). The isolated,
+# removable routing crate; this crate is the server-side host where the
+# centroids + the RAG query embed live, so it runs the pure router in-process
+# (no IPC, no extra embed). `concepts/routing_bridge.rs` is the only consumer;
+# deleting that file + this dep reverts the workspaces half of routing.
+wylde-concept-routing = { path = "../wylde-concept-routing" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

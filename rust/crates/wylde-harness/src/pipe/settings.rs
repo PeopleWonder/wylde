@@ -92,4 +92,33 @@ pub(super) fn install(api: &Arc<dyn HarnessApi>) {
          {enabled}.",
         HANDLER_MODULE_SETTINGS,
     );
+
+    // ── settings.concept_routing.* (routing master toggle, concept-routing
+    //    plan §3) ───────────────────────────────────────────────────────
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
+        "settings.concept_routing.get",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.settings_concept_routing_get(p).await }
+        },
+        "The concept-routing config (master toggle + knobs). Payload {}. \
+         Returns {enabled, curate_before_inject, mode, max_concepts, \
+         abs_threshold, relative_floor, scope_to_active_region}. Default off.",
+        HANDLER_MODULE_SETTINGS,
+    );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
+        "settings.concept_routing.set",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.settings_concept_routing_set(p).await }
+        },
+        "Persist the concept-routing config. Payload is a partial patch — any \
+         omitted field keeps its current value (e.g. {enabled:true} flips just \
+         the master toggle). Returns the persisted config.",
+        HANDLER_MODULE_SETTINGS,
+    );
 }
