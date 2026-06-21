@@ -1,0 +1,27 @@
+[package]
+name = "wylde-concept-routing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# Isolated, removable crate (concept-routing plan §2, requirement 4). Holds
+# ALL the novel routing logic as a pure library so the experiment can be
+# deleted by dropping this dep + reverting the two gated seams (the
+# `wylde-workspaces` routing_bridge and the harness `gather_with` branch).
+# Depends on `wylde-shared` only — for the `<data_dir>` resolution the master
+# toggle's config file shares with every other settings store. The routing
+# math itself takes pure types (query vector + centroids) in and out, so it
+# never reaches for a service, Ollama, or the filesystem.
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+serial_test = { workspace = true }

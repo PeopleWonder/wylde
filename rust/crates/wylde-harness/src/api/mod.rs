@@ -138,6 +138,11 @@ pub trait HarnessApi: Send + Sync {
     async fn settings_encryption_get(&self, payload: Value) -> Reply;
     async fn settings_encryption_set(&self, payload: Value) -> Reply;
 
+    // ── settings.concept_routing.* (routing master toggle, concept-routing
+    //    plan §3) ───────────────────────────────────────────────────────
+    async fn settings_concept_routing_get(&self, payload: Value) -> Reply;
+    async fn settings_concept_routing_set(&self, payload: Value) -> Reply;
+
     // prompts.* (5 verbs; system-prompt overrides + presets) — Rust
     // port of the Python `_prompts.py` actions (full-Rust cutover).
     async fn prompts_list(&self, payload: Value) -> Reply;
@@ -391,6 +396,15 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn settings_encryption_set(&self, payload: Value) -> Reply {
         settings_actions::handle_encryption_set(payload).await
+    }
+
+    // ── settings.concept_routing.* (routing master toggle) ────────────
+    async fn settings_concept_routing_get(&self, payload: Value) -> Reply {
+        settings_actions::handle_concept_routing_get(payload).await
+    }
+
+    async fn settings_concept_routing_set(&self, payload: Value) -> Reply {
+        settings_actions::handle_concept_routing_set(payload).await
     }
 
     // prompts.* (system-prompt overrides + presets). Synchronous store

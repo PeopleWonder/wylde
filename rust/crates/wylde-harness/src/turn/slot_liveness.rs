@@ -33,6 +33,7 @@ impl WorkspaceSource for Source {
         &self,
         _ws: &str,
         _m: &str,
+        _route: bool,
     ) -> Result<Option<WorkspaceBlock>, crate::turn::context_gather::SourceStatus> {
         Ok(self.block.clone())
     }
@@ -192,6 +193,7 @@ async fn workspace_block_feeds_notes_and_persona_subsections() {
             persona: Some("Be precise.".into()),
             notes: vec!["uses cargo nextest".into()],
             rag: Vec::new(),
+            route_candidates: None,
         }),
     };
     let out = gather_with(

@@ -346,7 +346,11 @@ impl WorkspacesClient {
         workspace_id: &str,
         user_message: &str,
     ) -> Result<String, WorkspacesClientError> {
-        let data = self.gather_prompt_raw(workspace_id, user_message).await?;
+        // The rendered-string convenience never routes (it predates routing and
+        // has no consumer for the candidate set).
+        let data = self
+            .gather_prompt_raw(workspace_id, user_message, false)
+            .await?;
         Ok(data
             .get("slots")
             .and_then(Value::as_str)
@@ -355,20 +359,27 @@ impl WorkspacesClient {
     }
 
     /// `workspaces.gather_prompt`, full reply — `{slots, persona,
-    /// memory_snippets, rag_snippets}`. The harness gather consumes the
-    /// structured fields so persona / notes / RAG map onto separate
-    /// eviction tiers instead of one opaque block (improvement plan B6);
-    /// [`Self::gather_prompt`] remains the rendered-string convenience.
+    /// memory_snippets, rag_snippets, route_candidates}`. The harness gather
+    /// consumes the structured fields so persona / notes / RAG map onto
+    /// separate eviction tiers instead of one opaque block (improvement plan
+    /// B6); [`Self::gather_prompt`] remains the rendered-string convenience.
+    ///
+    /// `route` is the concept-routing master toggle (concept-routing plan
+    /// R0/R1): `false` ⇒ the pre-routing path + a null `route_candidates`;
+    /// `true` ⇒ the service routes (reusing the RAG embed) and returns the
+    /// candidate set for the harness to log. **R1 logs only; no injection.**
     pub async fn gather_prompt_raw(
         &self,
         workspace_id: &str,
         user_message: &str,
+        route: bool,
     ) -> Result<Value, WorkspacesClientError> {
         self.call_verb(
             "workspaces.gather_prompt",
             serde_json::json!({
                 "workspace_id": workspace_id,
                 "user_message": user_message,
+                "route": route,
             }),
             1,
         )

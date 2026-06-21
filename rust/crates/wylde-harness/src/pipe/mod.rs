@@ -134,6 +134,10 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     // settings.encryption.* — encryption-at-rest toggle (OI-14, 2 verbs)
     "settings.encryption.get",
     "settings.encryption.set",
+    // settings.concept_routing.* — routing master toggle (concept-routing
+    // plan §3, 2 verbs)
+    "settings.concept_routing.get",
+    "settings.concept_routing.set",
     // prompts.* — system-prompt overrides + presets (5 verbs; Rust port
     // of the Python `_prompts.py` actions, full-Rust cutover)
     "prompts.list",

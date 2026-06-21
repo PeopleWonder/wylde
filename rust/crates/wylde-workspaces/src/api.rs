@@ -286,14 +286,29 @@ pub async fn handle_gather_prompt(payload: Value) -> Reply {
         .get("user_message")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let ctx = prompt::gather(&id, user_message).await;
+    // Concept-routing master toggle, forwarded by the harness (default false ⇒
+    // the pre-routing path; the field is absent on every non-routing caller).
+    let route = payload
+        .get("route")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let ctx = prompt::gather(&id, user_message, route).await;
     let slots = prompt::render_slots(&ctx);
+    // R1: surface the candidate set (logged server-side) so the harness can log
+    // it from its single gather site too. `null` when routing was off or found
+    // nothing to route against — never injected (injection is R2).
+    let route_candidates = ctx
+        .route_candidates
+        .as_ref()
+        .and_then(|c| serde_json::to_value(c).ok())
+        .unwrap_or(Value::Null);
     Reply::ok(json!({
         "workspace_id": id,
         "slots": slots,
         "persona": ctx.persona,
         "memory_snippets": ctx.memory_snippets,
         "rag_snippets": ctx.rag_snippets,
+        "route_candidates": route_candidates,
     }))
 }
 

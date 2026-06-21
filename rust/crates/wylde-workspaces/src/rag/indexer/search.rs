@@ -51,18 +51,53 @@ pub async fn query(workspace_id: &str, query_text: &str, k: usize) -> Vec<Search
     if query_text.trim().is_empty() || k == 0 {
         return Vec::new();
     }
+    let Some(query_vec) = embed_query(workspace_id, query_text).await else {
+        return Vec::new();
+    };
+    query_with_vec(workspace_id, &query_vec, query_text, k)
+}
+
+/// Embed `query_text` for `workspace_id`, returning `None` (never an error) for
+/// a blank query, an empty embedding, or an unreachable embedder — the same
+/// fail-soft contract [`query`] has always had.
+///
+/// Split out so a caller that needs the *vector itself* (concept routing —
+/// concept-routing plan §6.1 "no extra round-trip") can embed **once** and feed
+/// it to both [`query_with_vec`] and the router, instead of paying a second
+/// embed. The [`query`] path is unchanged: same text in, same vector, same
+/// hits out.
+pub async fn embed_query(workspace_id: &str, query_text: &str) -> Option<Vec<f32>> {
+    if query_text.trim().is_empty() {
+        return None;
+    }
+    match crate::embeddings::embed_one(query_text.to_owned()).await {
+        Ok(v) if !v.is_empty() => Some(v),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("workspaces.rag: query embed failed for {workspace_id}: {e}");
+            None
+        }
+    }
+}
+
+/// [`query`] with a pre-computed `query_vec` — skips the embed. `query_text` is
+/// still passed so the `[anchors: …]` / `[active_file: …]` markers can be
+/// extracted (they ride in the text, not the vector). Behaviour is identical to
+/// [`query`] for the same `(query_vec, query_text)`; the only difference is who
+/// paid for the embed.
+pub fn query_with_vec(
+    workspace_id: &str,
+    query_vec: &[f32],
+    query_text: &str,
+    k: usize,
+) -> Vec<SearchHit> {
+    if k == 0 || query_vec.is_empty() {
+        return Vec::new();
+    }
     let chunks = store::load_chunks(workspace_id);
     if chunks.is_empty() {
         return Vec::new();
     }
-    let query_vec = match crate::embeddings::embed_one(query_text.to_owned()).await {
-        Ok(v) if !v.is_empty() => v,
-        Ok(_) => return Vec::new(),
-        Err(e) => {
-            tracing::warn!("workspaces.rag: query embed failed for {workspace_id}: {e}");
-            return Vec::new();
-        }
-    };
     // 2.4 (anchor-biased retrieval): the harness folds the turn's already-
     // resolved anchor/symbol identifiers into the query behind a marker (see
     // [`extract_anchor_terms`]); chunks whose path/body literally contain one
@@ -75,7 +110,7 @@ pub async fn query(workspace_id: &str, query_text: &str, k: usize) -> Vec<Search
     // get a scoring boost so a generic question while a file is open biases
     // toward the user's current focus, without partitioning the index.
     let active_file = extract_active_file(query_text);
-    rank_with(&query_vec, chunks, k, &anchors, active_file.as_deref())
+    rank_with(query_vec, chunks, k, &anchors, active_file.as_deref())
 }
 
 /// MMR relevance/diversity trade-off (the `λ` in the standard formula):

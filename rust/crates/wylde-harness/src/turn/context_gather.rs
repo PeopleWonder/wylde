@@ -122,6 +122,11 @@ pub(crate) struct WorkspaceBlock {
     pub notes: Vec<String>,
     /// RAG snippets, best-first.
     pub rag: Vec<String>,
+    /// Concept-routing candidate set (concept-routing plan R1) — `Some` only
+    /// when routing was requested (`route == true`) and the service routed.
+    /// **Logged by [`gather_with`], never injected** (injection is R2), so it
+    /// has zero effect on the rendered prompt.
+    pub route_candidates: Option<wylde_concept_routing::CandidateSet>,
 }
 
 /// A vocabulary anchor the current prompt referenced. Always in the never-drop
@@ -236,11 +241,15 @@ type SourceResult<T> = Result<T, SourceStatus>;
 /// real [`WorkspacesClient`]; tests supply an in-memory mock.
 pub(crate) trait WorkspaceSource {
     /// `workspaces.gather_prompt` — the structured persona / notes / RAG
-    /// parts (B6).
+    /// parts (B6). `route` is the concept-routing master toggle (concept-routing
+    /// plan R0/R1): `false` ⇒ the exact pre-routing path + no candidate set;
+    /// `true` ⇒ the service also routes (reusing the RAG embed) and the block
+    /// carries `route_candidates` for the caller to **log** (R1; no injection).
     fn gather_prompt(
         &self,
         ws: &str,
         user_message: &str,
+        route: bool,
     ) -> impl Future<Output = SourceResult<Option<WorkspaceBlock>>> + Send;
 
     /// `workspaces.anchors.find_by_token` — anchors for one token.
@@ -310,20 +319,25 @@ impl WorkspaceSource for LiveSource {
         &self,
         ws: &str,
         user_message: &str,
+        route: bool,
     ) -> SourceResult<Option<WorkspaceBlock>> {
         // Reuse the established Slice-0d workspace-prompt fetch + degrade
         // semantics (its own client + NoRetry policy) rather than re-deriving
         // them — keeps one definition of "is the workspace reachable".
-        let prompt = crate::turn::workspace_context::gather(Some(ws), user_message).await;
+        let prompt = crate::turn::workspace_context::gather(Some(ws), user_message, route).await;
         if prompt.degraded {
             Err(SourceStatus::Unavailable)
-        } else if prompt.is_empty() {
+        } else if prompt.is_empty() && prompt.route_candidates.is_none() {
+            // Nothing to inject AND nothing to log → no block. (When routing
+            // surfaced a candidate set but every prompt slot was empty, we
+            // still return a block so the candidate set reaches the logger.)
             Ok(None)
         } else {
             Ok(Some(WorkspaceBlock {
                 persona: prompt.persona,
                 notes: prompt.notes,
                 rag: prompt.rag,
+                route_candidates: prompt.route_candidates,
             }))
         }
     }
@@ -602,11 +616,33 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
             retrieval_query.push_str(&format!("\n\n[active_file: {active_file}]"));
         }
 
+        // ── Concept-routing master toggle (concept-routing plan R0/R1) ──
+        // This is THE single integration site (plan §3). The toggle is
+        // harness-owned (`RoutingConfig`, the privacy-prefs store shape),
+        // read in-process here on the hot path (cheap copy out of a cache).
+        //
+        //   * OFF (the default) ⇒ `route = false` ⇒ the service runs the EXACT
+        //     pre-routing path and returns no candidate set, so the rest of
+        //     this turn — and the rendered prompt — is byte-identical to
+        //     pre-routing. The routing crate is never reached.
+        //   * ON ⇒ `route = true` ⇒ the service routes server-side, reusing the
+        //     RAG query embed (no extra embed, no extra round-trip — plan §6.1),
+        //     and returns the candidate set, which we **log** below as the
+        //     threshold-calibration data the plan calls for. **R1 injects
+        //     NOTHING**: the candidate set never touches a `ChatContext` slot,
+        //     so retrieval output is identical whether routing is on or off.
+        let route = wylde_concept_routing::RoutingConfig::current().enabled;
+
         // The workspace prompt parts (persona / notes / RAG — B6 split).
         // An unreachable service here is the degrade signal (Slice 0d
         // semantics).
-        match source.gather_prompt(ws, &retrieval_query).await {
+        match source.gather_prompt(ws, &retrieval_query, route).await {
             Ok(Some(block)) => {
+                // R1: log the routed candidate set (calibration data) and
+                // discard it. NOT assigned to any slot — injection is R2.
+                if let Some(set) = &block.route_candidates {
+                    tracing::info!(target: "concept_routing", "[harness] {}", set.log_line());
+                }
                 ctx.workspace_persona = block.persona;
                 ctx.workspace_notes = block.notes;
                 ctx.workspace_rag = block.rag;
@@ -1393,14 +1429,24 @@ mod tests {
         /// in call order — lets a test inspect the exact retrieval query the
         /// gather forwarded to the service (2.3).
         gather_prompt_queries: std::sync::Mutex<Vec<String>>,
+        /// every `route` flag `gather_prompt` was called with, in call order —
+        /// lets a routing test assert the master toggle drove the request
+        /// (concept-routing plan R0/R1).
+        gather_prompt_routes: std::sync::Mutex<Vec<bool>>,
     }
 
     impl WorkspaceSource for MockSource {
-        async fn gather_prompt(&self, _ws: &str, m: &str) -> SourceResult<Option<WorkspaceBlock>> {
+        async fn gather_prompt(
+            &self,
+            _ws: &str,
+            m: &str,
+            route: bool,
+        ) -> SourceResult<Option<WorkspaceBlock>> {
             self.gather_prompt_queries
                 .lock()
                 .unwrap()
                 .push(m.to_owned());
+            self.gather_prompt_routes.lock().unwrap().push(route);
             if self.prompt_unavailable {
                 Err(SourceStatus::Unavailable)
             } else {
@@ -1674,6 +1720,124 @@ mod tests {
         // Sanity: a query that is *just* the bare message would not contain
         // any of the prior-turn vocabulary.
         assert_ne!(forwarded, "why?", "the query must be augmented, not bare");
+    }
+
+    // ── concept-routing master toggle (concept-routing plan R0/R1) ──────
+
+    /// A mock block carrying persona/notes/rag, with an optional candidate set.
+    fn routing_mock(route_candidates: Option<wylde_concept_routing::CandidateSet>) -> MockSource {
+        MockSource {
+            prompt: Some(WorkspaceBlock {
+                persona: Some("Be precise.".into()),
+                notes: vec!["uses cargo".into()],
+                rag: vec!["fn main() {}".into()],
+                route_candidates,
+            }),
+            ..MockSource::default()
+        }
+    }
+
+    fn sample_candidate_set() -> wylde_concept_routing::CandidateSet {
+        wylde_concept_routing::CandidateSet {
+            query_echo: "auth question".into(),
+            concepts: vec![wylde_concept_routing::RoutedConcept {
+                id: "a".into(),
+                label: "Auth".into(),
+                score: 0.71,
+                activated: true,
+            }],
+            vocabulary: vec![],
+            abs_threshold: 0.50,
+            chosen_cutoff: 0.50,
+            activated_count: 1,
+            max_concepts: 3,
+        }
+    }
+
+    #[tokio::test]
+    async fn routing_toggle_off_forwards_no_route_and_is_unchanged() {
+        // Default (toggle OFF): gather must forward `route = false` and the
+        // rendered slots are exactly the non-routing path.
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        wylde_concept_routing::RoutingConfig::reload_from_disk(); // fresh dir ⇒ off
+        assert!(
+            !wylde_concept_routing::RoutingConfig::current().enabled,
+            "precondition: master toggle defaults off"
+        );
+
+        let src = routing_mock(None);
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "auth question",
+            "conv-routing-off",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+
+        let routes = src.gather_prompt_routes.lock().unwrap().clone();
+        assert_eq!(routes, vec![false], "toggle off ⇒ route=false forwarded");
+        // The persona/notes/rag still render exactly as before routing existed.
+        assert!(out.system_slots.contains("Be precise."));
+        assert!(out.system_slots.contains("fn main() {}"));
+    }
+
+    #[tokio::test]
+    async fn routing_toggle_on_routes_logs_and_injects_nothing() {
+        // Toggle ON: gather must forward `route = true`, accept the returned
+        // candidate set (which the branch logs) — and the rendered slots must
+        // be BYTE-IDENTICAL to the toggle-off render (zero injection in R1).
+        let _env = crate::user_profile::test_support::TestEnv::new();
+
+        // Baseline: what the slots look like with routing off + no candidates.
+        wylde_concept_routing::RoutingConfig::reload_from_disk();
+        let baseline = gather_with(
+            &routing_mock(None),
+            Some("ws"),
+            "auth question",
+            "conv-routing-base",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+
+        // Flip the master toggle on (persists to this test's data dir + cache).
+        wylde_concept_routing::RoutingConfig::persist(wylde_concept_routing::RoutingConfig {
+            enabled: true,
+            ..wylde_concept_routing::RoutingConfig::default()
+        })
+        .expect("persist toggle on");
+        assert!(wylde_concept_routing::RoutingConfig::current().enabled);
+
+        // The service now routes and returns a candidate set.
+        let src = routing_mock(Some(sample_candidate_set()));
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "auth question",
+            "conv-routing-on",
+            &TokenOverrides::default(),
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+
+        // Router was invoked: the master toggle drove `route = true`.
+        let routes = src.gather_prompt_routes.lock().unwrap().clone();
+        assert_eq!(routes, vec![true], "toggle on ⇒ route=true forwarded");
+
+        // ZERO injection: the candidate set never reaches a slot, so the
+        // rendered prompt is identical to the routing-off baseline.
+        assert_eq!(
+            out.system_slots, baseline.system_slots,
+            "R1 injects nothing — slots identical to the non-routing render"
+        );
+
+        // Reset the process-global config cache so later tests see default-off.
+        wylde_concept_routing::RoutingConfig::persist(
+            wylde_concept_routing::RoutingConfig::default(),
+        )
+        .expect("reset toggle off");
     }
 
     // ── 2.4: anchor-biased retrieval query construction ─────────────────
@@ -2431,6 +2595,7 @@ mod tests {
                 persona: Some("Be helpful.".into()),
                 notes: vec!["be concise".into()],
                 rag: Vec::new(),
+                route_candidates: None,
             }),
             ..MockSource::default()
         };
