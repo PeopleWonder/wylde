@@ -29,7 +29,9 @@
 //! / `nomic-embed-text`. One backend, one call site — no second embedder.
 
 pub mod delta;
+pub mod exclude;
 pub mod graph_writer;
+pub mod purge;
 pub mod search;
 pub mod store;
 pub mod walk;

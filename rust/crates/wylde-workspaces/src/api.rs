@@ -266,6 +266,56 @@ pub async fn handle_reindex(payload: Value) -> Reply {
     }))
 }
 
+/// `workspaces.reindex_purge` — drop already-indexed chunks whose path the
+/// current exclusion matcher now excludes (the index-hygiene one-time purge),
+/// filter-only (no re-embed). Payload: `{ "workspace_id": string }`. Returns
+/// the [`indexer::purge::PurgeOutcome`] `{ before, dropped, kept, files_dropped,
+/// excluded_remaining, graph_cleaned, graph_error }`. Idempotent — a clean
+/// index drops nothing. Re-cluster the concepts afterward
+/// (`workspaces.concepts.build_semantic`) so they re-derive from real source.
+pub async fn handle_reindex_purge(payload: Value) -> Reply {
+    let Some(id) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(def) = registry::get(&id) else {
+        return Reply::err_msg("not_found", format!("workspace {id:?} not found"));
+    };
+    let outcome = indexer::purge::purge_excluded(&def).await;
+    let mut v = outcome.to_value();
+    if let Value::Object(ref mut map) = v {
+        map.insert("workspace_id".to_owned(), json!(id));
+        map.insert("ok".to_owned(), json!(true));
+    }
+    Reply::ok(v)
+}
+
+/// `workspaces.rag.walk_preview` — read-only dry-run of the walk-time exclusion
+/// over a workspace folder. Payload: `{ "workspace_id": string, "sample"?: n }`.
+/// Returns `{ workspace_id, would_index, would_exclude, sample_excluded:[paths] }`
+/// so the matcher's effect can be confirmed before committing to a purge. Walks
+/// the raw tree (no embed, no persist); `sample` caps the excluded-path sample
+/// (default 20).
+pub async fn handle_walk_preview(payload: Value) -> Reply {
+    let Some(id) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    let Some(def) = registry::get(&id) else {
+        return Reply::err_msg("not_found", format!("workspace {id:?} not found"));
+    };
+    let sample_cap = payload
+        .get("sample")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(20);
+    let preview = indexer::walk::walk_preview(&def.folder, sample_cap);
+    Reply::ok(json!({
+        "workspace_id": id,
+        "would_index": preview.would_index,
+        "would_exclude": preview.would_exclude,
+        "sample_excluded": preview.sample_excluded,
+    }))
+}
+
 /// `workspaces.gather_prompt` — resolve a workspace's contribution to a
 /// chat turn's system prompt (persona + notes + RAG), rendered into the
 /// slot text the harness turn driver appends. Payload:

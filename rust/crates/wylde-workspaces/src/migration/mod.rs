@@ -48,6 +48,10 @@ use crate::registry::persistence::workspaces_dir;
 /// migration has completed. Its presence short-circuits future runs.
 pub const MARKER_V1: &str = "migration_completed_v1";
 
+/// Marker for the one-shot index-hygiene purge (P2). Its presence
+/// short-circuits the auto-purge so it self-heals each install exactly once.
+pub const MARKER_INDEX_HYGIENE_V1: &str = "index_hygiene_purge_v1";
+
 /// `<data_dir>/conversations/` — the harness flat conversation store (the
 /// pre-split location). Standalone conversations stay here; workspace ones
 /// are moved out by this migration.
@@ -178,6 +182,89 @@ fn write_marker() {
     let _ = std::fs::write(marker_path(), b"v1\n");
 }
 
+/// `<data_dir>/workspaces/index_hygiene_purge_v1`.
+fn hygiene_marker_path() -> PathBuf {
+    workspaces_dir().join(MARKER_INDEX_HYGIENE_V1)
+}
+
+/// Outcome of the one-shot index-hygiene purge pass.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct HygieneReport {
+    /// True when the marker was present and the pass was skipped.
+    pub skipped: bool,
+    /// Workspace bundles scanned.
+    pub workspaces: usize,
+    /// Total artifact chunks dropped across all workspaces.
+    pub dropped: usize,
+    /// Total chunks kept.
+    pub kept: usize,
+}
+
+/// One-shot self-heal (index hygiene P2): the walk-time exclusion fix makes
+/// **new** indexes clean, but an index built before it keeps its ~58 %
+/// build-artifact chunks until something rewrites it. On first boot of a binary
+/// carrying the fix, filter-purge every existing workspace index once (no
+/// re-embed), then write [`MARKER_INDEX_HYGIENE_V1`] so it never re-runs.
+///
+/// Async because the purge best-effort graph-cleans over Bolt. Marker-gated +
+/// idempotent: a present marker (or an already-clean index) makes it a no-op.
+/// Per-workspace failures are isolated — they never abort the pass.
+pub async fn run_index_hygiene_pending() -> HygieneReport {
+    if hygiene_marker_path().exists() {
+        return HygieneReport {
+            skipped: true,
+            ..Default::default()
+        };
+    }
+    let mut report = HygieneReport::default();
+    for id in registered_workspace_ids() {
+        let Some(def) = crate::registry::get(&id) else {
+            continue;
+        };
+        // Only touch workspaces that actually have a persisted index.
+        if !crate::rag::indexer::store::has_index(&def.id) {
+            continue;
+        }
+        report.workspaces += 1;
+        let outcome = crate::rag::indexer::purge::purge_excluded(&def).await;
+        report.dropped += outcome.dropped as usize;
+        report.kept += outcome.kept as usize;
+    }
+    write_hygiene_marker();
+    tracing::info!(
+        "wylde-workspaces index-hygiene purge v1: workspaces={} dropped={} kept={}",
+        report.workspaces,
+        report.dropped,
+        report.kept,
+    );
+    report
+}
+
+/// Every workspace id with a bundle dir under `<data_dir>/workspaces/` — the
+/// id is the directory name (a `definition.json` lives inside). Used by the
+/// hygiene pass to reach *all* indexes, not just the MRU-5 window.
+fn registered_workspace_ids() -> Vec<String> {
+    let mut ids = Vec::new();
+    let Ok(entries) = std::fs::read_dir(workspaces_dir()) else {
+        return ids;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if let Some(name) = entry.file_name().to_str() {
+                ids.push(name.to_owned());
+            }
+        }
+    }
+    ids
+}
+
+/// Write the hygiene completion marker (best-effort).
+fn write_hygiene_marker() {
+    let dir = workspaces_dir();
+    let _ = ensure_dir(&dir);
+    let _ = std::fs::write(hygiene_marker_path(), b"v1\n");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,6 +350,50 @@ mod tests {
             marker_path().exists(),
             "marker written even on empty install"
         );
+    }
+
+    #[tokio::test]
+    async fn index_hygiene_purges_artifacts_once_then_marker_skips() {
+        use crate::rag::indexer::store::{self, IndexedChunk};
+        let env = TestEnv::new();
+        let folder = env.ws_path("hygiene-proj");
+        std::fs::create_dir_all(&folder).unwrap();
+        let def = crate::registry::create(&folder, None);
+        let sep = std::path::MAIN_SEPARATOR;
+        let mk = |rel: &str, n: u32| IndexedChunk {
+            id: format!("id-{rel}-{n}"),
+            path: format!("{folder}{sep}{rel}").replace('/', &sep.to_string()),
+            chunk_idx: n,
+            content: "x".to_owned(),
+            mtime: 1.0,
+            start_line: 1,
+            end_line: 1,
+            vector: vec![0.1],
+        };
+        store::save_chunks(
+            &def.id,
+            &[
+                mk("src/main.rs", 0),
+                mk("target-dev/doc/a.html", 0),
+                mk("target-dev/doc/b.html", 0),
+            ],
+        )
+        .unwrap();
+
+        let r = run_index_hygiene_pending().await;
+        assert!(!r.skipped);
+        assert_eq!(r.workspaces, 1);
+        assert_eq!(r.dropped, 2, "the two target-dev html chunks");
+        assert_eq!(r.kept, 1, "src/main.rs survives");
+        assert!(hygiene_marker_path().exists());
+        assert_eq!(store::load_chunks(&def.id).len(), 1);
+
+        // Second run is marker-skipped even though a fresh artifact chunk lands.
+        store::save_chunks(&def.id, &[mk("src/main.rs", 0), mk("target-dev/doc/c.html", 0)])
+            .unwrap();
+        let r2 = run_index_hygiene_pending().await;
+        assert!(r2.skipped);
+        assert_eq!(store::load_chunks(&def.id).len(), 2, "untouched after marker");
     }
 
     #[test]
