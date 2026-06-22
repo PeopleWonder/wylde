@@ -24,7 +24,7 @@ use crate::graph::BoltClient;
 use crate::registry::{self, WorkspaceDefinition};
 
 use super::store::{self, IndexedChunk};
-use super::{embed_chunks, graph_writer, walk};
+use super::{embed_chunks, graph_writer, lock, manifest, walk};
 
 /// What one delta did, for the watcher's log line + the completion event.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -64,6 +64,22 @@ pub async fn upsert_file(def: &WorkspaceDefinition, path: &str) -> DeltaOutcome 
     if !walk::is_indexable_path(&def.folder, path) {
         tracing::debug!("workspaces.watcher: skip filtered path {path}");
         return DeltaOutcome::skipped(path, "filtered");
+    }
+    // Content-hash short-circuit (P3): a save that didn't change the bytes
+    // (touch / editor re-save / checkout) hashes identically to the manifest
+    // entry — skip the embed round-trip + graph rewrite, just refresh the
+    // recorded mtime so the fast-path stays warm.
+    if let Some((hash, size, mtime)) = walk::hash_file(path) {
+        let canonical = walk::canonical_path(std::path::Path::new(path));
+        if manifest::file_hash(&def.id, &canonical).as_deref() == Some(hash.as_str()) {
+            if registry::get(&def.id).is_some() {
+                let lk = lock::for_workspace(&def.id);
+                let _g = lk.lock().await;
+                manifest::touch_file(&def.id, &canonical, size, mtime);
+            }
+            tracing::debug!("workspaces.watcher: {canonical} unchanged (hash match); skip re-embed");
+            return DeltaOutcome::skipped(&canonical, "unchanged");
+        }
     }
     let chunks = walk::chunk_one_file(path);
     if chunks.is_empty() {
@@ -135,7 +151,7 @@ pub async fn remove_file(def: &WorkspaceDefinition, path: &str) -> DeltaOutcome 
     }
 
     // Vector: drop the file's chunks (and any under it, for a directory).
-    if let Err(e) = vector_remove(&def.id, &canonical) {
+    if let Err(e) = vector_remove(&def.id, &canonical).await {
         outcome.vector_error = Some(e);
     }
 
@@ -155,28 +171,44 @@ async fn vector_upsert(
     if registry::get(workspace_id).is_none() {
         return Ok(0);
     }
+    let ids: Vec<String> = fresh.iter().map(|c| c.id.clone()).collect();
+    // Hold the per-workspace index lock across the chunks-then-manifest pair so
+    // a racing manual reindex can't tear it (§3.3).
+    let lk = lock::for_workspace(workspace_id);
+    let _g = lk.lock().await;
     let mut kept: Vec<IndexedChunk> = store::load_chunks(workspace_id);
     kept.retain(|c| c.path != canonical);
     let n = fresh.len() as u32;
     kept.extend(fresh);
     store::save_chunks(workspace_id, &kept).map_err(|e| e.to_string())?;
+    // Manifest second: record this file's content hash so the next watcher
+    // event on it can short-circuit a no-op save.
+    if let Some((hash, size, mtime)) = walk::hash_file(canonical) {
+        manifest::update_file(workspace_id, canonical, hash, size, mtime, ids);
+    }
     Ok(n)
 }
 
 /// Remove `canonical`'s chunks (exact path or any under `<canonical><sep>`,
-/// for a deleted directory) from the vector index. No-op when nothing matches.
-fn vector_remove(workspace_id: &str, canonical: &str) -> Result<(), String> {
+/// for a deleted directory) from the vector index AND its manifest entries.
+/// No-op when nothing matches. Under the per-workspace index lock (§3.3).
+async fn vector_remove(workspace_id: &str, canonical: &str) -> Result<(), String> {
     if registry::get(workspace_id).is_none() {
         return Ok(());
     }
+    let lk = lock::for_workspace(workspace_id);
+    let _g = lk.lock().await;
     let mut kept = store::load_chunks(workspace_id);
     let before = kept.len();
     let prefix = format!("{canonical}{}", std::path::MAIN_SEPARATOR);
     kept.retain(|c| c.path != canonical && !c.path.starts_with(&prefix));
-    if kept.len() == before {
-        return Ok(()); // nothing to remove — skip the rewrite
+    if kept.len() != before {
+        store::save_chunks(workspace_id, &kept).map_err(|e| e.to_string())?;
     }
-    store::save_chunks(workspace_id, &kept).map_err(|e| e.to_string())
+    // Drop the manifest entry/entries either way (a stale entry with no chunks
+    // is still cleaned).
+    manifest::remove_files(workspace_id, canonical);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -204,8 +236,8 @@ mod tests {
         registry::create(&env.ws_path(name), None).id
     }
 
-    #[test]
-    fn vector_remove_drops_exact_path_and_subtree_only() {
+    #[tokio::test]
+    async fn vector_remove_drops_exact_path_and_subtree_only() {
         let env = TestEnv::new();
         let ws = registered_ws(&env, "rm");
         // Canonicalise a real dir so the separators match what retain compares.
@@ -219,7 +251,7 @@ mod tests {
         // Removing the `sub` directory drops everything under it (the b.rs
         // chunk), leaving the siblings a.rs + c.rs untouched.
         let dir = format!("{base}{}sub", std::path::MAIN_SEPARATOR);
-        vector_remove(&ws, &dir).unwrap();
+        vector_remove(&ws, &dir).await.unwrap();
         let left: Vec<String> = store::load_chunks(&ws)
             .into_iter()
             .map(|c| c.path)
@@ -229,14 +261,14 @@ mod tests {
         assert!(!left.iter().any(|p| p == &sub), "subtree file removed");
     }
 
-    #[test]
-    fn vector_remove_exact_file_keeps_siblings() {
+    #[tokio::test]
+    async fn vector_remove_exact_file_keeps_siblings() {
         let env = TestEnv::new();
         let ws = registered_ws(&env, "rm2");
         let a = "/proj/a.rs".to_owned();
         let b = "/proj/b.rs".to_owned();
         store::save_chunks(&ws, &[idx_chunk(&a), idx_chunk(&b)]).unwrap();
-        vector_remove(&ws, &a).unwrap();
+        vector_remove(&ws, &a).await.unwrap();
         let left: Vec<String> = store::load_chunks(&ws)
             .into_iter()
             .map(|c| c.path)
@@ -244,11 +276,11 @@ mod tests {
         assert_eq!(left, vec![b]);
     }
 
-    #[test]
-    fn vector_remove_unknown_workspace_is_noop() {
+    #[tokio::test]
+    async fn vector_remove_unknown_workspace_is_noop() {
         let _env = TestEnv::new();
         // No registry entry → guard short-circuits, no panic, no file created.
-        assert!(vector_remove("ghost-000000", "/x/y.rs").is_ok());
+        assert!(vector_remove("ghost-000000", "/x/y.rs").await.is_ok());
         assert!(store::load_chunks("ghost-000000").is_empty());
     }
 

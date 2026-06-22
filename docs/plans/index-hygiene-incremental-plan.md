@@ -1,7 +1,30 @@
 # Index Hygiene + Incremental Indexing — Design (read-only scoping pass)
 
-**Date:** 2026-06-22 · **Branch:** `feat/thought-bubble-system` · **Status:** DESIGN ONLY (no code changed)
-**Crate:** `rust/crates/wylde-workspaces` · **Author:** scoping pass for Aaron
+**Date:** 2026-06-22 · **Branch:** `feat/thought-bubble-system` · **Status:** ✅ **COMPLETE — all four phases shipped**
+**Crate:** `rust/crates/wylde-workspaces` (+ `wylde-concept-routing`) · **Author:** scoping pass for Aaron
+
+> ## ✅ BUILD STATUS — index hygiene plan COMPLETE (2026-06-22)
+> All four locked pieces are implemented, tested, and merged to trunk:
+> - **P1 — Walk-time exclusion** (`ExclusionMatcher`, gitignore + deny-list + `.wyldeignore`) — shipped `6e83a4f`.
+> - **P2 — One-time purge** (`purge_excluded`, filter-only) — shipped `6e83a4f`.
+> - **P3 — Content-hash manifest** — NEW: `rag/indexer/manifest.rs` (`manifest.json`: version +
+>   embed_model/dim guard + per-file sha256 + `(mtime,size)` fast-path + chunk-ids) +
+>   `rag/indexer/lock.rs` (per-workspace write-lock). `reindex_delta` is now a pure, hash-driven
+>   diff (metadata walk → hash only on `(mtime,size)` drift → re-embed only changed/new, drop
+>   deleted, keep unchanged); chunks-first/manifest-second atomicity under the lock; an incompatible
+>   manifest (model/dim/version) forces a full rebuild; the watcher's `upsert_file` short-circuits a
+>   no-op save by hash. A pre-P3 index upgrades in place via an mtime fallback (no mass re-embed).
+> - **P4 — Concept stability** — NEW: greedy nearest-centroid **carry-over** of `sem:` ids (cosine ≥
+>   `SemanticParams::carry_over_threshold`, default **0.85**) + a persisted never-reused ordinal
+>   allocator (`concepts/identity.rs`, `concept_identity.json`); a `dangling: bool` serde-default on
+>   `Relation` (migration-free) + `relations_bridge::sweep_dangling` — an edge to a vanished concept
+>   is **flagged + surfaced + excluded from routing, never deleted**; `dangling_count` in build /
+>   `relations.graph` replies.
+>
+> Verified: 466 `wylde-workspaces` lib tests + 89 `wylde-concept-routing` lib tests green; the
+> mock-embedder e2e delta-reindex integration test green; clippy + workspace build clean. Live
+> A/B against a real index deferred (no dev memgraph/ollama running — same precedent as the rest of
+> TBS).
 
 > Context: R4 found the live workspace RAG index is **~58 % build artifacts** (rustdoc
 > HTML under `*/target-dev/doc`). This is the #1 lever for concept-routing quality and it
