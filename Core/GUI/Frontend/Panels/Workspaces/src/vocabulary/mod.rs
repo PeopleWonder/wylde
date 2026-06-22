@@ -41,12 +41,16 @@ use ipc::{AnchorScopeTag, AnchorView, ProposalView};
 use list_view::{ScopeFilter, ViewFilter};
 
 /// Which sub-tab of the Vocabulary tab is showing (TBS concept-system §4.1):
-/// the curated user terms, or the system-discovered concepts.
+/// the curated user terms, the system-discovered concepts, or the experimental
+/// concept-routing **Relations** editor (R1.5c).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum VocabSubTab {
     #[default]
     Vocabulary,
     Concepts,
+    /// The typed-relation authoring surface (concept-routing R1.5c). Lives in
+    /// the isolated `crate::routing` folder so the feature deletes cleanly.
+    Relations,
 }
 
 /// One undoable connection edit: apply `before` to undo, `after` to redo
@@ -117,10 +121,12 @@ pub struct VocabularyTab {
     /// One-shot guard: take focus on the first render so the chord works
     /// without the user having to click the tab first.
     focused_once: bool,
-    /// Which sub-tab (Vocabulary terms vs. discovered Concepts) is showing.
+    /// Which sub-tab (Vocabulary terms / discovered Concepts / Relations).
     sub_tab: VocabSubTab,
     /// The Concepts sub-tab view (lazily relevant; built once).
     concepts: Entity<ConceptsView>,
+    /// The Relations editor sub-tab view (concept-routing R1.5c; built once).
+    relations: Entity<crate::routing::RelationsView>,
     /// Render the vocabulary list as an indented hierarchy tree (S1.2) vs flat.
     tree_view: bool,
 }
@@ -178,6 +184,7 @@ impl VocabularyTab {
             focused_once: false,
             sub_tab: VocabSubTab::default(),
             concepts: cx.new(ConceptsView::new),
+            relations: cx.new(crate::routing::RelationsView::new),
             tree_view: false,
         };
         Self::spawn_load(cx);
@@ -258,6 +265,11 @@ impl VocabularyTab {
     /// The Concepts sub-tab child view (test accessor).
     pub fn concepts_view(&self) -> &Entity<ConceptsView> {
         &self.concepts
+    }
+
+    /// The Relations sub-tab child view (test accessor).
+    pub fn relations_view(&self) -> &Entity<crate::routing::RelationsView> {
+        &self.relations
     }
 
     fn find(&self, scope: AnchorScopeTag, identifier: &str) -> Option<&AnchorView> {
@@ -796,6 +808,16 @@ impl Render for VocabularyTab {
                         this.sub_tab = VocabSubTab::Concepts;
                         cx.notify();
                     },
+                ))
+                .child(Self::button(
+                    ("vocab-subtab-relations", 0),
+                    "Relations",
+                    sub == VocabSubTab::Relations,
+                    cx,
+                    |this, cx| {
+                        this.sub_tab = VocabSubTab::Relations;
+                        cx.notify();
+                    },
                 )),
         );
 
@@ -803,6 +825,12 @@ impl Render for VocabularyTab {
         // search, cards, and graph deep-link live in `ConceptsView`).
         if self.sub_tab == VocabSubTab::Concepts {
             return root.child(self.concepts.clone());
+        }
+
+        // Relations sub-tab (concept-routing R1.5c): the typed-relation editor
+        // lives entirely in `crate::routing` (deletes with the feature).
+        if self.sub_tab == VocabSubTab::Relations {
+            return root.child(self.relations.clone());
         }
 
         // ── header ──────────────────────────────────────────────────────

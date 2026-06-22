@@ -35,6 +35,7 @@ pub mod editor;
 pub mod files;
 pub mod graph;
 pub mod ipc;
+pub mod routing;
 pub mod settings_tab;
 pub mod tabs;
 pub mod vocabulary;
