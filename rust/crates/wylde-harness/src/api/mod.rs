@@ -88,8 +88,11 @@ use helpers::{record_to_value, string_array};
 /// no return; unary verbs return [`Reply`].
 #[async_trait]
 pub trait HarnessApi: Send + Sync {
-    // ── chat.* (6 verbs) ─────────────────────────────────────────────
+    // ── chat.* (7 verbs) ─────────────────────────────────────────────
     async fn chat_run_turn(&self, payload: Value) -> Reply;
+    /// `chat.preview_context` — concept-routing R2 Phase 1: route + return the
+    /// curate-before-inject candidate menu (no injection, no LLM).
+    async fn chat_preview_context(&self, payload: Value) -> Reply;
     async fn chat_complete(&self, payload: Value) -> Reply;
     async fn chat_start_turn(&self, payload: Value) -> Reply;
     async fn chat_cancel(&self, payload: Value) -> Reply;
@@ -223,6 +226,10 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn chat_run_turn(&self, payload: Value) -> Reply {
         turn_actions::handle_run_turn(payload).await
+    }
+
+    async fn chat_preview_context(&self, payload: Value) -> Reply {
+        turn_actions::handle_preview_context(payload).await
     }
 
     async fn chat_complete(&self, payload: Value) -> Reply {

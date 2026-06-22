@@ -89,8 +89,9 @@ mod user_profile;
 /// `list_action_meta()` to catch a missing registration. Order mirrors
 /// the Phase 9 sectioning so the contract emitter produces stable output.
 pub const ALL_PIPE_ACTIONS: &[&str] = &[
-    // chat.* — turn driver (6 verbs)
+    // chat.* — turn driver (7 verbs)
     "chat.run_turn",
+    "chat.preview_context",
     "chat.complete",
     "chat.start_turn",
     "chat.cancel",

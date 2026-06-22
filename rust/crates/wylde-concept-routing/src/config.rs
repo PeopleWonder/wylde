@@ -161,6 +161,14 @@ pub struct RoutingConfig {
     #[serde(default = "default_true")]
     pub scope_to_active_region: bool,
 
+    /// Token cap (estimated, ~4 chars/token) on the injected concept context —
+    /// the boundary blurb plus the per-concept member snippets (R2, plan §6.3).
+    /// The curation [`apply`](crate::curation::apply) step evicts the
+    /// lowest-activation concept first when the curated set would exceed this,
+    /// and the menu warns when over. Default `1500`. **Bites at R2.**
+    #[serde(default = "default_inject_token_budget")]
+    pub inject_token_budget: usize,
+
     /// Spreading-activation knobs (R1.5b). Defaults make the engine an identity
     /// over the seed when the relation graph is empty, so an older file without
     /// this block behaves exactly as R1.
@@ -180,6 +188,9 @@ fn default_abs_threshold() -> f32 {
 fn default_relative_floor() -> f32 {
     0.6
 }
+fn default_inject_token_budget() -> usize {
+    1500
+}
 
 impl Default for RoutingConfig {
     fn default() -> Self {
@@ -191,6 +202,7 @@ impl Default for RoutingConfig {
             abs_threshold: default_abs_threshold(),
             relative_floor: default_relative_floor(),
             scope_to_active_region: true,
+            inject_token_budget: default_inject_token_budget(),
             relation_params: RelationParams::default(),
         }
     }
@@ -309,6 +321,7 @@ mod tests {
         assert!((c.abs_threshold - 0.50).abs() < 1e-6);
         assert!((c.relative_floor - 0.6).abs() < 1e-6);
         assert!(c.scope_to_active_region);
+        assert_eq!(c.inject_token_budget, 1500);
         // Relation params: the locked R1.5b defaults.
         let p = c.relation_params;
         assert!((p.dep_decay - 0.5).abs() < 1e-6);
@@ -359,6 +372,7 @@ mod tests {
             abs_threshold: 0.42,
             relative_floor: 0.7,
             scope_to_active_region: false,
+            inject_token_budget: 2000,
             relation_params: RelationParams {
                 dep_decay: 0.4,
                 inhibition_strength: 0.9,

@@ -33,6 +33,25 @@ pub(super) fn install(api: &Arc<dyn HarnessApi>) {
 
     let a = Arc::clone(api);
     register_action_with_meta(
+        "chat.preview_context",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.chat_preview_context(p).await }
+        },
+        "Concept-routing R2 Phase 1 (curate-before-inject). Routes the \
+         turn's query into concept space and returns the candidate menu \
+         the GUI curates — no injection, no LLM. Payload {user_message, \
+         conversation_id?, workspace_id?, excluded_tokens?, \
+         reactivated_tokens?, active_file?}. Returns {routing_enabled, \
+         curate, candidates, inject_token_budget}; candidates is null when \
+         the master toggle is OFF or nothing routed (the turn then runs as \
+         today). The user-curated ids ride back on chat.run_turn's \
+         curated_concepts.",
+        HANDLER_MODULE_CHAT,
+    );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
         "chat.complete",
         move |p: Value| {
             let a = Arc::clone(&a);

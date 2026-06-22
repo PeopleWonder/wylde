@@ -95,6 +95,7 @@ mod tests {
         let unary = list_actions();
         for n in [
             "chat.run_turn",
+            "chat.preview_context",
             "chat.start_turn",
             "chat.cancel",
             "tools.list",

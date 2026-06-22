@@ -292,7 +292,24 @@ pub async fn handle_gather_prompt(payload: Value) -> Reply {
         .get("route")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let ctx = prompt::gather(&id, user_message, route).await;
+    // Concept-routing R2: the user-curated concept ids (plan §4). `Some` (even
+    // empty) ⇒ the curate-before-inject menu ran and these are the concepts to
+    // Augment-inject; absent ⇒ no injection (R1 behaviour). Parsed as an
+    // Option so "field absent" and "explicitly curated to nothing" stay
+    // distinguishable — the latter must inject nothing without re-routing.
+    let curated_concepts: Option<Vec<String>> = payload.get("curated_concepts").map(|v| {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    });
+    let ctx = prompt::gather(&id, user_message, route, curated_concepts.as_deref()).await;
     let slots = prompt::render_slots(&ctx);
     // R1: surface the candidate set (logged server-side) so the harness can log
     // it from its single gather site too. `null` when routing was off or found
@@ -309,6 +326,10 @@ pub async fn handle_gather_prompt(payload: Value) -> Reply {
         "memory_snippets": ctx.memory_snippets,
         "rag_snippets": ctx.rag_snippets,
         "route_candidates": route_candidates,
+        // R2: the Augment-injection blocks (boundary blurb + member snippets)
+        // the harness renders into its dedicated `### Concepts` slot. Empty
+        // unless a non-empty curated set was injected.
+        "concept_context": ctx.concept_context,
     }))
 }
 

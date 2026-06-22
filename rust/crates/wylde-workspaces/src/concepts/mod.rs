@@ -27,6 +27,10 @@ pub mod cheap;
 pub mod clustering;
 pub mod concept;
 pub mod freshness;
+// Concept-routing R2 — the deletable Augment-injection seam: boundary blurb
+// (from relations) + member snippets for the user-curated concepts. Remove with
+// the crate to revert to pre-injection routing.
+pub mod inject;
 pub mod lens;
 pub mod proposals;
 pub mod retrieve;

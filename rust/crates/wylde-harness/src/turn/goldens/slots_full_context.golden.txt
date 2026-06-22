@@ -24,6 +24,12 @@ The user has been refactoring the context gather flow.
 ### Vocabulary
 - {{the_gather}} — the pre-LLM context gather (code symbol `gather_with`)
 
+### Concepts
+Context gather — assembles the layered turn context (depends on token budget; not related to streaming)
+
+`src/turn/context_gather.rs` (lines 1-9)
+pub(crate) async fn gather_with() {}
+
 ### Workspace context
 ## Persona
 Be precise.

@@ -124,9 +124,13 @@ pub(crate) struct WorkspaceBlock {
     pub rag: Vec<String>,
     /// Concept-routing candidate set (concept-routing plan R1) — `Some` only
     /// when routing was requested (`route == true`) and the service routed.
-    /// **Logged by [`gather_with`], never injected** (injection is R2), so it
-    /// has zero effect on the rendered prompt.
+    /// Logged by [`gather_with`]; carries the menu data for `preview`.
     pub route_candidates: Option<wylde_concept_routing::CandidateSet>,
+    /// Concept-routing **R2 Augment injection** (plan §6.3) — the boundary blurb
+    /// and member snippets for the user-curated concepts. Populates
+    /// [`ChatContext::concept_context`]. Empty unless a non-empty curated set was
+    /// forwarded (which only happens with the master toggle ON).
+    pub concept_context: Vec<String>,
 }
 
 /// A vocabulary anchor the current prompt referenced. Always in the never-drop
@@ -182,6 +186,16 @@ pub(crate) struct ChatContext {
     /// Workspace RAG snippets (B6 split). OI-8 tier **1** — the generic
     /// retrieval fallback, first to go; sheds lowest-ranked snippet first.
     pub workspace_rag: Vec<String>,
+    /// Concept-routing **R2 Augment injection** (concept-routing plan §3, §6.3):
+    /// the boundary blurb + member snippets for the user-curated concepts,
+    /// rendered as the `### Concepts` slot. **Additive** — rides alongside
+    /// `workspace_rag`, never replacing it (Augment). OI-8 tier **~1.5** —
+    /// *above* generic RAG (coherent concept context outlives scattered chunks,
+    /// per thesis §3.3) but below every other evictable tier and never the
+    /// never-drop tier. Element `[0]` is the boundary blurb (protected: the slot
+    /// sheds member snippets from the tail first). Empty unless routing is ON and
+    /// the user curated a non-empty set — so OFF / no-curation renders nothing.
+    pub concept_context: Vec<String>,
     /// Workspace note snippets (B6 split). OI-8 tier **3**; sheds
     /// lowest-ranked snippet first.
     pub workspace_notes: Vec<String>,
@@ -245,11 +259,15 @@ pub(crate) trait WorkspaceSource {
     /// plan R0/R1): `false` ⇒ the exact pre-routing path + no candidate set;
     /// `true` ⇒ the service also routes (reusing the RAG embed) and the block
     /// carries `route_candidates` for the caller to **log** (R1; no injection).
+    /// `curated_concepts` is the concept-routing R2 curated set (plan §4):
+    /// `Some` ⇒ Augment-inject those concepts (the block's `concept_context`);
+    /// `None` ⇒ no injection.
     fn gather_prompt(
         &self,
         ws: &str,
         user_message: &str,
         route: bool,
+        curated_concepts: Option<&[String]>,
     ) -> impl Future<Output = SourceResult<Option<WorkspaceBlock>>> + Send;
 
     /// `workspaces.anchors.find_by_token` — anchors for one token.
@@ -320,17 +338,24 @@ impl WorkspaceSource for LiveSource {
         ws: &str,
         user_message: &str,
         route: bool,
+        curated_concepts: Option<&[String]>,
     ) -> SourceResult<Option<WorkspaceBlock>> {
         // Reuse the established Slice-0d workspace-prompt fetch + degrade
         // semantics (its own client + NoRetry policy) rather than re-deriving
         // them — keeps one definition of "is the workspace reachable".
-        let prompt = crate::turn::workspace_context::gather(Some(ws), user_message, route).await;
+        let prompt =
+            crate::turn::workspace_context::gather(Some(ws), user_message, route, curated_concepts)
+                .await;
         if prompt.degraded {
             Err(SourceStatus::Unavailable)
-        } else if prompt.is_empty() && prompt.route_candidates.is_none() {
+        } else if prompt.is_empty()
+            && prompt.route_candidates.is_none()
+            && prompt.concept_context.is_empty()
+        {
             // Nothing to inject AND nothing to log → no block. (When routing
-            // surfaced a candidate set but every prompt slot was empty, we
-            // still return a block so the candidate set reaches the logger.)
+            // surfaced a candidate set, or R2 injected concept context, but
+            // every other slot was empty, we still return a block so it reaches
+            // the caller.)
             Ok(None)
         } else {
             Ok(Some(WorkspaceBlock {
@@ -338,6 +363,7 @@ impl WorkspaceSource for LiveSource {
                 notes: prompt.notes,
                 rag: prompt.rag,
                 route_candidates: prompt.route_candidates,
+                concept_context: prompt.concept_context,
             }))
         }
     }
@@ -446,6 +472,13 @@ pub(crate) struct TokenOverrides {
     /// query behind the `[active_file: …]` marker so the workspace search layer
     /// can lexically boost chunks from that file / its directory.
     pub active_file: Option<String>,
+    /// Concept-routing **R2** (plan §4): the user-curated concept ids carried by
+    /// `chat.run_turn` after the curate-before-inject menu. `Some` (even empty)
+    /// ⇒ the menu ran and these are the concepts to Augment-inject (empty ⇒
+    /// inject nothing — Aaron's lock); `None` ⇒ no curation this turn ⇒ no
+    /// injection (R1 behaviour). Only honoured when the master toggle is ON, so
+    /// a stale list can never inject while routing is OFF.
+    pub curated_concepts: Option<Vec<String>>,
 }
 
 impl TokenOverrides {
@@ -476,6 +509,22 @@ impl TokenOverrides {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned),
+            // R2: distinguish "field absent" (None ⇒ no curation, no injection)
+            // from "explicitly curated to nothing" (Some([]) ⇒ inject nothing
+            // without re-routing). A present-but-non-array value reads as an
+            // empty curated set, never as "absent".
+            curated_concepts: payload.get("curated_concepts").map(|v| {
+                v.as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }),
         }
     }
 }
@@ -580,8 +629,7 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         // up front (deterministic, high-precision) so 2.4 can fold the resolved
         // anchor identifiers into the RAG query below.
         let (anchors, anchor_symbol_ids) = gather_anchors(source, ws, &tokens).await;
-        let anchor_terms: Vec<String> =
-            anchors.iter().map(|a| a.identifier.clone()).collect();
+        let anchor_terms: Vec<String> = anchors.iter().map(|a| a.identifier.clone()).collect();
         ctx.vocabulary_anchors = anchors;
 
         // 2.3 (conversation-aware query construction) + 2.4 (anchor-biased
@@ -633,19 +681,39 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         //     so retrieval output is identical whether routing is on or off.
         let route = wylde_concept_routing::RoutingConfig::current().enabled;
 
-        // The workspace prompt parts (persona / notes / RAG — B6 split).
-        // An unreachable service here is the degrade signal (Slice 0d
-        // semantics).
-        match source.gather_prompt(ws, &retrieval_query, route).await {
+        // R2 (concept-routing plan §4): the user-curated concept set carried by
+        // `chat.run_turn` after the curate-before-inject menu. **Only honoured
+        // when the master toggle is ON** — so with routing OFF a stale curated
+        // list can never inject, keeping OFF byte-identical to today. `Some([])`
+        // (curated to nothing) injects nothing; `None` (no menu this turn) keeps
+        // R1 behaviour. Aaron's lock: never inject silently — injection requires
+        // an explicit curated set from the menu.
+        let curated = if route {
+            overrides.curated_concepts.as_deref()
+        } else {
+            None
+        };
+
+        // The workspace prompt parts (persona / notes / RAG — B6 split) plus,
+        // when routing is on, the routed candidate set (logged) and the R2
+        // curated Augment injection. An unreachable service here is the degrade
+        // signal (Slice 0d semantics).
+        match source
+            .gather_prompt(ws, &retrieval_query, route, curated)
+            .await
+        {
             Ok(Some(block)) => {
-                // R1: log the routed candidate set (calibration data) and
-                // discard it. NOT assigned to any slot — injection is R2.
+                // R1: log the routed candidate set (calibration data).
                 if let Some(set) = &block.route_candidates {
                     tracing::info!(target: "concept_routing", "[harness] {}", set.log_line());
                 }
                 ctx.workspace_persona = block.persona;
                 ctx.workspace_notes = block.notes;
                 ctx.workspace_rag = block.rag;
+                // R2 Augment: the concept slot rides ALONGSIDE the RAG slot
+                // above (additive — never replacing it). Empty unless a non-empty
+                // curated set was injected, so OFF / no-curation is unchanged.
+                ctx.concept_context = block.concept_context;
             }
             Ok(None) => {}
             Err(SourceStatus::Unavailable) => degraded = true,
@@ -685,6 +753,99 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         history,
         degraded,
         tier7_degraded,
+    }
+}
+
+// ── concept-routing R2: the two-phase preview (plan §4) ───────────────────
+
+/// Phase 1 of the curate-before-inject turn: route the turn's query into
+/// concept space and return the [`CandidateSet`](wylde_concept_routing::CandidateSet)
+/// the GUI menu is built from — **without** injecting or driving the LLM.
+///
+/// Returns `None` when the master toggle is OFF, there's no active workspace, or
+/// the service routed nothing / is unreachable — in every such case the GUI
+/// shows no menu and `chat.run_turn` proceeds exactly as today. Routes on the
+/// *same* conversation-composed query the live gather builds (summary +
+/// short-term + resolved anchors + active-file marker), so the menu reflects
+/// what would actually activate. The only routing in the two-phase flow happens
+/// here; `chat.run_turn` carries the user-curated ids and skips re-routing.
+pub(crate) async fn preview(
+    workspace_id: Option<&str>,
+    user_message: &str,
+    conversation_id: &str,
+    overrides: &TokenOverrides,
+) -> Option<wylde_concept_routing::CandidateSet> {
+    preview_with(
+        &LiveSource::for_active(),
+        workspace_id,
+        user_message,
+        conversation_id,
+        overrides,
+    )
+    .await
+}
+
+/// Source-injectable core of [`preview`] (tests pass a mock).
+pub(crate) async fn preview_with<S: WorkspaceSource + Sync>(
+    source: &S,
+    workspace_id: Option<&str>,
+    user_message: &str,
+    conversation_id: &str,
+    overrides: &TokenOverrides,
+) -> Option<wylde_concept_routing::CandidateSet> {
+    // Master toggle gate — OFF ⇒ no menu, no routing (byte-identical to today).
+    if !wylde_concept_routing::RoutingConfig::current().enabled {
+        return None;
+    }
+    let ws = workspace_id.map(str::trim).filter(|s| !s.is_empty())?;
+
+    // Re-build the conversation-aware retrieval query exactly as `gather_with`
+    // does (minus the windowed history, which the summary already distils), so
+    // the previewed routing matches the turn that follows.
+    let short_term = read_short_term(conversation_id);
+    let summary = crate::chat::search::summary::auto_summary_for(conversation_id);
+
+    let mut tokens = candidate_tokens(user_message);
+    let global_ignores: Vec<String> = crate::chat::ignore::store::load()
+        .into_iter()
+        .map(|e| e.token)
+        .collect();
+    let service_ignores = source
+        .ignored_tokens(ws, conversation_id)
+        .await
+        .unwrap_or_default();
+    tokens.retain(|t| {
+        if overrides.excluded.iter().any(|x| x == t) {
+            return false;
+        }
+        let ignored =
+            global_ignores.iter().any(|x| x == t) || service_ignores.iter().any(|x| x == t);
+        !ignored || overrides.reactivated.iter().any(|x| x == t)
+    });
+
+    let (anchors, _) = gather_anchors(source, ws, &tokens).await;
+    let anchor_terms: Vec<String> = anchors.iter().map(|a| a.identifier.clone()).collect();
+
+    let mut retrieval_query = compose_retrieval_query(
+        user_message,
+        summary.as_deref(),
+        &short_term,
+        &[],
+        &anchor_terms,
+    );
+    if let Some(active_file) = overrides
+        .active_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        retrieval_query.push_str(&format!("\n\n[active_file: {active_file}]"));
+    }
+
+    // Route only (curated = None ⇒ no injection); return the candidate set.
+    match source.gather_prompt(ws, &retrieval_query, true, None).await {
+        Ok(Some(block)) => block.route_candidates,
+        _ => None,
     }
 }
 
@@ -866,10 +1027,7 @@ fn gather_workspace_memory(workspace_id: &str, user_message: &str) -> Vec<String
         return Vec::new();
     }
     let hits = ws_store::search_records(workspace_id, user_message, WORKSPACE_MEMORY_LIMIT, None);
-    let mut selected: Vec<(String, String)> = hits
-        .into_iter()
-        .map(|h| (h.id, h.body))
-        .collect();
+    let mut selected: Vec<(String, String)> = hits.into_iter().map(|h| (h.id, h.body)).collect();
     if selected.len() < WORKSPACE_MEMORY_LIMIT {
         // Top up with the importance-ranked head the search missed —
         // high-importance insights ride even with zero token overlap
@@ -1069,12 +1227,11 @@ const RETRIEVAL_HISTORY_TURNS: usize = 2;
 /// the *appended tail* is filtered; the live message is always embedded
 /// verbatim regardless.)
 const RETRIEVAL_STOPWORDS: &[&str] = &[
-    "the", "and", "for", "that", "this", "with", "you", "your", "are", "was",
-    "were", "have", "has", "had", "not", "but", "can", "could", "would",
-    "should", "does", "did", "what", "why", "how", "when", "where", "who",
-    "which", "into", "from", "about", "there", "then", "them", "they", "its",
-    "our", "out", "get", "got", "one", "all", "any", "more", "than", "also",
-    "like", "just", "explain", "please", "tell", "use", "using",
+    "the", "and", "for", "that", "this", "with", "you", "your", "are", "was", "were", "have",
+    "has", "had", "not", "but", "can", "could", "would", "should", "does", "did", "what", "why",
+    "how", "when", "where", "who", "which", "into", "from", "about", "there", "then", "them",
+    "they", "its", "our", "out", "get", "got", "one", "all", "any", "more", "than", "also", "like",
+    "just", "explain", "please", "tell", "use", "using",
 ];
 
 /// Compose the workspace RAG / notes embed query for this turn (improvement
@@ -1197,18 +1354,17 @@ fn push_keywords(
     out: &mut Vec<String>,
 ) {
     let mut cur = String::new();
-    let consider = |cur: &mut String,
-                    seen: &mut std::collections::HashSet<String>,
-                    out: &mut Vec<String>| {
-        if cur.len() >= RETRIEVAL_KEYWORD_MIN_LEN
-            && !RETRIEVAL_STOPWORDS.contains(&cur.as_str())
-            && !in_message.contains(cur.as_str())
-            && seen.insert(cur.clone())
-        {
-            out.push(cur.clone());
-        }
-        cur.clear();
-    };
+    let consider =
+        |cur: &mut String, seen: &mut std::collections::HashSet<String>, out: &mut Vec<String>| {
+            if cur.len() >= RETRIEVAL_KEYWORD_MIN_LEN
+                && !RETRIEVAL_STOPWORDS.contains(&cur.as_str())
+                && !in_message.contains(cur.as_str())
+                && seen.insert(cur.clone())
+            {
+                out.push(cur.clone());
+            }
+            cur.clear();
+        };
     for ch in text.chars() {
         if ch.is_ascii_alphanumeric() || ch == '_' {
             cur.push(ch.to_ascii_lowercase());
@@ -1382,6 +1538,7 @@ fn dedupe_preserving_order(v: &mut Vec<String>) {
 mod tests {
     use super::*;
     use serde_json::json;
+    use serial_test::serial;
     use std::collections::HashMap;
     use wylde_shared::anchor::{AnchorKind, AnchorScope, AnchorTarget};
 
@@ -1433,6 +1590,16 @@ mod tests {
         /// lets a routing test assert the master toggle drove the request
         /// (concept-routing plan R0/R1).
         gather_prompt_routes: std::sync::Mutex<Vec<bool>>,
+        /// every `curated_concepts` arg `gather_prompt` was called with, in call
+        /// order — lets an R2 test assert the curated set was forwarded (or NOT,
+        /// when the toggle is off).
+        gather_prompt_curated: std::sync::Mutex<Vec<Option<Vec<String>>>>,
+        /// when set, the returned block's `concept_context` is derived from the
+        /// FORWARDED curated arg (a blurb + a snippet per id; empty for
+        /// None/`Some([])`) — faithfully modelling the server, which injects iff
+        /// a non-empty curated set reaches it. Lets the R2 safety proof assert
+        /// that toggle-off (curated=None) truly renders no concept slot.
+        echo_curated_injection: bool,
     }
 
     impl WorkspaceSource for MockSource {
@@ -1441,17 +1608,36 @@ mod tests {
             _ws: &str,
             m: &str,
             route: bool,
+            curated_concepts: Option<&[String]>,
         ) -> SourceResult<Option<WorkspaceBlock>> {
             self.gather_prompt_queries
                 .lock()
                 .unwrap()
                 .push(m.to_owned());
             self.gather_prompt_routes.lock().unwrap().push(route);
+            self.gather_prompt_curated
+                .lock()
+                .unwrap()
+                .push(curated_concepts.map(<[String]>::to_vec));
             if self.prompt_unavailable {
-                Err(SourceStatus::Unavailable)
-            } else {
-                Ok(self.prompt.clone())
+                return Err(SourceStatus::Unavailable);
             }
+            let mut block = self.prompt.clone();
+            if self.echo_curated_injection {
+                // Model the server: inject iff a non-empty curated set reached us.
+                let injected: Vec<String> = match curated_concepts {
+                    Some(ids) if !ids.is_empty() => {
+                        let mut v = vec![format!("BLURB: {}", ids.join(", "))];
+                        v.push(format!("`{}.rs` (lines 1-9)\nfn member() {{}}", ids[0]));
+                        v
+                    }
+                    _ => Vec::new(),
+                };
+                if let Some(b) = block.as_mut() {
+                    b.concept_context = injected;
+                }
+            }
+            Ok(block)
         }
         async fn find_anchors(&self, _ws: &str, token: &str) -> SourceResult<Vec<Anchor>> {
             Ok(self.anchors.get(token).cloned().unwrap_or_default())
@@ -1641,7 +1827,10 @@ mod tests {
         // Live message leads (dominant) ...
         assert!(q.starts_with("why?"), "live message must lead: {q}");
         // ... and the thread topic is folded in from each source.
-        assert!(q.contains("tokenizer"), "working-memory keyword folded: {q}");
+        assert!(
+            q.contains("tokenizer"),
+            "working-memory keyword folded: {q}"
+        );
         assert!(
             q.contains("eviction") && q.contains("ladder"),
             "recent-turn / summary keywords folded: {q}"
@@ -1714,7 +1903,9 @@ mod tests {
             "the live message leads the forwarded query: {forwarded}"
         );
         assert!(
-            forwarded.contains("eviction") || forwarded.contains("ladder") || forwarded.contains("budget"),
+            forwarded.contains("eviction")
+                || forwarded.contains("ladder")
+                || forwarded.contains("budget"),
             "the forwarded RAG query carries the thread topic: {forwarded}"
         );
         // Sanity: a query that is *just* the bare message would not contain
@@ -1732,6 +1923,7 @@ mod tests {
                 notes: vec!["uses cargo".into()],
                 rag: vec!["fn main() {}".into()],
                 route_candidates,
+                concept_context: Vec::new(),
             }),
             ..MockSource::default()
         }
@@ -1757,6 +1949,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn routing_toggle_off_forwards_no_route_and_is_unchanged() {
         // Default (toggle OFF): gather must forward `route = false` and the
         // rendered slots are exactly the non-routing path.
@@ -1786,6 +1979,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn routing_toggle_on_routes_logs_and_injects_nothing() {
         // Toggle ON: gather must forward `route = true`, accept the returned
         // candidate set (which the branch logs) — and the rendered slots must
@@ -1842,6 +2036,200 @@ mod tests {
         .expect("reset toggle off");
     }
 
+    // ── concept-routing R2: curate-before-inject + Augment injection ────
+
+    /// A mock that models the server's R2 injection: persona/notes/rag plus a
+    /// concept slot derived from the forwarded curated set (see
+    /// `echo_curated_injection`).
+    fn injecting_mock() -> MockSource {
+        MockSource {
+            prompt: Some(WorkspaceBlock {
+                persona: None,
+                notes: vec![],
+                rag: vec!["fn rag_chunk() {}".into()],
+                route_candidates: None,
+                concept_context: Vec::new(),
+            }),
+            echo_curated_injection: true,
+            ..MockSource::default()
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn r2_toggle_off_ignores_curated_concepts_and_is_unchanged() {
+        // The safety proof: even when the payload carries a curated set, master
+        // toggle OFF forwards `curated = None`, so the server injects nothing and
+        // the slots are byte-identical to a plain turn. A stale GUI list can't
+        // inject while routing is off.
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        wylde_concept_routing::RoutingConfig::reload_from_disk(); // fresh dir ⇒ off
+        assert!(!wylde_concept_routing::RoutingConfig::current().enabled);
+
+        let overrides = TokenOverrides {
+            curated_concepts: Some(vec!["nextcloud".into()]),
+            ..Default::default()
+        };
+        let src = injecting_mock();
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "q",
+            "conv-r2-off",
+            &overrides,
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+
+        // Curated was NOT forwarded (toggle gates it), routing stayed off, and
+        // — because the (server-modelling) mock injects only from a forwarded
+        // set — NO concept slot renders. OFF is byte-identical to today.
+        let curated = src.gather_prompt_curated.lock().unwrap().clone();
+        assert_eq!(curated, vec![None], "toggle off ⇒ curated=None forwarded");
+        let routes = src.gather_prompt_routes.lock().unwrap().clone();
+        assert_eq!(routes, vec![false]);
+        assert!(
+            !out.system_slots.contains("### Concepts"),
+            "OFF injects nothing"
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn r2_augment_injects_concept_slot_alongside_rag() {
+        // Toggle ON + a curated set: the concept slot is injected ALONGSIDE the
+        // RAG slot (Augment — additive, never replacing). The curated ids are
+        // forwarded to the service.
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        wylde_concept_routing::RoutingConfig::persist(wylde_concept_routing::RoutingConfig {
+            enabled: true,
+            ..Default::default()
+        })
+        .expect("toggle on");
+
+        let overrides = TokenOverrides {
+            curated_concepts: Some(vec!["nextcloud".into(), "ddns".into()]),
+            ..Default::default()
+        };
+        let src = injecting_mock();
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "how does nextcloud sync",
+            "conv-r2-on",
+            &overrides,
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+
+        // Curated ids forwarded to the service (Some, with both ids).
+        let curated = src.gather_prompt_curated.lock().unwrap().clone();
+        assert_eq!(
+            curated,
+            vec![Some(vec!["nextcloud".to_owned(), "ddns".to_owned()])]
+        );
+        // Augment: BOTH the concept slot and the raw RAG slot render.
+        assert!(out.system_slots.contains("### Concepts"));
+        assert!(out.system_slots.contains("BLURB: nextcloud, ddns"));
+        assert!(
+            out.system_slots.contains("### Workspace context"),
+            "Augment keeps the RAG slot alongside (never replaces it)"
+        );
+        assert!(out.system_slots.contains("fn rag_chunk() {}"));
+
+        wylde_concept_routing::RoutingConfig::persist(Default::default()).unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn r2_empty_curated_set_injects_nothing() {
+        // Aaron's lock: a curated-empty menu injects nothing. The empty set is
+        // still forwarded (Some([]) — explicit "curated to nothing"), but the
+        // server injects nothing for it, so no slot renders.
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        wylde_concept_routing::RoutingConfig::persist(wylde_concept_routing::RoutingConfig {
+            enabled: true,
+            ..Default::default()
+        })
+        .expect("toggle on");
+
+        let overrides = TokenOverrides {
+            curated_concepts: Some(vec![]),
+            ..Default::default()
+        };
+        let src = injecting_mock();
+        let out = gather_with(
+            &src,
+            Some("ws"),
+            "q",
+            "conv-r2-empty",
+            &overrides,
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        )
+        .await;
+
+        let curated = src.gather_prompt_curated.lock().unwrap().clone();
+        assert_eq!(
+            curated,
+            vec![Some(Vec::<String>::new())],
+            "Some([]) forwarded"
+        );
+        assert!(
+            !out.system_slots.contains("### Concepts"),
+            "nothing injected"
+        );
+
+        wylde_concept_routing::RoutingConfig::persist(Default::default()).unwrap();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn preview_returns_candidates_when_toggle_on_and_none_when_off() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+
+        // OFF ⇒ no preview, no routing (and gather_prompt is never called).
+        wylde_concept_routing::RoutingConfig::reload_from_disk();
+        let src = routing_mock(Some(sample_candidate_set()));
+        let got = preview_with(
+            &src,
+            Some("ws"),
+            "auth question",
+            "conv-prev-off",
+            &TokenOverrides::default(),
+        )
+        .await;
+        assert!(got.is_none(), "toggle off ⇒ no menu");
+        assert!(
+            src.gather_prompt_routes.lock().unwrap().is_empty(),
+            "toggle off ⇒ preview doesn't even call the service"
+        );
+
+        // ON ⇒ routes (curated=None) and returns the candidate set.
+        wylde_concept_routing::RoutingConfig::persist(wylde_concept_routing::RoutingConfig {
+            enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let src = routing_mock(Some(sample_candidate_set()));
+        let got = preview_with(
+            &src,
+            Some("ws"),
+            "auth question",
+            "conv-prev-on",
+            &TokenOverrides::default(),
+        )
+        .await;
+        let set = got.expect("toggle on ⇒ candidates");
+        assert_eq!(set.concepts[0].id, "a");
+        // Preview routes (route=true) but never injects (curated=None).
+        let routes = src.gather_prompt_routes.lock().unwrap().clone();
+        assert_eq!(routes, vec![true]);
+        let curated = src.gather_prompt_curated.lock().unwrap().clone();
+        assert_eq!(curated, vec![None], "preview never injects");
+
+        wylde_concept_routing::RoutingConfig::persist(Default::default()).unwrap();
+    }
+
     // ── 2.4: anchor-biased retrieval query construction ─────────────────
 
     #[test]
@@ -1854,7 +2242,10 @@ mod tests {
             "gather_with".to_owned(),
         ];
         let q = compose_retrieval_query("how is the query built?", None, &[], &[], &anchors);
-        assert!(q.starts_with("how is the query built?"), "message leads: {q}");
+        assert!(
+            q.starts_with("how is the query built?"),
+            "message leads: {q}"
+        );
         let tail = q
             .split_once("[anchors: ")
             .and_then(|(_, t)| t.strip_suffix(']'))
@@ -1869,10 +2260,7 @@ mod tests {
         assert_eq!(q2, "plain\n\n[anchors: run_it]");
 
         // Still byte-identical when neither context nor anchors contribute.
-        assert_eq!(
-            compose_retrieval_query("bare", None, &[], &[], &[]),
-            "bare"
-        );
+        assert_eq!(compose_retrieval_query("bare", None, &[], &[], &[]), "bare");
     }
 
     #[test]
@@ -1942,7 +2330,11 @@ mod tests {
         let o = TokenOverrides::from_payload(&json!({
             "active_file": "  services/x/foo.rs  "
         }));
-        assert_eq!(o.active_file.as_deref(), Some("services/x/foo.rs"), "trimmed");
+        assert_eq!(
+            o.active_file.as_deref(),
+            Some("services/x/foo.rs"),
+            "trimmed"
+        );
         // Absent / blank → None.
         assert_eq!(TokenOverrides::from_payload(&json!({})).active_file, None);
         assert_eq!(
@@ -2011,12 +2403,18 @@ mod tests {
     async fn workspace_memory_records_feed_the_insights_slot() {
         let _env = crate::user_profile::test_support::TestEnv::new();
         use crate::memory::workspace::store as ws_store;
-        let v1 = ws_store::save_new("ws", "stale guidance", "reflection", Some(6.0), vec![])
-            .unwrap();
+        let v1 =
+            ws_store::save_new("ws", "stale guidance", "reflection", Some(6.0), vec![]).unwrap();
         // Supersede v1 — only the replacement may ride.
         ws_store::update("ws", &v1.id, Some("fresh distilled guidance"), None, None).unwrap();
-        ws_store::save_new("ws", "unrelated high-value insight", "chat", Some(9.0), vec![])
-            .unwrap();
+        ws_store::save_new(
+            "ws",
+            "unrelated high-value insight",
+            "chat",
+            Some(9.0),
+            vec![],
+        )
+        .unwrap();
 
         let src = MockSource::default();
         let out = gather_with(
@@ -2598,6 +2996,7 @@ mod tests {
                 notes: vec!["be concise".into()],
                 rag: Vec::new(),
                 route_candidates: None,
+                concept_context: Vec::new(),
             }),
             ..MockSource::default()
         };

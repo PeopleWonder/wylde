@@ -10,6 +10,9 @@ Always show diffs.
 - the user is renaming the gather module
 - tests must stay green
 
+### Conversation summary
+The user has been refactoring the context gather flow.
+
 ### Long-term memory
 - prefers Rust over Python for new modules
 - works from a Windows box
@@ -20,6 +23,9 @@ Always show diffs.
 
 ### Vocabulary
 - {{the_gather}} — the pre-LLM context gather (code symbol `gather_with`)
+
+### Concepts
+Context gather — assembles the layered turn context (depends on token budget; not related to streaming)
 
 ### Workspace context
 ## Persona

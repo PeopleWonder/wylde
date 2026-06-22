@@ -347,9 +347,9 @@ impl WorkspacesClient {
         user_message: &str,
     ) -> Result<String, WorkspacesClientError> {
         // The rendered-string convenience never routes (it predates routing and
-        // has no consumer for the candidate set).
+        // has no consumer for the candidate set) and never injects.
         let data = self
-            .gather_prompt_raw(workspace_id, user_message, false)
+            .gather_prompt_raw(workspace_id, user_message, false, None)
             .await?;
         Ok(data
             .get("slots")
@@ -367,23 +367,29 @@ impl WorkspacesClient {
     /// `route` is the concept-routing master toggle (concept-routing plan
     /// R0/R1): `false` ⇒ the pre-routing path + a null `route_candidates`;
     /// `true` ⇒ the service routes (reusing the RAG embed) and returns the
-    /// candidate set for the harness to log. **R1 logs only; no injection.**
+    /// candidate set for the harness to log.
+    ///
+    /// `curated_concepts` is the concept-routing **R2** curated set (plan §4):
+    /// `Some` (even empty) ⇒ the curate-before-inject menu ran and these are the
+    /// concept ids to Augment-inject (the reply's `concept_context` carries the
+    /// boundary blurb + member snippets); `None` ⇒ no injection. The field is
+    /// sent only when `Some`, so a non-R2 caller's payload is unchanged.
     pub async fn gather_prompt_raw(
         &self,
         workspace_id: &str,
         user_message: &str,
         route: bool,
+        curated_concepts: Option<&[String]>,
     ) -> Result<Value, WorkspacesClientError> {
-        self.call_verb(
-            "workspaces.gather_prompt",
-            serde_json::json!({
-                "workspace_id": workspace_id,
-                "user_message": user_message,
-                "route": route,
-            }),
-            1,
-        )
-        .await
+        let mut payload = serde_json::json!({
+            "workspace_id": workspace_id,
+            "user_message": user_message,
+            "route": route,
+        });
+        if let Some(ids) = curated_concepts {
+            payload["curated_concepts"] = serde_json::json!(ids);
+        }
+        self.call_verb("workspaces.gather_prompt", payload, 1).await
     }
 
     // ── Slice 0c — workspace notes tier ─────────────────────────────────

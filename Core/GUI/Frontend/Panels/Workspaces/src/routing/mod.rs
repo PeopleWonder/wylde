@@ -36,8 +36,13 @@
 //! * **R3 (tree viz):** [`reducer::overview`] hands the typed-edge tree the same
 //!   per-node grouped shape; the tree mounts beside this editor in `routing/`.
 
+pub mod curate_ipc;
+pub mod curate_menu;
+pub mod curate_reducer;
 pub mod ipc;
 pub mod reducer;
+
+pub use curate_menu::{CurateMenuView, TurnDecision};
 
 use gpui::{
     div, prelude::*, px, rgb, Context, Entity, IntoElement, MouseButton, MouseDownEvent, Render,

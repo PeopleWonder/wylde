@@ -63,10 +63,18 @@ pub(crate) struct WorkspacePrompt {
     /// (Broken / breaker open) — the caller surfaces the inline notice.
     pub degraded: bool,
     /// Concept-routing candidate set (concept-routing plan R1) — `Some` only
-    /// when the master toggle was on and the service routed something. **R1:
-    /// logged, never injected**; carrying it here lets the harness log it from
-    /// its single gather site. Does not affect [`is_empty`](Self::is_empty).
+    /// when the master toggle was on and the service routed something. Logged
+    /// from the harness's single gather site. Does not affect
+    /// [`is_empty`](Self::is_empty).
     pub route_candidates: Option<wylde_concept_routing::CandidateSet>,
+
+    /// Concept-routing **R2 Augment injection** (plan §6.3): the boundary blurb
+    /// and member snippets for the user-curated concepts, returned only when a
+    /// non-empty curated set was passed. The harness renders these into a
+    /// dedicated `### Concepts` slot *alongside* the RAG slot (Augment). Does
+    /// not affect [`is_empty`](Self::is_empty) — a turn that only injects
+    /// concept context still returns a block so the slot reaches the prompt.
+    pub concept_context: Vec<String>,
 }
 
 impl WorkspacePrompt {
@@ -116,6 +124,7 @@ fn parse_prompt_reply(v: &Value) -> WorkspacePrompt {
         rag: list("rag_snippets"),
         degraded: false,
         route_candidates,
+        concept_context: list("concept_context"),
     }
 }
 
@@ -149,13 +158,17 @@ pub(crate) async fn gather(
     workspace_id: Option<&str>,
     user_message: &str,
     route: bool,
+    curated_concepts: Option<&[String]>,
 ) -> WorkspacePrompt {
     let Some(ws_id) = workspace_id.map(str::trim).filter(|s| !s.is_empty()) else {
         return WorkspacePrompt::base();
     };
 
     let client = WorkspacesClient::for_service(workspaces_service());
-    match client.gather_prompt_raw(ws_id, user_message, route).await {
+    match client
+        .gather_prompt_raw(ws_id, user_message, route, curated_concepts)
+        .await
+    {
         Ok(reply) => parse_prompt_reply(&reply),
         // Service unreachable / breaker open → base context + notice.
         Err(e) if is_unavailable(&e) => WorkspacePrompt {
@@ -197,11 +210,11 @@ mod tests {
 
     #[tokio::test]
     async fn no_workspace_is_base_context() {
-        let out = gather(None, "hello", false).await;
+        let out = gather(None, "hello", false, None).await;
         assert!(out.is_empty());
         assert!(!out.degraded);
 
-        let out = gather(Some("   "), "hello", false).await;
+        let out = gather(Some("   "), "hello", false, None).await;
         assert!(out.is_empty());
         assert!(!out.degraded);
     }
@@ -216,7 +229,7 @@ mod tests {
             format!("wylde-workspaces-dead-{}", std::process::id()),
         );
 
-        let out = gather(Some("any-workspace"), "hello", false).await;
+        let out = gather(Some("any-workspace"), "hello", false, None).await;
         assert!(out.is_empty(), "degraded gather must add nothing");
         assert!(out.degraded, "an unreachable service must degrade");
 

@@ -141,6 +141,12 @@ fn fixture_context() -> ChatContext {
             text: "{{the_gather}} — the pre-LLM context gather (code symbol `gather_with`)".into(),
         }],
         workspace_rag: vec!["fn gather_with() { /* fixture snippet */ }".into()],
+        // Concept-routing R2 Augment injection: boundary blurb (element [0]) +
+        // a member snippet — the `### Concepts` slot.
+        concept_context: vec![
+            "Context gather — assembles the layered turn context (depends on token budget; not related to streaming)".into(),
+            "`src/turn/context_gather.rs` (lines 1-9)\npub(crate) async fn gather_with() {}".into(),
+        ],
         workspace_notes: vec!["uses cargo nextest".into()],
         workspace_persona: Some("Be precise.".into()),
         symbol_contexts: vec![SymbolContextBlock {
@@ -252,6 +258,7 @@ mod tests {
             _ws: &str,
             _m: &str,
             _route: bool,
+            _curated_concepts: Option<&[String]>,
         ) -> Result<
             Option<crate::turn::context_gather::WorkspaceBlock>,
             crate::turn::context_gather::SourceStatus,
@@ -261,6 +268,7 @@ mod tests {
                 notes: Vec::new(),
                 rag: Vec::new(),
                 route_candidates: None,
+                concept_context: Vec::new(),
             }))
         }
         async fn find_anchors(
