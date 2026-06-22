@@ -164,7 +164,23 @@ pub async fn gather(
                     // curated set ⇒ empty injection ⇒ today's RAG fallback.
                     let concept_context = match curated_concepts {
                         Some(ids) if !ids.is_empty() => {
-                            let inj = crate::concepts::inject::inject_curated(&def.id, ids);
+                            // R3a scoped lens: when `scope_to_active_region` is
+                            // on and the turn carries an `[active_file: …]`
+                            // marker, narrow each curated concept's member
+                            // chunks to that file's subsystem. Off / no active
+                            // file ⇒ `None` ⇒ whole concept (unchanged from R2).
+                            let scope = if wylde_concept_routing::RoutingConfig::current()
+                                .scope_to_active_region
+                            {
+                                active_file_region(user_message)
+                            } else {
+                                None
+                            };
+                            let inj = crate::concepts::inject::inject_curated(
+                                &def.id,
+                                ids,
+                                scope.as_deref(),
+                            );
                             if !inj.is_empty() {
                                 tracing::info!(
                                     target: "concept_routing",
@@ -203,6 +219,34 @@ pub async fn gather(
         route_candidates,
         concept_context,
     }
+}
+
+/// The concept-routing **R3a** scoped-lens region for this turn: the active
+/// file's subsystem, or `None` when the turn carries no `[active_file: …]`
+/// marker (or it has no usable directory). The harness folds the active file
+/// into the composed query as an `[active_file: PATH]` line (the same marker
+/// `routing_bridge::strip_markers` strips); we read it back here and hand the
+/// path to the crate's pure [`region_for_active_file`](wylde_concept_routing::region_for_active_file).
+fn active_file_region(user_message: &str) -> Option<String> {
+    extract_active_file(user_message)
+        .as_deref()
+        .and_then(wylde_concept_routing::region_for_active_file)
+}
+
+/// Pull the `[active_file: PATH]` marker's path out of the composed query.
+/// Best-effort line scan (the harness always puts the marker on its own line,
+/// behind a `\n\n`); returns the trimmed path, or `None` when absent/blank.
+fn extract_active_file(user_message: &str) -> Option<String> {
+    for line in user_message.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("[active_file:") {
+            let path = rest.trim_end().trim_end_matches(']').trim();
+            if !path.is_empty() {
+                return Some(path.to_owned());
+            }
+        }
+    }
+    None
 }
 
 /// Render-time ceiling on the persona section (~2k estimated tokens at
@@ -267,6 +311,27 @@ mod tests {
     #[test]
     fn render_slots_empty_for_empty_context() {
         assert_eq!(render_slots(&WorkspaceContext::default()), "");
+    }
+
+    #[test]
+    fn extract_active_file_reads_the_marker() {
+        let q = "how does auth work\n\n[active_file: services/vpn/tunnel.rs]\n[anchors: vpn]";
+        assert_eq!(
+            extract_active_file(q).as_deref(),
+            Some("services/vpn/tunnel.rs")
+        );
+        // No marker ⇒ None (the no-scope, whole-concept path).
+        assert_eq!(extract_active_file("plain question"), None);
+    }
+
+    #[test]
+    fn active_file_region_derives_the_subsystem() {
+        let q = "q\n\n[active_file: services/vpn/tunnel.rs]";
+        assert_eq!(active_file_region(q).as_deref(), Some("services/vpn"));
+        // A bare filename has no subsystem ⇒ no scope.
+        assert_eq!(active_file_region("q\n\n[active_file: main.rs]"), None);
+        // No marker at all ⇒ no scope.
+        assert_eq!(active_file_region("just a question"), None);
     }
 
     #[test]

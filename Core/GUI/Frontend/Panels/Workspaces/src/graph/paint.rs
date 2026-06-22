@@ -13,7 +13,7 @@ use super::render::{Color, RenderOutput};
 use crate::workspaces_panel::pack;
 
 /// One line of overlay text.
-pub(super) fn overlay_text(s: String, sz: f32, w: u16) -> gpui::Div {
+pub(crate) fn overlay_text(s: String, sz: f32, w: u16) -> gpui::Div {
     use wylde_theme::colors::TEXT_PRIMARY;
     div()
         .font_family(FAMILY_INTER)
@@ -26,7 +26,7 @@ pub(super) fn overlay_text(s: String, sz: f32, w: u16) -> gpui::Div {
 /// Translate a renderer [`RenderOutput`] into gpui paint calls. Spheres are
 /// concentric filled circles (the radial-gradient fake); edges are thin filled
 /// quads via [`Path`].
-pub(super) fn paint_graph(window: &mut Window, out: &RenderOutput) {
+pub(crate) fn paint_graph(window: &mut Window, out: &RenderOutput) {
     // Boundary outlines first (under everything).
     for r in &out.outlines {
         window.paint_quad(gpui::quad(
@@ -99,7 +99,7 @@ fn paint_line(window: &mut Window, x0: f32, y0: f32, x1: f32, y1: f32, thickness
 }
 
 /// `Color` → gpui `Rgba` (both are 0..=1 RGBA; just a field copy).
-pub(super) fn to_rgba(c: Color) -> gpui::Rgba {
+pub(crate) fn to_rgba(c: Color) -> gpui::Rgba {
     gpui::Rgba {
         r: c.r,
         g: c.g,

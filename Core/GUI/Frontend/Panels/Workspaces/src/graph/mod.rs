@@ -30,7 +30,10 @@ pub mod layout;
 pub mod model;
 pub mod navigation;
 pub mod outline_view;
-mod paint;
+// `pub(crate)` (was private) so the concept-routing R3 dependency-tree view
+// (`crate::routing::tree_view`) can reuse the shipped `RenderOutput` → gpui
+// paint plumbing instead of duplicating it.
+pub(crate) mod paint;
 pub mod physics;
 pub mod render;
 pub mod settings;

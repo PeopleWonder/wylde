@@ -26,6 +26,7 @@
 
 use std::collections::HashSet;
 
+use super::lens;
 use super::retrieve::{self, ConceptSnippet};
 use super::store;
 use crate::rag::indexer::store as rag_store;
@@ -66,10 +67,26 @@ const MAX_TOTAL_SNIPPETS: usize = 8;
 /// `curated_ids` are already budget-resolved by
 /// [`wylde_concept_routing::apply_curation`]; this only assembles the text.
 ///
+/// `scope` is the **R3a scoped lens** (concept-routing plan §6.2): when `Some`
+/// (the active file's region, derived by
+/// [`wylde_concept_routing::region_for_active_file`]), each concept's member
+/// chunks are narrowed to that subtree via the existing [`lens::lens`] —
+/// "Authentication ∩ services/vpn" instead of the whole concept. **Behaviour-
+/// safe:** `scope == None` (no active file, or `scope_to_active_region` off) ⇒
+/// the whole concept, exactly R2; and an **empty intersection** (the concept
+/// has no members under the region) falls back to the whole concept rather than
+/// silently injecting nothing. The boundary blurb is concept-level (the
+/// concept's identity + its dependency/exclusion edges) and is unaffected by the
+/// lens — only the *member snippets* narrow.
+///
 /// Concepts are processed in `curated_ids` order (the apply step ordered them by
 /// activation, strongest first). An unknown id is skipped. An empty `curated_ids`
 /// (or no resolvable concepts) yields an empty injection.
-pub fn inject_curated(workspace_id: &str, curated_ids: &[String]) -> ConceptInjection {
+pub fn inject_curated(
+    workspace_id: &str,
+    curated_ids: &[String],
+    scope: Option<&str>,
+) -> ConceptInjection {
     if curated_ids.is_empty() {
         return ConceptInjection::default();
     }
@@ -126,7 +143,23 @@ pub fn inject_curated(workspace_id: &str, curated_ids: &[String]) -> ConceptInje
     let per_concept: Vec<Vec<ConceptSnippet>> = concepts
         .iter()
         .map(|c| {
-            let allowed: HashSet<String> = c.member_files.iter().cloned().collect();
+            // R3a scoped lens: narrow the concept's member files to the active
+            // region. An empty intersection (nothing under the region) falls
+            // back to the whole concept — never silently drop everything.
+            let allowed: HashSet<String> = match scope {
+                Some(region) => {
+                    let scoped: Vec<String> = lens::lens(&c.member_files, Some(region))
+                        .into_iter()
+                        .cloned()
+                        .collect();
+                    if scoped.is_empty() {
+                        c.member_files.iter().cloned().collect()
+                    } else {
+                        scoped.into_iter().collect()
+                    }
+                }
+                None => c.member_files.iter().cloned().collect(),
+            };
             if allowed.is_empty() {
                 return Vec::new();
             }
@@ -295,7 +328,7 @@ mod tests {
     #[test]
     fn empty_curation_is_empty_injection() {
         let _env = TestEnv::new();
-        assert!(inject_curated("ws-empty-00000", &[]).is_empty());
+        assert!(inject_curated("ws-empty-00000", &[], None).is_empty());
     }
 
     #[tokio::test]
@@ -334,7 +367,7 @@ mod tests {
         )
         .unwrap();
 
-        let out = inject_curated(ws, &["nextcloud".into(), "ddns".into()]);
+        let out = inject_curated(ws, &["nextcloud".into(), "ddns".into()], None);
         assert!(!out.is_empty());
         // Block 0 is the blurb, and it states the dependency boundary.
         assert!(out.blocks[0].contains("Nextcloud — self-hosted sync (depends on DDNS)"));
@@ -342,5 +375,73 @@ mod tests {
         let joined = out.blocks.join("\n");
         assert!(joined.contains("`nc.rs`"));
         assert!(joined.contains("`ddns.rs`"));
+    }
+
+    /// R3a: a scoped lens narrows the injected member chunks to the active
+    /// file's region — a concept spanning two subsystems injects only the
+    /// in-region members.
+    #[tokio::test]
+    async fn scoped_lens_narrows_member_snippets_to_the_region() {
+        let _env = TestEnv::new();
+        let ws = "inject-lens-00000";
+        // One concept whose members straddle two subsystems.
+        store::save(
+            ws,
+            &[concept_with(
+                "auth",
+                "Authentication",
+                "the auth layer",
+                &["services/vpn/auth.rs", "extensions/web/auth.rs"],
+                vec![1.0, 0.0],
+            )],
+        )
+        .unwrap();
+        rag_store::save_chunks(
+            ws,
+            &[
+                chunk("services/vpn/auth.rs", 0, vec![1.0, 0.0]),
+                chunk("extensions/web/auth.rs", 0, vec![1.0, 0.0]),
+            ],
+        )
+        .unwrap();
+
+        // Scoped to the VPN subsystem ⇒ only the VPN member is injected.
+        let out = inject_curated(ws, &["auth".into()], Some("services/vpn"));
+        let joined = out.blocks.join("\n");
+        assert!(joined.contains("`services/vpn/auth.rs`"), "in-region kept");
+        assert!(
+            !joined.contains("`extensions/web/auth.rs`"),
+            "out-of-region member excluded by the lens"
+        );
+    }
+
+    /// R3a behaviour-safe: an empty intersection (the concept has no members
+    /// under the region) falls back to the whole concept — never silently drops
+    /// everything.
+    #[tokio::test]
+    async fn empty_intersection_falls_back_to_whole_concept() {
+        let _env = TestEnv::new();
+        let ws = "inject-lens-fb-0000";
+        store::save(
+            ws,
+            &[concept_with(
+                "auth",
+                "Authentication",
+                "the auth layer",
+                &["services/vpn/auth.rs"],
+                vec![1.0, 0.0],
+            )],
+        )
+        .unwrap();
+        rag_store::save_chunks(ws, &[chunk("services/vpn/auth.rs", 0, vec![1.0, 0.0])]).unwrap();
+
+        // A region the concept has NO members under ⇒ fall back to the whole
+        // concept (the VPN member still injects) rather than nothing.
+        let out = inject_curated(ws, &["auth".into()], Some("extensions/web"));
+        let joined = out.blocks.join("\n");
+        assert!(
+            joined.contains("`services/vpn/auth.rs`"),
+            "empty intersection ⇒ whole-concept fallback, not silent drop"
+        );
     }
 }
