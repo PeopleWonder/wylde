@@ -75,6 +75,20 @@ async fn main() -> Result<()> {
     // finds the `ping` handler.
     wylde_workspaces::action_dispatch::install();
 
+    // Index hygiene P2 — one-shot self-heal: filter-purge build-artifact chunks
+    // (the ~58% target-dev/doc rustdoc pollution) out of every pre-existing
+    // index, once. Marker-gated + idempotent + filter-only (no re-embed), so a
+    // healed/clean install pays nothing. Runs before the watcher/symbol-index
+    // warm so they build from the cleaned set.
+    let hygiene = wylde_workspaces::migration::run_index_hygiene_pending().await;
+    if !hygiene.skipped && hygiene.dropped > 0 {
+        tracing::info!(
+            "wylde-workspaces: index-hygiene purge dropped {} artifact chunks across {} workspace(s)",
+            hygiene.dropped,
+            hygiene.workspaces,
+        );
+    }
+
     // Write the action contract for `wylde_check` / the cross-language
     // registry. Best-effort — a warning is fine.
     if let Err(e) = ipc::write_action_contract(&cfg.service_name, &cfg.wylde_root) {

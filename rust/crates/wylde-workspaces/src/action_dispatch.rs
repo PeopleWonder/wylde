@@ -36,6 +36,10 @@ pub const LIST_MRU: &str = "workspaces.list_mru";
 pub const RAG_QUERY: &str = "workspaces.rag_query";
 pub const REINDEX: &str = "workspaces.reindex";
 
+// ── Index hygiene (P1) — exclusion purge + dry-run preview ───────────────
+pub const REINDEX_PURGE: &str = "workspaces.reindex_purge";
+pub const WALK_PREVIEW: &str = "workspaces.rag.walk_preview";
+
 // ── Chat-turn prompt context (Slice 0d — relocated from the harness) ─────
 pub const GATHER_PROMPT: &str = "workspaces.gather_prompt";
 
@@ -135,6 +139,9 @@ pub const ALL_ACTIONS: &[&str] = &[
     LIST_MRU,
     RAG_QUERY,
     REINDEX,
+    // Index hygiene (P1)
+    REINDEX_PURGE,
+    WALK_PREVIEW,
     // Slice 0d — chat-turn prompt context
     GATHER_PROMPT,
     // Slice B — code graph read API
@@ -283,6 +290,26 @@ pub fn install() {
         |p: Value| async move { api::handle_reindex(p).await },
         "Force a synchronous full reindex of a workspace's folder. Payload: \
          {workspace_id}. Reply: {ok, file_count, chunk_count, last_error}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        REINDEX_PURGE,
+        |p: Value| async move { api::handle_reindex_purge(p).await },
+        "One-time index-hygiene purge: drop already-indexed chunks whose path \
+         the exclusion matcher now excludes (build artifacts like target-dev/ \
+         rustdoc), filter-only (no re-embed). Payload: {workspace_id}. Reply: \
+         {ok, workspace_id, before, dropped, kept, files_dropped, \
+         excluded_remaining, graph_cleaned, graph_error?}. Idempotent. \
+         Re-cluster concepts after via concepts.build_semantic.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        WALK_PREVIEW,
+        |p: Value| async move { api::handle_walk_preview(p).await },
+        "Read-only dry-run of the walk-time exclusion over a workspace folder \
+         (de-risks a purge). Payload: {workspace_id, sample?=20}. Reply: \
+         {workspace_id, would_index, would_exclude, sample_excluded:[paths]}. \
+         No embed, no persist.",
         META_MODULE,
     );
 

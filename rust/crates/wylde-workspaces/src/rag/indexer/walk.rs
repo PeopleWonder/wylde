@@ -6,7 +6,9 @@
 //! basis so the indexer never blocks on a multi-MB blob or feeds a
 //! non-text file to the embedder.
 
-use std::path::{Component, Path};
+use std::path::Path;
+
+use super::exclude::ExclusionMatcher;
 
 /// Soft-cap text-file size at 1 MB. Bigger files are logged-and-skipped
 /// rather than crashing the embedder with a multi-MB chunk.
@@ -27,26 +29,12 @@ const SKIP_SUFFIXES: &[&str] = &[
     "zip", "tar", "gz", "7z", "rar", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
 ];
 
-/// Directory names we never descend into.
-const SKIP_DIR_NAMES: &[&str] = &[
-    "__pycache__",
-    ".git",
-    ".hg",
-    ".svn",
-    "node_modules",
-    "venv",
-    ".venv",
-    "env",
-    ".env",
-    "dist",
-    "build",
-    "target",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".tox",
-    ".idea",
-    ".vscode",
-];
+// Directory pruning (skip-dirs / hidden / `.gitignore` / `.wyldeignore`) now
+// lives in the one shared [`super::exclude::ExclusionMatcher`], consulted by
+// both the full walk below and the watcher's [`is_indexable_path`] pre-filter —
+// the single predicate that fixes the `target-dev` blind spot. Only the binary
+// `SKIP_SUFFIXES` content guard stays here (it's a file-content concern, not a
+// path-exclusion one).
 
 /// One indexable chunk before embedding: where it came from + the text.
 #[derive(Clone, Debug, PartialEq)]
@@ -74,11 +62,15 @@ pub fn walk_and_chunk(folder: &str) -> Vec<Chunk> {
     if !root.is_dir() {
         return out;
     }
-    walk_dir(root, &mut out);
+    // One matcher for the whole walk — its per-directory `.gitignore` /
+    // `.wyldeignore` matchers are built lazily + cached, so each ignore file is
+    // read at most once across the descent.
+    let matcher = ExclusionMatcher::for_root(root);
+    walk_dir(root, &matcher, &mut out);
     out
 }
 
-fn walk_dir(dir: &Path, out: &mut Vec<Chunk>) {
+fn walk_dir(dir: &Path, matcher: &ExclusionMatcher, out: &mut Vec<Chunk>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
@@ -88,22 +80,18 @@ fn walk_dir(dir: &Path, out: &mut Vec<Chunk>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        // Hidden files / dirs are skipped, mirroring the Python walk.
-        if name.starts_with('.') {
-            // ...but allow the skip-dir set's leading-dot members to be
-            // pruned by the same rule; both paths drop hidden entries.
-            continue;
-        }
         let file_type = match entry.file_type() {
             Ok(t) => t,
             Err(_) => continue,
         };
-        if file_type.is_dir() {
-            if SKIP_DIR_NAMES.contains(&name.as_str()) {
-                continue;
-            }
-            walk_dir(&path, out);
+        let is_dir = file_type.is_dir();
+        // The one shared predicate: dotfiles, skip-dirs, the `target-*` build
+        // trees, and anything a nested `.gitignore` / `.wyldeignore` excludes.
+        if matcher.is_excluded(&path, is_dir) {
+            continue;
+        }
+        if is_dir {
+            walk_dir(&path, matcher, out);
         } else if file_type.is_file() {
             out.extend(chunk_file(&path));
         }
@@ -194,36 +182,88 @@ pub fn canonical_path(path: &Path) -> String {
 }
 
 /// Path-only pre-filter the watcher applies before any IO: would the full
-/// walk have indexed a file at `path` under `root`? Rejects anything whose
-/// ancestry (relative to `root`) contains a hidden component (dotfile/dir) or
-/// a [`SKIP_DIR_NAMES`] member, or whose suffix is in [`SKIP_SUFFIXES`].
+/// walk have indexed a file at `path` under `root`? Delegates to the same
+/// [`ExclusionMatcher`] the walk consults (dotfiles, skip-dirs, the `target-*`
+/// build trees, nested `.gitignore` / `.wyldeignore`), plus the binary-suffix
+/// guard ([`SKIP_SUFFIXES`]) kept here as a file-content concern.
 ///
-/// This mirrors the walk's pruning exactly (the spec's "respect the ingest
-/// walker's filter") so a `target/`, `.git/`, `node_modules/`, hidden, or
-/// binary-suffixed path never triggers a delta. Content-level skips (binary
-/// sniff, oversize, empty) are left to [`chunk_one_file`], which the delta
-/// path calls next.
+/// Because it shares the matcher with the walk, the watcher and the walk agree
+/// byte-for-byte on what's indexable, so a `target-dev/`, `.git/`,
+/// `node_modules/`, hidden, or binary-suffixed path never triggers a delta.
+/// Content-level skips (binary sniff, oversize, empty) are left to
+/// [`chunk_one_file`], which the delta path calls next.
 pub fn is_indexable_path(root: &str, path: &str) -> bool {
-    let root = Path::new(root);
     let p = Path::new(path);
-    let rel = p.strip_prefix(root).unwrap_or(p);
-    for comp in rel.components() {
-        if let Component::Normal(os) = comp {
-            let name = os.to_string_lossy();
-            if name.starts_with('.') {
-                return false;
-            }
-            if SKIP_DIR_NAMES.contains(&name.as_ref()) {
-                return false;
-            }
-        }
-    }
+    // Binary-suffix reject stays here — it's a file-content guard the
+    // exclusion matcher (a path/dir concern) deliberately doesn't own.
     if let Some(suffix) = p.extension().and_then(|s| s.to_str()) {
         if SKIP_SUFFIXES.contains(&suffix.to_ascii_lowercase().as_str()) {
             return false;
         }
     }
-    true
+    // The same shared predicate the full walk uses — so the watcher and the
+    // walk agree byte-for-byte on what's indexable. Built fresh per call
+    // (cheap, lazy) so it always reflects the current `.gitignore` files.
+    !ExclusionMatcher::for_root(Path::new(root)).is_excluded(p, false)
+}
+
+/// Read-only dry-run of the exclusion over a folder, for
+/// `workspaces.rag.walk_preview`. Counts files the walk *would* index vs
+/// exclude and samples some excluded paths — so the matcher's effect (e.g. the
+/// `target-dev/doc` rustdoc tree dropping out) can be confirmed before a purge.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WalkPreview {
+    /// Files that would be indexed.
+    pub would_index: u32,
+    /// Files that would be excluded.
+    pub would_exclude: u32,
+    /// Up to `sample_cap` excluded file paths, for eyeballing.
+    pub sample_excluded: Vec<String>,
+}
+
+/// Walk `folder` read-only and classify each file via the [`ExclusionMatcher`].
+/// Descends into excluded dirs (e.g. `target-dev`) so their files are *counted*
+/// as excluded — except `.git`, pruned as pure noise. No embed, no persist.
+pub fn walk_preview(folder: &str, sample_cap: usize) -> WalkPreview {
+    let mut pv = WalkPreview::default();
+    let root = Path::new(folder);
+    if !root.is_dir() {
+        return pv;
+    }
+    let matcher = ExclusionMatcher::for_root(root);
+    preview_dir(root, &matcher, sample_cap, &mut pv);
+    pv
+}
+
+fn preview_dir(dir: &Path, matcher: &ExclusionMatcher, cap: usize, pv: &mut WalkPreview) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if file_type.is_dir() {
+            // Prune `.git` descent — thousands of git objects would swamp the
+            // counts with noise no walk would ever index anyway.
+            if path.file_name().and_then(|n| n.to_str()) == Some(".git") {
+                continue;
+            }
+            preview_dir(&path, matcher, cap, pv);
+        } else if file_type.is_file() {
+            if matcher.is_excluded(&path, false) {
+                pv.would_exclude += 1;
+                if pv.sample_excluded.len() < cap {
+                    pv.sample_excluded.push(path.to_string_lossy().into_owned());
+                }
+            } else {
+                pv.would_index += 1;
+            }
+        }
+    }
 }
 
 /// Source-file mtime as epoch seconds (`f64`). Falls back to `0.0` if the
