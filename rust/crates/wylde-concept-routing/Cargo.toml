@@ -25,3 +25,9 @@ tracing.workspace = true
 [dev-dependencies]
 tempfile = "3"
 serial_test = { workspace = true }
+# Live-eval driver ONLY (the `#[ignore]`d `tests/live_eval.rs`, R4): embeds gold
+# queries against the running Ollama and reads the persisted workspace index.
+# A DEV-dependency — it never compiles into the shipped library, so the
+# isolation contract (lib depends on wylde-shared only) is intact and the
+# removal test still holds.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }

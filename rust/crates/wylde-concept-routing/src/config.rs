@@ -144,10 +144,16 @@ pub struct RoutingConfig {
     #[serde(default = "default_max_concepts")]
     pub max_concepts: usize,
 
-    /// Absolute cosine floor for activation. **Provisional 0.50** — concept
-    /// centroids are *means*, so their cosines run flatter than the
-    /// chunk-level `MIN_ABSOLUTE_SCORE` (0.55); R1 logs real numbers so R4 can
-    /// calibrate this the way the chunk floor was (plan §6.1, §8 risk 1).
+    /// Absolute cosine floor for activation. **Calibrated to 0.62 in R4**
+    /// (`outputs/concept-routing-r4-eval-results.md`). Concept centroids are
+    /// *means*, so their cosines run flat (~0.60–0.65) and the R1 provisional
+    /// 0.50 cleared everything — at 0.50 every live query activated the full
+    /// `max_concepts` cap (the flat-cosine finding). The R4 sweep over the live
+    /// index put the recall@k / nDCG@k optimum at ~0.62–0.64; 0.62 is the
+    /// balance point where tuned **Augment beats baseline RAG** on recall+nDCG
+    /// at negligible token cost while routing still engages on ~⅔ of queries
+    /// (0.64 maxes nDCG but routes nothing on >½). Only bites when routing is
+    /// ON (plan §6.1, §8 risk 1).
     #[serde(default = "default_abs_threshold")]
     pub abs_threshold: f32,
 
@@ -183,7 +189,8 @@ fn default_max_concepts() -> usize {
     3
 }
 fn default_abs_threshold() -> f32 {
-    0.50
+    // R4-calibrated (was the R1 provisional 0.50). See the field doc.
+    0.62
 }
 fn default_relative_floor() -> f32 {
     0.6
@@ -318,7 +325,7 @@ mod tests {
         assert!(c.curate_before_inject, "never silent by default");
         assert_eq!(c.mode, InjectionMode::Augment);
         assert_eq!(c.max_concepts, 3);
-        assert!((c.abs_threshold - 0.50).abs() < 1e-6);
+        assert!((c.abs_threshold - 0.62).abs() < 1e-6, "R4-calibrated abs floor");
         assert!((c.relative_floor - 0.6).abs() < 1e-6);
         assert!(c.scope_to_active_region);
         assert_eq!(c.inject_token_budget, 1500);

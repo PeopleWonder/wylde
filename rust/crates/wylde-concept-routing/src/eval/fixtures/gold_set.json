@@ -1,0 +1,236 @@
+{
+  "_README": "DRAFT gold set for concept-routing R4 eval — authored by Dispatch (Aaron delegated this; VET + EXTEND before trusting the numbers). ~36 real Wylde developer questions paired with the source files that SHOULD ground the answer. Graded by file-path SUFFIX match (case-insensitive, forward-slash), so a path here matches a live chunk whose absolute path ends with it. `kind`: easy = one clear subsystem; conflation = a cosine would wrongly pull an adjacent same-named concept that a Negative 'IS NOT' edge should suppress (see `avoid_files`); dependency = a depended-on concept should be pulled in (see `dependency_files`). `concepts` is left empty: the LIVE concept store is 122 coarse auto-clusters with generic labels ('Src'/'Ipc'/'Deps'), so there is no clean concept label to assert against — that is itself an R4 finding. The controlled fixture corpus (harness tests) carries clean named concepts + authored relations for the mechanism proof.",
+  "version": "r4-draft-1",
+  "cases": [
+    {
+      "id": "harness-tool-dispatch",
+      "kind": "easy",
+      "query": "how does the harness dispatch tool calls from the model?",
+      "relevant_files": ["rust/crates/wylde-harness/src/turn/tool_round.rs"]
+    },
+    {
+      "id": "rag-rank",
+      "kind": "easy",
+      "query": "how are RAG search results ranked and cut off (dynamic-k)?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/rag/indexer/search.rs"]
+    },
+    {
+      "id": "rag-index-walk",
+      "kind": "easy",
+      "query": "how are files chunked and walked during workspace indexing?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/rag/indexer/walk.rs", "rust/crates/wylde-workspaces/src/rag/indexer/mod.rs"]
+    },
+    {
+      "id": "query-embedding",
+      "kind": "easy",
+      "query": "where is the query embedded with nomic-embed-text before vector search?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/embeddings.rs", "rust/crates/wylde-workspaces/src/rag/indexer/search.rs"]
+    },
+    {
+      "id": "context-gather",
+      "kind": "dependency",
+      "query": "how is per-turn chat context assembled from the workspace?",
+      "relevant_files": ["rust/crates/wylde-harness/src/turn/context_gather.rs"],
+      "dependency_files": ["rust/crates/wylde-workspaces/src/rag/indexer/search.rs", "rust/crates/wylde-workspaces/src/graph/symbol_index.rs"]
+    },
+    {
+      "id": "token-budget-evict",
+      "kind": "easy",
+      "query": "how does the prompt token budget decide what context to evict?",
+      "relevant_files": ["rust/crates/wylde-harness/src/turn/token_budget.rs"]
+    },
+    {
+      "id": "concept-routing-select",
+      "kind": "dependency",
+      "query": "how does concept routing decide which concepts a query activates?",
+      "relevant_files": ["rust/crates/wylde-concept-routing/src/router/mod.rs", "rust/crates/wylde-concept-routing/src/router/policy.rs"],
+      "dependency_files": ["rust/crates/wylde-concept-routing/src/router/spread.rs", "rust/crates/wylde-concept-routing/src/relations/mod.rs"]
+    },
+    {
+      "id": "spreading-activation",
+      "kind": "easy",
+      "query": "how does spreading activation propagate over the relation graph?",
+      "relevant_files": ["rust/crates/wylde-concept-routing/src/router/spread.rs"]
+    },
+    {
+      "id": "relation-model",
+      "kind": "easy",
+      "query": "how are typed positive negative and dependency relations modelled?",
+      "relevant_files": ["rust/crates/wylde-concept-routing/src/relations/mod.rs"]
+    },
+    {
+      "id": "vram-lease",
+      "kind": "conflation",
+      "query": "how is GPU VRAM leased to a model so it does not get evicted?",
+      "relevant_files": ["rust/crates/wylde-vram-broker/src/policy.rs", "rust/crates/wylde-vram-broker/src/registry.rs", "rust/crates/wylde-vram-broker/src/lib.rs"],
+      "avoid_files": ["rust/crates/wylde-voice/src/lease.rs", "rust/crates/wylde-ollama/src/lease.rs"],
+      "note": "Three different 'lease' subsystems exist; the VRAM one is the broker, not voice/ollama mic leases."
+    },
+    {
+      "id": "ollama-lease",
+      "kind": "conflation",
+      "query": "how does the ollama proxy lease a model load slot from the vram broker?",
+      "relevant_files": ["rust/crates/wylde-ollama/src/lease.rs"],
+      "avoid_files": ["rust/crates/wylde-voice/src/lease.rs"]
+    },
+    {
+      "id": "memgraph-bolt-harness",
+      "kind": "conflation",
+      "query": "how does the harness long-term memory talk to memgraph over Bolt?",
+      "relevant_files": ["rust/crates/wylde-harness/src/memory/memgraph/bolt.rs", "rust/crates/wylde-harness/src/memory/memgraph/transport.rs"],
+      "avoid_files": ["rust/crates/wylde-workspaces/src/graph/bolt.rs"],
+      "note": "Two Bolt clients exist; this is the harness memory one, not the workspaces graph one."
+    },
+    {
+      "id": "workspaces-graph-bolt",
+      "kind": "conflation",
+      "query": "how does the workspaces graph panel read the code graph over Bolt?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/graph/bolt.rs", "rust/crates/wylde-workspaces/src/graph/query.rs"],
+      "avoid_files": ["rust/crates/wylde-harness/src/memory/memgraph/bolt.rs"]
+    },
+    {
+      "id": "symbol-index",
+      "kind": "easy",
+      "query": "how does the in-memory fuzzy symbol index get built and queried?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/graph/symbol_index.rs"]
+    },
+    {
+      "id": "symbol-neighborhood",
+      "kind": "easy",
+      "query": "how is a symbol's k-hop caller and callee neighborhood gathered?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/graph/neighborhood.rs"]
+    },
+    {
+      "id": "encryption-at-rest",
+      "kind": "easy",
+      "query": "how are data_dir state files encrypted at rest with DPAPI?",
+      "relevant_files": ["rust/crates/wylde-shared/src/encryption.rs"]
+    },
+    {
+      "id": "anchors-model",
+      "kind": "easy",
+      "query": "how is a vocabulary anchor term defined with aliases and targets?",
+      "relevant_files": ["rust/crates/wylde-shared/src/anchor.rs"]
+    },
+    {
+      "id": "self-updater-verify",
+      "kind": "dependency",
+      "query": "how does the self-updater verify a downloaded release before installing?",
+      "relevant_files": ["rust/crates/wylde-updater/src/verify.rs", "rust/crates/wylde-updater/src/release.rs"],
+      "dependency_files": ["rust/crates/wylde-updater/src/pubkey.rs"]
+    },
+    {
+      "id": "voice-transcribe",
+      "kind": "easy",
+      "query": "how does the voice service transcribe microphone audio with whisper?",
+      "relevant_files": ["rust/crates/wylde-voice/src/orchestrator.rs", "rust/crates/wylde-voice/src/mic.rs"]
+    },
+    {
+      "id": "voice-vad",
+      "kind": "easy",
+      "query": "how does voice activity detection segment speech?",
+      "relevant_files": ["rust/crates/wylde-voice/src/vad.rs"]
+    },
+    {
+      "id": "ollama-upstream-health",
+      "kind": "easy",
+      "query": "how does the ollama proxy probe upstream health on port 11434?",
+      "relevant_files": ["rust/crates/wylde-ollama/src/upstream.rs", "rust/crates/wylde-ollama/src/service.rs"]
+    },
+    {
+      "id": "lifecycle-daemon",
+      "kind": "easy",
+      "query": "how does the lifecycle daemon start and supervise services?",
+      "relevant_files": ["rust/crates/wylde-lifecycle/src/daemon.rs", "rust/crates/wylde-lifecycle/src/control.rs"]
+    },
+    {
+      "id": "vram-estimate",
+      "kind": "conflation",
+      "query": "how is a model's VRAM footprint estimated before loading?",
+      "relevant_files": ["rust/crates/wylde-vram-broker/src/estimate.rs"],
+      "avoid_files": ["rust/crates/wylde-ollama/src/estimate.rs"]
+    },
+    {
+      "id": "watcher-delta",
+      "kind": "dependency",
+      "query": "how does the file watcher debounce changes and re-index just the delta?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/rag/indexer/delta.rs"],
+      "dependency_files": ["rust/crates/wylde-workspaces/src/rag/indexer/graph_writer.rs"]
+    },
+    {
+      "id": "graph-writer",
+      "kind": "easy",
+      "query": "how are CALLS IMPORTS INHERITS edges written to memgraph during indexing?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/rag/indexer/graph_writer.rs"]
+    },
+    {
+      "id": "user-profile",
+      "kind": "easy",
+      "query": "how is the user profile stored and how are profile proposals accepted?",
+      "relevant_files": ["rust/crates/wylde-harness/src/user_profile/store.rs", "rust/crates/wylde-harness/src/user_profile/profile.rs"]
+    },
+    {
+      "id": "concepts-store",
+      "kind": "easy",
+      "query": "where are workspace concepts persisted and loaded from?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/concepts/store.rs", "rust/crates/wylde-workspaces/src/concepts/concept.rs"]
+    },
+    {
+      "id": "concept-centroid-cluster",
+      "kind": "easy",
+      "query": "how are concept centroids computed by semantic clustering of chunk embeddings?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/concepts/semantic.rs"]
+    },
+    {
+      "id": "concept-lens",
+      "kind": "dependency",
+      "query": "how does the concept lens narrow members to the active file's region?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/concepts/lens.rs", "rust/crates/wylde-concept-routing/src/lens_select/mod.rs"],
+      "dependency_files": ["rust/crates/wylde-workspaces/src/concepts/retrieve.rs"]
+    },
+    {
+      "id": "concept-inject",
+      "kind": "dependency",
+      "query": "how does augment injection build the concept boundary blurb and member snippets?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/concepts/inject.rs"],
+      "dependency_files": ["rust/crates/wylde-workspaces/src/concepts/retrieve.rs", "rust/crates/wylde-concept-routing/src/curation/apply.rs"]
+    },
+    {
+      "id": "routing-config-toggle",
+      "kind": "easy",
+      "query": "where is the concept routing master toggle config stored and read?",
+      "relevant_files": ["rust/crates/wylde-concept-routing/src/config.rs"]
+    },
+    {
+      "id": "privacy-prefs",
+      "kind": "easy",
+      "query": "where are the privacy and network opt-in toggles stored?",
+      "relevant_files": ["Core/GUI/Frontend/Pipe/src/privacy_prefs.rs"]
+    },
+    {
+      "id": "settings-ollama-defaults",
+      "kind": "easy",
+      "query": "how are per-model ollama default overrides resolved into effective settings?",
+      "relevant_files": ["rust/crates/wylde-ollama/src/actions/models.rs"]
+    },
+    {
+      "id": "ipc-wire-format",
+      "kind": "easy",
+      "query": "what is the IPC wire format for pipe verb calls and errors?",
+      "relevant_files": ["rust/crates/wylde-shared/src/ipc/wire.rs", "rust/crates/wylde-shared/src/ipc/mod.rs"]
+    },
+    {
+      "id": "routing-bridge",
+      "kind": "dependency",
+      "query": "how does the workspaces routing bridge load concepts and call the pure router?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/concepts/routing_bridge.rs"],
+      "dependency_files": ["rust/crates/wylde-concept-routing/src/router/mod.rs", "rust/crates/wylde-workspaces/src/concepts/relations_bridge.rs"]
+    },
+    {
+      "id": "relations-verbs",
+      "kind": "easy",
+      "query": "how are concept relation edges added listed and removed through verbs?",
+      "relevant_files": ["rust/crates/wylde-workspaces/src/concepts/relations_bridge.rs"]
+    }
+  ]
+}
