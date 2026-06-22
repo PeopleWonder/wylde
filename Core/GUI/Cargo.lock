@@ -8981,6 +8981,16 @@ name = "wylde-anchor-actions"
 version = "0.1.0-alpha.1"
 
 [[package]]
+name = "wylde-concept-routing"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+ "wylde-shared",
+]
+
+[[package]]
 name = "wylde-gpui-code-editor"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -9063,6 +9073,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wylde-concept-routing",
  "wylde-plugin-api",
  "wylde-prebuild-guard",
  "wylde-shared",
