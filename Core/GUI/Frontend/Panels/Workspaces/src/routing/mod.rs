@@ -41,8 +41,11 @@ pub mod curate_menu;
 pub mod curate_reducer;
 pub mod ipc;
 pub mod reducer;
+pub mod tree;
+pub mod tree_view;
 
 pub use curate_menu::{CurateMenuView, TurnDecision};
+pub use tree_view::{DependencyTreeView, TreeEvent};
 
 use gpui::{
     div, prelude::*, px, rgb, Context, Entity, IntoElement, MouseButton, MouseDownEvent, Render,
@@ -98,6 +101,13 @@ pub struct RelationsView {
     _picker_search_sub: gpui::Subscription,
     /// Optional note applied to the next authored edge.
     note_input: Entity<TextInput>,
+    /// The R3b dependency-tree view, mounted beside the editor (toggled by
+    /// `show_tree`). Built once; reloaded when shown so it reflects edits.
+    tree: Entity<crate::routing::DependencyTreeView>,
+    _tree_sub: gpui::Subscription,
+    /// Whether the typed dependency-tree visualization is showing (vs. the
+    /// authoring editor). Read-only display.
+    show_tree: bool,
 }
 
 impl RelationsView {
@@ -136,6 +146,17 @@ impl RelationsView {
                 .with_element_key("relations-note")
                 .with_placeholder("optional note (e.g. \"keeps the home IP current\")")
         });
+        // The dependency-tree view + a subscription so a node click in the tree
+        // deep-links the editor (reusing `set_focus`) and flips back to it.
+        let tree = cx.new(crate::routing::DependencyTreeView::new);
+        let tree_sub = cx.subscribe(
+            &tree,
+            |this: &mut Self, _emitter, event: &crate::routing::TreeEvent, cx| {
+                let crate::routing::TreeEvent::Selected(node) = event;
+                this.show_tree = false;
+                this.set_focus(node.clone(), cx);
+            },
+        );
         let view = Self {
             workspace_id: None,
             universe: Vec::new(),
@@ -151,6 +172,9 @@ impl RelationsView {
             picker_search,
             _picker_search_sub: picker_search_sub,
             note_input,
+            tree,
+            _tree_sub: tree_sub,
+            show_tree: false,
         };
         Self::spawn_load(cx);
         view
@@ -300,7 +324,27 @@ impl RelationsView {
         .detach();
     }
 
+    /// Show or hide the dependency-tree visualization (R3b). Reloads the tree
+    /// when shown so it reflects the latest authored relations. Public so a
+    /// windowed test can drive it.
+    pub fn set_show_tree(&mut self, show: bool, cx: &mut Context<Self>) {
+        self.show_tree = show;
+        if show {
+            self.tree.update(cx, |t, cx| t.reload(cx));
+        }
+        cx.notify();
+    }
+
     // ── test/observability accessors ─────────────────────────────────────
+
+    /// The dependency-tree child view (test accessor).
+    pub fn tree_view(&self) -> &Entity<crate::routing::DependencyTreeView> {
+        &self.tree
+    }
+    /// Whether the dependency-tree visualization is showing.
+    pub fn show_tree(&self) -> bool {
+        self.show_tree
+    }
 
     /// Whether the initial load is still in flight.
     pub fn is_loading(&self) -> bool {
@@ -550,13 +594,23 @@ impl Render for RelationsView {
                     self.overview_rels.len()
                 )))
                 .child(div().flex_1())
+                // R3b: toggle the read-only dependency-tree visualization.
+                .child(Self::button(
+                    ("relations-tree-toggle", 0),
+                    if self.show_tree { "Editor" } else { "Tree" },
+                    self.show_tree,
+                    cx,
+                    |this, cx| this.set_show_tree(!this.show_tree, cx),
+                ))
                 .child(Self::button(
                     ("relations-refresh", 0),
                     "Refresh",
                     false,
                     cx,
                     |this, cx| {
-                        if this.focus.is_some() {
+                        if this.show_tree {
+                            this.tree.update(cx, |t, cx| t.reload(cx));
+                        } else if this.focus.is_some() {
                             this.reload_focus(cx);
                         } else {
                             this.reload_overview(cx);
@@ -570,6 +624,19 @@ impl Render for RelationsView {
              nothing is injected yet (R2)."
                 .to_owned(),
         ));
+
+        // R3b: the dependency-tree visualization (read-only) replaces the
+        // authoring body when toggled on; the header (with the Editor toggle)
+        // stays so the user can flip back. A click in the tree deep-links the
+        // editor and returns here.
+        if self.show_tree {
+            root = root.child(Self::hint(
+                "Read-only dependency tree. → depends-on (arrowed) · ⊘ dashed red = IS NOT \
+                 (severed) · thin = relates-to. Click a node to focus its relations in the editor."
+                    .to_owned(),
+            ));
+            return root.child(self.tree.clone());
+        }
 
         if self.loading {
             return root.child(Self::hint("Loading relations…".to_owned()));

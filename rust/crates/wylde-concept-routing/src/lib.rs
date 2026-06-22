@@ -24,8 +24,10 @@
 //!   ([`CuratedMenu`]) + the apply step ([`apply_curation`] →
 //!   [`InjectionPlan`], token-budget eviction). The server-side bridge turns the
 //!   plan into the boundary blurb + member snippets (Augment injection).
-//! * **R3+** — [`lens_select`], [`eval`]: stubs today; filled in by later slices
-//!   (scoped lens, the eval arms).
+//! * **R3a (this slice)** — [`lens_select`]: the scoped-lens region derivation
+//!   ([`region_for_active_file`]) that narrows a curated concept's injection to
+//!   the active file's subsystem (`concepts/lens.rs` does the intersection).
+//! * **R4** — [`eval`]: stub today; filled in by the final slice (the eval arms).
 //!
 //! ## Isolation contract (the removal test, plan §2)
 //!
@@ -44,6 +46,7 @@ pub mod relations;
 pub mod router;
 
 pub use config::{InjectionMode, RelationParams, RoutingConfig};
+pub use lens_select::region_for_active_file;
 pub use curation::{
     apply_curation, CuratedMenu, InjectionPlan, MenuAnnotation, MenuItem, MenuItemKind,
 };
