@@ -951,4 +951,35 @@ mod tests {
 
         reset_for_tests();
     }
+
+    #[tokio::test]
+    async fn install_serves_relations_verbs_not_no_action() {
+        // R1.5a: the four relations verbs are REGISTERED and SERVED through the
+        // real production dispatcher (the path the pipe server routes
+        // /__action__ frames through) — the same wire-level guarantee the graph
+        // verb gets. Each is validated by its handler (bad_request on a blank
+        // payload), proving it's wired in without needing a live workspace.
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+
+        for verb in [
+            CONCEPTS_RELATIONS_GRAPH,
+            CONCEPTS_RELATIONS_LIST,
+            CONCEPTS_RELATIONS_ADD,
+            CONCEPTS_RELATIONS_REMOVE,
+        ] {
+            assert!(
+                list_actions().contains(&verb.to_string()),
+                "a fresh binary must register {verb}"
+            );
+            let reply = dispatch_action(json!({"action": verb, "payload": {}})).await;
+            assert!(!reply.ok, "{verb}: blank payload must be rejected");
+            let code = reply.error.unwrap().code;
+            assert_eq!(code, "bad_request", "{verb} served by handler, got {code:?}");
+            assert_ne!(code, "no_action", "{verb} must NOT be the unknown-action fallthrough");
+        }
+
+        reset_for_tests();
+    }
 }
