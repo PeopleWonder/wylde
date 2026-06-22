@@ -101,10 +101,18 @@ pub async fn gather(workspace_id: &str, user_message: &str, route: bool) -> Work
             Some(query_vec) => {
                 let rag = rag::scope::retrieve_with_vec(&scope, &query_vec, user_message);
                 // R1: compute the candidate set and LOG it (calibration data).
+                // R1.5b: when the relation graph reshaped the activation, also
+                // log the before→after proof line. Still LOG-ONLY — injects
+                // nothing (that is R2).
                 let candidates =
                     crate::concepts::routing_bridge::route_with_vec(&def.id, &query_vec, user_message);
                 match &candidates {
-                    Some(set) => tracing::info!(target: "concept_routing", "{}", set.log_line()),
+                    Some(set) => {
+                        tracing::info!(target: "concept_routing", "{}", set.log_line());
+                        if set.reshaped_by_relations() {
+                            tracing::info!(target: "concept_routing", "{}", set.relation_log_line());
+                        }
+                    }
                     None => tracing::debug!(
                         target: "concept_routing",
                         "concept-routing: skipped for {} — no centroid-bearing concepts yet",

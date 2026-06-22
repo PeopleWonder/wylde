@@ -1744,6 +1744,8 @@ mod tests {
                 id: "a".into(),
                 label: "Auth".into(),
                 score: 0.71,
+                seed_score: 0.71,
+                provenance: wylde_concept_routing::Provenance::Seed,
                 activated: true,
             }],
             vocabulary: vec![],

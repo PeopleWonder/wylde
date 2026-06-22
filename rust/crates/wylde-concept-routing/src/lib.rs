@@ -36,7 +36,10 @@ pub mod config;
 pub mod curation;
 pub mod eval;
 pub mod lens_select;
+pub mod relations;
 pub mod router;
 
-pub use config::{InjectionMode, RoutingConfig};
+pub use config::{InjectionMode, RelationParams, RoutingConfig};
+pub use relations::{NodeRef, Relation, RelationGraph, RelationKind};
+pub use router::spread::{spread, Provenance, SpreadResult};
 pub use router::{route, CandidateSet, ConceptCentroid, RoutedConcept, VocabMatch};

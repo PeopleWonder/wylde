@@ -69,6 +69,11 @@ pub const CONCEPTS_LENS: &str = "workspaces.concepts.lens";
 pub const CONCEPTS_RETRIEVE: &str = "workspaces.concepts.retrieve";
 // Phase 4 — freshness / drift
 pub const CONCEPTS_FRESHNESS: &str = "workspaces.concepts.freshness";
+// Concept-routing R1.5a — typed relation store (deletable relations_bridge)
+pub const CONCEPTS_RELATIONS_LIST: &str = "workspaces.concepts.relations.list";
+pub const CONCEPTS_RELATIONS_GRAPH: &str = "workspaces.concepts.relations.graph";
+pub const CONCEPTS_RELATIONS_ADD: &str = "workspaces.concepts.relations.add";
+pub const CONCEPTS_RELATIONS_REMOVE: &str = "workspaces.concepts.relations.remove";
 
 // ── File I/O — jailed editor/file-tree surface (S1 / IDE plan P0.2) ──────
 pub const FS_READ: &str = "workspaces.fs.read";
@@ -156,6 +161,11 @@ pub const ALL_ACTIONS: &[&str] = &[
     CONCEPTS_LENS,
     CONCEPTS_RETRIEVE,
     CONCEPTS_FRESHNESS,
+    // Concept-routing R1.5a — typed relation store
+    CONCEPTS_RELATIONS_LIST,
+    CONCEPTS_RELATIONS_GRAPH,
+    CONCEPTS_RELATIONS_ADD,
+    CONCEPTS_RELATIONS_REMOVE,
     // S1 (IDE plan P0.2) — jailed file I/O
     FS_READ,
     FS_WRITE,
@@ -473,6 +483,44 @@ pub fn install() {
          Reply: {concept_id, scope, snippets:[{path,start_line,end_line,content,\
          score}], count}. The retrieval MECHANISM; query→concept ROUTING is the \
          deferred §3.4 phase.",
+        META_MODULE,
+    );
+
+    // ── Concept-routing R1.5a — typed relation store ─────────────────────
+    register_action_with_meta(
+        CONCEPTS_RELATIONS_GRAPH,
+        |p: Value| async move { crate::concepts::relations_bridge::handle_graph(p).await },
+        "The whole typed relation graph for a workspace (tree view + routing \
+         engine warm-load). Payload: {workspace_id}. Reply: {workspace_id, \
+         count, relations:[{from, to, kind, note?, created_at}]}. Read-only; \
+         fail-soft to empty.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_RELATIONS_LIST,
+        |p: Value| async move { crate::concepts::relations_bridge::handle_list(p).await },
+        "Typed edges touching one node (both directions), grouped by kind. \
+         Payload: {workspace_id, node: {node:concept,id}|{node:vocab,identifier}}. \
+         Reply: {node, count, relations, by_kind:{positive, negative, \
+         dependency_out, dependency_in}}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_RELATIONS_ADD,
+        |p: Value| async move { crate::concepts::relations_bridge::handle_add(p).await },
+        "Author one typed relation edge. Payload: {workspace_id, from, to, \
+         kind: positive|negative|dependency, note?}. positive/negative are \
+         symmetric (orientation canonicalised); dependency is directional. \
+         Reply: {relation}. bad_request on a self-edge / unknown node; \
+         already_exists (details: the existing edge) on a duplicate (from,to,kind).",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        CONCEPTS_RELATIONS_REMOVE,
+        |p: Value| async move { crate::concepts::relations_bridge::handle_remove(p).await },
+        "Delete one relation edge by (from,to,kind); symmetric kinds match \
+         either orientation. Payload: {workspace_id, from, to, kind}. Reply: \
+         {removed: bool}.",
         META_MODULE,
     );
 

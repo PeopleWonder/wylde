@@ -52,13 +52,16 @@ pub fn route_with_vec(
 
     // Concepts with a real centroid — the routing units. Directory stand-ins
     // (no centroid) are excluded, matching the semantic half of concept search.
+    // `described_by` rides along for the R1.5b vocab seed-lift.
     let concepts: Vec<ConceptCentroid> = store::load(workspace_id)
         .into_iter()
         .filter_map(|c| {
+            let described_by = c.described_by.clone();
             c.centroid.filter(|v| !v.is_empty()).map(|centroid| ConceptCentroid {
                 id: c.id,
                 label: c.label,
                 centroid,
+                described_by,
             })
         })
         .collect();
@@ -69,11 +72,17 @@ pub fn route_with_vec(
     let clean = strip_markers(query_text);
     let vocab = matched_vocabulary(workspace_id, &clean);
 
+    // R1.5a/b — load the typed relation graph and let the spread engine reshape
+    // the flat seed. An empty graph (the default) is the engine's identity, so
+    // this stays byte-equivalent to R1 until the user authors relations.
+    let graph = super::relations_bridge::load(workspace_id);
+
     Some(route(
         clean,
         query_vec,
         &concepts,
         vocab,
+        &graph,
         &RoutingConfig::current(),
     ))
 }
@@ -119,6 +128,94 @@ mod tests {
         let mut c = Concept::new(id, label, "desc", ConceptSource::Manual);
         c.centroid = Some(centroid);
         c
+    }
+
+    /// A unit centroid whose cosine against the query `[1,0,0]` is exactly `c0`.
+    fn centroid_for_cosine(c0: f32) -> Vec<f32> {
+        vec![c0, (1.0 - c0 * c0).max(0.0).sqrt(), 0.0]
+    }
+
+    /// **R1.5b end-to-end proof** (the addendum's canonical claim, exercised
+    /// through the REAL verb handler + REAL routing path — deterministic, no
+    /// live service). Nextcloud sits flat next to Wylde (the conflation the raw
+    /// cosine can't separate) and depends-on DDNS (whose own cosine is flat).
+    /// Author "Nextcloud IS-NOT Wylde" + "Nextcloud depends-on DDNS" via the
+    /// `relations.add` verb, route, and prove: the exclusion SUPPRESSES Wylde
+    /// and the dependency PULLS IN DDNS — flipping their rank versus the
+    /// seed-only baseline.
+    #[tokio::test]
+    async fn relations_suppress_exclusions_and_pull_dependencies() {
+        let _env = TestEnv::new();
+        let ws = "rel-proof-00000";
+
+        // Seed the live-shaped concept set with realistic flat cosines:
+        // Nextcloud 0.64, Wylde 0.62 (near-tie — the conflation), DDNS 0.30.
+        super::super::store::save(
+            ws,
+            &[
+                concept_with_centroid("nextcloud", "Nextcloud", centroid_for_cosine(0.64)),
+                concept_with_centroid("wylde", "Wylde", centroid_for_cosine(0.62)),
+                concept_with_centroid("ddns", "DDNS", centroid_for_cosine(0.30)),
+            ],
+        )
+        .unwrap();
+
+        // Author the two edges through the real verb handler.
+        let add = |from: &'static str, to: &'static str, kind: &'static str| {
+            super::super::relations_bridge::handle_add(serde_json::json!({
+                "workspace_id": ws,
+                "from": {"node":"concept","id":from},
+                "to": {"node":"concept","id":to},
+                "kind": kind,
+            }))
+        };
+        assert!(add("nextcloud", "wylde", "negative").await.ok);
+        assert!(add("nextcloud", "ddns", "dependency").await.ok);
+
+        // Route the query (co-linear with Nextcloud) through the real path.
+        let q = vec![1.0, 0.0, 0.0];
+        let set = route_with_vec(ws, &q, "how do I set up nextcloud").expect("routes");
+
+        let by = |id: &str| set.concepts.iter().find(|c| c.id == id).unwrap().clone();
+        let wylde = by("wylde");
+        let ddns = by("ddns");
+
+        // BEFORE (seed cosine): the flat distribution R1 logged.
+        assert!(
+            wylde.seed_score > ddns.seed_score,
+            "seed: Wylde ≫ DDNS (flat cosine can't tell)"
+        );
+
+        // AFTER (settled): exclusion pushed Wylde DOWN, dependency pulled DDNS UP…
+        assert!(
+            wylde.score < wylde.seed_score,
+            "exclusion suppressed Wylde below its cosine"
+        );
+        assert!(
+            ddns.score > ddns.seed_score,
+            "dependency pulled DDNS above its cosine"
+        );
+        // …and the RANK FLIPPED — DDNS now outranks the excluded Wylde.
+        assert!(ddns.score > wylde.score, "the gap the raw cosine couldn't make");
+
+        // Provenance proves WHY (the explainable payload).
+        assert!(matches!(
+            wylde.provenance,
+            wylde_concept_routing::Provenance::Inhibited { .. }
+        ));
+        assert!(matches!(
+            ddns.provenance,
+            wylde_concept_routing::Provenance::Dependency { .. }
+        ));
+        assert!(
+            set.reshaped_by_relations(),
+            "the relation graph reshaped the activation"
+        );
+
+        // And it's all visible in the before→after proof log.
+        let line = set.relation_log_line();
+        assert!(line.contains("⊘Wylde"), "log marks Wylde inhibited: {line}");
+        assert!(line.contains("↳DDNS"), "log marks DDNS dependency-pulled: {line}");
     }
 
     #[test]
