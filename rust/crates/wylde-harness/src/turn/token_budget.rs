@@ -21,6 +21,12 @@
 // HOW THIS MAPS ONTO THE Phase-2 `ChatContext`:
 //   * tier 1  → `workspace_rag`                   (B6 split — lowest-ranked
 //                                                   snippet sheds first)
+//   * tier ~1.5 → `concept_context`                (concept-routing R2 Augment —
+//                                                   boundary blurb + member
+//                                                   snippets; above generic RAG,
+//                                                   below all else; blurb-first
+//                                                   layout means snippets shed
+//                                                   before the boundary)
 //   * tier 2  → `conversation_summary`            (the conversation doc's
 //                                                   auto_summary — B2)
 //   * tier 2.5 → `long_term`                       (injected long-term memory
@@ -278,6 +284,16 @@ fn drop_one_lowest_priority(ctx: &mut ChatContext) -> bool {
         return true;
     }
 
+    // tier ~1.5 — concept-routing R2 Augment context (plan §3, §6.3): sits
+    // *above* generic RAG (coherent concept context outlives scattered chunks,
+    // thesis §3.3) but below every other evictable tier. The slot is laid out
+    // blurb-first then member snippets, so popping the tail sheds the lowest
+    // snippet first and the (cheap, high-signal) boundary blurb survives
+    // longest — it's the last concept_context element to go.
+    if ctx.concept_context.pop().is_some() {
+        return true;
+    }
+
     // tier 2 — conversation summary.
     if ctx.conversation_summary.take().is_some() {
         return true;
@@ -486,6 +502,45 @@ mod tests {
         // tier 7: nothing left to drop.
         assert!(!drop_one_lowest_priority(&mut ctx));
         assert_eq!(ctx.user_profile, "P");
+    }
+
+    #[test]
+    fn concept_context_evicts_after_rag_but_before_summary() {
+        // The R2 concept slot sits at tier ~1.5: generic RAG sheds first, then
+        // concept context (snippets before the boundary blurb), then the summary.
+        let mut ctx = ChatContext {
+            user_profile: "P".into(),
+            workspace_rag: vec!["fn a() {}".into()],
+            concept_context: vec!["BLURB: boundary".into(), "snippet body".into()],
+            conversation_summary: Some("a summary".into()),
+            ..ChatContext::default()
+        };
+
+        // tier 1: the RAG snippet goes first.
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.workspace_rag.is_empty());
+        assert_eq!(
+            ctx.concept_context.len(),
+            2,
+            "concept context untouched yet"
+        );
+
+        // tier ~1.5: concept context sheds the tail (the member snippet) first.
+        drop_one_lowest_priority(&mut ctx);
+        assert_eq!(ctx.concept_context, vec!["BLURB: boundary".to_owned()]);
+        assert!(
+            ctx.conversation_summary.is_some(),
+            "summary outlasts concepts"
+        );
+
+        // …then the boundary blurb (last concept_context element).
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.concept_context.is_empty());
+        assert!(ctx.conversation_summary.is_some());
+
+        // tier 2: only now the summary.
+        drop_one_lowest_priority(&mut ctx);
+        assert!(ctx.conversation_summary.is_none());
     }
 
     #[test]

@@ -30,6 +30,7 @@ async fn main() -> Result<()> {
             "wylde_harness": {
                 "actions": [
                     "chat.run_turn",
+                    "chat.preview_context",
                     "chat.start_turn",
                     "chat.cancel",
                     "chat.stream_turn",
@@ -46,6 +47,7 @@ async fn main() -> Result<()> {
                 "slice": "7.B",
                 "implemented_actions": [
                     "chat.run_turn",
+                    "chat.preview_context",
                     "chat.start_turn",
                     "chat.cancel",
                     "chat.stream_turn",

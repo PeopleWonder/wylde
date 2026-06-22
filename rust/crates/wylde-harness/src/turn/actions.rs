@@ -53,10 +53,78 @@ use crate::turn::salvage::{self, RecoveredCall, SalvageResult};
 use crate::turn::tool_round::{self, ToolCall, ToolRoundState};
 use crate::turn::workspace_context;
 
+/// `chat.preview_context` — **Phase 1** of the concept-routing R2
+/// curate-before-inject turn (concept-routing plan §4). Routes the turn's query
+/// into concept space and returns the candidate set the GUI menu is built from,
+/// **without** injecting or driving the LLM. The GUI then shows the menu (or
+/// auto-applies the remembered selection) and sends the user-curated concept ids
+/// on `chat.run_turn` (`curated_concepts`).
+///
+/// Reply: `{ conversation_id, routing_enabled, curate, candidates, inject_token_budget }`.
+/// * `routing_enabled = false` ⇒ the master toggle is OFF: no menu, and
+///   `chat.run_turn` proceeds exactly as today (`candidates` is `null`).
+/// * `curate` mirrors `curate_before_inject` — when `false` the GUI auto-applies
+///   the default-checked set without a blocking menu (but still never silent:
+///   the first turn shows it; this is the per-conversation friction valve).
+/// * `candidates` is `null` when nothing routed (raw-RAG fallback) or the
+///   workspace is unreachable.
+///
+/// Purely additive + behaviour-safe: this verb only *reads*; it injects nothing.
+pub async fn handle_preview_context(payload: Value) -> Reply {
+    let user_message = match string_field(&payload, "user_message") {
+        Ok(s) => s,
+        Err(e) => return Reply::err(e),
+    };
+    let conversation_id = optional_string(&payload, "conversation_id").unwrap_or_default();
+    let workspace_id = optional_string(&payload, "workspace_id");
+    let overrides = context_gather::TokenOverrides::from_payload(&payload);
+
+    let cfg = wylde_concept_routing::RoutingConfig::current();
+    if !cfg.enabled {
+        // Toggle OFF — no preview, no routing. The GUI shows no menu and the
+        // turn runs as today.
+        return Reply::ok(json!({
+            "conversation_id": conversation_id,
+            "routing_enabled": false,
+            "curate": false,
+            "candidates": Value::Null,
+            "inject_token_budget": cfg.inject_token_budget,
+        }));
+    }
+
+    let candidates = context_gather::preview(
+        workspace_id.as_deref(),
+        &user_message,
+        &conversation_id,
+        &overrides,
+    )
+    .await;
+
+    let candidates_json = candidates
+        .as_ref()
+        .and_then(|c| serde_json::to_value(c).ok())
+        .unwrap_or(Value::Null);
+
+    Reply::ok(json!({
+        "conversation_id": conversation_id,
+        "routing_enabled": true,
+        "curate": cfg.curate_before_inject,
+        "candidates": candidates_json,
+        "inject_token_budget": cfg.inject_token_budget,
+    }))
+}
+
 /// `chat.run_turn` — synchronous chat turn with the 5.C tool-round
 /// loop. Drives the LLM → salvage → dispatch cycle up to
 /// [`tool_round::MAX_TOOL_LOOPS`] rounds, then returns the final
 /// message + a [`tool_round::ToolSummary`] list.
+///
+/// **Concept-routing R2 (Phase 2):** the `curated_concepts` array — the user's
+/// curate-before-inject choices from `chat.preview_context` — rides on the
+/// payload and is parsed into [`context_gather::TokenOverrides`]; when the master
+/// toggle is ON, the gather Augment-injects exactly those concepts (boundary
+/// blurb + member snippets) alongside RAG. Absent ⇒ no injection; toggle OFF ⇒
+/// the list is ignored entirely (byte-identical to today).
 pub async fn handle_run_turn(payload: Value) -> Reply {
     let cfg = Config::get();
 

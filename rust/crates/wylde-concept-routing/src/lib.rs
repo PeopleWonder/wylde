@@ -20,8 +20,12 @@
 //!   against centroids, select with the `dynamic_k`-shaped cutoff, match
 //!   vocabulary, and produce a [`CandidateSet`]. **No injection** — the
 //!   `CandidateSet` is logged as threshold-calibration data and discarded.
-//! * **R2+** — [`curation`], [`lens_select`], [`eval`]: stubs today; filled in
-//!   by later slices (curate-before-inject menu, scoped lens, the eval arms).
+//! * **R2 (this slice)** — [`curation`]: the curate-before-inject menu
+//!   ([`CuratedMenu`]) + the apply step ([`apply_curation`] →
+//!   [`InjectionPlan`], token-budget eviction). The server-side bridge turns the
+//!   plan into the boundary blurb + member snippets (Augment injection).
+//! * **R3+** — [`lens_select`], [`eval`]: stubs today; filled in by later slices
+//!   (scoped lens, the eval arms).
 //!
 //! ## Isolation contract (the removal test, plan §2)
 //!
@@ -40,6 +44,9 @@ pub mod relations;
 pub mod router;
 
 pub use config::{InjectionMode, RelationParams, RoutingConfig};
+pub use curation::{
+    apply_curation, CuratedMenu, InjectionPlan, MenuAnnotation, MenuItem, MenuItemKind,
+};
 pub use relations::{NodeRef, Relation, RelationGraph, RelationKind};
 pub use router::spread::{spread, Provenance, SpreadResult};
 pub use router::{route, CandidateSet, ConceptCentroid, RoutedConcept, VocabMatch};

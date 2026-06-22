@@ -22,8 +22,11 @@
 //!    option B: the importance+supersession tier reflection consolidates
 //!    into; evictable).
 //! 6. **Vocabulary** — anchors the prompt referenced (never-dropped).
-//! 7. **Workspace context** — persona + notes + RAG (`gather_prompt`).
-//! 8. **Code graph context** — structural retrieval for referenced symbols.
+//! 7. **Concepts** — concept-routing R2 Augment injection: boundary blurb +
+//!    member snippets for the user-curated concepts (empty unless routing is on
+//!    and the user curated a set; additive — rides alongside workspace context).
+//! 8. **Workspace context** — persona + notes + RAG (`gather_prompt`).
+//! 9. **Code graph context** — structural retrieval for referenced symbols.
 //!
 //! An empty [`ChatContext`] renders to `""`, so a plain chat turn with nothing
 //! to add is byte-identical to one with no gather at all.
@@ -75,6 +78,21 @@ pub(crate) fn render(ctx: &ChatContext) -> String {
             .collect::<Vec<_>>()
             .join("\n");
         sections.push(section("Vocabulary", &body));
+    }
+
+    // Concept-routing R2 Augment injection (concept-routing plan §3, §6.3): the
+    // boundary blurb (element [0]) leads, then the member snippets. Rendered
+    // just before the raw workspace context so the model reads "here are the
+    // coherent concepts and their boundaries" before the scattered RAG chunks.
+    // Empty unless routing is ON and the user curated a non-empty set.
+    let concepts: Vec<&str> = ctx
+        .concept_context
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !concepts.is_empty() {
+        sections.push(section("Concepts", &concepts.join("\n\n")));
     }
 
     // The workspace parts render under ONE "### Workspace context" header
@@ -242,6 +260,38 @@ mod tests {
         assert!(out.contains("## Persona\nBe precise."));
         assert!(out.contains("## Workspace memory\n- uses cargo nextest"));
         assert!(out.contains("## Workspace files\n\nfn main() {}"));
+    }
+
+    #[test]
+    fn concepts_slot_renders_blurb_and_snippets_before_workspace_context() {
+        let ctx = ChatContext {
+            concept_context: vec![
+                "Nextcloud — self-hosted sync (depends on DDNS; not related to Wylde)".into(),
+                "`nc.rs` (lines 1-9)\nfn sync() {}".into(),
+            ],
+            workspace_rag: vec!["fn other() {}".into()],
+            ..ChatContext::default()
+        };
+        let out = render(&ctx);
+        assert!(out.contains("### Concepts"));
+        assert!(out.contains("depends on DDNS; not related to Wylde"));
+        assert!(out.contains("`nc.rs` (lines 1-9)"));
+        // Augment: the raw RAG slot still renders alongside (never replaced).
+        assert!(out.contains("### Workspace context"));
+        assert!(out.contains("fn other() {}"));
+        // Concepts slot leads the workspace context.
+        assert!(out.find("### Concepts").unwrap() < out.find("### Workspace context").unwrap());
+    }
+
+    #[test]
+    fn empty_concept_context_renders_nothing() {
+        // The R2 slot is empty by default (routing off / no curation) ⇒ a plain
+        // turn is byte-identical to pre-R2.
+        let ctx = ChatContext {
+            user_profile: "Name: Aaron".into(),
+            ..ChatContext::default()
+        };
+        assert!(!render(&ctx).contains("### Concepts"));
     }
 
     #[test]

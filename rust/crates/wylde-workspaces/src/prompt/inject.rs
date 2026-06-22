@@ -33,8 +33,17 @@ pub struct WorkspaceContext {
     /// when the caller asked to route (`route == true`) and the workspace has
     /// centroid-bearing concepts. **R1: logged, never injected** — it does NOT
     /// feed any prompt slot, so it leaves [`is_empty`](Self::is_empty) and the
-    /// rendered output untouched (injection is R2).
+    /// rendered output untouched.
     pub route_candidates: Option<wylde_concept_routing::CandidateSet>,
+
+    /// Concept-routing **R2 Augment injection** (concept-routing plan §6.3) —
+    /// the boundary blurb + member snippets for the user-curated concepts. The
+    /// harness carries this into a dedicated `### Concepts` system-prompt slot
+    /// *alongside* the RAG snippets (Augment, never replace). Empty unless the
+    /// caller passed a non-empty curated set; rendered by the harness, NOT by
+    /// [`render_slots`] (which owns only the persona/notes/RAG block), so the
+    /// `slots` string stays byte-identical to pre-R2 when this is empty.
+    pub concept_context: Vec<String>,
 }
 
 impl WorkspaceContext {
@@ -55,13 +64,27 @@ impl WorkspaceContext {
 /// unknown (or empty) `workspace_id` so a plain chat turn is unaffected.
 ///
 /// `route` is the concept-routing master toggle, forwarded from the harness
-/// (concept-routing plan R0/R1). When `false` the function is **byte-identical
-/// to before** — it never touches the routing crate. When `true`, on the
-/// RAG-enabled path, it embeds the query **once** and shares that vector
-/// between RAG and the router, so routing costs **no extra embed and no extra
-/// round-trip** (plan §6.1). R1 only *logs* the resulting candidate set; it
-/// feeds no slot.
-pub async fn gather(workspace_id: &str, user_message: &str, route: bool) -> WorkspaceContext {
+/// (concept-routing plan R0/R1). When `false` *and* `curated_concepts` is `None`
+/// the function is **byte-identical to before** — it never touches the routing
+/// crate. When `route` is `true`, on the RAG-enabled path, it embeds the query
+/// **once** and shares that vector between RAG and the router, so routing costs
+/// **no extra embed and no extra round-trip** (plan §6.1). R1 only *logs* the
+/// resulting candidate set.
+///
+/// `curated_concepts` is the concept-routing **R2** curated set (plan §4): when
+/// `Some` (even empty), the user has been through the curate-before-inject menu
+/// and these are the concepts to Augment-inject. The shared embed ranks each
+/// concept's member chunks; the boundary blurb + member snippets land in
+/// [`WorkspaceContext::concept_context`]. `None` ⇒ no injection (R1 behaviour),
+/// `Some([])` ⇒ injection explicitly empty (curated to nothing) — both leave
+/// `concept_context` empty, so the Augment fallback is today's RAG. Injection,
+/// like routing, only engages on the RAG-enabled path (where the embed exists).
+pub async fn gather(
+    workspace_id: &str,
+    user_message: &str,
+    route: bool,
+    curated_concepts: Option<&[String]>,
+) -> WorkspaceContext {
     if workspace_id.trim().is_empty() {
         return WorkspaceContext::default();
     }
@@ -93,41 +116,84 @@ pub async fn gather(workspace_id: &str, user_message: &str, route: bool) -> Work
             .collect()
     };
 
-    let (rag_snippets, route_candidates) = match WorkspaceRagScope::from_definition(&def) {
-        // Routing ON + RAG enabled: share ONE embed across RAG and the router.
-        // This is the only path that reaches the routing crate.
-        Some(scope) if route => match rag::indexer::search::embed_query(&def.id, user_message).await
-        {
-            Some(query_vec) => {
-                let rag = rag::scope::retrieve_with_vec(&scope, &query_vec, user_message);
-                // R1: compute the candidate set and LOG it (calibration data).
-                // R1.5b: when the relation graph reshaped the activation, also
-                // log the before→after proof line. Still LOG-ONLY — injects
-                // nothing (that is R2).
-                let candidates =
-                    crate::concepts::routing_bridge::route_with_vec(&def.id, &query_vec, user_message);
-                match &candidates {
-                    Some(set) => {
-                        tracing::info!(target: "concept_routing", "{}", set.log_line());
-                        if set.reshaped_by_relations() {
-                            tracing::info!(target: "concept_routing", "{}", set.relation_log_line());
+    // Routing (R1, log-only) and injection (R2) both need the query embed; we
+    // share the ONE embed the RAG path already pays for (plan §6.1). The embed
+    // happens only when `route` or a curated set is present, so the pure
+    // pre-routing path stays untouched.
+    let need_embed = route || curated_concepts.is_some();
+    let (rag_snippets, route_candidates, concept_context) = match WorkspaceRagScope::from_definition(
+        &def,
+    ) {
+        // Routing / injection ON + RAG enabled: share ONE embed across RAG,
+        // the router, and the curated injection.
+        Some(scope) if need_embed => {
+            match rag::indexer::search::embed_query(&def.id, user_message).await {
+                Some(query_vec) => {
+                    let rag = rag::scope::retrieve_with_vec(&scope, &query_vec, user_message);
+
+                    // R1: compute the candidate set and LOG it (calibration
+                    // data); R1.5b adds the before→after relation line.
+                    // Still LOG-ONLY when `route` — the menu is what injects.
+                    let candidates = if route {
+                        let c = crate::concepts::routing_bridge::route_with_vec(
+                            &def.id,
+                            &query_vec,
+                            user_message,
+                        );
+                        match &c {
+                            Some(set) => {
+                                tracing::info!(target: "concept_routing", "{}", set.log_line());
+                                if set.reshaped_by_relations() {
+                                    tracing::info!(target: "concept_routing", "{}", set.relation_log_line());
+                                }
+                            }
+                            None => tracing::debug!(
+                                target: "concept_routing",
+                                "concept-routing: skipped for {} — no centroid-bearing concepts yet",
+                                def.id
+                            ),
                         }
-                    }
-                    None => tracing::debug!(
-                        target: "concept_routing",
-                        "concept-routing: skipped for {} — no centroid-bearing concepts yet",
-                        def.id
-                    ),
+                        c
+                    } else {
+                        None
+                    };
+
+                    // R2 Augment injection: build the boundary blurb +
+                    // member snippets for the user-curated concepts, ranking
+                    // member chunks against the SAME shared embed. Empty
+                    // curated set ⇒ empty injection ⇒ today's RAG fallback.
+                    let concept_context = match curated_concepts {
+                        Some(ids) if !ids.is_empty() => {
+                            let inj = crate::concepts::inject::inject_curated(&def.id, ids);
+                            if !inj.is_empty() {
+                                tracing::info!(
+                                    target: "concept_routing",
+                                    "concept-routing[inject]: ws={} concepts={} blocks={}",
+                                    def.id,
+                                    ids.len(),
+                                    inj.blocks.len()
+                                );
+                            }
+                            inj.blocks
+                        }
+                        _ => Vec::new(),
+                    };
+
+                    (rag, candidates, concept_context)
                 }
-                (rag, candidates)
+                // Blank query / embed unreachable → same empty RAG as today;
+                // no routing/injection (nothing to share an embed with).
+                None => (Vec::new(), None, Vec::new()),
             }
-            // Blank query / embed unreachable → same empty RAG as today; no
-            // routing (nothing to share an embed with).
-            None => (Vec::new(), None),
-        },
-        // Routing OFF (or RAG disabled): the exact pre-routing path, untouched.
-        Some(scope) => (rag::scope::retrieve(&scope, user_message).await, None),
-        None => (Vec::new(), None),
+        }
+        // Routing OFF + no curation (or RAG disabled): the exact pre-routing
+        // path, untouched.
+        Some(scope) => (
+            rag::scope::retrieve(&scope, user_message).await,
+            None,
+            Vec::new(),
+        ),
+        None => (Vec::new(), None, Vec::new()),
     };
 
     WorkspaceContext {
@@ -135,6 +201,7 @@ pub async fn gather(workspace_id: &str, user_message: &str, route: bool) -> Work
         memory_snippets,
         rag_snippets,
         route_candidates,
+        concept_context,
     }
 }
 
@@ -264,8 +331,8 @@ mod tests {
     #[tokio::test]
     async fn gather_is_empty_for_unknown_or_blank_workspace() {
         let _env = TestEnv::new();
-        assert!(gather("", "hi", false).await.is_empty());
-        assert!(gather("nope-000000", "hi", false).await.is_empty());
+        assert!(gather("", "hi", false, None).await.is_empty());
+        assert!(gather("nope-000000", "hi", false, None).await.is_empty());
     }
 
     #[tokio::test]
@@ -274,11 +341,14 @@ mod tests {
         let def = registry::create("/tmp/gather-persona", None);
         registry::update(&def.id, None, Some(true), Some(false)).unwrap();
         persona::save(&def.id, "Answer in haiku.").unwrap();
-        let ctx = gather(&def.id, "hello", false).await;
+        let ctx = gather(&def.id, "hello", false, None).await;
         assert_eq!(ctx.persona, "Answer in haiku.");
         // RAG disabled → no rag snippets; notes empty → none.
         assert!(ctx.rag_snippets.is_empty());
-        assert!(ctx.route_candidates.is_none(), "routing off ⇒ no candidates");
+        assert!(
+            ctx.route_candidates.is_none(),
+            "routing off ⇒ no candidates"
+        );
     }
 
     #[tokio::test]
@@ -290,8 +360,27 @@ mod tests {
         let def = registry::create("/tmp/gather-route-no-rag", None);
         registry::update(&def.id, None, Some(true), Some(false)).unwrap();
         persona::save(&def.id, "Hi.").unwrap();
-        let ctx = gather(&def.id, "hello", true).await;
+        let ctx = gather(&def.id, "hello", true, None).await;
         assert_eq!(ctx.persona, "Hi.");
-        assert!(ctx.route_candidates.is_none(), "no shared embed ⇒ no routing");
+        assert!(
+            ctx.route_candidates.is_none(),
+            "no shared embed ⇒ no routing"
+        );
+    }
+
+    #[tokio::test]
+    async fn gather_curated_concepts_skipped_when_rag_disabled() {
+        // R2: injection only engages on the RAG-enabled path (the shared embed).
+        // With RAG off, a curated set injects nothing — concept_context stays
+        // empty — so the rendered output is byte-identical to base.
+        let _env = TestEnv::new();
+        let def = registry::create("/tmp/gather-curate-no-rag", None);
+        registry::update(&def.id, None, Some(true), Some(false)).unwrap();
+        persona::save(&def.id, "Hi.").unwrap();
+        let ctx = gather(&def.id, "hello", false, Some(&["some-concept".to_owned()])).await;
+        assert!(
+            ctx.concept_context.is_empty(),
+            "no shared embed ⇒ no injection"
+        );
     }
 }
