@@ -34,6 +34,10 @@ pub mod retrieve;
 // `wylde-concept-routing` crate (load store + match vocab + call the pure
 // router with the shared RAG embed). Remove with the crate to revert routing.
 pub mod routing_bridge;
+// Concept-routing R1.5a — the deletable typed-relation store + the
+// `workspaces.concepts.relations.*` verbs (sibling of `routing_bridge`).
+// Remove with the crate to revert to pure-seed R1 (empty graph = identity).
+pub mod relations_bridge;
 pub mod search;
 pub mod semantic;
 pub mod store;

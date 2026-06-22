@@ -40,6 +40,86 @@ pub enum InjectionMode {
     Replace,
 }
 
+/// The spreading-activation knobs (concept-routing R1.5b, relation-model
+/// addendum §3.2). Nested inside [`RoutingConfig`] so every relation lever
+/// round-trips through the one harness-owned store and inherits the
+/// fail-closed-to-OFF guarantee. **All defaults reduce the engine to pure-seed
+/// R1 when the relation graph is empty** (every step becomes a no-op), so the
+/// behaviour-safe contract holds: empty graph ⇒ identity.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RelationParams {
+    /// Scale on the cosine seed before propagation (lets vocab/dependency
+    /// activation outweigh a flat cosine). `1.0` = identity.
+    #[serde(default = "default_seed_weight")]
+    pub seed_weight: f32,
+    /// Activation a matched vocab term lifts into its `described_by` concepts
+    /// (addendum §3.1 step 1). Default `0.7`.
+    #[serde(default = "default_seed_vocab_weight")]
+    pub seed_vocab_weight: f32,
+    /// Per-hop multiplier on dependency spread. Default `0.5`.
+    #[serde(default = "default_dep_decay")]
+    pub dep_decay: f32,
+    /// A propagated contribution below this stops the path (bounds spread +
+    /// cycles). Default `0.05`.
+    #[serde(default = "default_spread_floor")]
+    pub spread_floor: f32,
+    /// Hard hop cap on dependency spread (belt-and-braces with the floor).
+    /// Default `3`.
+    #[serde(default = "default_max_hops")]
+    pub max_hops: u8,
+    /// 1-hop positive co-activation strength. Default `0.3`.
+    #[serde(default = "default_positive_decay")]
+    pub positive_decay: f32,
+    /// How hard an excluder suppresses (`0` = off, `1` = max). Default `0.8`.
+    #[serde(default = "default_inhibition_strength")]
+    pub inhibition_strength: f32,
+    /// The SOFT floor: an overwhelming raw signal still surfaces — inhibition
+    /// can never push a node below `floor ×` its pre-inhibition value. Default
+    /// `0.15`.
+    #[serde(default = "default_inhibition_floor")]
+    pub inhibition_floor: f32,
+}
+
+fn default_seed_weight() -> f32 {
+    1.0
+}
+fn default_seed_vocab_weight() -> f32 {
+    0.7
+}
+fn default_dep_decay() -> f32 {
+    0.5
+}
+fn default_spread_floor() -> f32 {
+    0.05
+}
+fn default_max_hops() -> u8 {
+    3
+}
+fn default_positive_decay() -> f32 {
+    0.3
+}
+fn default_inhibition_strength() -> f32 {
+    0.8
+}
+fn default_inhibition_floor() -> f32 {
+    0.15
+}
+
+impl Default for RelationParams {
+    fn default() -> Self {
+        Self {
+            seed_weight: default_seed_weight(),
+            seed_vocab_weight: default_seed_vocab_weight(),
+            dep_decay: default_dep_decay(),
+            spread_floor: default_spread_floor(),
+            max_hops: default_max_hops(),
+            positive_decay: default_positive_decay(),
+            inhibition_strength: default_inhibition_strength(),
+            inhibition_floor: default_inhibition_floor(),
+        }
+    }
+}
+
 /// The master routing config. Every field has a privacy/behaviour-safe
 /// default, and the whole struct round-trips through JSON; an older file
 /// missing a key reads that key as its default (forward-compatible, like the
@@ -80,6 +160,12 @@ pub struct RoutingConfig {
     /// (the lens). Default `true`. **Inert until R3.**
     #[serde(default = "default_true")]
     pub scope_to_active_region: bool,
+
+    /// Spreading-activation knobs (R1.5b). Defaults make the engine an identity
+    /// over the seed when the relation graph is empty, so an older file without
+    /// this block behaves exactly as R1.
+    #[serde(default)]
+    pub relation_params: RelationParams,
 }
 
 fn default_true() -> bool {
@@ -105,6 +191,7 @@ impl Default for RoutingConfig {
             abs_threshold: default_abs_threshold(),
             relative_floor: default_relative_floor(),
             scope_to_active_region: true,
+            relation_params: RelationParams::default(),
         }
     }
 }
@@ -222,6 +309,25 @@ mod tests {
         assert!((c.abs_threshold - 0.50).abs() < 1e-6);
         assert!((c.relative_floor - 0.6).abs() < 1e-6);
         assert!(c.scope_to_active_region);
+        // Relation params: the locked R1.5b defaults.
+        let p = c.relation_params;
+        assert!((p.dep_decay - 0.5).abs() < 1e-6);
+        assert!((p.inhibition_strength - 0.8).abs() < 1e-6);
+        assert!((p.inhibition_floor - 0.15).abs() < 1e-6);
+        assert_eq!(p.max_hops, 3);
+        assert!((p.seed_vocab_weight - 0.7).abs() < 1e-6);
+        assert!((p.positive_decay - 0.3).abs() < 1e-6);
+        assert!((p.spread_floor - 0.05).abs() < 1e-6);
+        assert!((p.seed_weight - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn relation_params_block_missing_reads_defaults() {
+        // An older concept_routing.json without the relation_params block must
+        // read the locked defaults (so it behaves exactly as pre-R1.5b).
+        let c = RoutingConfig::from_value(&json!({ "enabled": true }));
+        assert!(c.enabled);
+        assert_eq!(c.relation_params, RelationParams::default());
     }
 
     #[test]
@@ -253,6 +359,12 @@ mod tests {
             abs_threshold: 0.42,
             relative_floor: 0.7,
             scope_to_active_region: false,
+            relation_params: RelationParams {
+                dep_decay: 0.4,
+                inhibition_strength: 0.9,
+                max_hops: 2,
+                ..RelationParams::default()
+            },
         };
         assert_eq!(RoutingConfig::from_value(&c.to_value()), c);
     }
