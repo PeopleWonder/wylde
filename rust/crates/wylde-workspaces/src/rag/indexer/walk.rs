@@ -266,6 +266,89 @@ fn preview_dir(dir: &Path, matcher: &ExclusionMatcher, cap: usize, pv: &mut Walk
     }
 }
 
+/// Metadata-only view of one indexable file — the cheap (path, mtime, size)
+/// triple the content-hash manifest diff (P3, [`super::manifest`]) walks
+/// **without reading any file content**. The `(mtime, size)` fast-path lets an
+/// unchanged file skip both the read AND the embed; only files whose
+/// `(mtime, size)` drifted are read + hashed to confirm a real change.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileStat {
+    /// Canonical, absolute path — the same key the chunk store + manifest use.
+    pub path: String,
+    /// Source-file mtime (epoch seconds).
+    pub mtime: f64,
+    /// Source-file size in bytes.
+    pub size: u64,
+}
+
+/// Metadata-only walk of `folder`: every file the full walk *would* index,
+/// as a [`FileStat`] (no content read). Shares the one [`ExclusionMatcher`] +
+/// the binary-suffix guard with [`walk_and_chunk`] so the manifest diff sees
+/// exactly the set the chunker does. Content-level skips (binary sniff, empty,
+/// oversize) are deferred to [`chunk_one_file`] when a changed file is actually
+/// re-chunked — a metadata walk can't know them, and a file that turns out
+/// unchunkable simply yields zero chunks (treated as a removal).
+pub fn walk_file_stats(folder: &str) -> Vec<FileStat> {
+    let mut out = Vec::new();
+    let root = Path::new(folder);
+    if !root.is_dir() {
+        return out;
+    }
+    let matcher = ExclusionMatcher::for_root(root);
+    stat_dir(root, &matcher, &mut out);
+    out
+}
+
+fn stat_dir(dir: &Path, matcher: &ExclusionMatcher, out: &mut Vec<FileStat>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let is_dir = file_type.is_dir();
+        if matcher.is_excluded(&path, is_dir) {
+            continue;
+        }
+        if is_dir {
+            stat_dir(&path, matcher, out);
+        } else if file_type.is_file() {
+            // Binary-suffix reject mirrors `chunk_file` / `is_indexable_path`.
+            if let Some(suffix) = path.extension().and_then(|s| s.to_str()) {
+                if SKIP_SUFFIXES.contains(&suffix.to_ascii_lowercase().as_str()) {
+                    continue;
+                }
+            }
+            let Ok(meta) = entry.metadata() else { continue };
+            out.push(FileStat {
+                path: canonical_path(&path),
+                mtime: mtime_secs(&meta),
+                size: meta.len(),
+            });
+        }
+    }
+}
+
+/// Read `path` and return its content hash + `(size, mtime)` — the manifest's
+/// per-file fingerprint. The hash is `sha256(file bytes)` truncated to 16 hex
+/// chars (same discipline as the per-chunk id), so a `touch`/checkout that
+/// changes mtime but not bytes hashes identically and avoids a re-embed.
+/// `None` on an unreadable file (caller keeps the prior entry).
+pub fn hash_file(path: &str) -> Option<(String, u64, f64)> {
+    use sha2::{Digest, Sha256};
+    let p = Path::new(path);
+    let meta = p.metadata().ok()?;
+    let bytes = std::fs::read(p).ok()?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let hash = hex::encode(hasher.finalize())[..16].to_owned();
+    Some((hash, meta.len(), mtime_secs(&meta)))
+}
+
 /// Source-file mtime as epoch seconds (`f64`). Falls back to `0.0` if the
 /// platform can't report it.
 fn mtime_secs(meta: &std::fs::Metadata) -> f64 {

@@ -74,6 +74,41 @@ fn node_exists(workspace_id: &str, node: &NodeRef) -> bool {
     }
 }
 
+/// Re-validate every relation after a concept recompute (Phase-B §4.2): flag an
+/// edge `dangling` when an endpoint no longer resolves, and clear the flag when
+/// it resolves again. **Never deletes** — the user's authored edge is retained
+/// on disk (and surfaced in the tree for re-pointing) but excluded from routing
+/// (`RelationGraph::adjacency`/`of_kind` skip dangling). Returns the count of
+/// dangling edges after the sweep. No-op (saves nothing) on an empty graph or
+/// when nothing changed.
+pub fn sweep_dangling(workspace_id: &str) -> usize {
+    let mut graph = load(workspace_id);
+    if graph.relations.is_empty() {
+        return 0;
+    }
+    let mut changed = false;
+    let mut dangling = 0usize;
+    for r in &mut graph.relations {
+        let resolves = node_exists(workspace_id, &r.from) && node_exists(workspace_id, &r.to);
+        let now_dangling = !resolves;
+        if r.dangling != now_dangling {
+            r.dangling = now_dangling;
+            changed = true;
+        }
+        if now_dangling {
+            dangling += 1;
+        }
+    }
+    if changed {
+        if let Err(e) = save(workspace_id, &graph) {
+            tracing::warn!(
+                "workspaces.concepts.relations: sweep_dangling save failed for {workspace_id}: {e}"
+            );
+        }
+    }
+    dangling
+}
+
 // Validation helpers return `Err(message)` — the error is always `bad_request`,
 // so the caller wraps it (a small `String` Err keeps clippy's `result_large_err`
 // quiet, vs returning the heavy `Reply` by value).
@@ -113,9 +148,11 @@ pub async fn handle_graph(payload: Value) -> Reply {
         Err(m) => return Reply::err_msg("bad_request", m),
     };
     let graph = load(&ws);
+    let dangling_count = graph.relations.iter().filter(|r| r.dangling).count();
     Reply::ok(json!({
         "workspace_id": ws,
         "count": graph.relations.len(),
+        "dangling_count": dangling_count,
         "relations": graph.relations,
     }))
 }
@@ -429,5 +466,42 @@ mod tests {
     async fn missing_file_is_empty_graph() {
         let _env = TestEnv::new();
         assert!(load("rel-none-00000").is_empty());
+    }
+
+    #[tokio::test]
+    async fn sweep_flags_vanished_concept_never_deletes_and_clears_on_return() {
+        let _env = TestEnv::new();
+        let ws = "rel-dangle-0000";
+        seed_nodes(ws);
+        // Author an edge between the two concepts.
+        let add = handle_add(json!({
+            "workspace_id": ws,
+            "from": {"node":"concept","id":"nextcloud"},
+            "to": {"node":"concept","id":"wylde"},
+            "kind": "negative",
+        }))
+        .await;
+        assert!(add.ok);
+        assert_eq!(sweep_dangling(ws), 0, "both endpoints resolve initially");
+
+        // A recompute drops the `wylde` concept (id no longer in the store).
+        super::super::store::delete(ws, "wylde").unwrap();
+        let dangling = sweep_dangling(ws);
+        assert_eq!(dangling, 1, "edge to a vanished concept is flagged");
+        // The edge is RETAINED on disk, just flagged — never deleted.
+        let g = load(ws);
+        assert_eq!(g.relations.len(), 1, "edge kept, not deleted");
+        assert!(g.relations[0].dangling, "flag set");
+        // …and excluded from routing.
+        assert!(g.adjacency().is_empty(), "dangling edge absent from routing adjacency");
+
+        // The concept returns on a later build → the flag clears (re-validate).
+        super::super::store::create(
+            ws,
+            Concept::new("wylde", "Wylde", "the assistant", ConceptSource::Manual),
+        )
+        .unwrap();
+        assert_eq!(sweep_dangling(ws), 0, "flag cleared when the endpoint returns");
+        assert!(!load(ws).relations[0].dangling);
     }
 }

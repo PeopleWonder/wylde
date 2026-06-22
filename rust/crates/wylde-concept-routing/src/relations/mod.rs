@@ -103,6 +103,15 @@ pub struct Relation {
     /// Epoch seconds at first persist (harness convention).
     #[serde(default)]
     pub created_at: f64,
+    /// **Dangling**: set when a concept recompute dropped an endpoint this edge
+    /// points at (Phase-B §4.2). A dangling edge is **retained on disk** and
+    /// **surfaced in the relations tree** for the user to re-point or delete,
+    /// but **excluded from routing** ([`RelationGraph::adjacency`] /
+    /// [`RelationGraph::of_kind`] skip it). `#[serde(default)]` ⇒ migration-free
+    /// (an old store with no field loads as `false`). Cleared automatically when
+    /// the endpoint resolves again on a later sweep.
+    #[serde(default)]
+    pub dangling: bool,
 }
 
 impl Relation {
@@ -126,6 +135,7 @@ impl Relation {
             kind,
             note,
             created_at: 0.0,
+            dangling: false,
         }
     }
 
@@ -162,19 +172,24 @@ impl RelationGraph {
     /// Symmetric kinds appear under both endpoints; dependency appears under
     /// both too (the spread is bidirectional — addendum §3.1 step 2), so a
     /// single pass over the flat `Vec` makes every node's incident edges
-    /// reachable. Rebuilt per turn; never persisted.
+    /// reachable. **Dangling** edges (a dropped endpoint, Phase-B §4.2) are
+    /// excluded — the routing engine never sees an edge to a vanished concept.
+    /// Rebuilt per turn; never persisted.
     pub fn adjacency(&self) -> HashMap<NodeRef, Vec<&Relation>> {
         let mut adj: HashMap<NodeRef, Vec<&Relation>> = HashMap::new();
-        for r in &self.relations {
+        for r in self.relations.iter().filter(|r| !r.dangling) {
             adj.entry(r.from.clone()).or_default().push(r);
             adj.entry(r.to.clone()).or_default().push(r);
         }
         adj
     }
 
-    /// Iterate edges of one kind.
+    /// Iterate **non-dangling** edges of one kind (dangling edges are excluded
+    /// from routing — Phase-B §4.2).
     pub fn of_kind(&self, kind: RelationKind) -> impl Iterator<Item = &Relation> {
-        self.relations.iter().filter(move |r| r.kind == kind)
+        self.relations
+            .iter()
+            .filter(move |r| r.kind == kind && !r.dangling)
     }
 }
 
@@ -204,11 +219,22 @@ mod tests {
             kind: RelationKind::Dependency,
             note: Some("keeps the home IP current".into()),
             created_at: 1.0,
+            dangling: false,
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["kind"], "dependency");
         let back: Relation = serde_json::from_value(v).unwrap();
         assert_eq!(back, r);
+
+        // An old store with no `dangling` field loads as non-dangling
+        // (migration-free serde default).
+        let legacy: Relation = serde_json::from_value(serde_json::json!({
+            "from": {"node":"vocab","identifier":"a"},
+            "to": {"node":"vocab","identifier":"b"},
+            "kind": "positive"
+        }))
+        .unwrap();
+        assert!(!legacy.dangling, "absent dangling ⇒ false");
 
         // A note-less edge omits the key (compact store).
         let bare = Relation::normalized(
@@ -275,5 +301,39 @@ mod tests {
     fn empty_graph_predicates() {
         assert!(RelationGraph::empty().is_empty());
         assert!(RelationGraph::empty().adjacency().is_empty());
+    }
+
+    #[test]
+    fn dangling_edges_excluded_from_routing_but_kept_on_disk() {
+        let mut dead = Relation::normalized(
+            NodeRef::concept("sem:0001"),
+            NodeRef::vocab("ddns"),
+            RelationKind::Dependency,
+            None,
+        );
+        dead.dangling = true;
+        let live = Relation::normalized(
+            NodeRef::vocab("nextcloud"),
+            NodeRef::vocab("ddns"),
+            RelationKind::Positive,
+            None,
+        );
+        let g = RelationGraph {
+            relations: vec![dead, live],
+        };
+        // Both edges remain on disk (the user can re-point/delete the dangling).
+        assert_eq!(g.relations.len(), 2);
+        // But routing only sees the live one.
+        assert!(
+            !g.adjacency().contains_key(&NodeRef::concept("sem:0001")),
+            "dangling endpoint absent from adjacency"
+        );
+        assert_eq!(g.of_kind(RelationKind::Dependency).count(), 0, "dangling skipped");
+        assert_eq!(g.of_kind(RelationKind::Positive).count(), 1, "live kept");
+        assert_eq!(
+            g.adjacency()[&NodeRef::vocab("ddns")].len(),
+            1,
+            "ddns touched only by the live edge"
+        );
     }
 }

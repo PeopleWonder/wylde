@@ -26,7 +26,7 @@ use crate::graph::BoltClient;
 use crate::registry::{self, WorkspaceDefinition};
 
 use super::exclude::ExclusionMatcher;
-use super::store;
+use super::{lock, manifest, store};
 
 /// What a purge did, for the verb reply + the migration log line.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -101,13 +101,25 @@ pub async fn purge_excluded(def: &WorkspaceDefinition) -> PurgeOutcome {
         .count() as u32;
 
     // Existence-guard: a delete that raced the purge must not recreate the
-    // bundle dir (same discipline as `persist`).
+    // bundle dir (same discipline as `persist_full`).
     if registry::get(&def.id).is_some() {
+        let lk = lock::for_workspace(&def.id);
+        let _g = lk.lock().await;
         if let Err(e) = store::save_chunks(&def.id, &kept) {
             tracing::warn!("workspaces.rag.purge: write chunks failed for {}: {e}", def.id);
             // Couldn't persist — report the would-be result without touching
             // state, so the caller sees the failure rather than a false win.
             return outcome;
+        }
+        // Manifest second (§3.3): drop the purged files' entries, keeping the
+        // surviving files' hashes/ids verbatim (the purge changes no content).
+        // A legacy index with no manifest is left as-is — the next reindex
+        // writes one.
+        if let Some(mut m) = manifest::load(&def.id) {
+            let kept_paths: std::collections::HashSet<&str> =
+                kept.iter().map(|c| c.path.as_str()).collect();
+            m.files.retain(|p, _| kept_paths.contains(p.as_str()));
+            let _ = manifest::save(&def.id, &m);
         }
         let mut st = store::load_state(&def.id);
         st.file_count = super::distinct_paths(&kept);

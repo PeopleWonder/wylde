@@ -89,9 +89,7 @@ pub async fn handle_build(payload: Value) -> Reply {
     let chunks = crate::rag::indexer::store::load_chunks(&ws);
     let have_vectors = chunks.iter().filter(|c| !c.vector.is_empty()).count();
     if have_vectors >= 2 {
-        let concepts =
-            super::semantic::build_semantic_concepts(&chunks, &super::semantic::SemanticParams::default());
-        return finish_build(&ws, concepts, "embedding").await;
+        return build_semantic_stable(&ws, &chunks, super::semantic::SemanticParams::default()).await;
     }
 
     // Fallback: label the directory clusters from the live code graph.
@@ -122,12 +120,41 @@ pub async fn handle_build_semantic(payload: Value) -> Reply {
         params.seed = s;
     }
     let chunks = crate::rag::indexer::store::load_chunks(&ws);
-    let concepts = super::semantic::build_semantic_concepts(&chunks, &params);
-    finish_build(&ws, concepts, "embedding").await
+    build_semantic_stable(&ws, &chunks, params).await
+}
+
+/// Build semantic concepts with **stable ids** (Phase-B §4.1): feed the prior
+/// `Embedding` concepts + the persisted never-reused ordinal allocator into the
+/// clustering so a recompute carries ids over to drifted themes and mints fresh
+/// ids for new ones, then persist the advanced allocator. Delegates the store
+/// swap + projection + dangling sweep to [`finish_build`].
+async fn build_semantic_stable(
+    ws: &str,
+    chunks: &[crate::rag::indexer::store::IndexedChunk],
+    params: super::semantic::SemanticParams,
+) -> Reply {
+    let prior_emb: Vec<Concept> = store::load(ws)
+        .into_iter()
+        .filter(|c| c.source == super::concept::ConceptSource::Embedding)
+        .collect();
+    let mut ident = super::identity::load(ws);
+    let out = super::semantic::build_semantic_concepts_stable(
+        chunks,
+        &params,
+        &prior_emb,
+        ident.next_sem_ordinal,
+    );
+    ident.next_sem_ordinal = out.next_ordinal;
+    if let Err(e) = super::identity::save(ws, &ident) {
+        tracing::warn!("workspaces.concepts: persist id allocator failed for {ws}: {e}");
+    }
+    finish_build(ws, out.concepts, "embedding").await
 }
 
 /// Shared tail of the build verbs: preserve manually-authored concepts, replace
-/// the rest with `built`, and additively project into the graph (fail-soft).
+/// the rest with `built`, additively project into the graph (fail-soft), then
+/// re-validate authored relations against the new concept set (Phase-B §4.2:
+/// flag edges to dropped concepts `dangling`, never delete them).
 async fn finish_build(ws: &str, built: Vec<Concept>, source: &str) -> Reply {
     // Preserve curated (Manual) concepts; replace the auto-generated set.
     let mut concepts: Vec<Concept> = store::load(ws)
@@ -174,11 +201,17 @@ async fn finish_build(ws: &str, built: Vec<Concept>, source: &str) -> Reply {
         }
     };
 
+    // Re-validate authored relations against the new concept set: an edge whose
+    // concept id the recompute dropped is flagged `dangling` (surfaced, excluded
+    // from routing) — never deleted (Phase-B §4.2).
+    let dangling_count = super::relations_bridge::sweep_dangling(ws);
+
     Reply::ok(json!({
         "workspace_id": ws,
         "built": built,
         "projected": projected,
         "source": source,
+        "dangling_count": dangling_count,
     }))
 }
 
@@ -684,6 +717,50 @@ mod tests {
         // manual concept preserved + semantic concepts added.
         assert!(all.iter().any(|c| c.id == "manual:keep"));
         assert!(all.iter().any(|c| c.id.starts_with("sem:") && c.centroid.is_some()));
+    }
+
+    #[tokio::test]
+    async fn stable_ids_let_authored_relation_survive_recompute() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-stab-00";
+        // A clean two-theme index.
+        let mut chunks = Vec::new();
+        for j in 0..5 {
+            chunks.push(idx_chunk(&format!("a{j}"), "src/auth/a.rs", vec![1.0, 0.02 * j as f32, 0.0]));
+            chunks.push(idx_chunk(&format!("g{j}"), "src/graph/g.rs", vec![0.0, 0.02 * j as f32, 1.0]));
+        }
+        crate::rag::indexer::store::save_chunks(ws, &chunks).unwrap();
+
+        let r1 = handle_build_semantic(json!({ "workspace_id": ws, "k": 2 })).await;
+        assert!(r1.ok, "{:?}", r1.error);
+        let ids_before: Vec<String> = store::load(ws)
+            .into_iter()
+            .filter(|c| c.id.starts_with("sem:"))
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids_before.len(), 2, "two semantic themes");
+
+        // Author a relation between the two semantic concepts.
+        let add = crate::concepts::relations_bridge::handle_add(json!({
+            "workspace_id": ws,
+            "from": {"node":"concept","id": ids_before[0]},
+            "to": {"node":"concept","id": ids_before[1]},
+            "kind": "positive",
+        }))
+        .await;
+        assert!(add.ok, "{:?}", add.error);
+
+        // Recompute over the same corpus → ids carried over → relation stays
+        // live (not dangling) and the ids are unchanged.
+        let r2 = handle_build_semantic(json!({ "workspace_id": ws, "k": 2 })).await;
+        assert!(r2.ok, "{:?}", r2.error);
+        assert_eq!(r2.data["dangling_count"], 0, "carried-over ids keep the relation live");
+        let ids_after: Vec<String> = store::load(ws)
+            .into_iter()
+            .filter(|c| c.id.starts_with("sem:"))
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids_before, ids_after, "semantic ids stable across recompute");
     }
 
     #[tokio::test]

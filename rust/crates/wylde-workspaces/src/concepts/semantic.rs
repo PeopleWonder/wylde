@@ -38,6 +38,14 @@ use crate::rag::indexer::store::IndexedChunk;
 /// The id prefix marking a semantic (embedding-clustered) concept.
 pub const SEM_CONCEPT_PREFIX: &str = "sem:";
 
+/// Default greedy nearest-centroid **carry-over** threshold (Phase-B stable
+/// ids): a new cluster whose centroid is ≥ this cosine to a prior `sem:`
+/// concept's centroid **reuses that id** (same theme, drifted). Tunable via
+/// [`SemanticParams::carry_over_threshold`]. 0.85 tolerates the small centroid
+/// drift a "same" theme shows between recomputes while staying well clear of
+/// distinct themes (which typically sit far below 0.85 cosine).
+pub const DEFAULT_CARRY_OVER_THRESHOLD: f32 = 0.85;
+
 /// Tunables for a semantic build. Defaults are deterministic + offline.
 #[derive(Clone, Debug)]
 pub struct SemanticParams {
@@ -49,6 +57,9 @@ pub struct SemanticParams {
     pub overlap_margin: f32,
     /// RNG seed (fixed ⇒ reproducible clusters).
     pub seed: u64,
+    /// Cosine threshold for carrying a prior `sem:` id over to a new cluster
+    /// ([`DEFAULT_CARRY_OVER_THRESHOLD`]).
+    pub carry_over_threshold: f32,
 }
 
 impl Default for SemanticParams {
@@ -58,14 +69,42 @@ impl Default for SemanticParams {
             iters: 25,
             overlap_margin: 0.04,
             seed: 0x5EED,
+            carry_over_threshold: DEFAULT_CARRY_OVER_THRESHOLD,
         }
     }
 }
 
+/// A stable-id build result: the concept set plus the advanced **never-reused**
+/// `sem:` ordinal allocator (persist it so a deleted theme's number is never
+/// recycled onto a different theme — Phase-B §4.1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StableBuild {
+    pub concepts: Vec<Concept>,
+    pub next_ordinal: u32,
+}
+
 /// Build semantic concepts from a workspace's chunks. Pure + deterministic.
-/// Chunks without a usable vector are skipped; an empty/degenerate input yields
-/// no concepts. Concepts are sorted by id (`sem:NNNN`) for a stable store.
+/// Convenience wrapper over [`build_semantic_concepts_stable`] with **no prior
+/// concepts** (fresh ids from ordinal 0) — used by tests and any caller that
+/// doesn't need cross-recompute id stability.
 pub fn build_semantic_concepts(chunks: &[IndexedChunk], params: &SemanticParams) -> Vec<Concept> {
+    build_semantic_concepts_stable(chunks, params, &[], 0).concepts
+}
+
+/// Build semantic concepts with **stable ids** (Phase-B §4.1). Pure +
+/// deterministic. Each new cluster greedily claims the nearest prior `sem:`
+/// concept's id when their centroids are ≥ `params.carry_over_threshold` cosine
+/// (one-to-one, descending similarity) — so a relation authored on a theme
+/// survives a recompute that merely grows/drifts the corpus. Genuinely-new
+/// clusters mint a fresh id from the monotonic `next_ordinal` allocator, never
+/// reusing a number. Chunks without a usable vector are skipped; a degenerate
+/// input yields no concepts.
+pub fn build_semantic_concepts_stable(
+    chunks: &[IndexedChunk],
+    params: &SemanticParams,
+    prior: &[Concept],
+    next_ordinal: u32,
+) -> StableBuild {
     // Keep only chunks with a non-empty vector, and pin the dimension to the
     // first one (defends against a torn/mixed index).
     let mut vectors: Vec<Vec<f32>> = Vec::new();
@@ -85,35 +124,33 @@ pub fn build_semantic_concepts(chunks: &[IndexedChunk], params: &SemanticParams)
         files.push(c.path.clone());
     }
     if vectors.len() < 2 {
-        return Vec::new();
+        return StableBuild {
+            concepts: Vec::new(),
+            next_ordinal,
+        };
     }
 
     let k = params.k.unwrap_or_else(|| default_k(vectors.len()));
     let res = clustering::cluster(&vectors, k, params.iters, params.seed);
     let soft = clustering::soft_members(&vectors, &res.centroids, params.overlap_margin);
 
-    let mut out: Vec<Concept> = Vec::new();
+    // Build draft concepts (no id yet) for every non-empty cluster.
+    let mut drafts: Vec<Concept> = Vec::new();
     for (ci, members) in soft.iter().enumerate() {
         if members.is_empty() {
             continue;
         }
-        // Distinct sorted files of this cluster's chunks.
         let mut cluster_files: Vec<String> = members.iter().map(|&i| files[i].clone()).collect();
         cluster_files.sort();
         cluster_files.dedup();
 
         let (label, description) = label_for_files(&cluster_files, members.len());
-        let mut concept = Concept::new(
-            format!("{SEM_CONCEPT_PREFIX}{ci:04}"),
-            label,
-            description,
-            ConceptSource::Embedding,
-        );
+        // Placeholder id; the carry-over pass assigns the real one below.
+        let mut concept = Concept::new("", label, description, ConceptSource::Embedding);
         concept.members = cluster_files.clone();
         concept.member_files = cluster_files;
-        // Carry the centroid — the routing prize.
+        // Carry the centroid — the routing prize + the carry-over key.
         let mut centroid = res.centroids[ci].clone();
-        // Defensive: ensure it's unit-length (cluster() already normalises).
         let norm_sq: f32 = centroid.iter().map(|x| x * x).sum();
         if norm_sq > 0.0 {
             let inv = 1.0 / norm_sq.sqrt();
@@ -122,11 +159,97 @@ pub fn build_semantic_concepts(chunks: &[IndexedChunk], params: &SemanticParams)
             }
             concept.centroid = Some(centroid);
         }
-        out.push(concept);
+        drafts.push(concept);
     }
-    out.sort_by(|a, b| a.id.cmp(&b.id));
-    disambiguate_labels(&mut out);
-    out
+
+    let next_ordinal = assign_stable_ids(&mut drafts, prior, params.carry_over_threshold, next_ordinal);
+
+    drafts.sort_by(|a, b| a.id.cmp(&b.id));
+    disambiguate_labels(&mut drafts);
+    StableBuild {
+        concepts: drafts,
+        next_ordinal,
+    }
+}
+
+/// Greedily carry prior `sem:` ids onto the nearest new draft by centroid
+/// cosine (≥ `tau`, one-to-one), then mint fresh never-reused ids for the rest.
+/// Returns the advanced ordinal allocator. Deterministic: ties break by draft
+/// then prior index.
+fn assign_stable_ids(
+    drafts: &mut [Concept],
+    prior: &[Concept],
+    tau: f32,
+    next_ordinal: u32,
+) -> u32 {
+    // Prior semantic concepts with a usable centroid are the carry-over pool.
+    let pool: Vec<&Concept> = prior
+        .iter()
+        .filter(|c| {
+            c.source == ConceptSource::Embedding
+                && c.id.starts_with(SEM_CONCEPT_PREFIX)
+                && c.centroid.is_some()
+        })
+        .collect();
+
+    // All (cosine, draft_idx, prior_idx) candidate pairs, dimension-compatible.
+    let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
+    for (di, d) in drafts.iter().enumerate() {
+        let Some(dc) = d.centroid.as_ref() else {
+            continue;
+        };
+        for (pi, p) in pool.iter().enumerate() {
+            let pc = p.centroid.as_ref().expect("filtered to Some");
+            if pc.len() == dc.len() {
+                pairs.push((cosine(dc, pc), di, pi));
+            }
+        }
+    }
+    // Descending similarity; deterministic tie-break.
+    pairs.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.1.cmp(&b.1))
+            .then(a.2.cmp(&b.2))
+    });
+
+    let mut claimed_id: Vec<Option<String>> = vec![None; drafts.len()];
+    let mut prior_used = vec![false; pool.len()];
+    for (cos, di, pi) in pairs {
+        if cos < tau {
+            break; // sorted desc — nothing below tau can match
+        }
+        if claimed_id[di].is_none() && !prior_used[pi] {
+            claimed_id[di] = Some(pool[pi].id.clone());
+            prior_used[pi] = true;
+        }
+    }
+
+    // Never reuse a number: start the allocator past every prior ordinal AND
+    // the persisted high-water mark, so a dropped theme's id can't be recycled.
+    let max_prior = pool
+        .iter()
+        .filter_map(|c| c.id.strip_prefix(SEM_CONCEPT_PREFIX))
+        .filter_map(|s| s.parse::<u32>().ok())
+        .max();
+    let mut next = next_ordinal.max(max_prior.map(|m| m + 1).unwrap_or(0));
+
+    for (di, d) in drafts.iter_mut().enumerate() {
+        match claimed_id[di].take() {
+            Some(id) => d.id = id,
+            None => {
+                d.id = format!("{SEM_CONCEPT_PREFIX}{next:04}");
+                next += 1;
+            }
+        }
+    }
+    next
+}
+
+/// Cosine of two equal-length vectors (centroids are unit-normalised, so this
+/// is their dot product). Returns 0.0 for a zero vector.
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
 /// Disambiguate **colliding base labels** (viz-fix A.1). k-means partitions the
@@ -464,6 +587,81 @@ mod tests {
         assert!(build_semantic_concepts(&[], &SemanticParams::default()).is_empty());
         let one = vec![chunk("x", "a.rs", norm(vec![1.0, 0.0]))];
         assert!(build_semantic_concepts(&one, &SemanticParams::default()).is_empty());
+    }
+
+    #[test]
+    fn stable_ids_carry_over_on_same_corpus_recompute() {
+        let params = SemanticParams {
+            k: Some(2),
+            overlap_margin: 0.0,
+            ..Default::default()
+        };
+        let first = build_semantic_concepts_stable(&corpus(), &params, &[], 0);
+        assert_eq!(first.concepts.len(), 2);
+        // Recompute over the same corpus, feeding the prior concepts back in:
+        // identical centroids ⇒ every id carries over (cosine 1.0 ≥ τ).
+        let second =
+            build_semantic_concepts_stable(&corpus(), &params, &first.concepts, first.next_ordinal);
+        let ids_a: Vec<&str> = first.concepts.iter().map(|c| c.id.as_str()).collect();
+        let ids_b: Vec<&str> = second.concepts.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids_a, ids_b, "same corpus ⇒ ids carried over verbatim");
+        // No new ids minted ⇒ the allocator doesn't advance.
+        assert_eq!(second.next_ordinal, first.next_ordinal);
+    }
+
+    #[test]
+    fn carry_over_reuses_id_for_drifted_theme() {
+        let params = SemanticParams {
+            k: Some(2),
+            overlap_margin: 0.0,
+            ..Default::default()
+        };
+        let first = build_semantic_concepts_stable(&corpus(), &params, &[], 0);
+        // Pick one prior concept and slightly drift its centroid (still ≥ 0.85
+        // cosine to its own theme). Its id must be carried over, not re-minted.
+        let target = &first.concepts[0];
+        let drifted_centroid: Vec<f32> = norm(
+            target
+                .centroid
+                .as_ref()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .map(|(i, x)| x + if i == 1 { 0.05 } else { 0.0 })
+                .collect(),
+        );
+        let mut prior = first.concepts.clone();
+        prior[0].centroid = Some(drifted_centroid);
+        let second =
+            build_semantic_concepts_stable(&corpus(), &params, &prior, first.next_ordinal);
+        let ids: std::collections::HashSet<&str> =
+            second.concepts.iter().map(|c| c.id.as_str()).collect();
+        assert!(ids.contains(target.id.as_str()), "drifted theme keeps its id");
+    }
+
+    #[test]
+    fn new_theme_mints_fresh_never_reused_id() {
+        // A prior concept whose centroid matches NEITHER corpus theme (vanished
+        // theme). Its number must not be recycled; new themes mint past the
+        // allocator high-water mark.
+        let mut gone = Concept::new("sem:0005", "Gone", "d", ConceptSource::Embedding);
+        gone.centroid = Some(norm(vec![0.0, 1.0, 0.0])); // orthogonal-ish to both
+        let params = SemanticParams {
+            k: Some(2),
+            overlap_margin: 0.0,
+            ..Default::default()
+        };
+        let out = build_semantic_concepts_stable(&corpus(), &params, &[gone], 6);
+        let ids: Vec<&str> = out.concepts.iter().map(|c| c.id.as_str()).collect();
+        assert!(
+            ids.iter().all(|id| *id != "sem:0005"),
+            "vanished theme's id is never reused: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"sem:0006") && ids.contains(&"sem:0007"),
+            "new themes mint past the allocator: {ids:?}"
+        );
+        assert_eq!(out.next_ordinal, 8, "allocator advanced by the two new ids");
     }
 
     #[test]
