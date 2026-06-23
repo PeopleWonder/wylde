@@ -5,6 +5,69 @@ All notable changes to Wylde are recorded here. Versions follow
 
 ## [Unreleased]
 
+### Added
+
+- **Thought Bubble System — structural awareness for chat.** A floating
+  Thought-Bubble composer layer over the chat input, with a unified
+  `Ctrl+Z` undo timeline spanning both typed text and bubbles. The composer is
+  symbol-aware (a `Ctrl+P` palette resolves code symbols) and, before each turn,
+  an AI context-gather hook performs structural retrieval — it detects symbols
+  and anchors in the prompt, pulls a bounded k-hop code neighbourhood
+  (callers/callees/types), the user profile, short-term memory, and workspace
+  notes, then evicts to a token budget and injects them as named prompt slots.
+- **Anchors & Vocabulary.** A durable anchor/vocabulary layer (workspace + global
+  stores, shared tokenizer, human-friendly aliases) with a Vocabulary tab, an
+  LLM-proposal review queue, a composer "Anchor-this" action, recommended-cleanup
+  / stale-mark / archive semantics, and a graph vocabulary overlay.
+- **User profile.** A `user_profile` module (name / style / freeform rules) with
+  an editable Settings section and an Accept / Edit / Reject queue for
+  model-proposed profile changes; user edits always win, proposals are
+  spam-gated and time-suppressed. Encrypted at rest (DPAPI).
+- **Workspace knowledge-graph verbs.** New read/query surface over the workspace
+  code graph: `workspaces.graph` (cached projection), `symbols.find` (in-memory
+  fuzzy symbol index), `workspaces.symbol_context` (k-hop caller/callee/type
+  neighbourhood with git-blame), `anchors.*`, and scoped chat-history search.
+  A file watcher keeps the graph fresh via per-file delta-upsert (and graph-clean
+  on delete).
+- **Workspaces graph panel.** A native gpui graph visualization for the workspace
+  code graph: force-directed layout (Barnes-Hut, off-thread physics worker),
+  plus deterministic hierarchical and stable-grid layouts with animated 500 ms
+  swaps; space-map navigation (zoom, breadcrumb, exit edges), auto-clustering
+  with expand-in-place, a clusters-first "galaxy" tier with aggregate edges,
+  viewport culling / LOD, fit-to-view, and a settings menu + per-workspace layout
+  profile library. Every colour/size is read from the locked Visual Style v1
+  theme.
+- **Workspaces IDE.** An in-app IDE for the active workspace: jailed
+  `workspaces.fs.*` verbs (read / write / list_dir), a Files + Editor tab shell,
+  a from-scratch gpui code-editor element with syntax highlighting, a lazy
+  file-tree, and cross-panel deep-links (vocab word → graph node, GraphView
+  `focus_node`). An optional `wylde-lsp` service wraps rust-analyzer to provide
+  in-editor diagnostics, completions, and hover.
+- **Concept system + concept-routing (R0–R4).** A concept layer over the index
+  (schema, directory-labeled cheap concepts, then semantic concepts via
+  embedding clustering + centroids + curation) feeding concept-driven retrieval,
+  a freshness signal, and an additive four-colour highlight. A browse surface
+  (Concepts sub-tab, hybrid search, vocab hierarchy). Concept-**routing** ships
+  as an isolated, **default-OFF, byte-identical-when-disabled** crate: toggle +
+  route-and-log → typed-relation store + spreading-activation engine → relations
+  authoring GUI → a curate-before-inject menu with Augment injection →
+  scoped-lens narrowing + typed dependency-tree viz → an eval harness with
+  calibrated thresholds. Augment is the default mode; Replace is opt-in.
+- **Tree-sitter expansion.** Code outline + highlight verbs (with a graph-panel
+  outline card) and added JSON, TOML, YAML, and Bash grammars.
+- **Conversation export / import.** An escape-hatch to move conversations in and
+  out.
+- **Out-of-tree runtime foundation.** Core's tracked tree stays "just Core"; three
+  out-of-tree buckets (`Services/`, `Extensions/`, `Core/Plugins/`) ship empty
+  and are populated out-of-band, each keeping its own `.git`. The lifecycle
+  registry descends into `Services/*`, dynamically supervises siblings, resolves
+  per-service data dirs (`service_paths.json` + `WYLDE_<SVC>_DATA_DIR`), and
+  cleanly no-ops when a bucket is absent. Adds a `cargo xtask build-all`, a
+  compiled-in plugin mechanism (`wylde-plugin-api` SDK + reference plugin), and
+  N8N as a first-class Rust service (`wylde-n8n`).
+- **GUI test harness.** A gpui windowed-test harness with dock-scoping tests
+  across the Workspaces, Chat, Memory, Editor, Files, and Graph surfaces.
+
 ### Changed
 
 - **Full-Rust cutover.** Every remaining Python runtime component was ported
@@ -24,6 +87,41 @@ All notable changes to Wylde are recorded here. Versions follow
   `wylde_check` lint tool (`Core/harness/dev/`) and the stdlib N8N tool
   stubs — is dev-only; `pyproject.toml` carries no runtime dependencies and
   the stale `uv.lock` was removed.
+- **Images extracted to a service.** The Images suite was lifted out of Core into
+  a standalone `wylde-images` service (subtractive removal from Core, with a
+  removability acceptance check).
+- **Security boundary hardened (P1–P4).** The gateway gained an egress SSRF guard
+  (deny-list + DNS-rebinding pin + host allowlist); the extension bridge gained a
+  capability-checked inference gate (`inference.embed` / `inference.chat`
+  forwarders) and a least-privilege, allowlist-scrubbed spawn environment; the
+  webcrawler is now gateway-only for egress, and spawned-process cwd is
+  placeholdered.
+- **Prompt engineering (B-series).** Per-model `num_ctx` overrides now drive the
+  slot budget; windowed conversation history is sent every turn; long-term memory
+  and the auto-summary are injected into dedicated tiers; hardcoded prompts were
+  migrated into a catalog (with a golden-snapshot harness and a lint rule banning
+  literal prompts); a post-turn extraction pass assigns importance; the base
+  instruction is capability-conditioned and the message layout is cache-aware;
+  vectors use int8 scalar quantization.
+- **RAG relevance levers (2.1–2.5).** MMR diversity rerank, dynamic
+  where-warranted top-k, conversation-aware query construction, anchor-biased
+  retrieval, and an active-file / current-focus boost.
+- **Chat scoping.** The Workspaces dock no longer shares the global ChatPanel
+  singleton; global Chat is strictly workspace-free, while in-workspace chat gets
+  a per-workspace conversation list + switcher, create-and-bind, a last-open
+  pointer, and a delete-time sweep of bound conversations.
+- **Index hygiene (P1–P4).** Walk-time exclusion, filter-only purge, a
+  content-hash manifest, and concept stability across re-indexes.
+- **Memory subsystem (M-series).** Tier-7 fit guarantee, pressure-triggered
+  consolidation, reflection dedup + recency-touch damping, slot-liveness net,
+  server-side query embedding for graph queries, and retirement of the old
+  harness RAG subsystem.
+- **Accessibility / theme.** Text tokens lifted toward white (ladder preserved),
+  non-colour cues for placeholder / disabled / ignored states, and real
+  Lucide + Seti file-tree icons replacing the CC0 placeholders.
+- **Dev environment.** Fast dev rebuild loop, theme hot-reload, desktop
+  shortcuts, and a dev-only hot-reload path (`dev.restart_service` verb +
+  backend watcher).
 
 ### Fixed
 
@@ -34,6 +132,24 @@ All notable changes to Wylde are recorded here. Versions follow
   saw an unreadable file and silently minted a stub over live data (losing
   the workspace binding and the working-memory list). Both stores now route
   through the same `wylde_shared::encryption` read/write path.
+- **Re-index no longer exhausts the OS ephemeral-port pool.** Bolt
+  connections are pooled and embed requests rate-capped, and graph
+  upsert/relate calls are batched with their own timeout, so whole-repo
+  indexing stops crashing the runner.
+- **Dev stage deploy-gap.** `wylde-dev.ps1` re-seeds a stale `target-dev/stage`
+  from the freshest build (fail-soft when the binary is locked), so newly-added
+  verbs stop `no_action`-ing in dev.
+- **Slow pipe verbs.** A `call_with_deadline` path gives long-running verbs
+  (re-index, graph) a generous deadline instead of timing out.
+- **GUI responsiveness.** Surfaced previously-swallowed failures across the
+  memory / devices / images / shell / chat surfaces, made graph degrade-retry
+  clickable, and wired the vocab undo chord. Shaped-text `TextInput` with real
+  glyph metrics (in-input wavy underline).
+- **Lifecycle / ollama robustness.** Memgraph/Neo4j spawn anchored to an absolute
+  root; a staleness guard flags running services on a rebuilt binary; implicit
+  `:latest` tags resolve in ollama `model_matches`; the Start-Ollama button now
+  starts the upstream daemon; service-down is distinguished from out-of-date in
+  `no_action`.
 
 ## [0.1.0-alpha.1] — 2026-06-04
 
