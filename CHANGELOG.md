@@ -7,6 +7,25 @@ All notable changes to Wylde are recorded here. Versions follow
 
 ### Added
 
+- **File organizer — `wylde-organize` Service + Organize panel (v1).** An
+  autonomous whole-PC file organizer: scan a chosen scope → propose a read-only
+  plan (group loose files into typed folders + junk/duplicate/stale/temp removal
+  candidates) → review/edit → apply reversibly → undo. Safety is the spine:
+  narrow default scope (`user_data`; whole-profile opt-in; whole-drive opt-in +
+  typed confirmation), a hard non-overridable protected-path denylist
+  (OS dirs / Program Files / AppData / credentials / Wylde footprint / system
+  files / drive roots) re-asserted at apply, removals to the OS recycle bin
+  (never hard delete), dry-run-always, no silent overwrite, and an append-only
+  undo journal. Ambiguous-file grouping uses the brokered `wylde-ollama` pipe
+  only. A first-party native gpui Organize panel drives it (greys out when the
+  service is absent). The maintenance watcher is deferred to phase 1.1; the
+  service ships `enabled:false` (opt-in for a whole-PC-capable tool).
+- **`wylde-fswalk` shared detector crate.** The walk-time `ExclusionMatcher`,
+  the metadata walk, the sha256 content-hash, and a new content-hash duplicate
+  grouper were extracted out of `wylde-workspaces`' RAG indexer into a shared
+  crate so the organizer reuses the identical detection logic without
+  cross-importing workspaces internals (`wylde_check` rule 26). Pure logic, no
+  storage; the indexer keeps its chunker and depends on the new crate.
 - **Thought Bubble System — structural awareness for chat.** A floating
   Thought-Bubble composer layer over the chat input, with a unified
   `Ctrl+Z` undo timeline spanning both typed text and bubbles. The composer is
