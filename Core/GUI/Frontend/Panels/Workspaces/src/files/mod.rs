@@ -568,6 +568,6 @@ mod tests {
         };
         assert_eq!(spec("target", Kind::Dir, false), "package");
         assert_eq!(spec("src", Kind::Dir, false), "folder");
-        assert_eq!(spec("main.rs", Kind::File, false), "code");
+        assert_eq!(spec("main.rs", Kind::File, false), "rust");
     }
 }
