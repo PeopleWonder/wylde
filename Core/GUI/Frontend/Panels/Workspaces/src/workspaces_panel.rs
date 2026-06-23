@@ -481,12 +481,75 @@ impl WorkspacesPanel {
     /// "Indexing…" flag the click set. Re-index never changes the MRU set,
     /// so we skip the refresh and update the clicked row in place.
     pub fn spawn_reindex(id: String, cx: &mut Context<Self>) {
+        // Shared completion flag: the reindex task sets it when the (long) verb
+        // returns so the progress poller stops. The poller keeps the card's
+        // live progress fresh meanwhile — `workspaces.reindex` is one blocking
+        // call that carries no intermediate frames, so without this the bar
+        // would never move until the very end.
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Self::spawn_progress_poller(id.clone(), done.clone(), cx);
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let outcome = reindex_workspace(&id).await;
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
             let _ = this.update(app_cx, |panel, cx| {
                 panel.apply_reindex_outcome(&id, &outcome);
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    /// Poll `list_mru` every ~600ms while a reindex runs and fold the in-flight
+    /// workspace's live progress snapshot into its row, so the card shows a
+    /// moving bar + ETA. The backend service handles `list_mru` on its own
+    /// connection task (concurrent with the embed loop, which yields on every
+    /// paced batch), so the poll returns the freshly-written `RagState`
+    /// progress promptly. Stops on the `done` flag (set when the reindex verb
+    /// returns) or after a generous safety cap.
+    fn spawn_progress_poller(
+        id: String,
+        done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        cx: &mut Context<Self>,
+    ) {
+        use std::sync::atomic::Ordering;
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            // ~10 min ceiling (1000 × 600ms) — a backstop in case the done flag
+            // is never observed; the reindex deadline is itself 300s.
+            for _ in 0..1000 {
+                if done.load(Ordering::Relaxed) {
+                    break;
+                }
+                app_cx
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(600))
+                    .await;
+                if done.load(Ordering::Relaxed) {
+                    break;
+                }
+                let Ok(rows) = list_workspaces().await else {
+                    continue;
+                };
+                let fresh = rows.into_iter().find(|w| w.id == id).map(|w| w.progress);
+                let _ = this.update(app_cx, |panel, cx| {
+                    // The reindex task may have completed between the poll and
+                    // this update — don't resurrect the cleared state.
+                    if done.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    if let Some(progress) = fresh {
+                        if let Some(w) = panel.workspaces.iter_mut().find(|w| w.id == id) {
+                            // Keep the optimistic in-progress flag; adopt the
+                            // live snapshot (and surface its file total).
+                            w.indexing = true;
+                            if let Some(p) = &progress {
+                                w.file_count = Some(p.files_total.max(w.file_count.unwrap_or(0)));
+                            }
+                            w.progress = progress;
+                            cx.notify();
+                        }
+                    }
+                });
+            }
         })
         .detach();
     }
@@ -509,6 +572,9 @@ impl WorkspacesPanel {
         };
         if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == id) {
             ws.indexing = false;
+            // The pass is over — drop the live progress snapshot so the card
+            // reverts to its static file-count / last-indexed strip.
+            ws.progress = None;
             if let Ok(file_count) = &result {
                 ws.file_count = *file_count;
                 ws.last_indexed_at = Some("just now".to_owned());
@@ -1064,13 +1130,21 @@ fn workspace_card(
     // ENTERS the workspace, which activates it, so a separate Switch was
     // redundant.) Each button calls `stop_propagation` so it acts without
     // also entering the card underneath it.
+    // Button label tracks live progress: a determinate pass shows the percent
+    // ("Indexing 46%"), the indeterminate walk shows "Indexing…", idle shows
+    // "Re-index".
+    let reindex_label = if ws.indexing {
+        ws.progress
+            .as_ref()
+            .and_then(|p| p.percent())
+            .map(|pct| format!("Indexing {pct}%"))
+            .unwrap_or_else(|| "Indexing…".to_owned())
+    } else {
+        "Re-index".to_owned()
+    };
     row = row.child(action_button(
         ElementId::Name(format!("ws-reindex::{}", ws.id).into()),
-        if ws.indexing {
-            "Indexing…"
-        } else {
-            "Re-index"
-        },
+        &reindex_label,
         cx.listener(move |this: &mut WorkspacesPanel, _ev, _window, cx| {
             cx.stop_propagation();
             // Optimistic in-progress flip so the button reads "Indexing…"
@@ -1121,35 +1195,100 @@ where
 /// `list_mru` (F4 joined RagState into it), so this survives a reload instead
 /// of reverting to "never". Every token here is real status — no decoration.
 fn meta_strip(ws: &WorkspaceSummary) -> gpui::Div {
+    // While a re-index runs, the strip becomes a live progress affordance
+    // (status line + bar + percent + "X / Y files" + ETA) instead of the static
+    // file-count / last-indexed row.
+    if ws.indexing {
+        return index_progress_block(ws);
+    }
     let chunks = ws
         .file_count
         .map(|n| format!("{n} files"))
         .unwrap_or_else(|| "—".into());
     let last = ws.last_indexed_at.clone().unwrap_or_else(|| "never".into());
-    let mut strip = div()
+    div()
         .flex()
         .flex_row()
         .items_center()
         .gap_3()
         .font_family(FAMILY_INTER)
         .text_size(px(size::MICRO))
-        .text_color(rgb(pack(TEXT_MUTED)));
-    // A live indexing indicator leads the strip when a re-index is running, so
-    // the card's status reflects the in-progress work (the Re-index button also
-    // reads "Indexing…", but the card status must stand on its own).
-    if ws.indexing {
-        strip = strip.child(
-            div()
-                .px_1()
-                .rounded(px(3.0))
-                .bg(rgb(pack(BRAND_DIM)))
-                .text_color(rgb(pack(TEXT_PRIMARY)))
-                .child(SharedString::from("Indexing…")),
-        );
-    }
-    strip
+        .text_color(rgb(pack(TEXT_MUTED)))
         .child(SharedString::from(chunks))
         .child(SharedString::from(format!("Last index: {last}")))
+}
+
+/// Live re-index progress for a card: a status line ("Embedding · 46% · 120 /
+/// 287 files · ~2m 30s remaining") above a thin progress bar. Before the total
+/// is known (the walk phase) it shows an indeterminate state — a "Scanning
+/// files…" label and a static partial-fill bar — then switches to the
+/// determinate bar + ETA once counting is done. Matches the model-download
+/// bar's track/fill styling (`SURFACE_900` track, `BRAND` fill, `relative`
+/// width) so it reads as the same family.
+fn index_progress_block(ws: &WorkspaceSummary) -> gpui::Div {
+    let progress = ws.progress.as_ref();
+    // Compose the status line + the bar fill ratio from the snapshot.
+    let (status, ratio): (String, Option<f64>) = match progress {
+        Some(p) => match p.percent() {
+            Some(pct) => {
+                // Determinate: label · percent · files · ETA.
+                let mut parts = vec![format!("{} · {pct}%", p.phase_label())];
+                if p.files_total > 0 {
+                    parts.push(format!(
+                        "{} / {} files",
+                        p.files_done.min(p.files_total),
+                        p.files_total
+                    ));
+                }
+                if let Some(eta) = p.eta_label() {
+                    parts.push(eta);
+                }
+                (parts.join("  ·  "), p.ratio())
+            }
+            // Indeterminate (walk/chunk): no total yet, so no percent/ETA.
+            None => (format!("{}…", p.phase_label()), None),
+        },
+        // Indexing flag set but no snapshot yet (the optimistic click instant).
+        None => ("Indexing…".to_owned(), None),
+    };
+
+    let bar_fill = match ratio {
+        // Determinate fill: brand bar to the exact ratio.
+        Some(r) => div()
+            .h(px(4.0))
+            .w(relative(r.clamp(0.0, 1.0) as f32))
+            .bg(rgb(pack(BRAND)))
+            .rounded(px(2.0)),
+        // Indeterminate: a static dim partial fill (gpui's static render has no
+        // marquee), signalling "working, total unknown" without a fake percent.
+        None => div()
+            .h(px(4.0))
+            .w(relative(0.4))
+            .bg(rgb(pack(BRAND_DIM)))
+            .rounded(px(2.0)),
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .w_full()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(SharedString::from(status)),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(4.0))
+                .bg(rgb(pack(SURFACE_900)))
+                .rounded(px(2.0))
+                .overflow_hidden()
+                .child(bar_fill),
+        )
 }
 
 fn empty_state() -> gpui::Div {
