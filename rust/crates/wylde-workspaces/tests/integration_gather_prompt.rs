@@ -177,6 +177,19 @@ async fn gather_prompt_degrades_then_trips_breaker_when_service_dies() {
         .await
         .expect("create");
     let ws_id = ws["id"].as_str().expect("ws id").to_owned();
+    // Disable RAG for the healthy baseline call. This test's subject is the
+    // transport/breaker behaviour AFTER the service dies, not retrieval — the
+    // pre-kill call only needs to legitimately succeed to prove the breaker
+    // starts closed. With RAG on, `gather_prompt`'s embed hops over IPC to the
+    // `wylde-ollama` sibling service (see `embeddings::embed_batch`), which this
+    // harness deliberately does not spawn; that hop would then blow the 2s
+    // Medium budget and the baseline would time out before we ever reach the
+    // kill. Disabling RAG isolates the breaker assertions from a live-embedder
+    // dependency (the positive test does the same for the same reason).
+    client
+        .update(serde_json::json!({ "workspace_id": ws_id, "rag_enabled": false }))
+        .await
+        .expect("disable rag");
     // Healthy call works before the kill.
     client
         .gather_prompt(&ws_id, "hi")
