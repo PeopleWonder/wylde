@@ -206,6 +206,11 @@ fn def_with_index_state(def: &registry::WorkspaceDefinition) -> Value {
         obj.insert("file_count".to_owned(), json!(st.file_count));
         obj.insert("chunk_count".to_owned(), json!(st.chunk_count));
         obj.insert("last_error".to_owned(), json!(st.last_error));
+        // Live progress (phase / counts / rate / ETA) rides the same row so the
+        // GUI can render a determinate bar + ETA mid-index; absent when idle.
+        if let Some(p) = &st.progress {
+            obj.insert("progress".to_owned(), serde_json::to_value(p).unwrap_or(Value::Null));
+        }
     }
     v
 }
@@ -469,6 +474,7 @@ mod tests {
                 file_count: 7,
                 chunk_count: 42,
                 last_error: None,
+                progress: None,
             },
         )
         .unwrap();

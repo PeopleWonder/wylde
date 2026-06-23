@@ -75,6 +75,13 @@ pub struct RagState {
     /// Last failure message (e.g. embedder unreachable), if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Live progress of the in-flight pass (phase / counts / rate / ETA),
+    /// present only while `indexing` is true. Joined onto each `list_mru` row
+    /// so the GUI renders a real progress bar + ETA instead of a bare
+    /// "Indexing…". Additive + `Option`, so a not-indexing state and older
+    /// readers are unaffected. See [`super::progress::IndexProgress`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<super::progress::IndexProgress>,
 }
 
 impl RagState {
@@ -202,6 +209,7 @@ mod tests {
             file_count: 2,
             chunk_count: 5,
             last_error: None,
+            progress: None,
         };
         save_state(ws, &st).unwrap();
         assert_eq!(load_state(ws), st);
