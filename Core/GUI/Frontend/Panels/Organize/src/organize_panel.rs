@@ -370,8 +370,12 @@ impl OrganizePanel {
         ))
     }
 
-    fn plan_review(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let proposal = self.proposal.as_ref().expect("guarded by caller");
+    fn plan_review(&self, cx: &mut Context<Self>) -> gpui::Div {
+        // Caller (render) only invokes this when a proposal exists; a let-else
+        // keeps the render path panic-free regardless (wylde_check rule 44).
+        let Some(proposal) = self.proposal.as_ref() else {
+            return div();
+        };
         let view = &proposal.view;
 
         let mut col = div()
