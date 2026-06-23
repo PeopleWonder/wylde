@@ -1,0 +1,28 @@
+[package]
+name = "wylde-fswalk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared filesystem-detection logic for Wylde: the layered .gitignore/.wyldeignore/deny-list ExclusionMatcher, the metadata-only walk (path/mtime/size), the sha256 content-hash fingerprint, and a content-hash duplicate grouper. Pure logic, no storage — the common detector both the workspaces RAG indexer and the wylde-organize Service depend on instead of cross-importing each other (wylde_check rule 26)."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Nested-`.gitignore`-aware matcher for the exclusion predicate. Renamed to
+# `ignore_crate` because consumers (wylde-workspaces) carry a local `ignore`
+# module; the rename keeps the path unambiguous there. We use only its
+# `gitignore::Gitignore` matcher, never its parallel `WalkBuilder`.
+ignore_crate = { version = "0.4", package = "ignore" }
+# SHA-256 + hex for the per-file content fingerprint (`hash_file`), the same
+# 16-hex-char discipline the RAG chunk ids use, so a moved/extracted detector
+# hashes a file identically to the indexer.
+sha2 = "0.10"
+hex = "0.4"
+# Debug-level skip diagnostics on unreadable entries during a walk.
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

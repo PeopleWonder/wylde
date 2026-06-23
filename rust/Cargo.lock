@@ -5362,6 +5362,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wylde-fswalk"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "hex",
+ "ignore",
+ "sha2",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "wylde-gateway"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -5666,7 +5677,6 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "hex",
- "ignore",
  "neo4rs",
  "notify",
  "nucleo-matcher",
@@ -5679,6 +5689,7 @@ dependencies = [
  "tracing",
  "uuid",
  "wylde-concept-routing",
+ "wylde-fswalk",
  "wylde-prebuild-guard",
  "wylde-shared",
  "wylde-treesitter",

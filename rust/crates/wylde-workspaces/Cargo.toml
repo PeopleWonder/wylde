@@ -21,6 +21,12 @@ wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
 
 [dependencies]
 wylde-shared = { path = "../wylde-shared" }
+# Shared filesystem-detection library (file-organizer build, 2026-06-23). The
+# RAG indexer's exclusion matcher + metadata-walk + content-hash were extracted
+# here so the `wylde-organize` Service can reuse the exact same detectors. The
+# `rag/indexer/exclude.rs` + `rag/indexer/walk.rs` modules now re-export from
+# this crate; the chunker stays local. Pure logic, no storage.
+wylde-fswalk = { path = "../wylde-fswalk" }
 # Concept-routing decision layer (concept-routing plan R0/R1). The isolated,
 # removable routing crate; this crate is the server-side host where the
 # centroids + the RAG query embed live, so it runs the pure router in-process
@@ -51,14 +57,9 @@ notify = "6"
 # reuses memchr + unicode-segmentation already in the tree, so it adds only
 # itself. Easily clears the <50ms / 5k-symbol fuzzy budget (Plan v2 §2.5).
 nucleo-matcher = "0.3"
-# Nested-`.gitignore`-aware matcher for the RAG walk-time exclusion (index
-# hygiene P1, `rag/indexer/exclude.rs`). Renamed to `ignore_crate` because this
-# crate already has a local `ignore` module (the symbol-ignore tier, Slice M) —
-# a bare `ignore` path would be ambiguous (E0659). We use only its
-# `gitignore::Gitignore` matcher (per-directory, lazily built), NOT its parallel
-# `WalkBuilder` — the hand-rolled walk + chunker stays; we just consult the
-# matcher. Pulls globset/bstr (both already cached) + a few small transitives.
-ignore_crate = { version = "0.4", package = "ignore" }
+# The `.gitignore`-aware exclusion matcher moved to `wylde-fswalk` (file-
+# organizer build, 2026-06-23), so the `ignore` crate is now a transitive dep
+# of fswalk rather than a direct dep here.
 
 [dev-dependencies]
 # The integration round-trip tests drive the service through the shared
