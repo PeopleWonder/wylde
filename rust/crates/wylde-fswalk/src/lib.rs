@@ -36,7 +36,7 @@ pub mod stats;
 
 // Flat re-exports so a consumer can `use wylde_fswalk::{ExclusionMatcher,
 // FileStat, walk_file_stats, hash_file}` without threading the module path.
-pub use dedup::{find_duplicates_under, group_duplicates, DuplicateGroup};
+pub use dedup::{find_duplicates_under, group_duplicates, group_file_stats, DuplicateGroup};
 pub use exclude::ExclusionMatcher;
 pub use stats::{
     canonical_path, hash_file, is_indexable_path, mtime_secs, walk_file_stats, walk_preview,

@@ -9160,6 +9160,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wylde-panel-organize"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "serde",
+ "serde_json",
+ "wylde-gpui-input",
+ "wylde-gui-pipe",
+ "wylde-gui-test-support",
+ "wylde-theme",
+]
+
+[[package]]
 name = "wylde-panel-registry"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -9172,6 +9186,7 @@ dependencies = [
  "wylde-panel-devices",
  "wylde-panel-memory",
  "wylde-panel-models",
+ "wylde-panel-organize",
  "wylde-panel-remote-access",
  "wylde-panel-settings",
  "wylde-panel-tools",

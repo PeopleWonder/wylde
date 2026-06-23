@@ -131,6 +131,13 @@ pub fn default_first_party() -> FactoryMap {
     // Service — it now surfaces as a loopback iframe via the
     // Extensions/wylde-images stub, so there is no compiled-in factory.)
 
+    // Organize panel — file-organizer build (the `wylde-organize` Service
+    // cockpit: scope picker, plan review, apply, undo).
+    m.register(
+        "wylde_panel_organize::OrganizePanel::view",
+        Box::new(wylde_panel_organize::OrganizePanel::view),
+    );
+
     m
 }
 
