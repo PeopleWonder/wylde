@@ -155,6 +155,19 @@ def check_import_paths_rust() -> List[Finding]:
                 # surface like wylde_shared — importable everywhere.
                 if imported == "wylde_plugin_api":
                     continue
+                # File-organizer build (2026-06-23): `wylde-fswalk` is a
+                # pure-logic shared DETECTOR library (the layered
+                # ExclusionMatcher, the metadata-walk, the content-hash, the
+                # duplicate-grouper) — no service logic, no peer surface being
+                # bypassed, no storage. It was extracted out of
+                # `wylde-workspaces`' RAG indexer precisely SO crates stop
+                # cross-importing each other's detection internals: both
+                # `wylde-workspaces` and the `wylde-organize` Service depend on
+                # this one shared crate. Same "shared authoring surface like
+                # wylde_shared" rationale as wylde_plugin_api — importable
+                # everywhere.
+                if imported == "wylde_fswalk":
+                    continue
                 # TX S4: plugin crates are linked by the harness host
                 # only (compile-time discovery — see
                 # rust/crates/wylde-harness/src/plugins/mod.rs).

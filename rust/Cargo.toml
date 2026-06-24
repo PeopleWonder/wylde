@@ -55,6 +55,13 @@ members = [
     # wylde-harness/src/plugins/mod.rs). The `hello_wylde` seed crate stays
     # on disk under `Core/Plugins/` (git-ignored) as the worked example.
     "crates/wylde-plugin-api",
+    # Shared filesystem-detection library (file-organizer build, 2026-06-23).
+    # Extracted out of `wylde-workspaces`' RAG indexer so the `wylde-organize`
+    # Service reuses the SAME ExclusionMatcher / metadata-walk / content-hash /
+    # duplicate-grouper detectors instead of cross-importing workspaces
+    # internals (wylde_check rule 26). Pure logic, no storage; both
+    # `wylde-workspaces` and the Service depend on it.
+    "crates/wylde-fswalk",
     # `crates/wylde-memgraph` removed 2026-05-25 — the memgraph client is
     # an in-process submodule of `wylde-harness/src/memory/memgraph/` per
     # the one-crate harness convention; the bundled Neo4j JVM stays
