@@ -31,6 +31,7 @@
 pub mod delta;
 pub mod exclude;
 pub mod graph_writer;
+pub mod lexical;
 pub mod lock;
 pub mod manifest;
 pub mod purge;
