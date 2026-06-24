@@ -1,0 +1,38 @@
+[package]
+name = "wylde-panel-organize"
+description = "Wylde Organize panel — native gpui cockpit over the `wylde-organize` Service: scope picker (tier gates + typed drive confirmation), read-only plan review with per-op accept/reject, apply, and undo. Greys out when the service is absent."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens — every panel imports the same palette.
+wylde-theme = { path = "../../Theme" }
+# Pipe surface — the panel talks to `wylde-organize` over its named pipe and
+# hosts the cross-panel nav bus.
+wylde-gui-pipe = { path = "../../Pipe" }
+# Single-line text inputs for the optional roots field + the typed drive
+# confirmation phrase.
+wylde-gpui-input = { path = "../../Input" }
+
+# gpui — every panel imports the same set: div builders, Render, etc.
+gpui.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true
+
+# ── DEV-ONLY (windowed gpui tests) ───────────────────────────────────
+# Same seam the Chat/Workspaces/Devices panels adopt (docs/gui-testing.md).
+# dev-dependencies only, so resolver = "2" never unifies `test-support` into
+# the shipped Shell's normal lib.
+[dev-dependencies]
+wylde-gui-test-support = { path = "../../test-support" }
+gpui = { workspace = true, features = ["test-support"] }
+wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
+serde_json.workspace = true
