@@ -327,6 +327,10 @@ impl ChatPanel {
                 .with_min_height(60.0)
                 .with_max_height(180.0)
                 .with_element_key("chat-prompt")
+                // Typed text in true white (TEXT_PRIMARY): the composer
+                // otherwise inherits gpui's dark default, which is near-
+                // invisible on the bar's SURFACE_900 fill.
+                .with_text_color(TEXT_PRIMARY)
                 // Unified undo (§5.9): the prompt's Ctrl+Z chords bubble to
                 // `on_panel_key`, which interleaves text undo with bubble
                 // ops by timeline recency. Only this input opts in.
