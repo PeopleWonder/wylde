@@ -123,6 +123,21 @@ All notable changes to Wylde are recorded here. Versions follow
   shortcuts, and a dev-only hot-reload path (`dev.restart_service` verb +
   backend watcher).
 
+### Security
+
+- **Dependency advisory sweep (RustSec / GitHub Dependabot).** Bumped two
+  transitive crates to their patched releases across the affected lockfiles:
+  `quinn-proto` 0.11.14 → 0.11.15 (RUSTSEC-2026-0185, HIGH — remote memory
+  exhaustion from unbounded out-of-order QUIC stream reassembly; pulled via
+  `reqwest`/`quinn` in the `rust/`, `Core/GUI/`, and `Services/wylde-images/`
+  workspaces) and `memmap2` 0.9.10 → 0.9.11 (RUSTSEC-2026-0186, unsound —
+  unchecked pointer offset; `Core/GUI/`). Lockfile-only patch bumps; no manifest
+  or API changes. Remaining advisories are RustSec *unmaintained* notices with no
+  patched release (`async-std`, the GTK3 `gtk`/`gdk`/`atk` binding family,
+  `glib` unsoundness, `paste`, `instant`, `backoff`, `bincode`, `fxhash`,
+  `proc-macro-error`/`proc-macro-error2`, `rustls-pemfile`); these are transitive
+  and deferred — clearing them needs upstream/major migrations, not a bump.
+
 ### Fixed
 
 - **Short-term memory store now honours encryption-at-rest (OI-14).** It
