@@ -42,6 +42,7 @@ pub mod walk;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 
+use crate::rag::LexicalConfig;
 use crate::registry::{self, WorkspaceDefinition};
 use store::{IndexedChunk, RagState};
 
@@ -304,6 +305,11 @@ async fn persist_full(workspace_id: &str, chunks: &[IndexedChunk]) -> IndexOutco
                 if let Err(e) = manifest::save(workspace_id, &manifest::build_full(chunks)) {
                     tracing::warn!("workspaces.rag: write manifest failed for {workspace_id}: {e}");
                 }
+                // Lexical half (best-effort, gated on the master toggle): rebuild
+                // the BM25 index from the SAME chunk slice so it can never drift
+                // from chunks.jsonl. Under the index lock alongside the vector
+                // pair. OFF ⇒ no-op (no lexical dir created), identity preserved.
+                sync_lexical_full(workspace_id, chunks);
             }
             Err(e) => tracing::warn!("workspaces.rag: write chunks failed for {workspace_id}: {e}"),
         }
@@ -313,6 +319,48 @@ async fn persist_full(workspace_id: &str, chunks: &[IndexedChunk]) -> IndexOutco
         chunk_count: chunks.len() as u32,
         error: None,
     }
+}
+
+/// Rebuild the lexical (BM25) index from a chunk slice — gated on the
+/// [`LexicalConfig`] master toggle, best-effort (a tantivy failure is logged,
+/// never fatal to the vector index, mirroring the graph half). **OFF ⇒ no-op**,
+/// so the lexical dir is never even created and retrieval stays byte-identical
+/// to today. Built from the post-`ExclusionMatcher` chunk set, never a fresh
+/// walk, so it inherits the index hygiene and can't drift (§2.4).
+fn sync_lexical_full(workspace_id: &str, chunks: &[IndexedChunk]) {
+    if !LexicalConfig::current().enabled {
+        return;
+    }
+    if let Err(e) = lexical::build_from_chunks(workspace_id, chunks) {
+        tracing::warn!("workspaces.rag.lexical: full build failed for {workspace_id}: {e}");
+    }
+}
+
+/// One-time backfill (§2.5): when the toggle is ON and a workspace has chunks
+/// but no `lexical/` index yet (it was indexed before lexical existed, or the
+/// toggle was just flipped on), build the BM25 index once from the persisted
+/// chunks — **no embedder, no Ollama** (BM25 is local), so even a 16k-chunk
+/// index backfills in seconds. No-op when OFF, when the index already exists, or
+/// when there are no chunks. This is what makes turning the toggle ON a true
+/// switch and not a "re-index everything" event.
+///
+/// Best-effort + idempotent: a concurrent backfill loses the tantivy writer lock
+/// and is skipped (logged), the winner builds the index. Called lazily from the
+/// search path (L4) so a flip-on without a reindex still works on first query.
+pub fn ensure_lexical_backfill(workspace_id: &str) {
+    if !LexicalConfig::current().enabled || lexical::has_lexical_index(workspace_id) {
+        return;
+    }
+    let chunks = store::load_chunks(workspace_id);
+    if chunks.is_empty() {
+        return;
+    }
+    tracing::info!(
+        "workspaces.rag.lexical: backfilling BM25 index for {workspace_id} \
+         ({} chunks, no re-embed)",
+        chunks.len()
+    );
+    sync_lexical_full(workspace_id, &chunks);
 }
 
 /// Persist a **delta** pass: write the merged chunks, then the manifest built
@@ -467,5 +515,102 @@ mod tests {
         let plan = manifest::diff(&prior, &stats, &legacy, |_| Some("h".into()));
         assert!(plan.keep_paths.contains("/a.rs"), "lagging chunk kept, not lost");
         assert!(plan.to_embed.is_empty());
+    }
+
+    // ── L2: lexical full-build + backfill (gated on the master toggle) ───────
+
+    /// Build a content-bearing chunk (the lexical index needs real tokens to
+    /// score, unlike the vector-only `idx` helper above).
+    fn lex_chunk(id: &str, path: &str, content: &str) -> IndexedChunk {
+        IndexedChunk {
+            id: id.to_owned(),
+            path: path.to_owned(),
+            chunk_idx: 0,
+            content: content.to_owned(),
+            mtime: 100.0,
+            start_line: 1,
+            end_line: 1,
+            vector: vec![0.1, 0.2],
+        }
+    }
+
+    /// Flip the process-global lexical toggle ON for the body of a test, then
+    /// reset it OFF on drop so sibling tests (which share the cache) aren't left
+    /// seeing it enabled. Call only inside a `TestEnv` (which holds the env lock
+    /// and points `WYLDE_DATA_DIR` at a scratch dir).
+    struct LexicalOn;
+    impl LexicalOn {
+        fn enable() -> Self {
+            LexicalConfig::persist(LexicalConfig {
+                enabled: true,
+                ..LexicalConfig::default()
+            })
+            .expect("enable lexical");
+            LexicalOn
+        }
+    }
+    impl Drop for LexicalOn {
+        fn drop(&mut self) {
+            let _ = LexicalConfig::persist(LexicalConfig::default());
+        }
+    }
+
+    #[tokio::test]
+    async fn persist_full_builds_lexical_when_enabled() {
+        let env = crate::test_support::TestEnv::new();
+        let _on = LexicalOn::enable();
+        let def = registry::create(&env.ws_path("lx-full"), None);
+        let chunks = vec![
+            lex_chunk("c0", "/src/search.rs", "const ANCHOR_BOOST_CAP: f64 = 0.30;"),
+            lex_chunk("c1", "/src/notes.md", "prose about boosting things"),
+        ];
+        persist_full(&def.id, &chunks).await;
+        // The lexical index was built alongside the vectors and is queryable.
+        assert!(lexical::has_lexical_index(&def.id), "lexical/ built when ON");
+        let hits = lexical::search(&def.id, "ANCHOR_BOOST_CAP", 5);
+        assert_eq!(hits[0].0, "c0", "BM25 finds the exact token");
+    }
+
+    #[tokio::test]
+    async fn persist_full_skips_lexical_when_disabled() {
+        let env = crate::test_support::TestEnv::new();
+        // Toggle OFF (the default) — ensure the cache is OFF for this test.
+        LexicalConfig::persist(LexicalConfig::default()).unwrap();
+        let def = registry::create(&env.ws_path("lx-off"), None);
+        persist_full(&def.id, &[lex_chunk("c0", "/a.rs", "hello world")]).await;
+        // No lexical dir is created when OFF — identity with today.
+        assert!(
+            !lexical::has_lexical_index(&def.id),
+            "OFF ⇒ no lexical index (byte-identical to today)"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_backfill_builds_from_existing_chunks_without_reembed() {
+        let env = crate::test_support::TestEnv::new();
+        let def = registry::create(&env.ws_path("lx-backfill"), None);
+        // A pre-lexical index: chunks on disk, no lexical/ yet.
+        store::save_chunks(
+            &def.id,
+            &[lex_chunk("c0", "/src/run_it_handler.rs", "fn run_it_handler() {}")],
+        )
+        .unwrap();
+        assert!(!lexical::has_lexical_index(&def.id));
+
+        // OFF ⇒ backfill is a no-op.
+        LexicalConfig::persist(LexicalConfig::default()).unwrap();
+        ensure_lexical_backfill(&def.id);
+        assert!(!lexical::has_lexical_index(&def.id), "no backfill when OFF");
+
+        // Flip ON ⇒ the one-time backfill builds the index from the chunks
+        // already on disk (no embedder involved).
+        let _on = LexicalOn::enable();
+        ensure_lexical_backfill(&def.id);
+        assert!(lexical::has_lexical_index(&def.id), "backfilled when ON");
+        assert_eq!(lexical::search(&def.id, "run_it_handler", 5)[0].0, "c0");
+
+        // Idempotent: a second backfill is a no-op (index already present).
+        ensure_lexical_backfill(&def.id);
+        assert!(lexical::has_lexical_index(&def.id));
     }
 }
