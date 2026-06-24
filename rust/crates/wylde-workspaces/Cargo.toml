@@ -59,6 +59,14 @@ nucleo-matcher = "0.3"
 # `WalkBuilder` — the hand-rolled walk + chunker stays; we just consult the
 # matcher. Pulls globset/bstr (both already cached) + a few small transitives.
 ignore_crate = { version = "0.4", package = "ignore" }
+# Pure-Rust BM25 inverted index for the lexical retrieval arm (lexical-bm25
+# plan, `rag/indexer/lexical.rs`). Deliberately chosen over the rejected
+# `lancedb` (`rag/indexer/store.rs:13-27`): tantivy needs **no external `protoc`
+# toolchain** and builds clean on Windows, and we are NOT replacing the
+# brute-force vector scan — this adds a lexical *signal* fused via RRF, not a
+# storage-engine swap. Gated behind the `LexicalConfig` master toggle
+# (default OFF ⇒ the dep is linked but never exercised).
+tantivy = "0.22"
 
 [dev-dependencies]
 # The integration round-trip tests drive the service through the shared
