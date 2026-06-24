@@ -211,9 +211,7 @@ pub fn register_all(
             .take(factory_key)
             .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
         registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty {
-                service: "core".into(),
-            },
+            origin: PanelOrigin::FirstParty { service: "core".into() },
             entry: PanelEntry {
                 id: "tabulate".into(),
                 title: "Tabulate".into(),
@@ -221,9 +219,7 @@ pub fn register_all(
                 order: 47,
                 version: "0.1.0".into(),
                 required_services: vec!["wylde-tabulate".into()],
-                source: PanelSource::GpuiView {
-                    factory: factory_key.into(),
-                },
+                source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
         })?;
