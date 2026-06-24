@@ -131,6 +131,13 @@ pub fn default_first_party() -> FactoryMap {
     // Service — it now surfaces as a loopback iframe via the
     // Extensions/wylde-images stub, so there is no compiled-in factory.)
 
+    // Tabulate panel — file→spreadsheet cockpit over the `wylde-tabulate`
+    // Service (PHI-safe Probe + Extract).
+    m.register(
+        "wylde_panel_tabulate::TabulatePanel::view",
+        Box::new(wylde_panel_tabulate::TabulatePanel::view),
+    );
+
     m
 }
 
@@ -190,6 +197,12 @@ mod tests {
     fn default_map_contains_remote_access_panel() {
         let m = default_first_party();
         assert!(m.contains("wylde_panel_remote_access::RemoteAccessPanel::view"));
+    }
+
+    #[test]
+    fn default_map_contains_tabulate_panel() {
+        let m = default_first_party();
+        assert!(m.contains("wylde_panel_tabulate::TabulatePanel::view"));
     }
 
     #[test]

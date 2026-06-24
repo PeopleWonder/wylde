@@ -11,6 +11,7 @@
 //!   - Core/GUI/Frontend/Panels/Models/manifest.json
 //!   - Core/GUI/Frontend/Panels/RemoteAccess/manifest.json
 //!   - Core/GUI/Frontend/Panels/Settings/manifest.json
+//!   - Core/GUI/Frontend/Panels/Tabulate/manifest.json
 //!   - Core/GUI/Frontend/Panels/Tools/manifest.json
 //!   - Core/GUI/Frontend/Panels/Workspaces/manifest.json
 //!
@@ -204,6 +205,31 @@ pub fn register_all(
                 order: 95,
                 version: "0.1.0".into(),
                 required_services: vec!["wylde-harness".into()],
+                source: PanelSource::GpuiView {
+                    factory: factory_key.into(),
+                },
+            },
+            factory: Some(factory),
+        })?;
+    }
+
+    // ── core / tabulate  (from Core/GUI/Frontend/Panels/Tabulate/manifest.json) ──
+    {
+        let factory_key = "wylde_panel_tabulate::TabulatePanel::view";
+        let factory = factories
+            .take(factory_key)
+            .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
+        registry.register_internal(RegistryRow {
+            origin: PanelOrigin::FirstParty {
+                service: "core".into(),
+            },
+            entry: PanelEntry {
+                id: "tabulate".into(),
+                title: "Tabulate".into(),
+                icon: Some("table".into()),
+                order: 47,
+                version: "0.1.0".into(),
+                required_services: vec!["wylde-tabulate".into()],
                 source: PanelSource::GpuiView {
                     factory: factory_key.into(),
                 },

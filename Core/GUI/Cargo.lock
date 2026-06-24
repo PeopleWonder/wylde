@@ -9174,6 +9174,7 @@ dependencies = [
  "wylde-panel-models",
  "wylde-panel-remote-access",
  "wylde-panel-settings",
+ "wylde-panel-tabulate",
  "wylde-panel-tools",
  "wylde-panel-workspaces",
 ]
@@ -9206,6 +9207,19 @@ dependencies = [
  "wylde-gui-test-support",
  "wylde-theme",
  "wylde-updater",
+]
+
+[[package]]
+name = "wylde-panel-tabulate"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "serde",
+ "serde_json",
+ "wylde-gpui-input",
+ "wylde-gui-pipe",
+ "wylde-theme",
 ]
 
 [[package]]

@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "service": "core",
+  "panels": [
+    {
+      "id": "tabulate",
+      "title": "Tabulate",
+      "icon": "table",
+      "order": 47,
+      "version": "0.1.0",
+      "required_services": ["wylde-tabulate"],
+      "source": {
+        "kind": "gpui_view",
+        "factory": "wylde_panel_tabulate::TabulatePanel::view"
+      }
+    }
+  ]
+}

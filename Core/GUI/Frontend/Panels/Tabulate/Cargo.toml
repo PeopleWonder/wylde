@@ -1,0 +1,26 @@
+[package]
+name = "wylde-panel-tabulate"
+description = "Wylde Tabulate panel — native gpui cockpit over the `wylde-tabulate` Service: pick a file, PHI-safe structure Probe (shape only, never cell values), and Extract to a spreadsheet. Surfaces the HIPAA safety posture (local-only / encrypted-at-rest / audit). Greys out when the service is absent."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens — every panel imports the same palette.
+wylde-theme = { path = "../../Theme" }
+# Pipe surface — the panel talks to `wylde-tabulate` over its named pipe.
+wylde-gui-pipe = { path = "../../Pipe" }
+# Single-line text input for the input-file path field.
+wylde-gpui-input = { path = "../../Input" }
+
+# gpui — every panel imports the same set: div builders, Render, etc.
+gpui.workspace = true
+
+serde.workspace      = true
+serde_json.workspace = true
+anyhow.workspace     = true

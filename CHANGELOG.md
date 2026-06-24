@@ -7,6 +7,15 @@ All notable changes to Wylde are recorded here. Versions follow
 
 ### Added
 
+- **Tabulate panel.** A native gpui cockpit (`Frontend/Panels/Tabulate`) over
+  the out-of-tree `wylde-tabulate` Service: pick a file, **Probe** its structure
+  (PHI-safe — file type, table shape, per-column header + inferred type, never a
+  cell value, with the redaction-review gate), and **Extract** it to a `.xlsx` /
+  `.csv`, showing the absolute output path. A subtle safety chip surfaces the
+  HIPAA posture (local-only / encrypted-at-rest / audit on) from
+  `tabulate.capabilities`. Greys out via `required_services` when the service is
+  absent. (Built on the `feat/tabulate-panel` branch for a live feel-test; not
+  merged.)
 - **Thought Bubble System — structural awareness for chat.** A floating
   Thought-Bubble composer layer over the chat input, with a unified
   `Ctrl+Z` undo timeline spanning both typed text and bubbles. The composer is
