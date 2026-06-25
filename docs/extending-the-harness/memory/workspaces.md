@@ -158,6 +158,21 @@ bool` field exists in the struct specifically so JSON round-trips
 preserve Python's value when Rust reads + writes the registry without
 touching the indexer.
 
+> **Update (indexer ported + live progress).** The indexer is now fully
+> Rust (`wylde-workspaces` `rag::indexer`). Live status lives in
+> `RagState` (`index/rag_state.json`), joined onto every `list_mru` row
+> by `api::def_with_index_state`. Alongside `indexing: bool` it now carries
+> an optional `progress` snapshot
+> (`rag::indexer::progress::IndexProgress`): the current phase
+> (walk / chunk / embed / persist), files/chunks done vs total, a rolling
+> chunks/sec, and a computed ETA. The reporter writes it (throttled) during
+> a pass and clears it on completion, so the Workspaces panel can render a
+> determinate progress bar + ETA — indeterminate during the walk (no total
+> yet), then a percent + "X / Y files" + "~Nm remaining" during the embed.
+> Measure real throughput with the `index_bench` example (it pins an
+> isolated `WYLDE_DATA_DIR` and a dead `GRAPH_BOLT_URL`, so it never touches
+> the live index or the shared graph).
+
 ## How to extend
 
 ### Add a new field to the Workspace struct
