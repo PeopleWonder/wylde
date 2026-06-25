@@ -53,7 +53,7 @@ All notable changes to Wylde are recorded here. Versions follow
   authoring GUI → a curate-before-inject menu with Augment injection →
   scoped-lens narrowing + typed dependency-tree viz → an eval harness with
   calibrated thresholds. Augment is the default mode; Replace is opt-in.
-- **Definitional concept hierarchy (H0–H4).** A navigable, drill-down DAG that
+- **Definitional concept hierarchy (H0–H5).** A navigable, drill-down DAG that
   unifies concepts + vocabulary anchors into one `{id, label, definition,
   parents, children}` node model — every node carries a definition; you drill
   until leaves are definition-only. Shipped as an isolated, **default-OFF,
@@ -78,8 +78,13 @@ All notable changes to Wylde are recorded here. Versions follow
   merges" panel that surfaces dangling records for re-point/remove. Toggle OFF ⇒
   the verbs are inert, the sub-tab renders an inert disabled state, and the
   overlay is never written; deleting the crate + bridge + overlay + sub-tab
-  folder reverts to today. (H5 injection + H6 containment-spread — the
-  retrieval-affecting slices — are not yet wired.)
+  folder reverts to today. **H5 retrieval injection** rides the existing
+  `### Concepts` slot: for each curated concept it adds a high-signal
+  definitional ancestor-chain line (`Label — definition — under Parent — under
+  Root`), blurb-first so token-budget eviction sheds snippets before
+  definitions, Augment-only, missing-definition nodes skipped — and gated
+  identity-when-off (the block is never added unless the toggle is on, so today's
+  prompt is byte-identical). (H6 containment-spread is not yet wired.)
 - **Tree-sitter expansion.** Code outline + highlight verbs (with a graph-panel
   outline card) and added JSON, TOML, YAML, and Bash grammars.
 - **Conversation export / import.** An escape-hatch to move conversations in and
