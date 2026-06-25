@@ -53,6 +53,22 @@ All notable changes to Wylde are recorded here. Versions follow
   authoring GUI → a curate-before-inject menu with Augment injection →
   scoped-lens narrowing + typed dependency-tree viz → an eval harness with
   calibrated thresholds. Augment is the default mode; Replace is opt-in.
+- **Definitional concept hierarchy (H0–H1).** A navigable, drill-down DAG that
+  unifies concepts + vocabulary anchors into one `{id, label, definition,
+  parents, children}` node model — every node carries a definition; you drill
+  until leaves are definition-only. Shipped as an isolated, **default-OFF,
+  byte-identical-when-disabled** crate (`wylde-concept-hierarchy`) that
+  *projects* the view read-only from the existing concept / anchor / relation
+  stores (multi-parent preserved, diamonds/cycles guarded, the definitional
+  ancestor-chain accessor), plus a thin additive `hierarchy.json` overlay for
+  net-new authored data: authored/overriding definitions by a priority ladder, a
+  never-reused `node:<n>` id allocator, authored containment edges, and node
+  merges — all with the `Relation.dangling` retain-but-exclude rule. A deletable
+  `workspaces.hierarchy.*` verb seam (`get_tree`, `get_node`, `set_definition`,
+  `add_edge`, `remove_edge`, `merge_nodes`) maps the Core `Concept` into the
+  crate's Core-free `ConceptView` so the crate never touches Core. Toggle OFF ⇒
+  the verbs are inert and the overlay is never written; deleting the crate +
+  bridge + overlay reverts to today.
 - **Tree-sitter expansion.** Code outline + highlight verbs (with a graph-panel
   outline card) and added JSON, TOML, YAML, and Bash grammars.
 - **Conversation export / import.** An escape-hatch to move conversations in and

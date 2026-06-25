@@ -27,6 +27,14 @@ wylde-shared = { path = "../wylde-shared" }
 # (no IPC, no extra embed). `concepts/routing_bridge.rs` is the only consumer;
 # deleting that file + this dep reverts the workspaces half of routing.
 wylde-concept-routing = { path = "../wylde-concept-routing" }
+# Definitional concept hierarchy projection (definitional-hierarchy plan, H1).
+# The isolated, removable crate holding the pure `HierNode` view + the additive
+# overlay types + the never-reused id allocator. This crate is the server-side
+# host where the concept / anchor / relation stores live, so it projects the
+# view + persists the overlay in-process (no IPC). `concepts/hierarchy_bridge.rs`
+# is the only consumer; deleting that file + this dep + the overlay store
+# reverts the workspaces half of the hierarchy (the removal test).
+wylde-concept-hierarchy = { path = "../wylde-concept-hierarchy" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

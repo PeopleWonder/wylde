@@ -26,13 +26,20 @@
 //!   future injection payload).
 //! * [`config`] -- the master [`HierarchyConfig`] toggle (default **OFF**,
 //!   fail-closed), gating [`build_view_if_enabled`].
+//! * [`overlay`] (H1) -- the pure additive-overlay types ([`HierarchyOverlay`],
+//!   the [`HierarchyIdentity`] never-reused id allocator) + [`apply_overlay`],
+//!   the pure fold that layers authored definitions / labels / containment edges
+//!   / merges onto a projected [`HierGraph`] by the priority ladder, with the
+//!   `Relation.dangling` retention rule. The encrypted/atomic/fail-soft
+//!   persistence + the `workspaces.hierarchy.*` verbs live in the deletable
+//!   `wylde-workspaces` bridge, exactly as the relation types live here while
+//!   `relations_bridge.rs` does the I/O.
 //!
-//! ## What H0 deliberately is NOT
+//! ## What this crate deliberately is NOT
 //!
-//! No persistence (the `hierarchy.json` overlay + the id allocator are H1), no
-//! verbs / bridge (H1), no GUI sub-tab (H2), no injection (H5), no spread step
-//! (H6). Nothing in Core depends on this crate yet -- it is a pure library tested
-//! over fixtures, exactly the smallest-first H0 slice.
+//! Still no I/O (the overlay/identity persistence is the bridge's job, H1), no
+//! GUI sub-tab (H2), no injection (H5), no spread step (H6). The crate stays a
+//! pure library tested over fixtures.
 //!
 //! ## Isolation contract (the removal test, plan SS5)
 //!
@@ -45,12 +52,16 @@
 
 pub mod config;
 pub mod model;
+pub mod overlay;
 pub mod project;
 pub mod traverse;
 
 pub use config::HierarchyConfig;
 pub use model::{
     DefSource, Definition, HierGraph, HierNode, NodeId, NodeKind, XRef, XRefKind,
+};
+pub use overlay::{
+    apply_overlay, HierarchyIdentity, HierarchyOverlay, NodeMerge, OverlayEdge, OverlayNode,
 };
 pub use project::{build_view, build_view_if_enabled, ConceptView};
 pub use traverse::{Reached, WalkOptions};
