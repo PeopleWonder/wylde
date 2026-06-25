@@ -67,6 +67,23 @@ All notable changes to Wylde are recorded here. Versions follow
   N8N as a first-class Rust service (`wylde-n8n`).
 - **GUI test harness.** A gpui windowed-test harness with dock-scoping tests
   across the Workspaces, Chat, Memory, Editor, Files, and Graph surfaces.
+- **Lexical (BM25) retrieval + RRF fusion (default OFF).** A per-workspace
+  pure-Rust [tantivy](https://github.com/quickwit-oss/tantivy) inverted index
+  over the *same* chunk corpus the dense index already holds, fused with the
+  existing cosine retrieval via Reciprocal Rank Fusion so an exact-token recall
+  signal (rare identifiers, error codes, literal names the embedder blurs) sits
+  alongside semantic relevance. Behind a `settings.lexical.*` master toggle that
+  is **OFF by default** — OFF is byte-for-byte today's dense-only behaviour. The
+  lexical index is built from the post-exclusion chunk set (never a fresh walk,
+  so it can never drift from `chunks.jsonl`), holds term postings + chunk ids
+  only (no second copy of chunk bodies), and stays in step via the existing
+  content-hash manifest (full rebuild + cheap embed-free backfill + incremental
+  watcher delta). Under fusion a strong BM25 hit at low cosine bypasses the
+  absolute cosine floor (the recall win) while a query off-topic to both signals
+  still injects nothing; the anchor-bias is reworked from a substring boost into
+  an IDF-weighted, exact-token BM25 sub-query. A dense/lexical/fused eval harness
+  (with a lexical gold class) proves the recall gain and the semantic
+  no-regression guardrail.
 
 ### Changed
 
