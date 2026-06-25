@@ -53,7 +53,7 @@ All notable changes to Wylde are recorded here. Versions follow
   authoring GUI → a curate-before-inject menu with Augment injection →
   scoped-lens narrowing + typed dependency-tree viz → an eval harness with
   calibrated thresholds. Augment is the default mode; Replace is opt-in.
-- **Definitional concept hierarchy (H0–H2).** A navigable, drill-down DAG that
+- **Definitional concept hierarchy (H0–H3).** A navigable, drill-down DAG that
   unifies concepts + vocabulary anchors into one `{id, label, definition,
   parents, children}` node model — every node carries a definition; you drill
   until leaves are definition-only. Shipped as an isolated, **default-OFF,

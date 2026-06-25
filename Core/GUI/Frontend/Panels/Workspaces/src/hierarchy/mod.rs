@@ -31,9 +31,10 @@ pub mod ipc;
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    div, prelude::*, px, rgb, Context, IntoElement, MouseButton, MouseDownEvent, Render, Rgba,
-    SharedString, Window,
+    div, prelude::*, px, rgb, Context, Entity, IntoElement, MouseButton, MouseDownEvent, Render,
+    Rgba, SharedString, Window,
 };
+use wylde_gpui_input::TextInput;
 use wylde_theme::colors::{
     ACCENT_CYAN, BORDER_SUBTLE, BRAND, DANGER, SURFACE_700, SURFACE_800, TEXT_MUTED, TEXT_PRIMARY,
 };
@@ -75,10 +76,20 @@ pub struct HierarchyView {
     selected: Option<String>,
     /// A toggle write is in flight.
     toggling: bool,
+    /// The definition editor for the selected node (H3). Populated on select.
+    def_input: Entity<TextInput>,
+    /// A definition write is in flight (disables Save to avoid double-submit).
+    saving: bool,
 }
 
 impl HierarchyView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let def_input = cx.new(|c| {
+            TextInput::single_line(c)
+                .with_submit_mode(wylde_gpui_input::SubmitMode::Never)
+                .with_element_key("hierarchy-def-input")
+                .with_placeholder("Write this node's definition…")
+        });
         let view = Self {
             workspace_id: None,
             enabled: false,
@@ -91,6 +102,8 @@ impl HierarchyView {
             expanded: HashSet::new(),
             selected: None,
             toggling: false,
+            def_input,
+            saving: false,
         };
         Self::spawn_load(cx);
         view
@@ -208,9 +221,82 @@ impl HierarchyView {
         self.expanded.insert(id.to_owned());
         cx.notify();
     }
-    /// Select a node (test/driver helper).
+    /// Select a node (test/driver helper) and populate the definition editor
+    /// with its current text — so editing starts from what's there.
     pub fn select(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.set_selected(id, cx);
+    }
+
+    /// Select `id` and load its current definition into [`Self::def_input`].
+    fn set_selected(&mut self, id: &str, cx: &mut Context<Self>) {
         self.selected = Some(id.to_owned());
+        let text = self
+            .index()
+            .get(id)
+            .filter(|n| !n.needs_definition())
+            .map(|n| n.definition.text.clone())
+            .unwrap_or_default();
+        self.def_input.update(cx, |i, cx| i.set_text_silent(text, cx));
+        cx.notify();
+    }
+
+    /// Author / override the selected node's definition (H3) — writes through
+    /// `set_definition`, then reloads so the priority-ladder source flips to
+    /// `authored`. Empty text is a no-op here (use [`Self::clear_definition`] to
+    /// revert to the inherited description explicitly).
+    pub fn save_definition(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.selected.clone() else { return };
+        let Some(ws) = self.workspace_id.clone() else { return };
+        let text = self.def_input.read(cx).text().trim().to_owned();
+        if text.is_empty() {
+            self.status = Some(Err("Definition is empty — use Clear to revert to inherited".to_owned()));
+            cx.notify();
+            return;
+        }
+        self.saving = true;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
+            let outcome = ipc::set_definition(&ws, Some(&id), &text, None).await;
+            let _ = this.update(app_cx, |v, cx| {
+                v.saving = false;
+                v.status = Some(match outcome {
+                    Ok(_) => Ok("Definition saved (authored)".to_owned()),
+                    Err(e) => Err(format!("Save failed: {e}")),
+                });
+                v.reload(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Clear the selected node's authored override — reverts to the inherited
+    /// description (or `needs definition` if there is none). Writes an empty
+    /// definition, which the bridge prunes back to the projection ground state.
+    pub fn clear_definition(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.selected.clone() else { return };
+        let Some(ws) = self.workspace_id.clone() else { return };
+        self.saving = true;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
+            let outcome = ipc::set_definition(&ws, Some(&id), "", None).await;
+            let _ = this.update(app_cx, |v, cx| {
+                v.saving = false;
+                v.status = Some(match outcome {
+                    Ok(_) => Ok("Authored definition cleared".to_owned()),
+                    Err(e) => Err(format!("Clear failed: {e}")),
+                });
+                v.def_input.update(cx, |i, cx| i.set_text_silent(String::new(), cx));
+                v.reload(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Set the definition-editor draft text (test/driver helper).
+    pub fn set_draft(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.def_input.update(cx, |i, cx| i.set_text_silent(text.to_owned(), cx));
         cx.notify();
     }
 
@@ -460,8 +546,9 @@ impl HierarchyView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| {
-                    // Clicking a row selects it; if it has children, also toggles.
-                    this.selected = Some(id_for_click.clone());
+                    // Clicking a row selects it (loading its definition into the
+                    // editor); if it has children, also toggles expansion.
+                    this.set_selected(&id_for_click, cx);
                     this.toggle_expand(&id_for_click, cx);
                 }),
             )
@@ -522,8 +609,35 @@ impl HierarchyView {
                     .text_color(rgb(pack(TEXT_PRIMARY)))
                     .child(SharedString::from(node.definition.text.clone())),
             );
-            detail = detail.child(Self::hint(format!("source: {}", node.definition.source)));
         }
+        // The priority-ladder source rung — always shown (plan H3 "the priority
+        // ladder shows the source"): authored | inherited_* | llm_draft | missing.
+        detail = detail.child(Self::hint(format!("source: {}", node.definition.source)));
+
+        // ── H3: definition editor ────────────────────────────────────────
+        detail = detail
+            .child(Self::hint("Edit definition (authored overrides the inherited one):".to_owned()))
+            .child(div().child(self.def_input.clone()))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(Self::button(
+                        ("hier-save-def", 0),
+                        if self.saving { "Saving…" } else { "Save definition" },
+                        true,
+                        cx,
+                        |this, cx| this.save_definition(cx),
+                    ))
+                    .child(Self::button(
+                        ("hier-clear-def", 0),
+                        "Clear override",
+                        false,
+                        cx,
+                        |this, cx| this.clear_definition(cx),
+                    )),
+            );
         Some(detail)
     }
 }

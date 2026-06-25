@@ -127,6 +127,63 @@ fn expand_and_select_drive_state(cx: &mut TestAppContext) {
         .unwrap();
 }
 
+// ── (c2) H3: authoring a definition issues set_definition then reloads ────
+
+#[gpui::test]
+fn save_definition_issues_set_definition(cx: &mut TestAppContext) {
+    let fake = backend(true).on(
+        "workspaces.hierarchy.set_definition",
+        json!({ "id": "concept:token", "node": { "id": "concept:token" } }),
+    );
+    let _guard = fake.clone().install();
+
+    let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
+    cx.run_until_parked();
+
+    // Select the (undefined) token node, type a definition, save.
+    window
+        .update(cx, |view, _w, cx| {
+            view.select("concept:token", cx);
+            view.set_draft("a bearer credential", cx);
+            view.save_definition(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let call = fake
+        .last_call_for("workspaces.hierarchy.set_definition")
+        .expect("Save must issue set_definition");
+    assert_eq!(call.payload.get("id"), Some(&json!("concept:token")));
+    assert_eq!(call.payload.get("definition"), Some(&json!("a bearer credential")));
+    // A save reloads the tree.
+    assert!(fake.count_for("workspaces.hierarchy.get_tree") >= 2);
+}
+
+// ── (c3) H3: Clear reverts via an empty set_definition ───────────────────
+
+#[gpui::test]
+fn clear_definition_sends_empty_override(cx: &mut TestAppContext) {
+    let fake = backend(true).on("workspaces.hierarchy.set_definition", json!({ "id": "concept:auth" }));
+    let _guard = fake.clone().install();
+
+    let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _w, cx| {
+            view.select("concept:auth", cx);
+            view.clear_definition(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let call = fake
+        .last_call_for("workspaces.hierarchy.set_definition")
+        .expect("Clear must issue set_definition");
+    assert_eq!(call.payload.get("id"), Some(&json!("concept:auth")));
+    assert_eq!(call.payload.get("definition"), Some(&json!("")), "empty clears the override");
+}
+
 // ── (d) Vocabulary tab flips to the Hierarchy sub-tab ────────────────────
 
 #[gpui::test]
