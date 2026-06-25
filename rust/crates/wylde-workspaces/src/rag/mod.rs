@@ -23,8 +23,11 @@
 //!   prompt-builder contract.
 
 pub mod indexer;
+pub mod lexical_config;
+pub mod lexical_eval;
 pub mod scope;
 
+pub use lexical_config::LexicalConfig;
 pub use scope::WorkspaceRagScope;
 
 /// Cosine similarity in `[-1, 1]` between two equal-length vectors; `0.0`

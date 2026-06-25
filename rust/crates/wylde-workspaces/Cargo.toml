@@ -59,7 +59,17 @@ notify = "6"
 nucleo-matcher = "0.3"
 # The `.gitignore`-aware exclusion matcher moved to `wylde-fswalk` (file-
 # organizer build, 2026-06-23), so the `ignore` crate is now a transitive dep
-# of fswalk rather than a direct dep here.
+# of fswalk rather than a direct dep here — the indexer reaches it through the
+# `super::exclude::ExclusionMatcher` re-export shim, so the lexical arm needs no
+# direct `ignore` dep of its own.
+# Pure-Rust BM25 inverted index for the lexical retrieval arm (lexical-bm25
+# plan, `rag/indexer/lexical.rs`). Deliberately chosen over the rejected
+# `lancedb` (`rag/indexer/store.rs:13-27`): tantivy needs **no external `protoc`
+# toolchain** and builds clean on Windows, and we are NOT replacing the
+# brute-force vector scan — this adds a lexical *signal* fused via RRF, not a
+# storage-engine swap. Gated behind the `LexicalConfig` master toggle
+# (default OFF ⇒ the dep is linked but never exercised).
+tantivy = "0.22"
 
 [dev-dependencies]
 # The integration round-trip tests drive the service through the shared
@@ -72,3 +82,8 @@ tempfile = "3"
 wylde-treesitter = { path = "../wylde-treesitter" }
 # Unique pipe / service names in the integration tests.
 uuid = { version = "1", features = ["v4"] }
+# Blocking HTTP client for the `#[ignore]`d live lexical-eval driver
+# (tests/lexical_eval.rs) — embeds the gold queries against the running Ollama,
+# exactly as the RAG path does. Test-only (mirrors the concept-routing live
+# eval): the shipped library never carries an HTTP client.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
