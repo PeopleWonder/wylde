@@ -53,7 +53,7 @@ All notable changes to Wylde are recorded here. Versions follow
   authoring GUI → a curate-before-inject menu with Augment injection →
   scoped-lens narrowing + typed dependency-tree viz → an eval harness with
   calibrated thresholds. Augment is the default mode; Replace is opt-in.
-- **Definitional concept hierarchy (H0–H1).** A navigable, drill-down DAG that
+- **Definitional concept hierarchy (H0–H2).** A navigable, drill-down DAG that
   unifies concepts + vocabulary anchors into one `{id, label, definition,
   parents, children}` node model — every node carries a definition; you drill
   until leaves are definition-only. Shipped as an isolated, **default-OFF,
@@ -66,9 +66,15 @@ All notable changes to Wylde are recorded here. Versions follow
   merges — all with the `Relation.dangling` retain-but-exclude rule. A deletable
   `workspaces.hierarchy.*` verb seam (`get_tree`, `get_node`, `set_definition`,
   `add_edge`, `remove_edge`, `merge_nodes`) maps the Core `Concept` into the
-  crate's Core-free `ConceptView` so the crate never touches Core. Toggle OFF ⇒
-  the verbs are inert and the overlay is never written; deleting the crate +
-  bridge + overlay reverts to today.
+  crate's Core-free `ConceptView` so the crate never touches Core. A read-only
+  **Hierarchy** sub-tab (in the isolated `hierarchy/` GUI folder, fourth tab of
+  the Vocabulary tab) renders the DAG as a cycle-safe, indented drill-down —
+  definitions shown at every level with a priority-ladder source badge, a "needs
+  definition" badge on `Missing` nodes, "also under: …" for multi-parent nodes,
+  a selected-node ancestor-chain breadcrumb, and a Graph deep-link via the focus
+  bus. Toggle OFF ⇒ the verbs are inert, the sub-tab renders an inert
+  disabled state, and the overlay is never written; deleting the crate + bridge
+  + overlay + sub-tab folder reverts to today.
 - **Tree-sitter expansion.** Code outline + highlight verbs (with a graph-panel
   outline card) and added JSON, TOML, YAML, and Bash grammars.
 - **Conversation export / import.** An escape-hatch to move conversations in and

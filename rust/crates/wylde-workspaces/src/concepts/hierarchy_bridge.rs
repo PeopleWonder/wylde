@@ -557,6 +557,32 @@ pub async fn handle_merge_nodes(payload: Value) -> Reply {
     Reply::ok(json!({ "workspace_id": ws, "merge": probe }))
 }
 
+// ── Master toggle facade (OQ-7 default: one toggle) ──────────────────────────
+//
+// Ungated -- these are how the sub-tab reads + flips the master switch, so they
+// MUST work while the feature is off (otherwise it could never be turned on).
+// `set_enabled` persists through `HierarchyConfig`, updating both this service's
+// in-memory cache and `<data_dir>/settings/hierarchy.json` (fail-closed OFF).
+
+/// `workspaces.hierarchy.get_config` -- the master toggle state. Payload: `{}`.
+/// Reply: `{enabled}`.
+pub async fn handle_get_config(_payload: Value) -> Reply {
+    Reply::ok(json!({ "enabled": HierarchyConfig::current().enabled }))
+}
+
+/// `workspaces.hierarchy.set_enabled` -- flip the master toggle. Payload:
+/// `{enabled: bool}`. Reply: `{enabled}`. A persist failure still updates the
+/// in-session cache (optimistic) and is surfaced as `io`.
+pub async fn handle_set_enabled(payload: Value) -> Reply {
+    let Some(enabled) = payload.get("enabled").and_then(Value::as_bool) else {
+        return Reply::err_msg("bad_request", "enabled (bool) is required");
+    };
+    match HierarchyConfig::persist(HierarchyConfig { enabled }) {
+        Ok(()) => Reply::ok(json!({ "enabled": enabled })),
+        Err(e) => Reply::err_msg("io", format!("toggle saved in-session but disk write failed: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,6 +851,28 @@ mod tests {
         assert_eq!(auth.definition.source, DefSource::Authored);
         // The authored node persists with its minted id untouched.
         assert!(g.node(&NodeId(authored_id.clone())).is_some(), "authored node survived");
+        disable();
+    }
+
+    #[tokio::test]
+    async fn config_toggle_facade_round_trips() {
+        let _env = TestEnv::new();
+        disable();
+        // get_config reflects OFF.
+        let c = handle_get_config(json!({})).await;
+        assert_eq!(c.data["enabled"], json!(false));
+        // set_enabled flips it ON, persisted to the cache.
+        let s = handle_set_enabled(json!({ "enabled": true })).await;
+        assert!(s.ok);
+        assert_eq!(s.data["enabled"], json!(true));
+        assert!(HierarchyConfig::current().enabled);
+        // A read verb is now live.
+        assert_eq!(
+            handle_get_tree(json!({ "workspace_id": "hier-cfg-00000" })).await.data["enabled"],
+            json!(true)
+        );
+        // Bad payload rejected.
+        assert!(!handle_set_enabled(json!({})).await.ok);
         disable();
     }
 

@@ -86,6 +86,8 @@ pub const HIERARCHY_SET_DEFINITION: &str = "workspaces.hierarchy.set_definition"
 pub const HIERARCHY_ADD_EDGE: &str = "workspaces.hierarchy.add_edge";
 pub const HIERARCHY_REMOVE_EDGE: &str = "workspaces.hierarchy.remove_edge";
 pub const HIERARCHY_MERGE_NODES: &str = "workspaces.hierarchy.merge_nodes";
+pub const HIERARCHY_GET_CONFIG: &str = "workspaces.hierarchy.get_config";
+pub const HIERARCHY_SET_ENABLED: &str = "workspaces.hierarchy.set_enabled";
 
 // ── File I/O — jailed editor/file-tree surface (S1 / IDE plan P0.2) ──────
 pub const FS_READ: &str = "workspaces.fs.read";
@@ -615,6 +617,21 @@ pub fn install() {
          apply. Payload: {workspace_id, primary, alias}. bad_request on a \
          self-merge / unknown endpoint; already_exists on a live duplicate; \
          re-adding a dangling merge clears its flag. OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_GET_CONFIG,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_get_config(p).await },
+        "The hierarchy master-toggle state. Payload: {}. Reply: {enabled}. \
+         Ungated (must be readable while the feature is off).",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_SET_ENABLED,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_set_enabled(p).await },
+        "Flip the hierarchy master toggle. Payload: {enabled: bool}. Reply: \
+         {enabled}. Ungated; persists to <data_dir>/settings/hierarchy.json \
+         (fail-closed OFF). Off ⇒ all hierarchy verbs go inert.",
         META_MODULE,
     );
 
