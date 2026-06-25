@@ -27,6 +27,102 @@ pub struct WorkspaceSummary {
     pub last_activated_at: Option<String>,
     pub indexing: bool,
     pub persona: Option<String>,
+    /// Live index progress (phase / counts / rate / ETA), present only while a
+    /// reindex is in flight. The backend joins it onto each `list_mru` row from
+    /// `RagState`; the panel renders it as a determinate bar + ETA, or an
+    /// indeterminate "scanning" state before the total is known.
+    pub progress: Option<IndexProgress>,
+}
+
+/// GUI-side mirror of the backend `RagState.progress` snapshot (hand-rolled
+/// from JSON, like [`WorkspaceSummary`] itself — the panel crate talks to the
+/// service over IPC, not via a shared Rust type). Carries everything the
+/// progress affordance needs: phase, determinacy, file/chunk counts, the
+/// rolling rate, and the computed ETA.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexProgress {
+    /// `"walk"` / `"chunk"` / `"embed"` / `"persist"`.
+    pub phase: String,
+    /// `false` while the total is unknown (walk/chunk) ⇒ indeterminate bar.
+    pub determinate: bool,
+    pub files_done: u64,
+    pub files_total: u64,
+    pub chunks_done: u64,
+    pub chunks_total: u64,
+    pub items_per_sec: f64,
+    /// Estimated seconds remaining, or `None` when not yet computable.
+    pub eta_secs: Option<f64>,
+}
+
+impl IndexProgress {
+    /// Parse from the `progress` object on a `list_mru` row. `None` when the
+    /// field is absent or not an object (the idle case).
+    pub fn from_value(v: &Value) -> Option<Self> {
+        let o = v.as_object()?;
+        Some(IndexProgress {
+            phase: o
+                .get("phase")
+                .and_then(|x| x.as_str())
+                .unwrap_or("embed")
+                .to_owned(),
+            determinate: o.get("determinate").and_then(|x| x.as_bool()).unwrap_or(false),
+            files_done: o.get("files_done").and_then(|x| x.as_u64()).unwrap_or(0),
+            files_total: o.get("files_total").and_then(|x| x.as_u64()).unwrap_or(0),
+            chunks_done: o.get("chunks_done").and_then(|x| x.as_u64()).unwrap_or(0),
+            chunks_total: o.get("chunks_total").and_then(|x| x.as_u64()).unwrap_or(0),
+            items_per_sec: o.get("items_per_sec").and_then(|x| x.as_f64()).unwrap_or(0.0),
+            eta_secs: o.get("eta_secs").and_then(|x| x.as_f64()),
+        })
+    }
+
+    /// Fraction complete in `0.0..=1.0`, or `None` when indeterminate / before
+    /// the total is known (guards divide-by-zero on a 0 total).
+    pub fn ratio(&self) -> Option<f64> {
+        if !self.determinate || self.chunks_total == 0 {
+            return None;
+        }
+        Some((self.chunks_done as f64 / self.chunks_total as f64).clamp(0.0, 1.0))
+    }
+
+    /// Whole-percent complete (0..=100), or `None` when indeterminate.
+    pub fn percent(&self) -> Option<u32> {
+        self.ratio().map(|r| (r * 100.0).round() as u32)
+    }
+
+    /// Short human label for the current phase.
+    pub fn phase_label(&self) -> &'static str {
+        match self.phase.as_str() {
+            "walk" => "Scanning files",
+            "chunk" => "Reading changes",
+            "persist" => "Saving",
+            _ => "Embedding",
+        }
+    }
+
+    /// `"~2m 30s remaining"`, or `None` when no ETA is available yet.
+    pub fn eta_label(&self) -> Option<String> {
+        self.eta_secs.map(|s| format!("~{} remaining", format_eta(s)))
+    }
+}
+
+/// Format a duration in seconds as a compact `"2m 30s"` / `"45s"` / `"1h 5m"`
+/// string. Pure (no clock) so it's unit-tested. Rounds to whole seconds and
+/// floors at `"0s"`; non-finite / non-positive values clamp to `"0s"`.
+pub fn format_eta(secs: f64) -> String {
+    if !secs.is_finite() || secs <= 0.0 {
+        return "0s".to_owned();
+    }
+    let total = secs.round() as u64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{h}h {m}m")
+    } else if m > 0 {
+        format!("{m}m {s}s")
+    } else {
+        format!("{s}s")
+    }
 }
 
 impl WorkspaceSummary {
@@ -65,6 +161,7 @@ impl WorkspaceSummary {
                 .get("persona")
                 .and_then(|x| x.as_str())
                 .map(|s| s.to_owned()),
+            progress: v.get("progress").and_then(IndexProgress::from_value),
         }
     }
 }
@@ -287,6 +384,73 @@ mod tests {
         assert!(s.path.is_empty());
         assert_eq!(s.file_count, None);
         assert!(!s.indexing);
+        assert_eq!(s.progress, None, "no progress object ⇒ idle");
+    }
+
+    #[test]
+    fn format_eta_buckets() {
+        assert_eq!(format_eta(0.0), "0s");
+        assert_eq!(format_eta(-5.0), "0s", "negative clamps");
+        assert_eq!(format_eta(f64::NAN), "0s", "NaN clamps");
+        assert_eq!(format_eta(45.0), "45s");
+        assert_eq!(format_eta(150.0), "2m 30s");
+        assert_eq!(format_eta(3905.0), "1h 5m");
+        assert_eq!(format_eta(59.4), "59s", "rounds to whole seconds");
+    }
+
+    #[test]
+    fn progress_indeterminate_has_no_percent() {
+        let v = json!({
+            "phase": "walk",
+            "determinate": false,
+            "files_done": 0, "files_total": 0,
+            "chunks_done": 0, "chunks_total": 0,
+            "items_per_sec": 0.0
+        });
+        let p = IndexProgress::from_value(&v).expect("parses");
+        assert_eq!(p.phase_label(), "Scanning files");
+        assert_eq!(p.ratio(), None);
+        assert_eq!(p.percent(), None);
+        assert_eq!(p.eta_label(), None, "no ETA before the total is known");
+    }
+
+    #[test]
+    fn progress_determinate_percent_and_eta() {
+        let v = json!({
+            "phase": "embed",
+            "determinate": true,
+            "files_done": 12, "files_total": 40,
+            "chunks_done": 120, "chunks_total": 480,
+            "items_per_sec": 8.0,
+            "eta_secs": 150.0
+        });
+        let p = IndexProgress::from_value(&v).expect("parses");
+        assert_eq!(p.phase_label(), "Embedding");
+        assert_eq!(p.percent(), Some(25));
+        assert_eq!(p.ratio(), Some(0.25));
+        assert_eq!(p.eta_label().as_deref(), Some("~2m 30s remaining"));
+    }
+
+    #[test]
+    fn progress_guards_zero_total() {
+        // A determinate-but-zero-total snapshot must not divide by zero.
+        let v = json!({ "phase": "embed", "determinate": true, "chunks_done": 0, "chunks_total": 0 });
+        let p = IndexProgress::from_value(&v).expect("parses");
+        assert_eq!(p.ratio(), None);
+        assert_eq!(p.percent(), None);
+    }
+
+    #[test]
+    fn workspace_summary_carries_progress() {
+        let v = json!({
+            "id": "w", "indexing": true,
+            "progress": { "phase": "embed", "determinate": true,
+                          "chunks_done": 50, "chunks_total": 100, "eta_secs": 10.0 }
+        });
+        let s = WorkspaceSummary::from_value(&v);
+        assert!(s.indexing);
+        let p = s.progress.expect("progress joined onto the row");
+        assert_eq!(p.percent(), Some(50));
     }
 
     #[test]
