@@ -50,12 +50,40 @@ use ipc::HierNodeView;
 const MAX_ROWS: usize = 4000;
 const MAX_DEPTH: usize = 16;
 
-/// One flattened, about-to-render tree row: a node id, its indfrom-root depth,
-/// and whether it has containment children (so the chevron shows).
+/// One flattened, about-to-render tree row: a node id, its indent-from-root
+/// depth, and whether it has containment children (so the chevron shows).
 struct Row {
     id: String,
     depth: usize,
     expandable: bool,
+}
+
+/// The result of one combined tree + overlay fetch.
+struct Loaded {
+    tree: Option<ipc::TreeReply>,
+    edges: Vec<ipc::OverlayEdgeView>,
+    merges: Vec<ipc::OverlayMergeView>,
+    error: Option<String>,
+}
+
+/// Fetch the applied tree, and — when enabled — the raw overlay (best-effort;
+/// an overlay error degrades to an empty authoring section, never blocks the
+/// tree).
+async fn fetch(ws: &str) -> Loaded {
+    match ipc::get_tree(ws).await {
+        Ok(tree) => {
+            let (edges, merges) = if tree.enabled {
+                match ipc::get_overlay(ws).await {
+                    Ok(ov) => (ov.edges, ov.merges),
+                    Err(_) => (Vec::new(), Vec::new()),
+                }
+            } else {
+                (Vec::new(), Vec::new())
+            };
+            Loaded { tree: Some(tree), edges, merges, error: None }
+        }
+        Err(e) => Loaded { tree: None, edges: Vec::new(), merges: Vec::new(), error: Some(e) },
+    }
 }
 
 /// The Hierarchy sub-tab view.
@@ -80,6 +108,44 @@ pub struct HierarchyView {
     def_input: Entity<TextInput>,
     /// A definition write is in flight (disables Save to avoid double-submit).
     saving: bool,
+    // ── H4: edge / merge authoring ───────────────────────────────────────
+    /// The raw authored containment edges (with dangling flags) — for the
+    /// "authored edges" + dangling re-point section.
+    overlay_edges: Vec<ipc::OverlayEdgeView>,
+    /// The raw authored merges (with dangling flags).
+    overlay_merges: Vec<ipc::OverlayMergeView>,
+    /// Which authoring picker is open (add a child / parent / merge target).
+    picker: Option<PickerMode>,
+    /// Search box for the open picker (filters the loaded node universe).
+    picker_search: Entity<TextInput>,
+    _picker_sub: gpui::Subscription,
+    /// Whether the "new node" create form is showing.
+    show_create: bool,
+    create_label: Entity<TextInput>,
+    create_def: Entity<TextInput>,
+    /// An edge / merge / create write is in flight.
+    authoring: bool,
+}
+
+/// Which authoring action the open picker is choosing a target for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PickerMode {
+    /// Add the picked node as a CHILD of the selected node.
+    AddChild,
+    /// Add the picked node as a PARENT of the selected node.
+    AddParent,
+    /// Merge the picked node (alias) INTO the selected node (primary).
+    Merge,
+}
+
+impl PickerMode {
+    fn title(self) -> &'static str {
+        match self {
+            PickerMode::AddChild => "Add child:",
+            PickerMode::AddParent => "Add parent:",
+            PickerMode::Merge => "Merge a node into this one:",
+        }
+    }
 }
 
 impl HierarchyView {
@@ -89,6 +155,32 @@ impl HierarchyView {
                 .with_submit_mode(wylde_gpui_input::SubmitMode::Never)
                 .with_element_key("hierarchy-def-input")
                 .with_placeholder("Write this node's definition…")
+        });
+        let picker_search = cx.new(|c| {
+            TextInput::single_line(c)
+                .with_submit_mode(wylde_gpui_input::SubmitMode::Never)
+                .with_element_key("hierarchy-picker-search")
+                .with_placeholder("search nodes…")
+        });
+        let picker_sub = cx.subscribe(
+            &picker_search,
+            |_this: &mut Self, _e, event: &wylde_gpui_input::InputEvent, cx| {
+                if matches!(event, wylde_gpui_input::InputEvent::Changed(_)) {
+                    cx.notify();
+                }
+            },
+        );
+        let create_label = cx.new(|c| {
+            TextInput::single_line(c)
+                .with_submit_mode(wylde_gpui_input::SubmitMode::Never)
+                .with_element_key("hierarchy-create-label")
+                .with_placeholder("label")
+        });
+        let create_def = cx.new(|c| {
+            TextInput::single_line(c)
+                .with_submit_mode(wylde_gpui_input::SubmitMode::Never)
+                .with_element_key("hierarchy-create-def")
+                .with_placeholder("definition (required)")
         });
         let view = Self {
             workspace_id: None,
@@ -104,40 +196,37 @@ impl HierarchyView {
             toggling: false,
             def_input,
             saving: false,
+            overlay_edges: Vec::new(),
+            overlay_merges: Vec::new(),
+            picker: None,
+            picker_search,
+            _picker_sub: picker_sub,
+            show_create: false,
+            create_label,
+            create_def,
+            authoring: false,
         };
         Self::spawn_load(cx);
         view
     }
 
-    /// Resolve the active workspace, then load the whole tree.
+    /// Resolve the active workspace, then load the whole tree + raw overlay.
     fn spawn_load(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
-            let ws = crate::vocabulary::ipc::active_workspace().await;
-            let (ws_id, reply, error) = match ws {
-                Ok(Some(id)) => match ipc::get_tree(&id).await {
-                    Ok(r) => (Some(id), Some(r), None),
-                    Err(e) => (Some(id), None, Some(e)),
-                },
-                Ok(None) => (None, None, None),
-                Err(e) => (None, None, Some(e)),
+            let ws_id = crate::vocabulary::ipc::active_workspace().await.ok().flatten();
+            let loaded = match &ws_id {
+                Some(id) => Some(fetch(id).await),
+                None => None,
             };
             let _ = this.update(app_cx, |v, cx| {
-                v.loading = false;
                 v.workspace_id = ws_id;
-                if let Some(r) = reply {
-                    v.enabled = r.enabled;
-                    v.nodes = r.nodes;
-                    v.roots = r.roots;
-                    v.dangling_count = r.dangling_count;
-                }
-                v.error = error;
-                cx.notify();
+                v.apply_loaded(loaded, cx);
             });
         })
         .detach();
     }
 
-    /// Reload the tree (after a toggle / authoring edit / Refresh).
+    /// Reload the tree + overlay (after a toggle / authoring edit / Refresh).
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let known = self.workspace_id.clone();
         cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
@@ -145,27 +234,33 @@ impl HierarchyView {
                 Some(id) => Some(id),
                 None => crate::vocabulary::ipc::active_workspace().await.ok().flatten(),
             };
-            let (reply, error) = match &ws_id {
-                Some(id) => match ipc::get_tree(id).await {
-                    Ok(r) => (Some(r), None),
-                    Err(e) => (None, Some(e)),
-                },
-                None => (None, None),
+            let loaded = match &ws_id {
+                Some(id) => Some(fetch(id).await),
+                None => None,
             };
             let _ = this.update(app_cx, |v, cx| {
-                v.loading = false;
                 v.workspace_id = ws_id;
-                if let Some(r) = reply {
-                    v.enabled = r.enabled;
-                    v.nodes = r.nodes;
-                    v.roots = r.roots;
-                    v.dangling_count = r.dangling_count;
-                }
-                v.error = error;
-                cx.notify();
+                v.apply_loaded(loaded, cx);
             });
         })
         .detach();
+    }
+
+    /// Fold a completed [`fetch`] into the view state.
+    fn apply_loaded(&mut self, loaded: Option<Loaded>, cx: &mut Context<Self>) {
+        self.loading = false;
+        if let Some(l) = loaded {
+            self.error = l.error;
+            if let Some(t) = l.tree {
+                self.enabled = t.enabled;
+                self.nodes = t.nodes;
+                self.roots = t.roots;
+                self.dangling_count = t.dangling_count;
+            }
+            self.overlay_edges = l.edges;
+            self.overlay_merges = l.merges;
+        }
+        cx.notify();
     }
 
     /// Flip the master toggle, then reload (so OFF→ON pulls the tree in).
@@ -298,6 +393,190 @@ impl HierarchyView {
     pub fn set_draft(&mut self, text: &str, cx: &mut Context<Self>) {
         self.def_input.update(cx, |i, cx| i.set_text_silent(text.to_owned(), cx));
         cx.notify();
+    }
+
+    // ── H4: edge / merge / new-node authoring ────────────────────────────
+
+    /// Toggle the "new node" create form.
+    fn toggle_create(&mut self, cx: &mut Context<Self>) {
+        self.show_create = !self.show_create;
+        cx.notify();
+    }
+
+    /// Mint a brand-new authored node from the create form (label + definition).
+    /// A non-empty definition is required (the verb enforces it too).
+    pub fn create_node(&mut self, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspace_id.clone() else { return };
+        let label = self.create_label.read(cx).text().trim().to_owned();
+        let def = self.create_def.read(cx).text().trim().to_owned();
+        if def.is_empty() {
+            self.status = Some(Err("A new node needs a definition".to_owned()));
+            cx.notify();
+            return;
+        }
+        let label_opt = (!label.is_empty()).then_some(label);
+        self.authoring = true;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
+            let outcome = ipc::set_definition(&ws, None, &def, label_opt.as_deref()).await;
+            let _ = this.update(app_cx, |v, cx| {
+                v.authoring = false;
+                match outcome {
+                    Ok(id) => {
+                        v.status = Some(Ok(format!("Created node {id}")));
+                        v.show_create = false;
+                        v.create_label.update(cx, |i, cx| i.set_text_silent(String::new(), cx));
+                        v.create_def.update(cx, |i, cx| i.set_text_silent(String::new(), cx));
+                        v.reload(cx);
+                    }
+                    Err(e) => v.status = Some(Err(format!("Create failed: {e}"))),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Open the target picker for an authoring action on the selected node.
+    fn begin_picker(&mut self, mode: PickerMode, cx: &mut Context<Self>) {
+        self.picker = Some(mode);
+        self.picker_search.update(cx, |i, cx| i.set_text_silent(String::new(), cx));
+        cx.notify();
+    }
+
+    /// Close the picker without acting.
+    fn cancel_picker(&mut self, cx: &mut Context<Self>) {
+        self.picker = None;
+        cx.notify();
+    }
+
+    /// Candidate nodes for the open picker: the loaded universe filtered by the
+    /// picker search (case-insensitive substring on label or id), excluding the
+    /// selected node, capped for the dropdown.
+    fn picker_candidates(&self, cx: &Context<Self>) -> Vec<(String, String)> {
+        let q = self.picker_search.read(cx).text().trim().to_lowercase();
+        let sel = self.selected.clone().unwrap_or_default();
+        self.nodes
+            .iter()
+            .filter(|n| n.id != sel)
+            .filter(|n| {
+                q.is_empty()
+                    || n.label.to_lowercase().contains(&q)
+                    || n.id.to_lowercase().contains(&q)
+            })
+            .take(20)
+            .map(|n| (n.id.clone(), n.label.clone()))
+            .collect()
+    }
+
+    /// Act on a picked target according to the open picker mode, then reload.
+    fn pick_target(&mut self, target: &str, cx: &mut Context<Self>) {
+        let Some(mode) = self.picker else { return };
+        self.dispatch_pick(mode, target, cx);
+    }
+
+    /// Add `target` as a child of the selected node (test/driver helper).
+    pub fn add_child(&mut self, target: &str, cx: &mut Context<Self>) {
+        self.dispatch_pick(PickerMode::AddChild, target, cx);
+    }
+    /// Add `target` as a parent of the selected node (test/driver helper).
+    pub fn add_parent(&mut self, target: &str, cx: &mut Context<Self>) {
+        self.dispatch_pick(PickerMode::AddParent, target, cx);
+    }
+    /// Merge `alias` into the selected node (test/driver helper).
+    pub fn merge_into(&mut self, alias: &str, cx: &mut Context<Self>) {
+        self.dispatch_pick(PickerMode::Merge, alias, cx);
+    }
+
+    /// Run an authoring action against `target` for the selected node, then
+    /// reload. No-op without a selection / workspace.
+    fn dispatch_pick(&mut self, mode: PickerMode, target: &str, cx: &mut Context<Self>) {
+        let Some(sel) = self.selected.clone() else { return };
+        let Some(ws) = self.workspace_id.clone() else { return };
+        let target = target.to_owned();
+        self.picker = None;
+        self.authoring = true;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
+            let outcome = match mode {
+                PickerMode::AddChild => ipc::add_edge(&ws, &sel, &target).await,
+                PickerMode::AddParent => ipc::add_edge(&ws, &target, &sel).await,
+                PickerMode::Merge => ipc::merge_nodes(&ws, &sel, &target).await,
+            };
+            let _ = this.update(app_cx, |v, cx| {
+                v.authoring = false;
+                v.status = Some(match outcome {
+                    Ok(()) => Ok(match mode {
+                        PickerMode::AddChild => "Added child edge".to_owned(),
+                        PickerMode::AddParent => "Added parent edge".to_owned(),
+                        PickerMode::Merge => "Merged node".to_owned(),
+                    }),
+                    Err(e) => Err(format!("Authoring failed: {e}")),
+                });
+                v.reload(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Remove one authored containment edge (the ✕ on an authored / dangling
+    /// edge). Re-point = remove here, then Add child/parent afresh.
+    pub fn remove_edge(&mut self, parent: &str, child: &str, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspace_id.clone() else { return };
+        let (parent, child) = (parent.to_owned(), child.to_owned());
+        self.authoring = true;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
+            let outcome = ipc::remove_edge(&ws, &parent, &child).await;
+            let _ = this.update(app_cx, |v, cx| {
+                v.authoring = false;
+                v.status = Some(match outcome {
+                    Ok(_) => Ok("Edge removed".to_owned()),
+                    Err(e) => Err(format!("Remove failed: {e}")),
+                });
+                v.reload(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Undo a merge (the alias re-appears as its own node).
+    pub fn remove_merge(&mut self, primary: &str, alias: &str, cx: &mut Context<Self>) {
+        let Some(ws) = self.workspace_id.clone() else { return };
+        let (primary, alias) = (primary.to_owned(), alias.to_owned());
+        self.authoring = true;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
+            let outcome = ipc::remove_merge(&ws, &primary, &alias).await;
+            let _ = this.update(app_cx, |v, cx| {
+                v.authoring = false;
+                v.status = Some(match outcome {
+                    Ok(_) => Ok("Merge undone".to_owned()),
+                    Err(e) => Err(format!("Unmerge failed: {e}")),
+                });
+                v.reload(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Populate the create form (test/driver helper).
+    pub fn set_create_draft(&mut self, label: &str, def: &str, cx: &mut Context<Self>) {
+        self.create_label.update(cx, |i, cx| i.set_text_silent(label.to_owned(), cx));
+        self.create_def.update(cx, |i, cx| i.set_text_silent(def.to_owned(), cx));
+        cx.notify();
+    }
+
+    /// The number of authored overlay edges currently loaded (test accessor).
+    pub fn overlay_edge_count(&self) -> usize {
+        self.overlay_edges.len()
+    }
+    /// Whether the picker is open (test accessor).
+    pub fn picker_open(&self) -> bool {
+        self.picker.is_some()
     }
 
     // ── internal helpers ─────────────────────────────────────────────────
@@ -638,7 +917,176 @@ impl HierarchyView {
                         |this, cx| this.clear_definition(cx),
                     )),
             );
+
+        // ── H4: containment + merge authoring on the selected node ───────
+        detail = detail.child(
+            div()
+                .flex()
+                .flex_row()
+                .gap_2()
+                .pt_1()
+                .child(Self::button(("hier-add-child", 0), "Add child", false, cx, |this, cx| {
+                    this.begin_picker(PickerMode::AddChild, cx)
+                }))
+                .child(Self::button(("hier-add-parent", 0), "Add parent", false, cx, |this, cx| {
+                    this.begin_picker(PickerMode::AddParent, cx)
+                }))
+                .child(Self::button(("hier-merge", 0), "Merge into…", false, cx, |this, cx| {
+                    this.begin_picker(PickerMode::Merge, cx)
+                })),
+        );
+
+        // The open target picker (search + candidate buttons + cancel).
+        if let Some(mode) = self.picker {
+            let mut picker = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_2()
+                .rounded(px(4.0))
+                .bg(rgb(pack(SURFACE_800)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(Self::hint(mode.title().to_owned()))
+                        .child(div().flex_1())
+                        .child(Self::button(("hier-picker-cancel", 0), "Cancel", false, cx, |this, cx| {
+                            this.cancel_picker(cx)
+                        })),
+                )
+                .child(div().child(self.picker_search.clone()));
+            for (ci, (id, label)) in self.picker_candidates(cx).into_iter().enumerate() {
+                let target = id.clone();
+                picker = picker.child(
+                    div()
+                        .id(("hier-cand", ci))
+                        .px_2()
+                        .py_0p5()
+                        .rounded(px(3.0))
+                        .bg(rgb(pack(SURFACE_700)))
+                        .cursor_pointer()
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                        .child(SharedString::from(format!("{label}  ·  {id}")))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _ev: &MouseDownEvent, _w, cx| {
+                                cx.stop_propagation();
+                                this.pick_target(&target, cx);
+                            }),
+                        ),
+                );
+            }
+            detail = detail.child(picker);
+        }
         Some(detail)
+    }
+
+    /// The "new node" create form (H4) — mint a brand-new authored node.
+    fn render_create(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let mut col = div().flex().flex_col().gap_1().child(Self::button(
+            ("hier-new-node", 0),
+            if self.show_create { "× New node" } else { "+ New node" },
+            false,
+            cx,
+            |this, cx| this.toggle_create(cx),
+        ));
+        if self.show_create {
+            col = col.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .p_2()
+                    .rounded(px(4.0))
+                    .bg(rgb(pack(SURFACE_800)))
+                    .child(div().child(self.create_label.clone()))
+                    .child(div().child(self.create_def.clone()))
+                    .child(Self::button(
+                        ("hier-create", 0),
+                        if self.authoring { "Creating…" } else { "Create node" },
+                        true,
+                        cx,
+                        |this, cx| this.create_node(cx),
+                    )),
+            );
+        }
+        col
+    }
+
+    /// The authored-overlay section (H4): authored containment edges with a ✕,
+    /// dangling ones flagged for re-point, and authored merges with an undo.
+    fn render_overlay_section(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if self.overlay_edges.is_empty() && self.overlay_merges.is_empty() {
+            return None;
+        }
+        let idx = self.index();
+        let label = |id: &str| idx.get(id).map(|n| n.label.clone()).unwrap_or_else(|| id.to_owned());
+
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .pt_2()
+            .child(Self::heading("Authored edges & merges"));
+
+        for (ei, e) in self.overlay_edges.iter().enumerate() {
+            let line = format!("{}  →  {}", label(&e.parent), label(&e.child));
+            let mut row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                        .child(SharedString::from(line)),
+                );
+            if e.dangling {
+                row = row.child(Self::badge("dangling — re-point", DANGER));
+            }
+            let (p, c) = (e.parent.clone(), e.child.clone());
+            row = row.child(div().flex_1()).child(Self::button(
+                ("hier-edge-rm", ei),
+                "✕",
+                false,
+                cx,
+                move |this, cx| this.remove_edge(&p, &c, cx),
+            ));
+            section = section.child(row);
+        }
+
+        for (mi, m) in self.overlay_merges.iter().enumerate() {
+            let line = format!("merge: {}  ⇐  {}", label(&m.primary), label(&m.alias));
+            let mut row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                        .child(SharedString::from(line)),
+                );
+            if m.dangling {
+                row = row.child(Self::badge("dangling", DANGER));
+            }
+            let (p, a) = (m.primary.clone(), m.alias.clone());
+            row = row.child(div().flex_1()).child(Self::button(
+                ("hier-merge-rm", mi),
+                "undo",
+                false,
+                cx,
+                move |this, cx| this.remove_merge(&p, &a, cx),
+            ));
+            section = section.child(row);
+        }
+        Some(section)
     }
 }
 
@@ -721,7 +1169,11 @@ impl Render for HierarchyView {
             );
         }
 
-        // The selected-node detail (breadcrumb + definition + graph link).
+        // H4: the "new node" create form.
+        root = root.child(self.render_create(cx));
+
+        // The selected-node detail (breadcrumb + definition + editor +
+        // containment/merge authoring).
         if let Some(detail) = self.render_detail(cx) {
             root = root.child(detail);
         }
@@ -741,6 +1193,11 @@ impl Render for HierarchyView {
             list = list.child(self.render_row(ri, row, cx));
         }
         root = root.child(list);
+
+        // H4: authored edges + merges (remove / re-point dangling).
+        if let Some(section) = self.render_overlay_section(cx) {
+            root = root.child(section);
+        }
 
         root = root.child(maybe_status(&self.status));
         root.border_t_1().border_color(rgb(pack(BORDER_SUBTLE)))

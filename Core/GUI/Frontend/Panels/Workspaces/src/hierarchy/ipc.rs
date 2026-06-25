@@ -69,6 +69,33 @@ pub struct TreeReply {
     pub dangling_count: usize,
 }
 
+/// The GUI mirror of one raw authored containment edge (with its dangling flag).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct OverlayEdgeView {
+    pub parent: String,
+    pub child: String,
+    pub dangling: bool,
+}
+
+/// The GUI mirror of one raw authored merge (with its dangling flag).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct OverlayMergeView {
+    pub primary: String,
+    pub alias: String,
+    pub dangling: bool,
+}
+
+/// The `get_overlay` reply — the raw authored overlay for the authoring UI.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct OverlayReply {
+    pub enabled: bool,
+    pub edges: Vec<OverlayEdgeView>,
+    pub merges: Vec<OverlayMergeView>,
+}
+
 async fn workspaces_call(action: &str, payload: Value) -> Result<Value, String> {
     wylde_gui_pipe::call(
         SVC_WORKSPACES,
@@ -142,6 +169,23 @@ pub async fn merge_nodes(ws: &str, primary: &str, alias: &str) -> Result<(), Str
     )
     .await
     .map(|_| ())
+}
+
+/// `workspaces.hierarchy.remove_merge` — undo a merge (H4); the alias re-appears.
+pub async fn remove_merge(ws: &str, primary: &str, alias: &str) -> Result<bool, String> {
+    let v = workspaces_call(
+        "workspaces.hierarchy.remove_merge",
+        json!({ "workspace_id": ws, "primary": primary, "alias": alias }),
+    )
+    .await?;
+    Ok(v.get("removed").and_then(Value::as_bool).unwrap_or(false))
+}
+
+/// `workspaces.hierarchy.get_overlay` — the raw authored overlay (edges + merges
+/// with dangling flags) for the authoring UI's re-point/remove affordances.
+pub async fn get_overlay(ws: &str) -> Result<OverlayReply, String> {
+    let v = workspaces_call("workspaces.hierarchy.get_overlay", json!({ "workspace_id": ws })).await?;
+    serde_json::from_value(v).map_err(|e| format!("bad get_overlay reply: {e}"))
 }
 
 #[cfg(test)]

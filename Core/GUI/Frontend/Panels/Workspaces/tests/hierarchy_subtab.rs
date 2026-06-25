@@ -184,6 +184,132 @@ fn clear_definition_sends_empty_override(cx: &mut TestAppContext) {
     assert_eq!(call.payload.get("definition"), Some(&json!("")), "empty clears the override");
 }
 
+// ── (H4) new-node creation mints via set_definition (no id) ──────────────
+
+#[gpui::test]
+fn create_node_mints_authored_node(cx: &mut TestAppContext) {
+    let fake = backend(true).on("workspaces.hierarchy.set_definition", json!({ "id": "node:0000" }));
+    let _guard = fake.clone().install();
+
+    let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _w, cx| {
+            view.set_create_draft("Theme", "a net-new theme", cx);
+            view.create_node(cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let call = fake
+        .last_call_for("workspaces.hierarchy.set_definition")
+        .expect("create must issue set_definition");
+    assert_eq!(call.payload.get("id"), None, "no id ⇒ mint a new node");
+    assert_eq!(call.payload.get("definition"), Some(&json!("a net-new theme")));
+    assert_eq!(call.payload.get("label"), Some(&json!("Theme")));
+}
+
+// ── (H4) add-child issues add_edge(parent=selected, child=target) ────────
+
+#[gpui::test]
+fn add_child_issues_add_edge(cx: &mut TestAppContext) {
+    let fake = backend(true).on("workspaces.hierarchy.add_edge", json!({ "edge": {} }));
+    let _guard = fake.clone().install();
+
+    let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _w, cx| {
+            view.select("concept:auth", cx);
+            view.add_child("concept:token", cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    let call = fake.last_call_for("workspaces.hierarchy.add_edge").expect("add_edge issued");
+    assert_eq!(call.payload.get("parent"), Some(&json!("concept:auth")));
+    assert_eq!(call.payload.get("child"), Some(&json!("concept:token")));
+    assert!(fake.count_for("workspaces.hierarchy.get_tree") >= 2, "reloads after authoring");
+}
+
+// ── (H4) merge + undo issue merge_nodes / remove_merge ───────────────────
+
+#[gpui::test]
+fn merge_and_unmerge_issue_their_verbs(cx: &mut TestAppContext) {
+    let fake = backend(true)
+        .on("workspaces.hierarchy.merge_nodes", json!({ "merge": {} }))
+        .on("workspaces.hierarchy.remove_merge", json!({ "removed": true }));
+    let _guard = fake.clone().install();
+
+    let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _w, cx| {
+            view.select("concept:auth", cx);
+            view.merge_into("concept:token", cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    let m = fake.last_call_for("workspaces.hierarchy.merge_nodes").expect("merge issued");
+    assert_eq!(m.payload.get("primary"), Some(&json!("concept:auth")));
+    assert_eq!(m.payload.get("alias"), Some(&json!("concept:token")));
+
+    window
+        .update(cx, |view, _w, cx| view.remove_merge("concept:auth", "concept:token", cx))
+        .unwrap();
+    cx.run_until_parked();
+    let u = fake.last_call_for("workspaces.hierarchy.remove_merge").expect("unmerge issued");
+    assert_eq!(u.payload.get("alias"), Some(&json!("concept:token")));
+}
+
+// ── (H4) the overlay section surfaces authored + dangling edges ──────────
+
+#[gpui::test]
+fn overlay_section_loads_authored_edges(cx: &mut TestAppContext) {
+    let fake = backend(true).on(
+        "workspaces.hierarchy.get_overlay",
+        json!({
+            "enabled": true,
+            "edges": [{ "parent": "concept:auth", "child": "vocab:gone", "dangling": true }],
+            "merges": []
+        }),
+    );
+    let _guard = fake.clone().install();
+
+    let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _w, _cx| {
+            assert_eq!(view.overlay_edge_count(), 1, "authored (dangling) edge surfaced for re-point");
+        })
+        .unwrap();
+    assert!(fake.count_for("workspaces.hierarchy.get_overlay") >= 1);
+}
+
+// ── (H4) remove-edge issues remove_edge ──────────────────────────────────
+
+#[gpui::test]
+fn remove_edge_issues_remove_edge(cx: &mut TestAppContext) {
+    let fake = backend(true).on("workspaces.hierarchy.remove_edge", json!({ "removed": true }));
+    let _guard = fake.clone().install();
+
+    let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
+    cx.run_until_parked();
+
+    window
+        .update(cx, |view, _w, cx| view.remove_edge("concept:auth", "vocab:gone", cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    let call = fake.last_call_for("workspaces.hierarchy.remove_edge").expect("remove_edge issued");
+    assert_eq!(call.payload.get("parent"), Some(&json!("concept:auth")));
+    assert_eq!(call.payload.get("child"), Some(&json!("vocab:gone")));
+}
+
 // ── (d) Vocabulary tab flips to the Hierarchy sub-tab ────────────────────
 
 #[gpui::test]

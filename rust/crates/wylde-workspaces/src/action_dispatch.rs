@@ -86,8 +86,10 @@ pub const HIERARCHY_SET_DEFINITION: &str = "workspaces.hierarchy.set_definition"
 pub const HIERARCHY_ADD_EDGE: &str = "workspaces.hierarchy.add_edge";
 pub const HIERARCHY_REMOVE_EDGE: &str = "workspaces.hierarchy.remove_edge";
 pub const HIERARCHY_MERGE_NODES: &str = "workspaces.hierarchy.merge_nodes";
+pub const HIERARCHY_REMOVE_MERGE: &str = "workspaces.hierarchy.remove_merge";
 pub const HIERARCHY_GET_CONFIG: &str = "workspaces.hierarchy.get_config";
 pub const HIERARCHY_SET_ENABLED: &str = "workspaces.hierarchy.set_enabled";
+pub const HIERARCHY_GET_OVERLAY: &str = "workspaces.hierarchy.get_overlay";
 
 // ── File I/O — jailed editor/file-tree surface (S1 / IDE plan P0.2) ──────
 pub const FS_READ: &str = "workspaces.fs.read";
@@ -620,6 +622,14 @@ pub fn install() {
         META_MODULE,
     );
     register_action_with_meta(
+        HIERARCHY_REMOVE_MERGE,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_remove_merge(p).await },
+        "Undo a merge by (primary, alias) so the alias re-appears as its own \
+         node — authoring stays reversible. Payload: {workspace_id, primary, \
+         alias}. Reply: {removed: bool}. OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
         HIERARCHY_GET_CONFIG,
         |p: Value| async move { crate::concepts::hierarchy_bridge::handle_get_config(p).await },
         "The hierarchy master-toggle state. Payload: {}. Reply: {enabled}. \
@@ -632,6 +642,16 @@ pub fn install() {
         "Flip the hierarchy master toggle. Payload: {enabled: bool}. Reply: \
          {enabled}. Ungated; persists to <data_dir>/settings/hierarchy.json \
          (fail-closed OFF). Off ⇒ all hierarchy verbs go inert.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_GET_OVERLAY,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_get_overlay(p).await },
+        "The RAW authored overlay (authored nodes + containment edges + merges) \
+         WITH dangling flags, for the authoring UI's re-point/remove affordances \
+         — unlike get_tree, which folds + excludes dangling. Payload: \
+         {workspace_id}. Reply: {enabled, nodes, edges:[{parent,child,dangling}], \
+         merges:[{primary,alias,dangling}]}. OFF ⇒ {enabled:false, edges:[]}.",
         META_MODULE,
     );
 

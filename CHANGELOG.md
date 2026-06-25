@@ -53,7 +53,7 @@ All notable changes to Wylde are recorded here. Versions follow
   authoring GUI → a curate-before-inject menu with Augment injection →
   scoped-lens narrowing + typed dependency-tree viz → an eval harness with
   calibrated thresholds. Augment is the default mode; Replace is opt-in.
-- **Definitional concept hierarchy (H0–H3).** A navigable, drill-down DAG that
+- **Definitional concept hierarchy (H0–H4).** A navigable, drill-down DAG that
   unifies concepts + vocabulary anchors into one `{id, label, definition,
   parents, children}` node model — every node carries a definition; you drill
   until leaves are definition-only. Shipped as an isolated, **default-OFF,
@@ -72,9 +72,14 @@ All notable changes to Wylde are recorded here. Versions follow
   definitions shown at every level with a priority-ladder source badge, a "needs
   definition" badge on `Missing` nodes, "also under: …" for multi-parent nodes,
   a selected-node ancestor-chain breadcrumb, and a Graph deep-link via the focus
-  bus. Toggle OFF ⇒ the verbs are inert, the sub-tab renders an inert
-  disabled state, and the overlay is never written; deleting the crate + bridge
-  + overlay + sub-tab folder reverts to today.
+  bus. The sub-tab also **authors**: edit/override or clear a node's definition,
+  mint brand-new authored nodes, add/remove containment edges, and merge/unmerge
+  nodes (a target picker over the loaded universe) — with an "authored edges &
+  merges" panel that surfaces dangling records for re-point/remove. Toggle OFF ⇒
+  the verbs are inert, the sub-tab renders an inert disabled state, and the
+  overlay is never written; deleting the crate + bridge + overlay + sub-tab
+  folder reverts to today. (H5 injection + H6 containment-spread — the
+  retrieval-affecting slices — are not yet wired.)
 - **Tree-sitter expansion.** Code outline + highlight verbs (with a graph-panel
   outline card) and added JSON, TOML, YAML, and Bash grammars.
 - **Conversation export / import.** An escape-hatch to move conversations in and

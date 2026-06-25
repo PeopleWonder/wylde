@@ -557,6 +557,66 @@ pub async fn handle_merge_nodes(payload: Value) -> Reply {
     Reply::ok(json!({ "workspace_id": ws, "merge": probe }))
 }
 
+/// `workspaces.hierarchy.remove_merge` -- undo a merge by `(primary, alias)`,
+/// so the alias re-appears as its own node (authoring stays reversible).
+/// Payload: `{workspace_id, primary, alias}`. Reply: `{removed: bool}`. OFF ⇒
+/// `disabled`.
+pub async fn handle_remove_merge(payload: Value) -> Reply {
+    let ws = match require_ws(&payload) {
+        Ok(w) => w,
+        Err(m) => return Reply::err_msg("bad_request", m),
+    };
+    if !HierarchyConfig::current().enabled {
+        return disabled_err();
+    }
+    let primary = match parse_node(&payload, "primary") {
+        Ok(n) => n,
+        Err(m) => return Reply::err_msg("bad_request", m),
+    };
+    let alias = match parse_node(&payload, "alias") {
+        Ok(n) => n,
+        Err(m) => return Reply::err_msg("bad_request", m),
+    };
+    let target = NodeMerge { primary, alias, created_at: 0.0, dangling: false };
+    let mut overlay = load_overlay(&ws);
+    let before = overlay.merges.len();
+    overlay.merges.retain(|m| !m.same_merge(&target));
+    let removed = overlay.merges.len() != before;
+    if removed {
+        if let Err(e) = save_overlay(&ws, &overlay) {
+            return Reply::err_msg("io", format!("failed to persist overlay: {e}"));
+        }
+    }
+    Reply::ok(json!({ "workspace_id": ws, "removed": removed }))
+}
+
+/// `workspaces.hierarchy.get_overlay` -- the RAW authored overlay (authored
+/// nodes, containment edges, merges) WITH their `dangling` flags, for the
+/// authoring UI. Unlike `get_tree` (which folds + excludes dangling records),
+/// this surfaces them so the UI can offer re-point / remove. Payload:
+/// `{workspace_id}`. OFF ⇒ `{enabled:false, edges:[], merges:[], nodes:[]}`.
+pub async fn handle_get_overlay(payload: Value) -> Reply {
+    let ws = match require_ws(&payload) {
+        Ok(w) => w,
+        Err(m) => return Reply::err_msg("bad_request", m),
+    };
+    if !HierarchyConfig::current().enabled {
+        return Reply::ok(json!({
+            "workspace_id": ws, "enabled": false, "nodes": [], "edges": [], "merges": [],
+        }));
+    }
+    // Refresh dangling flags first so the UI sees the current state.
+    sweep_dangling(&ws);
+    let overlay = load_overlay(&ws);
+    Reply::ok(json!({
+        "workspace_id": ws,
+        "enabled": true,
+        "nodes": overlay.nodes,
+        "edges": overlay.edges,
+        "merges": overlay.merges,
+    }))
+}
+
 // ── Master toggle facade (OQ-7 default: one toggle) ──────────────────────────
 //
 // Ungated -- these are how the sub-tab reads + flips the master switch, so they
@@ -775,6 +835,15 @@ mod tests {
         }))
         .await;
         assert_eq!(dup.error.unwrap().code, "already_exists");
+
+        // remove_merge undoes it: the alias re-appears as its own node.
+        let rm = handle_remove_merge(json!({
+            "workspace_id": ws, "primary": "concept:auth", "alias": "vocab:workflows"
+        }))
+        .await;
+        assert!(rm.ok && rm.data["removed"] == json!(true));
+        let g = current_graph(ws);
+        assert!(g.node(&NodeId::vocab("workflows")).is_some(), "alias restored after unmerge");
         disable();
     }
 
@@ -852,6 +921,33 @@ mod tests {
         // The authored node persists with its minted id untouched.
         assert!(g.node(&NodeId(authored_id.clone())).is_some(), "authored node survived");
         disable();
+    }
+
+    #[tokio::test]
+    async fn get_overlay_surfaces_authored_and_dangling_records() {
+        let _env = TestEnv::new();
+        enable();
+        let ws = "hier-ovl-00000";
+        seed(ws);
+        // Author an edge, then drop the child anchor so the edge dangles.
+        handle_add_edge(json!({
+            "workspace_id": ws, "parent": "concept:auth", "child": "vocab:workflows"
+        }))
+        .await;
+        anchor_store::save(ws, &[vocab(ws, "n8n", None)]).unwrap();
+
+        let r = handle_get_overlay(json!({ "workspace_id": ws })).await;
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data["enabled"], json!(true));
+        let edges = r.data["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 1, "the authored edge is RETAINED + surfaced");
+        assert_eq!(edges[0]["dangling"], json!(true), "and flagged dangling for re-point");
+
+        // OFF ⇒ inert empty.
+        disable();
+        let off = handle_get_overlay(json!({ "workspace_id": ws })).await;
+        assert_eq!(off.data["enabled"], json!(false));
+        assert!(off.data["edges"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
