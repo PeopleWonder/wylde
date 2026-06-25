@@ -30,6 +30,7 @@
 
 pub mod delta;
 pub mod exclude;
+pub mod fuse;
 pub mod graph_writer;
 pub mod lexical;
 pub mod lock;

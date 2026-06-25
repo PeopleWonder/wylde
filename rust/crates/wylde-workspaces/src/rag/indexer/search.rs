@@ -11,7 +11,8 @@
 use serde_json::{json, Value};
 
 use super::store::{self, IndexedChunk};
-use crate::rag::cosine;
+use super::{fuse, lexical};
+use crate::rag::{cosine, LexicalConfig};
 
 /// One ranked search hit. Shape mirrors the retired Python verb:
 /// `{file_path, line_range, content, score}`.
@@ -23,22 +24,43 @@ pub struct SearchHit {
     pub line_range: [u32; 2],
     /// The chunk text.
     pub content: String,
-    /// Cosine similarity in `[-1, 1]` (higher = closer).
+    /// Cosine similarity in `[-1, 1]` (higher = closer). **Always the true
+    /// cosine** — even under RRF fusion, so the GUI/IPC contract (`score` is the
+    /// dense relevance) never changes (lexical-bm25 plan §1.5).
     pub score: f64,
     /// 0-based chunk index within its file (disambiguates same-file hits).
     pub chunk_idx: u32,
+    /// The BM25 lexical score, when the lexical arm matched this chunk under RRF
+    /// fusion. `None` when fusion is OFF or the lexical arm didn't match — so a
+    /// lexical-only hit (low cosine, high BM25) isn't mistaken for a weak one.
+    /// Additive provenance; never affects `score`. Omitted from `to_value` when
+    /// `None` (so today's JSON is unchanged with fusion OFF).
+    pub lexical_score: Option<f64>,
+    /// The RRF fused score that drove ordering/cutoff under fusion. `None` when
+    /// fusion is OFF (ordering is pure cosine). Additive provenance, omitted from
+    /// `to_value` when `None`.
+    pub fused_score: Option<f64>,
 }
 
 impl SearchHit {
-    /// JSON shape handed to the IPC layer / GUI.
+    /// JSON shape handed to the IPC layer / GUI. The two provenance keys are
+    /// **additive** — present only under fusion when set — so existing consumers
+    /// see a JSON object identical to today's when fusion is OFF.
     pub fn to_value(&self) -> Value {
-        json!({
+        let mut v = json!({
             "file_path": self.file_path,
             "line_range": [self.line_range[0], self.line_range[1]],
             "content": self.content,
             "score": self.score,
             "chunk_idx": self.chunk_idx,
-        })
+        });
+        if let Some(lex) = self.lexical_score {
+            v["lexical_score"] = json!(lex);
+        }
+        if let Some(fused) = self.fused_score {
+            v["fused_score"] = json!(fused);
+        }
+        v
     }
 }
 
@@ -110,7 +132,24 @@ pub fn query_with_vec(
     // get a scoring boost so a generic question while a file is open biases
     // toward the user's current focus, without partitioning the index.
     let active_file = extract_active_file(query_text);
-    rank_with(query_vec, chunks, k, &anchors, active_file.as_deref())
+
+    // Lexical/BM25 + RRF fusion is OFF by default ⇒ today's dense-only path,
+    // byte-for-byte (the identity guarantee, lexical-bm25 plan §1.3). Only an
+    // explicit, persisted opt-in enters the fused path below.
+    let cfg = crate::rag::LexicalConfig::current();
+    if !cfg.enabled {
+        return rank_with(query_vec, chunks, k, &anchors, active_file.as_deref());
+    }
+    rank_fused(
+        workspace_id,
+        query_vec,
+        query_text,
+        chunks,
+        k,
+        &anchors,
+        active_file.as_deref(),
+        &cfg,
+    )
 }
 
 /// MMR relevance/diversity trade-off (the `λ` in the standard formula):
@@ -363,7 +402,7 @@ pub fn rank_with(
     // warranted count. The pool floor of `keep` keeps behaviour intact when
     // `keep` exceeds it.
     scored.truncate(MMR_POOL.max(keep));
-    mmr_select(scored, keep)
+    mmr_select(scored, keep, |t| t.0, |t| &t.2.vector)
         .into_iter()
         .map(|(_, cos, c)| SearchHit {
             file_path: c.path,
@@ -371,8 +410,182 @@ pub fn rank_with(
             content: c.content,
             score: cos,
             chunk_idx: c.chunk_idx,
+            lexical_score: None,
+            fused_score: None,
         })
         .collect()
+}
+
+/// How many lexical (BM25) hits to fetch for fusion. Beyond this depth the
+/// lexical RRF contribution (`w/(rrf_k+rank)`) is negligible vs the dense arm, so
+/// fetching deeper can't change the fused top-k; it just over-fetches. Always at
+/// least the caller's `k`.
+const LEXICAL_FETCH: usize = 50;
+
+/// Ranking core for the **fused** path (toggle ON, lexical-bm25 plan §1.3). Runs
+/// the dense (cosine) and lexical (BM25) arms over the same chunk set, fuses them
+/// with RRF ([`fuse::fuse`]), then drives the existing dynamic-k / MMR levers off
+/// the fused score. The reported [`SearchHit::score`] is **still the true
+/// cosine**; the RRF score and any BM25 hit ride in the additive provenance
+/// fields so a lexical-only hit isn't mistaken for a weak one.
+#[allow(clippy::too_many_arguments)] // the fused retrieval entry: ws + vec + text + chunks + budget + levers + cfg
+fn rank_fused(
+    workspace_id: &str,
+    query_vec: &[f32],
+    query_text: &str,
+    chunks: Vec<IndexedChunk>,
+    k: usize,
+    anchors: &[String],
+    active_file: Option<&str>,
+    cfg: &LexicalConfig,
+) -> Vec<SearchHit> {
+    if k == 0 || chunks.is_empty() {
+        return Vec::new();
+    }
+    // One-time backfill (§2.5): if the toggle was just flipped on and the lexical
+    // index doesn't exist yet, build it from the persisted chunks (no embedder).
+    // Best-effort — if it's still absent the lexical arm returns nothing and
+    // fusion degrades to dense-only ranking.
+    super::ensure_lexical_backfill(workspace_id);
+
+    let n = chunks.len();
+
+    // ── DENSE arm: cosine per chunk + a full descending-cosine ordering. ──
+    let cosines: Vec<f64> = chunks.iter().map(|c| cosine(query_vec, &c.vector)).collect();
+    let mut dense_order: Vec<usize> = (0..n).collect();
+    dense_order.sort_by(|&a, &b| {
+        cosines[b]
+            .partial_cmp(&cosines[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // ── LEXICAL arm: BM25 over the tantivy index, joined back to chunk indices
+    // by chunk_id. A lexical hit with no matching loaded chunk is silently
+    // dropped (§2.6 fail-soft) — lexical can never surface a chunk the vector
+    // store lacks. ──
+    let lex_query = build_lexical_query(query_text, anchors);
+    let lex_raw = lexical::search(workspace_id, &lex_query, LEXICAL_FETCH.max(k));
+    let id_to_idx: std::collections::HashMap<&str, usize> = chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.id.as_str(), i))
+        .collect();
+    let lex_hits: Vec<(usize, f64)> = lex_raw
+        .iter()
+        .filter_map(|(id, s)| id_to_idx.get(id.as_str()).map(|&i| (i, *s)))
+        .collect();
+
+    // ── RRF fuse → (fused, lexical_opt) per chunk index. ──
+    let fused = fuse::fuse(n, &dense_order, &lex_hits, cfg);
+
+    // Scored candidates: (effective_fused, cosine, lexical_opt, chunk). The
+    // active-file boost is an additive FOCUS lift on the fused score (§3) — at
+    // the RRF scale so it nudges the open file up without dwarfing a genuine
+    // two-arm hit, kept separate from the lexical relevance arm.
+    let mut scored: Vec<(f64, f64, Option<f64>, IndexedChunk)> = chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let focus = active_file_focus_boost(&c, active_file, cfg);
+            (fused[i].0 + focus, cosines[i], fused[i].1, c)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let keep = dynamic_k_fused(&scored, k, cfg);
+    if keep == 0 {
+        return Vec::new();
+    }
+    scored.truncate(MMR_POOL.max(keep));
+    mmr_select(scored, keep, |t| t.0, |t| &t.3.vector)
+        .into_iter()
+        .map(|(fused_eff, cos, lex, c)| SearchHit {
+            file_path: c.path,
+            line_range: [c.start_line, c.end_line],
+            content: c.content,
+            score: cos, // STILL true cosine (the §1.5 contract)
+            chunk_idx: c.chunk_idx,
+            lexical_score: lex,
+            fused_score: Some(fused_eff),
+        })
+        .collect()
+}
+
+/// The lexical-arm query text: strip the protocol markers the harness appends
+/// (`[anchors: …]` / `[active_file: …]`) so their payloads don't pollute the BM25
+/// query, leaving the user message. (L5 folds the resolved `anchors` back in as
+/// boosted exact-token sub-queries; here they ride only via the user text.)
+fn build_lexical_query(query_text: &str, _anchors: &[String]) -> String {
+    let cut = [ANCHOR_QUERY_MARKER, ACTIVE_FILE_QUERY_MARKER]
+        .iter()
+        .filter_map(|m| query_text.find(m))
+        .min();
+    match cut {
+        Some(i) => query_text[..i].trim().to_owned(),
+        None => query_text.trim().to_owned(),
+    }
+}
+
+/// Active-file FOCUS boost at the **RRF scale** (fused path, §3): the exact open
+/// file gets [`LexicalConfig::active_file_focus_boost`], a sibling in the same
+/// directory the smaller dir boost, everything else nothing. Kept additive and
+/// post-RRF — a positional/focus signal, deliberately separate from the lexical
+/// relevance arm. `active_file` is already normalised by [`extract_active_file`].
+fn active_file_focus_boost(
+    chunk: &IndexedChunk,
+    active_file: Option<&str>,
+    cfg: &LexicalConfig,
+) -> f64 {
+    let Some(active) = active_file else {
+        return 0.0;
+    };
+    let path = normalize_path(&chunk.path);
+    if path == active {
+        return cfg.active_file_focus_boost;
+    }
+    match (dir_of(active), dir_of(&path)) {
+        (Some(ad), Some(pd)) if !ad.is_empty() && ad == pd => cfg.active_file_dir_focus_boost,
+        _ => 0.0,
+    }
+}
+
+/// Fused dynamic-k cutoff (§1.4) — the one real friction RRF introduces. Returns
+/// a count in `0..=k`:
+///
+/// * `0` — the **top** candidate is on-topic to *neither* signal (dense cosine
+///   below [`MIN_ABSOLUTE_SCORE`] **and** no lexical hit clearing
+///   [`LexicalConfig::min_bm25`]): inject nothing, exactly as the dense floor
+///   does for an off-topic query.
+/// * else — the fused-sorted prefix that clears
+///   [`LexicalConfig::fused_relative_floor`] · `top_fused`, capped at `k`.
+///
+/// The crucial difference from [`dynamic_k`]: the absolute *cosine* floor is
+/// **not** applied to a fused score (RRF scores are scale-free); its *purpose* —
+/// "off-topic injects nothing" — is preserved by the on-topic gate, which a
+/// strong exact-token BM25 hit at low cosine **passes** (the approved bypass,
+/// confirmed by Aaron). That bypass is the recall win.
+fn dynamic_k_fused(
+    scored: &[(f64, f64, Option<f64>, IndexedChunk)],
+    k: usize,
+    cfg: &LexicalConfig,
+) -> usize {
+    if k == 0 || scored.is_empty() {
+        return 0;
+    }
+    let (top_fused, top_cos, top_lex) = (scored[0].0, scored[0].1, scored[0].2);
+    // On-topic gate on the TOP candidate: cleared either floor → on-topic.
+    let on_topic =
+        top_cos >= MIN_ABSOLUTE_SCORE || top_lex.map(|bm| bm >= cfg.min_bm25).unwrap_or(false);
+    if !on_topic || top_fused <= 0.0 {
+        return 0;
+    }
+    let threshold = cfg.fused_relative_floor * top_fused;
+    let kept = scored
+        .iter()
+        .take(k)
+        .take_while(|c| c.0 >= threshold)
+        .count();
+    kept.max(1)
 }
 
 /// Decide how many of the top hits are *worth* a prompt slot, given the
@@ -415,27 +628,30 @@ fn dynamic_k(scored: &[(f64, f64, IndexedChunk)], k: usize) -> usize {
 /// `λ·rel − (1−λ)·max cosine to anything already picked`, so a chunk nearly
 /// identical to one already chosen is demoted in favour of a fresh-but-still-
 /// relevant one. Returns at most `k` items in selection order.
-fn mmr_select(
-    mut candidates: Vec<(f64, f64, IndexedChunk)>,
+fn mmr_select<T>(
+    mut candidates: Vec<T>,
     k: usize,
-) -> Vec<(f64, f64, IndexedChunk)> {
+    rel: impl Fn(&T) -> f64,
+    vec_of: impl Fn(&T) -> &[f32],
+) -> Vec<T> {
     let target = k.min(candidates.len());
     if target == 0 {
         return Vec::new();
     }
-    let mut selected: Vec<(f64, f64, IndexedChunk)> = Vec::with_capacity(target);
+    let mut selected: Vec<T> = Vec::with_capacity(target);
     // Seed with the top hit — candidates is already sorted descending by the
-    // effective (cosine + anchor-boost) score.
+    // effective relevance score (cosine + anchor-boost for the dense path, the
+    // fused RRF score for the fusion path).
     selected.push(candidates.remove(0));
     while selected.len() < target && !candidates.is_empty() {
         let mut best_idx = 0;
         let mut best_mmr = f64::NEG_INFINITY;
-        for (i, (rel, _, cand)) in candidates.iter().enumerate() {
+        for (i, cand) in candidates.iter().enumerate() {
             let max_sim = selected
                 .iter()
-                .map(|(_, _, s)| cosine(&cand.vector, &s.vector))
+                .map(|s| cosine(vec_of(cand), vec_of(s)))
                 .fold(0.0_f64, f64::max);
-            let mmr = MMR_LAMBDA * rel - (1.0 - MMR_LAMBDA) * max_sim;
+            let mmr = MMR_LAMBDA * rel(cand) - (1.0 - MMR_LAMBDA) * max_sim;
             if mmr > best_mmr {
                 best_mmr = mmr;
                 best_idx = i;
@@ -854,11 +1070,230 @@ mod tests {
             content: "body".into(),
             score: 0.42,
             chunk_idx: 2,
+            lexical_score: None,
+            fused_score: None,
         };
         let v = hit.to_value();
         assert_eq!(v["file_path"], "/a.md");
         assert_eq!(v["line_range"], json!([3, 9]));
         assert_eq!(v["content"], "body");
         assert_eq!(v["score"], 0.42);
+        // With no fusion provenance, the two optional keys are ABSENT — today's
+        // JSON shape is byte-identical (additive, OFF-safe).
+        assert!(v.get("lexical_score").is_none(), "omitted when None");
+        assert!(v.get("fused_score").is_none(), "omitted when None");
+    }
+
+    #[test]
+    fn to_value_includes_provenance_when_set() {
+        let hit = SearchHit {
+            file_path: "/a.md".into(),
+            line_range: [1, 2],
+            content: "body".into(),
+            score: 0.3,
+            chunk_idx: 0,
+            lexical_score: Some(7.5),
+            fused_score: Some(0.021),
+        };
+        let v = hit.to_value();
+        assert_eq!(v["lexical_score"], 7.5);
+        assert_eq!(v["fused_score"], 0.021);
+        assert_eq!(v["score"], 0.3, "score is still true cosine");
+    }
+
+    // ── L4: RRF-fused dynamic-k cutoff (pure) ───────────────────────────────
+
+    /// Build descending fused candidates `(fused, cosine, lexical_opt, chunk)`
+    /// for direct [`dynamic_k_fused`] tests, without an index.
+    fn fscored(rows: &[(f64, f64, Option<f64>)]) -> Vec<(f64, f64, Option<f64>, IndexedChunk)> {
+        rows.iter()
+            .enumerate()
+            .map(|(i, &(fused, cos, lex))| {
+                (fused, cos, lex, chunk(&format!("/c{i}.rs"), vec![1.0, 0.0], "c"))
+            })
+            .collect()
+    }
+
+    fn fuse_cfg() -> LexicalConfig {
+        LexicalConfig {
+            enabled: true,
+            rrf_k: 60.0,
+            w_dense: 1.0,
+            w_lex: 1.0,
+            min_bm25: 0.5,
+            fused_relative_floor: 0.6,
+            ..LexicalConfig::default()
+        }
+    }
+
+    #[test]
+    fn fused_dynamic_k_zero_when_top_is_off_topic_to_both() {
+        // Top has a sub-floor cosine AND no lexical hit → inject nothing.
+        let s = fscored(&[(0.02, 0.40, None), (0.01, 0.30, None)]);
+        assert_eq!(dynamic_k_fused(&s, 5, &fuse_cfg()), 0);
+    }
+
+    #[test]
+    fn fused_dynamic_k_keeps_low_cosine_top_rescued_by_bm25() {
+        // The approved bypass: the top has a sub-floor cosine but a strong BM25
+        // hit clearing min_bm25 → it is on-topic and kept (the recall win).
+        let s = fscored(&[(0.03, 0.30, Some(8.0)), (0.005, 0.20, None)]);
+        let keep = dynamic_k_fused(&s, 5, &fuse_cfg());
+        assert!(keep >= 1, "lexical-only top is on-topic and kept");
+    }
+
+    #[test]
+    fn fused_dynamic_k_on_topic_via_cosine_keeps_prefix() {
+        // Top clears the cosine floor → on-topic; the relative floor on fused
+        // trims the tail below 0.6·top.
+        let cfg = fuse_cfg();
+        let top = 0.030_f64;
+        let s = fscored(&[
+            (top, 0.80, None),
+            (0.62 * top, 0.50, None),     // above 0.6·top → kept
+            (0.40 * top, 0.40, None),     // below 0.6·top → trimmed
+        ]);
+        assert_eq!(dynamic_k_fused(&s, 5, &cfg), 2);
+    }
+
+    #[test]
+    fn fused_dynamic_k_capped_by_budget() {
+        let cfg = fuse_cfg();
+        let s = fscored(&[(0.03, 0.8, None), (0.029, 0.7, None), (0.028, 0.7, None)]);
+        assert_eq!(dynamic_k_fused(&s, 2, &cfg), 2);
+    }
+
+    // ── L4: build_lexical_query strips the protocol markers ─────────────────
+
+    #[test]
+    fn build_lexical_query_strips_markers() {
+        let q = "why does compose_retrieval_query fail?\n\n\
+                 [anchors: compose_retrieval_query]\n[active_file: src/x.rs]";
+        assert_eq!(
+            build_lexical_query(q, &[]),
+            "why does compose_retrieval_query fail?"
+        );
+        // No markers → trimmed user text verbatim.
+        assert_eq!(build_lexical_query("plain question  ", &[]), "plain question");
+    }
+
+    // ── L4: end-to-end fusion through query_with_vec ────────────────────────
+
+    /// Unit vector whose cosine against the `[1, 0]` query equals `c` (re-stated
+    /// in the integration scope; `vec_with_cosine` above is the same shape).
+    fn cos_vec(c: f64) -> Vec<f32> {
+        vec_with_cosine(c as f32)
+    }
+
+    fn enable_fusion() {
+        LexicalConfig::persist(LexicalConfig {
+            enabled: true,
+            rrf_k: 60.0,
+            w_dense: 1.0,
+            w_lex: 1.0,
+            min_bm25: 0.5,
+            fused_relative_floor: 0.6,
+            ..LexicalConfig::default()
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn fused_off_is_byte_identical_to_dense_only() {
+        let _env = crate::test_support::TestEnv::new();
+        LexicalConfig::persist(LexicalConfig::default()).unwrap(); // OFF
+        let ws = "fuse-off";
+        let chunks = vec![
+            chunk("/near.rs", cos_vec(0.9), "near content alpha"),
+            chunk("/mid.rs", cos_vec(0.6), "mid content beta"),
+        ];
+        store::save_chunks(ws, &chunks).unwrap();
+        let q = vec![1.0_f32, 0.0];
+        let hits = query_with_vec(ws, &q, "a question", 5);
+        let dense = rank_with(&q, chunks, 5, &[], None);
+        assert_eq!(hits.len(), dense.len());
+        for (a, b) in hits.iter().zip(dense.iter()) {
+            assert_eq!(a.file_path, b.file_path);
+            assert_eq!(a.score, b.score);
+            assert!(a.fused_score.is_none(), "no fusion provenance when OFF");
+            assert!(a.lexical_score.is_none());
+        }
+        assert!(
+            !lexical::has_lexical_index(ws),
+            "OFF builds no lexical index (identity with today)"
+        );
+    }
+
+    #[test]
+    fn fused_surfaces_a_lexical_only_hit_below_the_cosine_floor() {
+        let _env = crate::test_support::TestEnv::new();
+        let ws = "fuse-bypass";
+        // Target: a sub-floor cosine but a unique rare exact token. Decoy: even
+        // lower cosine, no token match.
+        let target = chunk(
+            "/defining.rs",
+            cos_vec(MIN_ABSOLUTE_SCORE - 0.20),
+            "fn zqxjrare_handler() { do_work() }",
+        );
+        let decoy = chunk("/other.rs", cos_vec(MIN_ABSOLUTE_SCORE - 0.30), "unrelated prose body");
+        store::save_chunks(ws, &[target, decoy]).unwrap();
+        let q = vec![1.0_f32, 0.0];
+
+        // Dense-only (OFF): both below the absolute floor ⇒ nothing injected.
+        LexicalConfig::persist(LexicalConfig::default()).unwrap();
+        assert!(
+            query_with_vec(ws, &q, "zqxjrare_handler", 5).is_empty(),
+            "OFF: below the cosine floor, injects nothing"
+        );
+
+        // Fusion ON: the BM25 exact-token hit bypasses the absolute cosine floor
+        // (the approved §1.4 bypass) and the low-cosine defining file is rescued.
+        enable_fusion();
+        let hits = query_with_vec(ws, &q, "zqxjrare_handler", 5);
+        assert!(!hits.is_empty(), "ON: lexical hit rescues the low-cosine chunk");
+        assert_eq!(hits[0].file_path, "/defining.rs");
+        assert!(hits[0].lexical_score.is_some(), "carries BM25 provenance");
+        assert!(hits[0].fused_score.is_some());
+        assert!(
+            (hits[0].score - (MIN_ABSOLUTE_SCORE - 0.20)).abs() < 1e-3,
+            "reported score stays the true cosine, got {}",
+            hits[0].score
+        );
+        LexicalConfig::persist(LexicalConfig::default()).unwrap();
+    }
+
+    #[test]
+    fn fused_off_topic_to_both_injects_nothing() {
+        let _env = crate::test_support::TestEnv::new();
+        let ws = "fuse-offtopic";
+        let target = chunk("/a.rs", cos_vec(MIN_ABSOLUTE_SCORE - 0.20), "fn zqxjrare_handler() {}");
+        store::save_chunks(ws, &[target]).unwrap();
+        let q = vec![1.0_f32, 0.0];
+        enable_fusion();
+        // Sub-floor cosine AND a query token that matches nothing lexically →
+        // on-topic to neither signal → empty (the off-topic guard holds).
+        assert!(
+            query_with_vec(ws, &q, "absent_token_qqzzx", 5).is_empty(),
+            "off-topic to both arms injects nothing"
+        );
+        LexicalConfig::persist(LexicalConfig::default()).unwrap();
+    }
+
+    #[test]
+    fn fused_semantic_guardrail_dense_nailed_query_unaffected() {
+        let _env = crate::test_support::TestEnv::new();
+        let ws = "fuse-guardrail";
+        // A strongly-cosine-relevant chunk the lexical query does NOT match.
+        let strong = chunk("/strong.rs", cos_vec(0.85), "alpha bravo charlie delta");
+        store::save_chunks(ws, &[strong]).unwrap();
+        let q = vec![1.0_f32, 0.0];
+        enable_fusion();
+        // No lexical overlap, but the high cosine clears the floor → fused ≈
+        // dense; the hit the dense path already nailed is still returned.
+        let hits = query_with_vec(ws, &q, "echo foxtrot golf", 5);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].file_path, "/strong.rs");
+        assert!((hits[0].score - 0.85).abs() < 1e-3, "true cosine reported");
+        LexicalConfig::persist(LexicalConfig::default()).unwrap();
     }
 }
