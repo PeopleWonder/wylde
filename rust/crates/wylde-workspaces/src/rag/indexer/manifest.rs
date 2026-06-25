@@ -397,6 +397,26 @@ pub fn remove_files(workspace_id: &str, canonical: &str) {
     }
 }
 
+/// The chunk ids the manifest records for an exact path **or** anything under
+/// `<canonical><sep>` (a directory subtree) — the delete keys the watcher's
+/// lexical remove ([`super::lexical::sync_remove_file`]) needs to drop a removed
+/// file or directory from the BM25 index. `Vec::new()` for an absent manifest
+/// (legacy index) or an unknown path. Read BEFORE [`remove_files`] mutates the
+/// manifest.
+pub fn chunk_ids_under(workspace_id: &str, canonical: &str) -> Vec<String> {
+    let Some(m) = load(workspace_id) else {
+        return Vec::new();
+    };
+    let prefix = format!("{canonical}{}", std::path::MAIN_SEPARATOR);
+    let mut ids = Vec::new();
+    for (p, e) in &m.files {
+        if p == canonical || p.starts_with(&prefix) {
+            ids.extend(e.chunk_ids.iter().cloned());
+        }
+    }
+    ids
+}
+
 /// Max cached-chunk mtime per path — the `legacy_mtimes` input to [`diff`] for
 /// a pre-manifest index (mirrors the old `plan_delta` cached-mtime map).
 pub fn legacy_mtimes(chunks: &[IndexedChunk]) -> HashMap<String, f64> {
