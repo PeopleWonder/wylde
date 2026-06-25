@@ -34,11 +34,18 @@ use serde_json::{json, Value};
 /// that key as its default (forward-compatible, like `RoutingConfig` and the
 /// other settings stores).
 ///
-/// The fusion knobs (`rrf_k`, `w_dense`, `w_lex`, `min_bm25`,
-/// `fused_relative_floor`, the active-file focus boosts) are **provisional**
-/// until the L7 eval sweep calibrates them against the live index — exactly as
-/// `RoutingConfig::abs_threshold` was provisional 0.50 until R4 calibrated it to
-/// 0.62. They only ever bite when `enabled` is `true`.
+/// L8 live calibration (2026-06-25, `tests/lexical_eval.rs` against a real
+/// 2115-chunk `nomic-embed-text` index of the Wylde `rust/` tree): the RRF
+/// fusion knobs landed at `rrf_k = 60`, `w_dense = 1.0`, `w_lex = 1.0` — the
+/// sweep confirmed these maximise lexical-class recall (1.000) and nDCG (0.728)
+/// while holding the semantic guardrail flat (dense 0.600 → fused 0.600);
+/// up-weighting dense to 1.5 collapsed lexical recall to 0.625, and lowering
+/// `rrf_k` only hurt nDCG. `fused_relative_floor` calibrated from the
+/// provisional 0.6 down to **0.5**, which lifted lexical-inject 75% → 88% at no
+/// cost to the semantic-kept count (10.0) or off-topic silence (0%). The
+/// `min_bm25` exact-token gate and the active-file focus boosts were NOT in this
+/// sweep and remain **provisional**. All knobs only ever bite when `enabled` is
+/// `true`. See `outputs/lexical-bm25-eval-results.md` for the full tables.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct LexicalConfig {
     /// **THE MASTER TOGGLE.** `false` ⇒ the lexical arm is never built or
@@ -76,8 +83,9 @@ pub struct LexicalConfig {
     /// Relative dominance floor on the **fused** score (§1.4): keep the
     /// fused-sorted prefix while `fused ≥ floor · top_fused`. RRF scores are
     /// scale-free so this ratio transfers cleanly from the dense
-    /// `RELATIVE_FLOOR`. Default `0.6` (mirrors `rank_with`'s dense floor).
-    /// **L7-tunable.**
+    /// `RELATIVE_FLOOR`. **Live-calibrated to `0.5`** (L8, 2026-06-25): on the
+    /// real index this kept 88% of lexical-class injections vs 75% at 0.6, with
+    /// no loss to the semantic guardrail or off-topic silence.
     #[serde(default = "default_fused_relative_floor")]
     pub fused_relative_floor: f64,
 
@@ -109,7 +117,10 @@ fn default_min_bm25() -> f64 {
     1.0
 }
 fn default_fused_relative_floor() -> f64 {
-    0.6
+    // L8 live-calibrated (2026-06-25): 0.5 kept 88% of lexical injections vs 75%
+    // at the provisional 0.6, with no semantic-guardrail or off-topic-silence
+    // cost. See outputs/lexical-bm25-eval-results.md.
+    0.5
 }
 fn default_active_file_focus_boost() -> f64 {
     // ≈ 0.5 / 60 — half of one RRF arm's top contribution at the default rrf_k.
@@ -233,7 +244,7 @@ mod tests {
         assert!((c.w_dense - 1.0).abs() < 1e-9, "symmetric default weights");
         assert!((c.w_lex - 1.0).abs() < 1e-9);
         assert!((c.min_bm25 - 1.0).abs() < 1e-9);
-        assert!((c.fused_relative_floor - 0.6).abs() < 1e-9);
+        assert!((c.fused_relative_floor - 0.5).abs() < 1e-9, "L8 live-calibrated floor");
         assert!(c.active_file_focus_boost > c.active_file_dir_focus_boost);
     }
 
