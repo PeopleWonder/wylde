@@ -24,6 +24,7 @@
 
 pub mod indexer;
 pub mod lexical_config;
+pub mod lexical_eval;
 pub mod scope;
 
 pub use lexical_config::LexicalConfig;

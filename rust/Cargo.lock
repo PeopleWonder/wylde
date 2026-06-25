@@ -6010,6 +6010,7 @@ dependencies = [
  "neo4rs",
  "notify",
  "nucleo-matcher",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",

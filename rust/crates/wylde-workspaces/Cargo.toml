@@ -79,3 +79,8 @@ tempfile = "3"
 wylde-treesitter = { path = "../wylde-treesitter" }
 # Unique pipe / service names in the integration tests.
 uuid = { version = "1", features = ["v4"] }
+# Blocking HTTP client for the `#[ignore]`d live lexical-eval driver
+# (tests/lexical_eval.rs) — embeds the gold queries against the running Ollama,
+# exactly as the RAG path does. Test-only (mirrors the concept-routing live
+# eval): the shipped library never carries an HTTP client.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }

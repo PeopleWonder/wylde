@@ -540,8 +540,8 @@ mod tests {
         // Incremental: seed with a, upsert b, upsert c, then remove b.
         let incr = "lx-conv-incr";
         build_from_chunks(incr, &[a0.clone(), a1.clone()]).unwrap();
-        sync_upsert_file(incr, "/b.rs", &[b0.clone()]).unwrap();
-        sync_upsert_file(incr, "/c.rs", &[c0.clone()]).unwrap();
+        sync_upsert_file(incr, "/b.rs", std::slice::from_ref(&b0)).unwrap();
+        sync_upsert_file(incr, "/c.rs", std::slice::from_ref(&c0)).unwrap();
         sync_remove_file(incr, "/b.rs", &["b0".into()]).unwrap();
 
         // Same live matched-id set for each unique-token query.
