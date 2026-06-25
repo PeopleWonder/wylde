@@ -57,9 +57,22 @@ const WRITER_HEAP_BYTES: usize = 50_000_000;
 /// Relative BM25 boost on a path/identifier token match over a body match — the
 /// defining file (whose path carries the symbol) should outrank a file that
 /// merely mentions it, reproducing the dense path's `ANCHOR_PATH_BOOST` intent
-/// as a principled field boost rather than a magic additive. (Anchor terms get
-/// an additional, higher boost in L5.)
+/// as a principled field boost rather than a magic additive.
 const PATH_FIELD_BOOST: f32 = 2.0;
+
+/// BM25 field boost on the **content** match of a resolved anchor token (L5).
+/// Higher than a plain body term (`1.0`) so a chunk that literally mentions a
+/// referenced symbol outranks one that's merely topically near — but the IDF in
+/// BM25 already does the heavy lifting (a rare identifier scores far above a
+/// common word), so this stays modest rather than a flat additive.
+const ANCHOR_CONTENT_BOOST: f32 = 3.0;
+
+/// BM25 field boost on the **path/identifier** match of a resolved anchor token
+/// (L5) — the strongest "the symbol's defining file ranks top" signal,
+/// reproducing the old additive `ANCHOR_PATH_BOOST` as a principled, IDF-weighted
+/// field boost with exact token boundaries (so `add` no longer matches inside
+/// `address` — the `ANCHOR_TERM_MIN_LEN` substring hack is retired on this path).
+const ANCHOR_PATH_FIELD_BOOST: f32 = 6.0;
 
 /// The four schema fields, resolved once so callers don't re-`get_field`.
 #[derive(Clone, Copy)]
@@ -207,26 +220,38 @@ fn tokenize(index: &Index, text: &str) -> Vec<String> {
     out
 }
 
-/// Build a robust BM25 query from already-tokenised terms: an OR (`Should`) over
-/// a `content` term-query (boost 1.0) and a `path_text` term-query (boosted by
-/// [`PATH_FIELD_BOOST`]) for **each** token. Built from terms — never the
-/// `QueryParser` — so code identifiers with `:`/`-`/`(` can't trip query syntax.
+/// Append `Should` BM25 term-clauses for each token to `clauses`: one over
+/// `content` (boost `content_boost`) and one over `path_text` (boost
+/// `path_boost`). Built from terms — never the `QueryParser` — so code
+/// identifiers with `:`/`-`/`(` can't trip query syntax. A boost of `1.0` is the
+/// BM25 baseline.
+fn push_term_clauses(
+    clauses: &mut Vec<(Occur, Box<dyn Query>)>,
+    f: &LexicalFields,
+    terms: &[String],
+    content_boost: f32,
+    path_boost: f32,
+) {
+    for tok in terms {
+        let content_q = TermQuery::new(Term::from_field_text(f.content, tok), IndexRecordOption::WithFreqs);
+        clauses.push((
+            Occur::Should,
+            Box::new(BoostQuery::new(Box::new(content_q), content_boost)),
+        ));
+        let path_q = TermQuery::new(Term::from_field_text(f.path_text, tok), IndexRecordOption::WithFreqs);
+        clauses.push((
+            Occur::Should,
+            Box::new(BoostQuery::new(Box::new(path_q), path_boost)),
+        ));
+    }
+}
+
+/// Build a robust BM25 query from already-tokenised body terms — an OR over
+/// `content` (boost 1.0) + `path_text` (boost [`PATH_FIELD_BOOST`]) per token.
 /// An empty term list yields an empty query (no matches, scored 0).
 fn term_or_query(f: &LexicalFields, terms: &[String]) -> BooleanQuery {
     let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::with_capacity(terms.len() * 2);
-    for tok in terms {
-        let content_term = Term::from_field_text(f.content, tok);
-        clauses.push((
-            Occur::Should,
-            Box::new(TermQuery::new(content_term, IndexRecordOption::WithFreqs)),
-        ));
-        let path_term = Term::from_field_text(f.path_text, tok);
-        let path_q = TermQuery::new(path_term, IndexRecordOption::WithFreqs);
-        clauses.push((
-            Occur::Should,
-            Box::new(BoostQuery::new(Box::new(path_q), PATH_FIELD_BOOST)),
-        ));
-    }
+    push_term_clauses(&mut clauses, f, terms, 1.0, PATH_FIELD_BOOST);
     BooleanQuery::new(clauses)
 }
 
@@ -265,7 +290,83 @@ fn search_inner(
     let query = term_or_query(&fields, &terms);
     let reader = index.reader()?;
     let searcher = reader.searcher();
-    let top = searcher.search(&query, &TopDocs::with_limit(limit))?;
+    collect_top(&searcher, &fields, &query, limit)
+}
+
+/// BM25-search with the resolved **anchor terms** folded in as a boosted
+/// sub-query (L5 / §3) — the rework of the legacy substring anchor-bias. The
+/// cleaned user `text` contributes baseline body terms; each anchor token is
+/// added at [`ANCHOR_CONTENT_BOOST`] on `content` and [`ANCHOR_PATH_FIELD_BOOST`]
+/// on `path_text`, so the symbol's defining file ranks top — with **IDF
+/// weighting and exact token boundaries for free** (a rare identifier outscores
+/// a common word; `add` no longer matches inside `address`). Multiple anchors
+/// compose via normal BM25 term accumulation. Same fail-soft contract as
+/// [`search`]. With no anchors this is identical to [`search`].
+pub fn search_boosted(
+    workspace_id: &str,
+    text: &str,
+    anchors: &[String],
+    limit: usize,
+) -> Vec<(String, f64)> {
+    if (text.trim().is_empty() && anchors.is_empty())
+        || limit == 0
+        || !has_lexical_index(workspace_id)
+    {
+        return Vec::new();
+    }
+    match search_boosted_inner(workspace_id, text, anchors, limit) {
+        Ok(hits) => hits,
+        Err(e) => {
+            tracing::warn!("workspaces.rag.lexical: boosted search failed for {workspace_id}: {e}");
+            Vec::new()
+        }
+    }
+}
+
+fn search_boosted_inner(
+    workspace_id: &str,
+    text: &str,
+    anchors: &[String],
+    limit: usize,
+) -> tantivy::Result<Vec<(String, f64)>> {
+    let (index, fields) = open_or_create(workspace_id)?;
+    let base_terms = tokenize(&index, text);
+    // Tokenise each anchor through the same analyzer (so `compose_retrieval_query`
+    // splits into its sub-tokens, matching the indexed postings), deduped.
+    let mut anchor_toks: Vec<String> = Vec::new();
+    for a in anchors {
+        for t in tokenize(&index, a) {
+            if !anchor_toks.contains(&t) {
+                anchor_toks.push(t);
+            }
+        }
+    }
+    let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+    push_term_clauses(&mut clauses, &fields, &base_terms, 1.0, PATH_FIELD_BOOST);
+    push_term_clauses(
+        &mut clauses,
+        &fields,
+        &anchor_toks,
+        ANCHOR_CONTENT_BOOST,
+        ANCHOR_PATH_FIELD_BOOST,
+    );
+    if clauses.is_empty() {
+        return Ok(Vec::new());
+    }
+    let query = BooleanQuery::new(clauses);
+    let reader = index.reader()?;
+    let searcher = reader.searcher();
+    collect_top(&searcher, &fields, &query, limit)
+}
+
+/// Run a query and collect up to `limit` `(chunk_id, bm25)` pairs, highest first.
+fn collect_top(
+    searcher: &tantivy::Searcher,
+    fields: &LexicalFields,
+    query: &dyn Query,
+    limit: usize,
+) -> tantivy::Result<Vec<(String, f64)>> {
+    let top = searcher.search(query, &TopDocs::with_limit(limit))?;
     let mut out = Vec::with_capacity(top.len());
     for (score, addr) in top {
         let doc: TantivyDocument = searcher.doc(addr)?;
@@ -466,5 +567,70 @@ mod tests {
             search(incr, "removed_marker_token", 5).is_empty(),
             "removed file's token absent in the incrementally-built index too"
         );
+    }
+
+    // ── L5: anchors as a boosted BM25 sub-query ─────────────────────────────
+
+    #[test]
+    fn anchor_boost_promotes_the_defining_file() {
+        let _env = TestEnv::new();
+        let ws = "lx-anchor";
+        build_from_chunks(
+            ws,
+            &[
+                // Defining file: the symbol is in its PATH (highest-boosted field).
+                chunk("c0", "/src/run_it_handler.rs", "fn run_it_handler() { work() }"),
+                // A file that merely mentions the symbol in its body.
+                chunk("c1", "/src/caller.rs", "calls run_it_handler from here somewhere"),
+                // Unrelated.
+                chunk("c2", "/src/other.rs", "totally different content"),
+            ],
+        )
+        .unwrap();
+        // With the anchor folded in as a boosted sub-query, the defining file
+        // (path match, highest boost) ranks above the mere mention.
+        let hits = search_boosted(ws, "where is it", &["run_it_handler".to_owned()], 5);
+        assert_eq!(hits[0].0, "c0", "anchor path-boost ranks the defining file top");
+        assert!(hits.iter().any(|(id, _)| id == "c1"), "the mention still matches");
+    }
+
+    #[test]
+    fn anchor_exact_token_boundary_add_not_in_address() {
+        let _env = TestEnv::new();
+        let ws = "lx-boundary";
+        build_from_chunks(
+            ws,
+            &[
+                chunk("c0", "/net/dns.rs", "the address record resolver"),
+                chunk("c1", "/ops/add.rs", "fn add(a, b) { a + b }"),
+            ],
+        )
+        .unwrap();
+        // BM25 matches whole tokens, so the anchor `add` hits the `add` token in
+        // c1 but NOT inside `address` in c0 — the old ≥4-char substring hack is
+        // unnecessary on this path.
+        let hits = search_boosted(ws, "", &["add".to_owned()], 5);
+        let ids: Vec<&str> = hits.iter().map(|(id, _)| id.as_str()).collect();
+        assert!(ids.contains(&"c1"), "exact `add` token matched");
+        assert!(!ids.contains(&"c0"), "`add` did NOT match inside `address`");
+    }
+
+    #[test]
+    fn search_boosted_without_anchors_matches_plain_search_set() {
+        let _env = TestEnv::new();
+        let ws = "lx-boosted-plain";
+        build_from_chunks(
+            ws,
+            &[chunk("c0", "/a.rs", "alphaword body"), chunk("c1", "/b.rs", "betaword body")],
+        )
+        .unwrap();
+        // No anchors ⇒ same matched set as the plain body search.
+        let boosted: Vec<String> = search_boosted(ws, "alphaword", &[], 5)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(boosted, vec!["c0".to_owned()]);
+        // Empty text + empty anchors ⇒ nothing.
+        assert!(search_boosted(ws, "  ", &[], 5).is_empty());
     }
 }

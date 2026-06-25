@@ -460,11 +460,13 @@ fn rank_fused(
     });
 
     // ── LEXICAL arm: BM25 over the tantivy index, joined back to chunk indices
-    // by chunk_id. A lexical hit with no matching loaded chunk is silently
-    // dropped (§2.6 fail-soft) — lexical can never surface a chunk the vector
-    // store lacks. ──
-    let lex_query = build_lexical_query(query_text, anchors);
-    let lex_raw = lexical::search(workspace_id, &lex_query, LEXICAL_FETCH.max(k));
+    // by chunk_id. The cleaned user text contributes baseline body terms; the
+    // resolved anchor terms are folded in as a boosted exact-token sub-query
+    // (L5 — IDF-weighted, exact boundaries, retiring the substring hack). A hit
+    // with no matching loaded chunk is silently dropped (§2.6 fail-soft) —
+    // lexical can never surface a chunk the vector store lacks. ──
+    let lex_query = build_lexical_query(query_text);
+    let lex_raw = lexical::search_boosted(workspace_id, &lex_query, anchors, LEXICAL_FETCH.max(k));
     let id_to_idx: std::collections::HashMap<&str, usize> = chunks
         .iter()
         .enumerate()
@@ -513,9 +515,9 @@ fn rank_fused(
 
 /// The lexical-arm query text: strip the protocol markers the harness appends
 /// (`[anchors: …]` / `[active_file: …]`) so their payloads don't pollute the BM25
-/// query, leaving the user message. (L5 folds the resolved `anchors` back in as
-/// boosted exact-token sub-queries; here they ride only via the user text.)
-fn build_lexical_query(query_text: &str, _anchors: &[String]) -> String {
+/// body query, leaving the user message. The resolved anchor terms are folded
+/// back in separately, with a boost, by [`lexical::search_boosted`] (L5).
+fn build_lexical_query(query_text: &str) -> String {
     let cut = [ANCHOR_QUERY_MARKER, ACTIVE_FILE_QUERY_MARKER]
         .iter()
         .filter_map(|m| query_text.find(m))
@@ -1170,11 +1172,11 @@ mod tests {
         let q = "why does compose_retrieval_query fail?\n\n\
                  [anchors: compose_retrieval_query]\n[active_file: src/x.rs]";
         assert_eq!(
-            build_lexical_query(q, &[]),
+            build_lexical_query(q),
             "why does compose_retrieval_query fail?"
         );
         // No markers → trimmed user text verbatim.
-        assert_eq!(build_lexical_query("plain question  ", &[]), "plain question");
+        assert_eq!(build_lexical_query("plain question  "), "plain question");
     }
 
     // ── L4: end-to-end fusion through query_with_vec ────────────────────────
