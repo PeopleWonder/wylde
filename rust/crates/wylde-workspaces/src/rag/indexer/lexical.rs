@@ -141,6 +141,54 @@ pub fn build_from_chunks(workspace_id: &str, chunks: &[IndexedChunk]) -> tantivy
     Ok(())
 }
 
+/// **Incremental per-file upsert** (watcher hot path, L3): delete every doc
+/// whose `path_raw` equals `canonical` (exact-term, so it clears the file's old
+/// chunks regardless of how many or what ids they had), add the file's fresh
+/// chunks, and commit. No full rebuild — a single-file save stays cheap. The
+/// caller must already have written the matching vectors (§2.6 invariant:
+/// lexical never holds a chunk the vector store lacks).
+pub fn sync_upsert_file(
+    workspace_id: &str,
+    canonical: &str,
+    chunks: &[IndexedChunk],
+) -> tantivy::Result<()> {
+    let (index, fields) = open_or_create(workspace_id)?;
+    let mut writer: IndexWriter = index.writer(WRITER_HEAP_BYTES)?;
+    writer.delete_term(Term::from_field_text(fields.path_raw, canonical));
+    for c in chunks {
+        writer.add_document(chunk_doc(&fields, c))?;
+    }
+    writer.commit()?;
+    Ok(())
+}
+
+/// **Incremental remove** (watcher hot path, L3): drop a deleted file or a
+/// deleted directory's whole subtree. Deletes the exact file by `path_raw`
+/// **and** every `chunk_id` in `subtree_chunk_ids` (the manifest-recorded ids
+/// under a removed directory, which an exact path term can't reach). Belt-and-
+/// braces: even if the manifest lacked some ids, the `chunk_id` join at search
+/// time silently drops any orphaned lexical hit (§2.6), so a miss here can never
+/// surface wrong content — it only leaves a harmless tombstone until the next
+/// full rebuild.
+pub fn sync_remove_file(
+    workspace_id: &str,
+    canonical: &str,
+    subtree_chunk_ids: &[String],
+) -> tantivy::Result<()> {
+    // Nothing to do if the index was never built.
+    if !has_lexical_index(workspace_id) {
+        return Ok(());
+    }
+    let (index, fields) = open_or_create(workspace_id)?;
+    let mut writer: IndexWriter = index.writer(WRITER_HEAP_BYTES)?;
+    writer.delete_term(Term::from_field_text(fields.path_raw, canonical));
+    for id in subtree_chunk_ids {
+        writer.delete_term(Term::from_field_text(fields.chunk_id, id));
+    }
+    writer.commit()?;
+    Ok(())
+}
+
 /// Tokenise `text` with the index's default analyzer (the same one the `content`
 /// / `path_text` fields are tokenised with), so a query token matches a posting.
 /// Lowercases + splits on non-alphanumeric, dropping empties.
@@ -320,5 +368,103 @@ mod tests {
         // away harmlessly here (we build the query from terms, not the parser).
         let hits = search(ws, "os error 32 [](){}:-+", 5);
         assert_eq!(hits[0].0, "c0");
+    }
+
+    // ── L3: incremental delta primitives + delta == full convergence ────────
+
+    #[test]
+    fn upsert_file_replaces_a_files_docs_by_path() {
+        let _env = TestEnv::new();
+        let ws = "lx-upsert";
+        build_from_chunks(ws, &[chunk("c0", "/a.rs", "alphaword zeta")]).unwrap();
+        assert_eq!(search(ws, "alphaword", 5).len(), 1);
+        // Re-save the same file with disjoint-token content: the exact-path
+        // delete clears the stale doc, the new one replaces it. (Tokens are
+        // chosen not to overlap, since the default tokenizer splits on
+        // non-alphanumerics — a shared sub-token would match either doc.)
+        sync_upsert_file(ws, "/a.rs", &[chunk("c1", "/a.rs", "betaword omega")]).unwrap();
+        assert!(
+            search(ws, "alphaword", 5).is_empty(),
+            "stale doc cleared by path delete"
+        );
+        assert_eq!(search(ws, "betaword", 5)[0].0, "c1");
+    }
+
+    #[test]
+    fn remove_file_drops_by_path_and_subtree_ids() {
+        let _env = TestEnv::new();
+        let ws = "lx-remove";
+        build_from_chunks(
+            ws,
+            &[
+                chunk("c0", "/dir/a.rs", "alphaword"),
+                chunk("c1", "/dir/sub/b.rs", "betaword"),
+                chunk("c2", "/keep.rs", "gammaword"),
+            ],
+        )
+        .unwrap();
+        // Remove the /dir directory: exact path doesn't match (it's a dir), but
+        // the subtree ids drop both files under it; the sibling survives.
+        sync_remove_file(ws, "/dir", &["c0".into(), "c1".into()]).unwrap();
+        assert!(search(ws, "alphaword", 5).is_empty());
+        assert!(search(ws, "betaword", 5).is_empty());
+        assert_eq!(search(ws, "gammaword", 5)[0].0, "c2", "sibling kept");
+    }
+
+    /// The convergence guarantee (L3): a lexical index built **incrementally**
+    /// (full build of a seed, then per-file upserts/removes) returns the same
+    /// **live document set** for a query as one built in a single full pass over
+    /// the same final chunk set. Mirrors the "delta == full" property the vector
+    /// + graph halves already hold.
+    ///
+    /// Convergence is asserted on the matched-id *set*, not exact BM25 ordering:
+    /// tantivy keeps a removed doc's term stats until a segment merge, so an
+    /// incrementally-built index can score two near-tied live docs in a slightly
+    /// different order than a clean build — but the set of *live matches* is
+    /// identical (deleted docs are filtered), and RRF fuses on rank, robust to
+    /// the minor drift. Each query below targets a token unique to one chunk, so
+    /// the live set is unambiguous.
+    #[test]
+    fn delta_equals_full_after_incremental_ops() {
+        let _env = TestEnv::new();
+        let a0 = chunk("a0", "/a.rs", "fn compose_retrieval_query body");
+        let a1 = chunk("a1", "/a.rs", "additional helper paragraph");
+        let b0 = chunk("b0", "/b.rs", "const removed_marker_token usize");
+        let c0 = chunk("c0", "/c.rs", "ReadDirectoryChangesW watcher notes");
+
+        // Reference: one full build over the final set {a0, a1, c0} (b removed).
+        let full = "lx-conv-full";
+        build_from_chunks(full, &[a0.clone(), a1.clone(), c0.clone()]).unwrap();
+
+        // Incremental: seed with a, upsert b, upsert c, then remove b.
+        let incr = "lx-conv-incr";
+        build_from_chunks(incr, &[a0.clone(), a1.clone()]).unwrap();
+        sync_upsert_file(incr, "/b.rs", &[b0.clone()]).unwrap();
+        sync_upsert_file(incr, "/c.rs", &[c0.clone()]).unwrap();
+        sync_remove_file(incr, "/b.rs", &["b0".into()]).unwrap();
+
+        // Same live matched-id set for each unique-token query.
+        let id_set = |ws: &str, q: &str| {
+            let mut ids: Vec<String> = search(ws, q, 10).into_iter().map(|(id, _)| id).collect();
+            ids.sort();
+            ids
+        };
+        for q in [
+            "compose_retrieval_query",
+            "additional",
+            "ReadDirectoryChangesW",
+        ] {
+            assert_eq!(
+                id_set(full, q),
+                id_set(incr, q),
+                "delta and full return the same live set for {q:?}"
+            );
+        }
+        // The removed file's unique token is absent from both.
+        assert!(search(full, "removed_marker_token", 5).is_empty());
+        assert!(
+            search(incr, "removed_marker_token", 5).is_empty(),
+            "removed file's token absent in the incrementally-built index too"
+        );
     }
 }

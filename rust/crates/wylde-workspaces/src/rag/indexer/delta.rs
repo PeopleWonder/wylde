@@ -21,10 +21,11 @@
 //! primary deliverable — it needs no embedder).
 
 use crate::graph::BoltClient;
+use crate::rag::LexicalConfig;
 use crate::registry::{self, WorkspaceDefinition};
 
 use super::store::{self, IndexedChunk};
-use super::{embed_chunks, graph_writer, lock, manifest, walk};
+use super::{embed_chunks, graph_writer, lexical, lock, manifest, walk};
 
 /// What one delta did, for the watcher's log line + the completion event.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -172,6 +173,11 @@ async fn vector_upsert(
         return Ok(0);
     }
     let ids: Vec<String> = fresh.iter().map(|c| c.id.clone()).collect();
+    // Capture this file's fresh chunks for the lexical incremental upsert before
+    // they're moved into the merged set (gated, so OFF pays nothing — not even
+    // the clone). A single file's chunks are a handful, so the clone is cheap.
+    let lexical_on = LexicalConfig::current().enabled;
+    let lexical_chunks = if lexical_on { fresh.clone() } else { Vec::new() };
     // Hold the per-workspace index lock across the chunks-then-manifest pair so
     // a racing manual reindex can't tear it (§3.3).
     let lk = lock::for_workspace(workspace_id);
@@ -186,6 +192,14 @@ async fn vector_upsert(
     if let Some((hash, size, mtime)) = walk::hash_file(canonical) {
         manifest::update_file(workspace_id, canonical, hash, size, mtime, ids);
     }
+    // Lexical third (best-effort, AFTER the vector write so the BM25 index never
+    // holds a chunk the store lacks, §2.6): exact-path delete + add this file's
+    // fresh docs. Incremental — no full rebuild on a single-file save.
+    if lexical_on {
+        if let Err(e) = lexical::sync_upsert_file(workspace_id, canonical, &lexical_chunks) {
+            tracing::warn!("workspaces.rag.lexical: upsert {canonical} failed: {e}");
+        }
+    }
     Ok(n)
 }
 
@@ -198,12 +212,27 @@ async fn vector_remove(workspace_id: &str, canonical: &str) -> Result<(), String
     }
     let lk = lock::for_workspace(workspace_id);
     let _g = lk.lock().await;
+    // Capture the subtree's chunk ids from the manifest BEFORE it's mutated — the
+    // lexical remove needs them to drop a deleted directory's docs (an exact path
+    // term only reaches the single file). Gated so OFF pays nothing.
+    let lexical_on = LexicalConfig::current().enabled;
+    let subtree_ids = if lexical_on {
+        manifest::chunk_ids_under(workspace_id, canonical)
+    } else {
+        Vec::new()
+    };
     let mut kept = store::load_chunks(workspace_id);
     let before = kept.len();
     let prefix = format!("{canonical}{}", std::path::MAIN_SEPARATOR);
     kept.retain(|c| c.path != canonical && !c.path.starts_with(&prefix));
     if kept.len() != before {
         store::save_chunks(workspace_id, &kept).map_err(|e| e.to_string())?;
+    }
+    // Lexical (best-effort): drop the file by exact path + the subtree's ids.
+    if lexical_on {
+        if let Err(e) = lexical::sync_remove_file(workspace_id, canonical, &subtree_ids) {
+            tracing::warn!("workspaces.rag.lexical: remove {canonical} failed: {e}");
+        }
     }
     // Drop the manifest entry/entries either way (a stale entry with no chunks
     // is still cleaned).
@@ -282,6 +311,40 @@ mod tests {
         // No registry entry → guard short-circuits, no panic, no file created.
         assert!(vector_remove("ghost-000000", "/x/y.rs").await.is_ok());
         assert!(store::load_chunks("ghost-000000").is_empty());
+    }
+
+    #[tokio::test]
+    async fn vector_remove_drops_the_lexical_doc_when_enabled() {
+        let env = TestEnv::new();
+        let ws = registered_ws(&env, "lx-rm");
+        // Enable the lexical toggle for the body of this test, reset on drop.
+        LexicalConfig::persist(LexicalConfig {
+            enabled: true,
+            ..LexicalConfig::default()
+        })
+        .unwrap();
+
+        // Seed: chunks on disk + a lexical index + a manifest carrying the
+        // chunk id (so chunk_ids_under can find the subtree's delete keys).
+        let a = "/proj/a.rs".to_owned();
+        let b = "/proj/b.rs".to_owned();
+        let mut ca = idx_chunk(&a);
+        ca.content = "alpha_unique_marker".into();
+        let cb = idx_chunk(&b);
+        store::save_chunks(&ws, &[ca.clone(), cb.clone()]).unwrap();
+        lexical::build_from_chunks(&ws, &[ca.clone(), cb.clone()]).unwrap();
+        manifest::update_file(&ws, &a, "h".into(), 1, 1.0, vec![ca.id.clone()]);
+        assert_eq!(lexical::search(&ws, "alpha_unique_marker", 5).len(), 1);
+
+        // Remove a.rs: the watcher path drops it from the vector store AND the
+        // lexical index (gated).
+        vector_remove(&ws, &a).await.unwrap();
+        assert!(
+            lexical::search(&ws, "alpha_unique_marker", 5).is_empty(),
+            "lexical doc dropped alongside the vector chunk"
+        );
+
+        LexicalConfig::persist(LexicalConfig::default()).unwrap();
     }
 
     #[tokio::test]

@@ -381,6 +381,13 @@ async fn persist_delta(
                 if let Err(e) = manifest::save(workspace_id, &manifest::build(file_meta, chunks)) {
                     tracing::warn!("workspaces.rag: write manifest failed for {workspace_id}: {e}");
                 }
+                // Rebuild the lexical index from the merged chunk set. A folder
+                // delta is not the <500ms watcher path, so a clean rebuild from
+                // the authoritative merged set is the simplest convergence
+                // guarantee (delta == full: both feed build_from_chunks the same
+                // final chunks.jsonl). The watcher's *per-file* path stays
+                // incremental (delta.rs). Gated + best-effort; OFF ⇒ no-op.
+                sync_lexical_full(workspace_id, chunks);
             }
             Err(e) => tracing::warn!("workspaces.rag: write chunks failed for {workspace_id}: {e}"),
         }
