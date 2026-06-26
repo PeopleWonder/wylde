@@ -43,6 +43,13 @@ pub mod routing_bridge;
 // `workspaces.concepts.relations.*` verbs (sibling of `routing_bridge`).
 // Remove with the crate to revert to pure-seed R1 (empty graph = identity).
 pub mod relations_bridge;
+// Definitional concept hierarchy H1 — the deletable overlay store + the
+// `workspaces.hierarchy.*` verbs (sibling of `relations_bridge`). Maps the
+// Core `Concept` into the isolated crate's `ConceptView`, persists the additive
+// `hierarchy.json` overlay + `hierarchy_identity.json` allocator, and folds the
+// overlay onto the projected view. Remove with the crate + the overlay store to
+// revert to today (an empty overlay is the projection's identity).
+pub mod hierarchy_bridge;
 pub mod search;
 pub mod semantic;
 pub mod store;

@@ -18,6 +18,14 @@
 //!    (`dep_decay`), bounded by `spread_floor` + `max_hops`. A Dijkstra-flavoured
 //!    relaxation (max-heap, `visited_best` cycle guard) so cycles + diamonds
 //!    settle to the best path.
+//!    * **containment spread** (definitional-hierarchy H6) — an *optional*,
+//!      *separate* propagation channel sourced from the hierarchy overlay's
+//!      parent/child containment edges (NOT a `RelationKind` — OQ-6). Same
+//!      Dijkstra relaxation + cycle guard as the dependency step, but
+//!      **asymmetric** (OQ-5): child→parent strong (`containment_up_decay`),
+//!      parent→child weak (`containment_down_decay`). Slotted next to the
+//!      dependency relaxation, before positive/inhibition, so the IS-NOT
+//!      inhibition still has the last word over a containment-boosted node.
 //! 3. **positive co-activation** — gentle, 1-hop, symmetric (`positive_decay`).
 //! 4. **inhibition** — soft *multiplicative* lateral damp with a floor over
 //!    negative edges (`inhibition_strength`, `inhibition_floor`): an overwhelming
@@ -28,10 +36,14 @@
 //!
 //! ## Behaviour-safe contract
 //!
-//! **Empty relation graph + no seed-lift links ⇒ identity** (every step is a
-//! no-op, the settled activation equals the seed). With the master toggle OFF
-//! the engine is never reached at all. R1.5b is **log-only** — the caller logs
-//! the before/after activation; nothing is injected (that is R2).
+//! **Empty relation graph + no seed-lift links + no containment ⇒ identity**
+//! (every step is a no-op, the settled activation equals the seed). With the
+//! master toggle OFF the engine is never reached at all. The H6 containment
+//! channel is doubly safe: the hierarchy toggle OFF ⇒ the wiring layer passes an
+//! empty containment adjacency, and even ON an empty adjacency ⇒ the step is a
+//! no-op — so containment can only ever *add* behaviour, never change today's.
+//! R1.5b is **log-only** — the caller logs the before/after activation; nothing
+//! is injected (that is R2).
 //!
 //! Pure + deterministic: no I/O, no embed, no service. Microseconds on a
 //! few-hundred-node sparse graph (addendum §3.3).
@@ -59,6 +71,13 @@ pub enum Provenance {
     Dependency { from: NodeRef, hops: u8 },
     /// Co-activated by a relates-to (positive) edge.
     Positive { from: NodeRef },
+    /// Pulled in along a hierarchy **containment** edge (parent/child) — the
+    /// definitional-hierarchy H6 propagation channel, a *separate* adjacency
+    /// from the typed relations (OQ-6) so `concept_relations.json`'s wire shape
+    /// stays frozen. `from` is the originating seed node; `hops` the containment
+    /// hop count. Only ever produced when a non-empty containment adjacency is
+    /// supplied (toggle ON ⇒ wired); empty/off ⇒ never produced.
+    Containment { from: NodeRef, hops: u8 },
     /// Suppressed by an exclusion (negative) edge; `raw` is the pre-inhibition
     /// activation, so the menu/log can show how far it was pushed down.
     Inhibited { by: NodeRef, raw: f32 },
@@ -89,15 +108,25 @@ impl SpreadResult {
 /// relation `graph` under `p`. `vocab_to_concepts` carries the `described_by`
 /// links (vocab → the concepts it names) for the seed-lift step.
 ///
+/// `containment` is the **optional** hierarchy containment adjacency
+/// (definitional-hierarchy H6): each `(parent, child)` pair is one containment
+/// edge, sourced by the wiring layer from the hierarchy overlay/projection and
+/// mapped into this crate's node space. It is a *separate* propagation channel
+/// from the typed relations (OQ-6); pass `&[]` to disable it. The hierarchy
+/// toggle OFF ⇒ the wiring layer passes `&[]`, and an empty `containment` is the
+/// step's identity, so containment can only ever add behaviour.
+///
 /// `seed` is the initial activation: concept nodes keyed to their (already
 /// `seed_weight`-scaled) cosine, matched-vocab nodes to their match strength.
 /// Returns the settled activation + provenance for every reached node.
 ///
 /// **Identity guarantee:** when `graph` is empty *and* `vocab_to_concepts` is
-/// empty the result's activation equals `seed` and every provenance is `Seed`.
+/// empty *and* `containment` is empty the result's activation equals `seed` and
+/// every provenance is `Seed`.
 pub fn spread(
     seed: HashMap<NodeRef, f32>,
     vocab_to_concepts: &[(NodeRef, NodeRef)],
+    containment: &[(NodeRef, NodeRef)],
     graph: &RelationGraph,
     p: &RelationParams,
 ) -> SpreadResult {
@@ -120,8 +149,10 @@ pub fn spread(
         }
     }
 
-    // Nothing else to do without edges — the identity fast-path.
-    if graph.is_empty() {
+    // Nothing else to do without ANY propagation source — the identity
+    // fast-path. Containment is a separate channel, so it must keep the engine
+    // alive even when the relation graph is empty (and vice-versa).
+    if graph.is_empty() && containment.is_empty() {
         return SpreadResult {
             activation: a,
             provenance: prov,
@@ -190,6 +221,80 @@ pub fn spread(
                     node: v.clone(),
                     origin: f.origin.clone(),
                 });
+            }
+        }
+    }
+
+    // ── 2b. CONTAINMENT SPREAD: asymmetric, decayed, cycle-safe (H6) ───────
+    // A separate propagation channel from the typed relations (OQ-6): activation
+    // flows along the hierarchy's parent/child containment edges, child→parent
+    // STRONG (`containment_up_decay`) and parent→child WEAK
+    // (`containment_down_decay`) — a leaf strongly implies its category, a
+    // category only weakly implies any one child. Same Dijkstra relaxation +
+    // `visited_best` cycle guard as the dependency step. Guarded by a non-empty
+    // adjacency so an empty containment (toggle OFF, or no edges) is a pure
+    // no-op — the identity guarantee. Runs BEFORE inhibition so a strong IS-NOT
+    // still gets the last word over a containment-boosted node.
+    if !containment.is_empty() {
+        // Per-node neighbours as (neighbour, decay-to-apply). An edge (P, C)
+        // gives C an UP neighbour P (strong) and P a DOWN neighbour C (weak).
+        let mut cont_adj: HashMap<NodeRef, Vec<(NodeRef, f32)>> = HashMap::new();
+        for (parent, child) in containment {
+            cont_adj
+                .entry(child.clone())
+                .or_default()
+                .push((parent.clone(), p.containment_up_decay));
+            cont_adj
+                .entry(parent.clone())
+                .or_default()
+                .push((child.clone(), p.containment_down_decay));
+        }
+
+        let mut cont_best: HashMap<NodeRef, f32> = HashMap::new();
+        let mut cont_heap: BinaryHeap<Frontier> = BinaryHeap::new();
+        for (node, &act) in a.iter() {
+            if act >= p.spread_floor {
+                cont_best.insert(node.clone(), act);
+                cont_heap.push(Frontier {
+                    act,
+                    hops: 0,
+                    node: node.clone(),
+                    origin: node.clone(),
+                });
+            }
+        }
+        while let Some(f) = cont_heap.pop() {
+            if f.act < *cont_best.get(&f.node).unwrap_or(&0.0) {
+                continue; // stale entry
+            }
+            if f.hops >= p.max_hops {
+                continue; // hop cap (belt-and-braces with the floor)
+            }
+            let Some(neighbours) = cont_adj.get(&f.node) else {
+                continue;
+            };
+            for (v, decay) in neighbours {
+                let contributed = f.act * decay;
+                if contributed < p.spread_floor {
+                    continue; // floor cutoff bounds the spread + cycles
+                }
+                if contributed > a.get(v).copied().unwrap_or(0.0) {
+                    a.insert(v.clone(), contributed);
+                    prov.insert(
+                        v.clone(),
+                        Provenance::Containment {
+                            from: f.origin.clone(),
+                            hops: f.hops + 1,
+                        },
+                    );
+                    cont_best.insert(v.clone(), contributed);
+                    cont_heap.push(Frontier {
+                        act: contributed,
+                        hops: f.hops + 1,
+                        node: v.clone(),
+                        origin: f.origin.clone(),
+                    });
+                }
             }
         }
     }
@@ -309,7 +414,7 @@ mod tests {
     #[test]
     fn empty_graph_no_lift_is_identity() {
         let s = seed(&[(NodeRef::concept("a"), 0.62), (NodeRef::concept("b"), 0.58)]);
-        let out = spread(s.clone(), &[], &RelationGraph::empty(), &params());
+        let out = spread(s.clone(), &[], &[], &RelationGraph::empty(), &params());
         assert_eq!(out.activation, s, "empty graph + no lift ⇒ settled == seed");
         assert!(out.provenance.is_empty(), "no reshaping ⇒ no provenance");
     }
@@ -322,7 +427,7 @@ mod tests {
         let nc_vocab = NodeRef::vocab("nextcloud");
         let s = seed(&[(nc_concept.clone(), 0.40), (nc_vocab.clone(), 1.0)]);
         let links = vec![(nc_vocab.clone(), nc_concept.clone())];
-        let out = spread(s, &links, &RelationGraph::empty(), &params());
+        let out = spread(s, &links, &[], &RelationGraph::empty(), &params());
         assert!(approx(out.activation_of(&nc_concept), 0.7), "lifted to 0.7");
         assert!(matches!(
             out.provenance_of(&nc_concept),
@@ -346,7 +451,7 @@ mod tests {
             )],
         };
         let s = seed(&[(nc.clone(), 0.64), (ddns.clone(), 0.30)]);
-        let out = spread(s, &[], &g, &params());
+        let out = spread(s, &[], &[], &g, &params());
         assert!(
             approx(out.activation_of(&ddns), 0.32),
             "0.64*dep_decay(0.5)"
@@ -374,7 +479,7 @@ mod tests {
                 None,
             )],
         };
-        let out = spread(seed(&[(b.clone(), 0.8)]), &[], &g, &params());
+        let out = spread(seed(&[(b.clone(), 0.8)]), &[], &[], &g, &params());
         assert!(
             approx(out.activation_of(&a), 0.4),
             "backward spread 0.8*0.5"
@@ -410,7 +515,7 @@ mod tests {
             ),
         ];
         let g = RelationGraph { relations: rels };
-        let out = spread(seed(&[(nodes[0].clone(), 1.0)]), &[], &g, &params());
+        let out = spread(seed(&[(nodes[0].clone(), 1.0)]), &[], &[], &g, &params());
         assert!(approx(out.activation_of(&nodes[1]), 0.5));
         assert!(approx(out.activation_of(&nodes[2]), 0.25));
         assert!(approx(out.activation_of(&nodes[3]), 0.125));
@@ -448,7 +553,7 @@ mod tests {
             max_hops: 2,
             ..params()
         };
-        let out = spread(seed(&[(nodes[0].clone(), 1.0)]), &[], &g, &p);
+        let out = spread(seed(&[(nodes[0].clone(), 1.0)]), &[], &[], &g, &p);
         assert!(approx(out.activation_of(&nodes[2]), 0.25), "hop 2 reached");
         assert!(
             approx(out.activation_of(&nodes[3]), 0.0),
@@ -470,7 +575,7 @@ mod tests {
                 None,
             )],
         };
-        let out = spread(seed(&[(a.clone(), 0.08)]), &[], &g, &params());
+        let out = spread(seed(&[(a.clone(), 0.08)]), &[], &[], &g, &params());
         assert!(
             approx(out.activation_of(&b), 0.0),
             "below spread_floor ⇒ no spread"
@@ -491,7 +596,7 @@ mod tests {
                 Relation::normalized(c.clone(), a.clone(), RelationKind::Dependency, None),
             ],
         };
-        let out = spread(seed(&[(a.clone(), 1.0)]), &[], &g, &params());
+        let out = spread(seed(&[(a.clone(), 1.0)]), &[], &[], &g, &params());
         // a stays 1.0 (its own seed beats any decayed return trip); b,c decayed.
         assert!(approx(out.activation_of(&a), 1.0));
         assert!(approx(out.activation_of(&b), 0.5));
@@ -514,7 +619,7 @@ mod tests {
             )],
         };
         // x strong, y absent ⇒ y gets x*positive_decay (0.8*0.3=0.24).
-        let out = spread(seed(&[(x.clone(), 0.8)]), &[], &g, &params());
+        let out = spread(seed(&[(x.clone(), 0.8)]), &[], &[], &g, &params());
         assert!(approx(out.activation_of(&y), 0.24));
         assert!(matches!(out.provenance_of(&y), Provenance::Positive { .. }));
     }
@@ -535,6 +640,7 @@ mod tests {
         };
         let out = spread(
             seed(&[(nc.clone(), 0.64), (wylde.clone(), 0.62)]),
+            &[],
             &[],
             &g,
             &params(),
@@ -574,7 +680,7 @@ mod tests {
             inhibition_strength: 1.5,
             ..params()
         };
-        let out = spread(seed(&[(x.clone(), 1.0), (y.clone(), 0.9)]), &[], &g, &p);
+        let out = spread(seed(&[(x.clone(), 1.0), (y.clone(), 0.9)]), &[], &[], &g, &p);
         assert!(
             approx(out.activation_of(&y), 0.9 * 0.15),
             "floor caps the damp"
@@ -600,6 +706,7 @@ mod tests {
         };
         let out = spread(
             seed(&[(x.clone(), -0.3), (y.clone(), 0.5)]),
+            &[],
             &[],
             &g,
             &params(),
@@ -628,7 +735,7 @@ mod tests {
             (wylde.clone(), 0.62),
         ]);
         let before = s.clone();
-        let out = spread(s, &[], &g, &params());
+        let out = spread(s, &[], &[], &g, &params());
         assert!(
             out.activation_of(&ddns) > before[&ddns],
             "dependency pulled DDNS up"
@@ -639,5 +746,190 @@ mod tests {
         );
         // And the ordering flips usefully: DDNS now outranks the excluded Wylde.
         assert!(out.activation_of(&ddns) > out.activation_of(&wylde));
+    }
+
+    // ── H6: containment spread (the new, gated, separate channel) ──────────
+
+    #[test]
+    fn containment_empty_is_identity_even_with_relations() {
+        // An empty containment adjacency must not perturb the dependency result
+        // (the canonical dep proof) AND must never stamp a Containment
+        // provenance — the spread-level identity-when-empty guarantee, proven
+        // with a LIVE relation graph (not just an empty one).
+        let nc = NodeRef::vocab("nextcloud");
+        let ddns = NodeRef::vocab("ddns");
+        let g = RelationGraph {
+            relations: vec![Relation::normalized(
+                nc.clone(),
+                ddns.clone(),
+                RelationKind::Dependency,
+                None,
+            )],
+        };
+        let s = seed(&[(nc.clone(), 0.64), (ddns.clone(), 0.30)]);
+        let out = spread(s, &[], &[], &g, &params());
+        assert!(approx(out.activation_of(&ddns), 0.32), "dep result unchanged");
+        assert!(
+            out.provenance
+                .values()
+                .all(|p| !matches!(p, Provenance::Containment { .. })),
+            "empty containment ⇒ no Containment provenance anywhere"
+        );
+    }
+
+    #[test]
+    fn containment_propagates_up_strong_and_down_weak() {
+        // One containment edge: parent P contains child C.
+        let p_node = NodeRef::concept("parent");
+        let c_node = NodeRef::concept("child");
+        let cont = vec![(p_node.clone(), c_node.clone())];
+
+        // UP (child → parent) is STRONG (containment_up_decay 0.5): seeding the
+        // child lifts the parent to 0.8 * 0.5 = 0.4.
+        let up = spread(
+            seed(&[(c_node.clone(), 0.8)]),
+            &[],
+            &cont,
+            &RelationGraph::empty(),
+            &params(),
+        );
+        assert!(approx(up.activation_of(&p_node), 0.4), "child→parent strong");
+        match up.provenance_of(&p_node) {
+            Provenance::Containment { from, hops } => {
+                assert_eq!(from, c_node);
+                assert_eq!(hops, 1);
+            }
+            o => panic!("expected Containment provenance, got {o:?}"),
+        }
+
+        // DOWN (parent → child) is WEAK (containment_down_decay 0.15): seeding the
+        // parent lifts the child only to 0.8 * 0.15 = 0.12.
+        let down = spread(
+            seed(&[(p_node.clone(), 0.8)]),
+            &[],
+            &cont,
+            &RelationGraph::empty(),
+            &params(),
+        );
+        assert!(approx(down.activation_of(&c_node), 0.12), "parent→child weak");
+        assert!(
+            down.activation_of(&c_node) < up.activation_of(&p_node),
+            "asymmetry: up-strong beats down-weak (OQ-5)"
+        );
+    }
+
+    #[test]
+    fn containment_runs_with_an_empty_relation_graph() {
+        // The early-return must NOT short-circuit when the relation graph is
+        // empty but containment is present — containment is its own channel.
+        let p_node = NodeRef::concept("p");
+        let c_node = NodeRef::concept("c");
+        let cont = vec![(p_node.clone(), c_node.clone())];
+        let out = spread(
+            seed(&[(c_node.clone(), 1.0)]),
+            &[],
+            &cont,
+            &RelationGraph::empty(), // empty relations
+            &params(),
+        );
+        assert!(approx(out.activation_of(&p_node), 0.5), "containment still fired");
+    }
+
+    #[test]
+    fn containment_decays_per_hop_up_and_respects_floor_and_cap() {
+        // Chain T contains M contains L (so up-edges L→M→T). Seed leaf L = 1.0;
+        // up-decay 0.5 ⇒ M = 0.5, T = 0.25.
+        let t = NodeRef::concept("top");
+        let m = NodeRef::concept("mid");
+        let l = NodeRef::concept("leaf");
+        let cont = vec![(t.clone(), m.clone()), (m.clone(), l.clone())];
+        let out = spread(
+            seed(&[(l.clone(), 1.0)]),
+            &[],
+            &cont,
+            &RelationGraph::empty(),
+            &params(),
+        );
+        assert!(approx(out.activation_of(&m), 0.5), "1 hop up");
+        assert!(approx(out.activation_of(&t), 0.25), "2 hops up");
+
+        // max_hops caps the climb: with max_hops = 1, T (2 hops) is unreached.
+        let p = RelationParams {
+            max_hops: 1,
+            ..params()
+        };
+        let capped = spread(
+            seed(&[(l.clone(), 1.0)]),
+            &[],
+            &cont,
+            &RelationGraph::empty(),
+            &p,
+        );
+        assert!(approx(capped.activation_of(&m), 0.5), "hop 1 reached");
+        assert!(approx(capped.activation_of(&t), 0.0), "hop 2 capped out");
+    }
+
+    #[test]
+    fn containment_cycle_terminates_and_settles() {
+        // A containment cycle A⊃B⊃C⊃A — must terminate (visited_best guard), not
+        // spin, and the seed node keeps its own activation.
+        let a = NodeRef::concept("a");
+        let b = NodeRef::concept("b");
+        let c = NodeRef::concept("c");
+        let cont = vec![
+            (a.clone(), b.clone()),
+            (b.clone(), c.clone()),
+            (c.clone(), a.clone()),
+        ];
+        let out = spread(
+            seed(&[(a.clone(), 1.0)]),
+            &[],
+            &cont,
+            &RelationGraph::empty(),
+            &params(),
+        );
+        assert!(approx(out.activation_of(&a), 1.0), "seed keeps its own activation");
+        // b is a's child (down-weak 0.15) but also reachable up from c; it
+        // settles to its best finite value and the walk halts.
+        assert!(out.activation_of(&b) > 0.0 && out.activation_of(&b) <= 1.0);
+    }
+
+    #[test]
+    fn containment_does_not_override_a_strong_is_not() {
+        // Containment lifts Y, but a strong IS-NOT (Negative) edge still gets the
+        // LAST word — inhibition runs after the containment step.
+        let excluder = NodeRef::concept("excluder");
+        let y = NodeRef::concept("y");
+        let leaf = NodeRef::concept("leaf");
+        // Containment: Y contains leaf. Seeding the leaf lifts Y up-strong to
+        // 1.0 * 0.5 = 0.5.
+        let cont = vec![(y.clone(), leaf.clone())];
+        // Relation graph: excluder IS-NOT Y.
+        let g = RelationGraph {
+            relations: vec![Relation::normalized(
+                excluder.clone(),
+                y.clone(),
+                RelationKind::Negative,
+                None,
+            )],
+        };
+        let out = spread(
+            seed(&[(excluder.clone(), 1.0), (leaf.clone(), 1.0)]),
+            &[],
+            &cont,
+            &g,
+            &params(),
+        );
+        // Y was lifted to 0.5 by containment, then damped by the excluder:
+        // 0.5 * (1 - 0.8*1.0).max(0.15) = 0.5 * 0.2 = 0.10.
+        assert!(
+            approx(out.activation_of(&y), 0.5 * 0.2),
+            "strong IS-NOT suppresses the containment-boosted node, got {}",
+            out.activation_of(&y)
+        );
+        assert!(
+            matches!(out.provenance_of(&y), Provenance::Inhibited { .. }),
+            "inhibition has the last word over containment"
+        );
     }
 }

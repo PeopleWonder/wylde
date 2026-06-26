@@ -78,6 +78,21 @@ pub struct RelationParams {
     /// `0.15`.
     #[serde(default = "default_inhibition_floor")]
     pub inhibition_floor: f32,
+    /// Per-hop multiplier on **containment spread UP** (child → parent) — the
+    /// hierarchy's separate propagation channel (definitional-hierarchy H6,
+    /// OQ-5 default: asymmetric, *up-strong*). A specific leaf strongly implies
+    /// its category, so the up direction matches `dep_decay`. Default `0.5`.
+    /// **Inert until containment edges are supplied** (an empty containment
+    /// adjacency ⇒ the step is a no-op ⇒ identity), so an older file behaves
+    /// exactly as pre-H6.
+    #[serde(default = "default_containment_up_decay")]
+    pub containment_up_decay: f32,
+    /// Per-hop multiplier on **containment spread DOWN** (parent → child) —
+    /// deliberately *weak* (OQ-5): a category only weakly implies any one of its
+    /// children. Default `0.15`, well below the up direction. **Inert until
+    /// containment edges are supplied.**
+    #[serde(default = "default_containment_down_decay")]
+    pub containment_down_decay: f32,
 }
 
 fn default_seed_weight() -> f32 {
@@ -104,6 +119,12 @@ fn default_inhibition_strength() -> f32 {
 fn default_inhibition_floor() -> f32 {
     0.15
 }
+fn default_containment_up_decay() -> f32 {
+    0.5
+}
+fn default_containment_down_decay() -> f32 {
+    0.15
+}
 
 impl Default for RelationParams {
     fn default() -> Self {
@@ -116,6 +137,8 @@ impl Default for RelationParams {
             positive_decay: default_positive_decay(),
             inhibition_strength: default_inhibition_strength(),
             inhibition_floor: default_inhibition_floor(),
+            containment_up_decay: default_containment_up_decay(),
+            containment_down_decay: default_containment_down_decay(),
         }
     }
 }
@@ -339,6 +362,14 @@ mod tests {
         assert!((p.positive_decay - 0.3).abs() < 1e-6);
         assert!((p.spread_floor - 0.05).abs() < 1e-6);
         assert!((p.seed_weight - 1.0).abs() < 1e-6);
+        // H6 containment knobs: asymmetric, up-strong (OQ-5), inert when no
+        // containment adjacency is supplied.
+        assert!((p.containment_up_decay - 0.5).abs() < 1e-6);
+        assert!((p.containment_down_decay - 0.15).abs() < 1e-6);
+        assert!(
+            p.containment_up_decay > p.containment_down_decay,
+            "child→parent is stronger than parent→child"
+        );
     }
 
     #[test]

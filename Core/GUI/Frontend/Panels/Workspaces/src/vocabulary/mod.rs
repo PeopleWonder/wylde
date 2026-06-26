@@ -51,6 +51,10 @@ pub enum VocabSubTab {
     /// The typed-relation authoring surface (concept-routing R1.5c). Lives in
     /// the isolated `crate::routing` folder so the feature deletes cleanly.
     Relations,
+    /// The definitional concept-hierarchy drill-down (definitional-hierarchy
+    /// H2). Lives in the isolated `crate::hierarchy` folder; gated by its own
+    /// master toggle (off ⇒ the sub-tab renders an inert disabled state).
+    Hierarchy,
 }
 
 /// One undoable connection edit: apply `before` to undo, `after` to redo
@@ -127,6 +131,9 @@ pub struct VocabularyTab {
     concepts: Entity<ConceptsView>,
     /// The Relations editor sub-tab view (concept-routing R1.5c; built once).
     relations: Entity<crate::routing::RelationsView>,
+    /// The definitional-hierarchy sub-tab view (H2; built once). Isolated in
+    /// `crate::hierarchy` so it deletes with the feature.
+    hierarchy: Entity<crate::hierarchy::HierarchyView>,
     /// Render the vocabulary list as an indented hierarchy tree (S1.2) vs flat.
     tree_view: bool,
 }
@@ -185,6 +192,7 @@ impl VocabularyTab {
             sub_tab: VocabSubTab::default(),
             concepts: cx.new(ConceptsView::new),
             relations: cx.new(crate::routing::RelationsView::new),
+            hierarchy: cx.new(crate::hierarchy::HierarchyView::new),
             tree_view: false,
         };
         Self::spawn_load(cx);
@@ -270,6 +278,11 @@ impl VocabularyTab {
     /// The Relations sub-tab child view (test accessor).
     pub fn relations_view(&self) -> &Entity<crate::routing::RelationsView> {
         &self.relations
+    }
+
+    /// The Hierarchy sub-tab child view (test accessor).
+    pub fn hierarchy_view(&self) -> &Entity<crate::hierarchy::HierarchyView> {
+        &self.hierarchy
     }
 
     fn find(&self, scope: AnchorScopeTag, identifier: &str) -> Option<&AnchorView> {
@@ -818,8 +831,25 @@ impl Render for VocabularyTab {
                         this.sub_tab = VocabSubTab::Relations;
                         cx.notify();
                     },
+                ))
+                .child(Self::button(
+                    ("vocab-subtab-hierarchy", 0),
+                    "Hierarchy",
+                    sub == VocabSubTab::Hierarchy,
+                    cx,
+                    |this, cx| {
+                        this.sub_tab = VocabSubTab::Hierarchy;
+                        cx.notify();
+                    },
                 )),
         );
+
+        // Hierarchy sub-tab (definitional-hierarchy H2): the drill-down view
+        // lives entirely in `crate::hierarchy` (deletes with the feature). Its
+        // own master toggle renders an inert disabled state when off.
+        if self.sub_tab == VocabSubTab::Hierarchy {
+            return root.child(self.hierarchy.clone());
+        }
 
         // Concepts sub-tab: render the child view and stop (its own header,
         // search, cards, and graph deep-link live in `ConceptsView`).
