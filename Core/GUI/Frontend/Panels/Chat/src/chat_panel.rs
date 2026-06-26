@@ -1631,19 +1631,35 @@ impl ChatPanel {
                     let event = ToolChunk::from_value(&value);
                     let _ = this.update(app_cx, |panel, cx| {
                         match event {
-                            ToolChunk::Dispatched { call_id, name, .. } => {
+                            ToolChunk::Dispatched {
+                                call_id, name, args, ..
+                            } => {
                                 if let Some(p) = panel.processing.as_mut() {
-                                    p.on_tool_dispatched(&call_id, &name);
+                                    p.on_tool_dispatched(&call_id, &name, tool_detail(&args, None));
                                 }
                             }
-                            ToolChunk::Result { call_id, .. } => {
+                            ToolChunk::Result {
+                                call_id,
+                                output,
+                                duration_ms,
+                                ..
+                            } => {
                                 if let Some(p) = panel.processing.as_mut() {
-                                    p.on_tool_done(&call_id, true);
+                                    p.on_tool_done(&call_id, true, tool_detail(&output, Some(duration_ms)));
                                 }
                             }
-                            ToolChunk::Error { call_id, .. } => {
+                            ToolChunk::Error {
+                                call_id,
+                                message,
+                                duration_ms,
+                                ..
+                            } => {
                                 if let Some(p) = panel.processing.as_mut() {
-                                    p.on_tool_done(&call_id, false);
+                                    let detail = tool_detail(
+                                        &serde_json::Value::String(message),
+                                        Some(duration_ms),
+                                    );
+                                    p.on_tool_done(&call_id, false, detail);
                                 }
                             }
                             ToolChunk::MemoryWritten => {
@@ -1968,6 +1984,25 @@ fn flush_streaming_bubble(messages: &mut [ChatMessage], assistant_id: &str, fall
     }
 }
 
+/// Format a tool's args / output (+ optional duration) into a compact,
+/// truncated activity-log detail line (chat-processing-indicator, full
+/// visibility). A bare string value is used verbatim (error messages), other
+/// JSON is serialised; `Null`/empty collapses to just the duration, or `None`.
+fn tool_detail(value: &serde_json::Value, duration_ms: Option<f64>) -> Option<String> {
+    let raw = match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s.clone()),
+        other => serde_json::to_string(other).ok(),
+    };
+    let body = raw.as_deref().and_then(|s| processing::compact_detail(s, 160));
+    match (body, duration_ms) {
+        (Some(b), Some(ms)) if ms > 0.0 => Some(format!("{b}  ·  {ms:.0}ms")),
+        (Some(b), _) => Some(b),
+        (None, Some(ms)) if ms > 0.0 => Some(format!("{ms:.0}ms")),
+        (None, _) => None,
+    }
+}
+
 /// Feed a user-facing turn chunk into the live processing indicator
 /// (chat-processing-indicator). A `None` state — no in-flight indicator — is
 /// a silent noop, so this is safe to call unconditionally. Only the
@@ -1990,6 +2025,11 @@ fn apply_processing_turn_event(state: Option<&mut ProcessingState>, event: &Turn
         }
         TurnChunk::Thinking { text, .. } => {
             p.on_thinking(text);
+        }
+        TurnChunk::Step {
+            summary, detail, ..
+        } => {
+            p.on_step(summary.clone(), detail.clone());
         }
         TurnChunk::Token { .. }
         | TurnChunk::TurnComplete { .. }
@@ -2027,9 +2067,9 @@ fn apply_turn_chunk(messages: &mut [ChatMessage], assistant_id: &str, event: &Tu
             }
             msg.streaming = false;
         }
-        // Phase / Usage feed only the processing indicator
+        // Phase / Usage / Step feed only the processing indicator
         // (`apply_processing_turn_event`); the bubble itself is unchanged.
-        TurnChunk::Phase { .. } | TurnChunk::Usage { .. } => {}
+        TurnChunk::Phase { .. } | TurnChunk::Usage { .. } | TurnChunk::Step { .. } => {}
         TurnChunk::Unknown => { /* future variant — noop */ }
     }
 }
@@ -2871,10 +2911,12 @@ fn processing_indicator(p: &ProcessingState, cx: &mut Context<ChatPanel>) -> gpu
     col
 }
 
-/// The expandable activity dropdown body — the ordered log of what the turn
-/// did (phases, tool calls, memory writes, thinking), an optional token
-/// split, and the model's exposed reasoning when present. Shared by the live
-/// indicator and the settled-message disclosure.
+/// The expandable activity dropdown body — the honest, full-visibility log of
+/// what the turn did, **grouped** Claude-style into Context (the gather
+/// pipeline), Tools (each call with its args/result), and Thinking (the
+/// model's reasoning), plus the prompt/completion token split. Each group is
+/// rendered only when it has content, so a turn never shows an empty section.
+/// Shared by the live indicator and the settled-message disclosure.
 fn activity_dropdown(
     entries: &[processing::ActivityEntry],
     thinking: &str,
@@ -2883,14 +2925,42 @@ fn activity_dropdown(
     let mut body = div()
         .flex()
         .flex_col()
-        .gap_1()
+        .gap_2()
         .ml_4()
         .pl_3()
         .border_l_2()
         .border_color(rgb(pack(BORDER_SUBTLE)));
 
-    for e in entries {
-        body = body.child(activity_log_row(e));
+    // Context (the gather pipeline) and Tools sections, in time order within
+    // each. The Thinking marker rows are skipped here — the reasoning text is
+    // rendered as its own block below.
+    let context: Vec<&processing::ActivityEntry> =
+        entries.iter().filter(|e| e.kind.group() == 0).collect();
+    let tools: Vec<&processing::ActivityEntry> =
+        entries.iter().filter(|e| e.kind.group() == 1).collect();
+
+    if !context.is_empty() {
+        body = body.child(activity_section("Context", &context));
+    }
+    if !tools.is_empty() {
+        body = body.child(activity_section("Tools", &tools));
+    }
+
+    if !thinking.is_empty() {
+        body = body.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(activity_section_header("Thinking"))
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_MUTED)))
+                        .child(SharedString::from(thinking.to_owned())),
+                ),
+        );
     }
 
     if let Some(detail) = token_detail {
@@ -2903,32 +2973,47 @@ fn activity_dropdown(
         );
     }
 
-    if !thinking.is_empty() {
-        body = body.child(
-            div()
-                .mt_1()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::XS))
-                .text_color(rgb(pack(TEXT_MUTED)))
-                .child(SharedString::from(format!("thinking: {thinking}"))),
-        );
-    }
-
     body
 }
 
-/// One row in the activity dropdown — a small coloured kind-glyph + text.
+/// A small uppercase section header for the grouped activity dropdown.
+fn activity_section_header(title: &str) -> gpui::Div {
+    div()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .child(SharedString::from(title.to_uppercase()))
+}
+
+/// One titled group of activity rows.
+fn activity_section(title: &str, rows: &[&processing::ActivityEntry]) -> gpui::Div {
+    let mut sec = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(activity_section_header(title));
+    for e in rows {
+        sec = sec.child(activity_log_row(e));
+    }
+    sec
+}
+
+/// One row in the activity dropdown — a small coloured kind-glyph + text, with
+/// the optional `detail` (concept names / tool args / output) on a dim,
+/// indented second line for full visibility without crowding the line.
 fn activity_log_row(e: &processing::ActivityEntry) -> gpui::Div {
     use processing::ActivityKind;
     let (glyph, color) = match e.kind {
         ActivityKind::Phase => ("▸", TEXT_MUTED),
+        ActivityKind::Step => ("•", TEXT_SECONDARY),
         ActivityKind::Tool => ("→", TEXT_SECONDARY),
         ActivityKind::ToolOk => ("✓", BRAND),
         ActivityKind::ToolErr => ("✕", BORDER_EMPHASIS),
         ActivityKind::Memory => ("✦", TEXT_SECONDARY),
         ActivityKind::Thinking => ("…", TEXT_MUTED),
     };
-    div()
+    let head = div()
         .flex()
         .flex_row()
         .gap_2()
@@ -2945,7 +3030,20 @@ fn activity_log_row(e: &processing::ActivityEntry) -> gpui::Div {
             div()
                 .text_color(rgb(pack(TEXT_SECONDARY)))
                 .child(SharedString::from(e.text.clone())),
-        )
+        );
+
+    let mut row = div().flex().flex_col().child(head);
+    if let Some(detail) = &e.detail {
+        row = row.child(
+            div()
+                .ml(px(20.0))
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(detail.clone())),
+        );
+    }
+    row
 }
 
 /// The persisted "Activity" disclosure under a settled assistant bubble: a
@@ -4348,6 +4446,39 @@ mod tests {
             },
         );
         assert_eq!(p.token_meter(), Some("1.2k tokens".to_owned()));
+    }
+
+    #[test]
+    fn tool_detail_formats_args_output_and_duration() {
+        // Object args → compact JSON.
+        let d = tool_detail(&serde_json::json!({"query": "vpn"}), None);
+        assert_eq!(d.as_deref(), Some("{\"query\":\"vpn\"}"));
+        // String value (an error) used verbatim + duration appended.
+        let d = tool_detail(&serde_json::Value::String("boom".into()), Some(12.0));
+        assert_eq!(d.as_deref(), Some("boom  ·  12ms"));
+        // Null + no duration → nothing.
+        assert_eq!(tool_detail(&serde_json::Value::Null, None), None);
+        // Null + duration → just the duration.
+        assert_eq!(
+            tool_detail(&serde_json::Value::Null, Some(5.0)).as_deref(),
+            Some("5ms")
+        );
+    }
+
+    #[test]
+    fn processing_event_routing_handles_steps() {
+        let mut p = ProcessingState::new();
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Step {
+                turn_id: "t".into(),
+                stage: "routing".into(),
+                summary: "Routed to 2 concepts".into(),
+                detail: Some("nextcloud, vpn".into()),
+            },
+        );
+        let e = p.log.iter().find(|e| e.text == "Routed to 2 concepts").unwrap();
+        assert_eq!(e.detail.as_deref(), Some("nextcloud, vpn"));
     }
 
     #[test]

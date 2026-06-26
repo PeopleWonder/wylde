@@ -201,6 +201,16 @@ pub enum TurnChunk {
         completion_tokens: u64,
         done: bool,
     },
+    /// One granular context-gather step (full-visibility activity log). `stage`
+    /// is the raw wire string (`retrieval`/`routing`/`injection`/`memory`/
+    /// `symbol`/`notice`); `detail` is optional supporting text (concept names,
+    /// a degraded reason).
+    Step {
+        turn_id: String,
+        stage: String,
+        summary: String,
+        detail: Option<String>,
+    },
     TurnComplete {
         turn_id: String,
         final_message: String,
@@ -256,6 +266,23 @@ impl TurnChunk {
                     .and_then(Value::as_u64)
                     .unwrap_or(0),
                 done: v.get("done").and_then(Value::as_bool).unwrap_or(false),
+            },
+            "step" => Self::Step {
+                turn_id,
+                stage: v
+                    .get("stage")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                summary: v
+                    .get("summary")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                detail: v
+                    .get("detail")
+                    .and_then(|x| x.as_str())
+                    .map(str::to_owned),
             },
             "turn_complete" => Self::TurnComplete {
                 turn_id,
@@ -616,27 +643,31 @@ pub fn stream_consent_pending() -> Result<wylde_gui_pipe::PipeStream, String> {
 
 /// One streaming chunk on the tool-activity channel
 /// (`chat.stream_tools`).  Mirror of `wylde_harness::events::ToolEvent`.
-/// We only project the fields the activity strip actually renders;
-/// fields like `args`, `output`, `duration_ms` are discarded at parse
-/// time so the strip doesn't accidentally surface a tool's input args
-/// to the user.
+/// As of the chat-processing-indicator full-visibility pass we carry the
+/// tool's `args` / `output` / `duration_ms` too (Aaron reversed the old
+/// "tool calls invisible to the chat UI" decision) so the activity dropdown
+/// can show the honest tool log; the GUI truncates them for display.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolChunk {
     Dispatched {
         turn_id: String,
         call_id: String,
         name: String,
+        args: Value,
     },
     Result {
         turn_id: String,
         call_id: String,
         name: String,
+        output: Value,
+        duration_ms: f64,
     },
     Error {
         turn_id: String,
         call_id: String,
         name: String,
         message: String,
+        duration_ms: f64,
     },
     /// Memory-write side effect — used to surface a brief "remembered:
     /// …" pulse when the strip wants to acknowledge it.  Slice 5.1 just
@@ -666,16 +697,20 @@ impl ToolChunk {
             .and_then(|x| x.as_str())
             .unwrap_or_default()
             .to_owned();
+        let duration_ms = v.get("duration_ms").and_then(Value::as_f64).unwrap_or(0.0);
         match t {
             "tool_dispatched" => Self::Dispatched {
                 turn_id,
                 call_id,
                 name,
+                args: v.get("args").cloned().unwrap_or(Value::Null),
             },
             "tool_result" => Self::Result {
                 turn_id,
                 call_id,
                 name,
+                output: v.get("output").cloned().unwrap_or(Value::Null),
+                duration_ms,
             },
             "tool_error" => Self::Error {
                 turn_id,
@@ -686,6 +721,7 @@ impl ToolChunk {
                     .and_then(|x| x.as_str())
                     .unwrap_or_default()
                     .to_owned(),
+                duration_ms,
             },
             "memory_written" => Self::MemoryWritten,
             "tool_warning" => Self::Warning,
@@ -1184,6 +1220,61 @@ mod tests {
             "phase": "gathering_context",
         }));
         assert!(matches!(c, TurnChunk::Phase { ref phase, .. } if phase == "gathering_context"));
+    }
+
+    #[test]
+    fn turn_chunk_parses_step_with_and_without_detail() {
+        let c = TurnChunk::from_value(&json!({
+            "type": "step",
+            "turn_id": "t",
+            "stage": "routing",
+            "summary": "Routed to 3 concepts",
+            "detail": "nextcloud, ddns",
+        }));
+        match c {
+            TurnChunk::Step {
+                stage,
+                summary,
+                detail,
+                ..
+            } => {
+                assert_eq!(stage, "routing");
+                assert_eq!(summary, "Routed to 3 concepts");
+                assert_eq!(detail.as_deref(), Some("nextcloud, ddns"));
+            }
+            _ => panic!("expected Step"),
+        }
+        // Missing detail → None.
+        let c = TurnChunk::from_value(&json!({
+            "type": "step", "turn_id": "t", "stage": "memory", "summary": "Loaded 2 turns",
+        }));
+        assert!(matches!(c, TurnChunk::Step { detail: None, .. }));
+    }
+
+    #[test]
+    fn tool_chunk_carries_args_output_and_duration() {
+        let d = ToolChunk::from_value(&json!({
+            "type": "tool_dispatched", "turn_id": "t", "call_id": "c1",
+            "name": "memory.search", "args": {"query": "vpn"},
+        }));
+        match d {
+            ToolChunk::Dispatched { name, args, .. } => {
+                assert_eq!(name, "memory.search");
+                assert_eq!(args["query"], "vpn");
+            }
+            _ => panic!("expected Dispatched"),
+        }
+        let r = ToolChunk::from_value(&json!({
+            "type": "tool_result", "turn_id": "t", "call_id": "c1",
+            "name": "memory.search", "output": {"hits": 3}, "duration_ms": 42.0,
+        }));
+        match r {
+            ToolChunk::Result { output, duration_ms, .. } => {
+                assert_eq!(output["hits"], 3);
+                assert_eq!(duration_ms, 42.0);
+            }
+            _ => panic!("expected Result"),
+        }
     }
 
     #[test]

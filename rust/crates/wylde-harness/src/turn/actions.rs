@@ -188,6 +188,20 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     )
     .await;
     log_tier7_degrade(&gathered, &conversation_id, slot_budget);
+    // Replay the honest gather activity log (chat-processing-indicator, full
+    // visibility): each retrieval / routing / injection / memory step the
+    // gather actually performed, as ordered `Step` events the GUI dropdown
+    // surfaces. Empty on a plain turn that gathered nothing.
+    for step in &gathered.steps {
+        handle
+            .push_turn_event(TurnEvent::Step {
+                turn_id: turn_id.clone(),
+                stage: step.stage,
+                summary: step.summary.clone(),
+                detail: step.detail.clone(),
+            })
+            .await;
+    }
     let mut messages = initial_messages(
         base_prompt,
         &gathered.history,
@@ -613,6 +627,20 @@ async fn drive_streaming_turn(
     )
     .await;
     log_tier7_degrade(&gathered, &conversation_id, slot_budget);
+    // Replay the honest gather activity log (chat-processing-indicator, full
+    // visibility): each retrieval / routing / injection / memory step the
+    // gather actually performed, as ordered `Step` events the GUI dropdown
+    // surfaces. Empty on a plain turn that gathered nothing.
+    for step in &gathered.steps {
+        handle
+            .push_turn_event(TurnEvent::Step {
+                turn_id: turn_id.clone(),
+                stage: step.stage,
+                summary: step.summary.clone(),
+                detail: step.detail.clone(),
+            })
+            .await;
+    }
     let mut messages = initial_messages(
         base_prompt,
         &gathered.history,
@@ -706,6 +734,16 @@ async fn drive_streaming_turn(
                                     frame_tokens += 1;
                                 }
                                 accumulated.push_str(&piece);
+                            }
+                            // Forward any reasoning delta (thinking models) so the
+                            // GUI dropdown shows the model's thinking live.
+                            if let Some(thought) = extract_chunk_thinking(&chunk) {
+                                handle
+                                    .push_turn_event(TurnEvent::Thinking {
+                                        turn_id: turn_id.clone(),
+                                        text: thought,
+                                    })
+                                    .await;
                             }
                             native_raw.extend(extract_native_tool_calls(&chunk));
                             // The final `done` frame carries the exact counts.
@@ -1216,6 +1254,22 @@ fn extract_chunk_content(chunk: &Value) -> Option<String> {
         .get("message")
         .and_then(|m| m.get("content"))
         .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+/// Pull a thinking/reasoning delta off an `ollama.chat_stream` chunk
+/// (chat-processing-indicator). Thinking-capable models (run with
+/// `think: true`) stream their reasoning on `message.thinking` separate from
+/// `message.content`; we forward it as [`TurnEvent::Thinking`] so the GUI's
+/// activity dropdown can show it. Absent for non-thinking models / configs →
+/// `None`, so nothing is emitted (graceful). We do NOT parse `<think>` out of
+/// `content` — that would alter the displayed reply.
+fn extract_chunk_thinking(chunk: &Value) -> Option<String> {
+    chunk
+        .get("message")
+        .and_then(|m| m.get("thinking"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
 

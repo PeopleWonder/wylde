@@ -105,6 +105,8 @@ pub fn friendly_tool(name: &str) -> String {
 pub enum ActivityKind {
     /// A turn-phase milestone (context gather, generating, …).
     Phase,
+    /// A granular context-gather step (retrieval / routing / injection / …).
+    Step,
     /// A tool was dispatched.
     Tool,
     /// A tool completed successfully.
@@ -117,12 +119,29 @@ pub enum ActivityKind {
     Thinking,
 }
 
-/// A single entry in the activity log (the dropdown). Holds only
-/// human-readable text — no tool args, no raw output.
+impl ActivityKind {
+    /// Which dropdown section this entry groups under (Claude-style sections,
+    /// so a busy turn isn't an undifferentiated wall). `0` = Context (gather
+    /// pipeline), `1` = Tools, `2` = Thinking.
+    pub fn group(self) -> u8 {
+        match self {
+            ActivityKind::Phase | ActivityKind::Step => 0,
+            ActivityKind::Tool | ActivityKind::ToolOk | ActivityKind::ToolErr
+            | ActivityKind::Memory => 1,
+            ActivityKind::Thinking => 2,
+        }
+    }
+}
+
+/// A single entry in the activity log (the dropdown). `text` is the
+/// human-readable line; `detail` is optional supporting text — concept names
+/// for a routing step, or a tool's (truncated) args / output for full
+/// visibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivityEntry {
     pub kind: ActivityKind,
     pub text: String,
+    pub detail: Option<String>,
 }
 
 impl ActivityEntry {
@@ -130,8 +149,36 @@ impl ActivityEntry {
         Self {
             kind,
             text: text.into(),
+            detail: None,
         }
     }
+
+    fn with_detail(kind: ActivityKind, text: impl Into<String>, detail: Option<String>) -> Self {
+        Self {
+            kind,
+            text: text.into(),
+            detail,
+        }
+    }
+}
+
+/// Collapse a raw args/output string onto a single truncated line for the
+/// activity log (full visibility, but never a wall of JSON). Whitespace is
+/// flattened and the result capped at `max` chars with an ellipsis.
+pub fn compact_detail(raw: &str, max: usize) -> Option<String> {
+    let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = flat.trim();
+    if flat.is_empty() || flat == "null" {
+        return None;
+    }
+    let out = if flat.chars().count() > max {
+        let mut s: String = flat.chars().take(max).collect();
+        s.push('…');
+        s
+    } else {
+        flat.to_owned()
+    };
+    Some(out)
 }
 
 /// Live processing state for the active turn. Reset on each new turn;
@@ -196,20 +243,27 @@ impl ProcessingState {
         self.phase = phase;
     }
 
-    /// A tool was dispatched. Names the phase after it and logs the line.
-    pub fn on_tool_dispatched(&mut self, call_id: &str, name: &str) {
-        let friendly = friendly_tool(name);
+    /// A granular context-gather step (retrieval / routing / injection /
+    /// memory). Logged verbatim with its optional detail (full visibility).
+    pub fn on_step(&mut self, summary: impl Into<String>, detail: Option<String>) {
         self.log
-            .push(ActivityEntry::new(ActivityKind::Tool, friendly.clone()));
-        self.active_tools
-            .push((call_id.to_owned(), friendly.clone()));
-        self.phase = ProcessingPhase::Tool(friendly);
+            .push(ActivityEntry::with_detail(ActivityKind::Step, summary, detail));
     }
 
-    /// A dispatched tool resolved (`ok` = success). Clears it from the active
-    /// set; when nothing else is in flight the phase falls back to
-    /// generating (the model resumes).
-    pub fn on_tool_done(&mut self, call_id: &str, ok: bool) {
+    /// A tool was dispatched. Names the phase after it (friendly) and logs the
+    /// raw tool name + its (truncated) args for full visibility.
+    pub fn on_tool_dispatched(&mut self, call_id: &str, name: &str, args: Option<String>) {
+        self.log
+            .push(ActivityEntry::with_detail(ActivityKind::Tool, name, args));
+        // Keep the RAW name keyed by call_id so the result line can name it.
+        self.active_tools.push((call_id.to_owned(), name.to_owned()));
+        self.phase = ProcessingPhase::Tool(friendly_tool(name));
+    }
+
+    /// A dispatched tool resolved (`ok` = success). Logs the raw name + its
+    /// (truncated) output / error, clears it from the active set, and — when
+    /// nothing else is in flight — falls the phase back to generating.
+    pub fn on_tool_done(&mut self, call_id: &str, ok: bool, result: Option<String>) {
         let removed = if let Some(pos) = self.active_tools.iter().position(|(id, _)| id == call_id) {
             Some(self.active_tools.remove(pos).1)
         } else {
@@ -222,8 +276,11 @@ impl ProcessingState {
                 ActivityKind::ToolErr
             };
             let suffix = if ok { "done" } else { "failed" };
-            self.log
-                .push(ActivityEntry::new(kind, format!("{name} — {suffix}")));
+            self.log.push(ActivityEntry::with_detail(
+                kind,
+                format!("{name} — {suffix}"),
+                result,
+            ));
         }
         if self.active_tools.is_empty() && matches!(self.phase, ProcessingPhase::Tool(_)) {
             self.phase = ProcessingPhase::Generating;
@@ -451,33 +508,71 @@ mod tests {
     fn tool_dispatch_then_done_names_and_reverts_phase() {
         let mut p = ProcessingState::new();
         p.set_phase(ProcessingPhase::Generating);
-        p.on_tool_dispatched("c1", "memory.search");
+        p.on_tool_dispatched("c1", "memory.search", Some("{\"query\":\"vpn\"}".to_owned()));
+        // Friendly phase for the animated line…
         assert_eq!(p.phase, ProcessingPhase::Tool("Consulting memory".to_owned()));
         assert_eq!(p.active_tools.len(), 1);
 
-        p.on_tool_done("c1", true);
+        p.on_tool_done("c1", true, Some("{\"hits\":3}".to_owned()));
         // No tools left → back to generating.
         assert_eq!(p.phase, ProcessingPhase::Generating);
         assert!(p.active_tools.is_empty());
 
-        // Log has the dispatch + the ok line.
-        assert!(p.log.iter().any(|e| e.kind == ActivityKind::Tool && e.text == "Consulting memory"));
-        assert!(p
+        // …but the LOG shows the raw tool name + args/output (full visibility).
+        let dispatch = p
             .log
             .iter()
-            .any(|e| e.kind == ActivityKind::ToolOk && e.text == "Consulting memory — done"));
+            .find(|e| e.kind == ActivityKind::Tool)
+            .unwrap();
+        assert_eq!(dispatch.text, "memory.search");
+        assert_eq!(dispatch.detail.as_deref(), Some("{\"query\":\"vpn\"}"));
+        let done = p
+            .log
+            .iter()
+            .find(|e| e.kind == ActivityKind::ToolOk)
+            .unwrap();
+        assert_eq!(done.text, "memory.search — done");
+        assert_eq!(done.detail.as_deref(), Some("{\"hits\":3}"));
     }
 
     #[test]
     fn concurrent_tools_hold_phase_until_all_resolve() {
         let mut p = ProcessingState::new();
-        p.on_tool_dispatched("a", "memory.search");
-        p.on_tool_dispatched("b", "workspace.rag_query");
-        p.on_tool_done("a", true);
+        p.on_tool_dispatched("a", "memory.search", None);
+        p.on_tool_dispatched("b", "workspace.rag_query", None);
+        p.on_tool_done("a", true, None);
         // One still in flight → stays a tool phase.
         assert!(matches!(p.phase, ProcessingPhase::Tool(_)));
-        p.on_tool_done("b", false);
+        p.on_tool_done("b", false, None);
         assert_eq!(p.phase, ProcessingPhase::Generating);
+    }
+
+    #[test]
+    fn step_entries_log_with_detail_and_group_as_context() {
+        let mut p = ProcessingState::new();
+        p.on_step("Retrieved 8 workspace snippets", None);
+        p.on_step("Routed to 3 concepts", Some("nextcloud, ddns, vpn".to_owned()));
+        let routing = p.log.iter().find(|e| e.text.starts_with("Routed")).unwrap();
+        assert_eq!(routing.kind, ActivityKind::Step);
+        assert_eq!(routing.detail.as_deref(), Some("nextcloud, ddns, vpn"));
+        // Steps group under Context (0); tools under Tools (1).
+        assert_eq!(ActivityKind::Step.group(), 0);
+        assert_eq!(ActivityKind::Tool.group(), 1);
+        assert_eq!(ActivityKind::Thinking.group(), 2);
+    }
+
+    #[test]
+    fn compact_detail_flattens_truncates_and_drops_null() {
+        assert_eq!(compact_detail("null", 80), None);
+        assert_eq!(compact_detail("  \n ", 80), None);
+        assert_eq!(
+            compact_detail("{\n  \"q\": \"hi\"\n}", 80),
+            Some("{ \"q\": \"hi\" }".to_owned())
+        );
+        let long = "x".repeat(200);
+        let got = compact_detail(&long, 10).unwrap();
+        assert_eq!(got.chars().count(), 11); // 10 + ellipsis
+        assert!(got.ends_with('…'));
     }
 
     #[test]
@@ -516,10 +611,10 @@ mod tests {
 
         // Fold a finished turn.
         let mut p = ProcessingState::new();
-        p.on_tool_dispatched("c1", "memory.search");
-        p.on_tool_done("c1", true);
-        p.on_tool_dispatched("c2", "fs.read_file");
-        p.on_tool_done("c2", true);
+        p.on_tool_dispatched("c1", "memory.search", None);
+        p.on_tool_done("c1", true, None);
+        p.on_tool_dispatched("c2", "fs.read_file", None);
+        p.on_tool_done("c2", true, None);
         p.on_usage(Some(1_000), 200);
         let ma = p.into_message_activity();
         assert!(!ma.is_empty());

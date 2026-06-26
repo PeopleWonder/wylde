@@ -56,6 +56,19 @@ pub enum TurnEvent {
         completion_tokens: u64,
         done: bool,
     },
+    /// One granular context-gather step (chat-processing-indicator, full
+    /// visibility). Surfaces the retrieval / concept-routing / injection /
+    /// memory pipeline activity as an honest, ordered log — each carries a
+    /// human `summary` and an optional `detail` (counts, concept names, a
+    /// degraded reason). Emitted between the `gathering_context` and
+    /// `generating` phases. Additive — see [`TurnEvent::Phase`].
+    Step {
+        turn_id: String,
+        stage: StepStage,
+        summary: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
     TurnComplete {
         turn_id: String,
         final_message: String,
@@ -84,6 +97,25 @@ pub enum TurnPhase {
     Generating,
     /// Recovered tool calls are being dispatched between generation rounds.
     RunningTools,
+}
+
+/// Which slice of the context-gather pipeline a [`TurnEvent::Step`] reports.
+/// The GUI groups the activity log by these (Claude-style sections).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepStage {
+    /// RAG / workspace retrieval (snippets, notes, persona, active-file boost).
+    Retrieval,
+    /// Concept routing — the candidate concepts the query mapped to.
+    Routing,
+    /// Concept injection — the curated concept definitions folded into context.
+    Injection,
+    /// Memory slots — prior-turn history, long-term, working, workspace memory.
+    Memory,
+    /// Resolved code-symbol / anchor context.
+    Symbol,
+    /// A degrade / fallback notice (workspace unreachable, tier-7 shrink).
+    Notice,
 }
 
 /// Discriminator for the tool-activity stream.
@@ -268,6 +300,30 @@ mod tests {
         assert_eq!(v["prompt_tokens"], 40);
         assert_eq!(v["completion_tokens"], 18);
         assert_eq!(v["done"], true);
+    }
+
+    #[test]
+    fn step_event_serialises_and_omits_absent_detail() {
+        let with = TurnEvent::Step {
+            turn_id: "t".into(),
+            stage: StepStage::Routing,
+            summary: "Routed to 3 concepts".into(),
+            detail: Some("nextcloud, ddns, vpn".into()),
+        };
+        let v = serde_json::to_value(&with).unwrap();
+        assert_eq!(v["type"], "step");
+        assert_eq!(v["stage"], "routing");
+        assert_eq!(v["summary"], "Routed to 3 concepts");
+        assert_eq!(v["detail"], "nextcloud, ddns, vpn");
+
+        let without = TurnEvent::Step {
+            turn_id: "t".into(),
+            stage: StepStage::Retrieval,
+            summary: "Retrieved 8 snippets".into(),
+            detail: None,
+        };
+        let v = serde_json::to_value(&without).unwrap();
+        assert!(!v.as_object().unwrap().contains_key("detail"));
     }
 
     #[test]

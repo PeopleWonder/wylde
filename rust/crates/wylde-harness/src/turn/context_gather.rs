@@ -233,6 +233,52 @@ pub(crate) struct GatheredContext {
     /// markers; this flag is for logging/UI annotation (the B8 Settings
     /// surface, when it lands).
     pub tier7_degraded: bool,
+    /// Honest, ordered log of what the gather actually did (chat-processing-
+    /// indicator, full visibility): retrieval / routing / injection / memory
+    /// steps with real counts + names. The driver replays these as
+    /// [`TurnEvent::Step`](crate::events::TurnEvent::Step) so the GUI's
+    /// activity dropdown shows the pipeline, not just "thinking…". Empty on a
+    /// plain unbound turn that gathered nothing.
+    pub steps: Vec<GatherStep>,
+}
+
+/// One line in the gather activity log (chat-processing-indicator). A
+/// human-readable `summary` (e.g. "Retrieved 8 workspace snippets") plus an
+/// optional `detail` (concept names, a degraded reason). Built from the real
+/// gathered data, not stubbed.
+pub(crate) struct GatherStep {
+    pub stage: crate::events::StepStage,
+    pub summary: String,
+    pub detail: Option<String>,
+}
+
+impl GatherStep {
+    fn new(
+        stage: crate::events::StepStage,
+        summary: impl Into<String>,
+        detail: Option<String>,
+    ) -> Self {
+        Self {
+            stage,
+            summary: summary.into(),
+            detail,
+        }
+    }
+}
+
+/// Join up to `n` names into a "a, b, c (+k more)" detail string, or `None`
+/// when the list is empty. Keeps the activity detail readable when a turn
+/// routes to many concepts.
+fn name_detail(names: &[String], n: usize) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+    let shown: Vec<&str> = names.iter().take(n).map(String::as_str).collect();
+    let mut s = shown.join(", ");
+    if names.len() > n {
+        s.push_str(&format!(" (+{} more)", names.len() - n));
+    }
+    Some(s)
 }
 
 // ── workspace data source (real + mockable) ──────────────────────────────
@@ -595,6 +641,10 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         ..ChatContext::default()
     };
     let mut degraded = false;
+    // Captured for the activity log (chat-processing-indicator): the routed
+    // concept set + the curated names actually injected this turn.
+    let mut routed: Option<(usize, Vec<String>)> = None;
+    let mut curated_names: Vec<String> = Vec::new();
 
     if let Some(ws) = active_ws {
         // Bare candidate tokens from the live message, then the Slice M / F
@@ -693,6 +743,7 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         } else {
             None
         };
+        curated_names = curated.map(<[String]>::to_vec).unwrap_or_default();
 
         // The workspace prompt parts (persona / notes / RAG — B6 split) plus,
         // when routing is on, the routed candidate set (logged) and the R2
@@ -703,9 +754,13 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
             .await
         {
             Ok(Some(block)) => {
-                // R1: log the routed candidate set (calibration data).
+                // R1: log the routed candidate set (calibration data) + capture
+                // it for the activity log.
                 if let Some(set) = &block.route_candidates {
                     tracing::info!(target: "concept_routing", "[harness] {}", set.log_line());
+                    let names: Vec<String> =
+                        set.activated().map(|c| c.label.clone()).collect();
+                    routed = Some((set.activated_count, names));
                 }
                 ctx.workspace_persona = block.persona;
                 ctx.workspace_notes = block.notes;
@@ -736,11 +791,105 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         ctx.symbol_contexts = gather_symbol_contexts(source, ws, &symbol_ids).await;
     }
 
+    // Build the honest activity log from what was actually gathered (pre-
+    // eviction counts — they reflect the retrieval work, not the trim). Each
+    // entry is gated on having something, so a plain turn that gathered
+    // nothing emits no steps (no broken/empty sections).
+    use crate::events::StepStage;
+    let mut steps: Vec<GatherStep> = Vec::new();
+    if !ctx.history.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Memory,
+            format!("Loaded {} prior turn(s)", ctx.history.len()),
+            None,
+        ));
+    }
+    if !ctx.long_term.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Memory,
+            format!("Recalled {} long-term memory line(s)", ctx.long_term.len()),
+            None,
+        ));
+    }
+    if !ctx.conversation_short_term.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Memory,
+            format!("Working memory: {} entr(ies)", ctx.conversation_short_term.len()),
+            None,
+        ));
+    }
+    if !ctx.vocabulary_anchors.is_empty() {
+        let names: Vec<String> = ctx
+            .vocabulary_anchors
+            .iter()
+            .map(|a| a.identifier.clone())
+            .collect();
+        steps.push(GatherStep::new(
+            StepStage::Symbol,
+            format!("Resolved {} anchor(s)", names.len()),
+            name_detail(&names, 6),
+        ));
+    }
+    let snippet_count = ctx.workspace_rag.len() + ctx.workspace_notes.len();
+    if snippet_count > 0 || ctx.workspace_persona.is_some() {
+        let detail = ctx
+            .workspace_persona
+            .as_ref()
+            .map(|_| "incl. workspace persona".to_owned());
+        steps.push(GatherStep::new(
+            StepStage::Retrieval,
+            format!("Retrieved {snippet_count} workspace snippet(s)"),
+            detail,
+        ));
+    }
+    if let Some((count, names)) = &routed {
+        steps.push(GatherStep::new(
+            StepStage::Routing,
+            format!("Routed to {count} concept(s)"),
+            name_detail(names, 8),
+        ));
+    }
+    if !ctx.concept_context.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Injection,
+            format!("Injected {} concept definition(s)", curated_names.len().max(1)),
+            name_detail(&curated_names, 8),
+        ));
+    }
+    if !ctx.workspace_memory.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Memory,
+            format!("Workspace memory: {} record(s)", ctx.workspace_memory.len()),
+            None,
+        ));
+    }
+    if !ctx.symbol_contexts.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Symbol,
+            format!("Loaded {} code-symbol context(s)", ctx.symbol_contexts.len()),
+            None,
+        ));
+    }
+    if degraded {
+        steps.push(GatherStep::new(
+            StepStage::Notice,
+            "Workspace unreachable — answering from base context",
+            None,
+        ));
+    }
+
     // Trim to the model's budget (OI-8), then render the named slots.
     // When the never-drop tier alone still exceeds the budget, evict's
     // M3 degrade pass shrinks tier-7 content rather than shipping an
     // over-window prompt Ollama would front-truncate.
     let tier7_degraded = token_budget::evict(&mut ctx, slot_budget);
+    if tier7_degraded {
+        steps.push(GatherStep::new(
+            StepStage::Notice,
+            "Context trimmed to fit the model's window",
+            None,
+        ));
+    }
     let system_slots = prompt_assembly::render(&ctx);
     let history = ctx
         .history
@@ -753,6 +902,7 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         history,
         degraded,
         tier7_degraded,
+        steps,
     }
 }
 
