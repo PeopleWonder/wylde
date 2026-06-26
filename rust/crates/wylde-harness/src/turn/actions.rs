@@ -564,6 +564,12 @@ async fn stream_events(handle: Arc<TurnHandle>, sender: StreamSender, source: So
     }
 }
 
+/// How many newly-streamed tokens accrue before the driver emits a
+/// running [`TurnEvent::Usage`] tick (chat-processing-indicator). Coalesces
+/// Ollama's per-token frames into a few UI updates per turn rather than one
+/// IPC event per token.
+const USAGE_TICK_EVERY: u64 = 16;
+
 /// Streaming turn driver — the spawned task `chat.start_turn` kicks
 /// off. Each round opens a fresh `ollama.chat_stream`, accumulates
 /// assistant text silently (Option A), salvages tool calls at
@@ -584,6 +590,17 @@ async fn drive_streaming_turn(
     workspace_id: Option<String>,
     overrides: context_gather::TokenOverrides,
 ) {
+    // Status line (chat-processing-indicator): the gather below does RAG
+    // retrieval + concept routing/injection and can take a beat, so flag
+    // the phase before it starts. Purely informational; the GUI animates a
+    // Claude-style status from these and degrades gracefully if absent.
+    handle
+        .push_turn_event(TurnEvent::Phase {
+            turn_id: turn_id.clone(),
+            phase: crate::events::TurnPhase::GatheringContext,
+        })
+        .await;
+
     // Gather the turn's context (Slice G) — see `handle_run_turn` for the flow.
     let base_prompt = base_system_prompt(&model);
     let slot_budget = chat_options::slot_budget(&model, &base_prompt, &user_message).await;
@@ -614,6 +631,14 @@ async fn drive_streaming_turn(
         Some(device_tier.as_str())
     });
 
+    // Turn-level token meter (chat-processing-indicator). Folds each
+    // round's exact Ollama counts so a multi-round (tool-using) turn shows
+    // its cumulative usage. `turn_prompt` sums input tokens processed
+    // across rounds (the context is re-sent each round); `turn_completion`
+    // sums generated tokens.
+    let mut turn_prompt: u64 = 0;
+    let mut turn_completion: u64 = 0;
+
     for round in 0..tool_round::MAX_TOOL_LOOPS {
         round_state.rounds = round + 1;
 
@@ -623,6 +648,14 @@ async fn drive_streaming_turn(
             schedule_eviction(turn_id.clone());
             return;
         }
+
+        // The LLM is about to generate this round.
+        handle
+            .push_turn_event(TurnEvent::Phase {
+                turn_id: turn_id.clone(),
+                phase: crate::events::TurnPhase::Generating,
+            })
+            .await;
 
         let mut body = json!({
             "model": model,
@@ -645,6 +678,15 @@ async fn drive_streaming_turn(
         let mut errored: Option<String> = None;
         let mut cancelled_mid_round = false;
 
+        // Live token tick (chat-processing-indicator). Ollama streams ≈ one
+        // content frame per generated token, so a running frame count is a
+        // good-enough live meter; the final `done` frame's `eval_count` /
+        // `prompt_eval_count` then give the authoritative totals.
+        let mut frame_tokens: u64 = 0;
+        let mut emitted_at: u64 = 0;
+        let mut round_prompt: Option<u64> = None;
+        let mut round_completion: Option<u64> = None;
+
         loop {
             tokio::select! {
                 _ = handle.cancel.notified() => {
@@ -660,15 +702,43 @@ async fn drive_streaming_turn(
                         }
                         Some(Ok(chunk)) => {
                             if let Some(piece) = extract_chunk_content(&chunk) {
+                                if !piece.is_empty() {
+                                    frame_tokens += 1;
+                                }
                                 accumulated.push_str(&piece);
                             }
                             native_raw.extend(extract_native_tool_calls(&chunk));
+                            // The final `done` frame carries the exact counts.
+                            if let Some(p) = chunk.get("prompt_eval_count").and_then(Value::as_u64) {
+                                round_prompt = Some(p);
+                            }
+                            if let Some(c) = chunk.get("eval_count").and_then(Value::as_u64) {
+                                round_completion = Some(c);
+                            }
+                            // Throttled running tick — coalesces hundreds of
+                            // per-token frames into a handful of UI updates.
+                            if frame_tokens - emitted_at >= USAGE_TICK_EVERY {
+                                emitted_at = frame_tokens;
+                                handle
+                                    .push_turn_event(TurnEvent::Usage {
+                                        turn_id: turn_id.clone(),
+                                        prompt_tokens: round_prompt.map(|p| turn_prompt + p),
+                                        completion_tokens: turn_completion + frame_tokens,
+                                        done: false,
+                                    })
+                                    .await;
+                            }
                         }
                     }
                 }
             }
         }
         drop(stream);
+
+        // Fold this round's authoritative counts into the turn meter
+        // (falling back to the live frame count if Ollama omitted them).
+        turn_prompt += round_prompt.unwrap_or(0);
+        turn_completion += round_completion.unwrap_or(frame_tokens);
 
         if cancelled_mid_round || handle.is_cancelled() {
             emit_aborted(&handle, &turn_id, AbortReason::Cancelled, None).await;
@@ -724,6 +794,8 @@ async fn drive_streaming_turn(
                     })
                     .await;
             }
+            // Authoritative end-of-turn token totals.
+            emit_final_usage(&handle, &turn_id, turn_prompt, turn_completion).await;
             handle
                 .push_turn_event(TurnEvent::TurnComplete {
                     turn_id: turn_id.clone(),
@@ -735,8 +807,16 @@ async fn drive_streaming_turn(
             return;
         }
 
-        // Tool calls present — emit any pre-call text (the "let me
-        // look that up" mid-stream), then dispatch each call.
+        // Tool calls present — the model wants to act before answering.
+        handle
+            .push_turn_event(TurnEvent::Phase {
+                turn_id: turn_id.clone(),
+                phase: crate::events::TurnPhase::RunningTools,
+            })
+            .await;
+
+        // Emit any pre-call text (the "let me look that up" mid-stream),
+        // then dispatch each call.
         if !final_text.is_empty() {
             handle
                 .push_turn_event(TurnEvent::Token {
@@ -858,6 +938,29 @@ async fn emit_aborted(
             turn_id: turn_id.to_owned(),
             reason,
             error,
+        })
+        .await;
+}
+
+/// Emit the authoritative end-of-turn token meter (chat-processing-indicator).
+/// Skipped entirely when both counts are zero (e.g. an Ollama build that
+/// omits the eval fields and produced no content) so the GUI never shows a
+/// bogus `0` — it just keeps the live tick or hides the meter.
+async fn emit_final_usage(
+    handle: &Arc<TurnHandle>,
+    turn_id: &str,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+) {
+    if prompt_tokens == 0 && completion_tokens == 0 {
+        return;
+    }
+    handle
+        .push_turn_event(TurnEvent::Usage {
+            turn_id: turn_id.to_owned(),
+            prompt_tokens: (prompt_tokens > 0).then_some(prompt_tokens),
+            completion_tokens,
+            done: true,
         })
         .await;
 }

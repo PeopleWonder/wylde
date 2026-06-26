@@ -183,6 +183,24 @@ pub enum TurnChunk {
         turn_id: String,
         text: String,
     },
+    /// Coarse turn-phase transition (chat-processing-indicator). Drives the
+    /// animated status line. `phase` is the raw wire string
+    /// (`gathering_context` / `generating` / `running_tools`); an
+    /// unrecognised value maps to [`ProcessingPhase::Working`] downstream so
+    /// a future backend phase never breaks the indicator.
+    Phase {
+        turn_id: String,
+        phase: String,
+    },
+    /// Token-usage progress (chat-processing-indicator). `done == false` is
+    /// a throttled running tick; `done == true` is the authoritative
+    /// end-of-turn total. `prompt_tokens` is `None` until known.
+    Usage {
+        turn_id: String,
+        prompt_tokens: Option<u64>,
+        completion_tokens: u64,
+        done: bool,
+    },
     TurnComplete {
         turn_id: String,
         final_message: String,
@@ -221,6 +239,23 @@ impl TurnChunk {
                     .and_then(|x| x.as_str())
                     .unwrap_or_default()
                     .to_owned(),
+            },
+            "phase" => Self::Phase {
+                turn_id,
+                phase: v
+                    .get("phase")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+            },
+            "usage" => Self::Usage {
+                turn_id,
+                prompt_tokens: v.get("prompt_tokens").and_then(Value::as_u64),
+                completion_tokens: v
+                    .get("completion_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                done: v.get("done").and_then(Value::as_bool).unwrap_or(false),
             },
             "turn_complete" => Self::TurnComplete {
                 turn_id,
@@ -1139,6 +1174,60 @@ mod tests {
             "text": "hello",
         }));
         assert!(matches!(c, TurnChunk::Token { ref text, .. } if text == "hello"));
+    }
+
+    #[test]
+    fn turn_chunk_parses_phase() {
+        let c = TurnChunk::from_value(&json!({
+            "type": "phase",
+            "turn_id": "t",
+            "phase": "gathering_context",
+        }));
+        assert!(matches!(c, TurnChunk::Phase { ref phase, .. } if phase == "gathering_context"));
+    }
+
+    #[test]
+    fn turn_chunk_parses_usage_tick_and_final() {
+        let tick = TurnChunk::from_value(&json!({
+            "type": "usage",
+            "turn_id": "t",
+            "completion_tokens": 12,
+            "done": false,
+        }));
+        match tick {
+            TurnChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                done,
+                ..
+            } => {
+                assert_eq!(prompt_tokens, None);
+                assert_eq!(completion_tokens, 12);
+                assert!(!done);
+            }
+            _ => panic!("expected Usage"),
+        }
+
+        let done = TurnChunk::from_value(&json!({
+            "type": "usage",
+            "turn_id": "t",
+            "prompt_tokens": 40,
+            "completion_tokens": 18,
+            "done": true,
+        }));
+        match done {
+            TurnChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                done,
+                ..
+            } => {
+                assert_eq!(prompt_tokens, Some(40));
+                assert_eq!(completion_tokens, 18);
+                assert!(done);
+            }
+            _ => panic!("expected Usage"),
+        }
     }
 
     #[test]

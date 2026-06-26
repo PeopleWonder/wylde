@@ -42,5 +42,6 @@ pub mod composer;
 mod composer_ui;
 pub mod ipc;
 pub mod markdown;
+pub mod processing;
 
 pub use chat_panel::{ChatPanel, InferenceBarDock};
