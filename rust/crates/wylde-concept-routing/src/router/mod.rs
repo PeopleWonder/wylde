@@ -192,6 +192,7 @@ impl CandidateSet {
                 Provenance::SeedLift { from } => ("↑", from.label()),
                 Provenance::Dependency { from, hops } => ("↳", format!("{}@{hops}", from.label())),
                 Provenance::Positive { from } => ("+", from.label()),
+                Provenance::Containment { from, hops } => ("⊂", format!("{}@{hops}", from.label())),
                 Provenance::Inhibited { by, .. } => ("⊘", by.label()),
             };
             // before→after makes the lift/suppression unmistakable.
@@ -217,8 +218,9 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 /// Route `query_vec` against `concepts` under `cfg`, folding in pre-matched
-/// `vocabulary`. Pure: no I/O, no embed (the caller passes the vector the RAG
-/// path already embedded — plan's "no extra round-trip").
+/// `vocabulary` and the optional hierarchy `containment` adjacency (H6 — `&[]`
+/// disables it; see [`spread`]). Pure: no I/O, no embed (the caller passes the
+/// vector the RAG path already embedded — plan's "no extra round-trip").
 ///
 /// Scores every concept by centroid cosine, sorts descending, applies the
 /// `dynamic_k`-shaped [`policy::select`] cutoff, and marks the activated
@@ -229,6 +231,7 @@ pub fn route(
     query_vec: &[f32],
     concepts: &[ConceptCentroid],
     vocabulary: Vec<VocabMatch>,
+    containment: &[(NodeRef, NodeRef)],
     graph: &RelationGraph,
     cfg: &crate::config::RoutingConfig,
 ) -> CandidateSet {
@@ -263,9 +266,11 @@ pub fn route(
     }
 
     // ── Spread (R1.5b): reshape the flat seed through the relation graph ────
-    // Empty graph + no links ⇒ identity ⇒ settled activation == seed cosine,
-    // so `policy::select` sees exactly the R1 distribution (behaviour-safe).
-    let settled = spread::spread(seed_map, &links, graph, p);
+    // Empty graph + no links + no containment ⇒ identity ⇒ settled activation ==
+    // seed cosine, so `policy::select` sees exactly the R1 distribution
+    // (behaviour-safe). `containment` (H6) is the hierarchy's separate channel,
+    // empty unless the hierarchy toggle is ON and edges exist.
+    let settled = spread::spread(seed_map, &links, containment, graph, p);
 
     // Each concept's SETTLED activation (what the cutoff is applied to) plus its
     // raw seed cosine and provenance. Sort descending by settled score with a
@@ -395,7 +400,7 @@ mod tests {
         ];
         // Query co-linear with Auth.
         let q = vec![1.0, 0.0, 0.0];
-        let set = route("how does auth work", &q, &concepts, vec![], &RelationGraph::empty(), &cfg());
+        let set = route("how does auth work", &q, &concepts, vec![], &[], &RelationGraph::empty(), &cfg());
         assert_eq!(set.concepts[0].id, "a", "nearest concept ranks first");
         assert!(set.concepts[0].activated);
         assert!((set.concepts[0].score - 1.0).abs() < 1e-6);
@@ -411,7 +416,7 @@ mod tests {
             cc("b", "Graph", vec![0.0, 0.0, 1.0]),
         ];
         let q = vec![1.0, 0.0, 0.0];
-        let set = route("weather forecast", &q, &concepts, vec![], &RelationGraph::empty(), &cfg());
+        let set = route("weather forecast", &q, &concepts, vec![], &[], &RelationGraph::empty(), &cfg());
         assert!(set.routed_nothing(), "nothing clears the absolute floor");
         assert_eq!(set.activated_count, 0);
         assert_eq!(set.chosen_cutoff, cfg().abs_threshold);
@@ -432,7 +437,7 @@ mod tests {
             cc("z", "Z", vec![0.0, 0.0, 1.0]),
         ];
         let q = vec![1.0, 0.0, 0.0];
-        let set = route("q", &q, &concepts, vec![], &RelationGraph::empty(), &c);
+        let set = route("q", &q, &concepts, vec![], &[], &RelationGraph::empty(), &c);
         assert_eq!(set.activated_count, 2, "cluster activates up to the cap");
         assert!(set.concepts[0].activated && set.concepts[1].activated);
         assert!(!set.concepts[2].activated);
@@ -440,7 +445,7 @@ mod tests {
 
     #[test]
     fn empty_concepts_routes_nothing() {
-        let set = route("q", &[1.0, 0.0], &[], vec![], &RelationGraph::empty(), &cfg());
+        let set = route("q", &[1.0, 0.0], &[], vec![], &[], &RelationGraph::empty(), &cfg());
         assert!(set.routed_nothing());
         assert!(set.concepts.is_empty());
     }
@@ -450,7 +455,7 @@ mod tests {
         let concepts = vec![cc("a", "Auth", vec![0.0, 1.0])]; // orthogonal → off-topic
         let q = vec![1.0, 0.0];
         let vocab = match_vocabulary("how does the_pipe work", &["the_pipe".into()], 8);
-        let set = route("how does the_pipe work", &q, &concepts, vocab, &RelationGraph::empty(), &cfg());
+        let set = route("how does the_pipe work", &q, &concepts, vocab, &[], &RelationGraph::empty(), &cfg());
         assert!(set.routed_nothing(), "vocab match alone does not activate a concept");
         assert_eq!(set.vocabulary.len(), 1);
         assert_eq!(set.vocabulary[0].identifier, "the_pipe");
@@ -494,7 +499,7 @@ mod tests {
     #[test]
     fn log_line_marks_activation_and_cutoff() {
         let concepts = vec![cc("a", "Auth", vec![1.0, 0.0]), cc("b", "Graph", vec![0.0, 1.0])];
-        let set = route("auth flow", &[1.0, 0.0], &concepts, vec![], &RelationGraph::empty(), &cfg());
+        let set = route("auth flow", &[1.0, 0.0], &concepts, vec![], &[], &RelationGraph::empty(), &cfg());
         let line = set.log_line();
         assert!(line.contains("★Auth"), "activated concept starred: {line}");
         assert!(line.contains("·Graph"), "suppressed concept dotted: {line}");

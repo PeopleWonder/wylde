@@ -53,7 +53,7 @@ All notable changes to Wylde are recorded here. Versions follow
   authoring GUI → a curate-before-inject menu with Augment injection →
   scoped-lens narrowing + typed dependency-tree viz → an eval harness with
   calibrated thresholds. Augment is the default mode; Replace is opt-in.
-- **Definitional concept hierarchy (H0–H5).** A navigable, drill-down DAG that
+- **Definitional concept hierarchy (H0–H6).** A navigable, drill-down DAG that
   unifies concepts + vocabulary anchors into one `{id, label, definition,
   parents, children}` node model — every node carries a definition; you drill
   until leaves are definition-only. Shipped as an isolated, **default-OFF,
@@ -84,7 +84,21 @@ All notable changes to Wylde are recorded here. Versions follow
   Root`), blurb-first so token-budget eviction sheds snippets before
   definitions, Augment-only, missing-definition nodes skipped — and gated
   identity-when-off (the block is never added unless the toggle is on, so today's
-  prompt is byte-identical). (H6 containment-spread is not yet wired.)
+  prompt is byte-identical). **H6 containment-spread** wires the hierarchy's
+  parent/child containment edges into the spreading-activation router as a
+  *separate*, gated propagation channel (not a `RelationKind` — the
+  `concept_relations.json` wire shape stays frozen): activation flows along
+  containment with an asymmetric decay (child→parent strong, parent→child weak —
+  both tunable knobs, conservative defaults), reusing the same Dijkstra
+  relaxation + cycle guard as the dependency step, and slotted before the IS-NOT
+  inhibition so a strong exclusion still has the last word. The channel is
+  sourced at the workspaces wiring layer from the applied hierarchy graph and
+  mapped into the router's node space, so the routing crate stays decoupled from
+  hierarchy storage. **Doubly identity-safe:** the master toggle OFF ⇒ no
+  containment adjacency is passed (built without touching the hierarchy stores),
+  and even ON an empty adjacency is the spread step's identity — so routing is
+  byte-identical to today unless containment edges actually exist and the toggle
+  is on.
 - **Tree-sitter expansion.** Code outline + highlight verbs (with a graph-panel
   outline card) and added JSON, TOML, YAML, and Bash grammars.
 - **Conversation export / import.** An escape-hatch to move conversations in and

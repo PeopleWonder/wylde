@@ -43,6 +43,7 @@ use wylde_concept_hierarchy::{
     apply_overlay, ConceptView, DefSource, HierGraph, HierarchyConfig, HierarchyIdentity,
     HierarchyOverlay, NodeId, NodeMerge, OverlayEdge, OverlayNode,
 };
+use wylde_concept_routing::NodeRef;
 use wylde_shared::ipc::{IpcError, Reply};
 
 use crate::anchors::store as anchor_store;
@@ -124,6 +125,54 @@ fn base_graph(workspace_id: &str) -> HierGraph {
 /// what the read verbs surface and what traversal runs over.
 pub fn current_graph(workspace_id: &str) -> HierGraph {
     apply_overlay(base_graph(workspace_id), &load_overlay(workspace_id))
+}
+
+// ── Routing seam (H6 containment spread) ─────────────────────────────────────
+
+/// Map a hierarchy [`NodeId`] to the routing [`NodeRef`], for the two kinds that
+/// have a routing identity: `concept:<id>` -> a concept node, `vocab:<ident>` ->
+/// a vocab node. An overlay-only authored `node:<n>` has no routing counterpart
+/// (routing scores concept centroids + matched vocab, not authored nodes), so it
+/// maps to `None` and its containment edges are dropped from the routing channel
+/// -- they still carry definitions for injection (H5); they just don't seed
+/// activation.
+fn node_id_to_ref(id: &NodeId) -> Option<NodeRef> {
+    match id.split() {
+        Some(("concept", rest)) => Some(NodeRef::concept(rest)),
+        Some(("vocab", rest)) => Some(NodeRef::vocab(rest)),
+        _ => None,
+    }
+}
+
+/// The **containment adjacency** the routing spread step consumes (H6): every
+/// live `parent -> child` containment edge of the APPLIED hierarchy graph (the
+/// projection + overlay, dangling excluded), mapped into the routing crate's
+/// node space -- but ONLY when the master hierarchy toggle is ON.
+///
+/// **This is the H6 identity gate.** Toggle OFF (the default) ⇒ an empty `Vec`
+/// is returned *without loading or projecting anything*, so the routing
+/// spread step receives no containment channel and routing is byte-identical to
+/// today. The gate lives here, at the wiring layer, so the `wylde-concept-routing`
+/// crate stays decoupled from the hierarchy crate's storage (OQ-6: containment is
+/// a separate adjacency, not a `RelationKind`). Even ON, a workspace with no
+/// containment edges yields an empty `Vec` ⇒ the spread step is still identity.
+pub fn containment_adjacency(workspace_id: &str) -> Vec<(NodeRef, NodeRef)> {
+    if !HierarchyConfig::current().enabled {
+        return Vec::new();
+    }
+    let graph = current_graph(workspace_id);
+    let mut out = Vec::new();
+    for node in &graph.nodes {
+        let Some(child) = node_id_to_ref(&node.id) else {
+            continue;
+        };
+        for parent_id in &node.parents {
+            if let Some(parent) = node_id_to_ref(parent_id) {
+                out.push((parent, child.clone()));
+            }
+        }
+    }
+    out
 }
 
 /// Does this id refer to a real node? -- present in the projected base OR
@@ -970,6 +1019,34 @@ mod tests {
         // Bad payload rejected.
         assert!(!handle_set_enabled(json!({})).await.ok);
         disable();
+    }
+
+    #[tokio::test]
+    async fn containment_adjacency_gated_by_toggle() {
+        // The H6 wiring proof: the hierarchy's containment edges reach the router
+        // ONLY when the master toggle is ON.
+        let _env = TestEnv::new();
+        let ws = "hier-cont-000";
+        seed(ws); // `token` is a child of `auth` (parent_concepts), drawing a containment edge.
+
+        // OFF (default): empty — no projection, no channel.
+        disable();
+        assert!(
+            containment_adjacency(ws).is_empty(),
+            "toggle OFF ⇒ no containment reaches the router"
+        );
+
+        // ON: the projected parent→child edge appears, mapped into the routing
+        // crate's NodeRef space.
+        enable();
+        let adj = containment_adjacency(ws);
+        assert!(
+            adj.contains(&(NodeRef::concept("auth"), NodeRef::concept("token"))),
+            "auth⊃token containment reaches the router when ON: {adj:?}"
+        );
+        disable();
+        // Flipping back OFF returns empty again.
+        assert!(containment_adjacency(ws).is_empty(), "OFF again ⇒ empty");
     }
 
     #[tokio::test]
