@@ -141,7 +141,10 @@ pub fn run_arm(
         RelationMode::RelationsOn => &corpus.relations,
     };
     let vocab = match_vocabulary(query_text, &corpus.vocab_terms, VOCAB_MATCH_LIMIT);
-    let cand = route(query_text, query_vec, &centroids, vocab, graph, cfg);
+    // The eval harness does not exercise the H6 containment channel (it has no
+    // hierarchy overlay); pass an empty adjacency so routing is identity w.r.t.
+    // containment and the eval numbers stay comparable to pre-H6.
+    let cand = route(query_text, query_vec, &centroids, vocab, &[], graph, cfg);
     let activated_ids: Vec<String> = cand.activated().map(|c| c.id.clone()).collect();
 
     // Auto-curate = inject every activated concept (the menu's "auto next time"

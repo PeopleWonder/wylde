@@ -34,6 +34,9 @@
 pub mod editor;
 pub mod files;
 pub mod graph;
+// Definitional concept hierarchy H2 — the isolated, removable Hierarchy
+// sub-tab folder (sibling of `routing/`). Deletes with the feature.
+pub mod hierarchy;
 pub mod ipc;
 pub mod routing;
 pub mod settings_tab;

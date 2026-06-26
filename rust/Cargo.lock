@@ -5631,6 +5631,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
+name = "wylde-concept-hierarchy"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tracing",
+ "wylde-concept-routing",
+ "wylde-shared",
+]
+
+[[package]]
 name = "wylde-concept-routing"
 version = "0.1.0-alpha.1"
 dependencies = [
@@ -6030,6 +6042,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "wylde-concept-hierarchy",
  "wylde-concept-routing",
  "wylde-fswalk",
  "wylde-prebuild-guard",
