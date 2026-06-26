@@ -9,6 +9,7 @@
 //!   - Core/GUI/Frontend/Panels/Devices/manifest.json
 //!   - Core/GUI/Frontend/Panels/Memory/manifest.json
 //!   - Core/GUI/Frontend/Panels/Models/manifest.json
+//!   - Core/GUI/Frontend/Panels/N8n/manifest.json
 //!   - Core/GUI/Frontend/Panels/RemoteAccess/manifest.json
 //!   - Core/GUI/Frontend/Panels/Settings/manifest.json
 //!   - Core/GUI/Frontend/Panels/Tools/manifest.json
@@ -33,6 +34,7 @@ pub fn register_all(
     registry: &mut PanelRegistry,
     factories: &mut FactoryMap,
 ) -> Result<(), RegistryError> {
+
     // ── core / chat  (from Core/GUI/Frontend/Panels/Chat/manifest.json) ──
     {
         let factory_key = "wylde_panel_chat::ChatPanel::view";
@@ -40,9 +42,7 @@ pub fn register_all(
             .take(factory_key)
             .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
         registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty {
-                service: "core".into(),
-            },
+            origin: PanelOrigin::FirstParty { service: "core".into() },
             entry: PanelEntry {
                 id: "chat".into(),
                 title: "Chat".into(),
@@ -50,9 +50,7 @@ pub fn register_all(
                 order: 5,
                 version: "0.1.0".into(),
                 required_services: vec!["wylde-harness".into(), "wylde-ollama".into()],
-                source: PanelSource::GpuiView {
-                    factory: factory_key.into(),
-                },
+                source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
         })?;
@@ -65,9 +63,7 @@ pub fn register_all(
             .take(factory_key)
             .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
         registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty {
-                service: "core".into(),
-            },
+            origin: PanelOrigin::FirstParty { service: "core".into() },
             entry: PanelEntry {
                 id: "dashboard".into(),
                 title: "Dashboard".into(),
@@ -75,9 +71,7 @@ pub fn register_all(
                 order: 8,
                 version: "0.1.0".into(),
                 required_services: vec![],
-                source: PanelSource::GpuiView {
-                    factory: factory_key.into(),
-                },
+                source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
         })?;
@@ -90,9 +84,7 @@ pub fn register_all(
             .take(factory_key)
             .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
         registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty {
-                service: "core".into(),
-            },
+            origin: PanelOrigin::FirstParty { service: "core".into() },
             entry: PanelEntry {
                 id: "devices".into(),
                 title: "Devices".into(),
@@ -100,9 +92,7 @@ pub fn register_all(
                 order: 60,
                 version: "0.1.0".into(),
                 required_services: vec!["wylde-device-gate".into()],
-                source: PanelSource::GpuiView {
-                    factory: factory_key.into(),
-                },
+                source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
         })?;
@@ -115,9 +105,7 @@ pub fn register_all(
             .take(factory_key)
             .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
         registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty {
-                service: "core".into(),
-            },
+            origin: PanelOrigin::FirstParty { service: "core".into() },
             entry: PanelEntry {
                 id: "memory".into(),
                 title: "Memory".into(),
@@ -125,9 +113,7 @@ pub fn register_all(
                 order: 20,
                 version: "0.1.0".into(),
                 required_services: vec!["wylde-harness".into()],
-                source: PanelSource::GpuiView {
-                    factory: factory_key.into(),
-                },
+                source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
         })?;
@@ -140,25 +126,39 @@ pub fn register_all(
             .take(factory_key)
             .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
         registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty {
-                service: "core".into(),
-            },
+            origin: PanelOrigin::FirstParty { service: "core".into() },
             entry: PanelEntry {
                 id: "models".into(),
                 title: "Models".into(),
                 icon: Some("cpu".into()),
                 order: 40,
                 version: "0.1.0".into(),
-                required_services: vec![
-                    "wylde-ollama".into(),
-                    "wylde-vram-broker".into(),
-                    "wylde-harness".into(),
-                ],
-                source: PanelSource::GpuiView {
-                    factory: factory_key.into(),
-                },
+                required_services: vec!["wylde-ollama".into(), "wylde-vram-broker".into(), "wylde-harness".into()],
+                source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
+        })?;
+    }
+
+    // ── core / n8n  (from Core/GUI/Frontend/Panels/N8n/manifest.json) ──
+    {
+        registry.register_internal(RegistryRow {
+            origin: PanelOrigin::FirstParty { service: "core".into() },
+            entry: PanelEntry {
+                id: "n8n".into(),
+                title: "Workflows".into(),
+                icon: Some("workflow".into()),
+                order: 55,
+                version: "0.1.0".into(),
+                required_services: vec!["wylde-n8n".into()],
+                source: PanelSource::Iframe {
+                    url: "http://127.0.0.1:5678".into(),
+                    sandbox: None,
+                    health_check: None,
+                    auth_bootstrap: Some("wylde-n8n:n8n.editor_bootstrap".into()),
+                },
+            },
+            factory: None,
         })?;
     }
 
@@ -169,9 +169,7 @@ pub fn register_all(
             .take(factory_key)
             .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
         registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty {
-                service: "core".into(),
-            },
+            origin: PanelOrigin::FirstParty { service: "core".into() },
             entry: PanelEntry {
                 id: "remote_access".into(),
                 title: "Remote Access".into(),
@@ -179,9 +177,7 @@ pub fn register_all(
                 order: 65,
                 version: "0.1.0".into(),
                 required_services: vec!["wylde-vpn".into()],
-                source: PanelSource::GpuiView {
-                    factory: factory_key.into(),
-                },
+                source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
         })?;
@@ -194,9 +190,7 @@ pub fn register_all(
             .take(factory_key)
             .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
         registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty {
-                service: "core".into(),
-            },
+            origin: PanelOrigin::FirstParty { service: "core".into() },
             entry: PanelEntry {
                 id: "settings".into(),
                 title: "Settings".into(),
@@ -204,9 +198,7 @@ pub fn register_all(
                 order: 95,
                 version: "0.1.0".into(),
                 required_services: vec!["wylde-harness".into()],
-                source: PanelSource::GpuiView {
-                    factory: factory_key.into(),
-                },
+                source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
         })?;
@@ -219,9 +211,7 @@ pub fn register_all(
             .take(factory_key)
             .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
         registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty {
-                service: "core".into(),
-            },
+            origin: PanelOrigin::FirstParty { service: "core".into() },
             entry: PanelEntry {
                 id: "tools".into(),
                 title: "Tools".into(),
@@ -229,9 +219,7 @@ pub fn register_all(
                 order: 50,
                 version: "0.1.0".into(),
                 required_services: vec!["wylde-extension-bridge".into()],
-                source: PanelSource::GpuiView {
-                    factory: factory_key.into(),
-                },
+                source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
         })?;
@@ -244,9 +232,7 @@ pub fn register_all(
             .take(factory_key)
             .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
         registry.register_internal(RegistryRow {
-            origin: PanelOrigin::FirstParty {
-                service: "core".into(),
-            },
+            origin: PanelOrigin::FirstParty { service: "core".into() },
             entry: PanelEntry {
                 id: "workspaces".into(),
                 title: "Workspaces".into(),
@@ -254,9 +240,7 @@ pub fn register_all(
                 order: 30,
                 version: "0.1.0".into(),
                 required_services: vec!["wylde-harness".into()],
-                source: PanelSource::GpuiView {
-                    factory: factory_key.into(),
-                },
+                source: PanelSource::GpuiView { factory: factory_key.into() },
             },
             factory: Some(factory),
         })?;

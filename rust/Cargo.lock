@@ -5461,6 +5461,7 @@ name = "wylde-n8n"
 version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
+ "rand 0.8.6",
  "reqwest",
  "serde",
  "serde_json",

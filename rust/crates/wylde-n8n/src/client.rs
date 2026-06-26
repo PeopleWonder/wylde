@@ -39,6 +39,12 @@ const HEALTH_TIMEOUT_S: u64 = 3;
 /// Python's `resp.text[:500]` detail cap (characters, not bytes).
 const DETAIL_CAP_CHARS: usize = 500;
 
+/// Stable `browser-id` for this client's login session. n8n 2.x binds
+/// every session JWT to the `browser-id` header sent at login and
+/// re-checks it on every request — a login without a matching header on
+/// later calls 401s. A fixed value keeps the whole session consistent.
+const CLIENT_BROWSER_ID: &str = "wylde-n8n-client";
+
 pub struct N8nClient {
     http: reqwest::Client,
     auth: AuthConfig,
@@ -83,6 +89,7 @@ impl N8nClient {
         let req = self
             .http
             .post(format!("{}/rest/login", self.auth.url))
+            .header("browser-id", CLIENT_BROWSER_ID)
             .json(&json!({
                 "emailOrLdapLoginId": self.auth.email,
                 "password": self.auth.password,
@@ -150,6 +157,9 @@ impl N8nClient {
         let mut req = self
             .http
             .request(method, &url)
+            // Match the login session's browser binding on every call
+            // (harmless under API-key auth, which n8n doesn't browser-bind).
+            .header("browser-id", CLIENT_BROWSER_ID)
             .timeout(Duration::from_secs(timeout_s));
         if !self.auth.api_key.is_empty() {
             req = req.header("X-N8N-API-KEY", &self.auth.api_key);

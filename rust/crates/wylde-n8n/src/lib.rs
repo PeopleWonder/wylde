@@ -23,6 +23,10 @@
 pub mod actions;
 pub mod client;
 pub mod config;
+pub mod editor;
+pub mod provision;
+pub mod runtime;
+pub mod secret;
 pub mod service;
 
 pub use service::{install, reset_for_tests, stop};

@@ -32,6 +32,10 @@ anyhow.workspace = true
 # `cookies` replaces Python's `requests.Session` cookie jar for the
 # email+password login-session auth mode (`POST /rest/login`).
 reqwest = { version = "0.12", default-features = false, features = ["json", "cookies"] }
+# OS-CSPRNG randomness for the Wylde-owned n8n identity (encryption key +
+# owner password). Same crate + version the device-gate service already
+# uses for token minting.
+rand = "0.8"
 
 [dev-dependencies]
 wiremock = "0.6"

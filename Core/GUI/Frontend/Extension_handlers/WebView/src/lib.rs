@@ -165,6 +165,12 @@ pub fn translate_sandbox<'a>(
 pub struct IframeHost {
     url: String,
     sandbox: Option<String>,
+    /// JS injected before the page's own scripts run on every load.
+    /// Used by the shared-auth bridge: an embedded editor (n8n) mounts
+    /// with a login script so it lands authenticated, with no login
+    /// screen. Must be set before [`Self::mount`] — wry bakes
+    /// initialization scripts in at WebView creation.
+    init_script: Option<String>,
     webview: Option<Rc<WebView>>,
     last_bounds: Option<Bounds>,
     pub last_sandbox_report: Option<SandboxApplied>,
@@ -175,10 +181,26 @@ impl IframeHost {
         Self {
             url: url.into(),
             sandbox,
+            init_script: None,
             webview: None,
             last_bounds: None,
             last_sandbox_report: None,
         }
+    }
+
+    /// Set the pre-load initialization script. No-op once the WebView is
+    /// already mounted (wry can't add scripts after creation) — the
+    /// caller gates mount on the script being present, so this always
+    /// runs first in practice.
+    pub fn set_init_script(&mut self, js: impl Into<String>) {
+        if self.webview.is_none() {
+            self.init_script = Some(js.into());
+        }
+    }
+
+    /// Whether an init script has been installed.
+    pub fn has_init_script(&self) -> bool {
+        self.init_script.is_some()
     }
 
     pub fn url(&self) -> &str {
@@ -203,9 +225,14 @@ impl IframeHost {
             return self.set_bounds(bounds);
         }
         let url = self.url.clone();
-        let builder = WebViewBuilder::new()
+        let mut builder = WebViewBuilder::new()
             .with_url(&url)
             .with_bounds(bounds.to_wry());
+        // Inject the shared-auth login script (if any) so it runs before
+        // the embedded app boots — the editor lands authenticated.
+        if let Some(js) = self.init_script.as_deref() {
+            builder = builder.with_initialization_script(js);
+        }
         let (builder, report) = translate_sandbox(builder, self.sandbox.as_deref());
         let webview = builder
             .build_as_child(parent)
@@ -355,6 +382,14 @@ mod tests {
             Some("allow-scripts allow-forms".into()),
         );
         assert_eq!(h.sandbox(), Some("allow-scripts allow-forms"));
+    }
+
+    #[test]
+    fn iframe_host_carries_init_script() {
+        let mut h = IframeHost::new("http://127.0.0.1:5678", None);
+        assert!(!h.has_init_script());
+        h.set_init_script("console.log('hi')");
+        assert!(h.has_init_script());
     }
 
     #[test]

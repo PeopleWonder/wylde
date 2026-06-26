@@ -97,12 +97,21 @@ pub enum PanelSource {
     /// enforces this).  `sandbox` and `health_check` are optional
     /// extension surface declared early so a future slice can ship
     /// them without bumping the schema version again.
+    ///
+    /// `auth_bootstrap` is the shared-auth hook: a `"service:action"`
+    /// the Shell calls before mounting to obtain a WebView init script
+    /// that authenticates the embedded app (e.g. `wylde-n8n:
+    /// n8n.editor_bootstrap` logs the n8n editor in as the Wylde-owned
+    /// owner so the user never sees a login screen).  Absent → the
+    /// panel mounts with no injection, exactly as before.
     Iframe {
         url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sandbox: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         health_check: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth_bootstrap: Option<String>,
     },
 }
 
