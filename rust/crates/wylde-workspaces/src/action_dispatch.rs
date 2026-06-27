@@ -79,6 +79,18 @@ pub const CONCEPTS_RELATIONS_GRAPH: &str = "workspaces.concepts.relations.graph"
 pub const CONCEPTS_RELATIONS_ADD: &str = "workspaces.concepts.relations.add";
 pub const CONCEPTS_RELATIONS_REMOVE: &str = "workspaces.concepts.relations.remove";
 
+// Definitional concept hierarchy H1 — the deletable overlay verbs (hierarchy_bridge)
+pub const HIERARCHY_GET_TREE: &str = "workspaces.hierarchy.get_tree";
+pub const HIERARCHY_GET_NODE: &str = "workspaces.hierarchy.get_node";
+pub const HIERARCHY_SET_DEFINITION: &str = "workspaces.hierarchy.set_definition";
+pub const HIERARCHY_ADD_EDGE: &str = "workspaces.hierarchy.add_edge";
+pub const HIERARCHY_REMOVE_EDGE: &str = "workspaces.hierarchy.remove_edge";
+pub const HIERARCHY_MERGE_NODES: &str = "workspaces.hierarchy.merge_nodes";
+pub const HIERARCHY_REMOVE_MERGE: &str = "workspaces.hierarchy.remove_merge";
+pub const HIERARCHY_GET_CONFIG: &str = "workspaces.hierarchy.get_config";
+pub const HIERARCHY_SET_ENABLED: &str = "workspaces.hierarchy.set_enabled";
+pub const HIERARCHY_GET_OVERLAY: &str = "workspaces.hierarchy.get_overlay";
+
 // ── File I/O — jailed editor/file-tree surface (S1 / IDE plan P0.2) ──────
 pub const FS_READ: &str = "workspaces.fs.read";
 pub const FS_WRITE: &str = "workspaces.fs.write";
@@ -548,6 +560,98 @@ pub fn install() {
         "Delete one relation edge by (from,to,kind); symmetric kinds match \
          either orientation. Payload: {workspace_id, from, to, kind}. Reply: \
          {removed: bool}.",
+        META_MODULE,
+    );
+
+    // ── Definitional concept hierarchy H1 — overlay store + verbs ─────────
+    register_action_with_meta(
+        HIERARCHY_GET_TREE,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_get_tree(p).await },
+        "The whole projected+overlaid concept-hierarchy DAG (definitional \
+         hierarchy plan H1). Payload: {workspace_id}. Reply: {enabled, count, \
+         roots, leaves, nodes:[{id,label,definition,kind,parents,children,\
+         is_leaf}], xrefs, dangling_count}. Master-toggle OFF ⇒ \
+         {enabled:false, nodes:[]} (inert). Read-only; fail-soft to the bare \
+         projection when no overlay exists.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_GET_NODE,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_get_node(p).await },
+        "One hierarchy node with its parents, children, the definitional \
+         ancestor-chain (nearest-first, each resolved to its definition), and \
+         the cross-references touching it. Payload: {workspace_id, id}. \
+         not_found on an unknown id; OFF ⇒ {enabled:false, node:null}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_SET_DEFINITION,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_set_definition(p).await },
+        "Author/override a node's definition (and optional label), or mint a \
+         brand-new authored node. Payload: {workspace_id, id?, definition?, \
+         source?=authored|llm_draft, label?}. With id: empty definition CLEARS \
+         the override (reverts to inherited) and prunes the record. Without id: \
+         mints a never-reused node:<n> id (a non-empty definition is required). \
+         Reply: {id, node}. OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_ADD_EDGE,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_add_edge(p).await },
+        "Author one containment edge (parent contains child). Payload: \
+         {workspace_id, parent, child}. Re-adding a dangling edge clears its \
+         flag. bad_request on a self-edge / unknown endpoint; already_exists on \
+         a live duplicate. OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_REMOVE_EDGE,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_remove_edge(p).await },
+        "Delete one authored containment edge. Payload: {workspace_id, parent, \
+         child}. Reply: {removed: bool}. Only overlay edges are removable (the \
+         projection's own edges live in the concept store). OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_MERGE_NODES,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_merge_nodes(p).await },
+        "Declare two nodes are one (OQ-2): the alias folds into the primary on \
+         apply. Payload: {workspace_id, primary, alias}. bad_request on a \
+         self-merge / unknown endpoint; already_exists on a live duplicate; \
+         re-adding a dangling merge clears its flag. OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_REMOVE_MERGE,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_remove_merge(p).await },
+        "Undo a merge by (primary, alias) so the alias re-appears as its own \
+         node — authoring stays reversible. Payload: {workspace_id, primary, \
+         alias}. Reply: {removed: bool}. OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_GET_CONFIG,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_get_config(p).await },
+        "The hierarchy master-toggle state. Payload: {}. Reply: {enabled}. \
+         Ungated (must be readable while the feature is off).",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_SET_ENABLED,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_set_enabled(p).await },
+        "Flip the hierarchy master toggle. Payload: {enabled: bool}. Reply: \
+         {enabled}. Ungated; persists to <data_dir>/settings/hierarchy.json \
+         (fail-closed OFF). Off ⇒ all hierarchy verbs go inert.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_GET_OVERLAY,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_get_overlay(p).await },
+        "The RAW authored overlay (authored nodes + containment edges + merges) \
+         WITH dangling flags, for the authoring UI's re-point/remove affordances \
+         — unlike get_tree, which folds + excludes dangling. Payload: \
+         {workspace_id}. Reply: {enabled, nodes, edges:[{parent,child,dangling}], \
+         merges:[{primary,alias,dangling}]}. OFF ⇒ {enabled:false, edges:[]}.",
         META_MODULE,
     );
 

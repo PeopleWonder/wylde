@@ -1,0 +1,46 @@
+[package]
+name = "wylde-concept-hierarchy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# Isolated, removable crate (definitional-hierarchy plan SS1, locked
+# constraint 5 -- "own separated / experimental crate behind a toggle ...
+# delete the crate + bridge => reverts to today"). H0 holds ONLY the pure
+# projection: the `HierNode` model, the in-memory `HierGraph` DAG, the
+# read-only `build_view` projection, and cycle-safe traversal. No I/O, no
+# persistence, no retrieval wiring, no GUI -- those are later slices (H1+).
+#
+# Dependencies are deliberately minimal so the isolation contract holds:
+#   * `wylde-shared`          -- the `Anchor` model (a SHARED base type, not
+#                                Core; `wylde-concept-routing` depends on it
+#                                too). Projected as Vocab nodes.
+#   * `wylde-concept-routing` -- the typed relation model (`NodeRef`,
+#                                `RelationGraph`, `RelationKind`). A sibling
+#                                EXPERIMENTAL crate, itself pure-serde and
+#                                wylde-shared-only; reused so the cross-
+#                                reference walk speaks the exact same wire
+#                                shape as `concept_relations.json` rather
+#                                than re-declaring it. Both experiments are
+#                                removed together.
+# `Concept` lives in Core (`wylde-workspaces`), so it is NOT depended on:
+# the projection takes a pure local `ConceptView` input, and the future H1
+# bridge (deletable, in `wylde-workspaces`) maps `Concept -> ConceptView` --
+# exactly how `wylde-concept-routing` takes `ConceptCentroid`, never the
+# Core `Concept`. This keeps H0 byte-isolated from Core.
+[dependencies]
+wylde-shared = { path = "../wylde-shared" }
+wylde-concept-routing = { path = "../wylde-concept-routing" }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# Serialises the config tests that mutate the process-global env var +
+# the shared toggle cache (the same `OnceLock<Mutex>` shape the routing
+# config uses), so cargo's parallel runner can't interleave them.
+serial_test = { workspace = true }

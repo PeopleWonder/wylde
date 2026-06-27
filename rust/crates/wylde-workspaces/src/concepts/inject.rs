@@ -173,15 +173,62 @@ pub fn inject_curated(
         .collect();
     let snippets = round_robin(per_concept, MAX_TOTAL_SNIPPETS);
 
-    // Assemble: blurb block first (protected), then snippet blocks.
+    // Assemble: blurb block first (protected), then the H5 definitional
+    // ancestor-chain block (also protected, high-signal), then snippet blocks.
     let mut blocks: Vec<String> = Vec::new();
     if !blurb_lines.is_empty() {
         blocks.push(blurb_lines.join("\n"));
+    }
+    if let Some(hier) = hierarchy_definition_block(workspace_id, curated_ids) {
+        blocks.push(hier);
     }
     for s in snippets {
         blocks.push(render_snippet(&s));
     }
     ConceptInjection { blocks }
+}
+
+/// **H5 — the definitional ancestor-chain injection** (definitional-hierarchy
+/// plan SS3c): for each curated concept that resolves to a hierarchy node WITH a
+/// definition, render `Label — definition — under Parent — under Root` along the
+/// node's primary containment path. This is the hierarchy's highest-signal,
+/// cheapest slot content — an authored leaf definition + its category chain that
+/// raw chunk retrieval structurally cannot produce.
+///
+/// **Gated + identity-when-off (plan SS3):** returns `None` when the master
+/// toggle is OFF (the default), so today's injection is *byte-identical* — the
+/// block is never added. `Missing`-definition nodes are skipped (we never inject
+/// an empty definition — the invariant surfacing). An empty result ⇒ `None` ⇒ no
+/// block, so a curated set with no hierarchy nodes changes nothing.
+fn hierarchy_definition_block(workspace_id: &str, curated_ids: &[String]) -> Option<String> {
+    use wylde_concept_hierarchy::{HierarchyConfig, NodeId};
+    // Identity-when-off: the feature is invisible until explicitly enabled.
+    if !HierarchyConfig::current().enabled {
+        return None;
+    }
+    let graph = super::hierarchy_bridge::current_graph(workspace_id);
+    let mut lines: Vec<String> = Vec::new();
+    for id in curated_ids {
+        let nid = NodeId::concept(id);
+        let Some(node) = graph.node(&nid) else { continue };
+        if node.definition.is_missing() {
+            continue; // never inject an empty definition (plan SS3 invariant)
+        }
+        let mut line = format!("{} — {}", node.label, node.definition.text.trim());
+        // The primary containment path (ancestor_chain is nearest-first incl.
+        // the start node; skip the start, name each ancestor as a category).
+        for anc_id in graph.ancestor_chain(&nid).iter().skip(1) {
+            if let Some(anc) = graph.node(anc_id) {
+                line.push_str(&format!(" — under {}", anc.label));
+            }
+        }
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
 }
 
 /// Render one concept's boundary line: `Label — description. (depends on X;
@@ -329,6 +376,83 @@ mod tests {
     fn empty_curation_is_empty_injection() {
         let _env = TestEnv::new();
         assert!(inject_curated("ws-empty-00000", &[], None).is_empty());
+    }
+
+    // ── H5: definitional ancestor-chain injection (gated) ─────────────────
+
+    fn hier_enable() {
+        wylde_concept_hierarchy::HierarchyConfig::persist(wylde_concept_hierarchy::HierarchyConfig {
+            enabled: true,
+        })
+        .expect("enable hierarchy");
+    }
+    fn hier_disable() {
+        let _ = wylde_concept_hierarchy::HierarchyConfig::persist(
+            wylde_concept_hierarchy::HierarchyConfig { enabled: false },
+        );
+    }
+
+    /// Seed a two-level concept DAG: `token` (child) under `auth` (root).
+    fn seed_hier(ws: &str) {
+        let mut token = Concept::new("token", "Token", "a bearer credential", ConceptSource::Manual);
+        token.parent_concepts = vec!["auth".into()];
+        store::save(
+            ws,
+            &[
+                Concept::new("auth", "Auth", "the authentication layer", ConceptSource::Manual),
+                token,
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn hierarchy_block_is_none_when_toggle_off() {
+        let _env = TestEnv::new();
+        hier_disable();
+        let ws = "inject-hier-off";
+        seed_hier(ws);
+        // Identity-when-off: no block, byte-identical to pre-hierarchy injection.
+        assert_eq!(hierarchy_definition_block(ws, &["token".into()]), None);
+    }
+
+    #[test]
+    fn hierarchy_block_renders_definition_and_ancestor_chain_when_on() {
+        let _env = TestEnv::new();
+        hier_enable();
+        let ws = "inject-hier-on0";
+        seed_hier(ws);
+        let block = hierarchy_definition_block(ws, &["token".into()]).expect("on ⇒ a block");
+        assert!(block.contains("Token — a bearer credential"), "node label + definition");
+        assert!(block.contains("under Auth"), "primary containment chain named");
+        hier_disable();
+    }
+
+    #[test]
+    fn hierarchy_block_skips_missing_definitions() {
+        let _env = TestEnv::new();
+        hier_enable();
+        let ws = "inject-hier-mis";
+        // A concept with a blank description ⇒ Missing ⇒ never injected.
+        store::save(ws, &[Concept::new("bare", "Bare", "   ", ConceptSource::Manual)]).unwrap();
+        assert_eq!(
+            hierarchy_definition_block(ws, &["bare".into()]),
+            None,
+            "missing-definition node is skipped (never inject an empty definition)"
+        );
+        hier_disable();
+    }
+
+    #[tokio::test]
+    async fn inject_curated_includes_the_hierarchy_block_when_enabled() {
+        let _env = TestEnv::new();
+        hier_enable();
+        let ws = "inject-hier-int";
+        seed_hier(ws);
+        let out = inject_curated(ws, &["token".into()], None);
+        let joined = out.blocks.join("\n");
+        assert!(joined.contains("Token — a bearer credential — under Auth"), "{joined}");
+        hier_disable();
     }
 
     #[tokio::test]

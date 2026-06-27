@@ -53,6 +53,52 @@ All notable changes to Wylde are recorded here. Versions follow
   authoring GUI → a curate-before-inject menu with Augment injection →
   scoped-lens narrowing + typed dependency-tree viz → an eval harness with
   calibrated thresholds. Augment is the default mode; Replace is opt-in.
+- **Definitional concept hierarchy (H0–H6).** A navigable, drill-down DAG that
+  unifies concepts + vocabulary anchors into one `{id, label, definition,
+  parents, children}` node model — every node carries a definition; you drill
+  until leaves are definition-only. Shipped as an isolated, **default-OFF,
+  byte-identical-when-disabled** crate (`wylde-concept-hierarchy`) that
+  *projects* the view read-only from the existing concept / anchor / relation
+  stores (multi-parent preserved, diamonds/cycles guarded, the definitional
+  ancestor-chain accessor), plus a thin additive `hierarchy.json` overlay for
+  net-new authored data: authored/overriding definitions by a priority ladder, a
+  never-reused `node:<n>` id allocator, authored containment edges, and node
+  merges — all with the `Relation.dangling` retain-but-exclude rule. A deletable
+  `workspaces.hierarchy.*` verb seam (`get_tree`, `get_node`, `set_definition`,
+  `add_edge`, `remove_edge`, `merge_nodes`) maps the Core `Concept` into the
+  crate's Core-free `ConceptView` so the crate never touches Core. A read-only
+  **Hierarchy** sub-tab (in the isolated `hierarchy/` GUI folder, fourth tab of
+  the Vocabulary tab) renders the DAG as a cycle-safe, indented drill-down —
+  definitions shown at every level with a priority-ladder source badge, a "needs
+  definition" badge on `Missing` nodes, "also under: …" for multi-parent nodes,
+  a selected-node ancestor-chain breadcrumb, and a Graph deep-link via the focus
+  bus. The sub-tab also **authors**: edit/override or clear a node's definition,
+  mint brand-new authored nodes, add/remove containment edges, and merge/unmerge
+  nodes (a target picker over the loaded universe) — with an "authored edges &
+  merges" panel that surfaces dangling records for re-point/remove. Toggle OFF ⇒
+  the verbs are inert, the sub-tab renders an inert disabled state, and the
+  overlay is never written; deleting the crate + bridge + overlay + sub-tab
+  folder reverts to today. **H5 retrieval injection** rides the existing
+  `### Concepts` slot: for each curated concept it adds a high-signal
+  definitional ancestor-chain line (`Label — definition — under Parent — under
+  Root`), blurb-first so token-budget eviction sheds snippets before
+  definitions, Augment-only, missing-definition nodes skipped — and gated
+  identity-when-off (the block is never added unless the toggle is on, so today's
+  prompt is byte-identical). **H6 containment-spread** wires the hierarchy's
+  parent/child containment edges into the spreading-activation router as a
+  *separate*, gated propagation channel (not a `RelationKind` — the
+  `concept_relations.json` wire shape stays frozen): activation flows along
+  containment with an asymmetric decay (child→parent strong, parent→child weak —
+  both tunable knobs, conservative defaults), reusing the same Dijkstra
+  relaxation + cycle guard as the dependency step, and slotted before the IS-NOT
+  inhibition so a strong exclusion still has the last word. The channel is
+  sourced at the workspaces wiring layer from the applied hierarchy graph and
+  mapped into the router's node space, so the routing crate stays decoupled from
+  hierarchy storage. **Doubly identity-safe:** the master toggle OFF ⇒ no
+  containment adjacency is passed (built without touching the hierarchy stores),
+  and even ON an empty adjacency is the spread step's identity — so routing is
+  byte-identical to today unless containment edges actually exist and the toggle
+  is on.
 - **Tree-sitter expansion.** Code outline + highlight verbs (with a graph-panel
   outline card) and added JSON, TOML, YAML, and Bash grammars.
 - **Conversation export / import.** An escape-hatch to move conversations in and
