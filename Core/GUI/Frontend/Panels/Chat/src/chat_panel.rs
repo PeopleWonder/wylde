@@ -32,9 +32,10 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, Entity,
-    FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseDownEvent, Render,
-    SharedString, Stateful, Subscription, WeakEntity, Window,
+    div, list, prelude::*, px, rgb, AnyElement, AnyView, App, AppContext, AsyncApp, Context,
+    ElementId, Entity, FocusHandle, Focusable, FollowMode, FontWeight, IntoElement, KeyDownEvent,
+    ListAlignment, ListState, MouseDownEvent, Render, SharedString, Stateful, Subscription,
+    WeakEntity, Window,
 };
 use wylde_gpui_input::{InputEvent, SubmitMode, TextInput};
 use wylde_theme::colors::{
@@ -245,6 +246,32 @@ pub struct ChatPanel {
     /// mode restores its own session pointer.
     pub scope: ChatScope,
     pub messages: Vec<ChatMessage>,
+    /// Virtualized backing store for the message log. The log renders through
+    /// gpui's [`gpui::list`], which paints only the items in (and just around)
+    /// the viewport — so a long conversation costs a bounded number of bubble
+    /// builds per frame instead of one per message. Bubbles are variable height
+    /// (message length, thinking block, markdown), so this is `list`/[`ListState`]
+    /// (measured items) rather than `uniform_list`. [`ChatPanel::sync_message_list`]
+    /// keeps its item count + measurements in lock-step with `messages` before
+    /// each paint; [`ListAlignment::Top`] keeps short logs pinned to the top
+    /// (identical to the old flex column) while [`FollowMode::Tail`] gives
+    /// stick-to-bottom while streaming.
+    pub message_list: ListState,
+    /// Id of `messages[0]` as of the last [`sync_message_list`] pass. Lets the
+    /// sync tell a pure append within the current thread (same head → `splice`
+    /// the tail delta, preserve scroll) from a wholesale swap (head changed →
+    /// `reset` + re-engage tail-follow so a switched/loaded thread opens pinned
+    /// to its newest message).
+    ///
+    /// [`sync_message_list`]: ChatPanel::sync_message_list
+    list_head_id: Option<String>,
+    /// Cheap signature of the tail bubble's rendered size inputs (content +
+    /// thinking length, plus the streaming flag) at the last sync. A streaming
+    /// bubble grows token-by-token at a fixed item count, so the list must
+    /// remeasure that one item (`remeasure_items`, which preserves the scroll
+    /// anchor) whenever this changes — including the final non-streaming swap
+    /// `TurnComplete` may apply.
+    list_tail_sig: usize,
     pub active_turn_id: Option<String>,
     pub conversation_id: String,
     /// Conversation switcher (Memory Slice B): the saved-chat list for the
@@ -387,6 +414,18 @@ impl ChatPanel {
             focus_handle: cx.focus_handle(),
             scope,
             messages: Vec::new(),
+            // Bottom-anchored chat behaviour without a Bottom alignment: Top keeps
+            // a short log pinned to the top (matching the old flex column), and
+            // Tail follow snaps to / re-engages the bottom as the log grows past
+            // the viewport — i.e. stick-to-bottom while streaming. The overdraw
+            // measures a little above/below the fold so scrolling doesn't pop in.
+            message_list: {
+                let state = ListState::new(0, ListAlignment::Top, px(256.0));
+                state.set_follow_mode(FollowMode::Tail);
+                state
+            },
+            list_head_id: None,
+            list_tail_sig: 0,
             active_turn_id: None,
             conversation_id: "default".to_owned(),
             conversations: Vec::new(),
@@ -1231,12 +1270,70 @@ impl ChatPanel {
         self.send_user_message(trimmed, cx);
     }
 
+    /// Reconcile the virtualized [`ListState`] with `self.messages` before each
+    /// paint. `list` tracks an opaque item count; it can't see how the backing
+    /// vec changed, so we tell it — and crucially we choose the *kind* of update
+    /// so scroll position survives:
+    ///
+    /// * **empty** → reset to zero items (the empty-state element renders
+    ///   instead, but keep the list count honest so the next message rebuilds);
+    /// * **pure append within the current thread** (same `messages[0]`, count
+    ///   only grew) → [`ListState::splice`] the new tail items, leaving existing
+    ///   measurements and the scroll anchor untouched. This is the in-turn path:
+    ///   the user+assistant bubbles get spliced once, then the assistant bubble
+    ///   grows *in place* (count unchanged) and only needs remeasuring;
+    /// * **wholesale swap** (head id changed — switch / load / new / clear — or
+    ///   the log shrank) → [`ListState::reset`] and re-engage [`FollowMode::Tail`]
+    ///   so the freshly loaded thread opens pinned to its newest message, the
+    ///   chat convention;
+    /// * **streaming tail** → whenever the last bubble's size inputs change
+    ///   (content/thinking length or the streaming flag) [`ListState::remeasure_items`]
+    ///   the single tail item. That re-measures the growing bubble while
+    ///   preserving the scroll anchor (and tail-follow keeps it on screen).
+    ///
+    /// Identity for short logs: with nothing scrolled and everything fitting the
+    /// viewport, Top alignment paints from the top exactly like the old column.
+    ///
+    /// Called from `render`; `pub` only so the windowed tests can drive the
+    /// reconciler deterministically without depending on paint scheduling.
+    pub fn sync_message_list(&mut self) {
+        let n = self.messages.len();
+        let head_id = self.messages.first().map(|m| m.id.clone());
+        let tail_sig = self.messages.last().map_or(0, |m| {
+            m.content.len() + m.thinking.as_ref().map_or(0, String::len) + m.streaming as usize
+        });
+        let known = self.message_list.item_count();
+
+        if n == 0 {
+            if known != 0 {
+                self.message_list.reset(0);
+            }
+        } else if head_id == self.list_head_id && n >= known {
+            if n > known {
+                self.message_list.splice(known..known, n - known);
+            }
+            if n > known || tail_sig != self.list_tail_sig {
+                self.message_list.remeasure_items(n - 1..n);
+            }
+        } else {
+            self.message_list.reset(n);
+            self.message_list.set_follow_mode(FollowMode::Tail);
+        }
+
+        self.list_head_id = head_id;
+        self.list_tail_sig = tail_sig;
+    }
+
     pub fn send_user_message(&mut self, text: String, cx: &mut Context<Self>) {
         self.error = None;
         self.messages.push(ChatMessage::user(text.clone()));
         let assistant = ChatMessage::assistant_streaming();
         let assistant_id = assistant.id.clone();
         self.messages.push(assistant);
+        // A new turn always sticks to the bottom while it streams, regardless of
+        // where the user had scrolled — re-engage tail-follow. `sync_message_list`
+        // then splices the two new bubbles in on the next paint.
+        self.message_list.set_follow_mode(FollowMode::Tail);
         // Latch synchronously — see the `starting` field doc.  Cleared
         // the moment `active_turn_id` is published (or on any failure).
         self.starting = true;
@@ -2565,6 +2662,8 @@ impl ChatPanel {
 
 impl Render for ChatPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Reconcile the virtualized list with `messages` before anything reads it.
+        self.sync_message_list();
         let inference_bar = inference_bar(self, cx);
         let log = message_log(self, cx);
         let consent_strip = consent_card_strip(self, cx);
@@ -2630,35 +2729,43 @@ impl Render for InferenceBarDock {
     }
 }
 
-fn message_log(panel: &ChatPanel, _cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
-    let mut log = div()
-        .id(ElementId::Name("chat-log".into()))
-        .flex_1()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .p_5()
-        .overflow_y_scroll();
-
+fn message_log(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> AnyElement {
     if panel.messages.is_empty() {
-        log = log.child(
-            div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::SM))
-                .text_color(rgb(pack(TEXT_MUTED)))
-                .child(SharedString::from("How can I help?")),
-        );
-        return log;
+        return div()
+            .id(ElementId::Name("chat-log".into()))
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::SM))
+            .text_color(rgb(pack(TEXT_MUTED)))
+            .child(SharedString::from("How can I help?"))
+            .into_any_element();
     }
 
-    for m in &panel.messages {
-        log = log.child(bubble(m));
-    }
-    log
+    // Virtualized log: `list` invokes this closure only for the items it needs
+    // to paint (visible range + overdraw), so render cost is bounded regardless
+    // of how long the conversation is. The closure can't borrow `panel` (it must
+    // be `'static`), so it reads the live messages back out of the entity by
+    // index each time an item is (re)built — the same bubble builders as before.
+    let entity = cx.entity();
+    list(panel.message_list.clone(), move |ix, _window, cx| {
+        let Some(m) = entity.read(cx).messages.get(ix).cloned() else {
+            // Index briefly out of range between a `messages` mutation and the
+            // next `sync_message_list` — render nothing rather than panic.
+            return div().into_any_element();
+        };
+        // `gap_3` between bubbles in the old flex column = a 12px top gap on
+        // every item but the first; reproduce it exactly here.
+        div()
+            .when(ix > 0, |d| d.pt_3())
+            .child(bubble(&m))
+            .into_any_element()
+    })
+    .flex_1()
+    .p_5()
+    .into_any_element()
 }
 
 fn bubble(m: &ChatMessage) -> gpui::Div {
