@@ -28,6 +28,7 @@
 
 pub mod manifest;
 pub mod orphan_sweep;
+pub mod restart;
 pub mod services;
 
 use std::collections::HashMap;
@@ -265,6 +266,18 @@ pub fn spawn_records_snapshot() -> Vec<(String, SpawnRecord)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Whether the daemon currently holds a spawn record for `name` — i.e. it
+/// spawned the service and hasn't been told to stop it. The crash-restart
+/// supervisor uses this as its crash-vs-intended-stop signal: an intended
+/// stop clears the record (via [`forget_spawn`]), so a service still recorded
+/// here that died was a genuine crash.
+pub fn spawn_record_exists(name: &str) -> bool {
+    state()
+        .lock()
+        .map(|s| s.spawn_records.contains_key(name))
+        .unwrap_or(false)
 }
 
 /// Flip the `grace_satisfied` flag for a spawn record so the

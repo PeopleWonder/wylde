@@ -93,6 +93,12 @@ pub struct ServiceInfo {
     /// predates its own binary). Computed in [`crate::control`] at list time —
     /// not from any manifest — so it defaults to `false` on construction.
     pub stale_binary: bool,
+    /// The manifest's `status.state` verbatim (`alive` / `stopped` /
+    /// `dead-orphan` / `failed`), when a runtime manifest exists. Surfaced to
+    /// the GUI so the dashboard can distinguish a crashed-and-retrying service
+    /// (`dead-orphan`) from one the crash-restart supervisor gave up on
+    /// (`failed`). `None` for declarative-only entries with no runtime file.
+    pub state: Option<String>,
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -551,6 +557,7 @@ fn build_info(
         heartbeat: None,
         manifest_path: None,
         stale_binary: false,
+        state: None,
     };
 
     if let Some(rt) = runtime_doc {
@@ -562,6 +569,10 @@ fn build_info(
                 .map(str::to_owned);
             info.heartbeat = status
                 .get("heartbeat")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            info.state = status
+                .get("state")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
         }
@@ -630,6 +641,7 @@ fn runtime_only_info(name: &str, runtime_doc: &Value) -> ServiceInfo {
         heartbeat: None,
         manifest_path: None,
         stale_binary: false,
+        state: None,
     };
 
     if let Some(status) = runtime_doc.get("status").and_then(Value::as_object) {
@@ -640,6 +652,10 @@ fn runtime_only_info(name: &str, runtime_doc: &Value) -> ServiceInfo {
             .map(str::to_owned);
         info.heartbeat = status
             .get("heartbeat")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        info.state = status
+            .get("state")
             .and_then(Value::as_str)
             .map(str::to_owned);
     }

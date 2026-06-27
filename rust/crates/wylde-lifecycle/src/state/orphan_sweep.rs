@@ -294,7 +294,17 @@ pub fn start_orphan_sweep_with_interval(interval: Duration) {
                     // mark_orphan_dead — both are synchronous and short
                     // (10s of ms even with hundreds of manifests). No
                     // need to spawn_blocking here.
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(sweep_orphans));
+                    let report =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(sweep_orphans));
+                    // Crash-restart: hand the freshly-detected orphans to the
+                    // restart supervisor. It reuses THIS dead-orphan transition
+                    // (no parallel watcher), keeps intended stops sacrosanct
+                    // (spawn-record gated), and applies backoff + a crash-loop
+                    // breaker. Default ON; a clean no-op when disabled or when
+                    // the sweep found nothing. Skipped if the sweep panicked.
+                    if let Ok(report) = report {
+                        crate::state::restart::drive_restarts(&report.orphans).await;
+                    }
                 }
             }
         }
