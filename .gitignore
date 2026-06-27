@@ -5,7 +5,9 @@ __pycache__/
 *.so
 .Python
 
-# uv-managed virtualenv (uv.lock is committed, .venv is not)
+# Local Python virtualenv for the dev-time wylde_check linter (.venv is not tracked).
+# NOTE: uv.lock was deleted in the full-Rust cutover (commit 2f5aa82) and is no
+# longer committed — there is no runtime Python dependency lockfile anymore.
 .venv/
 
 # Test / lint caches
