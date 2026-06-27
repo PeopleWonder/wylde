@@ -166,6 +166,8 @@ mod tests {
             content: "  body text  ".into(),
             score: 0.5,
             chunk_idx: 0,
+            lexical_score: None,
+            fused_score: None,
         };
         let s = render_hit(&scope, &hit);
         assert!(s.contains("`notes.md`"));

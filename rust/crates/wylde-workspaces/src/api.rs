@@ -316,6 +316,45 @@ pub async fn handle_walk_preview(payload: Value) -> Reply {
     }))
 }
 
+// ── settings.lexical.* (the lexical/BM25 + RRF master toggle, lexical-bm25
+//    plan L0) — the GUI's write facade over the service-owned `LexicalConfig`
+//    store, so there is ONE source of truth read in-process by the RAG search
+//    hot path (no TCP↔pipe drift). Mirrors `settings.concept_routing.*`,
+//    relocated to this service because *its* consumer (`search.rs`) lives here.
+
+/// `settings.lexical.get {}` — the full lexical config. Reply: the serialized
+/// [`LexicalConfig`](super::rag::LexicalConfig) (`{enabled, rrf_k, w_dense,
+/// w_lex, min_bm25, fused_relative_floor, active_file_focus_boost,
+/// active_file_dir_focus_boost}`). Default-off on a fresh install.
+pub async fn handle_lexical_get(_payload: Value) -> Reply {
+    Reply::ok(super::rag::LexicalConfig::current().to_value())
+}
+
+/// `settings.lexical.set {...}` — persist the lexical config. Every field is
+/// optional; an omitted field keeps its current value (a partial patch), so the
+/// GUI can flip just `enabled` without resending the knobs. Reply: the persisted
+/// config. The master toggle defaults off and only ever turns on by an explicit,
+/// persisted opt-in here.
+pub async fn handle_lexical_set(payload: Value) -> Reply {
+    if !payload.is_object() {
+        return Reply::err_msg("bad_request", "payload must be an object");
+    }
+    // Merge the incoming patch over the current config so callers can send only
+    // the keys they're changing, then re-parse through the tolerant loader
+    // (unknown/garbage keys fall back to current values, never fail open).
+    let mut merged = super::rag::LexicalConfig::current().to_value();
+    if let (Some(base), Some(patch)) = (merged.as_object_mut(), payload.as_object()) {
+        for (k, v) in patch {
+            base.insert(k.clone(), v.clone());
+        }
+    }
+    let next = super::rag::LexicalConfig::from_value(&merged);
+    match super::rag::LexicalConfig::persist(next) {
+        Ok(()) => Reply::ok(next.to_value()),
+        Err(e) => Reply::err_msg("io_error", format!("persist lexical: {e}")),
+    }
+}
+
 /// `workspaces.gather_prompt` — resolve a workspace's contribution to a
 /// chat turn's system prompt (persona + notes + RAG), rendered into the
 /// slot text the harness turn driver appends. Payload:

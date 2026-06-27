@@ -40,6 +40,10 @@ pub const REINDEX: &str = "workspaces.reindex";
 pub const REINDEX_PURGE: &str = "workspaces.reindex_purge";
 pub const WALK_PREVIEW: &str = "workspaces.rag.walk_preview";
 
+// ── Lexical/BM25 + RRF master toggle (lexical-bm25 plan L0) ───────────────
+pub const LEXICAL_GET: &str = "settings.lexical.get";
+pub const LEXICAL_SET: &str = "settings.lexical.set";
+
 // ── Chat-turn prompt context (Slice 0d — relocated from the harness) ─────
 pub const GATHER_PROMPT: &str = "workspaces.gather_prompt";
 
@@ -154,6 +158,9 @@ pub const ALL_ACTIONS: &[&str] = &[
     // Index hygiene (P1)
     REINDEX_PURGE,
     WALK_PREVIEW,
+    // lexical-bm25 plan L0 — lexical/RRF master toggle
+    LEXICAL_GET,
+    LEXICAL_SET,
     // Slice 0d — chat-turn prompt context
     GATHER_PROMPT,
     // Slice B — code graph read API
@@ -322,6 +329,24 @@ pub fn install() {
          (de-risks a purge). Payload: {workspace_id, sample?=20}. Reply: \
          {workspace_id, would_index, would_exclude, sample_excluded:[paths]}. \
          No embed, no persist.",
+        META_MODULE,
+    );
+
+    register_action_with_meta(
+        LEXICAL_GET,
+        |p: Value| async move { api::handle_lexical_get(p).await },
+        "Read the lexical/BM25 + RRF master toggle + fusion knobs. Payload: {}. \
+         Reply: {enabled, rrf_k, w_dense, w_lex, min_bm25, fused_relative_floor, \
+         active_file_focus_boost, active_file_dir_focus_boost}. Default-off.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        LEXICAL_SET,
+        |p: Value| async move { api::handle_lexical_set(p).await },
+        "Persist the lexical/RRF config (partial patch — omitted fields keep \
+         their current value). Payload: any subset of the get-reply keys. Reply: \
+         the persisted config. Master toggle defaults off; only an explicit \
+         opt-in here turns the lexical arm on.",
         META_MODULE,
     );
 
