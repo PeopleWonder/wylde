@@ -1,5 +1,9 @@
 # R3 Gateway — wave 2+ queue
 
+> ⚠️ **ARCHIVED / STALE — historical migration queue from the Python→Rust Gateway port. Kept for history.**
+> This is the deferred-work queue from the in-progress R3 Gateway port; it references the Python Gateway surface (Flask/FastAPI handlers) that was **removed in the full-Rust cutover (R6, commit `2f5aa82`, 2026-06-10)**. The live Gateway is the Rust crate `wylde-gateway` (Axum on `127.0.0.1:8005` + `\\.\pipe\wylde-gateway`). Use this only to understand what the port intended to cover, not the current state.
+> *Banner added 2026-06-27 on branch `chore/structure-tidy` (structure-tidy pass).*
+
 R3 wave 1 shipped a minimum-viable Rust Gateway port: `/health`, request
 trace + audit-log middleware, the device-gate IPC wrapper, a minimal
 `proxy_core`, the named-pipe action shell, and the lifecycle wiring
