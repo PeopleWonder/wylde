@@ -13,10 +13,15 @@
 //!     dispatch.  Multi-line; Enter submits, Shift+Enter newline.
 //!   * `workspaces` / `models`  — MRU + picker state for the inference
 //!     bar's two pills.
-//!   * `tool_activity`          — current in-flight `chat.stream_tools`
-//!     event the activity strip renders.  Disjoint from the bubble log
-//!     (the `wylde_inference_bar_scope` rule says tool calls don't
-//!     become bubbles).
+//!   * `processing`             — live status for the in-flight turn
+//!     (chat-processing-indicator): current phase, an activity log, the
+//!     token meter, and the thinking buffer, fed by both `chat.stream_turn`
+//!     (phase / usage / thinking) and `chat.stream_tools` (tool activity).
+//!     Drives the animated indicator that replaces the old static `…`, and
+//!     is folded onto the assistant bubble as a collapsible disclosure when
+//!     the turn settles.  Tool calls still never become bubbles (the
+//!     `wylde_inference_bar_scope` rule) — they surface only as friendly
+//!     activity-log lines, never raw args/output.
 //!   * `active_stream` /
 //!     `active_tool_stream`      — the two open `PipeStream`s for the
 //!     in-flight turn.  Dropping them cancels server-side handlers; the
@@ -29,7 +34,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{
     div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, Entity,
@@ -57,8 +62,14 @@ use crate::ipc::{
     TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
 };
 use crate::markdown;
+use crate::processing::{self, MessageActivity, ProcessingPhase, ProcessingState};
 
 const WORKSPACE_MRU_LIMIT: u32 = 5;
+
+/// How often the processing-indicator animation advances (the bouncing-dot
+/// frame + any elapsed display). Cheap: one `cx.notify()` per tick, only
+/// while a turn is in flight.
+const PROCESSING_TICK: Duration = Duration::from_millis(360);
 
 /// Process-wide shared [`ChatPanel`] singleton (UX rework decision 6). Holds a
 /// weak handle so the entity is freed if every surface that renders it unmounts;
@@ -114,6 +125,13 @@ pub struct ChatMessage {
     /// `true` while the chunk loop is still appending tokens to this
     /// bubble.  The bubble shows a typing indicator until this clears.
     pub streaming: bool,
+    /// Activity log + token totals folded from the live processing state
+    /// when this turn settled (chat-processing-indicator). `None` on user /
+    /// system messages and on assistant turns with nothing worth showing;
+    /// `Some` powers the collapsible "Activity" disclosure on the bubble.
+    pub activity: Option<MessageActivity>,
+    /// Whether this bubble's activity disclosure is expanded.
+    pub activity_expanded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +151,8 @@ impl ChatMessage {
             content,
             thinking: None,
             streaming: false,
+            activity: None,
+            activity_expanded: false,
         }
     }
 
@@ -143,6 +163,8 @@ impl ChatMessage {
             content: String::new(),
             thinking: None,
             streaming: true,
+            activity: None,
+            activity_expanded: false,
         }
     }
 
@@ -162,6 +184,8 @@ impl ChatMessage {
             content,
             thinking: None,
             streaming: false,
+            activity: None,
+            activity_expanded: false,
         }
     }
 }
@@ -170,15 +194,6 @@ fn new_message_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-/// One active tool call surfaced from `chat.stream_tools`.  The strip
-/// renders the most recently dispatched name; tool_result / tool_error
-/// for the same call_id clears it.
-#[derive(Debug, Clone)]
-pub struct ToolActivity {
-    pub call_id: String,
-    pub name: String,
-    pub since: Instant,
-}
 
 /// Which surface a [`ChatPanel`] backs, and thus which process-wide scope the
 /// entity owns. Two distinct entities live at once: the Chat slot's [`Global`]
@@ -292,7 +307,11 @@ pub struct ChatPanel {
     pub active_stream: Option<wylde_gui_pipe::PipeStream>,
     pub active_tool_stream: Option<wylde_gui_pipe::PipeStream>,
     pub consent_stream: Option<wylde_gui_pipe::PipeStream>,
-    pub tool_activity: Option<ToolActivity>,
+    /// Live processing status for the in-flight turn (chat-processing-
+    /// indicator): current phase, the activity log, the token meter, and the
+    /// dropdown's expanded flag. `Some` only while a turn is active; folded
+    /// onto the assistant message and cleared when the turn settles.
+    pub processing: Option<ProcessingState>,
     pub prompt_input: Entity<TextInput>,
     /// Held to keep the input → panel subscription alive for the
     /// lifetime of the panel.
@@ -413,7 +432,7 @@ impl ChatPanel {
             active_stream: None,
             active_tool_stream: None,
             consent_stream: None,
-            tool_activity: None,
+            processing: None,
             prompt_input,
             _input_sub: input_sub,
             composer: ComposerState::default(),
@@ -1235,6 +1254,65 @@ impl ChatPanel {
         self.send_user_message(trimmed, cx);
     }
 
+    /// Drive the processing-indicator animation: advance the tick + notify
+    /// every [`PROCESSING_TICK`] while a turn is in flight. Exits the moment
+    /// `processing` clears (turn settled) or the entity is gone, so there's
+    /// never a runaway timer between turns.
+    fn spawn_processing_ticker(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            loop {
+                app_cx.background_executor().timer(PROCESSING_TICK).await;
+                let keep_going = this.update(app_cx, |panel, cx| match panel.processing.as_mut() {
+                    Some(p) => {
+                        p.tick = p.tick.wrapping_add(1);
+                        cx.notify();
+                        true
+                    }
+                    None => false,
+                });
+                match keep_going {
+                    Ok(true) => {}
+                    _ => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Fold the live processing state onto the just-settled assistant bubble
+    /// so its activity log + token meter survive as a collapsible disclosure,
+    /// then clear `processing` (which also stops the ticker). No-op when
+    /// there's no in-flight processing. Drops an empty log (nothing ran) so
+    /// the bubble shows no disclosure rather than an empty one.
+    fn settle_processing(&mut self, assistant_id: &str) {
+        let Some(state) = self.processing.take() else {
+            return;
+        };
+        let activity = state.into_message_activity();
+        if activity.is_empty() {
+            return;
+        }
+        if let Some(msg) = self.messages.iter_mut().find(|m| m.id == assistant_id) {
+            msg.activity = Some(activity);
+        }
+    }
+
+    /// Toggle the live indicator's activity dropdown.
+    pub fn toggle_processing_expanded(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = self.processing.as_mut() {
+            p.expanded = !p.expanded;
+            cx.notify();
+        }
+    }
+
+    /// Toggle a settled bubble's persisted activity disclosure.
+    pub fn toggle_message_activity(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(msg) = self.messages.iter_mut().find(|m| m.id == id) {
+            msg.activity_expanded = !msg.activity_expanded;
+            cx.notify();
+        }
+    }
+
     pub fn send_user_message(&mut self, text: String, cx: &mut Context<Self>) {
         self.error = None;
         self.messages.push(ChatMessage::user(text.clone()));
@@ -1244,6 +1322,12 @@ impl ChatPanel {
         // Latch synchronously — see the `starting` field doc.  Cleared
         // the moment `active_turn_id` is published (or on any failure).
         self.starting = true;
+        // Arm the live processing indicator (chat-processing-indicator). It
+        // shows "Working…" through the `start_turn` round-trip, then tracks
+        // real phase / tool / token / thinking signals as they stream. Folded
+        // onto the assistant bubble and cleared when the turn settles.
+        self.processing = Some(ProcessingState::new());
+        self.spawn_processing_ticker(cx);
         cx.notify();
 
         let conversation_id = self.conversation_id.clone();
@@ -1293,6 +1377,7 @@ impl ChatPanel {
                         }
                         panel.active_turn_id = None;
                         panel.starting = false;
+                        panel.processing = None;
                         panel.error = Some(msg);
                         cx.notify();
                     });
@@ -1313,6 +1398,7 @@ impl ChatPanel {
                         panel.active_turn_id = None;
                         panel.starting = false;
                         panel.active_tool_stream = None;
+                        panel.processing = None;
                         cx.notify();
                     });
                     return;
@@ -1431,21 +1517,21 @@ impl ChatPanel {
                                     done = true;
                                     return;
                                 }
-                                // A user-facing token clears any stale tool
-                                // activity strip — the assistant is talking.
-                                if matches!(event, TurnChunk::Token { .. }) {
-                                    panel.tool_activity = None;
-                                }
+                                // Feed the live indicator (phase / token meter
+                                // / thinking) before the bubble apply.
+                                apply_processing_turn_event(panel.processing.as_mut(), &event);
                                 apply_turn_chunk(&mut panel.messages, &assistant_id, &event);
                                 if matches!(
                                     event,
                                     TurnChunk::TurnComplete { .. } | TurnChunk::TurnAborted { .. }
                                 ) {
                                     done = true;
+                                    // Fold the activity onto the bubble, then
+                                    // clear (also stops the ticker).
+                                    panel.settle_processing(&assistant_id);
                                     panel.active_turn_id = None;
                                     panel.active_stream = None;
                                     panel.active_tool_stream = None;
-                                    panel.tool_activity = None;
                                 }
                                 cx.notify();
                             })
@@ -1461,10 +1547,10 @@ impl ChatPanel {
                                 &assistant_id,
                                 &format!("[stream error: {e}]"),
                             );
+                            panel.settle_processing(&assistant_id);
                             panel.active_turn_id = None;
                             panel.active_stream = None;
                             panel.active_tool_stream = None;
-                            panel.tool_activity = None;
                             cx.notify();
                         });
                         break;
@@ -1481,10 +1567,10 @@ impl ChatPanel {
             let _ = this.update(app_cx, |panel, cx| {
                 if panel.active_turn_id.as_deref() == Some(turn_id.as_str()) {
                     flush_streaming_bubble(&mut panel.messages, &assistant_id, "[stream ended]");
+                    panel.settle_processing(&assistant_id);
                     panel.active_turn_id = None;
                     panel.active_stream = None;
                     panel.active_tool_stream = None;
-                    panel.tool_activity = None;
                     cx.notify();
                 }
             });
@@ -1500,8 +1586,9 @@ impl ChatPanel {
         .detach();
     }
 
-    /// Pump events off the active tool stream into `tool_activity`.
-    /// Runs until the stream ends (turn complete, drop, or transport
+    /// Pump events off the active tool stream into the live processing
+    /// indicator (`processing`). Runs until the stream ends (turn complete,
+    /// drop, or transport
     /// error) — the parent task that spawned the user-facing stream
     /// owns the actual stream slot; this task only borrows it briefly
     /// per `recv`.  When the slot is taken from under us (turn ends),
@@ -1531,10 +1618,8 @@ impl ChatPanel {
                     };
                     let Some(chunk) = next else {
                         // Stream ended naturally.
-                        let _ = this.update(app_cx, |panel, cx| {
+                        let _ = this.update(app_cx, |panel, _| {
                             panel.active_tool_stream = None;
-                            panel.tool_activity = None;
-                            cx.notify();
                         });
                         return;
                     };
@@ -1544,35 +1629,49 @@ impl ChatPanel {
                             // Transport hiccup; let it ride.  The
                             // user-facing stream will surface a louder
                             // error if the whole turn died.
-                            let _ = this.update(app_cx, |panel, cx| {
-                                panel.tool_activity = None;
-                                cx.notify();
-                            });
                             return;
                         }
                     };
                     let event = ToolChunk::from_value(&value);
                     let _ = this.update(app_cx, |panel, cx| {
                         match event {
-                            ToolChunk::Dispatched { call_id, name, .. } => {
-                                panel.tool_activity = Some(ToolActivity {
-                                    call_id,
-                                    name,
-                                    since: Instant::now(),
-                                });
-                            }
-                            ToolChunk::Result { call_id, .. }
-                            | ToolChunk::Error { call_id, .. } => {
-                                if panel
-                                    .tool_activity
-                                    .as_ref()
-                                    .map(|a| a.call_id == call_id)
-                                    .unwrap_or(false)
-                                {
-                                    panel.tool_activity = None;
+                            ToolChunk::Dispatched {
+                                call_id, name, args, ..
+                            } => {
+                                if let Some(p) = panel.processing.as_mut() {
+                                    p.on_tool_dispatched(&call_id, &name, tool_detail(&args, None));
                                 }
                             }
-                            ToolChunk::MemoryWritten | ToolChunk::Warning | ToolChunk::Unknown => {}
+                            ToolChunk::Result {
+                                call_id,
+                                output,
+                                duration_ms,
+                                ..
+                            } => {
+                                if let Some(p) = panel.processing.as_mut() {
+                                    p.on_tool_done(&call_id, true, tool_detail(&output, Some(duration_ms)));
+                                }
+                            }
+                            ToolChunk::Error {
+                                call_id,
+                                message,
+                                duration_ms,
+                                ..
+                            } => {
+                                if let Some(p) = panel.processing.as_mut() {
+                                    let detail = tool_detail(
+                                        &serde_json::Value::String(message),
+                                        Some(duration_ms),
+                                    );
+                                    p.on_tool_done(&call_id, false, detail);
+                                }
+                            }
+                            ToolChunk::MemoryWritten => {
+                                if let Some(p) = panel.processing.as_mut() {
+                                    p.on_memory_written();
+                                }
+                            }
+                            ToolChunk::Warning | ToolChunk::Unknown => {}
                         }
                         cx.notify();
                     });
@@ -1596,12 +1695,22 @@ impl ChatPanel {
         // resources immediately instead of waiting on close-detect.
         self.active_stream.take();
         self.active_tool_stream.take();
-        self.tool_activity = None;
         // Abandon any consent cards belonging to this turn.  Only one
         // turn is ever in flight (sends are blocked while active), so
         // every pending card belongs to the turn being cancelled.
         self.pending_consents.clear();
-        // Flush the in-flight assistant bubble's streaming flag.
+        // Flush the in-flight assistant bubble's streaming flag, preserving
+        // whatever activity ran before the stop as a disclosure on it.
+        let cancelled_id = self
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.streaming)
+            .map(|m| m.id.clone());
+        if let Some(id) = &cancelled_id {
+            self.settle_processing(id);
+        }
+        self.processing = None;
         if let Some(msg) = self.messages.iter_mut().rev().find(|m| m.streaming) {
             msg.streaming = false;
             if msg.content.is_empty() {
@@ -1879,6 +1988,60 @@ fn flush_streaming_bubble(messages: &mut [ChatMessage], assistant_id: &str, fall
     }
 }
 
+/// Format a tool's args / output (+ optional duration) into a compact,
+/// truncated activity-log detail line (chat-processing-indicator, full
+/// visibility). A bare string value is used verbatim (error messages), other
+/// JSON is serialised; `Null`/empty collapses to just the duration, or `None`.
+fn tool_detail(value: &serde_json::Value, duration_ms: Option<f64>) -> Option<String> {
+    let raw = match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s.clone()),
+        other => serde_json::to_string(other).ok(),
+    };
+    let body = raw.as_deref().and_then(|s| processing::compact_detail(s, 160));
+    match (body, duration_ms) {
+        (Some(b), Some(ms)) if ms > 0.0 => Some(format!("{b}  ·  {ms:.0}ms")),
+        (Some(b), _) => Some(b),
+        (None, Some(ms)) if ms > 0.0 => Some(format!("{ms:.0}ms")),
+        (None, _) => None,
+    }
+}
+
+/// Feed a user-facing turn chunk into the live processing indicator
+/// (chat-processing-indicator). A `None` state — no in-flight indicator — is
+/// a silent noop, so this is safe to call unconditionally. Only the
+/// indicator-relevant variants do anything; bubble text, completion, and
+/// abort are handled by [`apply_turn_chunk`] and the pump's settle.
+fn apply_processing_turn_event(state: Option<&mut ProcessingState>, event: &TurnChunk) {
+    let Some(p) = state else {
+        return;
+    };
+    match event {
+        TurnChunk::Phase { phase, .. } => {
+            p.set_phase(ProcessingPhase::from_wire(phase));
+        }
+        TurnChunk::Usage {
+            prompt_tokens,
+            completion_tokens,
+            ..
+        } => {
+            p.on_usage(*prompt_tokens, *completion_tokens);
+        }
+        TurnChunk::Thinking { text, .. } => {
+            p.on_thinking(text);
+        }
+        TurnChunk::Step {
+            summary, detail, ..
+        } => {
+            p.on_step(summary.clone(), detail.clone());
+        }
+        TurnChunk::Token { .. }
+        | TurnChunk::TurnComplete { .. }
+        | TurnChunk::TurnAborted { .. }
+        | TurnChunk::Unknown => {}
+    }
+}
+
 /// Apply a single `chat.stream_turn` chunk to the assistant bubble.
 fn apply_turn_chunk(messages: &mut [ChatMessage], assistant_id: &str, event: &TurnChunk) {
     let Some(msg) = messages.iter_mut().find(|m| m.id == assistant_id) else {
@@ -1908,6 +2071,9 @@ fn apply_turn_chunk(messages: &mut [ChatMessage], assistant_id: &str, event: &Tu
             }
             msg.streaming = false;
         }
+        // Phase / Usage / Step feed only the processing indicator
+        // (`apply_processing_turn_event`); the bubble itself is unchanged.
+        TurnChunk::Phase { .. } | TurnChunk::Usage { .. } | TurnChunk::Step { .. } => {}
         TurnChunk::Unknown => { /* future variant — noop */ }
     }
 }
@@ -2572,7 +2738,6 @@ impl Render for ChatPanel {
         let inference_bar = inference_bar(self, cx);
         let log = message_log(self, cx);
         let consent_strip = consent_card_strip(self, cx);
-        let tool_strip = tool_activity_strip(self);
 
         let mut body =
             div()
@@ -2585,8 +2750,7 @@ impl Render for ChatPanel {
                     this.on_panel_key(ev, window, cx)
                 }))
                 .child(log)
-                .child(consent_strip)
-                .child(tool_strip);
+                .child(consent_strip);
 
         if let Some(err) = &self.error {
             body = body.child(error_strip(err));
@@ -2634,7 +2798,7 @@ impl Render for InferenceBarDock {
     }
 }
 
-fn message_log(panel: &ChatPanel, _cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
+fn message_log(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
     let mut log = div()
         .id(ElementId::Name("chat-log".into()))
         .flex_1()
@@ -2661,8 +2825,292 @@ fn message_log(panel: &ChatPanel, _cx: &mut Context<ChatPanel>) -> Stateful<gpui
 
     for m in &panel.messages {
         log = log.child(bubble(m));
+        // A settled assistant turn keeps its activity as a collapsible
+        // disclosure under the bubble (chat-processing-indicator).
+        if m.role == MessageRole::Assistant && !m.streaming {
+            if let Some(act) = &m.activity {
+                if !act.is_empty() {
+                    log = log.child(message_activity_disclosure(&m.id, act, m.activity_expanded, cx));
+                }
+            }
+        }
+        // The in-flight assistant bubble carries the live, animated status
+        // indicator in place of the old static `…`.
+        if m.role == MessageRole::Assistant && m.streaming {
+            if let Some(p) = &panel.processing {
+                log = log.child(processing_indicator(p, cx));
+            }
+        }
     }
     log
+}
+
+/// The live, animated processing status (chat-processing-indicator): a
+/// clickable row — bouncing dots + the current phase + a live token meter +
+/// a ▸/▾ chevron — over an expandable activity dropdown. Every sub-part
+/// degrades gracefully: no phase signal ⇒ "Working"; no usage ⇒ no meter;
+/// nothing logged ⇒ no chevron / dropdown.
+fn processing_indicator(p: &ProcessingState, cx: &mut Context<ChatPanel>) -> gpui::Div {
+    let label = format!("{}{}", p.phase.label(), processing_dots(p.tick));
+    let has_detail = !p.log.is_empty() || !p.thinking.is_empty();
+
+    // Three bouncing dots — the bright one cycles with the tick. Plain
+    // rounded divs, so no glyph/font dependency.
+    let active = processing::active_dot(p.tick);
+    let mut dots = div().flex().flex_row().gap_1().items_center().mr_1();
+    for i in 0..3usize {
+        let color = if i == active { BRAND } else { TEXT_MUTED };
+        dots = dots.child(div().size(px(6.0)).rounded(px(3.0)).bg(rgb(pack(color))));
+    }
+
+    let mut row = div()
+        .id(ElementId::Name("chat-processing".into()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(dots)
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::SM))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(SharedString::from(label)),
+        );
+
+    // Live token meter, when the stream has reported any usage.
+    if let Some(meter) = p.token_meter() {
+        row = row.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(meter)),
+        );
+    }
+
+    // Expand affordance — only when there's something to expand.
+    if has_detail {
+        row = row
+            .cursor_pointer()
+            .child(
+                div()
+                    .font_family(FAMILY_INTER)
+                    .text_size(px(size::XS))
+                    .text_color(rgb(pack(TEXT_MUTED)))
+                    .child(SharedString::from(if p.expanded { "▾" } else { "▸" })),
+            )
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this: &mut ChatPanel, _ev, _w, cx| {
+                    this.toggle_processing_expanded(cx);
+                }),
+            );
+    }
+
+    let mut col = div().flex().flex_col().gap_1().max_w(px(720.0)).child(row);
+    if has_detail && p.expanded {
+        col = col.child(activity_dropdown(&p.log, &p.thinking, p.token_detail()));
+    }
+    col
+}
+
+/// The expandable activity dropdown body — the honest, full-visibility log of
+/// what the turn did, **grouped** Claude-style into Context (the gather
+/// pipeline), Tools (each call with its args/result), and Thinking (the
+/// model's reasoning), plus the prompt/completion token split. Each group is
+/// rendered only when it has content, so a turn never shows an empty section.
+/// Shared by the live indicator and the settled-message disclosure.
+fn activity_dropdown(
+    entries: &[processing::ActivityEntry],
+    thinking: &str,
+    token_detail: Option<String>,
+) -> gpui::Div {
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .ml_4()
+        .pl_3()
+        .border_l_2()
+        .border_color(rgb(pack(BORDER_SUBTLE)));
+
+    // Context (the gather pipeline) and Tools sections, in time order within
+    // each. The Thinking marker rows are skipped here — the reasoning text is
+    // rendered as its own block below.
+    let context: Vec<&processing::ActivityEntry> =
+        entries.iter().filter(|e| e.kind.group() == 0).collect();
+    let tools: Vec<&processing::ActivityEntry> =
+        entries.iter().filter(|e| e.kind.group() == 1).collect();
+
+    if !context.is_empty() {
+        body = body.child(activity_section("Context", &context));
+    }
+    if !tools.is_empty() {
+        body = body.child(activity_section("Tools", &tools));
+    }
+
+    if !thinking.is_empty() {
+        body = body.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(activity_section_header("Thinking"))
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_MUTED)))
+                        .child(SharedString::from(thinking.to_owned())),
+                ),
+        );
+    }
+
+    if let Some(detail) = token_detail {
+        body = body.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(format!("tokens · {detail}"))),
+        );
+    }
+
+    body
+}
+
+/// A small uppercase section header for the grouped activity dropdown.
+fn activity_section_header(title: &str) -> gpui::Div {
+    div()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .child(SharedString::from(title.to_uppercase()))
+}
+
+/// One titled group of activity rows.
+fn activity_section(title: &str, rows: &[&processing::ActivityEntry]) -> gpui::Div {
+    let mut sec = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(activity_section_header(title));
+    for e in rows {
+        sec = sec.child(activity_log_row(e));
+    }
+    sec
+}
+
+/// One row in the activity dropdown — a small coloured kind-glyph + text, with
+/// the optional `detail` (concept names / tool args / output) on a dim,
+/// indented second line for full visibility without crowding the line.
+fn activity_log_row(e: &processing::ActivityEntry) -> gpui::Div {
+    use processing::ActivityKind;
+    let (glyph, color) = match e.kind {
+        ActivityKind::Phase => ("▸", TEXT_MUTED),
+        ActivityKind::Step => ("•", TEXT_SECONDARY),
+        ActivityKind::Tool => ("→", TEXT_SECONDARY),
+        ActivityKind::ToolOk => ("✓", BRAND),
+        ActivityKind::ToolErr => ("✕", BORDER_EMPHASIS),
+        ActivityKind::Memory => ("✦", TEXT_SECONDARY),
+        ActivityKind::Thinking => ("…", TEXT_MUTED),
+    };
+    let head = div()
+        .flex()
+        .flex_row()
+        .gap_2()
+        .items_center()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .child(
+            div()
+                .w(px(12.0))
+                .text_color(rgb(pack(color)))
+                .child(SharedString::from(glyph)),
+        )
+        .child(
+            div()
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(SharedString::from(e.text.clone())),
+        );
+
+    let mut row = div().flex().flex_col().child(head);
+    if let Some(detail) = &e.detail {
+        row = row.child(
+            div()
+                .ml(px(20.0))
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(detail.clone())),
+        );
+    }
+    row
+}
+
+/// The persisted "Activity" disclosure under a settled assistant bubble: a
+/// collapsed one-line summary ("Used 2 tools · 1.2k tokens") that expands to
+/// the full activity log. Mirrors Claude's collapsible tool-use sections.
+fn message_activity_disclosure(
+    id: &str,
+    act: &MessageActivity,
+    expanded: bool,
+    cx: &mut Context<ChatPanel>,
+) -> gpui::Div {
+    let id_owned = id.to_owned();
+    let header = div()
+        .id(ElementId::Name(format!("chat-activity-{id}").into()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .cursor_pointer()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(if expanded { "▾" } else { "▸" })),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(act.summary())),
+        )
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut ChatPanel, _ev, _w, cx| {
+                this.toggle_message_activity(&id_owned, cx);
+            }),
+        );
+
+    let mut col = div().flex().flex_col().gap_1().max_w(px(720.0)).child(header);
+    if expanded {
+        col = col.child(activity_dropdown(
+            &act.log,
+            "",
+            match (act.prompt_tokens, act.completion_tokens) {
+                (Some(p), Some(c)) => Some(format!(
+                    "{} in · {} out",
+                    processing::fmt_tokens(p),
+                    processing::fmt_tokens(c)
+                )),
+                _ => None,
+            },
+        ));
+    }
+    col
+}
+
+/// Animated trailing ellipsis for the status label — cycles `""`, `"."`,
+/// `".."`, `"..."` so the line reads as live even when no tokens are
+/// arriving (the streaming driver emits text in bulk).
+fn processing_dots(tick: u64) -> String {
+    ".".repeat((tick % 4) as usize)
 }
 
 fn bubble(m: &ChatMessage) -> gpui::Div {
@@ -2704,17 +3152,11 @@ fn assistant_bubble(m: &ChatMessage) -> gpui::Div {
         );
     }
 
-    // While streaming and still empty, show a typing indicator.  Once
-    // the first token arrives we switch to markdown rendering so the
-    // partial reply already starts formatting.
+    // While streaming and still empty, the live processing indicator
+    // (rendered alongside by `message_log`) stands in for the reply — no
+    // static `…` placeholder. Once the first token arrives we switch to
+    // markdown so the partial reply already starts formatting.
     if m.streaming && m.content.is_empty() {
-        col = col.child(
-            div()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::SM))
-                .text_color(rgb(pack(TEXT_MUTED)))
-                .child(SharedString::from("…")),
-        );
         return col;
     }
 
@@ -2862,31 +3304,6 @@ where
         .child(SharedString::from(label.to_owned()))
 }
 
-fn tool_activity_strip(panel: &ChatPanel) -> gpui::Div {
-    let mut strip = div().flex().flex_col();
-    if let Some(activity) = &panel.tool_activity {
-        let label = SharedString::from(format!("Wylde is consulting {}…", activity.name));
-        strip = strip.px_5().pb_2().child(
-            div()
-                .flex()
-                .flex_row()
-                .gap_2()
-                .items_center()
-                .px_3()
-                .py_1()
-                .rounded(px(12.0))
-                .bg(rgb(pack(SURFACE_800)))
-                .border_1()
-                .border_color(rgb(pack(BORDER_SUBTLE)))
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::XS))
-                .text_color(rgb(pack(TEXT_SECONDARY)))
-                .child(SharedString::from("·"))
-                .child(label),
-        );
-    }
-    strip
-}
 
 fn inference_bar(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
     let mut bar = div()
@@ -3974,6 +4391,122 @@ mod tests {
         let msg = msgs.iter().find(|m| m.id == aid).unwrap();
         assert_eq!(msg.thinking.as_deref(), Some("Let me think"));
         assert!(msg.content.is_empty());
+    }
+
+    #[test]
+    fn processing_event_routing_drives_indicator_through_a_turn() {
+        // Idle → animating → phases → tokens, fed off the user-facing
+        // stream the same way the pump routes it (chat-processing-indicator).
+        let mut p = ProcessingState::new();
+        // Pre-signal: generic "Working" fallback (graceful degradation).
+        assert_eq!(p.phase, ProcessingPhase::Working);
+
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Phase {
+                turn_id: "t".into(),
+                phase: "gathering_context".into(),
+            },
+        );
+        assert_eq!(p.phase, ProcessingPhase::GatheringContext);
+
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Phase {
+                turn_id: "t".into(),
+                phase: "generating".into(),
+            },
+        );
+        assert_eq!(p.phase, ProcessingPhase::Generating);
+
+        // Running usage tick, then thinking.
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Usage {
+                turn_id: "t".into(),
+                prompt_tokens: None,
+                completion_tokens: 120,
+                done: false,
+            },
+        );
+        assert_eq!(p.token_meter(), Some("120 tokens".to_owned()));
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Thinking {
+                turn_id: "t".into(),
+                text: "hmm".into(),
+            },
+        );
+        assert_eq!(p.thinking, "hmm");
+
+        // Authoritative final usage.
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Usage {
+                turn_id: "t".into(),
+                prompt_tokens: Some(1_000),
+                completion_tokens: 200,
+                done: true,
+            },
+        );
+        assert_eq!(p.token_meter(), Some("1.2k tokens".to_owned()));
+    }
+
+    #[test]
+    fn tool_detail_formats_args_output_and_duration() {
+        // Object args → compact JSON.
+        let d = tool_detail(&serde_json::json!({"query": "vpn"}), None);
+        assert_eq!(d.as_deref(), Some("{\"query\":\"vpn\"}"));
+        // String value (an error) used verbatim + duration appended.
+        let d = tool_detail(&serde_json::Value::String("boom".into()), Some(12.0));
+        assert_eq!(d.as_deref(), Some("boom  ·  12ms"));
+        // Null + no duration → nothing.
+        assert_eq!(tool_detail(&serde_json::Value::Null, None), None);
+        // Null + duration → just the duration.
+        assert_eq!(
+            tool_detail(&serde_json::Value::Null, Some(5.0)).as_deref(),
+            Some("5ms")
+        );
+    }
+
+    #[test]
+    fn processing_event_routing_handles_steps() {
+        let mut p = ProcessingState::new();
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Step {
+                turn_id: "t".into(),
+                stage: "routing".into(),
+                summary: "Routed to 2 concepts".into(),
+                detail: Some("nextcloud, vpn".into()),
+            },
+        );
+        let e = p.log.iter().find(|e| e.text == "Routed to 2 concepts").unwrap();
+        assert_eq!(e.detail.as_deref(), Some("nextcloud, vpn"));
+    }
+
+    #[test]
+    fn processing_event_routing_is_a_noop_without_a_state() {
+        // Graceful degradation: a chunk arriving with no in-flight indicator
+        // (e.g. a late frame after settle) must not panic.
+        apply_processing_turn_event(
+            None,
+            &TurnChunk::Phase {
+                turn_id: "t".into(),
+                phase: "generating".into(),
+            },
+        );
+        // Bubble-only variants are ignored by the processing router.
+        let mut p = ProcessingState::new();
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Token {
+                turn_id: "t".into(),
+                text: "hi".into(),
+            },
+        );
+        assert!(p.log.is_empty());
+        assert_eq!(p.token_meter(), None);
     }
 
     #[test]
