@@ -7,6 +7,20 @@ All notable changes to Wylde are recorded here. Versions follow
 
 ### Added
 
+- **Indexer progress + ETA.** The workspace re-index now reports real, live
+  progress instead of a bare "Indexing…". The indexer emits a structured
+  snapshot — current phase (scanning / embedding / saving), files and chunks
+  done vs total, a rolling throughput (chunks/sec), and a computed ETA
+  (remaining ÷ rolling rate) — over the existing `RagState` → `list_mru`
+  channel the GUI already polls (no new channel). The Workspaces card replaces
+  the static "Indexing…" text with a live progress affordance: a status line
+  (`Embedding · 46% · 612 / 1038 files · ~2m 30s remaining`) above a progress
+  bar, and the Re-index button shows the percent. It stays graceful before the
+  total is known — an indeterminate "Scanning files…" state during the walk —
+  then switches to the determinate bar + ETA once counting is done. A dev
+  bench (`examples/index_bench.rs`, isolated index dir, graph-write disabled)
+  calibrates the ETA against measured throughput on the real repo.
+
 - **Thought Bubble System — structural awareness for chat.** A floating
   Thought-Bubble composer layer over the chat input, with a unified
   `Ctrl+Z` undo timeline spanning both typed text and bubbles. The composer is

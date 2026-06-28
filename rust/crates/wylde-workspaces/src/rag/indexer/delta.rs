@@ -168,7 +168,9 @@ async fn vector_upsert(
     canonical: &str,
     chunks: &[walk::Chunk],
 ) -> Result<u32, String> {
-    let fresh = embed_chunks(chunks.to_vec()).await?;
+    // No live-progress reporter for the watcher's per-file delta — it's a tiny,
+    // fast upsert, not a user-initiated full reindex with a bar.
+    let fresh = embed_chunks(chunks.to_vec(), None).await?;
     if registry::get(workspace_id).is_none() {
         return Ok(0);
     }
