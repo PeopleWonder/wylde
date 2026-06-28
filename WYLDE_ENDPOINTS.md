@@ -1,5 +1,9 @@
 # Wylde — Endpoints & Pathways
 
+> ⚠️ **ARCHIVED / STALE — describes the REMOVED Python runtime, NOT the current all-Rust stack. Kept for history.**
+> This document was written top-to-bottom against the pre-cutover Python runtime (FastAPI Gateway `Gateway/app.py`, `Core/Memgraph/run.py`, `VPN/api.py`, `Voice/run.py`, `device_gate/run.py`, `Core/shared/ipc.py`, Flask test-client). **That runtime was deleted in the full-Rust cutover (R6, commit `2f5aa82`, 2026-06-10).** Every Python `file:line` citation below points at source that **no longer exists** — read them as historical *contract* references, never as "this file still exists." The live stack is the Rust crate workspace under `rust/crates/` (e.g. `wylde-gateway`, Axum on `127.0.0.1:8005` + `\\.\pipe\wylde-gateway`) talking over named pipes; there are no `run.py` supervisors. Do not use this file to learn the current architecture.
+> *Banner added 2026-06-27 on branch `chore/structure-tidy` (structure-tidy pass). The route surface / pipe contracts may still be informative; the implementation details are not.*
+
 Audience: future-you, or a contributor coming in cold. This is every place a request can enter Wylde and every channel components use to talk to each other. Every entry has a `file:line` citation.
 
 > **State markers:** **[live]** = wired and reachable, **[planned]** = future, **[uncertain]** = code present but not verified end-to-end. The earlier **[delete]** items (dead orchestrator routes, fletch-web shim, retired services router) have been executed — they're gone now. Last refresh: 2026-05-10 post-execution.
