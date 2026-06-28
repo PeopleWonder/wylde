@@ -187,6 +187,13 @@ pub struct TextInput {
     /// [`TextInput::undo`]/[`TextInput::redo`] and the seq peeks. Every
     /// other input keeps self-contained text undo.
     external_undo: bool,
+    /// Explicit colour for the typed buffer glyphs. `None` inherits the
+    /// ambient text-style colour from the element cascade (gpui's default,
+    /// which is dark — invisible on the app's dark surfaces unless an
+    /// ancestor sets one). Set per-instance where the input must read on
+    /// its own surface (the chat composer wants true white). Placeholder
+    /// (`TEXT_MUTED`, italic) and highlight-span colours are unaffected.
+    text_color: Option<Rgba>,
 }
 
 impl TextInput {
@@ -209,6 +216,7 @@ impl TextInput {
             last_layout: None,
             dragging: false,
             external_undo: false,
+            text_color: None,
         }
     }
 
@@ -231,6 +239,7 @@ impl TextInput {
             last_layout: None,
             dragging: false,
             external_undo: false,
+            text_color: None,
         }
     }
 
@@ -279,6 +288,14 @@ impl TextInput {
 
     pub fn with_element_key(mut self, key: impl Into<SharedString>) -> Self {
         self.element_key = key.into();
+        self
+    }
+
+    /// Override the colour of the typed buffer glyphs. Only the real text
+    /// takes this colour — the placeholder stays `TEXT_MUTED`/italic and
+    /// any highlight spans keep their per-span colours.
+    pub fn with_text_color(mut self, color: Rgba) -> Self {
+        self.text_color = Some(color);
         self
     }
 
@@ -763,6 +780,15 @@ impl Render for TextInput {
                 }),
             )
             .child(body);
+
+        // Per-instance typed-text colour. Set on the root so the
+        // `TextArea` element's `window.text_style()` shapes the buffer
+        // glyphs under it (same cascade the family/size refinements ride);
+        // the placeholder branch in `element::shape` overrides to
+        // `TEXT_MUTED` regardless, so only real text takes this colour.
+        if let Some(color) = self.text_color {
+            root = root.text_color(color);
+        }
 
         if self.chrome {
             root = root
