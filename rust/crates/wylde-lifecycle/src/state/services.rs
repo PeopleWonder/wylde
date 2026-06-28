@@ -353,6 +353,12 @@ fn send_ctrl_break(pid: u32) -> Result<()> {
 /// public API the daemon dispatches by name.
 async fn stop_service(name: &str, grace: Duration) -> Result<()> {
     forget_spawn(name);
+    // Intended stop is sacrosanct: drop any crash-restart bookkeeping so a
+    // service the operator stopped is never auto-restarted (and a later
+    // legitimate start isn't haunted by a stale crash count / tripped
+    // breaker). With the spawn record already gone, a restart pending from a
+    // pre-stop crash also aborts at its post-backoff ownership check.
+    crate::state::restart::forget(name);
     if nospawn_enabled() {
         nospawn_take(name);
         return Ok(());

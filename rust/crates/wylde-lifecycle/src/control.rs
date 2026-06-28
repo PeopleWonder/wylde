@@ -593,6 +593,14 @@ fn classify(info: &ServiceInfo) -> &'static str {
     if info.running {
         return "active";
     }
+    // A service the daemon has explicitly marked crashed (`dead-orphan`) or
+    // given up on (`failed`) is inactive regardless of how recent its last
+    // heartbeat was. Without this a just-crashed service would classify
+    // `active` for up to 90s (its final heartbeat is still fresh), hiding the
+    // crash from the dashboard until the heartbeat aged out.
+    if matches!(info.state.as_deref(), Some("dead-orphan") | Some("failed")) {
+        return "inactive";
+    }
     let age = heartbeat_age(info.heartbeat.as_deref());
     if age < ACTIVE_MAX_AGE_S {
         "active"
@@ -700,6 +708,12 @@ fn shape_service_list(infos: Vec<ServiceInfo>) -> Value {
             "pipe": pipe,
             "status": bucket,
             "running": info.running,
+            // The manifest's lifecycle state verbatim. `bucket`/`status` is the
+            // coarse active/stale/inactive tier; this is the precise state so
+            // the dashboard can tell a crashed-and-retrying service
+            // (`dead-orphan`) from one the crash-restart breaker gave up on
+            // (`failed`). Null for declarative-only entries (no runtime file).
+            "lifecycle_state": info.state.clone().map(Value::String).unwrap_or(Value::Null),
             // F1: the live process is running an out-of-date binary (rebuilt
             // after it started). Distinct from down/inactive — the service is
             // up but predates code it may be asked to serve.
@@ -753,6 +767,17 @@ async fn dispatch_start(name: &str) -> anyhow::Result<()> {
             None => anyhow::bail!("not a daemon-managed service: {name}"),
         },
     }
+}
+
+/// Re-spawn a daemon-managed `name` after the crash-restart supervisor
+/// observed it exit unexpectedly. Routes through the same [`dispatch_start`]
+/// the operator-facing `service.start` uses, so a restart goes through the
+/// service's canonical `start_<service>` path (the already-alive guard, the
+/// manifest re-write, the spawn-record refresh) rather than a bespoke spawn.
+/// Lives here because the name→start mapping is owned by this module; the
+/// supervisor ([`crate::state::restart`]) calls it once the backoff elapses.
+pub(crate) async fn restart_service(name: &str) -> anyhow::Result<()> {
+    dispatch_start(name).await
 }
 
 /// Route a daemon-managed `name` to its `stop_<service>` future.
