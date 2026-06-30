@@ -27,7 +27,7 @@ def test_run_all_envelope_shape(isolated_tree: Any) -> None:
 def test_run_all_covers_forty_five_rules(isolated_tree: Any) -> None:
     wc, _ = isolated_tree
     result = wc.run_all()
-    assert result["data"]["rules_checked"] == 48
+    assert result["data"]["rules_checked"] == 49
     expected = {
         "no_internal_http",
         "manifest_paths",
@@ -82,6 +82,9 @@ def test_run_all_covers_forty_five_rules(isolated_tree: Any) -> None:
         "no_bare_tokio_in_panel_src",
         "no_panic_in_panel_render",
         "silent_skip_in_service_start",
+        # Rule 53 — hardcoded LLM system-prompt literals in Rust source
+        # (prompt-engineering B11 slice, 2026-06-11).
+        "no_hardcoded_prompts_rust",
     }
     assert set(result["data"]["summary"]["by_rule"].keys()) == expected
 
@@ -97,7 +100,7 @@ def test_run_all_selects_only_named_rules(isolated_tree: Any) -> None:
 
 def test_run_all_executes_forty_five_rules(isolated_tree: Any) -> None:
     wc, _root = isolated_tree
-    assert len(wc._RULES) == 48
+    assert len(wc._RULES) == 49
     result = wc.run_all()
     assert result["ok"] is True
-    assert result["data"]["rules_checked"] == 48
+    assert result["data"]["rules_checked"] == 49
