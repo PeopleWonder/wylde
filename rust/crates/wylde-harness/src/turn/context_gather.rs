@@ -2832,9 +2832,17 @@ mod tests {
         // importance-sorted five self-reinforcing; only similarity
         // hits touch now — see `core_block_fillers_are_not_touched_by_injection`).
         let injected = entries::get(&saved[6].id).unwrap();
-        assert_eq!(
-            injected.last_used_at, saved[6].last_used_at,
-            "core filler must NOT be re-warmed by injection (M5)"
+        // The stored timestamp round-trips f64 → JSON → f64, which can drift
+        // by up to a ULP (serde_json's default parser isn't bit-exact; see
+        // the round-trip check in `entries::tests`). Compare with a small
+        // tolerance rather than exact identity — a real re-warm would push
+        // last_used_at forward by the >=25ms slept above, dwarfing any
+        // round-trip noise.
+        assert!(
+            (injected.last_used_at - saved[6].last_used_at).abs() < 1e-3,
+            "core filler must NOT be re-warmed by injection (M5): {} vs {}",
+            injected.last_used_at,
+            saved[6].last_used_at,
         );
     }
 
