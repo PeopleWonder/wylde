@@ -366,7 +366,10 @@ fn collect_top(
     query: &dyn Query,
     limit: usize,
 ) -> tantivy::Result<Vec<(String, f64)>> {
-    let top = searcher.search(query, &TopDocs::with_limit(limit))?;
+    // tantivy 0.26: `TopDocs::with_limit(n)` no longer implements `Collector`
+    // on its own — `.order_by_score()` selects BM25-relevance ordering and
+    // yields the `Vec<(Score, DocAddress)>` fruit this loop consumes.
+    let top = searcher.search(query, &TopDocs::with_limit(limit).order_by_score())?;
     let mut out = Vec::with_capacity(top.len());
     for (score, addr) in top {
         let doc: TantivyDocument = searcher.doc(addr)?;

@@ -74,7 +74,7 @@ ignore_crate = { version = "0.4", package = "ignore" }
 # brute-force vector scan — this adds a lexical *signal* fused via RRF, not a
 # storage-engine swap. Gated behind the `LexicalConfig` master toggle
 # (default OFF ⇒ the dep is linked but never exercised).
-tantivy = "0.22"
+tantivy = "0.26"
 
 [dev-dependencies]
 # The integration round-trip tests drive the service through the shared
