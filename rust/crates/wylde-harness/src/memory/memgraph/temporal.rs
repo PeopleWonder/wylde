@@ -211,6 +211,152 @@ SET   r.valid_from = coalesce(r.created_at, $epoch_default),
     )
 }
 
+/// **P1 — logical-delete `unrelate`.** Close the valid-time of the
+/// currently-open edge between two named entities *without* inserting a
+/// replacement: the fact **stopped being true** at `$at`. The historical
+/// row is preserved (now bounded in valid-time) and, crucially, `tx_to`
+/// is left [`OPEN`] so the retracted fact stays *current belief* and
+/// remains visible to an as-of read of its (now-bounded) valid window —
+/// the same reasoning that keeps supersession from closing `tx_to` (see
+/// module docs §3.2). This is the temporal answer to
+/// [`super::cypher::unrelate_typed`]'s hard `DELETE r`.
+///
+/// Mirrors [`TemporalEdgeLog::retract`]. Structurally identical to
+/// [`temporal_supersede`] (both close only `valid_to` on the open row);
+/// kept as a distinct verb because `unrelate` inserts nothing whereas
+/// `relate`'s supersede is followed by a fresh [`temporal_insert`].
+pub fn temporal_retract(rel_type: &str) -> String {
+    format!(
+        "
+MATCH (a:Entity {{name: $source}})-[r:{rel_type}]->(b:Entity {{name: $target}})
+WHERE r.valid_to = $open AND r.tx_to = $open
+SET   r.valid_to = $at
+"
+    )
+}
+
+/// **P1 — transaction-time correction.** "We recorded the wrong value."
+/// Retire our *belief* in the currently-open edge as of transaction time
+/// `$tt` (close its `tx_to`, so it drops out of current belief) and
+/// CREATE a corrected-belief edge that carries the **same real-world
+/// valid window** (`valid_from` copied from the retired edge, `valid_to`
+/// open) but a fresh transaction interval `[$tt, OPEN)` and the corrected
+/// `$weight`. After this, an as-of read under current belief sees the
+/// corrected weight, while an "as believed at `$tt - 1`" read still sees
+/// the original — transaction-time travel (see [`as_believed_at_match`]).
+///
+/// Closing `tx_to` here (unlike supersession/retraction) is exactly the
+/// P1 concern the module docs reserve the transaction axis for. Mirrors
+/// [`TemporalEdgeLog::correct`].
+pub fn temporal_correct(rel_type: &str) -> String {
+    format!(
+        "
+MATCH (a:Entity {{name: $source}})-[old:{rel_type}]->(b:Entity {{name: $target}})
+WHERE old.valid_to = $open AND old.tx_to = $open
+WITH a, b, old, old.valid_from AS vf
+SET old.tx_to = $tt
+CREATE (a)-[:{rel_type} {{valid_from: vf, valid_to: $open, tx_from: $tt, tx_to: $open, weight: $weight}}]->(b)
+"
+    )
+}
+
+/// **P1 — dual-axis ("as believed at") read.** Every edge of one type
+/// that was **valid at** event time `$t` **and believed at** transaction
+/// time `$tt`. Both axes are half-open. With `$tt` = "now" this collapses
+/// to the current-belief valid-time slice (equivalent to [`as_of_match`]
+/// modulo the explicit `tx` range vs the `tx_to = OPEN` shortcut); with a
+/// past `$tt` it reconstructs *what the store believed at that transaction
+/// time* — corrections made after `$tt` are invisible.
+pub fn as_believed_at_match(rel_type: &str) -> String {
+    format!(
+        "
+MATCH (a:Entity)-[r:{rel_type}]->(b:Entity)
+WHERE r.valid_from <= $t  AND $t  < r.valid_to
+  AND r.tx_from   <= $tt AND $tt < r.tx_to
+RETURN a.name      AS source,
+       b.name      AS target,
+       r.valid_from AS valid_from,
+       r.valid_to   AS valid_to,
+       r.tx_from    AS tx_from,
+       r.tx_to      AS tx_to
+"
+    )
+}
+
+/// **P1 — gated edge-property index.** Neo4j 5.x / 2026.x relationship
+/// RANGE index on one temporal property of one typed relation, backing
+/// the as-of range scans (`valid_from`) and the transaction-axis slice
+/// (`tx_from`). Idempotent (`IF NOT EXISTS`). Created only when the
+/// toggle is ON so an OFF deployment's schema is byte-identical to today.
+/// The index name is deterministic so `IF NOT EXISTS` de-dupes across
+/// boots.
+pub fn temporal_index(rel_type: &str, prop: &str) -> String {
+    let name = format!("rel_{}_{}", rel_type.to_ascii_lowercase(), prop);
+    format!("CREATE INDEX {name} IF NOT EXISTS FOR ()-[r:{rel_type}]-() ON (r.{prop})")
+}
+
+/// The five typed Entity→Entity relations that carry temporal edges
+/// (mirrors [`super::schema::relation_type_is_valid`]). Iterated by the
+/// gated schema/index setup and the migration backfill.
+pub const TEMPORAL_RELATIONS: [&str; 5] =
+    ["CALLS", "IMPORTS", "INHERITS", "CONFIGURES", "EXPOSES"];
+
+/// The temporal edge properties given a RANGE index under the toggle.
+/// `valid_from` backs as-of scans; `tx_from` backs the transaction-time
+/// ("as believed at") slice.
+pub const TEMPORAL_INDEXED_PROPS: [&str; 2] = ["valid_from", "tx_from"];
+
+/// Backfill floor for legacy edges with no `created_at` — "dawn of
+/// history" so migrated facts sort before any temporal write. `0`
+/// (epoch) is safe: it is `< now_ms()` for every real write and `< OPEN`.
+pub const EPOCH_DEFAULT_FLOOR: i64 = 0;
+
+/// **P1 — temporal-aware `traverse`.** The as-of variant of
+/// [`super::cypher::traverse_bucket`]: a graph walk whose typed-edge
+/// expansion only follows edges that were **valid at** event time `$t`
+/// under current belief (`tx_to = OPEN`). The temporal predicate is
+/// applied via `all(rel IN relationships(tp) WHERE …)` over the typed
+/// segment **only** — the trailing `MENTIONED_IN` hop is matched
+/// separately so its (non-temporal) edges are *not* time-filtered
+/// (applying the predicate to a property-less `MENTIONED_IN` edge would
+/// null out every path and return zero chunks).
+///
+/// A zero-length typed segment (`*0..depth` matching the seed itself)
+/// has an empty `relationships(tp)`, so `all(…)` is vacuously true and
+/// seed-anchored chunks still surface — matching the relational bucket's
+/// `*0..depth` behavior. `best_depth` is `length(tp)` directly (the
+/// typed hop count), where the relational form used `length(p) - 1`
+/// because its single path included the `MENTIONED_IN` hop.
+///
+/// Only reached when the toggle is ON **and** an `as_of` timestamp is
+/// supplied; otherwise `traverse` runs the relational
+/// [`super::cypher::traverse_bucket`] unchanged (OFF ⇒ byte-identical).
+pub fn traverse_bucket_as_of(rel_types: &str, depth: u32, with_workspace: bool) -> String {
+    let ws_filter = if with_workspace {
+        " AND c.workspace = $ws "
+    } else {
+        ""
+    };
+    format!(
+        "
+UNWIND $names AS name
+MATCH  (seed:Entity {{name: name}})
+MATCH  tp = (seed)-[:{rel_types}*0..{depth}]-(e:Entity)
+WHERE  all(rel IN relationships(tp) WHERE rel.valid_from <= $t AND $t < rel.valid_to AND rel.tx_to = $open)
+MATCH  (e)-[:MENTIONED_IN]->(c:Chunk)
+WHERE  1=1{ws_filter}
+WITH   c, seed, length(tp) AS typed_depth
+WITH   c, count(DISTINCT seed) AS seeds_touching, min(typed_depth) AS best_depth
+RETURN c.id       AS id,
+       c.path     AS path,
+       c.symbol   AS symbol,
+       c.language AS language,
+       seeds_touching,
+       best_depth
+"
+    )
+}
+
 // ── In-memory reference model ─────────────────────────────────────────
 
 /// One versioned edge. `weight` is `None` for plain typed edges and
@@ -323,6 +469,60 @@ impl TemporalEdgeLog {
             .iter()
             .filter(|e| e.is_current_belief() && e.is_valid_at(t))
             .collect()
+    }
+
+    /// **P1 — dual-axis read.** Every edge **valid at** event time `t`
+    /// **and believed at** transaction time `tt` (both half-open). With
+    /// `tt >= ` every edge's `tx_from` and no corrections yet, this
+    /// equals [`Self::as_of`]; with a past `tt` it excludes edges whose
+    /// belief began *after* `tt` (i.e. corrections made later), and
+    /// re-includes edges whose belief was later retired but was still
+    /// current at `tt`. Mirrors [`as_believed_at_match`].
+    pub fn as_of_believed(&self, t: i64, tt: i64) -> Vec<&TemporalEdge> {
+        self.edges
+            .iter()
+            .filter(|e| {
+                e.is_valid_at(t) && e.tx_from <= tt && tt < e.tx_to
+            })
+            .collect()
+    }
+
+    /// **P1 — transaction-time correction.** Retire our *belief* in the
+    /// currently-open edge as of transaction time `tt` (close its
+    /// `tx_to`) and append a corrected-belief edge carrying the **same
+    /// valid window** (`valid_from` copied, `valid_to` open), a fresh
+    /// transaction interval `[tt, OPEN)`, and `new_weight`. Returns
+    /// `true` iff an open edge was corrected. Mirrors [`temporal_correct`].
+    ///
+    /// Distinct from [`Self::retract`]: retract closes *valid_to* (the
+    /// fact stopped being true, still current belief); correct closes
+    /// *tx_to* (we changed our mind about the recorded value).
+    pub fn correct(
+        &mut self,
+        source: &str,
+        target: &str,
+        rel_type: &str,
+        tt: i64,
+        new_weight: Option<f64>,
+    ) -> bool {
+        match self.open_index(source, target, rel_type) {
+            Some(i) => {
+                let valid_from = self.edges[i].valid_from;
+                self.edges[i].tx_to = tt; // retire belief in the wrong row
+                self.edges.push(TemporalEdge {
+                    source: source.to_owned(),
+                    target: target.to_owned(),
+                    rel_type: rel_type.to_owned(),
+                    valid_from,
+                    valid_to: OPEN,
+                    tx_from: tt,
+                    tx_to: OPEN,
+                    weight: new_weight,
+                });
+                true
+            }
+            None => false,
+        }
     }
 
     /// Full history (every version, superseded or live), insertion order.
@@ -580,5 +780,133 @@ mod tests {
         let b = now_ms();
         assert!(a > 0);
         assert!(b >= a);
+    }
+
+    // ── P1: unrelate / correct / as-believed-at / index / traverse ─────
+
+    #[test]
+    fn retract_cypher_closes_valid_to_only_and_inserts_nothing() {
+        let q = temporal_retract("CALLS");
+        assert!(q.contains("MATCH (a:Entity {name: $source})-[r:CALLS]->"));
+        assert!(q.contains("r.valid_to = $open AND r.tx_to = $open"));
+        assert!(q.contains("SET   r.valid_to = $at"));
+        // Logical delete: NO replacement edge, and tx_to untouched so the
+        // retracted fact stays current belief for as-of of its window.
+        assert!(!q.contains("CREATE"), "unrelate must not insert a replacement");
+        assert!(!q.contains("DELETE"), "unrelate must not hard-delete");
+        // `r.tx_to = $open` appears in the WHERE guard, but tx_to must
+        // never be *set* to a timestamp (that would drop it from current
+        // belief and break as-of of its window — §3.2).
+        assert!(!q.contains("SET   r.tx_to"), "retract must not set tx_to");
+        assert!(!q.contains("tx_to = $at"), "retract must not close tx_to");
+    }
+
+    #[test]
+    fn correct_cypher_closes_tx_to_and_recreates_with_same_valid_from() {
+        let q = temporal_correct("IMPORTS");
+        assert!(q.contains("WHERE old.valid_to = $open AND old.tx_to = $open"));
+        assert!(q.contains("old.valid_from AS vf"), "carry the valid window forward");
+        assert!(q.contains("SET old.tx_to = $tt"), "correction closes tx_to");
+        assert!(q.contains("CREATE (a)-[:IMPORTS {valid_from: vf"), "reuse valid_from");
+        assert!(q.contains("tx_from: $tt"));
+        assert!(q.contains("weight: $weight"));
+    }
+
+    #[test]
+    fn as_believed_at_uses_both_half_open_axes() {
+        let q = as_believed_at_match("CONFIGURES");
+        assert!(q.contains("[r:CONFIGURES]"));
+        assert!(q.contains("r.valid_from <= $t"));
+        assert!(q.contains("$t  < r.valid_to"));
+        assert!(q.contains("r.tx_from   <= $tt"));
+        assert!(q.contains("$tt < r.tx_to"), "explicit transaction-time slice");
+        // Unlike as_of_match it does NOT hard-code tx_to = OPEN.
+        assert!(!q.contains("r.tx_to = $open"));
+    }
+
+    #[test]
+    fn temporal_index_is_idempotent_relationship_range_index() {
+        let q = temporal_index("CALLS", "valid_from");
+        assert_eq!(
+            q,
+            "CREATE INDEX rel_calls_valid_from IF NOT EXISTS FOR ()-[r:CALLS]-() ON (r.valid_from)"
+        );
+        assert!(temporal_index("EXPOSES", "tx_from").contains("IF NOT EXISTS"));
+    }
+
+    #[test]
+    fn traverse_bucket_as_of_time_filters_typed_edges_only() {
+        let q = traverse_bucket_as_of(REL_ALT_CALLS_FOR_TEST, 2, true);
+        // Temporal predicate over the typed segment only.
+        assert!(q.contains("all(rel IN relationships(tp) WHERE"));
+        assert!(q.contains("rel.valid_from <= $t AND $t < rel.valid_to AND rel.tx_to = $open"));
+        // MENTIONED_IN matched in a SEPARATE clause (not time-filtered).
+        assert!(q.contains("MATCH  (e)-[:MENTIONED_IN]->(c:Chunk)"));
+        // Workspace filter still threads through.
+        assert!(q.contains("c.workspace = $ws"));
+        // typed depth is length(tp) directly (no -1), since tp excludes MENTIONED_IN.
+        assert!(q.contains("length(tp) AS typed_depth"));
+    }
+
+    const REL_ALT_CALLS_FOR_TEST: &str = "CALLS|IMPORTS|INHERITS";
+
+    #[test]
+    fn correct_retires_belief_and_appends_corrected_edge() {
+        let mut log = TemporalEdgeLog::new();
+        log.write("s", "t", "CALLS", 10, Some(1.0)); // valid [10,OPEN) tx [10,OPEN)
+        // At tx=50 we realise the weight was wrong; correct to 9.0.
+        assert!(log.correct("s", "t", "CALLS", 50, Some(9.0)));
+        assert_eq!(log.len(), 2);
+
+        let wrong = &log.all()[0];
+        assert_eq!(wrong.tx_from, 10);
+        assert_eq!(wrong.tx_to, 50, "belief in the wrong row retired at tx=50");
+        assert_eq!(wrong.valid_to, OPEN, "valid-time untouched by a correction");
+
+        let fixed = &log.all()[1];
+        assert_eq!(fixed.valid_from, 10, "same real-world valid window");
+        assert_eq!((fixed.tx_from, fixed.tx_to), (50, OPEN));
+        assert_eq!(fixed.weight, Some(9.0));
+    }
+
+    #[test]
+    fn correct_with_no_open_edge_is_false() {
+        let mut log = TemporalEdgeLog::new();
+        assert!(!log.correct("s", "t", "CALLS", 50, Some(1.0)));
+        assert!(log.is_empty());
+    }
+
+    #[test]
+    fn as_believed_at_reconstructs_pre_correction_belief() {
+        let mut log = TemporalEdgeLog::new();
+        log.write("s", "t", "CALLS", 10, Some(1.0)); // believed from tx=10
+        log.correct("s", "t", "CALLS", 50, Some(9.0)); // corrected at tx=50
+
+        // Current belief (as-of now) sees the corrected weight.
+        let now = log.as_of(100);
+        assert_eq!(now.len(), 1);
+        assert_eq!(now[0].weight, Some(9.0));
+
+        // "As believed at tx=40" (before the correction) sees the original.
+        let before = log.as_of_believed(100, 40);
+        assert_eq!(before.len(), 1, "exactly the pre-correction row");
+        assert_eq!(before[0].weight, Some(1.0));
+
+        // "As believed at tx=60" (after) sees the corrected row.
+        let after = log.as_of_believed(100, 60);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].weight, Some(9.0));
+    }
+
+    #[test]
+    fn retract_keeps_fact_current_belief_for_as_of_of_its_window() {
+        // Guards the §3.2 reasoning for unrelate: closing valid_to (not
+        // tx_to) means as_of INSIDE the window still sees the fact.
+        let mut log = TemporalEdgeLog::new();
+        log.write("a", "b", "CALLS", 100, None);
+        assert!(log.retract("a", "b", "CALLS", 300));
+        assert_eq!(log.all()[0].tx_to, OPEN, "retract leaves tx_to open");
+        assert_eq!(log.as_of(200).len(), 1, "still visible mid-window");
+        assert_eq!(log.as_of_believed(200, now_ms()).len(), 1, "and under any current belief");
     }
 }

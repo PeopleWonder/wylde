@@ -239,6 +239,7 @@ where
         },
         decay_alpha: None,
         rel_depths: None,
+        as_of: None,
     };
     let reply = client.traverse(req).await;
     if !reply.ok {

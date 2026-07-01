@@ -282,6 +282,7 @@ async fn parity_06_traverse() {
         workspace: Some(ws.clone()),
         decay_alpha: None,
         rel_depths: None,
+        as_of: None,
     };
     let bolt_req = TraverseRequest {
         entities: vec!["shared_entity".into()],
@@ -290,6 +291,7 @@ async fn parity_06_traverse() {
         workspace: Some(ws.clone()),
         decay_alpha: None,
         rel_depths: None,
+        as_of: None,
     };
     let pipe = pipe_c.traverse(pipe_req).await;
     let bolt = bolt_c.traverse(bolt_req).await;

@@ -1,7 +1,7 @@
 # Temporal (Bi-Temporal) Memory Graph — Scope & Design
 
 Branch: `feat/temporal-memory-graph` (cut from `feat/thought-bubble-system` @ `0bcd1be`)
-Status: **scope locked + P0 landed, HELD for review** (do not merge to trunk)
+Status: **scope locked + P0 + P1 landed, HELD for review** (do not merge to trunk)
 Author surface: `rust/crates/wylde-harness/src/memory/memgraph/` (storage / edge layer only)
 
 ---
@@ -285,13 +285,42 @@ P0 = the storage/edge primitive, fully unit-tested DB-free, behind the toggle.
 
 ---
 
-## 8. Deferred (P1+)
+## 8. P1 landed (was Deferred) — HELD for review
 
-* Logical-delete `unrelate` (supersede instead of `DELETE r`) under the toggle.
-* `ensure_schema` temporal edge-property indexes (gated) + live migration run.
-* Dual-axis as-of Cypher (explicit transaction-time `tt` parameter).
-* Temporal-aware `traverse` (as-of graph expansion, not just edge reads).
+All four storage-layer P1 items shipped behind the same toggle
+(OFF ⇒ byte-identical), verified against a single live Neo4j:
+
+* **Logical-delete `unrelate`** — `temporal::temporal_retract` +
+  `BoltClient::unrelate_temporal`. Closes `valid_to` only (mirrors
+  `TemporalEdgeLog::retract`); `tx_to` stays OPEN so as-of of the fact's
+  window still sees it (§3.2 reasoning — this reconciles the earlier §3
+  prose that closed both axes). OFF path keeps the hard `DELETE r`.
+* **Gated edge-property indexes + live migration run** —
+  `BoltClient::ensure_temporal_schema` creates 5 rels × {`valid_from`,
+  `tx_from`} relationship RANGE indexes only when ON;
+  `BoltClient::backfill_temporal_edges` runs the P0
+  `backfill_temporal` builder live (backfills `valid_from`/`tx_from` from
+  `created_at`, floors to `EPOCH_DEFAULT_FLOOR` when absent, opens
+  `valid_to`/`tx_to`), idempotent on re-run (`migrated == 0`).
+* **Dual-axis "as believed at" Cypher** — `temporal::as_believed_at_match`
+  + `BoltClient::relations_as_believed_at` (explicit `tt`). Paired with a
+  transaction-time **correction** write (`temporal::temporal_correct` +
+  `BoltClient::correct_edge`, `TemporalEdgeLog::correct`) that closes
+  `tx_to` — the P1 concern the tx axis was reserved for — so
+  transaction-time travel is exercisable.
+* **Temporal-aware `traverse`** — `temporal::traverse_bucket_as_of` +
+  `TraverseRequest.as_of`. The valid/tx predicate applies via
+  `all(rel IN relationships(tp) …)` over the **typed segment only** (the
+  non-temporal `MENTIONED_IN` hop is matched separately). Reached only
+  when ON *and* `as_of` is set; OFF (or ON-without-`as_of`) runs the
+  relational `cypher::traverse_bucket` unchanged.
+
+### Still deferred (P2+)
+
 * Wiring the toggle into the GUI memory panel / surfacing edge history.
+* Corrected-value replacement for *weightless* typed edges (P1 correction
+  targets the weighted edge; a weightless "we never should have recorded
+  this" belief-retraction is a natural follow-on).
 
 ---
 
@@ -300,7 +329,14 @@ P0 = the storage/edge primitive, fully unit-tested DB-free, behind the toggle.
 * `cargo build` green, `cargo clippy` clean (capped jobs per crash-safety).
 * DB-free unit tests for insert / supersede / as-of / no-op / toggle-OFF
   identity (the `TemporalEdgeLog` reference model + Cypher-string pins).
-* Live round-trip behind `#[ignore]` (single Memgraph instance only).
+  P1 adds: retract, correct, as-believed-at, gated index, and temporal
+  traverse pins + reference-model round-trips (28 temporal unit tests).
+* Live round-trip behind `#[ignore]` (single Neo4j/Memgraph instance
+  only). P1: 7 tests covering insert/supersede/unrelate/as-of/
+  as-believed-at/temporal-traverse/migration-idempotency + a **live
+  toggle-OFF byte-identity** test (relate is MERGE-idempotent with no
+  temporal props, `upsert_edge` mutates weight in place, `unrelate`
+  hard-deletes, as-of refuses).
 
 The OFF-path identity test is the load-bearing one: it guarantees a deployment
 that never sets `WYLDE_TEMPORAL_MEMORY` is indistinguishable from today.

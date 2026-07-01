@@ -285,6 +285,13 @@ pub struct TraverseRequest {
     /// [`super::schema::BUCKET_CALLS_IMPORTS`] /
     /// [`super::schema::BUCKET_CONFIGURES_EXPOSES`].
     pub rel_depths: Option<Vec<(String, u32)>>,
+    /// Optional point-in-time (epoch-ms) for a **temporal-aware**
+    /// traverse (P1): the graph walk only follows typed edges valid at
+    /// this event time under current belief. Honoured by the Bolt path
+    /// **only when `WYLDE_TEMPORAL_MEMORY` is ON**; `None` (the default)
+    /// runs the relational walk unchanged, so an OFF deployment is
+    /// byte-identical. Serialised only when set.
+    pub as_of: Option<i64>,
 }
 
 impl TraverseRequest {
@@ -299,6 +306,7 @@ impl TraverseRequest {
             workspace: None,
             decay_alpha: None,
             rel_depths: None,
+            as_of: None,
         }
     }
 
@@ -321,6 +329,11 @@ impl TraverseRequest {
                 map.insert(bucket.clone(), json!(depth));
             }
             obj.insert("rel_depths".to_owned(), Value::Object(map));
+        }
+        // Omitted when None so the pipe payload for a non-temporal
+        // traverse is byte-identical to today's (OFF invariant).
+        if let Some(at) = self.as_of {
+            obj.insert("as_of".to_owned(), json!(at));
         }
         Value::Object(obj)
     }
@@ -473,6 +486,7 @@ mod tests {
                 (schema::BUCKET_CALLS_IMPORTS.to_owned(), 1),
                 (schema::BUCKET_CONFIGURES_EXPOSES.to_owned(), 2),
             ]),
+            as_of: None,
         };
         client.traverse(req).await;
         let payload = &handle.calls()[0].payload;
