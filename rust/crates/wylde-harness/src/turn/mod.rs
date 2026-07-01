@@ -55,6 +55,7 @@ mod slot_liveness;
 pub mod prompt;
 pub mod prompt_assembly;
 pub mod salvage;
+pub mod think_stream;
 pub mod token_budget;
 pub mod tool_round;
 pub mod workspace_context;

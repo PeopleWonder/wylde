@@ -252,6 +252,41 @@ impl ChatScope {
     }
 }
 
+/// Per-turn reasoning depth (agentic reasoning tier, scope P1b). Surfaced
+/// as a toggle pill in the InferenceBar per Aaron's confirmed placement.
+///
+/// **`Fast` is the default and the *only* behaviour today.** The Deep path
+/// (PLAN → EXECUTE → REFLECT) is not wired until the reasoning tier lands
+/// (scope P4+); until then this flag is a UI affordance that does not alter
+/// the turn — the send payload is untouched — so a fast turn is byte-for-byte
+/// the existing ReAct path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReasoningDepth {
+    /// The everyday fast-model ReAct loop — no reasoning tax. Default.
+    #[default]
+    Fast,
+    /// The deep plan→execute→reflect path (inert until scope P4+).
+    Deep,
+}
+
+impl ReasoningDepth {
+    /// The other depth — used by the toggle pill.
+    pub fn toggled(self) -> Self {
+        match self {
+            ReasoningDepth::Fast => ReasoningDepth::Deep,
+            ReasoningDepth::Deep => ReasoningDepth::Fast,
+        }
+    }
+
+    /// Short wire/label token (`"fast"` / `"deep"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasoningDepth::Fast => "fast",
+            ReasoningDepth::Deep => "deep",
+        }
+    }
+}
+
 /// Root Chat panel.
 pub struct ChatPanel {
     pub focus_handle: FocusHandle,
@@ -294,6 +329,11 @@ pub struct ChatPanel {
     pub models: Vec<String>,
     pub active_model: Option<String>,
     pub show_model_dropdown: bool,
+    /// Per-turn reasoning depth (agentic reasoning tier P1b). Defaults to
+    /// [`ReasoningDepth::Fast`]; toggled from the InferenceBar pill. Inert
+    /// today — the Deep turn pipeline lands in a later phase, so this does
+    /// not yet change turn behaviour.
+    pub reasoning_depth: ReasoningDepth,
     /// In-flight latch for the eject button — set while an `ollama.eject`
     /// round-trip is pending so the button dims and ignores re-clicks.
     pub ejecting: bool,
@@ -425,6 +465,7 @@ impl ChatPanel {
             models: Vec::new(),
             active_model: None,
             show_model_dropdown: false,
+            reasoning_depth: ReasoningDepth::Fast,
             ejecting: false,
             pending_consents: BTreeMap::new(),
             error: None,
@@ -1764,6 +1805,14 @@ impl ChatPanel {
         self.show_model_dropdown = !self.show_model_dropdown;
         self.show_ws_dropdown = false;
         self.show_conversations = false;
+        cx.notify();
+    }
+
+    /// Flip the per-turn reasoning depth (agentic reasoning tier P1b). An
+    /// instant toggle — both models are co-resident — but inert today: the
+    /// Deep turn pipeline lands later, so this only records the choice.
+    pub fn toggle_reasoning_depth(&mut self, cx: &mut Context<Self>) {
+        self.reasoning_depth = self.reasoning_depth.toggled();
         cx.notify();
     }
 
@@ -3388,8 +3437,24 @@ fn pill_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
             this.toggle_model_dropdown(cx);
         }),
     ))
+    .child(reasoning_depth_pill(panel, cx))
     .child(eject_button(panel, cx))
     .child(working_memory_pill(panel, cx))
+}
+
+/// Fast/deep reasoning toggle pill (agentic reasoning tier P1b — Aaron's
+/// confirmed InferenceBar placement). One click flips depth. Defaults to
+/// `fast`; the Deep path is inert until a later phase, so toggling only
+/// records the intended depth and never changes today's turn behaviour.
+fn reasoning_depth_pill(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
+    let label = SharedString::from(format!("reasoning · {}", panel.reasoning_depth.as_str()));
+    pill_button(
+        ElementId::Name("chat-reasoning-toggle".into()),
+        label,
+        cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+            this.toggle_reasoning_depth(cx);
+        }),
+    )
 }
 
 /// Working-memory toggle pill — shows the live entry count for the active
@@ -4799,5 +4864,38 @@ mod tests {
         // A stamp slightly in the future (clock skew) is "just now", not a
         // negative age.
         assert_eq!(relative_time(now + 100), "just now");
+    }
+
+    // ── P1b: InferenceBar fast/deep reasoning toggle ─────────────────────
+    // No gpui-executor harness in this crate (see the note above the C1
+    // tests), so the toggle is pinned at the state + label level: the field
+    // the pill reads/writes and the exact string the pill renders.
+
+    /// The confirmed default is Fast — never Deep-by-default (the reasoning
+    /// tax). This is the identity-invariant end of the toggle.
+    #[test]
+    fn reasoning_depth_defaults_to_fast() {
+        assert_eq!(ReasoningDepth::default(), ReasoningDepth::Fast);
+        assert_eq!(ReasoningDepth::Fast.as_str(), "fast");
+        assert_eq!(ReasoningDepth::Deep.as_str(), "deep");
+    }
+
+    /// One click flips depth and a second returns to Fast (the pill's whole
+    /// contract).
+    #[test]
+    fn reasoning_depth_toggles_both_ways() {
+        let d = ReasoningDepth::Fast;
+        assert_eq!(d.toggled(), ReasoningDepth::Deep);
+        assert_eq!(d.toggled().toggled(), ReasoningDepth::Fast);
+    }
+
+    /// The pill label the InferenceBar renders, defaulting Fast — the golden
+    /// the scope calls for ("toggle renders, defaults Fast").
+    #[test]
+    fn reasoning_depth_pill_label_matches_state() {
+        let fast = format!("reasoning · {}", ReasoningDepth::default().as_str());
+        assert_eq!(fast, "reasoning · fast");
+        let deep = format!("reasoning · {}", ReasoningDepth::Deep.as_str());
+        assert_eq!(deep, "reasoning · deep");
     }
 }

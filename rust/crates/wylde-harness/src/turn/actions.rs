@@ -699,6 +699,11 @@ async fn drive_streaming_turn(
 
         let mut stream = ipc::send_action_stream(&cfg.ollama_service, "ollama.chat_stream", body);
         let mut accumulated = String::new();
+        // Peels inline `<think>…</think>` reasoning (DeepSeek-R1-style
+        // reasoners) out of the streamed content so the trace goes to the
+        // Thinking dropdown, not the answer. Fast models emit no `<think>`
+        // ⇒ pure pass-through, byte-identical to the pre-P1 path.
+        let mut think_splitter = super::think_stream::ThinkSplitter::new();
         // Native `message.tool_calls` may arrive on any chunk (Ollama
         // typically emits them whole on the final chunk); accumulate
         // across the stream and decode after it completes.
@@ -730,13 +735,28 @@ async fn drive_streaming_turn(
                         }
                         Some(Ok(chunk)) => {
                             if let Some(piece) = extract_chunk_content(&chunk) {
+                                // Frame count keys off the RAW content piece,
+                                // exactly as before — the token meter is
+                                // unchanged for the fast path. The splitter then
+                                // routes inline `<think>` to the Thinking stream
+                                // and keeps only the answer body in `accumulated`.
                                 if !piece.is_empty() {
                                     frame_tokens += 1;
                                 }
-                                accumulated.push_str(&piece);
+                                let split = think_splitter.push(&piece);
+                                accumulated.push_str(&split.answer);
+                                if !split.thinking.is_empty() {
+                                    handle
+                                        .push_turn_event(TurnEvent::Thinking {
+                                            turn_id: turn_id.clone(),
+                                            text: split.thinking,
+                                        })
+                                        .await;
+                                }
                             }
-                            // Forward any reasoning delta (thinking models) so the
-                            // GUI dropdown shows the model's thinking live.
+                            // Forward any reasoning delta (native thinking-API
+                            // models expose it on `message.thinking`, separate
+                            // from the inline `<think>` handled above).
                             if let Some(thought) = extract_chunk_thinking(&chunk) {
                                 handle
                                     .push_turn_event(TurnEvent::Thinking {
@@ -772,6 +792,21 @@ async fn drive_streaming_turn(
             }
         }
         drop(stream);
+
+        // Flush any bytes the splitter held back (a marker fragment or an
+        // unterminated `<think>`). On the fast path this is at most a trailing
+        // `<`-prefixed fragment, flushed verbatim into `accumulated` — so the
+        // reassembled answer is byte-identical to the raw content.
+        let tail = think_splitter.finish();
+        accumulated.push_str(&tail.answer);
+        if !tail.thinking.is_empty() {
+            handle
+                .push_turn_event(TurnEvent::Thinking {
+                    turn_id: turn_id.clone(),
+                    text: tail.thinking,
+                })
+                .await;
+        }
 
         // Fold this round's authoritative counts into the turn meter
         // (falling back to the live frame count if Ollama omitted them).
