@@ -215,6 +215,27 @@ All notable changes to Wylde are recorded here. Versions follow
   `proc-macro-error`/`proc-macro-error2`, `rustls-pemfile`); these are transitive
   and deferred — clearing them needs upstream/major migrations, not a bump.
 
+- **GitHub Dependabot alert triage (5 open).** Reviewed and dispositioned the
+  five open Dependabot alerts on the default branch. The three HIGH `pip`
+  alerts — `transformers` remote code execution (CVE-2026-4372) and `soupsieve`
+  ReDoS + memory-exhaustion (CVE-2026-49477 / CVE-2026-49476) — are all against
+  `uv.lock`, the Python lockfile deleted in the R6 full-Rust cutover
+  (`2f5aa82`). Those packages have no importer left in-tree (`pyproject.toml`
+  now declares `dependencies = []`; the surviving Python is stdlib-only dev
+  tooling), so the vulnerable code is not present and the alerts are stale
+  against a removed manifest — dismissed as *vulnerable code not used*. The two
+  remaining Moderate Rust alerts are transitive and upstream-pinned, with no
+  clean bump: `glib` `VariantStrIter` unsoundness (GHSA-wrw7-89jp-8q8g) is
+  pulled only through the GTK3 binding family (`gtk`/`gdk`/`atk` ← `wry` /
+  `tray-icon`), which is `cfg(linux)`-gated and **not compiled into the shipped
+  Windows build** (confirmed absent from the `x86_64-pc-windows-msvc` dependency
+  graph); and `async-tar` PAX-header desync / entry-smuggling (CVE-2026-53600,
+  patched 0.6.1) is required at `^0.5.1` by Zed's `http_client` (pinned `gpui`
+  git rev `b3d93d44`) and Wylde exercises no untrusted-tarball extraction path
+  through it. `cargo update` rejects both across the 0.x major boundary; forcing
+  them needs a `gpui`-rev bump or a full gtk-rs major migration and is deferred.
+  Full reachability write-up in `docs/security/dependabot-triage-2026-07-11.md`.
+
 ### Fixed
 
 - **Short-term memory store now honours encryption-at-rest (OI-14).** It
