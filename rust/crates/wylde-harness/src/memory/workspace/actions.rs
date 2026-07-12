@@ -65,10 +65,20 @@ pub async fn handle_search(payload: Value) -> Reply {
         return Reply::err_msg("bad_request", "query is required");
     };
     let limit = search_limit(&payload);
-    let hits: Vec<Value> = store::search_records(&wsid, &query, limit, None)
-        .iter()
-        .map(|h| h.to_value())
-        .collect();
+    // Text-overlap baseline always computed — it's the safe fallback and
+    // it preserves recall for records the vector mirror doesn't cover.
+    let text_hits = store::search_records(&wsid, &query, limit, None);
+    // Upgrade to semantic ranking when the mirror is populated AND the
+    // query embeds; otherwise stay on text (dev / embedder-down path).
+    let ranked = if store::vector_mirror_is_empty(&wsid) {
+        text_hits
+    } else if let Some(query_vector) = crate::memory::embed_write::embed_for_write(&query).await {
+        let vector_hits = store::search_records_vector(&wsid, query_vector, limit, None);
+        store::merge_hits(vector_hits, text_hits, limit)
+    } else {
+        text_hits
+    };
+    let hits: Vec<Value> = ranked.iter().map(|h| h.to_value()).collect();
     Reply::ok(json!({ "hits": hits }))
 }
 
@@ -93,6 +103,11 @@ pub async fn handle_save(payload: Value) -> Reply {
 
     match store::save_new(&wsid, &body, &source, importance, entities) {
         Ok(record) => {
+            // Populate the per-workspace vector mirror so search can rank
+            // this record semantically (budgeted, fail-soft — an absent
+            // embedder just leaves it to text search).
+            let vector = crate::memory::embed_write::embed_for_write(&record.body).await;
+            store::vector_upsert(&wsid, &record.id, vector);
             record_entities_best_effort(&record);
             Reply::ok(record.to_value())
         }
@@ -121,6 +136,10 @@ pub async fn handle_update(payload: Value) -> Reply {
 
     match store::update(&wsid, &rid, body, importance, entities) {
         Some(record) => {
+            // The revision is a NEW record id — mirror its (possibly
+            // unchanged) body so the vector store tracks the live text.
+            let vector = crate::memory::embed_write::embed_for_write(&record.body).await;
+            store::vector_upsert(&wsid, &record.id, vector);
             record_entities_best_effort(&record);
             Reply::ok(record.to_value())
         }

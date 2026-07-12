@@ -40,27 +40,16 @@
 //! Three deferred entries are retained because they back genuinely
 //! planned or live-but-non-model-callable surfaces — see [`register`].
 
-use crate::tooling::registry::{entry_deferred, param, Registry};
+use crate::tooling::registry::{entry_deferred, Registry};
 
 pub fn register(reg: &mut Registry) {
     // ── Memory layer (Phase 7) ─────────────────────────────────────────
     //
     // The long-term tier (`memory_long_term_save` / `memory_update` /
-    // `memory_delete` / `memory_search`) is active in
-    // [`crate::tooling::tools::memory`]; the workspace-scoped tier is
-    // still deferred — it lands with the workspace-memory port (the
-    // `memory` resource's `create` with `scope=workspace` currently
-    // returns `not_supported`).
-    reg.insert(entry_deferred(
-        "memory_workspace_save",
-        "memory.workspace.save",
-        "memory",
-        "Save a memory scoped to the active workspace.",
-        vec![param("body", "string", true, "Memory text")],
-        true,
-        "7",
-        "lands with the workspace-memory port",
-    ));
+    // `memory_delete` / `memory_search`) AND the workspace-scoped tier
+    // (`memory_workspace_save` / `_update` / `_delete` / `_search` /
+    // `_list`) are now both ACTIVE in [`crate::tooling::tools::memory`].
+    // Nothing memory-related is deferred any longer.
 
     // ── Voice streaming subscriptions (Phase 11) ───────────────────────
     //
@@ -106,9 +95,9 @@ mod tests {
     fn deferred_register_contributes_expected_keepers() {
         let mut reg = Registry::empty();
         register(&mut reg);
-        // The three retained entries: the workspace-memory tier (Phase
-        // 7) and the two voice streaming subscriptions (Phase 11).
-        assert!(reg.lookup("memory_workspace_save").is_some());
+        // Only the two voice streaming subscriptions (Phase 11) remain
+        // deferred; the workspace-memory tier is now an active tool.
+        assert!(reg.lookup("memory_workspace_save").is_none());
         assert!(reg.lookup("voice_mic_chunks").is_some());
         assert!(reg.lookup("voice_wakeword_events").is_some());
     }
@@ -164,20 +153,18 @@ mod tests {
     }
 
     #[test]
-    fn workspace_memory_save_still_deferred_and_destructive() {
+    fn workspace_memory_save_no_longer_deferred() {
+        // It moved to an active handler in tools::memory; deferred no
+        // longer catalogs it.
         let mut reg = Registry::empty();
         register(&mut reg);
-        assert!(reg.lookup("memory_workspace_save").unwrap().destructive);
+        assert!(reg.lookup("memory_workspace_save").is_none());
     }
 
     #[test]
     fn deferred_dotted_aliases_resolve_to_canonical_ids() {
         let mut reg = Registry::empty();
         register(&mut reg);
-        assert_eq!(
-            reg.lookup("memory.workspace.save").unwrap().id,
-            "memory_workspace_save"
-        );
         assert_eq!(
             reg.lookup("voice.mic.chunks").unwrap().id,
             "voice_mic_chunks"

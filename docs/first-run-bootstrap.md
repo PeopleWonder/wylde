@@ -240,7 +240,10 @@ the harness pipe in Thought Bubble System Slice 0d; reach them via the
 - `tool_search`, `graph_query`
 - `time_now`, `time_format`
 - `list_loaded_models`, `preload_model`, `evict_model`, `auto_evict_lru`
-- `memory_workspace_save` (deferred — Phase 7.C)
+- `memory_long_term_save`, `memory_update`, `memory_delete`, `memory_search`
+- `memory_workspace_save`, `memory_workspace_update`,
+  `memory_workspace_delete`, `memory_workspace_search`,
+  `memory_workspace_list`
 
 ## Test bypass note
 

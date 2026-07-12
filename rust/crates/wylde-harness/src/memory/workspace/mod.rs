@@ -23,23 +23,25 @@
 //!
 //! ## Design decisions (vs. the Python implementation)
 //!
-//! * **Search is text-only in this slice.** Python mirrored each
-//!   record into a per-workspace LanceDB table and ran vector search
-//!   over it. The Rust crate cannot read those `.lance` folders, so on
-//!   cutover every existing workspace would have an empty vector
-//!   mirror and a vector-only search would silently return nothing.
-//!   Instead [`store::search_records`] scores the live JSON records
-//!   directly with a query-token-overlap similarity and re-ranks with
-//!   the shared importance + recency-decay formula
+//! * **Search is semantic when embeddings are available, text
+//!   otherwise.** Python mirrored each record into a per-workspace
+//!   LanceDB table and ran vector search over it. The Rust crate cannot
+//!   read those `.lance` folders, so the original cutover shipped
+//!   text-only. It now keeps its own pure-Rust `memory.vec.bin` mirror
+//!   ([`store::vector_path`] / [`store::vector_upsert`], the same
+//!   [`crate::memory::vector::VectorStore`] format the long-term tier
+//!   uses): the async save/update handlers embed the body on write
+//!   (budgeted + fail-soft, [`crate::memory::embed_write`]) and
+//!   [`store::search_records_vector`] ranks by cosine. The action layer
+//!   ([`actions::handle_search`]) embeds the query, runs the vector
+//!   search, and merges its hits with the token-overlap baseline
+//!   ([`store::search_records`]) via [`store::merge_hits`] — so mirrored
+//!   records rank semantically while un-mirrored ones (written by direct
+//!   sync callers) still surface by text. When the embedder is down or
+//!   the mirror is empty, search degrades cleanly to text-only. Both
+//!   paths re-rank with the shared importance + recency-decay formula
 //!   (`crate::memory::long_term::combined_score` — the Wylde user's
-//!   `similarity * importance * exp(-age_days / decay)`). This matches
-//!   the crate's existing reality: the Rust `memory.long_term.save`
-//!   pipe path doesn't embed either, so nothing populates a workspace
-//!   vector mirror today. The embedding bridge
-//!   ([`crate::memory::embeddings`]) and the pure-Rust
-//!   [`crate::memory::vector::VectorStore`] both exist, so a later
-//!   slice can add a `memory.vec.bin` mirror behind the same
-//!   `search_records` signature without touching the wire shape.
+//!   `similarity * importance * exp(-age_days / decay)`).
 //! * **Importance scoring is reused, not duplicated.**
 //!   `crate::memory::long_term::normalize_importance` is the existing
 //!   port of `Core/harness/memory/scoring.py::normalize_importance`
