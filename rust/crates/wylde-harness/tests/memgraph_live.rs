@@ -37,9 +37,13 @@
 //!   (`record_entities_best_effort` → `BoltClient::upsert`) lands a
 //!   `MENTIONED_IN` edge end-to-end through the real
 //!   `memory.workspace.save` handler.
+//! * `delete_workspace` drops a workspace's chunks *and* prunes the
+//!   entities left orphaned by that delete (no unbounded Entity leak).
 //!
-//! Everything is namespaced under `wylde_mglt_*` ids and torn down at
-//! start + end, so the test is idempotent and leaves no cruft.
+//! Each test uses its own `wylde_mglt_*` workspace id and tears down at
+//! start + end, and all three serialise on a shared mutex (they share
+//! one live DB and read global `stats()` counts), so the suite is
+//! idempotent and leaves no cruft.
 
 #![cfg(windows)]
 
@@ -49,7 +53,28 @@ use wylde_harness::memory::memgraph::bolt::BoltClient;
 use wylde_harness::memory::memgraph::client::{EntityPair, TraverseRequest};
 use wylde_harness::memory::workspace::actions as ws_actions;
 
-const WS: &str = "wylde_mglt_ws";
+// These live tests share ONE Neo4j and MUST NOT overlap. Two coupling
+// points make concurrent execution unsafe:
+//   1. Each calls `delete_workspace(...)` — a workspace-scoped chunk
+//      DETACH DELETE plus a *global* orphan-Entity prune — at start
+//      and teardown. Run in parallel, a sibling's teardown can delete
+//      this test's chunks mid-flight (the original flake: multihop
+//      then found nothing, and the failed test skipped its own
+//      teardown, leaving cruft that broke the *next* run's delta
+//      assertions).
+//   2. The assertions read `stats()` counts (`mentions`,
+//      `typed_relationships`) which are GLOBAL, not workspace-scoped,
+//      so a sibling adding or removing edges shifts this test's deltas
+//      even when the two use different workspace ids.
+// A process-wide async mutex held for the whole test body serialises
+// them with a hard, self-evident guarantee (chosen over `#[serial]`
+// so correctness doesn't hinge on serial_test's async attribute
+// semantics). Distinct workspace ids are layered on top as namespace
+// hygiene so each test's data is self-evidently its own.
+static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+const WS_ROUND_TRIP: &str = "wylde_mglt_ws_round";
+const WS_SAVE: &str = "wylde_mglt_ws_save";
+const WS_DELETE: &str = "wylde_mglt_ws_delete";
 
 fn client() -> BoltClient {
     BoltClient::new()
@@ -71,17 +96,23 @@ async fn require_live(c: &BoltClient) {
 
 fn count(reply: &wylde_shared::ipc::Reply, key: &str) -> i64 {
     assert!(reply.ok, "stats failed: {:?}", reply.error);
-    reply.data.get(key).and_then(serde_json::Value::as_i64).unwrap_or(-1)
+    reply
+        .data
+        .get(key)
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(-1)
 }
 
 #[tokio::test]
 #[ignore = "requires a live Neo4j/Memgraph on bolt://127.0.0.1:7687"]
 async fn upsert_traverse_relate_round_trip_lands_and_reads_edges() {
+    let _guard = DB_LOCK.lock().await;
     let c = client();
     require_live(&c).await;
+    let ws = WS_ROUND_TRIP;
 
     // Clean slate (idempotent) + schema.
-    let _ = c.delete_workspace(WS).await;
+    let _ = c.delete_workspace(ws).await;
     assert!(c.ensure_schema().await.ok, "ensure_schema failed");
 
     let before = c.stats().await;
@@ -95,7 +126,7 @@ async fn upsert_traverse_relate_round_trip_lands_and_reads_edges() {
             "path": "wylde_mglt/a.py",
             "symbol": "alpha",
             "language": "python",
-            "workspace": WS,
+            "workspace": ws,
             "entities": ["wylde_mglt_alpha", "wylde_mglt_beta"],
             "relationships": [
                 {"type": "CALLS", "source": "wylde_mglt_alpha", "target": "wylde_mglt_beta"}
@@ -106,7 +137,7 @@ async fn upsert_traverse_relate_round_trip_lands_and_reads_edges() {
             "path": "wylde_mglt/b.py",
             "symbol": "beta",
             "language": "python",
-            "workspace": WS,
+            "workspace": ws,
             "entities": ["wylde_mglt_beta", "wylde_mglt_gamma"],
             "relationships": [
                 {"type": "IMPORTS", "source": "wylde_mglt_beta", "target": "wylde_mglt_gamma"}
@@ -134,7 +165,7 @@ async fn upsert_traverse_relate_round_trip_lands_and_reads_edges() {
             entities: vec!["wylde_mglt_alpha".into()],
             max_hops: 3,
             limit: 10,
-            workspace: Some(WS.into()),
+            workspace: Some(ws.into()),
             decay_alpha: None,
             rel_depths: None,
         })
@@ -152,9 +183,7 @@ async fn upsert_traverse_relate_round_trip_lands_and_reads_edges() {
     );
 
     // ── multihop: expand co-mentioned entities, collect chunks ────────
-    let multi = c
-        .multihop(vec!["wylde_mglt_alpha".into()], 2, 20)
-        .await;
+    let multi = c.multihop(vec!["wylde_mglt_alpha".into()], 2, 20).await;
     assert!(multi.ok, "multihop failed: {:?}", multi.error);
     let expanded: Vec<String> = multi.data["expanded_entities"]
         .as_array()
@@ -207,7 +236,7 @@ async fn upsert_traverse_relate_round_trip_lands_and_reads_edges() {
     assert!(edge2.ok, "upsert_edge re-apply failed: {:?}", edge2.error);
 
     // ── teardown ──────────────────────────────────────────────────────
-    let del = c.delete_workspace(WS).await;
+    let del = c.delete_workspace(ws).await;
     assert!(del.ok, "delete_workspace failed: {:?}", del.error);
 }
 
@@ -218,9 +247,11 @@ async fn upsert_traverse_relate_round_trip_lands_and_reads_edges() {
 #[tokio::test]
 #[ignore = "requires a live Neo4j/Memgraph on bolt://127.0.0.1:7687"]
 async fn workspace_memory_save_lands_entity_graph_edge() {
+    let _guard = DB_LOCK.lock().await;
     let c = client();
     require_live(&c).await;
-    let _ = c.delete_workspace(WS).await;
+    let ws = WS_SAVE;
+    let _ = c.delete_workspace(ws).await;
     assert!(c.ensure_schema().await.ok);
 
     // The save handler needs a data dir for the JSON store.
@@ -230,7 +261,7 @@ async fn workspace_memory_save_lands_entity_graph_edge() {
     let mentions_before = count(&c.stats().await, "mentions");
 
     let reply = ws_actions::handle_save(json!({
-        "workspace_id": WS,
+        "workspace_id": ws,
         "body": "the watcher polls the outputs directory",
         "entities": ["wylde_mglt_watcher", "wylde_mglt_outputs"],
     }))
@@ -251,7 +282,71 @@ async fn workspace_memory_save_lands_entity_graph_edge() {
         "workspace save's best-effort MENTIONED_IN edges never appeared in the graph"
     );
 
-    let del = c.delete_workspace(WS).await;
+    let del = c.delete_workspace(ws).await;
     assert!(del.ok);
     std::env::remove_var("WYLDE_DATA_DIR");
+}
+
+/// `delete_workspace` must actually PRUNE the entities that are left
+/// orphaned once a workspace's chunks are gone — otherwise every
+/// workspace teardown leaks Entity nodes (and their typed edges) and
+/// the graph bloats without bound.
+///
+/// This is the direct regression test for the bug the live round-trip
+/// test surfaced: `delete_workspace` ran its chunk-delete and its
+/// orphan-prune as two independent autocommit queries, and the prune's
+/// `WHERE NOT (e)-[:MENTIONED_IN]->(:Chunk)` did not see the just-
+/// deleted chunks (no read-your-writes across pooled autocommit
+/// connections), so it pruned nothing. The fix runs both steps inside
+/// one explicit transaction.
+#[tokio::test]
+#[ignore = "requires a live Neo4j/Memgraph on bolt://127.0.0.1:7687"]
+async fn delete_workspace_prunes_orphaned_entities() {
+    let _guard = DB_LOCK.lock().await;
+    let c = client();
+    require_live(&c).await;
+    let ws = WS_DELETE;
+
+    // Clean slate + schema.
+    let _ = c.delete_workspace(ws).await;
+    assert!(c.ensure_schema().await.ok, "ensure_schema failed");
+
+    // One chunk mentioning two entities — after the chunk is deleted
+    // both entities have zero MENTIONED_IN edges, i.e. become orphans.
+    let up = c
+        .upsert(vec![json!({
+            "id": "wylde_mglt_del_c1",
+            "path": "wylde_mglt/del.py",
+            "symbol": "delsym",
+            "language": "python",
+            "workspace": ws,
+            "entities": ["wylde_mglt_del_a", "wylde_mglt_del_b"],
+        })])
+        .await;
+    assert!(up.ok, "upsert failed: {:?}", up.error);
+
+    let entities_before = count(&c.stats().await, "entities");
+
+    // Delete the workspace: chunk goes, and the two now-orphaned
+    // entities MUST go with it.
+    let del = c.delete_workspace(ws).await;
+    assert!(del.ok, "delete_workspace failed: {:?}", del.error);
+    assert!(
+        del.data["orphan_entities_deleted"].as_i64().unwrap_or(0) >= 2,
+        "delete_workspace should report >=2 pruned orphans, got {:?}",
+        del.data["orphan_entities_deleted"]
+    );
+
+    // Prove it against the graph, not just the reported count: the two
+    // entities are gone and the global entity count dropped.
+    let entities_after = count(&c.stats().await, "entities");
+    assert!(
+        entities_after <= entities_before - 2,
+        "expected >=2 fewer entities after prune (before={entities_before}, after={entities_after})"
+    );
+
+    // Re-running delete on the now-empty workspace is a clean no-op.
+    let del2 = c.delete_workspace(ws).await;
+    assert!(del2.ok, "idempotent re-delete failed: {:?}", del2.error);
+    assert_eq!(del2.data["chunks_deleted"], 0);
 }
