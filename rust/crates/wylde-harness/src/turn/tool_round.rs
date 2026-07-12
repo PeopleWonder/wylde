@@ -637,20 +637,20 @@ mod tests {
         let handle = register_turn(id.clone(), "c1".into());
         let mut state = ToolRoundState::new();
         let reg = Registry::default();
-        // Pick a tool still on the deferred list. After Phase 7.B
-        // moved the long_term memory tools and Phase 7.B-3 moved the
-        // rag.* tools to active, `memory.workspace.save` is the
-        // simplest still-deferred Phase 7 entry to assert against.
+        // Pick a tool still on the deferred list. The memory tools
+        // (long_term + workspace) and rag.* tools are all active now, so
+        // the remaining deferred entries are the Phase-11 voice streaming
+        // subscriptions — `voice.mic.chunks` is the simplest to assert.
         let call = ToolCall {
             id: "call_1".into(),
-            name: "memory.workspace.save".into(),
-            args: json!({"body": "x"}),
+            name: "voice.mic.chunks".into(),
+            args: json!({}),
         };
         let msg = run_one_tool(cfg, &handle, &mut state, TIER_DESTRUCTIVE, &reg, &call).await;
         assert!(msg["content"]
             .as_str()
             .unwrap()
-            .contains("phase_7_deferred"));
+            .contains("phase_11_deferred"));
         crate::state::remove_turn(&id);
     }
 

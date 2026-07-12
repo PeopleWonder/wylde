@@ -255,12 +255,16 @@ pub async fn reflect_long_term(
             .unwrap_or(REFLECTION_IMPORTANCE_FLOOR),
     );
 
+    // Embed the synthesis so it lands in the vector mirror (budgeted +
+    // fail-soft): reflections are prime semantic-search targets and the
+    // M5 dedup relies on their vectors being present.
+    let reflection_vector = crate::memory::embed_write::embed_for_write(&text).await;
     let new_record = match long_term_save(
         &text,
         "reflection:long_term",
         Some(importance as f64),
         vec![REFLECTION_TAG.to_owned()],
-        None,
+        reflection_vector,
     ) {
         Ok(r) => r,
         Err(e) => {

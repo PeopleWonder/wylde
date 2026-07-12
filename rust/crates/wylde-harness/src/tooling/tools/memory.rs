@@ -9,18 +9,23 @@
 //! * `memory_delete` — permanently remove a record.
 //! * `memory_search` — vector + recency-decay search.
 //!
-//! Workspace-scoped memory (`memory_workspace_save`) stays deferred —
-//! the `workspace_memory/` tier hasn't been ported yet (planned for a
-//! later 7.B+ slice). RAG tools are a separate parallel subtask.
+//! Workspace-scoped memory is ALSO exposed here now (the
+//! `memory_workspace_*` tools) — save / update / delete / search / list,
+//! each wired straight through to the `memory.workspace.*` action
+//! handlers in [`crate::memory::workspace::actions`]. This closes the
+//! locked-design drift where the model could reach the durable
+//! workspace tier only over the pipe, not as a tool-call. RAG tools are
+//! a separate parallel subtask.
 //!
 //! ## Embeddings
 //!
-//! Save / update take an optional `vector` parameter. When present the
-//! vector mirror is updated alongside the JSON record; when absent only
-//! the JSON is touched and the next `reindex` pass will rebuild the
-//! vector half. This keeps the write-side surface free of an Ollama
-//! dependency — the harness's chat loop can embed the body BEFORE
-//! calling these tools when an embedding is wanted.
+//! Save / update take an optional `vector` parameter. When the caller
+//! supplies one it is mirrored verbatim; when it is absent the handler
+//! now embeds the body itself via [`crate::memory::embeddings`]
+//! (budgeted + fail-soft — see [`crate::memory::embed_write`]), so the
+//! `long_term.vec.bin` mirror stays populated without the caller having
+//! to pre-embed. The workspace save/update handlers do the same against
+//! their per-workspace `memory.vec.bin` mirror.
 //!
 //! Search accepts EITHER a `query` (string — preferred; embedded via
 //! [`crate::memory::embeddings`]) OR a precomputed `query_vector`. The
@@ -29,9 +34,10 @@
 //! embedding in hand (e.g. tests, or reuse across a batch of searches).
 
 use serde_json::{json, Value};
-use wylde_shared::ipc::IpcError;
+use wylde_shared::ipc::{IpcError, Reply};
 
 use crate::memory::long_term;
+use crate::memory::workspace::actions as ws_actions;
 use crate::tooling::registry::{entry_active, param, param_default, Registry};
 
 pub fn register(reg: &mut Registry) {
@@ -121,6 +127,124 @@ pub fn register(reg: &mut Registry) {
         false,
         |args, _| async move { run_search(args).await },
     ));
+
+    // ── Workspace-scoped tier ────────────────────────────────────────
+    //
+    // The durable middle memory tier (memory plan M2, option B): the
+    // turn gather injects a workspace's top-k as the `### Workspace
+    // insights` prompt slot, so a model save here really does resurface
+    // in later workspace-bound turns. These mirror the long-term surface
+    // (save / update / delete / search) plus `list`, and each delegates
+    // straight through to the `memory.workspace.*` action handlers in
+    // [`crate::memory::workspace::actions`] — one implementation, two
+    // surfaces (named tool + pipe verb).
+
+    reg.insert(entry_active(
+        "memory_workspace_save",
+        "memory.workspace.save",
+        "memory",
+        "Save a memory scoped to a workspace. The workspace's top memories \
+         are injected into later prompts for that workspace, so this is how \
+         you durably teach yourself about a project. Requires `workspace_id`.",
+        vec![
+            param("workspace_id", "string", true, "Target workspace id"),
+            param("body", "string", true, "Memory text"),
+            param_default("source", "string", "Origin tag", json!("")),
+            param_default("importance", "number", "Importance 0..10", json!(null)),
+            param_default("entities", "array", "Entity names for graph edges", json!([])),
+        ],
+        true,
+        |args, _| async move { reply_to_value(ws_actions::handle_save(args).await) },
+    ));
+
+    reg.insert(entry_active(
+        "memory_workspace_update",
+        "memory.workspace.update",
+        "memory",
+        "Revise a workspace memory. Writes a new version and supersedes the \
+         old one. Requires `workspace_id` and `id`.",
+        vec![
+            param("workspace_id", "string", true, "Workspace id"),
+            param("id", "string", true, "Memory id to revise"),
+            param_default("body", "string", "New body (optional)", json!(null)),
+            param_default("importance", "number", "New importance", json!(null)),
+            param_default("entities", "array", "Replacement entity list", json!(null)),
+        ],
+        true,
+        |args, _| async move { reply_to_value(ws_actions::handle_update(args).await) },
+    ));
+
+    reg.insert(entry_active(
+        "memory_workspace_delete",
+        "memory.workspace.delete",
+        "memory",
+        "Permanently remove a workspace memory (and its superseded \
+         predecessors). Requires `workspace_id` and `id`.",
+        vec![
+            param("workspace_id", "string", true, "Workspace id"),
+            param("id", "string", true, "Memory id"),
+        ],
+        true,
+        |args, _| async move { reply_to_value(ws_actions::handle_delete(args).await) },
+    ));
+
+    reg.insert(entry_active(
+        "memory_workspace_search",
+        "memory.workspace.search",
+        "memory",
+        "Search a workspace's memories, ranked by relevance boosted by \
+         importance + recency decay. Requires `workspace_id` and `query`.",
+        vec![
+            param("workspace_id", "string", true, "Workspace id"),
+            param("query", "string", true, "Text query"),
+            param_default("limit", "number", "Max hits (1..=50, default 5)", json!(5)),
+        ],
+        false,
+        |args, _| async move { reply_to_value(ws_actions::handle_search(args).await) },
+    ));
+
+    reg.insert(entry_active(
+        "memory_workspace_list",
+        "memory.workspace.list",
+        "memory",
+        "List every memory for a workspace, importance then recency \
+         ordered. Requires `workspace_id`.",
+        vec![
+            param("workspace_id", "string", true, "Workspace id"),
+            param_default(
+                "include_superseded",
+                "boolean",
+                "Include superseded / tombstoned records",
+                json!(false),
+            ),
+        ],
+        false,
+        |args, _| async move { reply_to_value(ws_actions::handle_list(args).await) },
+    ));
+}
+
+/// Adapt a workspace-action [`Reply`] into the `{status, …}` value shape
+/// the named `memory.*` tools return. Success merges `status: "success"`
+/// into the reply's data object (so `id` / `hits` / `count` stay
+/// top-level); failure surfaces the `error` message + `code`, matching
+/// the long-term handlers' error envelope.
+fn reply_to_value(reply: Reply) -> Result<Value, IpcError> {
+    if reply.ok {
+        let value = match reply.data {
+            Value::Object(mut m) => {
+                m.insert("status".to_owned(), json!("success"));
+                Value::Object(m)
+            }
+            other => json!({ "status": "success", "data": other }),
+        };
+        Ok(value)
+    } else {
+        let (error, code) = match reply.error {
+            Some(e) => (e.message, e.code),
+            None => ("workspace memory operation failed".to_owned(), String::new()),
+        };
+        Ok(json!({ "status": "error", "error": error, "code": code }))
+    }
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────
@@ -139,7 +263,12 @@ pub(crate) async fn run_save(args: Value) -> Result<Value, IpcError> {
     let source = args.get("source").and_then(Value::as_str).unwrap_or("");
     let importance = args.get("importance").and_then(Value::as_f64);
     let tags = parse_string_array(args.get("tags"));
-    let vector = parse_float_array(args.get("vector"));
+    // Caller-supplied vector wins; otherwise embed the body ourselves so
+    // the `long_term.vec.bin` mirror stays populated (budgeted, fail-soft).
+    let vector = match parse_float_array(args.get("vector")) {
+        Some(v) => Some(v),
+        None => crate::memory::embed_write::embed_for_write(body).await,
+    };
     match long_term::save(body, source, importance, tags, vector) {
         Ok(r) => Ok(json!({
             "status": "success",
@@ -162,7 +291,23 @@ pub(crate) async fn run_update(args: Value) -> Result<Value, IpcError> {
     let body = args.get("body").and_then(Value::as_str);
     let importance = args.get("importance").and_then(Value::as_f64);
     let source = args.get("source").and_then(Value::as_str);
-    let vector = parse_float_array(args.get("vector"));
+    // The replacement record's mirror vector: caller-supplied wins;
+    // otherwise embed the effective new body (the supplied `body`, or the
+    // original's body when the update leaves it unchanged) so the mirror
+    // tracks the current text. Budgeted + fail-soft.
+    let vector = match parse_float_array(args.get("vector")) {
+        Some(v) => Some(v),
+        None => {
+            let effective_body = body
+                .map(str::to_owned)
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| long_term::get(memory_id).map(|r| r.body));
+            match effective_body {
+                Some(text) => crate::memory::embed_write::embed_for_write(&text).await,
+                None => None,
+            }
+        }
+    };
     match long_term::update(memory_id, body, importance, source, vector) {
         Some(r) => Ok(json!({
             "status": "success",
@@ -389,6 +534,58 @@ mod tests {
         assert!(reg.lookup("memory.update").is_some());
         assert!(reg.lookup("memory_delete").is_some());
         assert!(reg.lookup("memory_search").is_some());
+    }
+
+    #[tokio::test]
+    async fn workspace_memory_tools_register_under_canonical_and_alias_keys() {
+        let mut reg = Registry::empty();
+        register(&mut reg);
+        for (id, dotted) in [
+            ("memory_workspace_save", "memory.workspace.save"),
+            ("memory_workspace_update", "memory.workspace.update"),
+            ("memory_workspace_delete", "memory.workspace.delete"),
+            ("memory_workspace_search", "memory.workspace.search"),
+            ("memory_workspace_list", "memory.workspace.list"),
+        ] {
+            assert_eq!(reg.lookup(id).map(|e| e.id.clone()).as_deref(), Some(id));
+            assert_eq!(reg.lookup(dotted).map(|e| e.id.clone()).as_deref(), Some(id));
+        }
+        // Write ops destructive; read ops not.
+        assert!(reg.lookup("memory_workspace_save").unwrap().destructive);
+        assert!(reg.lookup("memory_workspace_update").unwrap().destructive);
+        assert!(reg.lookup("memory_workspace_delete").unwrap().destructive);
+        assert!(!reg.lookup("memory_workspace_search").unwrap().destructive);
+        assert!(!reg.lookup("memory_workspace_list").unwrap().destructive);
+    }
+
+    #[tokio::test]
+    async fn workspace_tool_adapter_maps_success_and_error_envelopes() {
+        let _env = TestEnv::new();
+        set_embed_dim_3();
+        // Success: status merged in, record fields stay top-level.
+        let ok = reply_to_value(
+            ws_actions::handle_save(json!({
+                "workspace_id": "wt", "body": "a durable note", "importance": 6,
+            }))
+            .await,
+        )
+        .unwrap();
+        assert_eq!(ok["status"], "success");
+        assert!(ok["id"].as_str().is_some());
+        assert_eq!(ok["workspace_id"], "wt");
+
+        // List round-trips the saved record via the tool adapter.
+        let listed =
+            reply_to_value(ws_actions::handle_list(json!({"workspace_id": "wt"})).await).unwrap();
+        assert_eq!(listed["status"], "success");
+        assert_eq!(listed["count"], 1);
+
+        // Missing workspace_id → error envelope with code preserved.
+        let err =
+            reply_to_value(ws_actions::handle_save(json!({"body": "orphan"})).await).unwrap();
+        assert_eq!(err["status"], "error");
+        assert_eq!(err["code"], "bad_request");
+        assert_eq!(err["error"], "workspace_id is required");
     }
 
     #[tokio::test]

@@ -40,8 +40,9 @@ use rand::RngCore;
 use serde_json::{json, Value};
 
 use super::record::WorkspaceMemory;
-use crate::memory::common::{data_dir, ensure_dir};
+use crate::memory::common::{data_dir, embed_dim, ensure_dir};
 use crate::memory::long_term::{combined_score, normalize_importance, DEFAULT_DECAY_DAYS};
+use crate::memory::vector::VectorStore;
 
 /// Process-wide guard over the per-workspace JSON files. One lock for
 /// the whole tier (not per-workspace) — matches Python's single
@@ -65,6 +66,17 @@ pub fn memory_dir(workspace_id: &str) -> PathBuf {
 /// `<data_dir>/workspace_memories/<workspace_id>/memory.json`.
 pub fn json_path(workspace_id: &str) -> PathBuf {
     memory_dir(workspace_id).join("memory.json")
+}
+
+/// `<data_dir>/workspace_memories/<workspace_id>/memory.vec.bin` — the
+/// pure-Rust vector mirror (same [`VectorStore`] format the long-term
+/// tier uses). Populated by the async save/update handlers via
+/// [`vector_upsert`]; consumed by [`search_records_vector`]. Lives
+/// beside `memory.json` and, like it, survives MRU eviction of the file
+/// index. Absent / empty → semantic search cleanly falls back to the
+/// text-overlap [`search_records`].
+pub fn vector_path(workspace_id: &str) -> PathBuf {
+    memory_dir(workspace_id).join("memory.vec.bin")
 }
 
 /// Recursively remove the durable workspace memory folder. Invoked on
@@ -353,6 +365,7 @@ pub fn delete(workspace_id: &str, record_id: &str) -> bool {
             ids.insert(r.id.as_str());
         }
     }
+    let deleted_ids: Vec<String> = ids.iter().map(|s| (*s).to_owned()).collect();
     let remaining: Vec<WorkspaceMemory> = records
         .iter()
         .filter(|r| !ids.contains(r.id.as_str()))
@@ -362,7 +375,160 @@ pub fn delete(workspace_id: &str, record_id: &str) -> bool {
         tracing::warn!("workspace_memory: save_all failed during delete: {}", e);
         return false;
     }
+    // Keep the vector mirror in sync — drop every removed id.
+    for id in &deleted_ids {
+        vector_delete(workspace_id, id);
+    }
     true
+}
+
+// ── Vector mirror ─────────────────────────────────────────────────────
+//
+// A per-workspace [`VectorStore`] (`memory.vec.bin`) mirrors the JSON
+// records' embeddings so search can rank semantically instead of by bare
+// token overlap. It is best-effort: populated by the async save/update
+// handlers ([`super::actions`]) which have the embedder; direct sync
+// callers (curation merges, some reflection paths) may leave records
+// un-mirrored, so [`search_records_vector`] joins strictly against the
+// live JSON and the action layer merges its hits with the text baseline
+// to preserve recall.
+
+fn vector_store(workspace_id: &str) -> VectorStore {
+    VectorStore::load_or_empty(&vector_path(workspace_id), embed_dim())
+}
+
+fn persist_vector_store(workspace_id: &str, store: &VectorStore) {
+    let path = vector_path(workspace_id);
+    if let Some(parent) = path.parent() {
+        if let Err(e) = ensure_dir(parent) {
+            tracing::warn!("workspace_memory: failed to ensure vector parent: {}", e);
+            return;
+        }
+    }
+    if let Err(e) = store.persist(&path) {
+        tracing::warn!("workspace_memory: vector persist failed: {}", e);
+    }
+}
+
+/// Upsert one record's embedding into the workspace vector mirror.
+/// `None` is a no-op (the caller couldn't embed — text search still
+/// covers the record). Best-effort: a persist failure logs and leaves
+/// the record un-mirrored.
+pub fn vector_upsert(workspace_id: &str, record_id: &str, vector: Option<Vec<f32>>) {
+    let Some(vec) = vector else { return };
+    let mut store = vector_store(workspace_id);
+    if let Err(e) = store.insert(record_id, vec) {
+        tracing::warn!(
+            "workspace_memory: vector upsert failed for {}/{}: {}",
+            workspace_id,
+            record_id,
+            e
+        );
+        return;
+    }
+    persist_vector_store(workspace_id, &store);
+}
+
+/// Remove one record from the workspace vector mirror. No-op if absent.
+pub fn vector_delete(workspace_id: &str, record_id: &str) {
+    let mut store = vector_store(workspace_id);
+    if store.delete(record_id) {
+        persist_vector_store(workspace_id, &store);
+    }
+}
+
+/// True when the mirror holds no vectors — the signal the action layer
+/// uses to skip the vector path entirely and stay on text.
+pub fn vector_mirror_is_empty(workspace_id: &str) -> bool {
+    vector_store(workspace_id).is_empty()
+}
+
+/// Vector search over a workspace's live (non-superseded) records, then
+/// re-rank by importance + recency decay — the semantic sibling of
+/// [`search_records`]. The caller embeds the query (this module stays
+/// embedder-free on the read path, mirroring `long_term::search`).
+/// Records absent from the mirror simply don't appear here; the action
+/// layer merges these hits with the text baseline so recall never
+/// regresses. Empty query vector / zero limit → empty.
+pub fn search_records_vector(
+    workspace_id: &str,
+    query_vector: Vec<f32>,
+    limit: usize,
+    decay_days: Option<f64>,
+) -> Vec<SearchHit> {
+    if query_vector.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    let store = vector_store(workspace_id);
+    // Over-fetch to leave headroom for the supersession filter + re-rank,
+    // matching the long-term store's `max(limit * 4, 16)`.
+    let k = std::cmp::max(limit * 4, 16);
+    let hits = match store.query_topk(query_vector, k) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!("workspace_memory: vector search failed for {}: {}", workspace_id, e);
+            return Vec::new();
+        }
+    };
+    let by_id: std::collections::HashMap<String, WorkspaceMemory> = list_records(workspace_id, false)
+        .into_iter()
+        .map(|r| (r.id.clone(), r))
+        .collect();
+    let decay = decay_days.unwrap_or(DEFAULT_DECAY_DAYS);
+    let mut out: Vec<SearchHit> = Vec::new();
+    for h in hits {
+        let Some(rec) = by_id.get(&h.id) else {
+            continue; // superseded / deleted since the mirror last wrote
+        };
+        let similarity = h.similarity as f64;
+        let score = combined_score(similarity, rec.importance as f64, rec.last_used_at, decay, None);
+        out.push(SearchHit {
+            id: rec.id.clone(),
+            body: rec.body.clone(),
+            source: rec.source.clone(),
+            importance: rec.importance,
+            created_at: rec.created_at,
+            last_used_at: rec.last_used_at,
+            similarity,
+            workspace_id: workspace_id.to_owned(),
+            score,
+        });
+    }
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    out.truncate(limit);
+    out
+}
+
+/// Merge a semantic hit list with the text-overlap baseline, keeping the
+/// higher-scoring hit per record id, then re-sort (score desc, id asc)
+/// and truncate to `limit`. This is how the action layer gets semantic
+/// ranking for mirrored records without losing recall on records the
+/// mirror doesn't yet cover.
+pub fn merge_hits(vector_hits: Vec<SearchHit>, text_hits: Vec<SearchHit>, limit: usize) -> Vec<SearchHit> {
+    use std::collections::HashMap;
+    let mut best: HashMap<String, SearchHit> = HashMap::new();
+    for hit in vector_hits.into_iter().chain(text_hits) {
+        match best.get(&hit.id) {
+            Some(existing) if existing.score >= hit.score => {}
+            _ => {
+                best.insert(hit.id.clone(), hit);
+            }
+        }
+    }
+    let mut merged: Vec<SearchHit> = best.into_values().collect();
+    merged.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    merged.truncate(limit);
+    merged
 }
 
 // ── Search ────────────────────────────────────────────────────────────
@@ -775,6 +941,97 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, r.id);
         assert!((hits[0].similarity - 1.0).abs() < 1e-9);
+    }
+
+    // ── vector mirror + hybrid search ────────────────────────────────
+
+    fn set_embed_dim_3() {
+        std::env::set_var("WYLDE_EMBED_DIM", "3");
+    }
+
+    #[test]
+    fn vector_mirror_empty_by_default_and_after_delete() {
+        let _env = TestEnv::new();
+        set_embed_dim_3();
+        assert!(vector_mirror_is_empty("wsm"));
+        let a = save_new("wsm", "body", "", Some(5.0), vec![]).unwrap();
+        vector_upsert("wsm", &a.id, Some(vec![1.0, 0.0, 0.0]));
+        assert!(!vector_mirror_is_empty("wsm"));
+        assert!(!vector_path("wsm").as_os_str().is_empty());
+        // delete prunes the mirror in lockstep.
+        assert!(delete("wsm", &a.id));
+        assert!(vector_mirror_is_empty("wsm"));
+    }
+
+    #[test]
+    fn vector_upsert_none_is_a_noop() {
+        let _env = TestEnv::new();
+        set_embed_dim_3();
+        let a = save_new("wsn", "body", "", Some(5.0), vec![]).unwrap();
+        vector_upsert("wsn", &a.id, None);
+        assert!(vector_mirror_is_empty("wsn"), "None must not create a mirror");
+    }
+
+    #[test]
+    fn vector_search_ranks_by_cosine_and_skips_superseded() {
+        let _env = TestEnv::new();
+        set_embed_dim_3();
+        let near = save_new("wsv", "near record", "", Some(5.0), vec![]).unwrap();
+        let far = save_new("wsv", "far record", "", Some(5.0), vec![]).unwrap();
+        vector_upsert("wsv", &near.id, Some(vec![1.0, 0.0, 0.0]));
+        vector_upsert("wsv", &far.id, Some(vec![0.0, 1.0, 0.0]));
+
+        let hits = search_records_vector("wsv", vec![1.0, 0.0, 0.0], 5, None);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, near.id, "closest cosine ranks first");
+        assert!(hits[0].similarity > hits[1].similarity);
+        assert_eq!(hits[0].workspace_id, "wsv");
+
+        // Supersede `near`; its replacement is not mirrored, so the
+        // now-superseded original must drop out of the vector results.
+        let _rev = update("wsv", &near.id, Some("near v2"), None, None).unwrap();
+        let hits2 = search_records_vector("wsv", vec![1.0, 0.0, 0.0], 5, None);
+        assert!(
+            hits2.iter().all(|h| h.id != near.id),
+            "superseded original filtered from vector hits"
+        );
+    }
+
+    #[test]
+    fn vector_search_empty_query_or_zero_limit_returns_empty() {
+        let _env = TestEnv::new();
+        set_embed_dim_3();
+        let a = save_new("wsz", "body", "", Some(5.0), vec![]).unwrap();
+        vector_upsert("wsz", &a.id, Some(vec![1.0, 0.0, 0.0]));
+        assert!(search_records_vector("wsz", vec![], 5, None).is_empty());
+        assert!(search_records_vector("wsz", vec![1.0, 0.0, 0.0], 0, None).is_empty());
+    }
+
+    #[test]
+    fn merge_hits_keeps_higher_score_per_id_and_sorts() {
+        let mk = |id: &str, score: f64| SearchHit {
+            id: id.to_owned(),
+            body: String::new(),
+            source: String::new(),
+            importance: 5,
+            created_at: 0.0,
+            last_used_at: 0.0,
+            similarity: 0.0,
+            workspace_id: "w".to_owned(),
+            score,
+        };
+        // `a` appears in both lists — the higher (vector, 0.9) wins.
+        let vector_hits = vec![mk("a", 0.9), mk("b", 0.2)];
+        let text_hits = vec![mk("a", 0.3), mk("c", 0.5)];
+        let merged = merge_hits(vector_hits, text_hits, 10);
+        assert_eq!(
+            merged.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
+            vec!["a", "c", "b"]
+        );
+        assert_eq!(merged.iter().filter(|h| h.id == "a").count(), 1);
+        assert!((merged[0].score - 0.9).abs() < 1e-9);
+        // Truncation honours the limit.
+        assert_eq!(merge_hits(vec![mk("a", 0.9)], vec![mk("b", 0.5)], 1).len(), 1);
     }
 
     #[test]

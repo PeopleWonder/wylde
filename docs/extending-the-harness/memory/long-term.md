@@ -228,11 +228,18 @@ for the recipe.
   pruning pass. Overusing it bloats long-term memory with unprunable
   detritus. Reserve it for `name`, `pronouns`, `birthdate`, `address`,
   `hard preferences I will never change` — that kind of thing.
-* **Pre-embedding is the caller's job.** `search(query_vector, ...)`
-  takes a vector, not a query string. The embedder lives in
-  wylde-ollama; when the Rust embedder ports (Phase 7.D), the
-  deferred `memory.long_term.search` pipe verb unblocks. Until then,
-  Python is canonical for the embed-then-search composite.
+* **The store stays embedder-free; the write handlers embed for you.**
+  `entries::save` / `update` and `search(query_vector, …)` still take a
+  precomputed vector so the store module carries no wylde-ollama dep.
+  But the *write path* no longer leaves the mirror empty: the
+  `memory.*` tool handlers (`tooling/tools/memory.rs`) and the
+  reflection cycles embed the body themselves via
+  `memory::embed_write::embed_for_write` (budgeted 1.2s, fail-soft) when
+  the caller doesn't supply a vector, so `long_term.vec.bin` stays
+  populated. `search` still expects a query vector; the string entry
+  point is `text_search` (embeds via the same path). When the embedder
+  is down the write degrades to JSON-only and search to
+  recency/text — never a hard failure.
 * **`TEST_ENV_LOCK` is shared.** Long-term tests serialise with every
   other memory submodule's tests. Don't hold the lock through
   multi-second work; if you need a slow test, mark it `#[ignore]` and
