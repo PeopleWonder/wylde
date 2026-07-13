@@ -40,6 +40,15 @@ pub const MAX_PLAN_STEPS: usize = crate::turn::tool_round::MAX_TOOL_LOOPS;
 /// 65k+ (S1.5 eval) — a user override may shrink this, never grow it.
 pub const REASONER_NUM_CTX_CAP: u64 = 32_768;
 
+/// Output allowance ON TOP of `think_budget_tokens` for the plan JSON
+/// itself. Ollama's `num_predict` caps think + content TOGETHER (there is
+/// no separate think cap), and the S3 live measurement showed the default
+/// reasoner ruminating ~3.5–4k tokens on a grounded plan prompt — a bare
+/// `num_predict = think_budget (4096)` truncated the JSON mid-string on
+/// 1 of 2 warm calls. The sum still hard-bounds a meltdown
+/// (6144 tok ≈ 37s at the measured 166 tok/s).
+pub const PLAN_OUTPUT_BUDGET: u32 = 2_048;
+
 /// What one successful PLAN call produced — the validated DAG plus the
 /// honest cost numbers the driver folds into the turn's token meter.
 #[derive(Debug, Clone, PartialEq)]
@@ -94,8 +103,10 @@ pub(crate) async fn run(
     let model = rcfg.slots.reasoner.clone();
 
     // Per-model user overrides ride the call, with two reasoning-owned
-    // knobs on top: the think budget (R2's `num_predict` guard — the
-    // grammar can't stop rumination, this can) and the resident-ctx cap.
+    // knobs on top: the generation cap (R2's `num_predict` guard — the
+    // grammar can't stop rumination, this can; think budget + the JSON
+    // output allowance, see [`PLAN_OUTPUT_BUDGET`]) and the resident-ctx
+    // cap.
     let mut options = crate::turn::chat_options::chat_options(&model);
     let num_ctx = options
         .get("num_ctx")
@@ -103,7 +114,10 @@ pub(crate) async fn run(
         .map(|v| v.min(REASONER_NUM_CTX_CAP))
         .unwrap_or(REASONER_NUM_CTX_CAP);
     options.insert("num_ctx".to_owned(), json!(num_ctx));
-    options.insert("num_predict".to_owned(), json!(rcfg.think_budget_tokens));
+    options.insert(
+        "num_predict".to_owned(),
+        json!(rcfg.think_budget_tokens.saturating_add(PLAN_OUTPUT_BUDGET)),
+    );
 
     let body = json!({
         "model": model,

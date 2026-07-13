@@ -299,7 +299,11 @@ async fn deep_turn_plans_grounds_and_guides_the_round() {
         "PLAN rides the PlanDag format schema (constrained decoding ON by default)"
     );
     assert_eq!(plan_body["options"]["num_ctx"], 32768, "reasoner ctx cap");
-    assert_eq!(plan_body["options"]["num_predict"], 4096, "think budget");
+    assert_eq!(
+        plan_body["options"]["num_predict"],
+        4096 + 2048,
+        "think budget + plan-JSON output allowance"
+    );
     assert_eq!(plan_body["stream"], false);
     assert!(
         plan_body["messages"][0]["content"]
