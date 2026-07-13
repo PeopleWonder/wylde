@@ -22,11 +22,11 @@
 //!
 //! ## Aaron's locked slot decisions (2026-07-13)
 //!
-//! 1. **Default reasoner = the locally-pulled Qwen3.6-35B-A3B build**
-//!    ([`DEFAULT_REASONER_MODEL`]). The tag is the exact string Ollama
-//!    reports for the pulled model (verified via `ollama list`); the
-//!    official-registry `qwen3.6:35b-a3b` alias is NOT pulled on the dev
-//!    box, so the hf.co tag is the honest default.
+//! 1. **Default reasoner = the OFFICIAL Qwen3.6-35B-A3B registry build**
+//!    ([`DEFAULT_REASONER_MODEL`], `qwen3.6:35b-a3b`, Q4_K_M). Aaron's
+//!    follow-up call (2026-07-13): the official Ollama-library tag, NOT
+//!    the community hf.co abliterated variant S1 initially wired (which
+//!    merely happened to be the pulled build at the time).
 //! 2. **PLAN and EXECUTE run on the SAME model.** The `fast` slot defaults
 //!    to the same tag as `reasoner`, and `fast == reasoner ⇒ Single` is
 //!    Aaron's confirmed derivation rule (scope DECISION #11), so
@@ -48,12 +48,12 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// The exact tag Ollama knows the default reasoner by on the dev box
-/// (Aaron's decision 1, 2026-07-13: "qwen 3.6 35B a3b"). Verified against
-/// `ollama list` — this is the pulled 21 GB Q4_K_M build; there is no
-/// plain `qwen3.6:35b-a3b` registry tag present locally.
-pub const DEFAULT_REASONER_MODEL: &str =
-    "hf.co/mradermacher/Qwen3.6-35B-A3B-Abliterix-EGA-abliterated-i1-GGUF:Qwen3.6-35B-A3B-Abliterix-EGA-abliterated.i1-Q4_K_M";
+/// The official Ollama-registry tag for the default reasoner (Aaron's
+/// decision 1, 2026-07-13, revised same day: the OFFICIAL Qwen build, not
+/// the abliterated hf.co variant). The registry's canonical `35b-a3b`
+/// alias resolves to the Q4_K_M quant (~24 GB) — the same quant class as
+/// the variant it replaces.
+pub const DEFAULT_REASONER_MODEL: &str = "qwen3.6:35b-a3b";
 
 /// Default embedder — matches `crate::memory::common::embed_model()`'s
 /// fallback so the slot and the env-driven embed path agree out of the box.
