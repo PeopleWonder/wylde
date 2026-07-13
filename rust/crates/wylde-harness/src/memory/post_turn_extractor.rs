@@ -36,6 +36,22 @@
 //!
 //! The extraction prompt is catalog-managed ([`EXTRACTION_PROMPT_ID`],
 //! per B9) so it's tunable from Settings without a rebuild.
+//!
+//! ## Grammar-constrained decoding (2026-07-13)
+//!
+//! The reply is machine-consumed fixed-schema JSON — exactly the class the
+//! constrained-decoding policy says to constrain (see the table in
+//! `turn/reasoning/constrained.rs`). By default the call carries
+//! [`extraction_format`] as Ollama's `format` (schema-forced decoding, the
+//! same treatment that took PLAN 93.3% → 100% valid); the
+//! `WYLDE_CONSTRAINED_EXTRACTION=off|0|false` kill switch drops back to
+//! the legacy JSON *mode* (`"format": "json"`) + lenient parser. Fail-soft
+//! twice over: a backend that rejects the schema is retried once freehand
+//! (`ollama_chat_maybe_constrained`), and [`parse_extraction`] stays
+//! lenient so an unconstrained reply parses exactly as before. The
+//! schema-vs-parser lockstep tests below are load-bearing: this Ollama
+//! build silently ignores malformed schemas (HTTP 200, unconstrained), so
+//! a schema bug fails open with no runtime signal.
 
 use serde_json::{json, Value};
 
@@ -212,6 +228,75 @@ pub fn parse_extraction(raw: &str, conversation_id: &str) -> Extraction {
     out
 }
 
+/// The canonical JSON Schema for the extractor's reply — the value handed
+/// to Ollama's `format` when [`constrained_extraction_enabled`]. MUST stay
+/// key-for-key in lockstep with what [`parse_extraction`] reads: a key the
+/// parser reads but the schema omits can never be emitted under the
+/// grammar (`additionalProperties: false`), and that drift is invisible at
+/// runtime because this Ollama build fails open on schema bugs. The
+/// lockstep tests below pin the coupling in both directions.
+///
+/// Deliberately conservative constructs only (object/array/string/
+/// integer/number/enum/required/additionalProperties/minItems-style
+/// bounds — the set `plan_dag_format` live-verified): `field` is a plain
+/// string rather than a `pattern`/`anyOf` union because `preference:<key>`
+/// needs regex support we can't verify the grammar compiler honours, and
+/// an unsupported construct silently un-constrains the whole call. The
+/// parser's [`valid_profile_field`] gate stays the enforcer.
+pub fn extraction_format() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "memory_entries": {
+                "type": "array",
+                "maxItems": MAX_MEMORY_ENTRIES,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"enum": ["fact", "decision", "preference"]},
+                        "text": {"type": "string"},
+                        "importance": {"type": "integer", "minimum": 1, "maximum": MAX_EXTRACTOR_IMPORTANCE}
+                    },
+                    "required": ["kind", "text", "importance"],
+                    "additionalProperties": false
+                }
+            },
+            "profile_proposals": {
+                "type": "array",
+                "maxItems": MAX_PROFILE_PROPOSALS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "field": {"type": "string"},
+                        "proposed": {"type": "string"},
+                        "rationale": {"type": "string"},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+                    },
+                    "required": ["field", "proposed", "rationale", "confidence"],
+                    "additionalProperties": false
+                }
+            },
+            "anchor_proposals": {
+                "type": "array",
+                "maxItems": MAX_ANCHOR_PROPOSALS,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "identifier": {"type": "string"},
+                        "description": {"type": "string"},
+                        "rationale": {"type": "string"},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+                    },
+                    "required": ["identifier", "description", "rationale", "confidence"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["memory_entries", "profile_proposals", "anchor_proposals"],
+        "additionalProperties": false
+    })
+}
+
 /// Pull the first balanced `{...}` object out of a possibly fence-wrapped
 /// / prose-wrapped reply and parse it.
 fn lenient_json_object(raw: &str) -> Option<Value> {
@@ -276,6 +361,21 @@ fn enabled() -> bool {
     }
 }
 
+/// Whether the extraction call carries the [`extraction_format`] schema
+/// (`WYLDE_CONSTRAINED_EXTRACTION` kill switch; on by default — same
+/// idiom as the pass's own switch). Off ⇒ the legacy JSON *mode*
+/// (`"format": "json"`) + lenient parser, byte-identical to the
+/// pre-constrained behaviour.
+pub fn constrained_extraction_enabled() -> bool {
+    match std::env::var("WYLDE_CONSTRAINED_EXTRACTION") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "off" | "0" | "false"
+        ),
+        Err(_) => true,
+    }
+}
+
 /// Run one post-turn extraction pass for a completed exchange. Best-effort
 /// end to end; see the module docs for the bound/fail-soft contract.
 pub async fn run(
@@ -302,8 +402,6 @@ pub async fn run(
              "content": crate::prompts::store::effective_prompt(EXTRACTION_PROMPT_ID)},
             {"role": "user", "content": exchange_block(user_message, assistant_message)},
         ],
-        // Constrain the reply to JSON — Ollama honours this natively.
-        "format": "json",
         "priority": cfg.default_chat_priority,
         "stream": false,
         "keep_alive": "24h",
@@ -313,7 +411,19 @@ pub async fn run(
         body["options"] = Value::Object(options);
     }
 
-    let reply = wylde_shared::ipc::call_action(&cfg.ollama_service, "ollama.chat", body).await;
+    // Grammar-constrained by default; the kill switch degrades to the
+    // legacy JSON mode. A backend that rejects the schema is retried once
+    // freehand inside the wrapper — the lenient parser owns that path.
+    let format = constrained_extraction_enabled().then(extraction_format);
+    if format.is_none() {
+        body["format"] = json!("json");
+    }
+    let reply = crate::turn::reasoning::constrained::ollama_chat_maybe_constrained(
+        &cfg.ollama_service,
+        body,
+        format.as_ref(),
+    )
+    .await;
     let content = match reply {
         Ok(v) => v
             .get("message")
@@ -509,6 +619,129 @@ mod tests {
         );
         // Non-numeric → the length+entity heuristic (3 for a short body).
         assert_eq!(x.memory_entries[2].importance, 3, "heuristic fallback");
+    }
+
+    /// Lockstep direction 1 (schema → parser): the minimal object the
+    /// grammar admits (`required` = the three arrays, all empty) must
+    /// parse to a clean empty extraction.
+    #[test]
+    fn minimal_schema_conformant_reply_parses() {
+        let minimal = json!({
+            "memory_entries": [],
+            "profile_proposals": [],
+            "anchor_proposals": [],
+        })
+        .to_string();
+        assert!(parse_extraction(&minimal, "c1").is_empty());
+    }
+
+    /// Lockstep direction 1, maximal: a reply exercising every field the
+    /// grammar can force (full rows at every cap, valid kinds/fields) must
+    /// parse with NOTHING dropped — grammar-forced output the parser
+    /// rejects would mean the schema admits shapes the parser doesn't.
+    #[test]
+    fn maximal_schema_conformant_reply_parses_lossless() {
+        let kinds = ["fact", "decision", "preference"];
+        let maximal = json!({
+            "memory_entries": (0..MAX_MEMORY_ENTRIES).map(|i| json!({
+                "kind": kinds[i % 3],
+                "text": format!("entry {i}"),
+                "importance": MAX_EXTRACTOR_IMPORTANCE,
+            })).collect::<Vec<_>>(),
+            "profile_proposals": [
+                {"field": "style", "proposed": "terse", "rationale": "r", "confidence": 0.9},
+                {"field": "preference:editor", "proposed": "vim", "rationale": "r", "confidence": 1.0},
+            ],
+            "anchor_proposals": [
+                {"identifier": "the_gather", "description": "d", "rationale": "r", "confidence": 0.8},
+                {"identifier": "exit_edges", "description": "d", "rationale": "r", "confidence": 0.0},
+            ],
+        })
+        .to_string();
+        let x = parse_extraction(&maximal, "c1");
+        assert_eq!(x.memory_entries.len(), MAX_MEMORY_ENTRIES);
+        assert!(x
+            .memory_entries
+            .iter()
+            .all(|e| e.importance == MAX_EXTRACTOR_IMPORTANCE));
+        assert_eq!(x.profile_proposals.len(), MAX_PROFILE_PROPOSALS);
+        assert_eq!(x.profile_proposals[1].field, "preference:editor");
+        assert_eq!(x.anchor_proposals.len(), MAX_ANCHOR_PROPOSALS);
+        assert_eq!(x.anchor_proposals[0].rationale, "r");
+        assert_eq!(x.anchor_proposals[1].confidence, 0.0);
+    }
+
+    /// Lockstep direction 2 (parser → schema): every key the parser reads
+    /// must be admitted by the schema (under `additionalProperties: false`
+    /// an omitted key can never be emitted), the `kind` enum must equal
+    /// the parser's accepted set, and the array caps / importance ceiling
+    /// must mirror the parser's constants.
+    #[test]
+    fn schema_admits_exactly_what_the_parser_reads() {
+        let s = extraction_format();
+        assert_eq!(
+            s["required"],
+            json!(["memory_entries", "profile_proposals", "anchor_proposals"])
+        );
+
+        let mem = &s["properties"]["memory_entries"];
+        assert_eq!(mem["maxItems"], MAX_MEMORY_ENTRIES);
+        assert_eq!(
+            mem["items"]["required"],
+            json!(["kind", "text", "importance"])
+        );
+        assert_eq!(
+            mem["items"]["properties"]["kind"]["enum"],
+            json!(["fact", "decision", "preference"]),
+            "schema kinds must be the parser's pass-through set"
+        );
+        assert_eq!(
+            mem["items"]["properties"]["importance"]["maximum"],
+            MAX_EXTRACTOR_IMPORTANCE,
+            "grammar must not admit the hand-flagged 9-10 band"
+        );
+
+        let prof = &s["properties"]["profile_proposals"];
+        assert_eq!(prof["maxItems"], MAX_PROFILE_PROPOSALS);
+        assert_eq!(
+            prof["items"]["required"],
+            json!(["field", "proposed", "rationale", "confidence"])
+        );
+
+        let anch = &s["properties"]["anchor_proposals"];
+        assert_eq!(anch["maxItems"], MAX_ANCHOR_PROPOSALS);
+        assert_eq!(
+            anch["items"]["required"],
+            json!(["identifier", "description", "rationale", "confidence"])
+        );
+
+        // Closed objects at every level — the property that makes
+        // direction 2 load-bearing.
+        assert_eq!(s["additionalProperties"], false);
+        for arr in ["memory_entries", "profile_proposals", "anchor_proposals"] {
+            assert_eq!(
+                s["properties"][arr]["items"]["additionalProperties"], false,
+                "{arr} items must be closed"
+            );
+        }
+    }
+
+    #[test]
+    fn constrained_extraction_toggle_parses_kill_switch() {
+        let _g = crate::memory::common::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("WYLDE_CONSTRAINED_EXTRACTION").ok(); // wylde-check: discard-result-ok
+        std::env::remove_var("WYLDE_CONSTRAINED_EXTRACTION");
+        assert!(constrained_extraction_enabled(), "default is on");
+        for v in ["off", "0", "false", " OFF "] {
+            std::env::set_var("WYLDE_CONSTRAINED_EXTRACTION", v);
+            assert!(!constrained_extraction_enabled(), "{v:?} must disable");
+        }
+        match prev {
+            Some(v) => std::env::set_var("WYLDE_CONSTRAINED_EXTRACTION", v),
+            None => std::env::remove_var("WYLDE_CONSTRAINED_EXTRACTION"),
+        }
     }
 
     #[test]
