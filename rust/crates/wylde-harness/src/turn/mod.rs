@@ -55,6 +55,7 @@ pub mod salvage;
 /// REAL producer asserted end-to-end through gather + render.
 #[cfg(test)]
 mod slot_liveness;
+pub mod think_stream;
 pub mod token_budget;
 pub mod tool_round;
 pub mod workspace_context;

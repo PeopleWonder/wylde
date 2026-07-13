@@ -97,6 +97,18 @@ pub enum TurnPhase {
     Generating,
     /// Recovered tool calls are being dispatched between generation rounds.
     RunningTools,
+    /// Agentic reasoning tier — the reasoner is drafting the step plan for a
+    /// Deep turn (PLAN phase). Emitted only behind `ReasoningConfig.enabled`
+    /// on a `Deep` turn; **inert until the reasoning tier lands** (scope P4).
+    /// Additive — older GUIs decode it to their `Unknown`/`Working` fallback.
+    Planning,
+    /// Agentic reasoning tier — the reasoner is critiquing the answer before
+    /// finalize (REFLECT phase). Inert until the reasoning tier lands (P6).
+    Reflecting,
+    /// Agentic reasoning tier — a surprising tool result is being handed back
+    /// to the reasoner (replan-on-surprise). Inert until the surprise
+    /// detector lands (P5).
+    Replanning,
 }
 
 /// Which slice of the context-gather pipeline a [`TurnEvent::Step`] reports.
@@ -116,6 +128,10 @@ pub enum StepStage {
     Symbol,
     /// A degrade / fallback notice (workspace unreachable, tier-7 shrink).
     Notice,
+    /// Agentic reasoning tier — a PLAN / REFLECT beat (grounded-input
+    /// gather, step drafting, critique). Inert until the reasoning tier
+    /// wires PLAN/REFLECT (scope P4+). Additive.
+    Reasoning,
 }
 
 /// Discriminator for the tool-activity stream.

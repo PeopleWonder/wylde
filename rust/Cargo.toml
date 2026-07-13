@@ -47,6 +47,15 @@ members = [
     # sub-tab arrive in later slices (H1+). Deleting the crate restores
     # pre-hierarchy behaviour byte-for-byte -- the removal test (plan SS5).
     "crates/wylde-concept-hierarchy",
+    # Agentic reasoning-tier data model (agentic-reasoning-tier scope, P0). An
+    # ISOLATED, removable pure-library crate: the planner's `PlanDag` /
+    # `PlanStep` / `ExpectedOutcome` types + the pure L0/L1 surprise
+    # `evaluate()` -- no I/O, no Ollama, no Core dependency. Nothing depends on
+    # it yet (P0 is the inert data slice); the gated turn wiring (PLAN call,
+    # InferenceBar controls, surprise L2/L3, REFLECT) lands behind
+    # `ReasoningConfig.enabled` in later phases (P1+). Deleting the crate
+    # restores pre-reasoning behaviour byte-for-byte -- the identity contract.
+    "crates/wylde-reasoning-plan",
     # Optional rust-analyzer LSP host (IDE S8, OQ-1). Supervises a single
     # rust-analyzer child and exposes diagnostics/completions/hover over
     # `lsp.*` pipe verbs. Taxonomy-clean: the editor works without it; it
