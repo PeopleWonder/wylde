@@ -849,15 +849,24 @@ mod tests {
         );
 
         // Empty / whitespace / None clears just that workspace's pointer.
-        assert_eq!(set_active_conversation_for_workspace("ws-a", Some("  ")), None);
+        assert_eq!(
+            set_active_conversation_for_workspace("ws-a", Some("  ")),
+            None
+        );
         assert_eq!(get_active_conversation_for_workspace("ws-a"), None);
-        assert_eq!(get_active_conversation_for_workspace("ws-b"), Some("thread-b".to_owned()));
+        assert_eq!(
+            get_active_conversation_for_workspace("ws-b"),
+            Some("thread-b".to_owned())
+        );
         assert_eq!(set_active_conversation_for_workspace("ws-b", None), None);
         assert_eq!(get_active_conversation_for_workspace("ws-b"), None);
 
         // A blank workspace id is never keyed here — the global pointer owns
         // the unbound surface.
-        assert_eq!(set_active_conversation_for_workspace("   ", Some("x")), None);
+        assert_eq!(
+            set_active_conversation_for_workspace("   ", Some("x")),
+            None
+        );
         assert_eq!(get_active_conversation_for_workspace("   "), None);
     }
 

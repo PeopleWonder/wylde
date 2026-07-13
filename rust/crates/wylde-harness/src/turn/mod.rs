@@ -48,13 +48,13 @@ pub mod context_gather;
 /// Prompt eval/regression goldens (improvement plan B11) — test-only.
 #[cfg(test)]
 mod golden;
+pub mod prompt;
+pub mod prompt_assembly;
+pub mod salvage;
 /// Slot liveness net (memory plan M8) — test-only: each injected slot's
 /// REAL producer asserted end-to-end through gather + render.
 #[cfg(test)]
 mod slot_liveness;
-pub mod prompt;
-pub mod prompt_assembly;
-pub mod salvage;
 pub mod token_budget;
 pub mod tool_round;
 pub mod workspace_context;

@@ -594,19 +594,19 @@ mod tests {
         let filter = ToolsetFilter::all();
         // (resource_type, op that the retired named tool maps to)
         let pairs = [
-            ("memory", ResourceOp::Search),        // memory.search
-            ("memory", ResourceOp::Create),        // memory.long_term.save
-            ("memory", ResourceOp::Update),        // memory.update
-            ("memory", ResourceOp::Delete),        // memory.delete
-            ("fs_file", ResourceOp::Get),          // fs.read_file
-            ("fs_file", ResourceOp::Update),       // fs.edit_file / fs.write_file
-            ("fs_file", ResourceOp::Search),       // search.code_search
-            ("fs_dir", ResourceOp::Search),        // search.code_search_files
+            ("memory", ResourceOp::Search),  // memory.search
+            ("memory", ResourceOp::Create),  // memory.long_term.save
+            ("memory", ResourceOp::Update),  // memory.update
+            ("memory", ResourceOp::Delete),  // memory.delete
+            ("fs_file", ResourceOp::Get),    // fs.read_file
+            ("fs_file", ResourceOp::Update), // fs.edit_file / fs.write_file
+            ("fs_file", ResourceOp::Search), // search.code_search
+            ("fs_dir", ResourceOp::Search),  // search.code_search_files
             // The rag_chunk / rag / rag_feedback / rag_miss / rag_chunk_usage
             // / rag_graph_stats resources were retired with the rag
             // subsystem (memory plan M7). `graph` survives — it is the
             // knowledge-graph entry point, not rag.
-            ("graph", ResourceOp::Search),         // meta.graph_query
+            ("graph", ResourceOp::Search), // meta.graph_query
             // ── Slice 4b clusters ──
             ("model", ResourceOp::List),    // ollama.list_loaded_models
             ("model", ResourceOp::Create),  // ollama.preload_model

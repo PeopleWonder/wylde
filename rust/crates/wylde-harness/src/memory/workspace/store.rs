@@ -466,14 +466,19 @@ pub fn search_records_vector(
     let hits = match store.query_topk(query_vector, k) {
         Ok(h) => h,
         Err(e) => {
-            tracing::warn!("workspace_memory: vector search failed for {}: {}", workspace_id, e);
+            tracing::warn!(
+                "workspace_memory: vector search failed for {}: {}",
+                workspace_id,
+                e
+            );
             return Vec::new();
         }
     };
-    let by_id: std::collections::HashMap<String, WorkspaceMemory> = list_records(workspace_id, false)
-        .into_iter()
-        .map(|r| (r.id.clone(), r))
-        .collect();
+    let by_id: std::collections::HashMap<String, WorkspaceMemory> =
+        list_records(workspace_id, false)
+            .into_iter()
+            .map(|r| (r.id.clone(), r))
+            .collect();
     let decay = decay_days.unwrap_or(DEFAULT_DECAY_DAYS);
     let mut out: Vec<SearchHit> = Vec::new();
     for h in hits {
@@ -481,7 +486,13 @@ pub fn search_records_vector(
             continue; // superseded / deleted since the mirror last wrote
         };
         let similarity = h.similarity as f64;
-        let score = combined_score(similarity, rec.importance as f64, rec.last_used_at, decay, None);
+        let score = combined_score(
+            similarity,
+            rec.importance as f64,
+            rec.last_used_at,
+            decay,
+            None,
+        );
         out.push(SearchHit {
             id: rec.id.clone(),
             body: rec.body.clone(),
@@ -509,7 +520,11 @@ pub fn search_records_vector(
 /// and truncate to `limit`. This is how the action layer gets semantic
 /// ranking for mirrored records without losing recall on records the
 /// mirror doesn't yet cover.
-pub fn merge_hits(vector_hits: Vec<SearchHit>, text_hits: Vec<SearchHit>, limit: usize) -> Vec<SearchHit> {
+pub fn merge_hits(
+    vector_hits: Vec<SearchHit>,
+    text_hits: Vec<SearchHit>,
+    limit: usize,
+) -> Vec<SearchHit> {
     use std::collections::HashMap;
     let mut best: HashMap<String, SearchHit> = HashMap::new();
     for hit in vector_hits.into_iter().chain(text_hits) {
@@ -969,7 +984,10 @@ mod tests {
         set_embed_dim_3();
         let a = save_new("wsn", "body", "", Some(5.0), vec![]).unwrap();
         vector_upsert("wsn", &a.id, None);
-        assert!(vector_mirror_is_empty("wsn"), "None must not create a mirror");
+        assert!(
+            vector_mirror_is_empty("wsn"),
+            "None must not create a mirror"
+        );
     }
 
     #[test]
@@ -1031,7 +1049,10 @@ mod tests {
         assert_eq!(merged.iter().filter(|h| h.id == "a").count(), 1);
         assert!((merged[0].score - 0.9).abs() < 1e-9);
         // Truncation honours the limit.
-        assert_eq!(merge_hits(vec![mk("a", 0.9)], vec![mk("b", 0.5)], 1).len(), 1);
+        assert_eq!(
+            merge_hits(vec![mk("a", 0.9)], vec![mk("b", 0.5)], 1).len(),
+            1
+        );
     }
 
     #[test]

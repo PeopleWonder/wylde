@@ -722,9 +722,9 @@ mod tests {
         assert!(ctx.user_profile.contains("User rules"), "rules untouched");
 
         // Exhaust WM down to the floor; rules degrade next.
-        while crate::turn::context_gather::degrade_short_term_once(
-            &mut ctx.conversation_short_term,
-        ) {}
+        while crate::turn::context_gather::degrade_short_term_once(&mut ctx.conversation_short_term)
+        {
+        }
         assert_eq!(ctx.conversation_short_term.len(), 5 + 1, "floor + marker");
         assert!(super::degrade_one_tier7(&mut ctx));
         assert!(

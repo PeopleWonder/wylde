@@ -758,8 +758,7 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
                 // it for the activity log.
                 if let Some(set) = &block.route_candidates {
                     tracing::info!(target: "concept_routing", "[harness] {}", set.log_line());
-                    let names: Vec<String> =
-                        set.activated().map(|c| c.label.clone()).collect();
+                    let names: Vec<String> = set.activated().map(|c| c.label.clone()).collect();
                     routed = Some((set.activated_count, names));
                 }
                 ctx.workspace_persona = block.persona;
@@ -814,7 +813,10 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     if !ctx.conversation_short_term.is_empty() {
         steps.push(GatherStep::new(
             StepStage::Memory,
-            format!("Working memory: {} entr(ies)", ctx.conversation_short_term.len()),
+            format!(
+                "Working memory: {} entr(ies)",
+                ctx.conversation_short_term.len()
+            ),
             None,
         ));
     }
@@ -852,7 +854,10 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     if !ctx.concept_context.is_empty() {
         steps.push(GatherStep::new(
             StepStage::Injection,
-            format!("Injected {} concept definition(s)", curated_names.len().max(1)),
+            format!(
+                "Injected {} concept definition(s)",
+                curated_names.len().max(1)
+            ),
             name_detail(&curated_names, 8),
         ));
     }
@@ -866,7 +871,10 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     if !ctx.symbol_contexts.is_empty() {
         steps.push(GatherStep::new(
             StepStage::Symbol,
-            format!("Loaded {} code-symbol context(s)", ctx.symbol_contexts.len()),
+            format!(
+                "Loaded {} code-symbol context(s)",
+                ctx.symbol_contexts.len()
+            ),
             None,
         ));
     }

@@ -122,8 +122,11 @@ fn graph_query_embed_enabled() -> bool {
 /// Fail-soft — timeout or embedder error degrades to `None` (the
 /// entity-only traversal, exactly today's behavior).
 async fn live_query_embedder(query: String) -> Option<Vec<f32>> {
-    match tokio::time::timeout(QUERY_EMBED_BUDGET, crate::memory::embeddings::embed_one(query))
-        .await
+    match tokio::time::timeout(
+        QUERY_EMBED_BUDGET,
+        crate::memory::embeddings::embed_one(query),
+    )
+    .await
     {
         Ok(Ok(v)) => Some(v),
         Ok(Err(e)) => {
@@ -282,8 +285,7 @@ async fn run_hybrid_path<T: MemgraphTraversal>(
     // importance × recency and filters superseded records; it never
     // errors (an unavailable store degrades to an empty list).
     let search_hits = long_term::search(query_vector, vector_k, None);
-    let vector_hits: Vec<VectorSeed> =
-        search_hits.iter().map(VectorSeed::from_long_term).collect();
+    let vector_hits: Vec<VectorSeed> = search_hits.iter().map(VectorSeed::from_long_term).collect();
     let candidates: Vec<Value> = vector_hits.iter().map(VectorSeed::to_value).collect();
 
     let opts = ExpandOptions {
@@ -546,11 +548,9 @@ mod tests {
     async fn embed_kill_switch_skips_the_embedder_entirely() {
         let _env = EmbedOffGuard::new();
         let (client, handle) = mock::new_with_static_ok(json!({"chunks": []}));
-        let out = run_graph_query_with(
-            json!({"q": "find foo_bar"}),
-            &client,
-            |_q: String| async { panic!("embedder must not be called when switched off") },
-        )
+        let out = run_graph_query_with(json!({"q": "find foo_bar"}), &client, |_q: String| async {
+            panic!("embedder must not be called when switched off")
+        })
         .await
         .unwrap();
         // Entity fallback ran (traverse hit) — today's pre-M4 behavior.
@@ -607,10 +607,22 @@ mod tests {
     /// rather than caller-chosen.
     fn seed_hybrid_store() -> (String, String) {
         std::env::set_var("WYLDE_EMBED_DIM", "4");
-        let a = long_term::save("alpha", "test", Some(4.0), vec![], Some(vec![1.0, 0.0, 0.0, 0.0]))
-            .expect("seed long-term record a");
-        let b = long_term::save("beta", "test", Some(9.0), vec![], Some(vec![0.0, 1.0, 0.0, 0.0]))
-            .expect("seed long-term record b");
+        let a = long_term::save(
+            "alpha",
+            "test",
+            Some(4.0),
+            vec![],
+            Some(vec![1.0, 0.0, 0.0, 0.0]),
+        )
+        .expect("seed long-term record a");
+        let b = long_term::save(
+            "beta",
+            "test",
+            Some(9.0),
+            vec![],
+            Some(vec![0.0, 1.0, 0.0, 0.0]),
+        )
+        .expect("seed long-term record b");
         (a.id, b.id)
     }
 

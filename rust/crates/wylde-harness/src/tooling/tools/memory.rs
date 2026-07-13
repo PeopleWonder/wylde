@@ -151,7 +151,12 @@ pub fn register(reg: &mut Registry) {
             param("body", "string", true, "Memory text"),
             param_default("source", "string", "Origin tag", json!("")),
             param_default("importance", "number", "Importance 0..10", json!(null)),
-            param_default("entities", "array", "Entity names for graph edges", json!([])),
+            param_default(
+                "entities",
+                "array",
+                "Entity names for graph edges",
+                json!([]),
+            ),
         ],
         true,
         |args, _| async move { reply_to_value(ws_actions::handle_save(args).await) },
@@ -241,7 +246,10 @@ fn reply_to_value(reply: Reply) -> Result<Value, IpcError> {
     } else {
         let (error, code) = match reply.error {
             Some(e) => (e.message, e.code),
-            None => ("workspace memory operation failed".to_owned(), String::new()),
+            None => (
+                "workspace memory operation failed".to_owned(),
+                String::new(),
+            ),
         };
         Ok(json!({ "status": "error", "error": error, "code": code }))
     }
@@ -548,7 +556,10 @@ mod tests {
             ("memory_workspace_list", "memory.workspace.list"),
         ] {
             assert_eq!(reg.lookup(id).map(|e| e.id.clone()).as_deref(), Some(id));
-            assert_eq!(reg.lookup(dotted).map(|e| e.id.clone()).as_deref(), Some(id));
+            assert_eq!(
+                reg.lookup(dotted).map(|e| e.id.clone()).as_deref(),
+                Some(id)
+            );
         }
         // Write ops destructive; read ops not.
         assert!(reg.lookup("memory_workspace_save").unwrap().destructive);
@@ -581,8 +592,7 @@ mod tests {
         assert_eq!(listed["count"], 1);
 
         // Missing workspace_id → error envelope with code preserved.
-        let err =
-            reply_to_value(ws_actions::handle_save(json!({"body": "orphan"})).await).unwrap();
+        let err = reply_to_value(ws_actions::handle_save(json!({"body": "orphan"})).await).unwrap();
         assert_eq!(err["status"], "error");
         assert_eq!(err["code"], "bad_request");
         assert_eq!(err["error"], "workspace_id is required");

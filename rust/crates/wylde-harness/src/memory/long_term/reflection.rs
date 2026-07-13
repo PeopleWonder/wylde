@@ -231,7 +231,10 @@ pub async fn reflect_long_term(
             match link_supersession(&r.id, &existing_id) {
                 Ok(()) => superseded_ids.push(r.id.clone()),
                 Err(e) => {
-                    tracing::warn!("reflection: dedup link_supersession failed for {}: {e}", r.id)
+                    tracing::warn!(
+                        "reflection: dedup link_supersession failed for {}: {e}",
+                        r.id
+                    )
                 }
             }
         }

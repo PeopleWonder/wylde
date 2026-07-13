@@ -288,7 +288,11 @@ mod tests {
         let set = handle_concept_routing_set(json!({ "enabled": true })).await;
         assert!(set.ok);
         assert_eq!(set.data["enabled"], json!(true));
-        assert_eq!(set.data["max_concepts"], json!(3), "untouched knob preserved");
+        assert_eq!(
+            set.data["max_concepts"],
+            json!(3),
+            "untouched knob preserved"
+        );
 
         // It persisted: a fresh get reflects the toggle.
         assert_eq!(
