@@ -184,8 +184,7 @@ mod tests {
         // here under the shared serial guard so the existing
         // call_internal semantics keep being pinned. New consent
         // integration tests live in `tooling::runner::tests`.
-        let _g = crate::tooling::consent::serial_test_guard().await;
-        crate::tooling::consent::set_bypass_for_tests(true);
+        let _g = crate::tooling::consent::bypass_scope(true).await;
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let registry = crate::tooling::registry::Registry::default();

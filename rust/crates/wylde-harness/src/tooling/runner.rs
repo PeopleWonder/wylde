@@ -286,15 +286,14 @@ mod tests {
     use crate::tooling::registry::{entry_active, entry_deferred};
     use serde_json::json;
 
-    /// Acquire the consent serial guard and set bypass=true. Drop the
-    /// returned guard at the end of the test to release. The two
-    /// dispatch-test families (bypass-needed and gate-needed) MUST
-    /// share the same guard so a gate test never overlaps with a
+    /// Acquire the consent serial guard and pin bypass=true for the
+    /// scope's lifetime (restored to the default `false` on drop, so
+    /// the flag never leaks into whichever test runs next). The two
+    /// dispatch-test families (bypass-needed and gate-needed) share
+    /// the same guard so a gate test never overlaps with a
     /// bypass-needed test mid-flight.
-    async fn bypass_scope() -> tokio::sync::MutexGuard<'static, ()> {
-        let g = consent::serial_test_guard().await;
-        consent::set_bypass_for_tests(true);
-        g
+    async fn bypass_scope() -> consent::BypassScope {
+        consent::bypass_scope(true).await
     }
 
     fn make_active_read_only_entry() -> ToolEntry {
@@ -432,9 +431,7 @@ mod tests {
         F: FnOnce(tempfile::TempDir) -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
-        let _guard = consent::serial_test_guard().await;
-        let prev = consent::global_bypass_active();
-        consent::set_bypass_for_tests(false);
+        let _guard = consent::bypass_scope(false).await;
         let td = tempfile::TempDir::new().expect("tempdir");
         let path = td.path().join("consent.json");
         // Inject a fresh store-of-record so the test's writes don't
@@ -446,7 +443,6 @@ mod tests {
         // previous test's residue doesn't bleed in.
         consent::clear_pending();
         test_body(td).await;
-        consent::set_bypass_for_tests(prev);
     }
 
     fn consent_store_set_path_for_tests(path: std::path::PathBuf) {
