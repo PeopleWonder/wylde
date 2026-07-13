@@ -61,6 +61,34 @@ pub struct PlanOutcome {
     pub completion_tokens: u64,
     /// Wall-clock of the reasoner call itself.
     pub elapsed_ms: u64,
+    /// The grounded inputs the plan was prompted with — retained on the
+    /// turn's `ReasoningState` so a replan (S4) can re-render the goal,
+    /// exclusions and tool catalog without re-gathering (no second IPC
+    /// fan-out on the surprise path).
+    pub plan_inputs: inputs::PlanInputs,
+}
+
+/// One reasoner→DAG call's result — shared by PLAN and REPLAN (S4). The
+/// caller owns the phase-specific emissions (checklist vs revision
+/// notice); this carries only the artifact + the honest cost numbers.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DagCall {
+    pub dag: PlanDag,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub elapsed_ms: u64,
+}
+
+/// Why a reasoner→DAG call yielded no plan. `Cancelled` is silent (the
+/// driver's round boundary owns the abort); the other two carry the
+/// human-readable detail for the caller's visible fallback notice.
+#[derive(Debug)]
+pub(crate) enum DagCallError {
+    Cancelled,
+    /// The IPC call itself failed — `"{code}: {message}"`.
+    Unavailable(String),
+    /// The reply parsed/validated to nothing usable.
+    Invalid(String),
 }
 
 /// Run the PLAN phase at the turn's tier. Emits `Phase(Planning)`, the
@@ -102,6 +130,96 @@ pub(crate) async fn run(
         return None;
     }
 
+    let messages = json!([
+        {"role": "system", "content": inputs::plan_system_prompt()},
+        {"role": "user", "content": inputs::render_user_prompt(&plan_inputs)},
+    ]);
+    let DagCall {
+        dag,
+        prompt_tokens,
+        completion_tokens,
+        elapsed_ms,
+    } = match tiered_dag_call(cfg, handle, turn_id, depth, &messages, alias_map).await {
+        Ok(call) => call,
+        Err(DagCallError::Cancelled) => return None,
+        Err(DagCallError::Unavailable(detail)) => {
+            tracing::warn!("reasoning: PLAN call failed ({detail})");
+            emit_step(
+                handle,
+                turn_id,
+                "Planner unavailable — running direct",
+                Some(detail),
+            )
+            .await;
+            return None;
+        }
+        Err(DagCallError::Invalid(reason)) => {
+            tracing::warn!("reasoning: PLAN parse/validation failed: {reason}");
+            emit_step(
+                handle,
+                turn_id,
+                "Planner output invalid — running direct",
+                Some(reason),
+            )
+            .await;
+            return None;
+        }
+    };
+
+    if dag.steps.is_empty() {
+        // A legal "answer directly" plan — fall through to plain ReAct
+        // with the trace kept (plan §2).
+        emit_step(handle, turn_id, "Plan: answer directly (0 steps)", None).await;
+    } else {
+        // THE plan checklist: one Step(Reasoning) per plan step — rendered
+        // by the existing grouped activity dropdown, zero new widgetry.
+        for (i, step) in dag.steps.iter().enumerate() {
+            emit_step(
+                handle,
+                turn_id,
+                format!("{} · {}", step.id, step.intent),
+                Some(step_detail(step, i)),
+            )
+            .await;
+        }
+        emit_step(
+            handle,
+            turn_id,
+            format!(
+                "Plan drafted: {} step(s) in {:.1}s",
+                dag.steps.len(),
+                elapsed_ms as f64 / 1000.0
+            ),
+            Some(format!(
+                "reasoner {prompt_tokens} prompt + {completion_tokens} completion tokens"
+            )),
+        )
+        .await;
+    }
+
+    Some(PlanOutcome {
+        dag,
+        prompt_tokens,
+        completion_tokens,
+        elapsed_ms,
+        plan_inputs,
+    })
+}
+
+/// The shared reasoner→DAG core (PLAN and REPLAN, S4): tier knobs
+/// (`num_ctx` cap, think budget + [`PLAN_OUTPUT_BUDGET`], the tier's
+/// `think` switch), the grammar-constrained call, thinking-event
+/// emission, the think-exhaustion salvage retry, and the parse/validation
+/// ladder. Behaviour is exactly the S3/tiers PLAN path — this is a
+/// factoring, not a change; the S3 e2e suite pins the wire bodies.
+async fn tiered_dag_call(
+    cfg: &'static Config,
+    handle: &Arc<TurnHandle>,
+    turn_id: &str,
+    depth: Depth,
+    messages: &Value,
+    alias_map: &HashMap<String, String>,
+) -> Result<DagCall, DagCallError> {
     let rcfg = ReasoningConfig::current();
     let model = rcfg.slots.reasoner.clone();
 
@@ -130,30 +248,21 @@ pub(crate) async fn run(
     // `think` on models without the capability).
     let think = (!depth.think_enabled()).then_some(false);
 
-    let messages = json!([
-        {"role": "system", "content": inputs::plan_system_prompt()},
-        {"role": "user", "content": inputs::render_user_prompt(&plan_inputs)},
-    ]);
     let format = constrained::plan_format();
     let started = Instant::now();
     let upstream =
-        match call_reasoner(cfg, &model, &messages, &options, think, format.as_ref()).await {
+        match call_reasoner(cfg, &model, messages, &options, think, format.as_ref()).await {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("reasoning: PLAN call failed ({}: {})", e.code, e.message);
-                emit_step(
-                    handle,
-                    turn_id,
-                    "Planner unavailable — running direct",
-                    Some(format!("{}: {}", e.code, e.message)),
-                )
-                .await;
-                return None;
+                return Err(DagCallError::Unavailable(format!(
+                    "{}: {}",
+                    e.code, e.message
+                )))
             }
         };
 
     if handle.is_cancelled() {
-        return None;
+        return Err(DagCallError::Cancelled);
     }
 
     let mut prompt_tokens = upstream
@@ -216,7 +325,7 @@ pub(crate) async fn run(
         match call_reasoner(
             cfg,
             &model,
-            &messages,
+            messages,
             &salvage_options,
             Some(false),
             format.as_ref(),
@@ -245,24 +354,11 @@ pub(crate) async fn run(
             }
         }
         if handle.is_cancelled() {
-            return None;
+            return Err(DagCallError::Cancelled);
         }
     }
 
-    let dag = match parse_plan_dag(&clean_content, alias_map) {
-        Ok(d) => d,
-        Err(reason) => {
-            tracing::warn!("reasoning: PLAN parse/validation failed: {reason}");
-            emit_step(
-                handle,
-                turn_id,
-                "Planner output invalid — running direct",
-                Some(reason),
-            )
-            .await;
-            return None;
-        }
-    };
+    let dag = parse_plan_dag(&clean_content, alias_map).map_err(DagCallError::Invalid)?;
     let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
     // The JSON-carried trace reaches the dropdown too when nothing else
@@ -271,43 +367,145 @@ pub(crate) async fn run(
         emit_thinking(handle, turn_id, &dag.reasoning_trace).await;
     }
 
-    if dag.steps.is_empty() {
-        // A legal "answer directly" plan — fall through to plain ReAct
-        // with the trace kept (plan §2).
-        emit_step(handle, turn_id, "Plan: answer directly (0 steps)", None).await;
-    } else {
-        // THE plan checklist: one Step(Reasoning) per plan step — rendered
-        // by the existing grouped activity dropdown, zero new widgetry.
-        for (i, step) in dag.steps.iter().enumerate() {
-            emit_step(
-                handle,
-                turn_id,
-                format!("{} · {}", step.id, step.intent),
-                Some(step_detail(step, i)),
-            )
-            .await;
-        }
-        emit_step(
-            handle,
-            turn_id,
-            format!(
-                "Plan drafted: {} step(s) in {:.1}s",
-                dag.steps.len(),
-                elapsed_ms as f64 / 1000.0
-            ),
-            Some(format!(
-                "reasoner {prompt_tokens} prompt + {completion_tokens} completion tokens"
-            )),
-        )
-        .await;
-    }
-
-    Some(PlanOutcome {
+    Ok(DagCall {
         dag,
         prompt_tokens,
         completion_tokens,
         elapsed_ms,
     })
+}
+
+/// REPLAN (S4, the expensive half of replan-on-surprise): one reasoner
+/// call handing back the original plan, the executed results, and the
+/// surprise verdict — out comes a REVISED [`PlanDag`] for the remaining
+/// work, with `plan_version` bumped past the current plan's.
+///
+/// Same tier knobs, grammar constraint, think-exhaustion salvage and
+/// validation as PLAN (via [`tiered_dag_call`]). **Fail-soft**: any
+/// failure emits a visible "Replan failed — continuing the existing plan"
+/// notice and returns `None`; the caller keeps executing the current
+/// plan. Cancellation is silent (the round boundary owns the abort).
+#[allow(clippy::too_many_arguments)] // mirrors the surprise-seam fan-out
+pub(crate) async fn replan(
+    cfg: &'static Config,
+    handle: &Arc<TurnHandle>,
+    turn_id: &str,
+    depth: Depth,
+    plan_inputs: &inputs::PlanInputs,
+    dag: &PlanDag,
+    executed: &[super::ExecutedStep],
+    surprise: &str,
+    alias_map: &HashMap<String, String>,
+) -> Option<DagCall> {
+    let messages = json!([
+        {"role": "system", "content": inputs::plan_system_prompt()},
+        {"role": "user", "content": render_replan_prompt(plan_inputs, dag, executed, surprise)},
+    ]);
+    match tiered_dag_call(cfg, handle, turn_id, depth, &messages, alias_map).await {
+        Ok(mut call) => {
+            // `validate_plan` normalises to 1; a revision supersedes the
+            // plan it revised.
+            call.dag.plan_version = dag.plan_version + 1;
+            Some(call)
+        }
+        Err(DagCallError::Cancelled) => None,
+        Err(DagCallError::Unavailable(detail)) | Err(DagCallError::Invalid(detail)) => {
+            tracing::warn!("reasoning: REPLAN failed: {detail}");
+            emit_step(
+                handle,
+                turn_id,
+                "Replan failed — continuing the existing plan",
+                Some(detail),
+            )
+            .await;
+            None
+        }
+    }
+}
+
+/// Render the REPLAN call's user message. Pure string assembly
+/// (golden-testable). Reuses the retained [`inputs::PlanInputs`] for the
+/// goal, the IS-NOT exclusions and the tool catalog — the surfaces a
+/// revision must still respect — and adds the plan under revision, the
+/// executed results, and the surprise verdict. Live concepts/boundaries/
+/// digest are deliberately dropped: the executed evidence is now the
+/// sharper grounding, and the replan prompt should stay lean.
+pub(crate) fn render_replan_prompt(
+    inputs: &inputs::PlanInputs,
+    dag: &PlanDag,
+    executed: &[super::ExecutedStep],
+    surprise: &str,
+) -> String {
+    let mut s = String::new();
+    s.push_str("### Goal\n");
+    s.push_str(&inputs.goal);
+
+    let section = |title: &str, lines: &[String], s: &mut String| {
+        if lines.is_empty() {
+            return;
+        }
+        s.push_str(&format!("\n\n### {title}\n"));
+        for l in lines {
+            s.push_str("- ");
+            s.push_str(l);
+            s.push('\n');
+        }
+        s.truncate(s.trim_end().len());
+    };
+
+    section(
+        "Excluded — NOT relevant (user-authored boundaries)",
+        &inputs.exclusions,
+        &mut s,
+    );
+    section("Available tools", &inputs.tool_catalog, &mut s);
+
+    let plan_lines: Vec<String> = dag
+        .steps
+        .iter()
+        .map(|step| {
+            let tool = step.tool.as_deref().unwrap_or("synthesis (no tool)");
+            let done = if executed.iter().any(|e| e.id == step.id) {
+                " · done"
+            } else {
+                " · pending"
+            };
+            format!("{} · {} · {tool}{done}", step.id, step.intent)
+        })
+        .collect();
+    section(
+        &format!("Plan under revision (version {})", dag.plan_version),
+        &plan_lines,
+        &mut s,
+    );
+
+    let executed_lines: Vec<String> = executed
+        .iter()
+        .map(|e| {
+            let tool = e.tool.as_deref().unwrap_or("synthesis");
+            format!("{} ({tool}) → {}", e.id, e.digest)
+        })
+        .collect();
+    section("Executed step results", &executed_lines, &mut s);
+
+    s.push_str("\n\n### Surprise\n");
+    s.push_str(surprise);
+
+    s.push_str(
+        "\n\n### Instructions\n\
+         The plan above hit an unexpected result. Produce a REVISED complete \
+         plan JSON (same schema) covering ONLY the remaining work toward the \
+         goal.\n\
+         - Executed step results stay available: reference them with \
+         ${stepid.output} / ${stepid.output.field.path}.\n\
+         - Use FRESH step ids (e.g. \"r1\", \"r2\") that do not collide with \
+         executed step ids, and never depends_on an executed step.\n\
+         - Route around the surprise; do not re-issue the exact tool call \
+         that surprised.\n\
+         - If the goal can now be answered directly from the results so far \
+         (or cannot be advanced at all), return \"steps\": [].",
+    );
+    s
 }
 
 /// One unary reasoner call: builds the `ollama.chat` body (system + user,
@@ -317,7 +515,7 @@ pub(crate) async fn run(
 /// explicit `think` for models without the thinking capability) gets ONE
 /// retry without the field — think-off is such a model's only behaviour
 /// anyway, so dropping the switch is behaviour-preserving.
-async fn call_reasoner(
+pub(crate) async fn call_reasoner(
     cfg: &'static Config,
     model: &str,
     messages: &Value,
@@ -355,7 +553,7 @@ async fn call_reasoner(
 }
 
 /// The checklist row's supporting detail: tool + declared expectation.
-fn step_detail(step: &PlanStep, index: usize) -> String {
+pub(crate) fn step_detail(step: &PlanStep, index: usize) -> String {
     let tool = step
         .tool
         .clone()
@@ -375,7 +573,7 @@ fn step_detail(step: &PlanStep, index: usize) -> String {
     format!("step {} · {tool} · {expectation}{deps}", index + 1)
 }
 
-async fn emit_step(
+pub(crate) async fn emit_step(
     handle: &Arc<TurnHandle>,
     turn_id: &str,
     summary: impl Into<String>,
@@ -403,7 +601,7 @@ async fn emit_thinking(handle: &Arc<TurnHandle>, turn_id: &str, text: &str) {
 /// Peel an inline `<think>…</think>` block off a UNARY body by driving
 /// the streaming splitter over it in one push (identity on think-free
 /// text — the splitter's tested invariant).
-fn strip_inline_think(body: &str) -> (String, String) {
+pub(crate) fn strip_inline_think(body: &str) -> (String, String) {
     let mut splitter = ThinkSplitter::new();
     let mut delta = splitter.push(body);
     let tail = splitter.finish();
