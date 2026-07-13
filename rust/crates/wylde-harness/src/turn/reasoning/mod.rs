@@ -84,10 +84,11 @@ pub fn resolve_depth(payload: &Value) -> Depth {
 }
 
 /// The one gate expression (plan §2): a turn enters PLAN only when the
-/// resolved depth is `Deep` **and** the master toggle is on. `false` ⇒
-/// today's exact path — plain vector RAG, plain ReAct, byte-identical.
+/// resolved depth is a planning TIER (anything above `Fast`) **and** the
+/// master toggle is on. `false` ⇒ today's exact path — plain vector RAG,
+/// plain ReAct, byte-identical.
 pub fn deep_gate_open(depth: Depth) -> bool {
-    depth == Depth::Deep && ReasoningConfig::current().enabled
+    depth.plans() && ReasoningConfig::current().enabled
 }
 
 /// Multiplier applied to on-disk model size to estimate resident bytes —
@@ -392,6 +393,7 @@ pub(crate) async fn maybe_plan(
         cfg,
         handle,
         turn_id,
+        depth,
         workspace_id,
         user_message,
         gathered,
@@ -420,7 +422,16 @@ mod tests {
 
     #[test]
     fn resolve_depth_payload_wins() {
-        assert_eq!(resolve_depth(&json!({ "depth": "deep" })), Depth::Deep);
+        assert_eq!(resolve_depth(&json!({ "depth": "think" })), Depth::Think);
+        assert_eq!(
+            resolve_depth(&json!({ "depth": "ultrathink" })),
+            Depth::Ultrathink
+        );
+        // Legacy wire value keeps its S3 semantics.
+        assert_eq!(
+            resolve_depth(&json!({ "depth": "deep" })),
+            Depth::ThinkHarder
+        );
         assert_eq!(resolve_depth(&json!({ "depth": "fast" })), Depth::Fast);
     }
 
@@ -437,9 +448,11 @@ mod tests {
 
     #[test]
     fn gate_is_closed_by_default() {
-        // Default config: enabled == false ⇒ even an explicit Deep turn
-        // does not open the gate. THE identity guard.
-        assert!(!deep_gate_open(Depth::Deep) || ReasoningConfig::current().enabled);
+        // Default config: enabled == false ⇒ even an explicit planning
+        // tier does not open the gate. THE identity guard.
+        for tier in [Depth::Think, Depth::ThinkHarder, Depth::Ultrathink] {
+            assert!(!deep_gate_open(tier) || ReasoningConfig::current().enabled);
+        }
         assert!(!deep_gate_open(Depth::Fast), "Fast never opens the gate");
     }
 

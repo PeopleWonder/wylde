@@ -27,7 +27,7 @@ use crate::state::TurnHandle;
 use crate::turn::context_gather::GatheredContext;
 use crate::turn::think_stream::ThinkSplitter;
 
-use super::config::ReasoningConfig;
+use super::config::{Depth, ReasoningConfig};
 use super::{constrained, inputs};
 
 /// Hard cap on plan length — mirrors `tool_round::MAX_TOOL_LOOPS` so a
@@ -40,13 +40,14 @@ pub const MAX_PLAN_STEPS: usize = crate::turn::tool_round::MAX_TOOL_LOOPS;
 /// 65k+ (S1.5 eval) — a user override may shrink this, never grow it.
 pub const REASONER_NUM_CTX_CAP: u64 = 32_768;
 
-/// Output allowance ON TOP of `think_budget_tokens` for the plan JSON
+/// Output allowance ON TOP of the tier's think budget for the plan JSON
 /// itself. Ollama's `num_predict` caps think + content TOGETHER (there is
 /// no separate think cap), and the S3 live measurement showed the default
 /// reasoner ruminating ~3.5–4k tokens on a grounded plan prompt — a bare
 /// `num_predict = think_budget (4096)` truncated the JSON mid-string on
-/// 1 of 2 warm calls. The sum still hard-bounds a meltdown
-/// (6144 tok ≈ 37s at the measured 166 tok/s).
+/// 1 of 2 warm calls. Every tier carries this headroom on top of its
+/// think allowance; the `Think` tier (deliberation off) runs on this
+/// allowance alone. The sum still hard-bounds a meltdown.
 pub const PLAN_OUTPUT_BUDGET: u32 = 2_048;
 
 /// What one successful PLAN call produced — the validated DAG plus the
@@ -62,14 +63,16 @@ pub struct PlanOutcome {
     pub elapsed_ms: u64,
 }
 
-/// Run the PLAN phase. Emits `Phase(Planning)`, the grounding step, the
-/// reasoner's thinking, then either the per-step plan checklist or a
-/// visible fallback notice. `None` ⇒ run plain ReAct (the caller changes
-/// nothing else).
+/// Run the PLAN phase at the turn's tier. Emits `Phase(Planning)`, the
+/// grounding step, the reasoner's thinking, then either the per-step plan
+/// checklist or a visible fallback notice. `None` ⇒ run plain ReAct (the
+/// caller changes nothing else).
+#[allow(clippy::too_many_arguments)] // mirrors the driver fan-out it's called from
 pub(crate) async fn run(
     cfg: &'static Config,
     handle: &Arc<TurnHandle>,
     turn_id: &str,
+    depth: Depth,
     workspace_id: Option<&str>,
     user_message: &str,
     gathered: &GatheredContext,
@@ -104,9 +107,9 @@ pub(crate) async fn run(
 
     // Per-model user overrides ride the call, with two reasoning-owned
     // knobs on top: the generation cap (R2's `num_predict` guard — the
-    // grammar can't stop rumination, this can; think budget + the JSON
-    // output allowance, see [`PLAN_OUTPUT_BUDGET`]) and the resident-ctx
-    // cap.
+    // grammar can't stop rumination, this can; the TIER's think budget +
+    // the JSON output allowance, see [`PLAN_OUTPUT_BUDGET`]) and the
+    // resident-ctx cap.
     let mut options = crate::turn::chat_options::chat_options(&model);
     let num_ctx = options
         .get("num_ctx")
@@ -114,56 +117,50 @@ pub(crate) async fn run(
         .map(|v| v.min(REASONER_NUM_CTX_CAP))
         .unwrap_or(REASONER_NUM_CTX_CAP);
     options.insert("num_ctx".to_owned(), json!(num_ctx));
+    let think_budget = depth.think_budget(&rcfg.tier_budgets);
     options.insert(
         "num_predict".to_owned(),
-        json!(rcfg.think_budget_tokens.saturating_add(PLAN_OUTPUT_BUDGET)),
+        json!(think_budget.saturating_add(PLAN_OUTPUT_BUDGET)),
     );
 
-    let body = json!({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": inputs::plan_system_prompt()},
-            {"role": "user", "content": inputs::render_user_prompt(&plan_inputs)},
-        ],
-        "priority": cfg.default_chat_priority,
-        "stream": false,
-        "keep_alive": "24h",
-        "options": Value::Object(options),
-    });
+    // The tier's think switch: the `Think` tier sends `think:false`
+    // (plan grammar-first, no rumination — measured ~2–6 s vs tens of
+    // seconds); the deliberating tiers OMIT the field so a non-thinking
+    // reasoner keeps working exactly as in S3 (Ollama rejects an explicit
+    // `think` on models without the capability).
+    let think = (!depth.think_enabled()).then_some(false);
 
+    let messages = json!([
+        {"role": "system", "content": inputs::plan_system_prompt()},
+        {"role": "user", "content": inputs::render_user_prompt(&plan_inputs)},
+    ]);
     let format = constrained::plan_format();
     let started = Instant::now();
-    let upstream = match constrained::ollama_chat_maybe_constrained(
-        &cfg.ollama_service,
-        body,
-        format.as_ref(),
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!("reasoning: PLAN call failed ({}: {})", e.code, e.message);
-            emit_step(
-                handle,
-                turn_id,
-                "Planner unavailable — running direct",
-                Some(format!("{}: {}", e.code, e.message)),
-            )
-            .await;
-            return None;
-        }
-    };
-    let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    let upstream =
+        match call_reasoner(cfg, &model, &messages, &options, think, format.as_ref()).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("reasoning: PLAN call failed ({}: {})", e.code, e.message);
+                emit_step(
+                    handle,
+                    turn_id,
+                    "Planner unavailable — running direct",
+                    Some(format!("{}: {}", e.code, e.message)),
+                )
+                .await;
+                return None;
+            }
+        };
 
     if handle.is_cancelled() {
         return None;
     }
 
-    let prompt_tokens = upstream
+    let mut prompt_tokens = upstream
         .get("prompt_eval_count")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let completion_tokens = upstream
+    let mut completion_tokens = upstream
         .get("eval_count")
         .and_then(Value::as_u64)
         .unwrap_or(0);
@@ -186,10 +183,70 @@ pub(crate) async fn run(
         .and_then(|m| m.get("content"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    let (clean_content, inline_think) = strip_inline_think(raw_content);
+    let (mut clean_content, inline_think) = strip_inline_think(raw_content);
     if !inline_think.trim().is_empty() {
         emit_thinking(handle, turn_id, &inline_think).await;
         emitted_thinking = true;
+    }
+
+    // Think-exhaustion salvage (tiers slice): a deliberating tier whose
+    // generation hit the num_predict cap while still inside `<think>`
+    // produced ZERO content — the grammar constrains `message.content`
+    // only and cannot force the model out of the think channel (measured:
+    // 2 of 3 seeds at the old 4096+2048 default died exactly this way,
+    // ~37 s wasted then plain ReAct). One grammar-first retry with
+    // deliberation disabled turns that into a valid — if unthought — plan
+    // for ~2–6 s more. Bounded: one retry, output allowance only.
+    let exhausted = depth.think_enabled()
+        && clean_content.trim().is_empty()
+        && upstream.get("done_reason").and_then(Value::as_str) == Some("length");
+    if exhausted {
+        emit_step(
+            handle,
+            turn_id,
+            "Deliberation used the whole budget — retrying without it",
+            Some(format!(
+                "{think_budget} think tokens exhausted before any plan JSON; \
+                 one grammar-first retry (think off)"
+            )),
+        )
+        .await;
+        let mut salvage_options = options.clone();
+        salvage_options.insert("num_predict".to_owned(), json!(PLAN_OUTPUT_BUDGET));
+        match call_reasoner(
+            cfg,
+            &model,
+            &messages,
+            &salvage_options,
+            Some(false),
+            format.as_ref(),
+        )
+        .await
+        {
+            Ok(v) => {
+                prompt_tokens += v
+                    .get("prompt_eval_count")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                completion_tokens += v.get("eval_count").and_then(Value::as_u64).unwrap_or(0);
+                let raw = v
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                clean_content = strip_inline_think(raw).0;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "reasoning: think-exhaustion salvage failed ({}: {})",
+                    e.code,
+                    e.message
+                );
+            }
+        }
+        if handle.is_cancelled() {
+            return None;
+        }
     }
 
     let dag = match parse_plan_dag(&clean_content, alias_map) {
@@ -206,6 +263,7 @@ pub(crate) async fn run(
             return None;
         }
     };
+    let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
 
     // The JSON-carried trace reaches the dropdown too when nothing else
     // did (a non-thinking backend still explains its plan).
@@ -250,6 +308,50 @@ pub(crate) async fn run(
         completion_tokens,
         elapsed_ms,
     })
+}
+
+/// One unary reasoner call: builds the `ollama.chat` body (system + user,
+/// non-streamed, 24h keep_alive), attaches the tier's `think` switch when
+/// given, and rides the constrained wrapper (grammar + fail-soft format
+/// retry). A backend that rejects the `think` field (Ollama errors on an
+/// explicit `think` for models without the thinking capability) gets ONE
+/// retry without the field — think-off is such a model's only behaviour
+/// anyway, so dropping the switch is behaviour-preserving.
+async fn call_reasoner(
+    cfg: &'static Config,
+    model: &str,
+    messages: &Value,
+    options: &serde_json::Map<String, Value>,
+    think: Option<bool>,
+    format: Option<&Value>,
+) -> Result<Value, wylde_shared::ipc::IpcError> {
+    let mut body = json!({
+        "model": model,
+        "messages": messages,
+        "priority": cfg.default_chat_priority,
+        "stream": false,
+        "keep_alive": "24h",
+        "options": Value::Object(options.clone()),
+    });
+    if let Some(t) = think {
+        body["think"] = json!(t);
+    }
+    match constrained::ollama_chat_maybe_constrained(&cfg.ollama_service, body.clone(), format)
+        .await
+    {
+        Err(e) if think.is_some() && e.code == "ollama_http" => {
+            tracing::warn!(
+                "reasoning: backend rejected the think switch ({}: {}); retrying without it",
+                e.code,
+                e.message
+            );
+            if let Some(obj) = body.as_object_mut() {
+                obj.remove("think");
+            }
+            constrained::ollama_chat_maybe_constrained(&cfg.ollama_service, body, format).await
+        }
+        other => other,
+    }
 }
 
 /// The checklist row's supporting detail: tool + declared expectation.

@@ -88,7 +88,9 @@ pub fn embed_model() -> String {
             return v;
         }
     }
-    let slot = crate::turn::reasoning::ReasoningConfig::current().slots.embedder;
+    let slot = crate::turn::reasoning::ReasoningConfig::current()
+        .slots
+        .embedder;
     if slot.trim().is_empty() {
         crate::turn::reasoning::config::DEFAULT_EMBED_MODEL.to_owned()
     } else {

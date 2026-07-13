@@ -651,7 +651,11 @@ mod tests {
             r##"{"summary": "We debugged the apply_overrides race.", "tags": ["#settings", " race ", ""]}"##,
         );
         assert_eq!(s, "We debugged the apply_overrides race.");
-        assert_eq!(tags, vec!["settings", "race"], "same normalisation as the line path");
+        assert_eq!(
+            tags,
+            vec!["settings", "race"],
+            "same normalisation as the line path"
+        );
         // Caps hold even if the grammar's maxItems failed open.
         let many: Vec<String> = (0..20).map(|i| format!("t{i}")).collect();
         let raw = json!({"summary": "x".repeat(2000), "tags": many}).to_string();

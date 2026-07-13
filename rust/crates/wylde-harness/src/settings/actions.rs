@@ -105,7 +105,7 @@ pub async fn handle_concept_routing_set(payload: Value) -> Reply {
 /// `settings.reasoning.get {}` — the full reasoning config. Reply: the
 /// serialized [`ReasoningConfig`](crate::turn::reasoning::ReasoningConfig)
 /// (`{enabled, slots{embedder,fast,reasoner}, mode, default_depth,
-/// auto_escalate, replan_budget, think_budget_tokens, reflect_gate}`).
+/// auto_escalate, replan_budget, tier_budgets, reflect_gate}`).
 /// Default-off on a fresh install; the default slots implement Aaron's
 /// 2026-07-13 same-model decision (fast == reasoner ⇒ mode single).
 pub async fn handle_reasoning_get(_payload: Value) -> Reply {
