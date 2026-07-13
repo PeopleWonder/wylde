@@ -235,21 +235,52 @@ mod tests {
         );
     }
 
+    /// Aaron's RTX 5080 budget as the broker reports it (16303 MiB per
+    /// nvidia-smi, 2026-07-13) — the rig the default slots must fit.
+    const DEV_RIG_BUDGET: u64 = 16303 * 1024 * 1024;
+
     #[test]
-    fn default_slots_on_the_dev_rig_warn_offload_honestly() {
+    fn default_slots_fit_the_dev_rig_cleanly() {
         // The shipped default priced with real 2026-07-13 numbers:
-        // qwen3.6:35b-a3b is 23_938_333_577 bytes on disk (× 1.2 est.
-        // ≈ 26.8 GiB) and Aaron's RTX 5080 budget is 16303 MiB. The
-        // shared brain does NOT co-reside — the correct verdict is the
-        // DRAM-offload advisory (never a block, never a "not pulled"
-        // warning, no collapse to suggest — it already is one brain).
+        // qwen3.5:9b is 6_594_474_711 bytes on disk (× 1.2 est. ≈ 7.4 GiB)
+        // + nomic-embed-text ≈ 0.3 GiB vs 15.9 GiB — the whole point of
+        // Aaron's next-size-down ruling is a CLEAN verdict here: fully
+        // co-resident, zero warnings (no offload advisory, no "not
+        // pulled"). If this fails, the default outgrew the reference rig.
         use super::super::config::{DEFAULT_EMBED_MODEL, DEFAULT_REASONER_MODEL};
         let s = sizes(&[
             (DEFAULT_EMBED_MODEL, (274_302_450_f64 * 1.2) as u64),
-            (DEFAULT_REASONER_MODEL, (23_938_333_577_f64 * 1.2) as u64),
+            (DEFAULT_REASONER_MODEL, (6_594_474_711_f64 * 1.2) as u64),
         ]);
-        let budget = 16303 * 1024 * 1024; // RTX 5080, per nvidia-smi
-        let f = fit(&ModelSlots::default(), ReasonMode::Single, budget, &s);
+        let f = fit(
+            &ModelSlots::default(),
+            ReasonMode::Single,
+            DEV_RIG_BUDGET,
+            &s,
+        );
+        assert!(f.co_resident, "the default MUST fit the 16 GB rig");
+        assert_eq!(f.suggested_mode, ReasonMode::Single);
+        assert!(f.suggestion.is_none());
+        assert!(f.warnings.is_empty(), "clean fit: {:?}", f.warnings);
+    }
+
+    #[test]
+    fn official_35b_a3b_on_the_dev_rig_warns_offload_honestly() {
+        // The model Aaron's ruling swapped OUT, pinned with its real
+        // numbers: qwen3.6:35b-a3b is 23_938_333_577 bytes on disk
+        // (× 1.2 est. ≈ 26.8 GiB) vs 15.9 GiB. One brain, so no collapse
+        // to suggest — the correct verdict is the DRAM-offload advisory
+        // (never a block, and no spurious "not pulled" warning).
+        let slots = ModelSlots {
+            embedder: "nomic-embed-text".into(),
+            fast: "qwen3.6:35b-a3b".into(),
+            reasoner: "qwen3.6:35b-a3b".into(),
+        };
+        let s = sizes(&[
+            ("nomic-embed-text", (274_302_450_f64 * 1.2) as u64),
+            ("qwen3.6:35b-a3b", (23_938_333_577_f64 * 1.2) as u64),
+        ]);
+        let f = fit(&slots, ReasonMode::Single, DEV_RIG_BUDGET, &s);
         assert!(!f.co_resident, "26.8 GiB est. cannot fit 15.9 GiB");
         assert_eq!(f.suggested_mode, ReasonMode::Single);
         assert!(f.suggestion.is_none());
@@ -260,7 +291,7 @@ mod tests {
         );
         assert!(
             !f.warnings.iter().any(|w| w.contains("not pulled")),
-            "the official tag IS pulled — no spurious warning: {:?}",
+            "the tag IS pulled — no spurious warning: {:?}",
             f.warnings
         );
     }

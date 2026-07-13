@@ -22,11 +22,16 @@
 //!
 //! ## Aaron's locked slot decisions (2026-07-13)
 //!
-//! 1. **Default reasoner = the OFFICIAL Qwen3.6-35B-A3B registry build**
-//!    ([`DEFAULT_REASONER_MODEL`], `qwen3.6:35b-a3b`, Q4_K_M). Aaron's
-//!    follow-up call (2026-07-13): the official Ollama-library tag, NOT
-//!    the community hf.co abliterated variant S1 initially wired (which
-//!    merely happened to be the pulled build at the time).
+//! 1. **Default reasoner = the largest OFFICIAL Qwen that FITS 16 GB VRAM**
+//!    ([`DEFAULT_REASONER_MODEL`], `qwen3.5:9b`, Q4_K_M ~6.6 GB). Aaron's
+//!    rulings, in order (all 2026-07-13): official registry builds only
+//!    (not the community hf.co abliterated variant S1 initially wired);
+//!    then, because the official `qwen3.6:35b-a3b` (~26.8 GiB est.) can't
+//!    co-reside on the dev rig's RTX 5080 and this slot runs PLAN, EXECUTE
+//!    *and* REFLECT on every deep turn, "swap it out for the next size
+//!    down" — fit-in-VRAM beats parameter count. The official ladder has
+//!    nothing between 9B and 27B, and 27B (~20 GB est.) still spills, so
+//!    9B is the largest official Qwen that runs fully GPU-resident.
 //! 2. **PLAN and EXECUTE run on the SAME model.** The `fast` slot defaults
 //!    to the same tag as `reasoner`, and `fast == reasoner ⇒ Single` is
 //!    Aaron's confirmed derivation rule (scope DECISION #11), so
@@ -49,11 +54,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 /// The official Ollama-registry tag for the default reasoner (Aaron's
-/// decision 1, 2026-07-13, revised same day: the OFFICIAL Qwen build, not
-/// the abliterated hf.co variant). The registry's canonical `35b-a3b`
-/// alias resolves to the Q4_K_M quant (~24 GB) — the same quant class as
-/// the variant it replaces.
-pub const DEFAULT_REASONER_MODEL: &str = "qwen3.6:35b-a3b";
+/// decision 1, 2026-07-13, twice revised the same day: official build
+/// only, and it must FIT the 16 GB dev rig without DRAM spill — see the
+/// module doc). Canonical alias → Q4_K_M, ~6.6 GB on disk, fully
+/// GPU-resident on the RTX 5080 with room for the embedder + KV cache.
+pub const DEFAULT_REASONER_MODEL: &str = "qwen3.5:9b";
 
 /// Default embedder — matches `crate::memory::common::embed_model()`'s
 /// fallback so the slot and the env-driven embed path agree out of the box.
