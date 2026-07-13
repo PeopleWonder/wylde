@@ -549,7 +549,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_one_tool_now_routes_through_registry_with_ok_summary() {
-        let _g = crate::tooling::consent::serial_test_guard().await;
+        // Dispatch crosses the Phase-12.2 consent gate; pin bypass=on
+        // for this test's scope instead of inheriting whatever the
+        // previous guard-holder leaked (the old order-dependence).
+        let _g = crate::tooling::consent::bypass_scope(true).await;
         let cfg: &'static Config = Box::leak(Box::new(Config::default_for_tests()));
         let id = crate::state::new_turn_id();
         let handle = register_turn(id.clone(), "c1".into());
@@ -631,7 +634,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_one_tool_returns_phase_deferred_for_stub_entries() {
-        let _g = crate::tooling::consent::serial_test_guard().await;
+        // The consent gate runs BEFORE the deferred-stub check, so this
+        // dispatch needs bypass=on too or it sees `consent_required`
+        // instead of the phase_11_deferred error it asserts on.
+        let _g = crate::tooling::consent::bypass_scope(true).await;
         let cfg: &'static Config = Box::leak(Box::new(Config::default_for_tests()));
         let id = crate::state::new_turn_id();
         let handle = register_turn(id.clone(), "c1".into());
