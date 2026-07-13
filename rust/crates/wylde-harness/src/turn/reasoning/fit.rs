@@ -295,7 +295,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn official_35b_a3b_on_the_dev_rig_warns_offload_honestly() {
         // The model Aaron's ruling swapped OUT, pinned with its real

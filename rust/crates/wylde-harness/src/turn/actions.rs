@@ -460,17 +460,17 @@ pub async fn handle_start_turn(payload: Value) -> Reply {
 
     let turn_id = optional_string(&payload, "turn_id").unwrap_or_else(state::new_turn_id);
     let workspace_id = optional_string(&payload, "workspace_id");
-    // Agentic-reasoning S1: the GUI's fast/deep pill now rides the wire as
-    // `depth`; resolved payload → config → Fast and logged here (the
-    // receipt assertion the S1 done-when calls for). NOT yet acted on —
-    // the S3 plan phase is the first consumer. With the master toggle off
-    // (default) the gate stays closed and the turn is byte-identical.
+    // Agentic-reasoning: the GUI's fast/deep pill rides the wire as
+    // `depth`; resolved payload → config → Fast. Since S3 the streaming
+    // driver ACTS on it — a Deep turn with the master toggle on runs the
+    // PLAN phase before the ReAct loop. With the toggle off (default) or
+    // depth Fast the gate stays closed and the turn is byte-identical.
     let depth = reasoning::resolve_depth(&payload);
     tracing::debug!(
         turn_id = %turn_id,
         depth = depth.as_str(),
         gate_open = reasoning::deep_gate_open(depth),
-        "harness: start_turn depth resolved (S1: parsed, not yet acted on)"
+        "harness: start_turn depth resolved"
     );
     let handle = state::register_turn(turn_id.clone(), conversation_id.clone());
 
@@ -493,6 +493,7 @@ pub async fn handle_start_turn(payload: Value) -> Reply {
             drive_tier,
             workspace_id,
             drive_overrides,
+            depth,
         )
         .await;
     });
@@ -619,7 +620,7 @@ const USAGE_TICK_EVERY: u64 = 16;
 /// when there are no more tool calls.
 #[allow(clippy::too_many_arguments)] // turn-driver fan-out; grouping into a
                                      // struct would only move the noise. Slice G added `conversation_id`; Slice M
-                                     // added the composer's per-message token overrides.
+                                     // added the composer's per-message token overrides; reasoning S3 added `depth`.
 async fn drive_streaming_turn(
     cfg: &'static Config,
     handle: Arc<TurnHandle>,
@@ -630,6 +631,7 @@ async fn drive_streaming_turn(
     device_tier: String,
     workspace_id: Option<String>,
     overrides: context_gather::TokenOverrides,
+    depth: reasoning::Depth,
 ) {
     // Status line (chat-processing-indicator): the gather below does RAG
     // retrieval + concept routing/injection and can take a beat, so flag
@@ -668,6 +670,29 @@ async fn drive_streaming_turn(
             })
             .await;
     }
+    // Built before the plan seam so the planner validates tool names
+    // against the exact alias map the executor dispatches with (a pure
+    // registry read — order is behaviour-neutral).
+    let alias_map = build_alias_map();
+
+    // Agentic-reasoning S3, seam 1 (post-gather): on a Deep turn with the
+    // master toggle on, run the PLAN phase — one reasoner call grounded in
+    // the turn's own routed concepts / IS-NOT exclusions / lessons. Every
+    // skip or failure path yields `None` and the loop below runs verbatim
+    // (gate closed ⇒ byte-identical fast path; planner failure ⇒ visible
+    // notice + plain ReAct).
+    let mut reasoning_state = reasoning::maybe_plan(
+        cfg,
+        &handle,
+        &turn_id,
+        depth,
+        workspace_id.as_deref(),
+        &user_message,
+        &gathered,
+        &alias_map,
+    )
+    .await;
+
     let mut messages = initial_messages(
         base_prompt,
         &gathered.history,
@@ -678,7 +703,6 @@ async fn drive_streaming_turn(
     // Per-model inference overrides ride every round's request (B5).
     let options = chat_options::chat_options(&model);
     let mut round_state = ToolRoundState::new();
-    let alias_map = build_alias_map();
 
     let normalised_tier = tool_round::normalise_device_tier(if device_tier.is_empty() {
         None
@@ -690,9 +714,14 @@ async fn drive_streaming_turn(
     // round's exact Ollama counts so a multi-round (tool-using) turn shows
     // its cumulative usage. `turn_prompt` sums input tokens processed
     // across rounds (the context is re-sent each round); `turn_completion`
-    // sums generated tokens.
+    // sums generated tokens. A Deep turn's PLAN call is part of the turn's
+    // honest cost, so its counts seed the meter.
     let mut turn_prompt: u64 = 0;
     let mut turn_completion: u64 = 0;
+    if let Some(rs) = &reasoning_state {
+        turn_prompt += rs.plan_prompt_tokens;
+        turn_completion += rs.plan_completion_tokens;
+    }
 
     for round in 0..tool_round::MAX_TOOL_LOOPS {
         round_state.rounds = round + 1;
@@ -711,6 +740,17 @@ async fn drive_streaming_turn(
                 phase: crate::events::TurnPhase::Generating,
             })
             .await;
+
+        // Agentic-reasoning S3, seam 2 (round-entry): when a plan exists,
+        // the next ready step's guidance rides the MESSAGE TAIL as a user
+        // message (append-only — the KV prefix over system + history
+        // survives, plan §9 R5). The model still emits the actual tool
+        // call; dispatch authority is unchanged.
+        if let Some(rs) = &mut reasoning_state {
+            if let Some(guidance) = rs.begin_round() {
+                messages.push(guidance);
+            }
+        }
 
         let mut body = json!({
             "model": model,
@@ -932,6 +972,10 @@ async fn drive_streaming_turn(
             "tool_calls": tool_calls_wire(&calls),
         }));
 
+        // Collected only on a planned (Deep) turn — feeds the plan's
+        // `${step.output…}` placeholder resolution (seam 3, open-loop:
+        // results recorded, outcomes unchecked until S4).
+        let mut round_results: Vec<(String, String)> = Vec::new();
         for call in &calls {
             if handle.is_cancelled() {
                 emit_aborted(&handle, &turn_id, AbortReason::Cancelled, None).await;
@@ -951,7 +995,15 @@ async fn drive_streaming_turn(
                 call,
             )
             .await;
+            if reasoning_state.is_some() {
+                if let Some(content) = tool_msg.get("content").and_then(Value::as_str) {
+                    round_results.push((call.name.clone(), content.to_owned()));
+                }
+            }
             messages.push(tool_msg);
+        }
+        if let Some(rs) = &mut reasoning_state {
+            rs.finish_round(&round_results);
         }
     }
 

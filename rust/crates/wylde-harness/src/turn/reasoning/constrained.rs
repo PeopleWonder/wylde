@@ -209,18 +209,19 @@ mod tests {
     async fn transport_error_is_not_retried_bare() {
         let calls = AtomicUsize::new(0);
         let fmt = json!({"type": "object"});
-        let err = chat_maybe_constrained_via(
-            |_b| {
-                calls.fetch_add(1, Ordering::SeqCst);
-                async move {
-                    Err::<Value, _>(IpcError::new("ollama_unreachable", "connect refused"))
-                }
-            },
-            body(),
-            Some(&fmt),
-        )
-        .await
-        .unwrap_err();
+        let err =
+            chat_maybe_constrained_via(
+                |_b| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        Err::<Value, _>(IpcError::new("ollama_unreachable", "connect refused"))
+                    }
+                },
+                body(),
+                Some(&fmt),
+            )
+            .await
+            .unwrap_err();
         assert_eq!(err.code, "ollama_unreachable");
         assert_eq!(
             calls.load(Ordering::SeqCst),
