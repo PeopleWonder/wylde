@@ -121,4 +121,50 @@ pub(super) fn install(api: &Arc<dyn HarnessApi>) {
          the master toggle). Returns the persisted config.",
         HANDLER_MODULE_SETTINGS,
     );
+
+    // ── settings.reasoning.* + reasoning.fit_check (agentic-reasoning S1:
+    //    master toggle + model slots + advisory VRAM fit) ───────────────
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
+        "settings.reasoning.get",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.settings_reasoning_get(p).await }
+        },
+        "The agentic-reasoning config (master toggle + model slots). Payload \
+         {}. Returns {enabled, slots{embedder,fast,reasoner}, mode, \
+         default_depth, auto_escalate, replan_budget, think_budget_tokens, \
+         reflect_gate}. Default off; default slots run PLAN and EXECUTE on \
+         the same model (mode single).",
+        HANDLER_MODULE_SETTINGS,
+    );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
+        "settings.reasoning.set",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.settings_reasoning_set(p).await }
+        },
+        "Persist the agentic-reasoning config. Payload is a partial patch — \
+         any omitted field keeps its current value (e.g. {enabled:true} flips \
+         just the master toggle). Returns the persisted config.",
+        HANDLER_MODULE_SETTINGS,
+    );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
+        "reasoning.fit_check",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.reasoning_fit_check(p).await }
+        },
+        "Price the (given or configured) model slots against the live VRAM \
+         budget. Payload {slots?, mode?}. Returns {co_resident, \
+         total_estimate_bytes, budget_bytes, suggested_mode, warnings, \
+         suggestion?}. Advisory only — warns, never blocks; unreachable \
+         Ollama/broker degrade to warnings.",
+        HANDLER_MODULE_SETTINGS,
+    );
 }

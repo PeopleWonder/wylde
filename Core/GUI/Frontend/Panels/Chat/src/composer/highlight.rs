@@ -493,7 +493,10 @@ mod tests {
         // bare word resolving to a symbol → Symbol.
         assert_eq!(categorize(&word("sym", 1, 0)), HighlightCategory::Symbol);
         // bare word matching a curated term → Vocabulary.
-        assert_eq!(categorize(&word("term", 0, 1)), HighlightCategory::Vocabulary);
+        assert_eq!(
+            categorize(&word("term", 0, 1)),
+            HighlightCategory::Vocabulary
+        );
         // explicit {{token}} → Anchor.
         let mut anchor = word("the_thing", 0, 1);
         anchor.token.kind = TokenKind::AnchorRef;

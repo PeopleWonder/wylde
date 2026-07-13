@@ -54,13 +54,12 @@ use crate::ipc::{
     activate_workspace, cancel_turn, clear_working_memory, delete_conversation, eject_model,
     export_conversation, fetch_conversation_messages, fetch_working_memory,
     get_active_conversation, get_active_conversation_for_workspace, import_conversation,
-    list_conversations, list_conversations_for_workspace, list_models,
-    new_conversation, recent_workspaces, respond_consent, set_active_conversation,
-    set_active_conversation_for_workspace, set_active_model, set_active_workspace,
-    set_workspace_for_conversation,
-    start_turn_with_model, stream_consent_pending,
-    stream_tools, stream_turn, ConsentEvent, ConversationMeta, PendingConsent, ToolChunk,
-    TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
+    list_conversations, list_conversations_for_workspace, list_models, new_conversation,
+    reasoning_fit_check, reasoning_settings, recent_workspaces, respond_consent,
+    set_active_conversation, set_active_conversation_for_workspace, set_active_model,
+    set_active_workspace, set_reasoning_mode, set_workspace_for_conversation,
+    start_turn_with_model, stream_consent_pending, stream_tools, stream_turn, ConsentEvent,
+    ConversationMeta, PendingConsent, ToolChunk, TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
 };
 use crate::markdown;
 use crate::processing::{self, MessageActivity, ProcessingPhase, ProcessingState};
@@ -195,7 +194,6 @@ fn new_message_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
-
 /// Which surface a [`ChatPanel`] backs, and thus which process-wide scope the
 /// entity owns. Two distinct entities live at once: the Chat slot's [`Global`]
 /// singleton ([`shared_cell`]) and the Workspaces dock's [`Docked`] singleton
@@ -288,6 +286,48 @@ impl ReasoningDepth {
     }
 }
 
+/// Split vs Single reasoning mode (agentic reasoning S1 — Aaron's confirmed
+/// InferenceBar placement, scope DECISION #11). Mirrors the harness's
+/// `ReasonMode`; the pill is a facade over `settings.reasoning.{get,set}` so
+/// the harness-owned store stays the single source of truth. Defaults to
+/// `Single` (Aaron 2026-07-13: PLAN and EXECUTE run on the same model).
+/// Inert while the reasoning master toggle is off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReasonMode {
+    /// fast slot ≠ reasoner slot — reason once, execute on fast.
+    Split,
+    /// fast slot == reasoner slot — one brain plans and executes. Default.
+    #[default]
+    Single,
+}
+
+impl ReasonMode {
+    /// The other mode — used by the toggle pill.
+    pub fn toggled(self) -> Self {
+        match self {
+            ReasonMode::Split => ReasonMode::Single,
+            ReasonMode::Single => ReasonMode::Split,
+        }
+    }
+
+    /// Short wire/label token (`"split"` / `"single"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasonMode::Split => "split",
+            ReasonMode::Single => "single",
+        }
+    }
+
+    /// Tolerant wire parse; unknown values keep the default.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "split" => Some(ReasonMode::Split),
+            "single" => Some(ReasonMode::Single),
+            _ => None,
+        }
+    }
+}
+
 /// Root Chat panel.
 pub struct ChatPanel {
     pub focus_handle: FocusHandle,
@@ -357,10 +397,19 @@ pub struct ChatPanel {
     pub active_model: Option<String>,
     pub show_model_dropdown: bool,
     /// Per-turn reasoning depth (agentic reasoning tier P1b). Defaults to
-    /// [`ReasoningDepth::Fast`]; toggled from the InferenceBar pill. Inert
-    /// today — the Deep turn pipeline lands in a later phase, so this does
-    /// not yet change turn behaviour.
+    /// [`ReasoningDepth::Fast`]; toggled from the InferenceBar pill. As of
+    /// S1 the pill's value rides the send payload as `depth` — the harness
+    /// parses + logs it; `fast` (the default) stays byte-identical, and the
+    /// Deep pipeline itself lands in S3.
     pub reasoning_depth: ReasoningDepth,
+    /// Split/Single selector state (agentic reasoning S1) — a facade over
+    /// the harness `settings.reasoning` store, hydrated on mount and
+    /// persisted on toggle. Inert while the reasoning master toggle is off.
+    pub reason_mode: ReasonMode,
+    /// The inline VRAM fit-chip text (readiness-chip pattern): the first
+    /// warning from `reasoning.fit_check`, `None` when the slot set fits or
+    /// the probe soft-failed.
+    pub fit_warning: Option<String>,
     /// In-flight latch for the eject button — set while an `ollama.eject`
     /// round-trip is pending so the button dims and ignores re-clicks.
     pub ejecting: bool,
@@ -505,6 +554,8 @@ impl ChatPanel {
             active_model: None,
             show_model_dropdown: false,
             reasoning_depth: ReasoningDepth::Fast,
+            reason_mode: ReasonMode::default(),
+            fit_warning: None,
             ejecting: false,
             pending_consents: BTreeMap::new(),
             error: None,
@@ -562,6 +613,7 @@ impl ChatPanel {
             wylde_gui_pipe::publish_active_conversation(&panel.conversation_id);
             Self::spawn_load_workspaces(cx);
             Self::spawn_load_models(cx);
+            Self::spawn_load_reasoning(cx);
             // Restore the persisted active conversation (Slice B), then load
             // its working-memory buffer + the switcher list — sequenced in
             // one task so the WM load reads the *restored* id, not "default".
@@ -602,6 +654,7 @@ impl ChatPanel {
             let panel = Self::new(ChatScope::Docked, cx);
             Self::spawn_load_workspaces(cx);
             Self::spawn_load_models(cx);
+            Self::spawn_load_reasoning(cx);
             // Per-mode restore (stubbed to "default" until C7's per-workspace
             // pointer): hydrate the WM strip + switcher without adopting the
             // global active-conversation pointer.
@@ -645,6 +698,78 @@ impl ChatPanel {
                 if let Ok(rows) = outcome {
                     panel.models = rows;
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Hydrate the Split/Single pill + fit chip from the harness-owned
+    /// reasoning store (agentic reasoning S1). Soft-fail throughout: an
+    /// unreachable harness leaves the defaults (Single, no chip) — the
+    /// pill is inert while the master toggle is off anyway. The fit chip
+    /// only renders when reasoning is enabled AND the fit probe warned,
+    /// so a default install shows nothing new.
+    pub fn spawn_load_reasoning(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let settings = reasoning_settings().await;
+            let (mode, enabled) = match &settings {
+                Ok(v) => (
+                    v.get("mode")
+                        .and_then(|m| m.as_str())
+                        .and_then(ReasonMode::parse)
+                        .unwrap_or_default(),
+                    v.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false),
+                ),
+                Err(_) => (ReasonMode::default(), false),
+            };
+            let fit_warning = if enabled {
+                Self::fetch_fit_warning().await
+            } else {
+                None
+            };
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.reason_mode = mode;
+                panel.fit_warning = fit_warning;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// First `reasoning.fit_check` warning, `None` on a clean fit or any
+    /// probe failure (advisory chip — never surface an error for it).
+    async fn fetch_fit_warning() -> Option<String> {
+        let v = reasoning_fit_check().await.ok()?;
+        v.get("warnings")
+            .and_then(|w| w.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|w| w.as_str())
+            .map(str::to_owned)
+    }
+
+    /// Flip the Split/Single selector: optimistic local flip, then persist
+    /// through `settings.reasoning.set` and refresh the fit chip against
+    /// the new mode. A failed persist flips back on the next hydrate.
+    pub fn toggle_reason_mode(&mut self, cx: &mut Context<Self>) {
+        self.reason_mode = self.reason_mode.toggled();
+        let mode = self.reason_mode;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let persisted = set_reasoning_mode(mode.as_str()).await;
+            let enabled = persisted
+                .as_ref()
+                .ok()
+                .and_then(|v| v.get("enabled"))
+                .and_then(|e| e.as_bool())
+                .unwrap_or(false);
+            let fit_warning = if enabled {
+                Self::fetch_fit_warning().await
+            } else {
+                None
+            };
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.fit_warning = fit_warning;
                 cx.notify();
             });
         })
@@ -1022,7 +1147,9 @@ impl ChatPanel {
         // Docked dock with no workspace) updates the single global pointer.
         // Routing through `scope` keeps a bound workspace thread out of the
         // Global slot's restore (D1).
-        let pointer_ws = self.scope.resolve_workspace_id(self.active_workspace_id.clone());
+        let pointer_ws = self
+            .scope
+            .resolve_workspace_id(self.active_workspace_id.clone());
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             match pointer_ws.as_deref() {
                 Some(ws) => {
@@ -1078,7 +1205,9 @@ impl ChatPanel {
             if let Some(ws) = bind_workspace.as_deref() {
                 if let Err(e) = set_workspace_for_conversation(&id, ws).await {
                     let _ = this.update(app_cx, |panel, cx| {
-                        panel.error = Some(format!("Couldn't bind the new thread to this workspace: {e}"));
+                        panel.error = Some(format!(
+                            "Couldn't bind the new thread to this workspace: {e}"
+                        ));
                         cx.notify();
                     });
                 }
@@ -1339,21 +1468,19 @@ impl ChatPanel {
     /// `processing` clears (turn settled) or the entity is gone, so there's
     /// never a runaway timer between turns.
     fn spawn_processing_ticker(&self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
-            loop {
-                app_cx.background_executor().timer(PROCESSING_TICK).await;
-                let keep_going = this.update(app_cx, |panel, cx| match panel.processing.as_mut() {
-                    Some(p) => {
-                        p.tick = p.tick.wrapping_add(1);
-                        cx.notify();
-                        true
-                    }
-                    None => false,
-                });
-                match keep_going {
-                    Ok(true) => {}
-                    _ => break,
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| loop {
+            app_cx.background_executor().timer(PROCESSING_TICK).await;
+            let keep_going = this.update(app_cx, |panel, cx| match panel.processing.as_mut() {
+                Some(p) => {
+                    p.tick = p.tick.wrapping_add(1);
+                    cx.notify();
+                    true
                 }
+                None => false,
+            });
+            match keep_going {
+                Ok(true) => {}
+                _ => break,
             }
         })
         .detach();
@@ -1473,7 +1600,9 @@ impl ChatPanel {
         // Global is structurally unbound, so this resolves to `None` regardless
         // of the field — the single read that guarantees a global turn never
         // rides a workspace context.
-        let workspace_id = self.scope.resolve_workspace_id(self.active_workspace_id.clone());
+        let workspace_id = self
+            .scope
+            .resolve_workspace_id(self.active_workspace_id.clone());
         // C6: a first send out of the empty state binds the fresh thread to the
         // entered workspace so it joins the scoped list. Only ever `Some` on a
         // Docked dock that minted a fileless thread on enter (see
@@ -1491,6 +1620,9 @@ impl ChatPanel {
         let model = self.active_model.clone();
         // The composer's per-message ✕/↺ choices ride the send (Slices F+M).
         let (excluded_tokens, reactivated_tokens) = self.composer.send_overrides();
+        // Agentic-reasoning S1: the fast/deep pill rides the wire. `fast`
+        // (the default) is behaviourally inert harness-side.
+        let depth = self.reasoning_depth;
 
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let start = start_turn_with_model(
@@ -1501,6 +1633,7 @@ impl ChatPanel {
                 &excluded_tokens,
                 &reactivated_tokens,
                 active_file.as_deref(),
+                depth.as_str(),
             )
             .await;
             let (turn_id, reply_conversation_id) = match start {
@@ -1774,7 +1907,10 @@ impl ChatPanel {
                     let _ = this.update(app_cx, |panel, cx| {
                         match event {
                             ToolChunk::Dispatched {
-                                call_id, name, args, ..
+                                call_id,
+                                name,
+                                args,
+                                ..
                             } => {
                                 if let Some(p) = panel.processing.as_mut() {
                                     p.on_tool_dispatched(&call_id, &name, tool_detail(&args, None));
@@ -1787,7 +1923,11 @@ impl ChatPanel {
                                 ..
                             } => {
                                 if let Some(p) = panel.processing.as_mut() {
-                                    p.on_tool_done(&call_id, true, tool_detail(&output, Some(duration_ms)));
+                                    p.on_tool_done(
+                                        &call_id,
+                                        true,
+                                        tool_detail(&output, Some(duration_ms)),
+                                    );
                                 }
                             }
                             ToolChunk::Error {
@@ -2144,7 +2284,9 @@ fn tool_detail(value: &serde_json::Value, duration_ms: Option<f64>) -> Option<St
         serde_json::Value::String(s) => Some(s.clone()),
         other => serde_json::to_string(other).ok(),
     };
-    let body = raw.as_deref().and_then(|s| processing::compact_detail(s, 160));
+    let body = raw
+        .as_deref()
+        .and_then(|s| processing::compact_detail(s, 160));
     match (body, duration_ms) {
         (Some(b), Some(ms)) if ms > 0.0 => Some(format!("{b}  ·  {ms:.0}ms")),
         (Some(b), _) => Some(b),
@@ -3261,7 +3403,12 @@ fn message_activity_disclosure(
             }
         });
 
-    let mut col = div().flex().flex_col().gap_1().max_w(px(720.0)).child(header);
+    let mut col = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .max_w(px(720.0))
+        .child(header);
     if expanded {
         col = col.child(activity_dropdown(
             &act.log,
@@ -3477,7 +3624,6 @@ where
         .child(SharedString::from(label.to_owned()))
 }
 
-
 fn inference_bar(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
     let mut bar = div()
         .flex()
@@ -3554,16 +3700,23 @@ fn pill_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
             ));
     }
 
-    row.child(pill_button(
-        ElementId::Name("chat-model-toggle".into()),
-        model_label,
-        cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
-            this.toggle_model_dropdown(cx);
-        }),
-    ))
-    .child(reasoning_depth_pill(panel, cx))
-    .child(eject_button(panel, cx))
-    .child(working_memory_pill(panel, cx))
+    let mut row = row
+        .child(pill_button(
+            ElementId::Name("chat-model-toggle".into()),
+            model_label,
+            cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+                this.toggle_model_dropdown(cx);
+            }),
+        ))
+        .child(reasoning_depth_pill(panel, cx))
+        .child(reason_mode_pill(panel, cx));
+    // Inline VRAM fit chip (readiness-chip pattern): advisory only, renders
+    // solely when reasoning is enabled and the fit probe warned.
+    if let Some(warning) = &panel.fit_warning {
+        row = row.child(fit_chip(warning.clone()));
+    }
+    row.child(eject_button(panel, cx))
+        .child(working_memory_pill(panel, cx))
 }
 
 /// Fast/deep reasoning toggle pill (agentic reasoning tier P1b — Aaron's
@@ -3579,6 +3732,38 @@ fn reasoning_depth_pill(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> State
             this.toggle_reasoning_depth(cx);
         }),
     )
+}
+
+/// Split/Single selector pill (agentic reasoning S1 — Aaron's confirmed
+/// InferenceBar placement, beside the fast/deep toggle). One click flips
+/// the mode and persists it through `settings.reasoning.set`. Inert while
+/// the reasoning master toggle is off — the harness never consults the
+/// mode on a fast/off turn.
+fn reason_mode_pill(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
+    let label = SharedString::from(format!("mode · {}", panel.reason_mode.as_str()));
+    pill_button(
+        ElementId::Name("chat-reason-mode-toggle".into()),
+        label,
+        cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+            this.toggle_reason_mode(cx);
+        }),
+    )
+}
+
+/// Inline VRAM fit warning chip (readiness-chip style, scope §3.2): the
+/// fit picker warns, never blocks — so this is a muted advisory tag, not
+/// an error banner.
+fn fit_chip(warning: String) -> gpui::Div {
+    div()
+        .px_2()
+        .py_1()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .child(SharedString::from(format!("⚠ {warning}")))
 }
 
 /// Working-memory toggle pill — shows the live entry count for the active
@@ -4670,7 +4855,11 @@ mod tests {
                 detail: Some("nextcloud, vpn".into()),
             },
         );
-        let e = p.log.iter().find(|e| e.text == "Routed to 2 concepts").unwrap();
+        let e = p
+            .log
+            .iter()
+            .find(|e| e.text == "Routed to 2 concepts")
+            .unwrap();
         assert_eq!(e.detail.as_deref(), Some("nextcloud, vpn"));
     }
 
@@ -5021,5 +5210,39 @@ mod tests {
         assert_eq!(fast, "reasoning · fast");
         let deep = format!("reasoning · {}", ReasoningDepth::Deep.as_str());
         assert_eq!(deep, "reasoning · deep");
+    }
+
+    #[test]
+    fn reason_mode_defaults_to_single() {
+        // Aaron 2026-07-13: PLAN and EXECUTE on the same model ⇒ Single.
+        assert_eq!(ReasonMode::default(), ReasonMode::Single);
+        assert_eq!(ReasonMode::Single.as_str(), "single");
+        assert_eq!(ReasonMode::Split.as_str(), "split");
+    }
+
+    #[test]
+    fn reason_mode_toggles_both_ways() {
+        let m = ReasonMode::Single;
+        assert_eq!(m.toggled(), ReasonMode::Split);
+        assert_eq!(m.toggled().toggled(), ReasonMode::Single);
+    }
+
+    #[test]
+    fn reason_mode_parse_is_tolerant() {
+        assert_eq!(ReasonMode::parse("split"), Some(ReasonMode::Split));
+        assert_eq!(ReasonMode::parse("single"), Some(ReasonMode::Single));
+        assert_eq!(
+            ReasonMode::parse("sideways"),
+            None,
+            "unknown → caller default"
+        );
+    }
+
+    #[test]
+    fn reason_mode_pill_label_matches_state() {
+        let single = format!("mode · {}", ReasonMode::default().as_str());
+        assert_eq!(single, "mode · single");
+        let split = format!("mode · {}", ReasonMode::Split.as_str());
+        assert_eq!(split, "mode · split");
     }
 }

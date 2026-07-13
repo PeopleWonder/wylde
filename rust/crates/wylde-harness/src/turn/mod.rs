@@ -50,6 +50,7 @@ pub mod context_gather;
 mod golden;
 pub mod prompt;
 pub mod prompt_assembly;
+pub mod reasoning;
 pub mod salvage;
 /// Slot liveness net (memory plan M8) — test-only: each injected slot's
 /// REAL producer asserted end-to-end through gather + render.

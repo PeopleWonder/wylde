@@ -216,8 +216,7 @@ mod tests {
 
     #[test]
     fn multiple_think_blocks() {
-        let (answer, thinking) =
-            run_pieces(&["a<think>one</think>b<think>two</think>c"]);
+        let (answer, thinking) = run_pieces(&["a<think>one</think>b<think>two</think>c"]);
         assert_eq!(answer, "abc");
         assert_eq!(thinking, "onetwo");
     }
@@ -253,7 +252,7 @@ mod tests {
         assert_eq!(partial_marker_len("foo<", OPEN), 1); // "<"
         assert_eq!(partial_marker_len("foobar", OPEN), 0);
         assert_eq!(partial_marker_len("x</thin", CLOSE), 6); // "</thin"
-        // A complete marker is not a *proper* prefix — find() handles those.
+                                                             // A complete marker is not a *proper* prefix — find() handles those.
         assert_eq!(partial_marker_len("<think>", OPEN), 0);
     }
 }

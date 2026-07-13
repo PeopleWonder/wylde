@@ -279,10 +279,7 @@ impl TurnChunk {
                     .and_then(|x| x.as_str())
                     .unwrap_or_default()
                     .to_owned(),
-                detail: v
-                    .get("detail")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_owned),
+                detail: v.get("detail").and_then(|x| x.as_str()).map(str::to_owned),
             },
             "turn_complete" => Self::TurnComplete {
                 turn_id,
@@ -326,6 +323,7 @@ pub async fn start_turn(
         &[],
         &[],
         None,
+        "fast",
     )
     .await
 }
@@ -337,6 +335,12 @@ pub async fn start_turn(
 /// `active_file` (2.5): the workspace-relative path of the file open in the
 /// editor, which biases RAG toward the user's current focus (`None` on the
 /// Global slot / when no file is open).
+///
+/// `depth` (agentic-reasoning S1) is the InferenceBar fast/deep pill's wire
+/// value (`"fast"` / `"deep"`). Always sent when non-empty so the explicit
+/// per-turn pill beats the harness config's `default_depth` in the
+/// payload → config → Fast resolution chain. `"fast"` is behaviourally
+/// inert on the harness (the everyday byte-identical path).
 #[allow(clippy::too_many_arguments)] // turn-start payload fan-out; each arg is a
                                      // distinct optional payload field.
 pub async fn start_turn_with_model(
@@ -347,6 +351,7 @@ pub async fn start_turn_with_model(
     excluded_tokens: &[String],
     reactivated_tokens: &[String],
     active_file: Option<&str>,
+    depth: &str,
 ) -> Result<StartTurnReply, String> {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -362,6 +367,9 @@ pub async fn start_turn_with_model(
     }
     if let Some(m) = model.filter(|s| !s.is_empty()) {
         payload.insert("model".into(), Value::String(m.to_owned()));
+    }
+    if !depth.is_empty() {
+        payload.insert("depth".into(), Value::String(depth.to_owned()));
     }
     if !excluded_tokens.is_empty() {
         payload.insert("excluded_tokens".into(), json!(excluded_tokens));
@@ -383,6 +391,56 @@ pub async fn start_turn_with_model(
     )
     .await?;
     Ok(StartTurnReply::from_value(&v))
+}
+
+// ── Agentic-reasoning settings (S1) ─────────────────────────────────
+
+/// `settings.reasoning.get {}` — the harness-owned reasoning config
+/// (master toggle, model slots, split/single mode). Returns the raw JSON;
+/// the panel reads `enabled` + `mode`.
+pub async fn reasoning_settings() -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "settings.reasoning.get",
+            "payload": {},
+        })),
+    )
+    .await
+}
+
+/// `settings.reasoning.set {mode}` — persist just the Split/Single mode
+/// (partial patch; every other field keeps its value). Returns the
+/// persisted config.
+pub async fn set_reasoning_mode(mode: &str) -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "settings.reasoning.set",
+            "payload": { "mode": mode },
+        })),
+    )
+    .await
+}
+
+/// `reasoning.fit_check {}` — price the configured slots against the live
+/// VRAM budget. Returns the SlotFit JSON (`warnings` feeds the inline fit
+/// chip). Advisory only — an error here is soft-failed by the caller.
+pub async fn reasoning_fit_check() -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "reasoning.fit_check",
+            "payload": {},
+        })),
+    )
+    .await
 }
 
 /// `chat.export` (TBS Slice J) — one conversation as a portable envelope.
@@ -1269,7 +1327,11 @@ mod tests {
             "name": "memory.search", "output": {"hits": 3}, "duration_ms": 42.0,
         }));
         match r {
-            ToolChunk::Result { output, duration_ms, .. } => {
+            ToolChunk::Result {
+                output,
+                duration_ms,
+                ..
+            } => {
                 assert_eq!(output["hits"], 3);
                 assert_eq!(duration_ms, 42.0);
             }

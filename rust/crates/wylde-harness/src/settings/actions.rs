@@ -97,6 +97,46 @@ pub async fn handle_concept_routing_set(payload: Value) -> Reply {
     }
 }
 
+// ── settings.reasoning.* (the agentic-reasoning master toggle + model
+//    slots, reasoning plan S1) — the GUI's write facade over the
+//    harness-owned `ReasoningConfig` store; same one-source-of-truth
+//    discipline as settings.concept_routing.*.
+
+/// `settings.reasoning.get {}` — the full reasoning config. Reply: the
+/// serialized [`ReasoningConfig`](crate::turn::reasoning::ReasoningConfig)
+/// (`{enabled, slots{embedder,fast,reasoner}, mode, default_depth,
+/// auto_escalate, replan_budget, think_budget_tokens, reflect_gate}`).
+/// Default-off on a fresh install; the default slots implement Aaron's
+/// 2026-07-13 same-model decision (fast == reasoner ⇒ mode single).
+pub async fn handle_reasoning_get(_payload: Value) -> Reply {
+    let cfg = crate::turn::reasoning::ReasoningConfig::current();
+    Reply::ok(cfg.to_value())
+}
+
+/// `settings.reasoning.set {...}` — persist the reasoning config. Every
+/// field is optional; an omitted field keeps its current value (a partial
+/// patch), so the GUI can flip just `mode` or `enabled` without resending
+/// the slots. Reply: the persisted config. The master toggle defaults off
+/// and only ever turns on by an explicit, persisted opt-in here.
+pub async fn handle_reasoning_set(payload: Value) -> Reply {
+    if !payload.is_object() {
+        return Reply::err_msg("bad_request", "payload must be an object");
+    }
+    // Merge the incoming patch over the current config, then re-parse
+    // through the tolerant loader (garbage keys fall back, never fail open).
+    let mut merged = crate::turn::reasoning::ReasoningConfig::current().to_value();
+    if let (Some(base), Some(patch)) = (merged.as_object_mut(), payload.as_object()) {
+        for (k, v) in patch {
+            base.insert(k.clone(), v.clone());
+        }
+    }
+    let next = crate::turn::reasoning::ReasoningConfig::from_value(&merged);
+    match crate::turn::reasoning::ReasoningConfig::persist(next.clone()) {
+        Ok(()) => Reply::ok(next.to_value()),
+        Err(e) => Reply::err_msg("io_error", format!("persist reasoning: {e}")),
+    }
+}
+
 /// `settings.ollama.get_overrides {model, profile?}` — the sparse
 /// overrides stored for `model`, `{}` when none. Reply:
 /// `{model, profile, overrides}`.
@@ -317,6 +357,59 @@ mod tests {
             wylde_concept_routing::RoutingConfig::default(),
         )
         .unwrap();
+        std::env::remove_var("WYLDE_DATA_DIR");
+    }
+
+    #[tokio::test]
+    async fn reasoning_get_set_default_off_and_partial_patch() {
+        use crate::turn::reasoning::ReasoningConfig;
+
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("WYLDE_DATA_DIR", tmp.path());
+        ReasoningConfig::reload_from_disk(); // fresh dir ⇒ off
+
+        // Default get: master toggle OFF, same-model slots, mode single.
+        let got = handle_reasoning_get(json!({})).await;
+        assert!(got.ok);
+        assert_eq!(got.data["enabled"], json!(false));
+        assert_eq!(got.data["mode"], json!("single"));
+        assert_eq!(got.data["default_depth"], json!("fast"));
+        assert_eq!(
+            got.data["slots"]["fast"], got.data["slots"]["reasoner"],
+            "Aaron 2026-07-13: plan+execute on the same model"
+        );
+
+        // Partial patch: flip only `enabled`; slots + knobs keep values.
+        let set = handle_reasoning_set(json!({ "enabled": true })).await;
+        assert!(set.ok);
+        assert_eq!(set.data["enabled"], json!(true));
+        assert_eq!(
+            set.data["replan_budget"],
+            json!(2),
+            "untouched knob preserved"
+        );
+
+        // It persisted: a fresh get reflects the toggle.
+        assert_eq!(
+            handle_reasoning_get(json!({})).await.data["enabled"],
+            json!(true)
+        );
+
+        // A second partial patch flips mode without resetting `enabled`.
+        let set2 = handle_reasoning_set(json!({ "mode": "split" })).await;
+        assert_eq!(set2.data["enabled"], json!(true), "enabled preserved");
+        assert_eq!(set2.data["mode"], json!("split"));
+
+        // Non-object payload → bad_request.
+        let bad = handle_reasoning_set(json!("nope")).await;
+        assert_eq!(
+            bad.error.as_ref().map(|e| e.code.as_str()),
+            Some("bad_request")
+        );
+
+        // Reset the process-global cache to default-off for sibling tests.
+        ReasoningConfig::persist(ReasoningConfig::default()).unwrap();
         std::env::remove_var("WYLDE_DATA_DIR");
     }
 }

@@ -139,6 +139,11 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     // plan §3, 2 verbs)
     "settings.concept_routing.get",
     "settings.concept_routing.set",
+    // settings.reasoning.* + reasoning.fit_check — agentic-reasoning master
+    // toggle + model slots + advisory VRAM fit (reasoning plan S1, 3 verbs)
+    "settings.reasoning.get",
+    "settings.reasoning.set",
+    "reasoning.fit_check",
     // prompts.* — system-prompt overrides + presets (5 verbs; Rust port
     // of the Python `_prompts.py` actions, full-Rust cutover)
     "prompts.list",
