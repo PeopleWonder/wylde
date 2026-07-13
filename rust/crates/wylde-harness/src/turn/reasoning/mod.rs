@@ -16,7 +16,10 @@
 //! * [`constrained`] — grammar-constrained decoding plumbing (2026-07-13):
 //!   [`constrained::plan_format`] (the `constrained_plan`-gated PlanDag
 //!   schema) + [`constrained::ollama_chat_maybe_constrained`] (the
-//!   fail-soft `format`-carrying chat call the PLAN phase makes).
+//!   fail-soft `format`-carrying chat call the PLAN phase makes). The
+//!   post-turn memory extractor and the conversation auto-summariser also
+//!   call the wrapper live (2026-07-13, policy table in [`constrained`]'s
+//!   module docs).
 //!
 //! Slice S3 ships the PLAN phase itself:
 //!
