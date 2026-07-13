@@ -261,7 +261,7 @@ pub(crate) async fn check_and_maybe_replan(
     cfg: &'static Config,
     handle: &Arc<TurnHandle>,
     turn_id: &str,
-    depth: Depth,
+    tier: Depth,
     fast_model: &str,
     alias_map: &HashMap<String, String>,
     state: &mut ReasoningState,
@@ -296,7 +296,7 @@ pub(crate) async fn check_and_maybe_replan(
         }
         SurpriseAction::Replan => {
             respond_with_replan(
-                cfg, handle, turn_id, depth, alias_map, state, &surprise, flow,
+                cfg, handle, turn_id, tier, alias_map, state, &surprise, flow,
             )
             .await
         }
@@ -413,7 +413,7 @@ async fn respond_with_replan(
     cfg: &'static Config,
     handle: &Arc<TurnHandle>,
     turn_id: &str,
-    depth: Depth,
+    tier: Depth,
     alias_map: &HashMap<String, String>,
     state: &mut ReasoningState,
     surprise: &Surprise,
@@ -472,7 +472,7 @@ async fn respond_with_replan(
         cfg,
         handle,
         turn_id,
-        depth,
+        tier,
         &state.plan_inputs,
         &state.dag,
         &executed,

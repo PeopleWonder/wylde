@@ -95,6 +95,11 @@ pub(crate) enum DagCallError {
 /// grounding step, the reasoner's thinking, then either the per-step plan
 /// checklist or a visible fallback notice. `None` ⇒ run plain ReAct (the
 /// caller changes nothing else).
+///
+/// `failures` is empty on an ordinary Deep turn; on an S4b auto-escalated
+/// Fast turn it carries the hard-tool-failure digests that triggered the
+/// escalation, rendered as their own prompt section so the planner routes
+/// around them.
 #[allow(clippy::too_many_arguments)] // mirrors the driver fan-out it's called from
 pub(crate) async fn run(
     cfg: &'static Config,
@@ -105,6 +110,7 @@ pub(crate) async fn run(
     user_message: &str,
     gathered: &GatheredContext,
     alias_map: &HashMap<String, String>,
+    failures: &[String],
 ) -> Option<PlanOutcome> {
     handle
         .push_turn_event(TurnEvent::Phase {
@@ -113,7 +119,8 @@ pub(crate) async fn run(
         })
         .await;
 
-    let plan_inputs = inputs::gather(workspace_id, user_message, gathered).await;
+    let mut plan_inputs = inputs::gather(workspace_id, user_message, gathered).await;
+    plan_inputs.failures = failures.to_vec();
     let grounding_detail = gathered.route_candidates.as_ref().and_then(|set| {
         let names: Vec<String> = set.activated().map(|c| c.label.clone()).collect();
         (!names.is_empty()).then(|| names.join(", "))

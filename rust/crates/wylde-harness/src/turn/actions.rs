@@ -693,6 +693,13 @@ async fn drive_streaming_turn(
     )
     .await;
 
+    // Agentic-reasoning S4b: on a FAST turn with reasoning enabled +
+    // auto_escalate, arm the hard-tool-failure watch (Aaron's narrowed
+    // identity contract: byte-identical EXCEPT after ≥2 hard failures).
+    // Pure counting — below the threshold nothing is emitted or changed;
+    // toggle off ⇒ `None` and the fast path carries no watch at all.
+    let mut escalation_watch = reasoning::arm_escalation(depth);
+
     let mut messages = initial_messages(
         base_prompt,
         &gathered.history,
@@ -999,6 +1006,12 @@ async fn drive_streaming_turn(
                 if let Some(content) = tool_msg.get("content").and_then(Value::as_str) {
                     round_results.push((call.name.clone(), content.to_owned()));
                 }
+            } else if let Some(watch) = &mut escalation_watch {
+                // S4b: pure hard-failure counting on a watched Fast turn
+                // — no events, no behaviour change below the threshold.
+                if let Some(content) = tool_msg.get("content").and_then(Value::as_str) {
+                    watch.observe(&call.name, &call.args, content);
+                }
             }
             messages.push(tool_msg);
         }
@@ -1008,10 +1021,12 @@ async fn drive_streaming_turn(
             // step's declared expectation — L0/L1 pure, L2 gated, replan
             // budget-gated (cheap detect / expensive respond). Everything
             // in the check is fail-soft except a planner-declared `abort`
-            // action, which ends the turn cleanly.
+            // action, which ends the turn cleanly. Replans run at the
+            // state's tier (the turn's depth, or the escalation tier on
+            // an S4b-escalated Fast turn).
             let completion = rs.finish_round(&round_results);
             let flow = reasoning::surprise::check_and_maybe_replan(
-                cfg, &handle, &turn_id, depth, &model, &alias_map, rs, completion,
+                cfg, &handle, &turn_id, rs.tier, &model, &alias_map, rs, completion,
             )
             .await;
             // The L2 / replan calls are part of the turn's honest cost.
@@ -1028,6 +1043,30 @@ async fn drive_streaming_turn(
                 handle.mark_done();
                 schedule_eviction(turn_id);
                 return;
+            }
+        } else if let Some(watch) = &mut escalation_watch {
+            // Agentic-reasoning S4b: the 2nd hard tool failure escalates
+            // this Fast turn to planning (Aaron's narrowed identity
+            // contract). One-shot — the watch is disarmed whether the
+            // escalated PLAN succeeds or fail-softs to plain ReAct.
+            if watch.should_escalate() {
+                reasoning_state = reasoning::maybe_escalate(
+                    cfg,
+                    &handle,
+                    &turn_id,
+                    workspace_id.as_deref(),
+                    &user_message,
+                    &gathered,
+                    &alias_map,
+                    watch,
+                )
+                .await;
+                if let Some(rs) = &reasoning_state {
+                    // The escalated PLAN call is part of the turn's cost.
+                    turn_prompt += rs.plan_prompt_tokens;
+                    turn_completion += rs.plan_completion_tokens;
+                }
+                escalation_watch = None;
             }
         }
     }

@@ -76,6 +76,10 @@ pub struct PlanInputs {
     /// The turn's rendered context slots — the same grounding the
     /// executor sees.
     pub context_digest: String,
+    /// S4b auto-escalation only: `tool → error digest` lines for the hard
+    /// tool failures that escalated the turn — the planner must route
+    /// around these, not re-plan them. Empty on every ordinary PLAN.
+    pub failures: Vec<String>,
 }
 
 impl PlanInputs {
@@ -118,6 +122,7 @@ pub(crate) async fn gather(
         lessons: select_lessons(MAX_LESSONS),
         tool_catalog: render_tool_catalog(),
         context_digest: gathered.system_slots.clone(),
+        failures: Vec::new(),
     }
 }
 
@@ -404,6 +409,14 @@ pub fn render_user_prompt(inputs: &PlanInputs) -> String {
         &mut s,
     );
     section("Lessons from past sessions", &inputs.lessons, &mut s);
+    // S4b auto-escalation: what already failed hard this turn — the
+    // reason the plan is being drafted at all. Rendered before the
+    // catalog so the planner reads the constraint before picking tools.
+    section(
+        "Hard tool failures this turn (route around these — do not re-plan them)",
+        &inputs.failures,
+        &mut s,
+    );
     section("Available tools", &inputs.tool_catalog, &mut s);
 
     if !inputs.context_digest.trim().is_empty() {
@@ -524,6 +537,34 @@ mod tests {
         assert!(!p.contains("Live concepts"), "empty block omitted");
         assert!(!p.contains("NOT relevant"), "empty block omitted");
         assert!(!p.contains("Context digest"), "empty digest omitted");
+        assert!(
+            !p.contains("Hard tool failures"),
+            "ordinary PLAN carries no failures block (S4b)"
+        );
+    }
+
+    #[test]
+    fn escalation_failures_render_before_the_catalog() {
+        // S4b: an auto-escalated PLAN carries the hard failures that
+        // triggered it, ahead of the tool catalog.
+        let inputs = PlanInputs {
+            goal: "list the entries".into(),
+            tool_catalog: vec!["fs.read — read a file".into()],
+            failures: vec![
+                "voice_mic_chunks {} → [error] phase_11_deferred: not yet ported".into(),
+            ],
+            ..PlanInputs::default()
+        };
+        let p = render_user_prompt(&inputs);
+        let failures_at = p
+            .find("### Hard tool failures this turn (route around these — do not re-plan them)")
+            .expect("failures section renders");
+        let tools_at = p.find("### Available tools").unwrap();
+        assert!(failures_at < tools_at, "failures precede the catalog: {p}");
+        assert!(
+            p.contains("- voice_mic_chunks {} → [error] phase_11_deferred"),
+            "{p}"
+        );
     }
 
     /// GOLDEN: the fully-populated plan prompt rendering. Pins the exact
@@ -550,6 +591,7 @@ mod tests {
                 "workspaces.rag_query — semantic search over the workspace".into(),
             ],
             context_digest: "### Concepts\nauth-flow: the login path".into(),
+            failures: Vec::new(),
         };
         let expected = "### Goal\n\
 trace the auth token flow\n\
