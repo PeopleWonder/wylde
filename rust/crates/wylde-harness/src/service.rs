@@ -41,6 +41,11 @@ pub fn install() {
     // when no async runtime is present (sync test callers). Its first
     // tick happens one poll interval after boot.
     crate::memory::scheduler::start_default();
+    // Warm model slots (agentic-reasoning S2): with the reasoning toggle
+    // on, preload the slot models (keep_alive 24h) so the first Deep turn
+    // doesn't pay a cold load. Declines when disabled (the default — zero
+    // behaviour change) or when no async runtime is present.
+    crate::turn::reasoning::residency::spawn_warm_slots("boot");
 }
 
 /// Signal stop. The 5.B turn-task pool is detached; outstanding tasks

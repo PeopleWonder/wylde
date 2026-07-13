@@ -69,10 +69,10 @@ use serde_json::{json, Value};
 /// variants remain excluded.
 pub const DEFAULT_REASONER_MODEL: &str = "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ3_XXS";
 
-/// Default embedder — matches `crate::memory::common::embed_model()`'s
-/// fallback so the slot and the env-driven embed path agree out of the box.
-/// (S2 unifies them: the slot becomes the settings-backed source with
-/// `WYLDE_EMBED_MODEL` as the override.)
+/// Default embedder. Since S2 the slot IS the settings-backed source of
+/// `crate::memory::common::embed_model()` (`WYLDE_EMBED_MODEL` stays the
+/// env override) — one definition of "the embedder", and this constant is
+/// its final fallback.
 pub const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
 
 /// Per-turn reasoning depth. `Fast` = today's ReAct loop, byte-identical.

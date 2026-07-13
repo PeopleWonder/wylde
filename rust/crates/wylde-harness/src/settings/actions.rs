@@ -132,7 +132,14 @@ pub async fn handle_reasoning_set(payload: Value) -> Reply {
     }
     let next = crate::turn::reasoning::ReasoningConfig::from_value(&merged);
     match crate::turn::reasoning::ReasoningConfig::persist(next.clone()) {
-        Ok(()) => Reply::ok(next.to_value()),
+        Ok(()) => {
+            // Warm model slots (S2): an enabled commit (re-)loads the slot
+            // models in the background so the next Deep turn is warm.
+            // Preloading an already-resident model just refreshes its
+            // keep_alive window; disabled commits spawn nothing.
+            crate::turn::reasoning::residency::spawn_warm_slots("settings commit");
+            Reply::ok(next.to_value())
+        }
         Err(e) => Reply::err_msg("io_error", format!("persist reasoning: {e}")),
     }
 }

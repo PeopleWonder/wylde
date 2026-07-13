@@ -266,15 +266,14 @@ mod tests {
         assert!(f.suggestion.is_none());
         assert!(f.warnings.is_empty(), "clean fit: {:?}", f.warnings);
 
-        // KNOWN COSMETIC WART: the live chip prices disk × 1.2
-        // (14_113_978_939 × 1.2 ≈ 15.8 GiB + embedder ≈ 16.1 GiB > 15.9)
-        // so it shows a spurious DRAM-offload ADVISORY for this quant —
-        // the ×1.2 disk multiplier over-estimates dynamic MoE quants
-        // (and UNDER-estimated the old 9b default at 131k: 9.46 GiB
-        // measured vs 7.4 est.). Advisory-only by contract (never blocks,
-        // no collapse to suggest). S2's warm-slot work should refine the
-        // estimator; until then this test pins the live behaviour so the
-        // wart is documented, not rediscovered.
+        // The ×1.2-disk-estimate wart, since S2 CONFINED to unloaded
+        // models: `probe_model_sizes` now overlays measured `/api/ps`
+        // footprints for loaded models (and warm slots keep the defaults
+        // loaded), so the live chip prices this quant at its real
+        // 12.9 GiB once resident and the spurious DRAM-offload advisory
+        // clears. This case pins pure fit() on the raw ×1.2 inputs — the
+        // verdict a fresh boot shows before anything has loaded: an
+        // advisory only (never blocks, no collapse to suggest).
         let disk_x12 = sizes(&[
             (DEFAULT_EMBED_MODEL, (274_302_450_f64 * 1.2) as u64),
             (DEFAULT_REASONER_MODEL, (14_113_978_939_f64 * 1.2) as u64),
