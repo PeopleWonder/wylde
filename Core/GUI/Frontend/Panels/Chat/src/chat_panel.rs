@@ -251,37 +251,57 @@ impl ChatScope {
     }
 }
 
-/// Per-turn reasoning depth (agentic reasoning tier, scope P1b). Surfaced
-/// as a toggle pill in the InferenceBar per Aaron's confirmed placement.
+/// Per-turn reasoning depth — the thinking TIERS (modelled on Claude's
+/// think / think-harder / ultrathink levels). Surfaced as a cycling pill
+/// in the InferenceBar per Aaron's confirmed placement.
 ///
-/// **`Fast` is the default and the *only* behaviour today.** The Deep path
-/// (PLAN → EXECUTE → REFLECT) is not wired until the reasoning tier lands
-/// (scope P4+); until then this flag is a UI affordance that does not alter
-/// the turn — the send payload is untouched — so a fast turn is byte-for-byte
-/// the existing ReAct path.
+/// **`Fast` is the default** — never planning-by-default (the reasoning
+/// tax). Each click cycles one tier up: fast → think → think harder →
+/// ultrathink → fast. The wire token rides the send payload as `depth`;
+/// the harness maps tiers to plan-call deliberation budgets (`think` runs
+/// the planner with deliberation off — seconds; `ultrathink` deliberates
+/// at length — up to ~a minute).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ReasoningDepth {
     /// The everyday fast-model ReAct loop — no reasoning tax. Default.
     #[default]
     Fast,
-    /// The deep plan→execute→reflect path (inert until scope P4+).
-    Deep,
+    /// Plan grammar-first, deliberation off (~seconds).
+    Think,
+    /// Plan with a bounded deliberation budget (tens of seconds).
+    ThinkHarder,
+    /// Plan with the heavy-rumination budget (up to ~a minute).
+    Ultrathink,
 }
 
 impl ReasoningDepth {
-    /// The other depth — used by the toggle pill.
+    /// The next tier up (wrapping) — used by the cycling pill.
     pub fn toggled(self) -> Self {
         match self {
-            ReasoningDepth::Fast => ReasoningDepth::Deep,
-            ReasoningDepth::Deep => ReasoningDepth::Fast,
+            ReasoningDepth::Fast => ReasoningDepth::Think,
+            ReasoningDepth::Think => ReasoningDepth::ThinkHarder,
+            ReasoningDepth::ThinkHarder => ReasoningDepth::Ultrathink,
+            ReasoningDepth::Ultrathink => ReasoningDepth::Fast,
         }
     }
 
-    /// Short wire/label token (`"fast"` / `"deep"`).
+    /// Wire token — matches the harness's `Depth::parse` strings.
     pub fn as_str(self) -> &'static str {
         match self {
             ReasoningDepth::Fast => "fast",
-            ReasoningDepth::Deep => "deep",
+            ReasoningDepth::Think => "think",
+            ReasoningDepth::ThinkHarder => "think_harder",
+            ReasoningDepth::Ultrathink => "ultrathink",
+        }
+    }
+
+    /// Human label for the pill (the wire token reads awkwardly).
+    pub fn label(self) -> &'static str {
+        match self {
+            ReasoningDepth::Fast => "fast",
+            ReasoningDepth::Think => "think",
+            ReasoningDepth::ThinkHarder => "think harder",
+            ReasoningDepth::Ultrathink => "ultrathink",
         }
     }
 }
@@ -2045,9 +2065,9 @@ impl ChatPanel {
         cx.notify();
     }
 
-    /// Flip the per-turn reasoning depth (agentic reasoning tier P1b). An
-    /// instant toggle — both models are co-resident — but inert today: the
-    /// Deep turn pipeline lands later, so this only records the choice.
+    /// Cycle the per-turn thinking tier (fast → think → think harder →
+    /// ultrathink → fast). An instant local flip; the chosen tier rides
+    /// the next send's `depth` field.
     pub fn toggle_reasoning_depth(&mut self, cx: &mut Context<Self>) {
         self.reasoning_depth = self.reasoning_depth.toggled();
         cx.notify();
@@ -3729,12 +3749,12 @@ fn pill_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
         .child(working_memory_pill(panel, cx))
 }
 
-/// Fast/deep reasoning toggle pill (agentic reasoning tier P1b — Aaron's
-/// confirmed InferenceBar placement). One click flips depth. Defaults to
-/// `fast`; the Deep path is inert until a later phase, so toggling only
-/// records the intended depth and never changes today's turn behaviour.
+/// Thinking-tier pill (Aaron's confirmed InferenceBar placement). Each
+/// click cycles one tier up: fast → think → think harder → ultrathink →
+/// fast. Defaults to `fast` (never planning-by-default); the tier rides
+/// the send payload as `depth`.
 fn reasoning_depth_pill(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
-    let label = SharedString::from(format!("reasoning · {}", panel.reasoning_depth.as_str()));
+    let label = SharedString::from(format!("reasoning · {}", panel.reasoning_depth.label()));
     pill_button(
         ElementId::Name("chat-reasoning-toggle".into()),
         label,
@@ -5189,37 +5209,57 @@ mod tests {
         assert_eq!(relative_time(now + 100), "just now");
     }
 
-    // ── P1b: InferenceBar fast/deep reasoning toggle ─────────────────────
+    // ── InferenceBar thinking-tier pill ──────────────────────────────────
     // No gpui-executor harness in this crate (see the note above the C1
-    // tests), so the toggle is pinned at the state + label level: the field
+    // tests), so the pill is pinned at the state + label level: the field
     // the pill reads/writes and the exact string the pill renders.
 
-    /// The confirmed default is Fast — never Deep-by-default (the reasoning
-    /// tax). This is the identity-invariant end of the toggle.
+    /// The confirmed default is Fast — never planning-by-default (the
+    /// reasoning tax). This is the identity-invariant end of the ladder.
     #[test]
     fn reasoning_depth_defaults_to_fast() {
         assert_eq!(ReasoningDepth::default(), ReasoningDepth::Fast);
         assert_eq!(ReasoningDepth::Fast.as_str(), "fast");
-        assert_eq!(ReasoningDepth::Deep.as_str(), "deep");
     }
 
-    /// One click flips depth and a second returns to Fast (the pill's whole
-    /// contract).
+    /// The wire tokens the harness's `Depth::parse` accepts, one per tier.
     #[test]
-    fn reasoning_depth_toggles_both_ways() {
-        let d = ReasoningDepth::Fast;
-        assert_eq!(d.toggled(), ReasoningDepth::Deep);
-        assert_eq!(d.toggled().toggled(), ReasoningDepth::Fast);
+    fn reasoning_depth_wire_tokens_match_harness() {
+        assert_eq!(ReasoningDepth::Think.as_str(), "think");
+        assert_eq!(ReasoningDepth::ThinkHarder.as_str(), "think_harder");
+        assert_eq!(ReasoningDepth::Ultrathink.as_str(), "ultrathink");
     }
 
-    /// The pill label the InferenceBar renders, defaulting Fast — the golden
-    /// the scope calls for ("toggle renders, defaults Fast").
+    /// Clicking cycles the full tier ladder and wraps back to Fast (the
+    /// pill's whole contract).
+    #[test]
+    fn reasoning_depth_cycles_the_tier_ladder() {
+        let d = ReasoningDepth::Fast;
+        assert_eq!(d.toggled(), ReasoningDepth::Think);
+        assert_eq!(d.toggled().toggled(), ReasoningDepth::ThinkHarder);
+        assert_eq!(d.toggled().toggled().toggled(), ReasoningDepth::Ultrathink);
+        assert_eq!(
+            d.toggled().toggled().toggled().toggled(),
+            ReasoningDepth::Fast,
+            "wraps"
+        );
+    }
+
+    /// The pill label the InferenceBar renders per tier, defaulting Fast.
     #[test]
     fn reasoning_depth_pill_label_matches_state() {
-        let fast = format!("reasoning · {}", ReasoningDepth::default().as_str());
-        assert_eq!(fast, "reasoning · fast");
-        let deep = format!("reasoning · {}", ReasoningDepth::Deep.as_str());
-        assert_eq!(deep, "reasoning · deep");
+        assert_eq!(
+            format!("reasoning · {}", ReasoningDepth::default().label()),
+            "reasoning · fast"
+        );
+        assert_eq!(
+            format!("reasoning · {}", ReasoningDepth::ThinkHarder.label()),
+            "reasoning · think harder"
+        );
+        assert_eq!(
+            format!("reasoning · {}", ReasoningDepth::Ultrathink.label()),
+            "reasoning · ultrathink"
+        );
     }
 
     #[test]

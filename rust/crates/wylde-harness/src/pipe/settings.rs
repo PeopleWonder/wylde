@@ -134,9 +134,9 @@ pub(super) fn install(api: &Arc<dyn HarnessApi>) {
         },
         "The agentic-reasoning config (master toggle + model slots). Payload \
          {}. Returns {enabled, slots{embedder,fast,reasoner}, mode, \
-         default_depth, auto_escalate, replan_budget, think_budget_tokens, \
-         reflect_gate}. Default off; default slots run PLAN and EXECUTE on \
-         the same model (mode single).",
+         default_depth, auto_escalate, replan_budget, \
+         tier_budgets{think_harder,ultrathink}, reflect_gate}. Default off; \
+         default slots run PLAN and EXECUTE on the same model (mode single).",
         HANDLER_MODULE_SETTINGS,
     );
 

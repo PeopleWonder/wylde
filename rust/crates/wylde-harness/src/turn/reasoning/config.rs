@@ -18,7 +18,8 @@
 //! malformed value all resolve to [`ReasoningConfig::default`], whose
 //! [`ReasoningConfig::enabled`] is `false` — i.e. today's exact fast-path
 //! ReAct behaviour, byte-identical. Deep reasoning can only ever be *added*
-//! by an explicit, persisted opt-in **and** a per-turn `depth:"deep"` flag.
+//! by an explicit, persisted opt-in **and** a per-turn planning-tier
+//! `depth` flag (`think` / `think_harder` / `ultrathink`).
 //!
 //! ## Aaron's locked slot decisions (2026-07-13)
 //!
@@ -75,32 +76,115 @@ pub const DEFAULT_REASONER_MODEL: &str = "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-
 /// its final fallback.
 pub const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
 
-/// Per-turn reasoning depth. `Fast` = today's ReAct loop, byte-identical.
-/// `Deep` = the gated PLAN→EXECUTE→REFLECT pipeline (S3+). Never
-/// Deep-by-default (locked — the *Illusion-of-Thinking* tax).
+/// Per-turn reasoning depth — the thinking TIERS (modelled on Claude's
+/// think / think-harder / ultrathink levels, Aaron 2026-07-14). `Fast` =
+/// today's ReAct loop, byte-identical, no planning. Every other tier runs
+/// the gated PLAN pipeline with an escalating deliberation budget:
+///
+/// | tier | reasoner `<think>` | budget | measured (15-prompt eval) |
+/// |---|---|---|---|
+/// | `Fast` | — (no PLAN call) | — | 0 s added |
+/// | `Think` | **disabled** (`think:false`) | JSON output only | ~2–6 s, 100% valid |
+/// | `ThinkHarder` | enabled | [`TierBudgets::think_harder`] | tens of seconds |
+/// | `Ultrathink` | enabled | [`TierBudgets::ultrathink`] | up to ~1 min |
+///
+/// **Why the tight tiers disable thinking instead of capping it** (live
+/// finding, 2026-07-14): Ollama's `num_predict` caps think + content
+/// TOGETHER and a generation that hits the cap mid-`<think>` produces
+/// ZERO content — the grammar constrains `message.content` only and
+/// cannot force the model out of the think channel. A "tight cap on
+/// thinking" is therefore an empty-plan machine; the honest tight tier
+/// is deliberation OFF, where the grammar guarantees the JSON.
+///
+/// Never planning-by-default (locked — the *Illusion-of-Thinking* tax):
+/// `default_depth` stays `Fast`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Depth {
     #[default]
     Fast,
-    Deep,
+    Think,
+    ThinkHarder,
+    Ultrathink,
 }
 
 impl Depth {
     pub fn as_str(self) -> &'static str {
         match self {
             Depth::Fast => "fast",
-            Depth::Deep => "deep",
+            Depth::Think => "think",
+            Depth::ThinkHarder => "think_harder",
+            Depth::Ultrathink => "ultrathink",
         }
     }
 
     /// Tolerant parse: unknown/empty strings are `None` so the resolution
     /// chain (payload → config → Fast) can fall through, never fail a turn.
+    /// The pre-tier wire value `"deep"` still parses — it maps to
+    /// [`Depth::ThinkHarder`], which carries the old Deep semantics
+    /// (thinking on, the S3-era 4096-token budget).
     pub fn parse(s: &str) -> Option<Depth> {
         match s.trim().to_ascii_lowercase().as_str() {
             "fast" => Some(Depth::Fast),
-            "deep" => Some(Depth::Deep),
+            "think" => Some(Depth::Think),
+            "think_harder" | "think-harder" | "deep" => Some(Depth::ThinkHarder),
+            "ultrathink" => Some(Depth::Ultrathink),
             _ => None,
+        }
+    }
+
+    /// Whether this tier runs the PLAN phase at all.
+    pub fn plans(self) -> bool {
+        self != Depth::Fast
+    }
+
+    /// Whether the PLAN call lets the reasoner deliberate (`<think>`).
+    /// `Think` plans grammar-first with deliberation disabled — see the
+    /// enum doc for why that is the only workable tight tier.
+    pub fn think_enabled(self) -> bool {
+        matches!(self, Depth::ThinkHarder | Depth::Ultrathink)
+    }
+
+    /// The reasoner think-token allowance for this tier (0 = thinking
+    /// disabled). The PLAN call's `num_predict` is this plus the JSON
+    /// output allowance (`plan_phase::PLAN_OUTPUT_BUDGET`) — Ollama caps
+    /// think + content together, so every tier carries its own output
+    /// headroom on top of the think allowance.
+    pub fn think_budget(self, budgets: &TierBudgets) -> u32 {
+        match self {
+            Depth::Fast | Depth::Think => 0,
+            Depth::ThinkHarder => budgets.think_harder,
+            Depth::Ultrathink => budgets.ultrathink,
+        }
+    }
+}
+
+/// Per-tier reasoner think-token budgets (user-tunable knobs of the tier
+/// ladder; the `Think` tier has no budget — its deliberation is off by
+/// construction). Defaults are eval-backed (2026-07-14, 15-prompt
+/// grounded-plan corpus, see `outputs/reasoning-thinking-tiers-report.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TierBudgets {
+    /// `ThinkHarder`: the S3-era Deep budget.
+    #[serde(default = "default_think_harder_budget")]
+    pub think_harder: u32,
+    /// `Ultrathink`: room for the heavy-rumination tail.
+    #[serde(default = "default_ultrathink_budget")]
+    pub ultrathink: u32,
+}
+
+fn default_think_harder_budget() -> u32 {
+    4096
+}
+fn default_ultrathink_budget() -> u32 {
+    10240
+}
+
+impl Default for TierBudgets {
+    fn default() -> Self {
+        Self {
+            think_harder: default_think_harder_budget(),
+            ultrathink: default_ultrathink_budget(),
         }
     }
 }
@@ -224,10 +308,12 @@ pub struct ReasoningConfig {
     #[serde(default = "default_replan_budget")]
     pub replan_budget: u8,
 
-    /// Hard cap on reasoner think tokens (`num_predict` on the plan call).
-    /// Inert until S3. Default 4096.
-    #[serde(default = "default_think_budget")]
-    pub think_budget_tokens: u32,
+    /// Per-tier reasoner think budgets (the tiers slice replaced the old
+    /// single `think_budget_tokens` knob — a file still carrying that key
+    /// reads as these defaults). The PLAN call's `num_predict` is the
+    /// tier's budget + the JSON output allowance.
+    #[serde(default)]
+    pub tier_budgets: TierBudgets,
 
     /// When REFLECT fires (OQ-6). Inert until S5. Default MultiToolOnly.
     #[serde(default)]
@@ -256,9 +342,6 @@ fn default_true() -> bool {
 fn default_replan_budget() -> u8 {
     2
 }
-fn default_think_budget() -> u32 {
-    4096
-}
 
 impl Default for ReasoningConfig {
     fn default() -> Self {
@@ -269,7 +352,7 @@ impl Default for ReasoningConfig {
             default_depth: Depth::Fast,
             auto_escalate: true,
             replan_budget: default_replan_budget(),
-            think_budget_tokens: default_think_budget(),
+            tier_budgets: TierBudgets::default(),
             reflect_gate: ReflectGate::default(),
             constrained_plan: true,
         }
@@ -387,7 +470,13 @@ mod tests {
         assert_eq!(c.slots.embedder, DEFAULT_EMBED_MODEL);
         assert!(c.auto_escalate);
         assert_eq!(c.replan_budget, 2);
-        assert_eq!(c.think_budget_tokens, 4096);
+        assert_eq!(
+            c.tier_budgets,
+            TierBudgets {
+                think_harder: 4096,
+                ultrathink: 10240
+            }
+        );
         assert_eq!(c.reflect_gate, ReflectGate::MultiToolOnly);
         assert!(
             c.constrained_plan,
@@ -408,10 +497,43 @@ mod tests {
     #[test]
     fn depth_parse_is_tolerant() {
         assert_eq!(Depth::parse("fast"), Some(Depth::Fast));
-        assert_eq!(Depth::parse("deep"), Some(Depth::Deep));
-        assert_eq!(Depth::parse(" DEEP "), Some(Depth::Deep));
+        assert_eq!(Depth::parse("think"), Some(Depth::Think));
+        assert_eq!(Depth::parse("think_harder"), Some(Depth::ThinkHarder));
+        assert_eq!(Depth::parse("think-harder"), Some(Depth::ThinkHarder));
+        assert_eq!(Depth::parse("ultrathink"), Some(Depth::Ultrathink));
         assert_eq!(Depth::parse(""), None);
         assert_eq!(Depth::parse("medium"), None, "unknown falls through");
+    }
+
+    #[test]
+    fn legacy_deep_maps_to_think_harder() {
+        // Pre-tier callers (old GUI builds, extensions) still send "deep";
+        // it keeps its S3 semantics: thinking on, the 4096 budget.
+        assert_eq!(Depth::parse("deep"), Some(Depth::ThinkHarder));
+        assert_eq!(Depth::parse(" DEEP "), Some(Depth::ThinkHarder));
+    }
+
+    #[test]
+    fn tier_ladder_gates_and_budgets() {
+        let b = TierBudgets::default();
+        assert!(!Depth::Fast.plans());
+        assert!(Depth::Think.plans());
+        assert!(Depth::ThinkHarder.plans());
+        assert!(Depth::Ultrathink.plans());
+
+        assert!(!Depth::Fast.think_enabled());
+        assert!(
+            !Depth::Think.think_enabled(),
+            "the tight tier plans WITHOUT deliberation — a capped think \
+             stream that dies mid-<think> yields zero content"
+        );
+        assert!(Depth::ThinkHarder.think_enabled());
+        assert!(Depth::Ultrathink.think_enabled());
+
+        assert_eq!(Depth::Fast.think_budget(&b), 0);
+        assert_eq!(Depth::Think.think_budget(&b), 0);
+        assert_eq!(Depth::ThinkHarder.think_budget(&b), 4096);
+        assert_eq!(Depth::Ultrathink.think_budget(&b), 10240);
     }
 
     #[test]
@@ -442,10 +564,13 @@ mod tests {
                 reasoner: "deepseek-r1:14b".into(),
             },
             mode: ReasonMode::Split,
-            default_depth: Depth::Deep,
+            default_depth: Depth::Ultrathink,
             auto_escalate: false,
             replan_budget: 3,
-            think_budget_tokens: 2048,
+            tier_budgets: TierBudgets {
+                think_harder: 2048,
+                ultrathink: 16384,
+            },
             reflect_gate: ReflectGate::Always,
             constrained_plan: false,
         };

@@ -16,7 +16,7 @@
 //! | idle memory consolidation | **never** (as shaped today) | `memory.consolidate` asks for one free paragraph (or the literal `NOTHING`) — prose consumed as prose |
 //! | chat composition / final answer | **never** | human-read prose |
 //! | tool-call rounds | **never** | the native Ollama `tools` field already constrains its own path |
-//! | `<think>` stream | **never** (and *cannot* be) | verified live 2026-07-13: Ollama's `format` constrains only `message.content`; `message.thinking` flows untouched (byte-identical think text at fixed seed, constrained vs not). A model that ruminates past `think_budget_tokens` still fails the call — that budget, not the grammar, is the guard. |
+//! | `<think>` stream | **never** (and *cannot* be) | verified live 2026-07-13: Ollama's `format` constrains only `message.content`; `message.thinking` flows untouched (byte-identical think text at fixed seed, constrained vs not). A model that ruminates past its tier's think budget still yields zero content — the tier budget (plus the tiers slice's think-off salvage retry), not the grammar, is the guard. |
 //!
 //! ## Transport
 //!

@@ -38,6 +38,10 @@ struct Harness {
     /// Count + program + received bodies for the unary (PLAN) surface.
     unary_count: Arc<AtomicU32>,
     unary_reply: Arc<Mutex<Value>>,
+    /// Optional per-call reply script (consumed front-first before
+    /// `unary_reply` applies) — lets a test serve a different reply to a
+    /// salvage retry than to the first PLAN call.
+    unary_script: Arc<Mutex<Vec<Value>>>,
     unary_bodies: Arc<Mutex<Vec<Value>>>,
     /// Per-round content script + received bodies for the stream surface.
     stream_count: Arc<AtomicU32>,
@@ -63,15 +67,22 @@ async fn harness() -> &'static Harness {
 
         let unary_count = Arc::new(AtomicU32::new(0));
         let unary_reply = Arc::new(Mutex::new(json!({"message": {"content": ""}})));
+        let unary_script: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let unary_bodies: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         {
             let count = Arc::clone(&unary_count);
             let reply = Arc::clone(&unary_reply);
+            let script = Arc::clone(&unary_script);
             let bodies = Arc::clone(&unary_bodies);
             ipc::register_action("ollama.chat", move |payload: Value| {
                 count.fetch_add(1, Ordering::SeqCst);
                 bodies.lock().unwrap().push(payload);
-                let r = reply.lock().unwrap().clone();
+                let mut s = script.lock().unwrap();
+                let r = if s.is_empty() {
+                    reply.lock().unwrap().clone()
+                } else {
+                    s.remove(0)
+                };
                 async move { ipc::Reply::ok(r) }
             });
         }
@@ -121,6 +132,7 @@ async fn harness() -> &'static Harness {
         Harness {
             unary_count,
             unary_reply,
+            unary_script,
             unary_bodies,
             stream_count,
             stream_script,
@@ -140,6 +152,7 @@ async fn test_guard<'a>() -> (MutexGuard<'a, ()>, &'static Harness) {
     let h = harness().await;
     h.unary_count.store(0, Ordering::SeqCst);
     h.stream_count.store(0, Ordering::SeqCst);
+    h.unary_script.lock().unwrap().clear();
     h.unary_bodies.lock().unwrap().clear();
     h.stream_bodies.lock().unwrap().clear();
     (guard, h)
@@ -302,7 +315,12 @@ async fn deep_turn_plans_grounds_and_guides_the_round() {
     assert_eq!(
         plan_body["options"]["num_predict"],
         4096 + 2048,
-        "think budget + plan-JSON output allowance"
+        "legacy \"deep\" = think_harder tier: think budget + plan-JSON output allowance"
+    );
+    assert!(
+        plan_body.get("think").is_none(),
+        "deliberating tiers OMIT the think switch (a non-thinking reasoner \
+         keeps working exactly as in S3)"
     );
     assert_eq!(plan_body["stream"], false);
     assert!(
@@ -386,6 +404,142 @@ async fn deep_turn_plans_grounds_and_guides_the_round() {
         .expect("final usage");
     assert_eq!(final_usage["prompt_tokens"], 100 + 7 + 7);
     assert_eq!(final_usage["completion_tokens"], 40 + 3 + 3);
+}
+
+/// The tiers slice: the `think` tier plans grammar-first with deliberation
+/// OFF (`think:false`, output allowance only) and `ultrathink` carries its
+/// bigger budget — the tier is a per-call knob, everything else identical.
+#[tokio::test]
+async fn think_and_ultrathink_tiers_set_the_call_knobs() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true);
+
+    for (depth, expect_think, expect_predict) in [
+        ("think", Some(false), 2048_u64),
+        ("think_harder", None, 4096 + 2048),
+        ("ultrathink", None, 10240 + 2048),
+    ] {
+        h.unary_bodies.lock().unwrap().clear();
+        set_unary_content(h, &canned_plan());
+        set_stream_script(h, &["{\"name\": \"time.now\", \"arguments\": {}}", "done"]);
+        h.stream_count.store(0, Ordering::SeqCst);
+
+        let events = run_streaming_turn(json!({
+            "user_message": "what time is it?",
+            "conversation_id": format!("rsn-tier-{depth}"),
+            "model": "stub",
+            "depth": depth,
+        }))
+        .await;
+
+        let plan_body = h.unary_bodies.lock().unwrap()[0].clone();
+        match expect_think {
+            Some(t) => assert_eq!(
+                plan_body["think"],
+                json!(t),
+                "{depth}: the tight tier sends think:false"
+            ),
+            None => assert!(
+                plan_body.get("think").is_none(),
+                "{depth}: deliberating tiers omit the switch"
+            ),
+        }
+        assert_eq!(
+            plan_body["options"]["num_predict"],
+            json!(expect_predict),
+            "{depth}: tier budget + output allowance"
+        );
+        assert_eq!(
+            plan_body["format"]["required"][0], "goal",
+            "{depth}: grammar constraint always rides the PLAN call"
+        );
+        // The plan executed regardless of tier.
+        assert_eq!(
+            events_of_type(&events, "turn_complete")[0]["final_message"],
+            "done"
+        );
+    }
+}
+
+/// Think-exhaustion salvage: a deliberating tier whose PLAN call burns the
+/// whole num_predict inside `<think>` (done_reason "length", zero content)
+/// gets ONE grammar-first retry with deliberation off — visible step, both
+/// calls' tokens on the meter, and the salvaged plan still guides the turn.
+#[tokio::test]
+async fn think_exhaustion_salvages_grammar_first() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true);
+    *h.unary_script.lock().unwrap() = vec![
+        json!({
+            "message": {"content": "", "thinking": "hmm, let me consider every angle…"},
+            "done_reason": "length",
+            "prompt_eval_count": 100,
+            "eval_count": 6144,
+        }),
+        json!({
+            "message": {"content": canned_plan()},
+            "done_reason": "stop",
+            "prompt_eval_count": 100,
+            "eval_count": 40,
+        }),
+    ];
+    set_stream_script(h, &["{\"name\": \"time.now\", \"arguments\": {}}", "done"]);
+
+    let events = run_streaming_turn(json!({
+        "user_message": "what time is it?",
+        "conversation_id": "rsn-salvage-1",
+        "model": "stub",
+        "depth": "think_harder",
+    }))
+    .await;
+
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        2,
+        "exactly one salvage retry"
+    );
+    let bodies = h.unary_bodies.lock().unwrap().clone();
+    assert!(bodies[0].get("think").is_none(), "first call deliberates");
+    assert_eq!(bodies[0]["options"]["num_predict"], 4096 + 2048);
+    assert_eq!(
+        bodies[1]["think"],
+        json!(false),
+        "salvage retry disables deliberation"
+    );
+    assert_eq!(
+        bodies[1]["options"]["num_predict"], 2048,
+        "salvage runs on the output allowance alone"
+    );
+
+    let notices: Vec<String> = events_of_type(&events, "step")
+        .iter()
+        .filter(|e| e["stage"] == "reasoning")
+        .map(|e| e["summary"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(
+        notices
+            .iter()
+            .any(|s| s == "Deliberation used the whole budget — retrying without it"),
+        "visible salvage notice: {notices:?}"
+    );
+    assert!(
+        notices.contains(&"s1 · get the current time".to_owned()),
+        "the salvaged plan still produces the checklist: {notices:?}"
+    );
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "done"
+    );
+
+    // Honest meter: BOTH plan calls' tokens fold in (100+100 prompt,
+    // 6144+40 completion) plus the two rounds' 7/3 each.
+    let usage = events_of_type(&events, "usage");
+    let final_usage = usage
+        .iter()
+        .find(|e| e["done"] == true)
+        .expect("final usage");
+    assert_eq!(final_usage["prompt_tokens"], 200 + 7 + 7);
+    assert_eq!(final_usage["completion_tokens"], 6184 + 3 + 3);
 }
 
 #[tokio::test]

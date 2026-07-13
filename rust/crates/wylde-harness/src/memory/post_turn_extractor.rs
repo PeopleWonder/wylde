@@ -696,8 +696,7 @@ mod tests {
             "schema kinds must be the parser's pass-through set"
         );
         assert_eq!(
-            mem["items"]["properties"]["importance"]["maximum"],
-            MAX_EXTRACTOR_IMPORTANCE,
+            mem["items"]["properties"]["importance"]["maximum"], MAX_EXTRACTOR_IMPORTANCE,
             "grammar must not admit the hand-flagged 9-10 band"
         );
 

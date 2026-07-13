@@ -332,9 +332,9 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
             .unwrap_or(Value::Null),
         "abort_error": abort_error.map(Value::String).unwrap_or(Value::Null),
     });
-    // Only a Deep request grows the reply — the everyday Fast reply shape
-    // is untouched (identity guard).
-    if depth == reasoning::Depth::Deep {
+    // Only a planning-tier request grows the reply — the everyday Fast
+    // reply shape is untouched (identity guard).
+    if depth.plans() {
         reply["depth_ignored"] = json!(true);
     }
     Reply::ok(reply)

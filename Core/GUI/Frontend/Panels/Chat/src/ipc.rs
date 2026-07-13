@@ -336,11 +336,13 @@ pub async fn start_turn(
 /// editor, which biases RAG toward the user's current focus (`None` on the
 /// Global slot / when no file is open).
 ///
-/// `depth` (agentic-reasoning S1) is the InferenceBar fast/deep pill's wire
-/// value (`"fast"` / `"deep"`). Always sent when non-empty so the explicit
-/// per-turn pill beats the harness config's `default_depth` in the
-/// payload → config → Fast resolution chain. `"fast"` is behaviourally
-/// inert on the harness (the everyday byte-identical path).
+/// `depth` is the InferenceBar thinking-tier pill's wire token (`"fast"` /
+/// `"think"` / `"think_harder"` / `"ultrathink"`; the pre-tier `"deep"`
+/// still parses harness-side as `think_harder`). Always sent when
+/// non-empty so the explicit per-turn pill beats the harness config's
+/// `default_depth` in the payload → config → Fast resolution chain.
+/// `"fast"` is behaviourally inert on the harness (the everyday
+/// byte-identical path).
 #[allow(clippy::too_many_arguments)] // turn-start payload fan-out; each arg is a
                                      // distinct optional payload field.
 pub async fn start_turn_with_model(
