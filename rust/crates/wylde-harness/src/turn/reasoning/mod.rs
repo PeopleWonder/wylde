@@ -16,8 +16,10 @@
 //! * [`constrained`] — grammar-constrained decoding plumbing (2026-07-13):
 //!   [`constrained::plan_format`] (the `constrained_plan`-gated PlanDag
 //!   schema) + [`constrained::ollama_chat_maybe_constrained`] (the
-//!   fail-soft `format`-carrying chat call S3's PLAN phase makes). Inert
-//!   until S3 — no live caller yet.
+//!   fail-soft `format`-carrying chat call). PLAN wiring lands with S3;
+//!   the post-turn memory extractor and the conversation auto-summariser
+//!   already call the wrapper live (2026-07-13, policy table in
+//!   [`constrained`]'s module docs).
 //!
 //! **Identity guarantee:** with `ReasoningConfig.enabled == false` (the
 //! default) or `depth == Fast`, nothing in this module touches the turn —

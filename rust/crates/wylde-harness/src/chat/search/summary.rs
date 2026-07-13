@@ -250,11 +250,69 @@ fn snippet(s: &str, max: usize) -> String {
     out
 }
 
-/// Parse a summariser reply into `(summary, tags)`. The prompt asks for the
-/// summary on its own, then an optional `Tags: a, b, c` line. Tolerant: a
-/// reply with no tags line yields no tags; the summary is everything that
-/// isn't the tags line, trimmed + capped.
+/// The canonical JSON Schema for the summariser's reply — the value handed
+/// to Ollama's `format` when [`constrained_summary_enabled`]. Two fields:
+/// the `summary` string stays completely free (the grammar constrains the
+/// ENVELOPE, never the prose inside it — that's what keeps this within the
+/// "constrain machine-consumed structured output, never human-read prose"
+/// policy), and `tags` is capped at the parser's [`MAX_TOPIC_TAGS`]. MUST
+/// stay in lockstep with [`parse_summary_response`]'s JSON path — the
+/// lockstep tests below pin it, and they're the only guard: this Ollama
+/// build silently ignores malformed schemas (fails open, unconstrained).
+pub fn summary_format() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "tags": {"type": "array", "maxItems": MAX_TOPIC_TAGS, "items": {"type": "string"}}
+        },
+        "required": ["summary", "tags"],
+        "additionalProperties": false
+    })
+}
+
+/// The JSON half of [`parse_summary_response`]: `Some` only when the reply
+/// carries a JSON object with a string `summary` (the constrained-decoding
+/// shape, or a freehand model that followed the JSON instruction after the
+/// fail-soft retry). Tags get the same normalisation as the line path
+/// (trim, strip `#`, drop empties, cap); the summary gets the same length
+/// cap. Requiring the `summary` key makes a brace-bearing prose reply fall
+/// through to the line scanner instead of being hijacked.
+fn parse_summary_json(text: &str) -> Option<(String, Vec<String>)> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    if end <= start {
+        return None;
+    }
+    let v: Value = serde_json::from_str(&text[start..=end]).ok()?;
+    let summary = v.get("summary")?.as_str()?.trim().to_owned();
+    let tags = v
+        .get("tags")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(|t| t.trim().trim_start_matches('#').trim())
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned)
+                .take(MAX_TOPIC_TAGS)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some((snippet(&summary, MAX_SUMMARY_CHARS), tags))
+}
+
+/// Parse a summariser reply into `(summary, tags)`. JSON-first: a reply
+/// shaped like [`summary_format`] (`{"summary": ..., "tags": [...]}`) is
+/// taken as-is — the constrained-decoding path. Otherwise the legacy line
+/// scan: the prompt asks for the summary on its own, then an optional
+/// `Tags: a, b, c` line. Tolerant: a reply with no tags line yields no
+/// tags; the summary is everything that isn't the tags line, trimmed +
+/// capped.
 pub fn parse_summary_response(text: &str) -> (String, Vec<String>) {
+    if let Some(parsed) = parse_summary_json(text) {
+        return parsed;
+    }
     let mut summary_lines: Vec<&str> = Vec::new();
     let mut tags: Vec<String> = Vec::new();
     for line in text.lines() {
@@ -329,6 +387,21 @@ pub fn auto_summary_enabled() -> bool {
     }
 }
 
+/// Whether the summariser call carries the [`summary_format`] schema
+/// (`WYLDE_CONSTRAINED_SUMMARY` kill switch; on by default — same idiom
+/// as [`auto_summary_enabled`]). Off ⇒ the legacy prose + `Tags:` line
+/// prompt and line-scan parse, byte-identical to the pre-constrained
+/// behaviour.
+pub fn constrained_summary_enabled() -> bool {
+    match std::env::var("WYLDE_CONSTRAINED_SUMMARY") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "off" | "0" | "false"
+        ),
+        Err(_) => true,
+    }
+}
+
 /// The post-turn auto-summary **producer** (improvement plan M1) — the
 /// caller `needs_regen`'s module docs always promised. The turn driver
 /// spawns this fire-and-forget after every naturally-completed turn;
@@ -385,16 +458,32 @@ pub async fn maybe_refresh(conversation_id: &str, workspace_id: Option<&str>) {
 
 /// Ask the LLM for a 1–2 sentence summary + topic tags of `convo_text` via
 /// `ollama.chat` on the wylde-ollama service. Returns `(summary, tags)`.
+///
+/// Grammar-constrained by default ([`summary_format`], see
+/// `turn/reasoning/constrained.rs` for the policy): the schema pins the
+/// two-field envelope, a shape note rides the prompt so the model isn't
+/// fighting the grammar, and the user-tuned catalog instruction still owns
+/// the summary's style. Fail-soft: a backend that rejects the schema is
+/// retried once freehand (the shape note then still steers toward JSON),
+/// and [`parse_summary_response`] falls back to the legacy line scan for
+/// any non-JSON reply.
 pub async fn generate_summary(convo_text: &str) -> Result<(String, Vec<String>), SummaryError> {
-    use wylde_shared::ipc;
-
     let cfg = crate::config::Config::get();
     let model = default_model()?;
 
     // B9: the instruction resolves through the prompts catalog so the
     // Settings prompt editor can tune summary style without a rebuild.
     let instruction = crate::prompts::store::effective_prompt("conversation.summarise");
-    let prompt = format!("{instruction}\n\n---\n{convo_text}\n---");
+    let format = constrained_summary_enabled().then(summary_format);
+    let prompt = if format.is_some() {
+        format!(
+            "{instruction}\n\nReply as ONE JSON object — \
+             {{\"summary\": \"<the summary>\", \"tags\": [\"<keyword>\", ...]}} — \
+             no `Tags:` line, no prose outside the JSON.\n\n---\n{convo_text}\n---"
+        )
+    } else {
+        format!("{instruction}\n\n---\n{convo_text}\n---")
+    };
     let body = json!({
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -403,7 +492,13 @@ pub async fn generate_summary(convo_text: &str) -> Result<(String, Vec<String>),
         "keep_alive": "24h",
     });
 
-    match ipc::call_action(&cfg.ollama_service, "ollama.chat", body).await {
+    let reply = crate::turn::reasoning::constrained::ollama_chat_maybe_constrained(
+        &cfg.ollama_service,
+        body,
+        format.as_ref(),
+    )
+    .await;
+    match reply {
         Ok(upstream) => {
             let text = upstream
                 .get("message")
@@ -414,7 +509,14 @@ pub async fn generate_summary(convo_text: &str) -> Result<(String, Vec<String>),
             if text.trim().is_empty() {
                 return Err(SummaryError::Llm("model returned empty content".to_owned()));
             }
-            Ok(parse_summary_response(&text))
+            let (summary, tags) = parse_summary_response(&text);
+            if summary.is_empty() {
+                // The grammar can force the envelope but not a non-empty
+                // sentence inside it; keep the previous summary instead of
+                // storing a blank one.
+                return Err(SummaryError::Llm("model returned empty summary".to_owned()));
+            }
+            Ok((summary, tags))
         }
         Err(e) => Err(SummaryError::Llm(format!("{}: {}", e.code, e.message))),
     }
@@ -533,6 +635,73 @@ mod tests {
             "messages": vec![json!({"role":"user","content":"x"}); 10],
         });
         assert!(needs_regen(&doc));
+    }
+
+    /// Lockstep direction 1 (schema → parser): the minimal and maximal
+    /// objects the grammar admits must parse — with the same tag
+    /// normalisation and length caps as the line path.
+    #[test]
+    fn schema_conformant_json_reply_parses() {
+        // Minimal (both required keys, empty).
+        let (s, tags) = parse_summary_response(r#"{"summary": "", "tags": []}"#);
+        assert_eq!(s, "");
+        assert!(tags.is_empty());
+        // Typical.
+        let (s, tags) = parse_summary_response(
+            r##"{"summary": "We debugged the apply_overrides race.", "tags": ["#settings", " race ", ""]}"##,
+        );
+        assert_eq!(s, "We debugged the apply_overrides race.");
+        assert_eq!(tags, vec!["settings", "race"], "same normalisation as the line path");
+        // Caps hold even if the grammar's maxItems failed open.
+        let many: Vec<String> = (0..20).map(|i| format!("t{i}")).collect();
+        let raw = json!({"summary": "x".repeat(2000), "tags": many}).to_string();
+        let (s, tags) = parse_summary_response(&raw);
+        assert!(s.chars().count() <= MAX_SUMMARY_CHARS + 1);
+        assert_eq!(tags.len(), MAX_TOPIC_TAGS);
+    }
+
+    /// Lockstep direction 2 (parser → schema): the schema must require
+    /// exactly the keys the JSON path reads, stay a closed object, and
+    /// mirror the parser's tag cap.
+    #[test]
+    fn summary_schema_matches_the_parser() {
+        let s = summary_format();
+        assert_eq!(s["required"], json!(["summary", "tags"]));
+        assert_eq!(s["additionalProperties"], false);
+        assert_eq!(s["properties"]["summary"]["type"], "string");
+        assert_eq!(
+            s["properties"]["tags"]["maxItems"], MAX_TOPIC_TAGS,
+            "grammar cap must equal the parser cap"
+        );
+        assert_eq!(s["properties"]["tags"]["items"]["type"], "string");
+    }
+
+    /// A prose reply that happens to contain braces must NOT be hijacked
+    /// by the JSON path — only an object with a string `summary` key is.
+    #[test]
+    fn brace_bearing_prose_still_line_parses() {
+        let (s, tags) =
+            parse_summary_response("We fixed {\"a\": 1} handling in the store.\nTags: json, store");
+        assert_eq!(s, "We fixed {\"a\": 1} handling in the store.");
+        assert_eq!(tags, vec!["json", "store"]);
+    }
+
+    #[test]
+    fn constrained_summary_toggle_parses_kill_switch() {
+        let _g = crate::memory::common::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var("WYLDE_CONSTRAINED_SUMMARY").ok(); // wylde-check: discard-result-ok
+        std::env::remove_var("WYLDE_CONSTRAINED_SUMMARY");
+        assert!(constrained_summary_enabled(), "default is on");
+        for v in ["off", "0", "false", " OFF "] {
+            std::env::set_var("WYLDE_CONSTRAINED_SUMMARY", v);
+            assert!(!constrained_summary_enabled(), "{v:?} must disable");
+        }
+        match prev {
+            Some(v) => std::env::set_var("WYLDE_CONSTRAINED_SUMMARY", v),
+            None => std::env::remove_var("WYLDE_CONSTRAINED_SUMMARY"),
+        }
     }
 
     #[test]
