@@ -240,6 +240,14 @@ pub(crate) struct GatheredContext {
     /// activity dropdown shows the pipeline, not just "thinking…". Empty on a
     /// plain unbound turn that gathered nothing.
     pub steps: Vec<GatherStep>,
+    /// The turn's routed concept candidate set (agentic-reasoning S3 /
+    /// concept-routing R1). Until S3 this died inside [`gather_with`] —
+    /// logged and dropped; now it rides out so the Deep-turn PLAN phase can
+    /// ground itself in the turn's OWN routing (activation scores,
+    /// provenance, inhibitions) **without a second embed or route call**.
+    /// `None` when routing is off, the conversation is unbound, or the
+    /// service didn't route — the fast path never populates or reads it.
+    pub route_candidates: Option<wylde_concept_routing::CandidateSet>,
 }
 
 /// One line in the gather activity log (chat-processing-indicator). A
@@ -642,8 +650,12 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
     };
     let mut degraded = false;
     // Captured for the activity log (chat-processing-indicator): the routed
-    // concept set + the curated names actually injected this turn.
+    // concept set + the curated names actually injected this turn. The full
+    // candidate set also rides out on `GatheredContext.route_candidates`
+    // (agentic-reasoning S3) so a Deep turn's PLAN phase reuses this turn's
+    // routing instead of re-embedding.
     let mut routed: Option<(usize, Vec<String>)> = None;
+    let mut route_candidates: Option<wylde_concept_routing::CandidateSet> = None;
     let mut curated_names: Vec<String> = Vec::new();
 
     if let Some(ws) = active_ws {
@@ -760,6 +772,7 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
                     tracing::info!(target: "concept_routing", "[harness] {}", set.log_line());
                     let names: Vec<String> = set.activated().map(|c| c.label.clone()).collect();
                     routed = Some((set.activated_count, names));
+                    route_candidates = Some(set.clone());
                 }
                 ctx.workspace_persona = block.persona;
                 ctx.workspace_notes = block.notes;
@@ -911,6 +924,7 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         degraded,
         tier7_degraded,
         steps,
+        route_candidates,
     }
 }
 

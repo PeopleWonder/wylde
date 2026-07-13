@@ -31,7 +31,7 @@ fn live_indicator_expand_collapse_toggles(cx: &mut TestAppContext) {
             // Stand up an in-flight processing state with detail to expand.
             let mut p = ProcessingState::new();
             p.set_phase(ProcessingPhase::GatheringContext);
-            p.on_step("Retrieved 8 workspace snippets", None);
+            p.on_step("retrieval", "Retrieved 8 workspace snippets", None);
             p.on_tool_dispatched("c1", "memory.search", Some("{\"query\":\"x\"}".to_owned()));
             p.on_usage(Some(40), 18);
             panel.processing = Some(p);

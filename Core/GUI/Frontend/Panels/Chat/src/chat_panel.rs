@@ -2319,9 +2319,12 @@ fn apply_processing_turn_event(state: Option<&mut ProcessingState>, event: &Turn
             p.on_thinking(text);
         }
         TurnChunk::Step {
-            summary, detail, ..
+            stage,
+            summary,
+            detail,
+            ..
         } => {
-            p.on_step(summary.clone(), detail.clone());
+            p.on_step(stage, summary.clone(), detail.clone());
         }
         TurnChunk::Token { .. }
         | TurnChunk::TurnComplete { .. }
@@ -3250,16 +3253,22 @@ fn activity_dropdown(
         .border_l_2()
         .border_color(rgb(pack(BORDER_SUBTLE)));
 
-    // Context (the gather pipeline) and Tools sections, in time order within
-    // each. The Thinking marker rows are skipped here — the reasoning text is
-    // rendered as its own block below.
+    // Context (the gather pipeline), Plan (the reasoning tier's grounded
+    // step checklist — agentic-reasoning S3), and Tools sections, in time
+    // order within each. The Thinking marker rows are skipped here — the
+    // reasoning text is rendered as its own block below.
     let context: Vec<&processing::ActivityEntry> =
         entries.iter().filter(|e| e.kind.group() == 0).collect();
+    let plan: Vec<&processing::ActivityEntry> =
+        entries.iter().filter(|e| e.kind.group() == 3).collect();
     let tools: Vec<&processing::ActivityEntry> =
         entries.iter().filter(|e| e.kind.group() == 1).collect();
 
     if !context.is_empty() {
         body = body.child(activity_section("Context", &context));
+    }
+    if !plan.is_empty() {
+        body = body.child(activity_section("Plan", &plan));
     }
     if !tools.is_empty() {
         body = body.child(activity_section("Tools", &tools));
@@ -3331,6 +3340,7 @@ fn activity_log_row(e: &processing::ActivityEntry) -> gpui::Div {
         ActivityKind::ToolErr => ("✕", BORDER_EMPHASIS),
         ActivityKind::Memory => ("✦", TEXT_SECONDARY),
         ActivityKind::Thinking => ("…", TEXT_MUTED),
+        ActivityKind::Reasoning => ("◆", TEXT_SECONDARY),
     };
     let head = div()
         .flex()

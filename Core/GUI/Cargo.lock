@@ -9076,6 +9076,7 @@ dependencies = [
  "wylde-concept-routing",
  "wylde-plugin-api",
  "wylde-prebuild-guard",
+ "wylde-reasoning-plan",
  "wylde-shared",
  "wylde-workspaces-client",
 ]
@@ -9253,6 +9254,14 @@ name = "wylde-prebuild-guard"
 version = "0.1.0-alpha.1"
 dependencies = [
  "wylde-shared",
+]
+
+[[package]]
+name = "wylde-reasoning-plan"
+version = "0.1.0-alpha.1"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

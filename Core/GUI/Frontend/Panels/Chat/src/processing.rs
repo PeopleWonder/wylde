@@ -41,6 +41,17 @@ pub enum ProcessingPhase {
     UsingTools,
     /// A specific tool is in flight — a friendly, user-facing phrase.
     Tool(String),
+    /// Agentic reasoning tier — the reasoner is drafting the step plan for
+    /// a Deep turn (PLAN phase). Only ever emitted behind the reasoning
+    /// master toggle on a Deep turn.
+    Planning,
+    /// Agentic reasoning tier — a surprising result is being handed back to
+    /// the reasoner (S4; the label exists so the wire value never falls
+    /// back to the mute "Working").
+    Replanning,
+    /// Agentic reasoning tier — the pre-finalize critique (S5; same
+    /// forward-wiring rationale as `Replanning`).
+    Reflecting,
 }
 
 impl ProcessingPhase {
@@ -53,6 +64,9 @@ impl ProcessingPhase {
             ProcessingPhase::Generating => "Generating".to_owned(),
             ProcessingPhase::UsingTools => "Using tools".to_owned(),
             ProcessingPhase::Tool(phrase) => phrase.clone(),
+            ProcessingPhase::Planning => "Planning".to_owned(),
+            ProcessingPhase::Replanning => "Replanning".to_owned(),
+            ProcessingPhase::Reflecting => "Reflecting".to_owned(),
         }
     }
 
@@ -64,6 +78,9 @@ impl ProcessingPhase {
             "gathering_context" => ProcessingPhase::GatheringContext,
             "generating" => ProcessingPhase::Generating,
             "running_tools" => ProcessingPhase::UsingTools,
+            "planning" => ProcessingPhase::Planning,
+            "replanning" => ProcessingPhase::Replanning,
+            "reflecting" => ProcessingPhase::Reflecting,
             _ => ProcessingPhase::Working,
         }
     }
@@ -117,12 +134,18 @@ pub enum ActivityKind {
     Memory,
     /// The model exposed reasoning ("thinking").
     Thinking,
+    /// An agentic-reasoning PLAN/REFLECT beat (`stage == "reasoning"` on
+    /// the wire): the grounding line, the per-step plan checklist, a
+    /// fallback notice. Groups under its own "Plan" section so the
+    /// checklist reads as one unit.
+    Reasoning,
 }
 
 impl ActivityKind {
     /// Which dropdown section this entry groups under (Claude-style sections,
     /// so a busy turn isn't an undifferentiated wall). `0` = Context (gather
-    /// pipeline), `1` = Tools, `2` = Thinking.
+    /// pipeline), `1` = Tools, `2` = Thinking, `3` = Plan (the reasoning
+    /// tier's grounded checklist).
     pub fn group(self) -> u8 {
         match self {
             ActivityKind::Phase | ActivityKind::Step => 0,
@@ -131,6 +154,7 @@ impl ActivityKind {
             | ActivityKind::ToolErr
             | ActivityKind::Memory => 1,
             ActivityKind::Thinking => 2,
+            ActivityKind::Reasoning => 3,
         }
     }
 }
@@ -245,14 +269,18 @@ impl ProcessingState {
         self.phase = phase;
     }
 
-    /// A granular context-gather step (retrieval / routing / injection /
-    /// memory). Logged verbatim with its optional detail (full visibility).
-    pub fn on_step(&mut self, summary: impl Into<String>, detail: Option<String>) {
-        self.log.push(ActivityEntry::with_detail(
-            ActivityKind::Step,
-            summary,
-            detail,
-        ));
+    /// A granular pipeline step. Logged verbatim with its optional detail
+    /// (full visibility). `stage` routes agentic-reasoning beats
+    /// (`"reasoning"` — the plan checklist) into their own "Plan" section;
+    /// every gather stage keeps grouping under Context.
+    pub fn on_step(&mut self, stage: &str, summary: impl Into<String>, detail: Option<String>) {
+        let kind = if stage == "reasoning" {
+            ActivityKind::Reasoning
+        } else {
+            ActivityKind::Step
+        };
+        self.log
+            .push(ActivityEntry::with_detail(kind, summary, detail));
     }
 
     /// A tool was dispatched. Names the phase after it (friendly) and logs the
@@ -569,8 +597,9 @@ mod tests {
     #[test]
     fn step_entries_log_with_detail_and_group_as_context() {
         let mut p = ProcessingState::new();
-        p.on_step("Retrieved 8 workspace snippets", None);
+        p.on_step("retrieval", "Retrieved 8 workspace snippets", None);
         p.on_step(
+            "routing",
             "Routed to 3 concepts",
             Some("nextcloud, ddns, vpn".to_owned()),
         );
@@ -581,6 +610,42 @@ mod tests {
         assert_eq!(ActivityKind::Step.group(), 0);
         assert_eq!(ActivityKind::Tool.group(), 1);
         assert_eq!(ActivityKind::Thinking.group(), 2);
+    }
+
+    #[test]
+    fn reasoning_steps_group_under_their_own_plan_section() {
+        // Agentic-reasoning S3: the plan checklist arrives as steps with
+        // stage == "reasoning" and must NOT drown in the Context section.
+        let mut p = ProcessingState::new();
+        p.on_step("reasoning", "s1 · find the config loader", None);
+        p.on_step("retrieval", "Retrieved 2 snippets", None);
+        let plan = p.log.iter().find(|e| e.text.starts_with("s1")).unwrap();
+        assert_eq!(plan.kind, ActivityKind::Reasoning);
+        assert_eq!(ActivityKind::Reasoning.group(), 3, "own 'Plan' section");
+    }
+
+    #[test]
+    fn reasoning_phases_map_from_wire_with_labels() {
+        assert_eq!(
+            ProcessingPhase::from_wire("planning"),
+            ProcessingPhase::Planning
+        );
+        assert_eq!(
+            ProcessingPhase::from_wire("replanning"),
+            ProcessingPhase::Replanning
+        );
+        assert_eq!(
+            ProcessingPhase::from_wire("reflecting"),
+            ProcessingPhase::Reflecting
+        );
+        assert_eq!(ProcessingPhase::Planning.label(), "Planning");
+        assert_eq!(ProcessingPhase::Replanning.label(), "Replanning");
+        assert_eq!(ProcessingPhase::Reflecting.label(), "Reflecting");
+        // Unknown still falls back, never breaks the indicator.
+        assert_eq!(
+            ProcessingPhase::from_wire("daydreaming"),
+            ProcessingPhase::Working
+        );
     }
 
     #[test]
