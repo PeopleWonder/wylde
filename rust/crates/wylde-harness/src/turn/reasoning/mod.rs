@@ -13,6 +13,11 @@
 //! * [`resolve_depth`] — the payload → config → Fast resolution chain,
 //!   consumed by `chat.start_turn` / `chat.run_turn` (parsed and logged in
 //!   S1; the S3 plan phase is the first consumer that *acts* on it).
+//! * [`constrained`] — grammar-constrained decoding plumbing (2026-07-13):
+//!   [`constrained::plan_format`] (the `constrained_plan`-gated PlanDag
+//!   schema) + [`constrained::ollama_chat_maybe_constrained`] (the
+//!   fail-soft `format`-carrying chat call S3's PLAN phase makes). Inert
+//!   until S3 — no live caller yet.
 //!
 //! **Identity guarantee:** with `ReasoningConfig.enabled == false` (the
 //! default) or `depth == Fast`, nothing in this module touches the turn —
@@ -21,6 +26,7 @@
 //! trunk; plain vector RAG + plain ReAct.
 
 pub mod config;
+pub mod constrained;
 pub mod fit;
 
 use std::collections::HashMap;

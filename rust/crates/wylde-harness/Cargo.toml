@@ -33,6 +33,11 @@ wylde-workspaces-client = { path = "../wylde-workspaces-client" }
 # the workspaces service routes. Pure-lib dep; deleting it + reverting the
 # `gather_with` branch + the facade verbs reverts the harness half of routing.
 wylde-concept-routing = { path = "../wylde-concept-routing" }
+# Reasoning-tier data model + the canonical PlanDag `format` schema
+# (constrained-decoding slice). First harness edge to this crate —
+# build-linked but runtime-inert behind `ReasoningConfig.enabled` (off by
+# default); S3's PLAN phase is the first live caller.
+wylde-reasoning-plan = { path = "../wylde-reasoning-plan" }
 # Core-plugin host (TX S4). The SDK trait the host registers against.
 # The harness is the single crate that links plugin crates (see
 # src/plugins/mod.rs for the four-step install story). Plugins are

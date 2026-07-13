@@ -5846,6 +5846,7 @@ dependencies = [
  "wylde-concept-routing",
  "wylde-plugin-api",
  "wylde-prebuild-guard",
+ "wylde-reasoning-plan",
  "wylde-shared",
  "wylde-treesitter",
  "wylde-workspaces-client",

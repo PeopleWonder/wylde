@@ -401,6 +401,40 @@ mod tests {
         assert_eq!(r.data, envelope);
     }
 
+    /// The pass-through contract the harness's constrained-decoding
+    /// plumbing (`turn/reasoning/constrained.rs`) relies on: an Ollama
+    /// `format` schema on the IPC payload reaches POST /api/chat
+    /// unmodified (while pipe-only knobs like `priority` are stripped).
+    /// The mock only matches when the upstream body carries the schema —
+    /// an `ok` reply proves the field survived the hop.
+    #[tokio::test]
+    async fn chat_forwards_format_schema_upstream() {
+        let (server, up) = fake_upstream().await;
+        let schema = json!({"type": "object", "required": ["goal"]});
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"format": schema}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": {"role": "assistant", "content": "{}"},
+                "done": true
+            })))
+            .mount(&server)
+            .await;
+        let r = handle_chat(
+            json!({
+                "model": "qwen",
+                "messages": [{"role": "user", "content": "hi"}],
+                "format": schema,
+                "priority": "high"
+            }),
+            up,
+        )
+        .await;
+        assert!(r.ok, "format-bearing body must match upstream: {r:?}");
+    }
+
     #[tokio::test]
     async fn chat_requires_model_and_messages() {
         let up = crate::upstream::for_test("http://127.0.0.1:1");

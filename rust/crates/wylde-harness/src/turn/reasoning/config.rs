@@ -232,6 +232,22 @@ pub struct ReasoningConfig {
     /// When REFLECT fires (OQ-6). Inert until S5. Default MultiToolOnly.
     #[serde(default)]
     pub reflect_gate: ReflectGate,
+
+    /// Grammar-constrained PLAN decoding (Aaron, 2026-07-13): pass the
+    /// canonical `PlanDag` JSON Schema (`wylde_reasoning_plan::plan_dag_format`)
+    /// as Ollama's `format` on PLAN/REPLAN calls. Eval-backed: takes the
+    /// default reasoner 93.3% → 100% schema-valid at unchanged speed and
+    /// quality. Default ON; the toggle exists so a future backend/model
+    /// that misbehaves under grammar constraints can be unwired without a
+    /// build. Scope discipline (constrain machine-consumed structured
+    /// output, never human-read prose): PLAN yes; the S4 L2 verdict yes
+    /// once it exists (tiny yes/no schema); REFLECT only if S5 defines a
+    /// structured lessons record; NEVER the chat composition, the tool-call
+    /// rounds (native `tools` path), or the `<think>` stream (verified
+    /// live: `format` constrains only `message.content` — thinking flows
+    /// untouched).
+    #[serde(default = "default_true")]
+    pub constrained_plan: bool,
 }
 
 fn default_true() -> bool {
@@ -255,6 +271,7 @@ impl Default for ReasoningConfig {
             replan_budget: default_replan_budget(),
             think_budget_tokens: default_think_budget(),
             reflect_gate: ReflectGate::default(),
+            constrained_plan: true,
         }
     }
 }
@@ -372,6 +389,10 @@ mod tests {
         assert_eq!(c.replan_budget, 2);
         assert_eq!(c.think_budget_tokens, 4096);
         assert_eq!(c.reflect_gate, ReflectGate::MultiToolOnly);
+        assert!(
+            c.constrained_plan,
+            "constrained PLAN decoding defaults ON (safe: gated behind enabled=false)"
+        );
     }
 
     #[test]
@@ -426,6 +447,7 @@ mod tests {
             replan_budget: 3,
             think_budget_tokens: 2048,
             reflect_gate: ReflectGate::Always,
+            constrained_plan: false,
         };
         assert_eq!(ReasoningConfig::from_value(&c.to_value()), c);
     }
