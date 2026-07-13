@@ -54,17 +54,26 @@
 //!   visible notice; a planner-declared `abort` action ends the turn
 //!   cleanly (`AbortReason::PlanPrecondition`). Everything else is
 //!   fail-soft: detector/L2/replan failures all continue the turn.
-//! * `auto_escalate` (config, OQ-5) stays **inert** after S4 — a Fast
-//!   turn that self-escalates would break the Fast-tier byte-identity
-//!   guarantee the e2e transcript test pins. Deliberately deferred until
-//!   Aaron rules on how those two coexist; see the S4 slice report.
+//! * `auto_escalate` (OQ-5) is **LIVE since S4b** under Aaron's
+//!   2026-07-14 NARROWED identity contract: reasoning enabled + Fast is
+//!   byte-identical to trunk EXCEPT after
+//!   [`ESCALATE_AFTER_HARD_FAILURES`] (2) hard tool failures (L0's exact
+//!   definition), at which point the turn runs one mid-turn PLAN at
+//!   `ReasoningConfig.escalate_tier` (default `Think`) and continues
+//!   plan-guided. [`arm_escalation`] / [`EscalationWatch`] /
+//!   [`maybe_escalate`]; fires at most once, fast→planning only, every
+//!   failure degrades to plain ReAct. The e2e transcript proof pins the
+//!   zero- and one-failure cases byte-identical.
 //!
-//! **Identity guarantee:** with `ReasoningConfig.enabled == false` (the
-//! default) or `depth == Fast`, nothing in this module touches the turn —
-//! [`deep_gate_open`] is the single gate expression, [`maybe_plan`]
-//! returns `None` without doing anything, and every driver-side touch is
-//! behind `if let Some(state)`. The fast path stays byte-identical to
-//! trunk; plain vector RAG + plain ReAct.
+//! **Identity guarantee (narrowed 2026-07-14, Aaron):** with
+//! `ReasoningConfig.enabled == false` (the default), nothing in this
+//! module touches the turn — byte-identical, unconditionally. With
+//! reasoning ENABLED and `depth == Fast`, the turn is byte-identical
+//! EXCEPT after [`ESCALATE_AFTER_HARD_FAILURES`] hard tool failures,
+//! when `auto_escalate` (default on) escalates it to planning — the sole,
+//! deliberate carve-out. [`deep_gate_open`] is the single planning gate,
+//! [`maybe_plan`] returns `None` without doing anything, and every
+//! driver-side touch is behind `if let Some(state)` / the armed watch.
 
 pub mod config;
 pub mod constrained;
@@ -262,6 +271,11 @@ pub(crate) struct RoundCompletion {
 /// plain ReAct).
 pub struct ReasoningState {
     pub dag: PlanDag,
+    /// The tier this plan (and any replans) reasons at. Equals the turn's
+    /// depth on an ordinary Deep turn; on an S4b auto-escalated Fast turn
+    /// it is the configured escalation tier — replans after escalation
+    /// keep the escalated knobs, not Fast's.
+    pub tier: Depth,
     /// Step results by id — feeds [`template::resolve`] for later steps'
     /// `${sid.output…}` placeholders. Retained across plan revisions.
     results: HashMap<String, Value>,
@@ -290,9 +304,10 @@ pub struct ReasoningState {
 }
 
 impl ReasoningState {
-    fn new(outcome: PlanOutcome) -> Self {
+    fn new(outcome: PlanOutcome, tier: Depth) -> Self {
         Self {
             dag: outcome.dag,
+            tier,
             results: HashMap::new(),
             completed: HashSet::new(),
             in_flight: None,
@@ -493,6 +508,7 @@ pub(crate) async fn maybe_plan(
         user_message,
         gathered,
         alias_map,
+        &[],
     )
     .await?;
     if outcome.dag.steps.is_empty() {
@@ -508,7 +524,131 @@ pub(crate) async fn maybe_plan(
         completion_tokens = outcome.completion_tokens,
         "reasoning: PLAN phase produced a plan"
     );
-    Some(ReasoningState::new(outcome))
+    Some(ReasoningState::new(outcome, depth))
+}
+
+// ── S4b: Fast→planning auto-escalation (Aaron's narrowed contract) ──────
+
+/// How many hard tool failures a watched Fast turn absorbs before it
+/// escalates to planning. Aaron's 2026-07-14 contract: "reasoning enabled
+/// + Fast tier is byte-identical to today EXCEPT after ≥2 hard tool
+/// failures".
+pub const ESCALATE_AFTER_HARD_FAILURES: usize = 2;
+
+/// Char cap on each failure digest carried into the escalated plan
+/// prompt / the escalation step's detail.
+const ESCALATION_DIGEST_MAX_CHARS: usize = 200;
+
+/// The Fast-turn failure watch (S4b). Armed only when reasoning is
+/// enabled, `auto_escalate` is on, and the turn is Fast; it counts hard
+/// tool failures — **exactly L0's definition**
+/// ([`surprise::is_tool_failure`]) — and nothing else. Below the
+/// threshold it emits nothing and changes nothing: the narrowed identity
+/// contract (zero-or-one failure ⇒ byte-identical) is pinned by the e2e
+/// transcript test.
+#[derive(Debug, Default)]
+pub(crate) struct EscalationWatch {
+    /// `tool args → digest` lines for the failures seen so far.
+    failures: Vec<String>,
+}
+
+impl EscalationWatch {
+    /// Observe one dispatched tool's reply content. Counts it only when
+    /// L0 calls it a hard failure (same parse-then-check the plan
+    /// executor uses: JSON when possible, else the raw string).
+    pub fn observe(&mut self, tool: &str, args: &Value, content: &str) {
+        let parsed = serde_json::from_str::<Value>(content)
+            .unwrap_or_else(|_| Value::String(content.to_owned()));
+        if !surprise::is_tool_failure(&parsed) {
+            return;
+        }
+        self.failures.push(format!(
+            "{tool} {} → {}",
+            serde_json::to_string(args).unwrap_or_else(|_| "{}".to_owned()),
+            surprise::digest_value(&parsed, ESCALATION_DIGEST_MAX_CHARS)
+        ));
+    }
+
+    pub fn should_escalate(&self) -> bool {
+        self.failures.len() >= ESCALATE_AFTER_HARD_FAILURES
+    }
+
+    pub fn failures(&self) -> &[String] {
+        &self.failures
+    }
+}
+
+/// Arm the S4b failure watch for this turn, or `None` when the narrowed
+/// contract doesn't apply: only a **Fast** turn (planning tiers already
+/// plan; escalation is fast→planning ONLY, never the reverse) with the
+/// master toggle AND `auto_escalate` on. `None` ⇒ the fast path carries
+/// no watch and stays exactly today's code path.
+pub(crate) fn arm_escalation(depth: Depth) -> Option<EscalationWatch> {
+    if depth != Depth::Fast {
+        return None;
+    }
+    let cfg = ReasoningConfig::current();
+    (cfg.enabled && cfg.auto_escalate).then(EscalationWatch::default)
+}
+
+/// The mid-turn escalation (S4b): the watch hit its threshold, so run ONE
+/// PLAN at the configured escalation tier (default `Think`, clamped to a
+/// planning tier) with the failure digests as their own grounding block,
+/// and hand back a `ReasoningState` — from the next round on, the turn is
+/// plan-guided exactly like a Deep turn. Every failure path (planner
+/// unreachable, invalid plan, zero steps) returns `None` and the turn
+/// continues as plain ReAct; the caller disarms the watch either way, so
+/// escalation fires at most once per turn.
+#[allow(clippy::too_many_arguments)] // mirrors the turn-driver fan-out it's called from
+pub(crate) async fn maybe_escalate(
+    cfg: &'static crate::config::Config,
+    handle: &Arc<TurnHandle>,
+    turn_id: &str,
+    workspace_id: Option<&str>,
+    user_message: &str,
+    gathered: &crate::turn::context_gather::GatheredContext,
+    alias_map: &HashMap<String, String>,
+    watch: &EscalationWatch,
+) -> Option<ReasoningState> {
+    let tier = ReasoningConfig::current().escalation_tier();
+    // The WHY, before the plan machinery starts: the user sees the
+    // escalation reason in the activity dropdown, then the Planning
+    // phase + grounding + checklist follow from plan_phase::run.
+    handle
+        .push_turn_event(crate::events::TurnEvent::Step {
+            turn_id: turn_id.to_owned(),
+            stage: crate::events::StepStage::Reasoning,
+            summary: format!(
+                "{} hard tool failures — escalating to planning ({})",
+                watch.failures().len(),
+                tier.as_str()
+            ),
+            detail: Some(watch.failures().join("\n")),
+        })
+        .await;
+
+    let outcome = plan_phase::run(
+        cfg,
+        handle,
+        turn_id,
+        tier,
+        workspace_id,
+        user_message,
+        gathered,
+        alias_map,
+        watch.failures(),
+    )
+    .await?;
+    if outcome.dag.steps.is_empty() {
+        return None;
+    }
+    tracing::info!(
+        turn_id = %turn_id,
+        steps = outcome.dag.steps.len(),
+        tier = tier.as_str(),
+        "reasoning: auto-escalated Fast turn to planning after hard tool failures"
+    );
+    Some(ReasoningState::new(outcome, tier))
 }
 
 #[cfg(test)]
@@ -604,18 +744,21 @@ mod tests {
     }
 
     fn state(steps: Vec<PlanStep>) -> ReasoningState {
-        ReasoningState::new(PlanOutcome {
-            dag: PlanDag {
-                goal: "g".into(),
-                steps,
-                reasoning_trace: String::new(),
-                plan_version: 1,
+        ReasoningState::new(
+            PlanOutcome {
+                dag: PlanDag {
+                    goal: "g".into(),
+                    steps,
+                    reasoning_trace: String::new(),
+                    plan_version: 1,
+                },
+                prompt_tokens: 100,
+                completion_tokens: 50,
+                elapsed_ms: 1200,
+                plan_inputs: inputs::PlanInputs::default(),
             },
-            prompt_tokens: 100,
-            completion_tokens: 50,
-            elapsed_ms: 1200,
-            plan_inputs: inputs::PlanInputs::default(),
-        })
+            Depth::Think,
+        )
     }
 
     #[test]
@@ -801,5 +944,56 @@ mod tests {
             rs.begin_round().is_none(),
             "budget exhaustion ⇒ plain ReAct, no more guidance"
         );
+    }
+
+    // ── S4b: the escalation watch ───────────────────────────────────────
+
+    #[test]
+    fn escalation_watch_counts_only_hard_failures() {
+        let mut w = EscalationWatch::default();
+        // Clean results never count.
+        w.observe("time_now", &json!({}), "2026-07-14T12:00:00Z");
+        w.observe("fs_read", &json!({"path": "a"}), "{\"ok\": true}");
+        assert!(!w.should_escalate());
+        assert!(w.failures().is_empty());
+
+        // One hard failure (L0's exact shapes) is below the threshold.
+        w.observe(
+            "voice_mic_chunks",
+            &json!({}),
+            "[error] phase_11_deferred: not yet ported",
+        );
+        assert!(!w.should_escalate(), "one failure stays byte-identical");
+
+        // The second trips it — tier_blocked and structural envelopes
+        // count exactly like [error] strings.
+        w.observe("fs_write_file", &json!({"path": "x"}), "[tier_blocked] no");
+        assert!(w.should_escalate());
+        assert_eq!(w.failures().len(), 2);
+        assert!(
+            w.failures()[0].starts_with("voice_mic_chunks {} → [error]"),
+            "{:?}",
+            w.failures()
+        );
+
+        // Structural envelope via JSON parse.
+        let mut w2 = EscalationWatch::default();
+        w2.observe("x", &json!({}), "{\"ok\": false}");
+        assert_eq!(w2.failures().len(), 1);
+    }
+
+    #[test]
+    fn arm_escalation_is_fast_only_and_gated() {
+        // Planning tiers never arm — they already plan (never deep→fast,
+        // and never "escalate" something that has the machinery).
+        for tier in [Depth::Think, Depth::ThinkHarder, Depth::Ultrathink] {
+            assert!(arm_escalation(tier).is_none());
+        }
+        // Fast + the DEFAULT config (enabled: false) never arms — the
+        // unconditional identity case. (Enabled+Fast arming is covered by
+        // the e2e, which persists an enabled config.)
+        if !ReasoningConfig::current().enabled {
+            assert!(arm_escalation(Depth::Fast).is_none());
+        }
     }
 }

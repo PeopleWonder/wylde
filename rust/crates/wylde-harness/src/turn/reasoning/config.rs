@@ -298,17 +298,30 @@ pub struct ReasoningConfig {
     #[serde(default)]
     pub default_depth: Depth,
 
-    /// Fast→Deep self-escalation on hard surprise (scope OQ-5 recommended
-    /// default ON; fast→deep ONLY, never deep→fast). **Still inert after
-    /// S4, deliberately**: an enabled+Fast turn that self-escalates on a
-    /// double hard-failure would no longer be byte-identical to trunk —
-    /// which the standing Fast-tier identity proof (the e2e transcript
-    /// test) forbids. Wiring this needs Aaron's ruling on how the two
-    /// coexist (e.g. weakening the Fast-identity contract to "identical
-    /// except after repeated hard tool failures"); flagged in the S4
-    /// slice report. Do not wire it casually.
+    /// Fast→planning self-escalation (scope OQ-5) — **LIVE since S4b,
+    /// under Aaron's 2026-07-14 NARROWED identity contract**: reasoning
+    /// enabled + Fast tier is byte-identical to today EXCEPT after
+    /// [`ESCALATE_AFTER_HARD_FAILURES`](super::ESCALATE_AFTER_HARD_FAILURES)
+    /// (2) hard tool failures — L0's exact definition (`[error]` /
+    /// `[tier_blocked]` content, or a structural error envelope) — at
+    /// which point the turn runs ONE mid-turn PLAN at
+    /// [`escalate_tier`](Self::escalate_tier) and continues plan-guided.
+    /// Fires at most once per turn, fast→planning ONLY (never the other
+    /// way), and every failure path degrades back to plain ReAct. The
+    /// e2e transcript proof pins the narrowed contract: zero and one
+    /// failure stay byte-identical. Default ON: it can only fire when the
+    /// master toggle is already an explicit opt-in AND the turn is
+    /// already failing, and the default escalation tier costs ~5 s.
     #[serde(default = "default_true")]
     pub auto_escalate: bool,
+
+    /// The tier an auto-escalated Fast turn plans at (S4b). Default
+    /// `Think` — grammar-guaranteed plan at ~5 s; escalating straight to
+    /// a deliberating tier would spring a 20–40 s stall the user never
+    /// asked for. `Fast` is meaningless here and is clamped to `Think`
+    /// by [`Self::escalation_tier`].
+    #[serde(default = "default_escalate_tier")]
+    pub escalate_tier: Depth,
 
     /// Max replans per turn (S4, live); exhaustion degrades to plain
     /// ReAct with a visible note, never a silent stop (OQ-4). Default 2.
@@ -349,6 +362,9 @@ fn default_true() -> bool {
 fn default_replan_budget() -> u8 {
     2
 }
+fn default_escalate_tier() -> Depth {
+    Depth::Think
+}
 
 impl Default for ReasoningConfig {
     fn default() -> Self {
@@ -358,6 +374,7 @@ impl Default for ReasoningConfig {
             mode: ReasonMode::default(),
             default_depth: Depth::Fast,
             auto_escalate: true,
+            escalate_tier: default_escalate_tier(),
             replan_budget: default_replan_budget(),
             tier_budgets: TierBudgets::default(),
             reflect_gate: ReflectGate::default(),
@@ -367,6 +384,16 @@ impl Default for ReasoningConfig {
 }
 
 impl ReasoningConfig {
+    /// The tier an auto-escalated turn plans at, clamped to a planning
+    /// tier: a configured `Fast` (which cannot plan) resolves to `Think`.
+    pub fn escalation_tier(&self) -> Depth {
+        if self.escalate_tier.plans() {
+            self.escalate_tier
+        } else {
+            Depth::Think
+        }
+    }
+
     /// Parse the on-disk shape. Tolerant: a non-object, a missing key, or a
     /// wrong-typed value all fall back to the default (so a degraded file
     /// keeps reasoning **off**, never silently on).
@@ -476,6 +503,11 @@ mod tests {
         assert_eq!(c.slots.reasoner, DEFAULT_REASONER_MODEL);
         assert_eq!(c.slots.embedder, DEFAULT_EMBED_MODEL);
         assert!(c.auto_escalate);
+        assert_eq!(
+            c.escalate_tier,
+            Depth::Think,
+            "escalation plans at the cheap grammar-first tier"
+        );
         assert_eq!(c.replan_budget, 2);
         assert_eq!(
             c.tier_budgets,
@@ -544,6 +576,16 @@ mod tests {
     }
 
     #[test]
+    fn escalation_tier_clamps_to_a_planning_tier() {
+        let mut c = ReasoningConfig::default();
+        assert_eq!(c.escalation_tier(), Depth::Think);
+        c.escalate_tier = Depth::Fast; // nonsense: Fast cannot plan
+        assert_eq!(c.escalation_tier(), Depth::Think, "Fast clamps to Think");
+        c.escalate_tier = Depth::ThinkHarder;
+        assert_eq!(c.escalation_tier(), Depth::ThinkHarder);
+    }
+
+    #[test]
     fn missing_keys_default_to_off_safe() {
         let c = ReasoningConfig::from_value(&json!({}));
         assert!(!c.enabled);
@@ -573,6 +615,7 @@ mod tests {
             mode: ReasonMode::Split,
             default_depth: Depth::Ultrathink,
             auto_escalate: false,
+            escalate_tier: Depth::ThinkHarder,
             replan_budget: 3,
             tier_budgets: TierBudgets {
                 think_harder: 2048,

@@ -1277,3 +1277,208 @@ async fn no_progress_duplicate_round_triggers_replan() {
         "done after revision"
     );
 }
+
+// ── S4b: Fast→planning auto-escalation (the narrowed identity contract) ──
+
+/// Persist a full reasoning config (the S4b tests need `auto_escalate`
+/// off while `enabled` stays on).
+fn set_reasoning(cfg: ReasoningConfig) {
+    ReasoningConfig::persist(cfg).expect("persist reasoning config");
+}
+
+/// Deterministic HARD tool failures: the deferred voice tools return an
+/// `[error] phase_11_deferred: …` envelope on every call — exactly L0's
+/// definition, no filesystem or network dependence.
+const FAIL_CALL_A: &str = "{\"name\": \"voice.mic.chunks\", \"arguments\": {}}";
+const FAIL_CALL_B: &str = "{\"name\": \"voice.wakeword.events\", \"arguments\": {}}";
+
+/// Aaron's narrowed contract, the identity half: reasoning enabled + Fast
+/// with ZERO or ONE hard tool failure stays byte-identical to trunk —
+/// same event transcript, same request bodies, zero reasoner calls.
+#[tokio::test]
+async fn narrowed_identity_holds_below_the_escalation_threshold() {
+    let (_g, h) = test_guard().await;
+
+    // Script A: no failures at all. Script B: exactly one hard failure.
+    for (case, script) in [
+        (
+            "zero-failure",
+            vec!["{\"name\": \"time.now\", \"arguments\": {}}", "done"],
+        ),
+        ("one-failure", vec![FAIL_CALL_A, "done"]),
+    ] {
+        let mut transcripts: Vec<Vec<Value>> = Vec::new();
+        let mut request_bodies: Vec<Vec<Value>> = Vec::new();
+        for enabled in [false, true] {
+            set_reasoning_enabled(enabled); // default cfg: auto_escalate ON
+            set_stream_script(h, &script);
+            h.stream_count.store(0, Ordering::SeqCst);
+            h.stream_bodies.lock().unwrap().clear();
+
+            let events = run_streaming_turn(json!({
+                "user_message": "poke the tools",
+                "conversation_id": format!("rsn-s4b-id-{case}-{enabled}"),
+                "model": "stub",
+                // no depth field: resolves Fast — the watched tier.
+            }))
+            .await;
+            transcripts.push(normalised(&events));
+            request_bodies.push(h.stream_bodies.lock().unwrap().clone());
+        }
+
+        assert_eq!(
+            h.unary_count.load(Ordering::SeqCst),
+            0,
+            "{case}: below the threshold the reasoner is never called"
+        );
+        assert_eq!(
+            transcripts[1], transcripts[0],
+            "{case}: enabled+Fast below the threshold must stay byte-identical"
+        );
+        assert_eq!(request_bodies[1].len(), request_bodies[0].len(), "{case}");
+        for (b, base) in request_bodies[1].iter().zip(&request_bodies[0]) {
+            assert_eq!(
+                mask_tool_results(&b["messages"]),
+                mask_tool_results(&base["messages"]),
+                "{case}: request bodies must match the baseline"
+            );
+            assert!(b.get("format").is_none(), "{case}: no format key");
+        }
+        h.unary_count.store(0, Ordering::SeqCst);
+    }
+}
+
+/// The carve-out: the SECOND hard tool failure escalates the Fast turn to
+/// planning — visibly (the escalation step names the failures, the
+/// Planning phase fires), at the cheap `think` tier, with the failures as
+/// their own grounding block, and the plan guides the rest of the turn.
+#[tokio::test]
+async fn second_hard_failure_escalates_fast_turn_to_planning() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true); // default: auto_escalate ON, escalate_tier think
+    *h.unary_script.lock().unwrap() = vec![unary_reply(&synthesis_revision().to_string(), 100, 40)];
+    set_stream_script(h, &[FAIL_CALL_A, FAIL_CALL_B, "planned recovery"]);
+
+    let events = run_streaming_turn(json!({
+        "user_message": "poke the tools",
+        "conversation_id": "rsn-s4b-escalate-1",
+        "model": "stub",
+    }))
+    .await;
+
+    // Exactly one reasoner call — the escalated PLAN.
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        1,
+        "one escalated PLAN"
+    );
+    let plan_body = h.unary_bodies.lock().unwrap()[0].clone();
+    assert_eq!(
+        plan_body["think"],
+        json!(false),
+        "escalation plans at the think tier (deliberation off)"
+    );
+    assert_eq!(
+        plan_body["options"]["num_predict"],
+        json!(2048),
+        "think tier: output allowance only"
+    );
+    assert_eq!(
+        plan_body["format"]["required"][0], "goal",
+        "escalated PLAN is grammar-constrained like any PLAN"
+    );
+    let user = plan_body["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        user.contains("### Hard tool failures this turn"),
+        "the failures ground the escalated plan: {user}"
+    );
+    assert!(user.contains("voice_mic_chunks"), "{user}");
+    assert!(user.contains("voice_wakeword_events"), "{user}");
+    assert!(user.contains("phase_11_deferred"), "{user}");
+
+    // Visible WHY + the Planning phase.
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s == "2 hard tool failures — escalating to planning (think)"),
+        "escalation step: {steps:?}"
+    );
+    let phases: Vec<&str> = events_of_type(&events, "phase")
+        .iter()
+        .filter_map(|e| e["phase"].as_str())
+        .collect();
+    assert!(phases.contains(&"planning"), "phases: {phases:?}");
+    assert!(
+        steps
+            .iter()
+            .any(|s| s.starts_with("r1 · compose the answer")),
+        "escalated plan checklist: {steps:?}"
+    );
+
+    // The plan guided the next round.
+    let round3 = h.stream_bodies.lock().unwrap()[2].clone();
+    let msgs = round3["messages"].as_array().unwrap().clone();
+    let guidance = msgs.last().unwrap()["content"].as_str().unwrap().to_owned();
+    assert!(
+        guidance.contains("[plan step 1/1 — r1]"),
+        "escalated guidance on the tail: {guidance}"
+    );
+
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "planned recovery"
+    );
+
+    // Honest meter: three rounds (7/3 each) + the escalated PLAN (100/40).
+    let usage = events_of_type(&events, "usage");
+    let final_usage = usage
+        .iter()
+        .find(|e| e["done"] == true)
+        .expect("final usage");
+    assert_eq!(final_usage["prompt_tokens"], 100 + 7 + 7 + 7);
+    assert_eq!(final_usage["completion_tokens"], 40 + 3 + 3 + 3);
+}
+
+/// The knob: `auto_escalate: false` keeps even a two-failure Fast turn
+/// byte-identical — no watch, no escalation, zero reasoner calls.
+#[tokio::test]
+async fn auto_escalate_off_never_escalates() {
+    let (_g, h) = test_guard().await;
+
+    let script: &[&str] = &[FAIL_CALL_A, FAIL_CALL_B, "done anyway"];
+    let mut transcripts: Vec<Vec<Value>> = Vec::new();
+    for enabled in [false, true] {
+        set_reasoning(ReasoningConfig {
+            enabled,
+            auto_escalate: false,
+            ..ReasoningConfig::default()
+        });
+        set_stream_script(h, script);
+        h.stream_count.store(0, Ordering::SeqCst);
+        h.stream_bodies.lock().unwrap().clear();
+
+        let events = run_streaming_turn(json!({
+            "user_message": "poke the tools",
+            "conversation_id": format!("rsn-s4b-off-{enabled}"),
+            "model": "stub",
+        }))
+        .await;
+        transcripts.push(normalised(&events));
+    }
+
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        0,
+        "auto_escalate off ⇒ two hard failures never reach the reasoner"
+    );
+    assert_eq!(
+        transcripts[1], transcripts[0],
+        "auto_escalate off ⇒ byte-identical even past the threshold"
+    );
+    // Restore the shared default config for the rest of the binary.
+    set_reasoning_enabled(false);
+}
