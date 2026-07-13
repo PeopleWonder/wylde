@@ -77,8 +77,23 @@ pub fn memgraph_pipe_name() -> String {
 
 // ── Embedding tunables (slice 7.B/D will consume) ─────────────────────
 
+/// The effective embedder — ONE definition, unified with the reasoning
+/// slot store in S2: `WYLDE_EMBED_MODEL` (the env override) →
+/// `ReasoningConfig.slots.embedder` (the settings-backed source) →
+/// the built-in default. The slot's default is the same tag the old
+/// env-only fallback used, so a fresh install resolves identically.
 pub fn embed_model() -> String {
-    std::env::var("WYLDE_EMBED_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_owned())
+    if let Ok(v) = std::env::var("WYLDE_EMBED_MODEL") {
+        if !v.trim().is_empty() {
+            return v;
+        }
+    }
+    let slot = crate::turn::reasoning::ReasoningConfig::current().slots.embedder;
+    if slot.trim().is_empty() {
+        crate::turn::reasoning::config::DEFAULT_EMBED_MODEL.to_owned()
+    } else {
+        slot
+    }
 }
 
 pub fn embed_native_dim() -> usize {

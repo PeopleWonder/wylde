@@ -34,6 +34,15 @@
 //!   the streaming loop consumes (open-loop in S3 — steps guide, outcomes
 //!   are unchecked until S4's surprise detector).
 //!
+//! Slice S2 ships residency:
+//!
+//! * [`residency`] — warm model slots (plan §6.3a): one `ollama.preload`
+//!   with `keep_alive:"24h"` per distinct slot model on boot / slot
+//!   commit, so a Deep turn's reasoner is resident before it's needed.
+//!   Also unifies the embedder definition
+//!   ([`crate::memory::common::embed_model`]: env override → slot) and
+//!   refines the fit probe with measured `/api/ps` footprints.
+//!
 //! **Identity guarantee:** with `ReasoningConfig.enabled == false` (the
 //! default) or `depth == Fast`, nothing in this module touches the turn —
 //! [`deep_gate_open`] is the single gate expression, [`maybe_plan`]
@@ -46,6 +55,7 @@ pub mod constrained;
 pub mod fit;
 pub mod inputs;
 pub mod plan_phase;
+pub mod residency;
 pub mod template;
 
 use std::collections::{HashMap, HashSet};
@@ -130,8 +140,13 @@ pub async fn handle_fit_check(payload: Value) -> Reply {
 }
 
 /// Estimated resident bytes per pulled model tag: `ollama.list_models`
-/// (`/api/tags` passthrough) `models[].{name,size}` × the estimate mult.
-/// Unreachable / malformed ⇒ empty map (every model "unknown", warned).
+/// (`/api/tags` passthrough) `models[].{name,size}` × the estimate mult,
+/// then REFINED with `ollama.list_loaded` (`/api/ps`): a currently-loaded
+/// model's measured resident footprint replaces the disk-based guess (S2
+/// estimator refinement — the ×1.2 disk multiplier over-prices dynamic
+/// MoE quants and under-prices long-context loads; the live number is the
+/// truth when we have it). Unreachable / malformed ⇒ empty map (every
+/// model "unknown", warned) / estimates kept.
 async fn probe_model_sizes() -> HashMap<String, u64> {
     let harness_cfg = crate::config::Config::get();
     let mult = vram_estimate_mult();
@@ -140,7 +155,7 @@ async fn probe_model_sizes() -> HashMap<String, u64> {
     if !reply.ok {
         return HashMap::new();
     }
-    reply
+    let mut sizes: HashMap<String, u64> = reply
         .data
         .get("models")
         .and_then(Value::as_array)
@@ -153,7 +168,32 @@ async fn probe_model_sizes() -> HashMap<String, u64> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let loaded =
+        ipc::send_action(&harness_cfg.ollama_service, "ollama.list_loaded", json!({})).await;
+    if loaded.ok {
+        merge_measured_sizes(&mut sizes, &loaded.data);
+    }
+    sizes
+}
+
+/// Overlay measured `/api/ps` footprints onto the disk-based estimates.
+/// `size` is the model's total resident memory (GPU + any DRAM spill) —
+/// the honest number to price against a VRAM budget for a model that is
+/// loaded right now.
+fn merge_measured_sizes(sizes: &mut HashMap<String, u64>, ps_reply: &Value) {
+    let Some(models) = ps_reply.get("models").and_then(Value::as_array) else {
+        return;
+    };
+    for m in models {
+        let Some(name) = m.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(size) = m.get("size").and_then(Value::as_u64).filter(|&n| n > 0) else {
+            continue;
+        };
+        sizes.insert(name.to_owned(), size);
+    }
 }
 
 /// GPU budget from the broker's `vram.state` (`gpu.total_bytes`).
@@ -409,6 +449,35 @@ mod tests {
         // just the parse contract on the default path.
         let m = vram_estimate_mult();
         assert!(m > 0.0);
+    }
+
+    #[test]
+    fn measured_ps_footprint_overrides_disk_estimate() {
+        // S2 estimator refinement: a loaded model's /api/ps `size` beats
+        // the ×1.2 disk guess; unloaded models keep their estimates and
+        // malformed entries are skipped.
+        let mut sizes = HashMap::from([
+            ("big-moe:35b".to_owned(), 16_936_774_726_u64), // disk × 1.2
+            ("qwen2.5:7b-instruct".to_owned(), 5_000_000_000_u64),
+        ]);
+        merge_measured_sizes(
+            &mut sizes,
+            &json!({
+                "models": [
+                    { "name": "big-moe:35b", "size": 13_884_970_760_u64, "size_vram": 13_884_970_760_u64 },
+                    { "name": "no-size" },
+                    { "size": 1 }
+                ]
+            }),
+        );
+        assert_eq!(sizes["big-moe:35b"], 13_884_970_760, "measured wins");
+        assert_eq!(sizes["qwen2.5:7b-instruct"], 5_000_000_000, "estimate kept");
+        assert_eq!(sizes.len(), 2, "malformed entries ignored");
+
+        // Fail-soft: a reply with no models array changes nothing.
+        let before = sizes.clone();
+        merge_measured_sizes(&mut sizes, &json!({}));
+        assert_eq!(sizes, before);
     }
 
     // ── S3: ReasoningState (open-loop plan execution) ───────────────────
