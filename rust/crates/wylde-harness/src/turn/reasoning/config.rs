@@ -299,12 +299,19 @@ pub struct ReasoningConfig {
     pub default_depth: Depth,
 
     /// Fast→Deep self-escalation on hard surprise (scope OQ-5 recommended
-    /// default ON; fast→deep ONLY, never deep→fast). Inert until S4.
+    /// default ON; fast→deep ONLY, never deep→fast). **Still inert after
+    /// S4, deliberately**: an enabled+Fast turn that self-escalates on a
+    /// double hard-failure would no longer be byte-identical to trunk —
+    /// which the standing Fast-tier identity proof (the e2e transcript
+    /// test) forbids. Wiring this needs Aaron's ruling on how the two
+    /// coexist (e.g. weakening the Fast-identity contract to "identical
+    /// except after repeated hard tool failures"); flagged in the S4
+    /// slice report. Do not wire it casually.
     #[serde(default = "default_true")]
     pub auto_escalate: bool,
 
-    /// Max replans per turn; exhaustion = finalize with a visible note,
-    /// never a silent stop (OQ-4). Inert until S4. Default 2.
+    /// Max replans per turn (S4, live); exhaustion degrades to plain
+    /// ReAct with a visible note, never a silent stop (OQ-4). Default 2.
     #[serde(default = "default_replan_budget")]
     pub replan_budget: u8,
 

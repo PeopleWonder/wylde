@@ -973,8 +973,8 @@ async fn drive_streaming_turn(
         }));
 
         // Collected only on a planned (Deep) turn — feeds the plan's
-        // `${step.output…}` placeholder resolution (seam 3, open-loop:
-        // results recorded, outcomes unchecked until S4).
+        // `${step.output…}` placeholder resolution (seam 3) and the S4
+        // outcome check below.
         let mut round_results: Vec<(String, String)> = Vec::new();
         for call in &calls {
             if handle.is_cancelled() {
@@ -1003,7 +1003,32 @@ async fn drive_streaming_turn(
             messages.push(tool_msg);
         }
         if let Some(rs) = &mut reasoning_state {
-            rs.finish_round(&round_results);
+            // Agentic-reasoning S4, seam 3b (post-dispatch): record the
+            // round's results, then CHECK the realised outcome against the
+            // step's declared expectation — L0/L1 pure, L2 gated, replan
+            // budget-gated (cheap detect / expensive respond). Everything
+            // in the check is fail-soft except a planner-declared `abort`
+            // action, which ends the turn cleanly.
+            let completion = rs.finish_round(&round_results);
+            let flow = reasoning::surprise::check_and_maybe_replan(
+                cfg, &handle, &turn_id, depth, &model, &alias_map, rs, completion,
+            )
+            .await;
+            // The L2 / replan calls are part of the turn's honest cost.
+            turn_prompt += flow.prompt_tokens;
+            turn_completion += flow.completion_tokens;
+            if let Some(detail) = flow.abort {
+                emit_aborted(
+                    &handle,
+                    &turn_id,
+                    AbortReason::PlanPrecondition,
+                    Some(detail),
+                )
+                .await;
+                handle.mark_done();
+                schedule_eviction(turn_id);
+                return;
+            }
         }
     }
 

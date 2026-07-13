@@ -43,6 +43,22 @@
 //!   ([`crate::memory::common::embed_model`]: env override → slot) and
 //!   refines the fit probe with measured `/api/ps` footprints.
 //!
+//! Slice S4 closes the loop — surprise detection + replan-on-surprise:
+//!
+//! * [`surprise`] — the layered detector (L0 tool-failure shape, L1 pure
+//!   `evaluate()` over declared predicates, conservatively-gated L2
+//!   fast-model yes/no, L3 budget + no-progress) and the budget-gated
+//!   replan response ([`plan_phase::replan`] → a revised
+//!   [`PlanDag`], `plan_version` bumped, spliced into the running
+//!   [`ReasoningState`]). Exhaustion degrades to plain ReAct with a
+//!   visible notice; a planner-declared `abort` action ends the turn
+//!   cleanly (`AbortReason::PlanPrecondition`). Everything else is
+//!   fail-soft: detector/L2/replan failures all continue the turn.
+//! * `auto_escalate` (config, OQ-5) stays **inert** after S4 — a Fast
+//!   turn that self-escalates would break the Fast-tier byte-identity
+//!   guarantee the e2e transcript test pins. Deliberately deferred until
+//!   Aaron rules on how those two coexist; see the S4 slice report.
+//!
 //! **Identity guarantee:** with `ReasoningConfig.enabled == false` (the
 //! default) or `depth == Fast`, nothing in this module touches the turn —
 //! [`deep_gate_open`] is the single gate expression, [`maybe_plan`]
@@ -56,6 +72,7 @@ pub mod fit;
 pub mod inputs;
 pub mod plan_phase;
 pub mod residency;
+pub mod surprise;
 pub mod template;
 
 use std::collections::{HashMap, HashSet};
@@ -214,20 +231,42 @@ async fn probe_vram_budget() -> u64 {
 
 // ── S3: the driver-facing plan-execution seam ───────────────────────────
 
+/// One executed step's record for the replan prompt: id, tool, and a
+/// truncated result digest. Kept in execution order across plan
+/// revisions (a v2 replan prompt still shows what v1 executed).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutedStep {
+    pub id: String,
+    pub tool: Option<String>,
+    pub digest: String,
+}
+
+/// What one round did to the plan — handed by [`ReasoningState::finish_round`]
+/// to the S4 outcome check.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RoundCompletion {
+    /// The step whose guidance rode the round (`None` = no plan step was
+    /// in flight — nothing to check).
+    pub step_id: Option<String>,
+    /// A result was recorded for that step. `false` with a `step_id` means
+    /// the round dispatched calls but every one was duplicate-suppressed —
+    /// the L3 no-progress signal.
+    pub completed: bool,
+}
+
 /// Per-turn reasoning state, threaded through the streaming loop NEXT TO
 /// `ToolRoundState`, never merged into it (the fast path's state stays
-/// untouched). Owns the plan and the open-loop execution cursor.
-///
-/// S3 executes **open-loop**: each round the next ready step is rendered
-/// as guidance on the message tail; the step is considered done when its
-/// round dispatched tool calls. Outcome checking (`evaluate()`, replans)
-/// is S4.
+/// untouched). Owns the plan, the execution cursor, and (S4) the surprise
+/// bookkeeping: replan budget used, per-step L2 marks, the executed-step
+/// log for replan prompts, and the abandoned flag (budget exhaustion ⇒
+/// plain ReAct).
 pub struct ReasoningState {
     pub dag: PlanDag,
     /// Step results by id — feeds [`template::resolve`] for later steps'
-    /// `${sid.output…}` placeholders.
+    /// `${sid.output…}` placeholders. Retained across plan revisions.
     results: HashMap<String, Value>,
-    /// Ids of steps considered executed.
+    /// Ids of steps considered executed. Retained across plan revisions
+    /// (a revised plan reusing a completed id is skipped, not re-run).
     completed: HashSet<String>,
     /// The step whose guidance rode the current round, if any.
     in_flight: Option<String>,
@@ -236,6 +275,18 @@ pub struct ReasoningState {
     pub plan_prompt_tokens: u64,
     pub plan_completion_tokens: u64,
     pub plan_elapsed_ms: u64,
+    /// The grounded inputs PLAN was prompted with — replan prompts reuse
+    /// the goal / exclusions / catalog without re-gathering (S4).
+    plan_inputs: inputs::PlanInputs,
+    /// Execution-ordered log of (id, tool, result digest) — the replan
+    /// prompt's "Executed step results" block (S4).
+    executed_log: Vec<ExecutedStep>,
+    /// Replans consumed this turn, against `ReasoningConfig.replan_budget`.
+    replans_used: u8,
+    /// Budget exhausted: guidance stops, the loop runs plain ReAct.
+    abandoned: bool,
+    /// Steps whose L2 check already ran (one L2 per step max).
+    l2_checked: HashSet<String>,
 }
 
 impl ReasoningState {
@@ -248,7 +299,21 @@ impl ReasoningState {
             plan_prompt_tokens: outcome.prompt_tokens,
             plan_completion_tokens: outcome.completion_tokens,
             plan_elapsed_ms: outcome.elapsed_ms,
+            plan_inputs: outcome.plan_inputs,
+            executed_log: Vec::new(),
+            replans_used: 0,
+            abandoned: false,
+            l2_checked: HashSet::new(),
         }
+    }
+
+    /// Splice a replanned DAG in (S4): the revision replaces the step
+    /// graph; results, the completed set and the executed log are
+    /// retained so `${sid.output…}` placeholders keep resolving and a
+    /// revision that reuses a completed id skips it instead of re-running.
+    pub(crate) fn adopt_revised_plan(&mut self, dag: PlanDag) {
+        self.dag = dag;
+        self.in_flight = None;
     }
 
     /// The next not-yet-executed step whose dependencies are all
@@ -264,13 +329,17 @@ impl ReasoningState {
     /// Round-entry seam: auto-advance past any non-final synthesis beats
     /// (a mid-plan `tool: null` step can't round-trip a ReAct round —
     /// its narrative rides the next guidance), then render the current
-    /// step's guidance as a tail message. `None` when the plan is spent —
-    /// the loop continues as plain ReAct.
+    /// step's guidance as a tail message. `None` when the plan is spent
+    /// or abandoned (S4 budget exhaustion) — the loop continues as plain
+    /// ReAct.
     ///
     /// The message is `role: user` on the TAIL of the round's messages —
     /// never the system message — so Ollama's KV prefix over
     /// `system + history` survives every Deep round (plan §9 R5).
     pub fn begin_round(&mut self) -> Option<Value> {
+        if self.abandoned {
+            return None;
+        }
         loop {
             let (id, is_synthesis) = {
                 let step = self.next_ready_step()?;
@@ -305,15 +374,27 @@ impl ReasoningState {
     /// whose canonical tool name matches the step's `tool` (else the
     /// round's first result), parsed as JSON when possible so
     /// `${sid.output.path}` can drill in.
-    pub fn finish_round(&mut self, round_results: &[(String, String)]) {
+    ///
+    /// The returned [`RoundCompletion`] feeds the S4 outcome check: which
+    /// step just realised a result (evaluate its expectation), or that
+    /// the round's calls were all duplicate-suppressed (`completed:
+    /// false` — the L3 no-progress signal; the step stays open).
+    pub(crate) fn finish_round(&mut self, round_results: &[(String, String)]) -> RoundCompletion {
         let Some(id) = self.in_flight.take() else {
-            return;
+            return RoundCompletion {
+                step_id: None,
+                completed: false,
+            };
         };
         if round_results.is_empty() {
-            // The model ignored the step and emitted no calls — the loop
-            // is completing naturally; leave the step open (harmless: the
-            // turn is ending).
-            return;
+            // Every dispatched call was duplicate-suppressed (a round
+            // with NO calls never reaches this seam — the driver
+            // finalizes instead). Leave the step open and let the
+            // outcome check decide (replan-or-degrade).
+            return RoundCompletion {
+                step_id: Some(id),
+                completed: false,
+            };
         }
         let step_tool = self
             .dag
@@ -327,8 +408,22 @@ impl ReasoningState {
             .map(|(_, content)| content.clone())
             .unwrap_or_default();
         let parsed = serde_json::from_str::<Value>(&chosen).unwrap_or(Value::String(chosen));
+        self.executed_log.push(ExecutedStep {
+            id: id.clone(),
+            tool: self
+                .dag
+                .steps
+                .iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.tool.clone()),
+            digest: surprise::digest_value(&parsed, surprise::REPLAN_DIGEST_MAX_CHARS),
+        });
         self.results.insert(id.clone(), parsed);
-        self.completed.insert(id);
+        self.completed.insert(id.clone());
+        RoundCompletion {
+            step_id: Some(id),
+            completed: true,
+        }
     }
 }
 
@@ -519,6 +614,7 @@ mod tests {
             prompt_tokens: 100,
             completion_tokens: 50,
             elapsed_ms: 1200,
+            plan_inputs: inputs::PlanInputs::default(),
         })
     }
 
@@ -612,9 +708,98 @@ mod tests {
     fn empty_round_leaves_step_open_and_meter_seeds() {
         let mut rs = state(vec![step("s1", Some("fs.read"), &[], json!({}))]);
         rs.begin_round().unwrap();
-        rs.finish_round(&[]); // model ignored the plan and answered
+        // All the round's calls were duplicate-suppressed: the step stays
+        // open and the completion flags the L3 no-progress signal.
+        let c = rs.finish_round(&[]);
+        assert_eq!(c.step_id.as_deref(), Some("s1"));
+        assert!(!c.completed, "no result ⇒ not completed ⇒ no-progress");
         assert!(rs.results.is_empty());
         assert_eq!(rs.plan_prompt_tokens, 100);
         assert_eq!(rs.plan_completion_tokens, 50);
+    }
+
+    // ── S4: surprise bookkeeping on the state ───────────────────────────
+
+    #[test]
+    fn finish_round_reports_the_completed_step_and_logs_it() {
+        let mut rs = state(vec![step("s1", Some("fs.read"), &[], json!({}))]);
+        rs.begin_round().unwrap();
+        let c = rs.finish_round(&[("fs.read".into(), "{\"entries\": [\"a\"]}".into())]);
+        assert_eq!(c.step_id.as_deref(), Some("s1"));
+        assert!(c.completed);
+        assert_eq!(
+            rs.executed_log,
+            vec![ExecutedStep {
+                id: "s1".into(),
+                tool: Some("fs.read".into()),
+                digest: "{\"entries\":[\"a\"]}".into(),
+            }],
+            "the executed log records id, tool and digest for replan prompts"
+        );
+        // No in-flight step ⇒ nothing to check.
+        let c = rs.finish_round(&[("fs.read".into(), "x".into())]);
+        assert_eq!(c.step_id, None);
+    }
+
+    #[test]
+    fn adopt_revised_plan_keeps_results_and_walks_the_new_steps() {
+        let mut rs = state(vec![
+            step("s1", Some("fs.list"), &[], json!({})),
+            step("s2", Some("fs.read"), &["s1"], json!({})),
+        ]);
+        rs.begin_round().unwrap();
+        rs.finish_round(&[("fs.list".into(), "{\"entries\": [\"Cargo.toml\"]}".into())]);
+
+        // The revision replaces the remainder; a fresh id chains onto the
+        // OLD step's recorded result via placeholders.
+        rs.adopt_revised_plan(PlanDag {
+            goal: "g".into(),
+            steps: vec![step(
+                "r1",
+                Some("fs.read"),
+                &[],
+                json!({"path": "${s1.output.entries.0}"}),
+            )],
+            reasoning_trace: String::new(),
+            plan_version: 2,
+        });
+        assert_eq!(rs.dag.plan_version, 2);
+        let g = rs.begin_round().expect("revised step guides");
+        let text = g["content"].as_str().unwrap();
+        assert!(text.contains("[plan step 1/1 — r1]"), "{text}");
+        assert!(
+            text.contains("{\"path\":\"Cargo.toml\"}"),
+            "old results still resolve placeholders: {text}"
+        );
+    }
+
+    #[test]
+    fn adopt_revised_plan_skips_reused_completed_ids() {
+        let mut rs = state(vec![step("s1", Some("fs.read"), &[], json!({}))]);
+        rs.begin_round().unwrap();
+        rs.finish_round(&[("fs.read".into(), "x".into())]);
+        // A revision that (against instructions) reuses the completed id
+        // skips it rather than re-running.
+        rs.adopt_revised_plan(PlanDag {
+            goal: "g".into(),
+            steps: vec![
+                step("s1", Some("fs.read"), &[], json!({})),
+                step("r1", Some("fs.list"), &[], json!({})),
+            ],
+            reasoning_trace: String::new(),
+            plan_version: 2,
+        });
+        let g = rs.begin_round().unwrap();
+        assert!(g["content"].as_str().unwrap().contains("r1"));
+    }
+
+    #[test]
+    fn abandoned_state_stops_guidance() {
+        let mut rs = state(vec![step("s1", Some("fs.read"), &[], json!({}))]);
+        rs.abandoned = true;
+        assert!(
+            rs.begin_round().is_none(),
+            "budget exhaustion ⇒ plain ReAct, no more guidance"
+        );
     }
 }

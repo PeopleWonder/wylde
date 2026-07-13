@@ -196,6 +196,12 @@ pub enum AbortReason {
     Cancelled,
     Error,
     ToolLoopLimit,
+    /// Agentic reasoning S4 — a plan step whose declared `on_surprise` is
+    /// `abort` failed its expected outcome: the planner marked the step an
+    /// unrecoverable precondition, so the turn ends cleanly rather than
+    /// executing on a premise known to be broken. Additive — the GUI decodes
+    /// the reason as a raw string, so older builds render it verbatim.
+    PlanPrecondition,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

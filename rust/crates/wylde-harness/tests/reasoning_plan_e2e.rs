@@ -681,6 +681,21 @@ async fn identity_gate_closed_transcript_matches_plain_turn() {
     );
     // Sanity: the transcript is non-trivial (phases + steps + completion).
     assert!(transcripts[0].len() >= 4, "{:?}", transcripts[0]);
+    // S4 extension: with the gate closed, the surprise/replan machinery is
+    // never entered — no replanning phase, no surprise/replan steps, no
+    // plan_precondition abort in any transcript.
+    for t in &transcripts {
+        for e in t {
+            assert_ne!(e["phase"], json!("replanning"), "{e}");
+            assert_ne!(e["reason"], json!("plan_precondition"), "{e}");
+            if let Some(s) = e["summary"].as_str() {
+                assert!(
+                    !s.contains("surprised") && !s.starts_with("Replanning"),
+                    "gate closed but a surprise step leaked: {e}"
+                );
+            }
+        }
+    }
 
     // Request bodies: identical message arrays (same system prompt, same
     // tail, no guidance), no `format` key anywhere.
@@ -701,4 +716,564 @@ async fn identity_gate_closed_transcript_matches_plain_turn() {
             assert!(b.get("format").is_none(), "no format key on a fast turn");
         }
     }
+}
+
+// ── S4: surprise detection + replan-on-surprise ──────────────────────────
+
+/// A one-step plan whose declared predicate is guaranteed to FAIL against
+/// the real `time_now` result (a timestamp has no `/entries` array), with
+/// the given `on_surprise` action and tool args.
+fn failing_plan(id: &str, args: Value, on_surprise: &str) -> Value {
+    json!({
+        "goal": "list the entries",
+        "steps": [{
+            "id": id,
+            "intent": format!("probe via {id}"),
+            "tool": "time.now",
+            "args_template": args,
+            "depends_on": [],
+            "expected": {
+                "predicates": [{"kind": "count_at_least", "path": "/entries", "n": 1}],
+                "assertion": "an entries array with at least one item",
+                "on_surprise": on_surprise,
+                "confidence": 0.9
+            }
+        }],
+        "reasoning_trace": "probe then read",
+        "plan_version": 1
+    })
+}
+
+/// A synthesis-only revision — the recovery plan the mock reasoner hands
+/// back on replan.
+fn synthesis_revision() -> Value {
+    json!({
+        "goal": "answer from what we have",
+        "steps": [{
+            "id": "r1",
+            "intent": "compose the answer from the results so far",
+            "tool": null,
+            "args_template": {},
+            "depends_on": [],
+            "expected": {
+                "predicates": [],
+                "assertion": "",
+                "on_surprise": "continue",
+                "confidence": 1.0
+            }
+        }],
+        "reasoning_trace": "the probe surprised; answer directly",
+        "plan_version": 1
+    })
+}
+
+fn unary_reply(content: &str, prompt: u64, eval: u64) -> Value {
+    json!({
+        "message": {"content": content},
+        "done_reason": "stop",
+        "prompt_eval_count": prompt,
+        "eval_count": eval,
+    })
+}
+
+fn reasoning_step_summaries(events: &[Value]) -> Vec<String> {
+    events_of_type(events, "step")
+        .iter()
+        .filter(|e| e["stage"] == "reasoning")
+        .map(|e| e["summary"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// The core S4 flow: a planted L1 failure (declared predicate vs the real
+/// tool result) trips the surprise, the reasoner is re-consulted with the
+/// full surprise context, and the REVISED plan guides the rest of the
+/// turn. Cost honesty: both reasoner calls fold into the final meter.
+#[tokio::test]
+async fn planted_failure_triggers_replan_and_revision_guides() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true);
+    *h.unary_script.lock().unwrap() = vec![
+        unary_reply(
+            &failing_plan("s1", json!({}), "replan").to_string(),
+            100,
+            40,
+        ),
+        unary_reply(&synthesis_revision().to_string(), 80, 30),
+    ];
+    set_stream_script(
+        h,
+        &[
+            "{\"name\": \"time.now\", \"arguments\": {}}",
+            "recovered answer",
+        ],
+    );
+
+    let events = run_streaming_turn(json!({
+        "user_message": "list the entries",
+        "conversation_id": "rsn-s4-replan-1",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+
+    // PLAN + REPLAN — exactly two reasoner calls.
+    assert_eq!(h.unary_count.load(Ordering::SeqCst), 2, "plan + one replan");
+
+    // The replan call carries the full surprise context and the same
+    // grammar constraint as PLAN.
+    let replan_body = h.unary_bodies.lock().unwrap()[1].clone();
+    assert_eq!(
+        replan_body["format"]["required"][0], "goal",
+        "REPLAN rides the PlanDag schema too"
+    );
+    let user = replan_body["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(user.starts_with("### Goal\nlist the entries"), "{user}");
+    assert!(
+        user.contains("### Plan under revision (version 1)"),
+        "{user}"
+    );
+    assert!(user.contains("### Executed step results"), "{user}");
+    assert!(user.contains("s1 (time_now) →"), "{user}");
+    assert!(user.contains("### Surprise"), "{user}");
+    assert!(user.contains("/entries has >= 1 item(s)"), "{user}");
+    assert!(user.contains("REVISED complete plan JSON"), "{user}");
+
+    // Visible: the surprise step, the Replanning phase, the revised
+    // checklist and the revision summary.
+    let phases: Vec<&str> = events_of_type(&events, "phase")
+        .iter()
+        .filter_map(|e| e["phase"].as_str())
+        .collect();
+    assert!(phases.contains(&"replanning"), "phases: {phases:?}");
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s == "s1 surprised: 1 expected check(s) failed"),
+        "surprise step: {steps:?}"
+    );
+    assert!(
+        steps.iter().any(|s| s.starts_with("Replanning (1 of 2)")),
+        "replanning step: {steps:?}"
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|s| s.starts_with("r1 · compose the answer")),
+        "revised checklist: {steps:?}"
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|s| s.starts_with("Plan revised (v2): 1 step(s)")),
+        "revision summary: {steps:?}"
+    );
+
+    // The revision guided the next round (synthesis guidance on the tail).
+    let round2 = h.stream_bodies.lock().unwrap()[1].clone();
+    let msgs = round2["messages"].as_array().unwrap().clone();
+    let guidance = msgs.last().unwrap()["content"].as_str().unwrap().to_owned();
+    assert!(
+        guidance.contains("[plan step 1/1 — r1]")
+            && guidance.contains("Synthesis step — no tool call"),
+        "revision guidance: {guidance}"
+    );
+
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "recovered answer"
+    );
+
+    // Honest meter: PLAN (100/40) + REPLAN (80/30) + two rounds (7/3 each).
+    let usage = events_of_type(&events, "usage");
+    let final_usage = usage
+        .iter()
+        .find(|e| e["done"] == true)
+        .expect("final usage");
+    assert_eq!(final_usage["prompt_tokens"], 100 + 80 + 7 + 7);
+    assert_eq!(final_usage["completion_tokens"], 40 + 30 + 3 + 3);
+}
+
+/// L2 gating: an assertion-only step (no predicates, low confidence) gets
+/// exactly ONE fast-model check — grammar-constrained, deliberation off,
+/// tight output allowance — and a satisfied verdict changes nothing.
+#[tokio::test]
+async fn l2_fires_only_when_pure_verdict_inconclusive() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true);
+    let assertion_only_plan = json!({
+        "goal": "tell the time",
+        "steps": [{
+            "id": "s1",
+            "intent": "get the current time",
+            "tool": "time.now",
+            "args_template": {},
+            "depends_on": [],
+            "expected": {
+                "predicates": [],
+                "assertion": "a timestamp is returned",
+                "on_surprise": "replan",
+                "confidence": 0.5
+            }
+        }],
+        "reasoning_trace": "just ask the clock",
+        "plan_version": 1
+    });
+    *h.unary_script.lock().unwrap() = vec![
+        unary_reply(&assertion_only_plan.to_string(), 100, 40),
+        unary_reply("{\"satisfied\": true, \"reason\": \"looks right\"}", 20, 10),
+    ];
+    set_stream_script(h, &["{\"name\": \"time.now\", \"arguments\": {}}", "fine"]);
+
+    let events = run_streaming_turn(json!({
+        "user_message": "what time is it?",
+        "conversation_id": "rsn-s4-l2-ok",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+
+    // PLAN + the L2 check — and nothing else.
+    assert_eq!(h.unary_count.load(Ordering::SeqCst), 2, "plan + one L2");
+    let l2_body = h.unary_bodies.lock().unwrap()[1].clone();
+    assert_eq!(
+        l2_body["think"],
+        json!(false),
+        "L2 never deliberates (the think-budget lesson)"
+    );
+    assert_eq!(
+        l2_body["options"]["num_predict"],
+        json!(256),
+        "L2 runs on a tight output allowance"
+    );
+    assert_eq!(
+        l2_body["format"]["required"],
+        json!(["satisfied", "reason"]),
+        "L2 is grammar-constrained — it never freehands"
+    );
+    let user = l2_body["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(user.contains("Expected: a timestamp is returned"), "{user}");
+
+    // Satisfied ⇒ no surprise, no replan.
+    let phases: Vec<&str> = events_of_type(&events, "phase")
+        .iter()
+        .filter_map(|e| e["phase"].as_str())
+        .collect();
+    assert!(!phases.contains(&"replanning"), "phases: {phases:?}");
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        !steps.iter().any(|s| s.contains("surprised")),
+        "satisfied L2 must not surprise: {steps:?}"
+    );
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "fine"
+    );
+
+    // Honest meter: PLAN (100/40) + L2 (20/10) + two rounds (7/3 each).
+    let usage = events_of_type(&events, "usage");
+    let final_usage = usage
+        .iter()
+        .find(|e| e["done"] == true)
+        .expect("final usage");
+    assert_eq!(final_usage["prompt_tokens"], 100 + 20 + 7 + 7);
+    assert_eq!(final_usage["completion_tokens"], 40 + 10 + 3 + 3);
+}
+
+/// An unsatisfied L2 verdict IS a surprise: the checker's reason feeds the
+/// replan prompt and the revision takes over.
+#[tokio::test]
+async fn l2_dissatisfied_triggers_replan() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true);
+    let assertion_only_plan = json!({
+        "goal": "tell the time",
+        "steps": [{
+            "id": "s1",
+            "intent": "get the current time",
+            "tool": "time.now",
+            "args_template": {},
+            "depends_on": [],
+            "expected": {
+                "predicates": [],
+                "assertion": "a full ISO timestamp with timezone",
+                "on_surprise": "replan",
+                "confidence": 0.5
+            }
+        }],
+        "reasoning_trace": "ask the clock",
+        "plan_version": 1
+    });
+    *h.unary_script.lock().unwrap() = vec![
+        unary_reply(&assertion_only_plan.to_string(), 100, 40),
+        unary_reply(
+            "{\"satisfied\": false, \"reason\": \"no timezone in the result\"}",
+            20,
+            10,
+        ),
+        unary_reply(&synthesis_revision().to_string(), 80, 30),
+    ];
+    set_stream_script(
+        h,
+        &["{\"name\": \"time.now\", \"arguments\": {}}", "recovered"],
+    );
+
+    let events = run_streaming_turn(json!({
+        "user_message": "what time is it?",
+        "conversation_id": "rsn-s4-l2-bad",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        3,
+        "plan + L2 + replan"
+    );
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s == "s1 surprised: outcome check said no"),
+        "L2 surprise step: {steps:?}"
+    );
+    // The checker's reason reaches the replan prompt.
+    let replan_body = h.unary_bodies.lock().unwrap()[2].clone();
+    let user = replan_body["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(user.contains("no timezone in the result"), "{user}");
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "recovered"
+    );
+}
+
+/// The loop guard: replans are budget-capped (default 2). A plan that
+/// keeps surprising exhausts the budget and degrades VISIBLY to plain
+/// ReAct — the turn still completes, no ping-pong.
+#[tokio::test]
+async fn replan_budget_exhaustion_degrades_visibly_to_plain_react() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true);
+    *h.unary_script.lock().unwrap() = vec![
+        unary_reply(
+            &failing_plan("s1", json!({}), "replan").to_string(),
+            100,
+            40,
+        ),
+        unary_reply(
+            &failing_plan("r1", json!({"probe": 1}), "replan").to_string(),
+            80,
+            30,
+        ),
+        unary_reply(
+            &failing_plan("r2", json!({"probe": 2}), "replan").to_string(),
+            80,
+            30,
+        ),
+    ];
+    set_stream_script(
+        h,
+        &[
+            "{\"name\": \"time.now\", \"arguments\": {}}",
+            "{\"name\": \"time.now\", \"arguments\": {\"probe\": 1}}",
+            "{\"name\": \"time.now\", \"arguments\": {\"probe\": 2}}",
+            "best effort answer",
+        ],
+    );
+
+    let events = run_streaming_turn(json!({
+        "user_message": "list the entries",
+        "conversation_id": "rsn-s4-budget-1",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+
+    // Initial plan + exactly `replan_budget` (2) replans — the third
+    // surprise finds the budget spent and NEVER calls the reasoner again.
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        3,
+        "plan + 2 replans, then the budget gate holds"
+    );
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        steps.iter().any(|s| s.starts_with("Replanning (1 of 2)")),
+        "{steps:?}"
+    );
+    assert!(
+        steps.iter().any(|s| s.starts_with("Replanning (2 of 2)")),
+        "{steps:?}"
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|s| s == "Replan budget exhausted (2) — continuing without the plan"),
+        "visible exhaustion note: {steps:?}"
+    );
+
+    // After exhaustion the final round carries NO new guidance (the three
+    // guidance messages already in the history stay — append-only tail).
+    let round4 = h.stream_bodies.lock().unwrap()[3].clone();
+    let guidance_count = round4["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| {
+            m["content"]
+                .as_str()
+                .is_some_and(|c| c.contains("[plan step"))
+        })
+        .count();
+    assert_eq!(guidance_count, 3, "no fourth guidance after exhaustion");
+
+    // The turn still completes — degrade, never break.
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "best effort answer"
+    );
+}
+
+/// A planner-declared `abort` action ends the turn CLEANLY on surprise:
+/// `turn_aborted` with the dedicated `plan_precondition` reason, never a
+/// hang or an error.
+#[tokio::test]
+async fn abort_action_ends_the_turn_cleanly() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true);
+    *h.unary_script.lock().unwrap() = vec![unary_reply(
+        &failing_plan("s1", json!({}), "abort").to_string(),
+        100,
+        40,
+    )];
+    set_stream_script(h, &["{\"name\": \"time.now\", \"arguments\": {}}"]);
+
+    let events = run_streaming_turn(json!({
+        "user_message": "list the entries",
+        "conversation_id": "rsn-s4-abort-1",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        1,
+        "no replan on abort"
+    );
+    let aborted = events_of_type(&events, "turn_aborted");
+    assert_eq!(aborted.len(), 1, "{events:?}");
+    assert_eq!(aborted[0]["reason"], "plan_precondition");
+    assert!(
+        aborted[0]["error"].as_str().unwrap().contains("s1"),
+        "{:?}",
+        aborted[0]
+    );
+    assert!(
+        events_of_type(&events, "turn_complete").is_empty(),
+        "a precondition abort is not a completion"
+    );
+    // The surprise itself was visible before the abort.
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s == "s1 surprised: 1 expected check(s) failed"),
+        "{steps:?}"
+    );
+}
+
+/// L3 no-progress: a round whose tool calls were ALL duplicate-suppressed
+/// (the model re-issuing an already-dispatched call) cannot advance the
+/// plan — it trips the replan path instead of ping-ponging to the loop cap.
+#[tokio::test]
+async fn no_progress_duplicate_round_triggers_replan() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true);
+    let two_step_plan = json!({
+        "goal": "double-check the time",
+        "steps": [
+            {
+                "id": "s1",
+                "intent": "get the time",
+                "tool": "time.now",
+                "args_template": {},
+                "depends_on": [],
+                "expected": {
+                    "predicates": [{"kind": "non_empty"}],
+                    "assertion": "",
+                    "on_surprise": "continue",
+                    "confidence": 0.9
+                }
+            },
+            {
+                "id": "s2",
+                "intent": "get the time again",
+                "tool": "time.now",
+                "args_template": {},
+                "depends_on": ["s1"],
+                "expected": {
+                    "predicates": [{"kind": "non_empty"}],
+                    "assertion": "",
+                    "on_surprise": "continue",
+                    "confidence": 0.9
+                }
+            }
+        ],
+        "reasoning_trace": "check twice",
+        "plan_version": 1
+    });
+    *h.unary_script.lock().unwrap() = vec![
+        unary_reply(&two_step_plan.to_string(), 100, 40),
+        unary_reply(&synthesis_revision().to_string(), 80, 30),
+    ];
+    set_stream_script(
+        h,
+        &[
+            "{\"name\": \"time.now\", \"arguments\": {}}",
+            // Round 2: the model re-issues the SAME call — dedupe
+            // suppresses it, the round records nothing.
+            "{\"name\": \"time.now\", \"arguments\": {}}",
+            "done after revision",
+        ],
+    );
+
+    let events = run_streaming_turn(json!({
+        "user_message": "double-check the time",
+        "conversation_id": "rsn-s4-noprog-1",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        2,
+        "plan + the no-progress replan"
+    );
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s == "s2 surprised: no progress (all tool calls were duplicates)"),
+        "no-progress surprise: {steps:?}"
+    );
+    assert!(
+        steps.iter().any(|s| s.starts_with("Replanning (1 of 2)")),
+        "{steps:?}"
+    );
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "done after revision"
+    );
 }
