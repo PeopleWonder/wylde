@@ -11,7 +11,7 @@
 //! | PLAN / REPLAN (S3) | **yes**, [`plan_format`] gated on `constrained_plan` | eval-backed: default reasoner 93.3% → 100% schema-valid, no speed/quality cost |
 //! | post-turn memory extractor | **yes**, `memory::post_turn_extractor::extraction_format` gated on `WYLDE_CONSTRAINED_EXTRACTION` (default on) | fixed-schema JSON feeding three machine gates; a parse failure was previously indistinguishable from "nothing to extract" (silent empty). JSON *mode* alone can't force the keys/kinds/caps the sinks need. |
 //! | conversation auto-summary + tags | **yes**, `chat::search::summary::summary_format` gated on `WYLDE_CONSTRAINED_SUMMARY` (default on) | machine-decomposed two-field envelope (`auto_summary` + `topic_tags` on the conversation doc). The grammar pins the ENVELOPE only — the `summary` string inside stays free prose, which keeps this on the right side of the never-constrain-prose line (unlike REFLECT, whose whole output is prose). Kills the silent tag-line parse misses. |
-//! | L2 surprise verdict (S4) | yes, once it exists | single yes/no — a tiny enum schema; should never freehand |
+//! | L2 surprise verdict (S4) | **yes**, `surprise::l2_verdict_schema` gated on `constrained_plan` | single yes/no — a tiny closed two-field schema; it never freehands |
 //! | REFLECT critique (S5) | only if its output becomes a structured lessons record | today's reflection cycles emit prompt-shaped free text through `memory::reflection::ReflectionChat` — constraining prose degrades it |
 //! | idle memory consolidation | **never** (as shaped today) | `memory.consolidate` asks for one free paragraph (or the literal `NOTHING`) — prose consumed as prose |
 //! | chat composition / final answer | **never** | human-read prose |
