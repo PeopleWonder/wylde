@@ -22,16 +22,23 @@
 //!
 //! ## Aaron's locked slot decisions (2026-07-13)
 //!
-//! 1. **Default reasoner = the largest OFFICIAL Qwen that FITS 16 GB VRAM**
-//!    ([`DEFAULT_REASONER_MODEL`], `qwen3.5:9b`, Q4_K_M ~6.6 GB). Aaron's
-//!    rulings, in order (all 2026-07-13): official registry builds only
-//!    (not the community hf.co abliterated variant S1 initially wired);
-//!    then, because the official `qwen3.6:35b-a3b` (~26.8 GiB est.) can't
-//!    co-reside on the dev rig's RTX 5080 and this slot runs PLAN, EXECUTE
-//!    *and* REFLECT on every deep turn, "swap it out for the next size
-//!    down" — fit-in-VRAM beats parameter count. The official ladder has
-//!    nothing between 9B and 27B, and 27B (~20 GB est.) still spills, so
-//!    9B is the largest official Qwen that runs fully GPU-resident.
+//! 1. **Default reasoner = the strongest OFFICIAL-WEIGHTS Qwen that FITS
+//!    16 GB VRAM** ([`DEFAULT_REASONER_MODEL`], `qwen3.6:35b-a3b` at
+//!    unsloth's UD-IQ3_XXS quant, ~13.1 GiB on disk). Aaron's rulings, in
+//!    order (all 2026-07-13): official *weights* only — the abliterated
+//!    finetune S1 initially wired is out, but a community GGUF
+//!    **quantization of unmodified official weights** is the same model
+//!    (provenance: `unsloth/Qwen3.6-35B-A3B-GGUF`, model card
+//!    `base_model: Qwen/Qwen3.6-35B-A3B`, no finetune). Fit-in-VRAM beats
+//!    parameter count (the official Q4 build of this model, ~26.8 GiB
+//!    est., spills badly). The interim `qwen3.5:9b` default was replaced
+//!    after the 2026-07-13 planning eval (15 PlanDag prompts, real serde
+//!    schema): 9b = 46.7% JSON-valid @128 tok/s vs this quant = 93.3%
+//!    freehand / 100% grammar-constrained @166 tok/s, 100% GPU-resident
+//!    at 32k ctx (12.93 GiB incl. embedder; spills above 65k — cap
+//!    reasoner num_ctx accordingly). 27B@Q3_K_M scored 100% freehand but
+//!    never fits (89% GPU @16k, 27 tok/s); 35b-a3b@UD-Q2_K_XL melts down
+//!    intermittently (73.3%) — IQ3_XXS is the quant floor for this job.
 //! 2. **PLAN and EXECUTE run on the SAME model.** The `fast` slot defaults
 //!    to the same tag as `reasoner`, and `fast == reasoner ⇒ Single` is
 //!    Aaron's confirmed derivation rule (scope DECISION #11), so
@@ -53,12 +60,14 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// The official Ollama-registry tag for the default reasoner (Aaron's
-/// decision 1, 2026-07-13, twice revised the same day: official build
-/// only, and it must FIT the 16 GB dev rig without DRAM spill — see the
-/// module doc). Canonical alias → Q4_K_M, ~6.6 GB on disk, fully
-/// GPU-resident on the RTX 5080 with room for the embedder + KV cache.
-pub const DEFAULT_REASONER_MODEL: &str = "qwen3.5:9b";
+/// The default reasoner tag (Aaron's decision 1, 2026-07-13, thrice
+/// revised the same day — see the module doc for the eval that locked
+/// this): official Qwen3.6-35B-A3B weights, unsloth UD-IQ3_XXS dynamic
+/// quant pulled via Ollama's hf.co bridge. ~13.1 GiB on disk, fully
+/// GPU-resident on the RTX 5080 with the embedder co-loaded at ≤32k ctx.
+/// A plain quantization of official weights — NOT a finetune; abliterated
+/// variants remain excluded.
+pub const DEFAULT_REASONER_MODEL: &str = "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ3_XXS";
 
 /// Default embedder — matches `crate::memory::common::embed_model()`'s
 /// fallback so the slot and the env-driven embed path agree out of the box.

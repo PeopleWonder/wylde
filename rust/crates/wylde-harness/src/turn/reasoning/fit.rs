@@ -240,29 +240,61 @@ mod tests {
     const DEV_RIG_BUDGET: u64 = 16303 * 1024 * 1024;
 
     #[test]
-    fn default_slots_fit_the_dev_rig_cleanly() {
-        // The shipped default priced with real 2026-07-13 numbers:
-        // qwen3.5:9b is 6_594_474_711 bytes on disk (× 1.2 est. ≈ 7.4 GiB)
-        // + nomic-embed-text ≈ 0.3 GiB vs 15.9 GiB — the whole point of
-        // Aaron's next-size-down ruling is a CLEAN verdict here: fully
-        // co-resident, zero warnings (no offload advisory, no "not
-        // pulled"). If this fails, the default outgrew the reference rig.
+    fn default_slots_on_the_dev_rig_measured_vs_x12_estimate() {
         use super::super::config::{DEFAULT_EMBED_MODEL, DEFAULT_REASONER_MODEL};
-        let s = sizes(&[
-            (DEFAULT_EMBED_MODEL, (274_302_450_f64 * 1.2) as u64),
-            (DEFAULT_REASONER_MODEL, (6_594_474_711_f64 * 1.2) as u64),
+
+        // MEASURED truth (2026-07-13 fit probe, embedder co-loaded): the
+        // 35B-A3B UD-IQ3_XXS default is fully GPU-resident at ≤32k ctx —
+        // 12.93 GiB model total + ~0.33 GiB embedder vs 15.9 GiB. Priced
+        // with measured bytes the verdict is CLEAN. If this fails, the
+        // default outgrew the reference rig.
+        // 12.93 GiB model total (`ollama ps`, 32k ctx) + ~0.33 GiB embedder.
+        const MEASURED_REASONER_BYTES: u64 = 13_882_470_000;
+        const MEASURED_EMBEDDER_BYTES: u64 = 354_334_801;
+        let measured = sizes(&[
+            (DEFAULT_EMBED_MODEL, MEASURED_EMBEDDER_BYTES),
+            (DEFAULT_REASONER_MODEL, MEASURED_REASONER_BYTES),
         ]);
         let f = fit(
             &ModelSlots::default(),
             ReasonMode::Single,
             DEV_RIG_BUDGET,
-            &s,
+            &measured,
         );
-        assert!(f.co_resident, "the default MUST fit the 16 GB rig");
+        assert!(f.co_resident, "measured residency fits the 16 GB rig");
         assert_eq!(f.suggested_mode, ReasonMode::Single);
         assert!(f.suggestion.is_none());
         assert!(f.warnings.is_empty(), "clean fit: {:?}", f.warnings);
+
+        // KNOWN COSMETIC WART: the live chip prices disk × 1.2
+        // (14_113_978_939 × 1.2 ≈ 15.8 GiB + embedder ≈ 16.1 GiB > 15.9)
+        // so it shows a spurious DRAM-offload ADVISORY for this quant —
+        // the ×1.2 disk multiplier over-estimates dynamic MoE quants
+        // (and UNDER-estimated the old 9b default at 131k: 9.46 GiB
+        // measured vs 7.4 est.). Advisory-only by contract (never blocks,
+        // no collapse to suggest). S2's warm-slot work should refine the
+        // estimator; until then this test pins the live behaviour so the
+        // wart is documented, not rediscovered.
+        let disk_x12 = sizes(&[
+            (DEFAULT_EMBED_MODEL, (274_302_450_f64 * 1.2) as u64),
+            (DEFAULT_REASONER_MODEL, (14_113_978_939_f64 * 1.2) as u64),
+        ]);
+        let f = fit(
+            &ModelSlots::default(),
+            ReasonMode::Single,
+            DEV_RIG_BUDGET,
+            &disk_x12,
+        );
+        assert!(!f.co_resident, "×1.2 disk estimate exceeds the budget");
+        assert_eq!(f.suggested_mode, ReasonMode::Single, "advisory only");
+        assert!(f.suggestion.is_none(), "one brain — nothing to collapse");
+        assert!(
+            f.warnings.iter().any(|w| w.contains("DRAM offload")),
+            "the known advisory: {:?}",
+            f.warnings
+        );
     }
+
 
     #[test]
     fn official_35b_a3b_on_the_dev_rig_warns_offload_honestly() {
