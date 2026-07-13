@@ -236,6 +236,36 @@ mod tests {
     }
 
     #[test]
+    fn default_slots_on_the_dev_rig_warn_offload_honestly() {
+        // The shipped default priced with real 2026-07-13 numbers:
+        // qwen3.6:35b-a3b is 23_938_333_577 bytes on disk (× 1.2 est.
+        // ≈ 26.8 GiB) and Aaron's RTX 5080 budget is 16303 MiB. The
+        // shared brain does NOT co-reside — the correct verdict is the
+        // DRAM-offload advisory (never a block, never a "not pulled"
+        // warning, no collapse to suggest — it already is one brain).
+        use super::super::config::{DEFAULT_EMBED_MODEL, DEFAULT_REASONER_MODEL};
+        let s = sizes(&[
+            (DEFAULT_EMBED_MODEL, (274_302_450_f64 * 1.2) as u64),
+            (DEFAULT_REASONER_MODEL, (23_938_333_577_f64 * 1.2) as u64),
+        ]);
+        let budget = 16303 * 1024 * 1024; // RTX 5080, per nvidia-smi
+        let f = fit(&ModelSlots::default(), ReasonMode::Single, budget, &s);
+        assert!(!f.co_resident, "26.8 GiB est. cannot fit 15.9 GiB");
+        assert_eq!(f.suggested_mode, ReasonMode::Single);
+        assert!(f.suggestion.is_none());
+        assert!(
+            f.warnings.iter().any(|w| w.contains("DRAM offload")),
+            "honest offload advisory: {:?}",
+            f.warnings
+        );
+        assert!(
+            !f.warnings.iter().any(|w| w.contains("not pulled")),
+            "the official tag IS pulled — no spurious warning: {:?}",
+            f.warnings
+        );
+    }
+
+    #[test]
     fn unpulled_model_warns_and_prices_zero() {
         let s = sizes(&[("nomic-embed-text", GIB)]);
         let f = fit(&split_slots(), ReasonMode::Split, 24 * GIB, &s);
