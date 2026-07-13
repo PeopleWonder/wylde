@@ -126,7 +126,9 @@ impl ActivityKind {
     pub fn group(self) -> u8 {
         match self {
             ActivityKind::Phase | ActivityKind::Step => 0,
-            ActivityKind::Tool | ActivityKind::ToolOk | ActivityKind::ToolErr
+            ActivityKind::Tool
+            | ActivityKind::ToolOk
+            | ActivityKind::ToolErr
             | ActivityKind::Memory => 1,
             ActivityKind::Thinking => 2,
         }
@@ -246,8 +248,11 @@ impl ProcessingState {
     /// A granular context-gather step (retrieval / routing / injection /
     /// memory). Logged verbatim with its optional detail (full visibility).
     pub fn on_step(&mut self, summary: impl Into<String>, detail: Option<String>) {
-        self.log
-            .push(ActivityEntry::with_detail(ActivityKind::Step, summary, detail));
+        self.log.push(ActivityEntry::with_detail(
+            ActivityKind::Step,
+            summary,
+            detail,
+        ));
     }
 
     /// A tool was dispatched. Names the phase after it (friendly) and logs the
@@ -256,7 +261,8 @@ impl ProcessingState {
         self.log
             .push(ActivityEntry::with_detail(ActivityKind::Tool, name, args));
         // Keep the RAW name keyed by call_id so the result line can name it.
-        self.active_tools.push((call_id.to_owned(), name.to_owned()));
+        self.active_tools
+            .push((call_id.to_owned(), name.to_owned()));
         self.phase = ProcessingPhase::Tool(friendly_tool(name));
     }
 
@@ -264,7 +270,8 @@ impl ProcessingState {
     /// (truncated) output / error, clears it from the active set, and — when
     /// nothing else is in flight — falls the phase back to generating.
     pub fn on_tool_done(&mut self, call_id: &str, ok: bool, result: Option<String>) {
-        let removed = if let Some(pos) = self.active_tools.iter().position(|(id, _)| id == call_id) {
+        let removed = if let Some(pos) = self.active_tools.iter().position(|(id, _)| id == call_id)
+        {
             Some(self.active_tools.remove(pos).1)
         } else {
             None
@@ -370,7 +377,10 @@ impl MessageActivity {
 
     /// Number of tools that ran this turn (dispatch lines in the log).
     pub fn tool_count(&self) -> usize {
-        self.log.iter().filter(|e| e.kind == ActivityKind::Tool).count()
+        self.log
+            .iter()
+            .filter(|e| e.kind == ActivityKind::Tool)
+            .count()
     }
 
     /// Collapsed one-line summary, e.g. "Used 2 tools · 1.2k tokens" or just
@@ -446,10 +456,16 @@ mod tests {
     fn friendly_tool_names_are_user_facing() {
         assert_eq!(friendly_tool("memory.search"), "Consulting memory");
         assert_eq!(friendly_tool("concept.route"), "Routing concepts");
-        assert_eq!(friendly_tool("workspace.rag_query"), "Searching the workspace");
+        assert_eq!(
+            friendly_tool("workspace.rag_query"),
+            "Searching the workspace"
+        );
         assert_eq!(friendly_tool("fs.read_file"), "Reading files");
         // Unknown id → humanised leaf, never the raw dotted name.
-        assert_eq!(friendly_tool("widget.frobnicate_thing"), "Running frobnicate thing");
+        assert_eq!(
+            friendly_tool("widget.frobnicate_thing"),
+            "Running frobnicate thing"
+        );
     }
 
     #[test]
@@ -508,9 +524,16 @@ mod tests {
     fn tool_dispatch_then_done_names_and_reverts_phase() {
         let mut p = ProcessingState::new();
         p.set_phase(ProcessingPhase::Generating);
-        p.on_tool_dispatched("c1", "memory.search", Some("{\"query\":\"vpn\"}".to_owned()));
+        p.on_tool_dispatched(
+            "c1",
+            "memory.search",
+            Some("{\"query\":\"vpn\"}".to_owned()),
+        );
         // Friendly phase for the animated line…
-        assert_eq!(p.phase, ProcessingPhase::Tool("Consulting memory".to_owned()));
+        assert_eq!(
+            p.phase,
+            ProcessingPhase::Tool("Consulting memory".to_owned())
+        );
         assert_eq!(p.active_tools.len(), 1);
 
         p.on_tool_done("c1", true, Some("{\"hits\":3}".to_owned()));
@@ -519,11 +542,7 @@ mod tests {
         assert!(p.active_tools.is_empty());
 
         // …but the LOG shows the raw tool name + args/output (full visibility).
-        let dispatch = p
-            .log
-            .iter()
-            .find(|e| e.kind == ActivityKind::Tool)
-            .unwrap();
+        let dispatch = p.log.iter().find(|e| e.kind == ActivityKind::Tool).unwrap();
         assert_eq!(dispatch.text, "memory.search");
         assert_eq!(dispatch.detail.as_deref(), Some("{\"query\":\"vpn\"}"));
         let done = p
@@ -551,7 +570,10 @@ mod tests {
     fn step_entries_log_with_detail_and_group_as_context() {
         let mut p = ProcessingState::new();
         p.on_step("Retrieved 8 workspace snippets", None);
-        p.on_step("Routed to 3 concepts", Some("nextcloud, ddns, vpn".to_owned()));
+        p.on_step(
+            "Routed to 3 concepts",
+            Some("nextcloud, ddns, vpn".to_owned()),
+        );
         let routing = p.log.iter().find(|e| e.text.starts_with("Routed")).unwrap();
         assert_eq!(routing.kind, ActivityKind::Step);
         assert_eq!(routing.detail.as_deref(), Some("nextcloud, ddns, vpn"));
@@ -581,7 +603,11 @@ mod tests {
         p.on_thinking("Let me ");
         p.on_thinking("think.");
         assert_eq!(p.thinking, "Let me think.");
-        let n = p.log.iter().filter(|e| e.kind == ActivityKind::Thinking).count();
+        let n = p
+            .log
+            .iter()
+            .filter(|e| e.kind == ActivityKind::Thinking)
+            .count();
         assert_eq!(n, 1);
     }
 

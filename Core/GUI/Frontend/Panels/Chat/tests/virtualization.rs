@@ -79,7 +79,9 @@ fn list_item_count_tracks_messages(cx: &mut TestAppContext) {
         .update(cx, |panel, _w, _cx| {
             assert_eq!(panel.message_list.item_count(), 0, "starts empty");
 
-            panel.messages.push(msg("u1", MessageRole::User, "hi", false));
+            panel
+                .messages
+                .push(msg("u1", MessageRole::User, "hi", false));
             panel
                 .messages
                 .push(msg("a1", MessageRole::Assistant, "hello", false));
@@ -103,19 +105,18 @@ fn appending_a_turn_keeps_following_the_tail(cx: &mut TestAppContext) {
         .update(cx, |panel, _w, _cx| {
             // Seed an existing thread and reconcile.
             for i in 0..3 {
-                panel.messages.push(msg(
-                    &format!("m{i}"),
-                    MessageRole::Assistant,
-                    "old",
-                    false,
-                ));
+                panel
+                    .messages
+                    .push(msg(&format!("m{i}"), MessageRole::Assistant, "old", false));
             }
             panel.sync_message_list();
             assert_eq!(panel.message_list.item_count(), 3);
 
             // Append within the SAME thread (head unchanged): item count grows by
             // the delta and the list keeps following the tail (stick-to-bottom).
-            panel.messages.push(msg("m3", MessageRole::User, "new", false));
+            panel
+                .messages
+                .push(msg("m3", MessageRole::User, "new", false));
             panel.sync_message_list();
             assert_eq!(panel.message_list.item_count(), 4, "spliced the new tail");
             assert!(
@@ -135,12 +136,9 @@ fn appending_while_scrolled_up_preserves_the_reader(cx: &mut TestAppContext) {
     window
         .update(cx, |panel, _w, _cx| {
             for i in 0..5 {
-                panel.messages.push(msg(
-                    &format!("m{i}"),
-                    MessageRole::Assistant,
-                    "line",
-                    false,
-                ));
+                panel
+                    .messages
+                    .push(msg(&format!("m{i}"), MessageRole::Assistant, "line", false));
             }
             panel.sync_message_list();
 
@@ -213,12 +211,9 @@ fn switching_thread_resets_and_reengages_tail(cx: &mut TestAppContext) {
         .update(cx, |panel, _w, _cx| {
             // Thread A, then the reader scrolls up (follow off).
             for i in 0..4 {
-                panel.messages.push(msg(
-                    &format!("a{i}"),
-                    MessageRole::Assistant,
-                    "A",
-                    false,
-                ));
+                panel
+                    .messages
+                    .push(msg(&format!("a{i}"), MessageRole::Assistant, "A", false));
             }
             panel.sync_message_list();
             panel.message_list.set_follow_mode(FollowMode::Normal);
@@ -344,12 +339,9 @@ fn paint_builds_only_the_visible_slice(cx: &mut TestAppContext) {
     window
         .update(cx, |panel, _w, _cx| {
             for i in 0..N {
-                panel.messages.push(msg(
-                    &format!("m{i}"),
-                    MessageRole::Assistant,
-                    "body",
-                    false,
-                ));
+                panel
+                    .messages
+                    .push(msg(&format!("m{i}"), MessageRole::Assistant, "body", false));
             }
             panel.sync_message_list();
             assert_eq!(panel.message_list.item_count(), N);

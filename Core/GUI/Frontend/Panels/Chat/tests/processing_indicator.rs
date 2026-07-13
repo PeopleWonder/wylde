@@ -49,9 +49,7 @@ fn live_indicator_expand_collapse_toggles(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn a_streamed_turn_drives_phases_then_settles_activity_onto_the_bubble(
-    cx: &mut TestAppContext,
-) {
+fn a_streamed_turn_drives_phases_then_settles_activity_onto_the_bubble(cx: &mut TestAppContext) {
     // Idle → animating → phases → tokens → done, end-to-end through the real
     // stream pump. The user-facing stream replays the chunks the harness emits.
     let fake = ScriptedBackend::new()
@@ -116,7 +114,10 @@ fn a_streamed_turn_drives_phases_then_settles_activity_onto_the_bubble(
             assert_eq!(act.summary(), "1.2k tokens");
             // The gather pipeline steps are present, in order, with detail
             // (full visibility).
-            assert!(act.log.iter().any(|e| e.text == "Retrieved 8 workspace snippets"));
+            assert!(act
+                .log
+                .iter()
+                .any(|e| e.text == "Retrieved 8 workspace snippets"));
             let routing = act
                 .log
                 .iter()
