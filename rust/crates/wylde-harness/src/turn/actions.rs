@@ -49,6 +49,7 @@ use crate::state::{self, TurnHandle};
 use crate::turn::chat_options;
 use crate::turn::context_gather;
 use crate::turn::prompt;
+use crate::turn::reasoning;
 use crate::turn::salvage::{self, RecoveredCall, SalvageResult};
 use crate::turn::tool_round::{self, ToolCall, ToolRoundState};
 use crate::turn::workspace_context;
@@ -152,12 +153,20 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     } else {
         Some(device_tier.as_str())
     });
+    // Agentic-reasoning S1: depth rides the payload (payload → config →
+    // Fast). v1 scopes Deep to the STREAMING driver only (plan §1) — the
+    // unary path always runs Fast; a Deep request is honestly flagged in
+    // the reply via `depth_ignored` so extension/N8N callers aren't
+    // silently degraded. Fast (the only value today's callers produce) is
+    // a no-op: no reply field, byte-identical.
+    let depth = reasoning::resolve_depth(&payload);
 
     tracing::debug!(
         turn_id = %turn_id,
         conversation_id = %conversation_id,
         model = %model,
         device_tier = %normalised_tier,
+        depth = depth.as_str(),
         "harness: run_turn entered"
     );
 
@@ -312,7 +321,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     // was requested but unreachable (scope v2 §7.5).
     let final_text = workspace_context::apply_degraded_notice(final_text, gathered.degraded);
 
-    Reply::ok(json!({
+    let mut reply = json!({
         "turn_id": turn_id,
         "conversation_id": conversation_id,
         "final_message": final_text,
@@ -322,7 +331,13 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
             .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
             .unwrap_or(Value::Null),
         "abort_error": abort_error.map(Value::String).unwrap_or(Value::Null),
-    }))
+    });
+    // Only a Deep request grows the reply — the everyday Fast reply shape
+    // is untouched (identity guard).
+    if depth == reasoning::Depth::Deep {
+        reply["depth_ignored"] = json!(true);
+    }
+    Reply::ok(reply)
 }
 
 /// `chat.complete` — single-shot, narrow completion endpoint for
@@ -445,6 +460,18 @@ pub async fn handle_start_turn(payload: Value) -> Reply {
 
     let turn_id = optional_string(&payload, "turn_id").unwrap_or_else(state::new_turn_id);
     let workspace_id = optional_string(&payload, "workspace_id");
+    // Agentic-reasoning S1: the GUI's fast/deep pill now rides the wire as
+    // `depth`; resolved payload → config → Fast and logged here (the
+    // receipt assertion the S1 done-when calls for). NOT yet acted on —
+    // the S3 plan phase is the first consumer. With the master toggle off
+    // (default) the gate stays closed and the turn is byte-identical.
+    let depth = reasoning::resolve_depth(&payload);
+    tracing::debug!(
+        turn_id = %turn_id,
+        depth = depth.as_str(),
+        gate_open = reasoning::deep_gate_open(depth),
+        "harness: start_turn depth resolved (S1: parsed, not yet acted on)"
+    );
     let handle = state::register_turn(turn_id.clone(), conversation_id.clone());
 
     let drive_handle = Arc::clone(&handle);

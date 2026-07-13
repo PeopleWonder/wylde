@@ -146,6 +146,12 @@ pub trait HarnessApi: Send + Sync {
     async fn settings_concept_routing_get(&self, payload: Value) -> Reply;
     async fn settings_concept_routing_set(&self, payload: Value) -> Reply;
 
+    // ── settings.reasoning.* + reasoning.fit_check (agentic-reasoning S1:
+    //    master toggle + model slots + advisory VRAM fit) ───────────────
+    async fn settings_reasoning_get(&self, payload: Value) -> Reply;
+    async fn settings_reasoning_set(&self, payload: Value) -> Reply;
+    async fn reasoning_fit_check(&self, payload: Value) -> Reply;
+
     // prompts.* (5 verbs; system-prompt overrides + presets) — Rust
     // port of the Python `_prompts.py` actions (full-Rust cutover).
     async fn prompts_list(&self, payload: Value) -> Reply;
@@ -412,6 +418,19 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn settings_concept_routing_set(&self, payload: Value) -> Reply {
         settings_actions::handle_concept_routing_set(payload).await
+    }
+
+    // ── settings.reasoning.* + reasoning.fit_check (agentic-reasoning S1) ─
+    async fn settings_reasoning_get(&self, payload: Value) -> Reply {
+        settings_actions::handle_reasoning_get(payload).await
+    }
+
+    async fn settings_reasoning_set(&self, payload: Value) -> Reply {
+        settings_actions::handle_reasoning_set(payload).await
+    }
+
+    async fn reasoning_fit_check(&self, payload: Value) -> Reply {
+        crate::turn::reasoning::handle_fit_check(payload).await
     }
 
     // prompts.* (system-prompt overrides + presets). Synchronous store
