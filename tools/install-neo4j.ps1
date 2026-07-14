@@ -94,15 +94,16 @@ function Write-Neo4jConf {
     # local-only Bolt with auth off and data stored under the user profile.
     # This is the exact runtime config the launcher expects.
     #
-    # Neo4j does NOT expand Windows-style %USERPROFILE% placeholders -- it only
-    # honours ${VAR} syntax (which is why ${USERPROFILE} worked before). We now
-    # root the data dirs at the WYLDE_MEMGRAPH_DATA env var, so a future estate
-    # move is a one-line env-var change rather than a reinstall. Writing the
-    # literal ${WYLDE_MEMGRAPH_DATA} placeholder lets Neo4j resolve it at boot.
-    # If the var is unset (fresh machine before setup), fall back to a resolved
-    # absolute path with forward slashes so a standalone install still boots.
+    # Neo4j does NOT expand env vars in neo4j.conf -- neither Windows-style
+    # %USERPROFILE% nor ${VAR} (a live boot test showed a literal ${...} folder
+    # being created under vendor/neo4j and an empty graph booted). So this
+    # installer is the indirection point: it RESOLVES $env:WYLDE_MEMGRAPH_DATA to
+    # an absolute path (forward slashes, Neo4j's Windows convention) and bakes it
+    # into the conf below. On an estate move: set WYLDE_MEMGRAPH_DATA, then re-run
+    # this installer to regenerate the conf. If the var is unset (fresh machine),
+    # fall back to the historical default so a standalone install still boots.
     if ($env:WYLDE_MEMGRAPH_DATA) {
-        $dataRoot = '${WYLDE_MEMGRAPH_DATA}'
+        $dataRoot = ($env:WYLDE_MEMGRAPH_DATA -replace '\\', '/')
     } else {
         $dataRoot = ($env:USERPROFILE -replace '\\', '/') + '/Documents/default/core/wylde-memgraph'
     }
