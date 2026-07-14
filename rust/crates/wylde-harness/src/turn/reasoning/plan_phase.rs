@@ -213,28 +213,41 @@ pub(crate) async fn run(
     })
 }
 
-/// The shared reasoner→DAG core (PLAN and REPLAN, S4): tier knobs
-/// (`num_ctx` cap, think budget + [`PLAN_OUTPUT_BUDGET`], the tier's
-/// `think` switch), the grammar-constrained call, thinking-event
-/// emission, the think-exhaustion salvage retry, and the parse/validation
-/// ladder. Behaviour is exactly the S3/tiers PLAN path — this is a
-/// factoring, not a change; the S3 e2e suite pins the wire bodies.
-async fn tiered_dag_call(
+/// One raw, tier-knobbed, grammar-constrained reasoner call — the shared
+/// core under PLAN/REPLAN ([`tiered_dag_call`]) and S5's REFLECT critique
+/// (`reflect_phase`): the `num_ctx` cap, the tier's think budget + the
+/// caller's output allowance, the tier's `think` switch, thinking-event
+/// emission, and the think-exhaustion salvage retry. Parsing is the
+/// caller's — PLAN deserializes a `PlanDag`, REFLECT a `TurnCritique`.
+/// Behaviour on the PLAN path is exactly the S3/tiers wire shape — the S5
+/// split is a factoring, pinned by the e2e request-body assertions.
+pub(crate) struct RawTieredCall {
+    /// The think-stripped content body.
+    pub content: String,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub elapsed_ms: u64,
+    /// Whether any thinking (native or inline) was already surfaced —
+    /// callers with a JSON-carried trace fall back to it only when not.
+    pub emitted_thinking: bool,
+}
+
+pub(crate) async fn tiered_constrained_call(
     cfg: &'static Config,
     handle: &Arc<TurnHandle>,
     turn_id: &str,
     depth: Depth,
     messages: &Value,
-    alias_map: &HashMap<String, String>,
-) -> Result<DagCall, DagCallError> {
+    format: Option<&Value>,
+    output_budget: u32,
+) -> Result<RawTieredCall, DagCallError> {
     let rcfg = ReasoningConfig::current();
     let model = rcfg.slots.reasoner.clone();
 
     // Per-model user overrides ride the call, with two reasoning-owned
     // knobs on top: the generation cap (R2's `num_predict` guard — the
     // grammar can't stop rumination, this can; the TIER's think budget +
-    // the JSON output allowance, see [`PLAN_OUTPUT_BUDGET`]) and the
-    // resident-ctx cap.
+    // the caller's JSON output allowance) and the resident-ctx cap.
     let mut options = crate::turn::chat_options::chat_options(&model);
     let num_ctx = options
         .get("num_ctx")
@@ -245,7 +258,7 @@ async fn tiered_dag_call(
     let think_budget = depth.think_budget(&rcfg.tier_budgets);
     options.insert(
         "num_predict".to_owned(),
-        json!(think_budget.saturating_add(PLAN_OUTPUT_BUDGET)),
+        json!(think_budget.saturating_add(output_budget)),
     );
 
     // The tier's think switch: the `Think` tier sends `think:false`
@@ -255,18 +268,16 @@ async fn tiered_dag_call(
     // `think` on models without the capability).
     let think = (!depth.think_enabled()).then_some(false);
 
-    let format = constrained::plan_format();
     let started = Instant::now();
-    let upstream =
-        match call_reasoner(cfg, &model, messages, &options, think, format.as_ref()).await {
-            Ok(v) => v,
-            Err(e) => {
-                return Err(DagCallError::Unavailable(format!(
-                    "{}: {}",
-                    e.code, e.message
-                )))
-            }
-        };
+    let upstream = match call_reasoner(cfg, &model, messages, &options, think, format).await {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(DagCallError::Unavailable(format!(
+                "{}: {}",
+                e.code, e.message
+            )))
+        }
+    };
 
     if handle.is_cancelled() {
         return Err(DagCallError::Cancelled);
@@ -311,8 +322,8 @@ async fn tiered_dag_call(
     // only and cannot force the model out of the think channel (measured:
     // 2 of 3 seeds at the old 4096+2048 default died exactly this way,
     // ~37 s wasted then plain ReAct). One grammar-first retry with
-    // deliberation disabled turns that into a valid — if unthought — plan
-    // for ~2–6 s more. Bounded: one retry, output allowance only.
+    // deliberation disabled turns that into a valid — if unthought —
+    // artifact for ~2–6 s more. Bounded: one retry, output allowance only.
     let exhausted = depth.think_enabled()
         && clean_content.trim().is_empty()
         && upstream.get("done_reason").and_then(Value::as_str) == Some("length");
@@ -322,23 +333,14 @@ async fn tiered_dag_call(
             turn_id,
             "Deliberation used the whole budget — retrying without it",
             Some(format!(
-                "{think_budget} think tokens exhausted before any plan JSON; \
+                "{think_budget} think tokens exhausted before any output JSON; \
                  one grammar-first retry (think off)"
             )),
         )
         .await;
         let mut salvage_options = options.clone();
-        salvage_options.insert("num_predict".to_owned(), json!(PLAN_OUTPUT_BUDGET));
-        match call_reasoner(
-            cfg,
-            &model,
-            messages,
-            &salvage_options,
-            Some(false),
-            format.as_ref(),
-        )
-        .await
-        {
+        salvage_options.insert("num_predict".to_owned(), json!(output_budget));
+        match call_reasoner(cfg, &model, messages, &salvage_options, Some(false), format).await {
             Ok(v) => {
                 prompt_tokens += v
                     .get("prompt_eval_count")
@@ -365,20 +367,53 @@ async fn tiered_dag_call(
         }
     }
 
-    let dag = parse_plan_dag(&clean_content, alias_map).map_err(DagCallError::Invalid)?;
     let elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    Ok(RawTieredCall {
+        content: clean_content,
+        prompt_tokens,
+        completion_tokens,
+        elapsed_ms,
+        emitted_thinking,
+    })
+}
+
+/// The shared reasoner→DAG core (PLAN and REPLAN, S4): the raw tiered
+/// call above with the PlanDag grammar and output allowance, then the
+/// parse/validation ladder. Behaviour is exactly the S3/tiers PLAN path —
+/// this is a factoring, not a change; the S3 e2e suite pins the wire
+/// bodies.
+async fn tiered_dag_call(
+    cfg: &'static Config,
+    handle: &Arc<TurnHandle>,
+    turn_id: &str,
+    depth: Depth,
+    messages: &Value,
+    alias_map: &HashMap<String, String>,
+) -> Result<DagCall, DagCallError> {
+    let format = constrained::plan_format();
+    let raw = tiered_constrained_call(
+        cfg,
+        handle,
+        turn_id,
+        depth,
+        messages,
+        format.as_ref(),
+        PLAN_OUTPUT_BUDGET,
+    )
+    .await?;
+    let dag = parse_plan_dag(&raw.content, alias_map).map_err(DagCallError::Invalid)?;
 
     // The JSON-carried trace reaches the dropdown too when nothing else
     // did (a non-thinking backend still explains its plan).
-    if !emitted_thinking && !dag.reasoning_trace.trim().is_empty() {
+    if !raw.emitted_thinking && !dag.reasoning_trace.trim().is_empty() {
         emit_thinking(handle, turn_id, &dag.reasoning_trace).await;
     }
 
     Ok(DagCall {
         dag,
-        prompt_tokens,
-        completion_tokens,
-        elapsed_ms,
+        prompt_tokens: raw.prompt_tokens,
+        completion_tokens: raw.completion_tokens,
+        elapsed_ms: raw.elapsed_ms,
     })
 }
 
@@ -630,6 +665,21 @@ pub fn parse_plan_dag(text: &str, alias_map: &HashMap<String, String>) -> Result
         return Err("planner returned an empty body".to_owned());
     }
 
+    let mut last_err = "no JSON object found in planner output".to_owned();
+    for c in json_candidates(trimmed) {
+        match serde_json::from_str::<PlanDag>(&c) {
+            Ok(dag) => return validate_plan(dag, alias_map),
+            Err(e) => last_err = format!("plan JSON did not match the schema: {e}"),
+        }
+    }
+    Err(last_err)
+}
+
+/// The recovery ladder's candidate JSON bodies, in trust order: the
+/// trimmed text itself when it opens an object, every fenced block, then
+/// the first balanced `{…}`. Shared by the PLAN parser and S5's critique
+/// parser.
+pub(crate) fn json_candidates(trimmed: &str) -> Vec<String> {
     let mut candidates: Vec<String> = Vec::new();
     if trimmed.starts_with('{') {
         candidates.push(trimmed.to_owned());
@@ -638,15 +688,7 @@ pub fn parse_plan_dag(text: &str, alias_map: &HashMap<String, String>) -> Result
     if let Some(b) = first_balanced_object(trimmed) {
         candidates.push(b);
     }
-
-    let mut last_err = "no JSON object found in planner output".to_owned();
-    for c in candidates {
-        match serde_json::from_str::<PlanDag>(&c) {
-            Ok(dag) => return validate_plan(dag, alias_map),
-            Err(e) => last_err = format!("plan JSON did not match the schema: {e}"),
-        }
-    }
-    Err(last_err)
+    candidates
 }
 
 /// Every ```json-fenced block body that looks like an object.

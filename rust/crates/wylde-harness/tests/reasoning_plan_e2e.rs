@@ -28,7 +28,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex as AsyncMutex, MutexGuard, OnceCell};
 use wylde_harness::turn::actions as chat;
-use wylde_harness::turn::reasoning::ReasoningConfig;
+use wylde_harness::turn::reasoning::{ReasoningConfig, ReflectGate};
 use wylde_shared::ipc;
 
 /// One mock pipe per test binary: unary `ollama.chat` (PLAN) + streaming
@@ -683,15 +683,21 @@ async fn identity_gate_closed_transcript_matches_plain_turn() {
     assert!(transcripts[0].len() >= 4, "{:?}", transcripts[0]);
     // S4 extension: with the gate closed, the surprise/replan machinery is
     // never entered — no replanning phase, no surprise/replan steps, no
-    // plan_precondition abort in any transcript.
+    // plan_precondition abort in any transcript. S5 extension: nor is the
+    // REFLECT machinery — no reflecting phase, no critique or lesson steps.
     for t in &transcripts {
         for e in t {
             assert_ne!(e["phase"], json!("replanning"), "{e}");
+            assert_ne!(e["phase"], json!("reflecting"), "{e}");
             assert_ne!(e["reason"], json!("plan_precondition"), "{e}");
             if let Some(s) = e["summary"].as_str() {
                 assert!(
                     !s.contains("surprised") && !s.starts_with("Replanning"),
                     "gate closed but a surprise step leaked: {e}"
+                );
+                assert!(
+                    !s.starts_with("Reflection") && !s.starts_with("Lesson"),
+                    "gate closed but a REFLECT step leaked: {e}"
                 );
             }
         }
@@ -1063,7 +1069,14 @@ async fn l2_dissatisfied_triggers_replan() {
 #[tokio::test]
 async fn replan_budget_exhaustion_degrades_visibly_to_plain_react() {
     let (_g, h) = test_guard().await;
-    set_reasoning_enabled(true);
+    // This turn dispatches 3 distinct calls, so the default MultiToolOnly
+    // gate would add an S5 critique on top; pin REFLECT off to keep the
+    // test a pure S4 budget-exhaustion proof (S5 has its own suite).
+    set_reasoning(ReasoningConfig {
+        enabled: true,
+        reflect_gate: ReflectGate::Off,
+        ..ReasoningConfig::default()
+    });
     *h.unary_script.lock().unwrap() = vec![
         unary_reply(
             &failing_plan("s1", json!({}), "replan").to_string(),
@@ -1355,7 +1368,15 @@ async fn narrowed_identity_holds_below_the_escalation_threshold() {
 #[tokio::test]
 async fn second_hard_failure_escalates_fast_turn_to_planning() {
     let (_g, h) = test_guard().await;
-    set_reasoning_enabled(true); // default: auto_escalate ON, escalate_tier think
+    // default knobs: auto_escalate ON, escalate_tier think. REFLECT is
+    // pinned off — the escalated turn dispatched 2 tools, so the default
+    // MultiToolOnly gate would critique it too (an escalated turn IS
+    // plan-guided; that composition is pinned in the S5 suite).
+    set_reasoning(ReasoningConfig {
+        enabled: true,
+        reflect_gate: ReflectGate::Off,
+        ..ReasoningConfig::default()
+    });
     *h.unary_script.lock().unwrap() = vec![unary_reply(&synthesis_revision().to_string(), 100, 40)];
     set_stream_script(h, &[FAIL_CALL_A, FAIL_CALL_B, "planned recovery"]);
 
@@ -1481,4 +1502,441 @@ async fn auto_escalate_off_never_escalates() {
     );
     // Restore the shared default config for the rest of the binary.
     set_reasoning_enabled(false);
+}
+
+// ── S5: REFLECT — the in-loop turn critique ──────────────────────────────
+
+/// A two-step plan dispatching two DISTINCT (name,args) calls — enough to
+/// clear the default MultiToolOnly gate. Predicates pass on the real
+/// `time_now` result at high confidence, so no surprise machinery runs.
+fn two_probe_plan() -> Value {
+    json!({
+        "goal": "probe the clock twice",
+        "steps": [
+            {"id": "s1", "intent": "first probe", "tool": "time.now",
+             "args_template": {}, "depends_on": [],
+             "expected": {"predicates": [{"kind": "non_empty"}], "assertion": "",
+                          "on_surprise": "continue", "confidence": 0.9}},
+            {"id": "s2", "intent": "second probe", "tool": "time.now",
+             "args_template": {"probe": 1}, "depends_on": ["s1"],
+             "expected": {"predicates": [{"kind": "non_empty"}], "assertion": "",
+                          "on_surprise": "continue", "confidence": 0.9}}
+        ],
+        "reasoning_trace": "probe twice then answer",
+        "plan_version": 1
+    })
+}
+
+const TOOL_CALL_1: &str = "{\"name\": \"time.now\", \"arguments\": {}}";
+const TOOL_CALL_2: &str = "{\"name\": \"time.now\", \"arguments\": {\"probe\": 1}}";
+
+/// THE S5 flagship — the closed loop: a multi-tool deep turn is critiqued
+/// at the pre-finalize seam (grammar-constrained typed record, tier
+/// knobs, visible in the InferenceBar), the lesson lands in long-term
+/// memory through the reflection write path, AND the very next deep
+/// turn's PLAN prompt carries it as grounding. Turn N learns; turn N+1
+/// plans with the lesson. Without the second half, reflection would be
+/// write-only.
+#[tokio::test]
+async fn lesson_from_turn_n_grounds_plan_on_turn_n_plus_1() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true); // default gate: MultiToolOnly
+
+    const LESSON: &str = "time.now returns a bare ISO timestamp without a timezone suffix";
+    *h.unary_script.lock().unwrap() = vec![
+        unary_reply(&two_probe_plan().to_string(), 100, 40),
+        unary_reply(
+            &json!({
+                "goal_satisfied": true,
+                "gaps": [],
+                "lesson": {"text": LESSON, "kind": "tool_behavior", "confidence": 0.9}
+            })
+            .to_string(),
+            20,
+            10,
+        ),
+    ];
+    set_stream_script(h, &[TOOL_CALL_1, TOOL_CALL_2, "the draft answer"]);
+
+    let events = run_streaming_turn(json!({
+        "user_message": "probe the clock twice",
+        "conversation_id": "rsn-s5-loop-n",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+
+    // PLAN + the critique — exactly two reasoner calls.
+    assert_eq!(h.unary_count.load(Ordering::SeqCst), 2, "plan + critique");
+
+    // The critique call: think tier ⇒ think:false, the critique output
+    // allowance, the reasoner ctx cap, the critique grammar, and the
+    // turn's own evidence in the user message.
+    let critique_body = h.unary_bodies.lock().unwrap()[1].clone();
+    assert_eq!(
+        critique_body["think"],
+        json!(false),
+        "think tier critiques grammar-first"
+    );
+    assert_eq!(
+        critique_body["options"]["num_predict"],
+        json!(1024),
+        "critique output allowance"
+    );
+    assert_eq!(
+        critique_body["options"]["num_ctx"],
+        json!(32768),
+        "reasoner ctx cap rides REFLECT too"
+    );
+    assert_eq!(
+        critique_body["format"]["required"],
+        json!(["goal_satisfied", "gaps", "lesson"]),
+        "REFLECT is grammar-constrained — the typed lessons record"
+    );
+    let sys = critique_body["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(sys.contains("reflection stage"), "{sys}");
+    let user = critique_body["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        user.starts_with("### Goal\nprobe the clock twice"),
+        "{user}"
+    );
+    assert!(user.contains("### Plan (version 1)"), "{user}");
+    assert!(
+        user.contains("s1 · first probe · time_now · done"),
+        "{user}"
+    );
+    assert!(user.contains("### Executed step results"), "{user}");
+    assert!(
+        user.contains("### Draft answer\nthe draft answer"),
+        "{user}"
+    );
+
+    // Visible: the Reflecting phase, the verdict, the lesson.
+    let phases: Vec<&str> = events_of_type(&events, "phase")
+        .iter()
+        .filter_map(|e| e["phase"].as_str())
+        .collect();
+    assert!(phases.contains(&"reflecting"), "phases: {phases:?}");
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s.starts_with("Reflection: the answer covers the goal")),
+        "verdict step: {steps:?}"
+    );
+    assert!(
+        steps.iter().any(|s| s == "Lesson learned"),
+        "lesson step: {steps:?}"
+    );
+    let lesson_detail = events_of_type(&events, "step")
+        .iter()
+        .find(|e| e["summary"] == "Lesson learned")
+        .and_then(|e| e["detail"].as_str())
+        .unwrap()
+        .to_owned();
+    assert_eq!(lesson_detail, format!("[tool_behavior] {LESSON}"));
+
+    // A satisfied critique finalizes the draft — no gap round.
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "the draft answer"
+    );
+
+    // Honest meter: PLAN (100/40) + critique (20/10) + 3 rounds (7/3).
+    let usage = events_of_type(&events, "usage");
+    let final_usage = usage
+        .iter()
+        .find(|e| e["done"] == true)
+        .expect("final usage");
+    assert_eq!(final_usage["prompt_tokens"], 100 + 20 + 7 + 7 + 7);
+    assert_eq!(final_usage["completion_tokens"], 40 + 10 + 3 + 3 + 3);
+
+    // The lesson is in the store, exactly where PLAN's selector reads.
+    let lessons = wylde_harness::turn::reasoning::inputs::select_lessons(5);
+    assert!(lessons.iter().any(|l| l == LESSON), "{lessons:?}");
+
+    // ── Turn N+1: the lesson RESURFACES as PLAN grounding ──────────────
+    h.unary_bodies.lock().unwrap().clear();
+    h.unary_count.store(0, Ordering::SeqCst);
+    h.stream_count.store(0, Ordering::SeqCst);
+    set_unary_content(h, &canned_plan());
+    set_stream_script(h, &[TOOL_CALL_1, "noon"]);
+
+    let events = run_streaming_turn(json!({
+        "user_message": "what time is it?",
+        "conversation_id": "rsn-s5-loop-n1",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+
+    // One PLAN only (single-tool turn: MultiToolOnly keeps REFLECT off —
+    // the gate's other side, pinned here).
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        1,
+        "one PLAN, no critique on a single-tool turn"
+    );
+    let plan_user = h.unary_bodies.lock().unwrap()[0]["messages"][1]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        plan_user.contains("### Lessons from past sessions"),
+        "turn N+1's PLAN prompt carries the lessons block: {plan_user}"
+    );
+    assert!(
+        plan_user.contains(&format!("- {LESSON}")),
+        "turn N's lesson grounds turn N+1's plan: {plan_user}"
+    );
+    // …and the grounding step counts it visibly.
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s.starts_with("Grounded plan in") && s.contains("1 lesson(s)")),
+        "{steps:?}"
+    );
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "noon"
+    );
+}
+
+/// A critique that finds gaps buys EXACTLY ONE extra EXECUTE round: the
+/// draft joins the tail as an assistant message, the gaps ride a user
+/// message, the next round's answer becomes the final one, and the
+/// post-gap-round completion never re-reflects.
+#[tokio::test]
+async fn reflection_gap_buys_exactly_one_extra_round() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true);
+    *h.unary_script.lock().unwrap() = vec![
+        unary_reply(&two_probe_plan().to_string(), 100, 40),
+        unary_reply(
+            &json!({
+                "goal_satisfied": false,
+                "gaps": ["the two probe results were never compared"],
+                "lesson": null
+            })
+            .to_string(),
+            20,
+            10,
+        ),
+    ];
+    set_stream_script(
+        h,
+        &[
+            TOOL_CALL_1,
+            TOOL_CALL_2,
+            "incomplete draft",
+            "final improved answer",
+        ],
+    );
+
+    let events = run_streaming_turn(json!({
+        "user_message": "probe the clock twice",
+        "conversation_id": "rsn-s5-gap-1",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+
+    // PLAN + ONE critique — never a second.
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        2,
+        "plan + one critique only"
+    );
+    let phases: Vec<&str> = events_of_type(&events, "phase")
+        .iter()
+        .filter_map(|e| e["phase"].as_str())
+        .collect();
+    assert_eq!(
+        phases.iter().filter(|p| **p == "reflecting").count(),
+        1,
+        "exactly one Reflecting phase: {phases:?}"
+    );
+
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s.starts_with("Reflection: 1 gap(s) in the draft answer")),
+        "{steps:?}"
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|s| s == "Reflection: one more round to close the gap(s)"),
+        "{steps:?}"
+    );
+
+    // The gap round's request tail: …, assistant draft, user gap message.
+    let round4 = h.stream_bodies.lock().unwrap()[3].clone();
+    let msgs = round4["messages"].as_array().unwrap().clone();
+    let last = msgs.last().unwrap();
+    assert_eq!(last["role"], "user");
+    let gap_text = last["content"].as_str().unwrap();
+    assert!(
+        gap_text.starts_with("[reflection] Your draft answer"),
+        "{gap_text}"
+    );
+    assert!(
+        gap_text.contains("- the two probe results were never compared"),
+        "{gap_text}"
+    );
+    let draft = &msgs[msgs.len() - 2];
+    assert_eq!(draft["role"], "assistant");
+    assert_eq!(draft["content"], "incomplete draft");
+
+    // The draft never reached the user; the gap round's answer did.
+    assert!(
+        !events_of_type(&events, "token").iter().any(|e| e["text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("incomplete draft")),
+        "the draft is internal context, never user-facing"
+    );
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "final improved answer"
+    );
+
+    // Meter: PLAN (100/40) + critique (20/10) + 4 rounds (7/3 each).
+    let usage = events_of_type(&events, "usage");
+    let final_usage = usage
+        .iter()
+        .find(|e| e["done"] == true)
+        .expect("final usage");
+    assert_eq!(final_usage["prompt_tokens"], 100 + 20 + 4 * 7);
+    assert_eq!(final_usage["completion_tokens"], 40 + 10 + 4 * 3);
+}
+
+/// The gate matrix at the seam: `Off` never critiques even a multi-tool
+/// turn; `Always` critiques even a single-tool one. (`MultiToolOnly`'s
+/// both sides are pinned by the flagship test: ≥2 reflects, 1 doesn't.)
+#[tokio::test]
+async fn reflect_gate_off_and_always_behave() {
+    let (_g, h) = test_guard().await;
+
+    // Off + multi-tool ⇒ PLAN only, no Reflecting phase.
+    set_reasoning(ReasoningConfig {
+        enabled: true,
+        reflect_gate: ReflectGate::Off,
+        ..ReasoningConfig::default()
+    });
+    set_unary_content(h, &two_probe_plan().to_string());
+    set_stream_script(h, &[TOOL_CALL_1, TOOL_CALL_2, "done"]);
+    let events = run_streaming_turn(json!({
+        "user_message": "probe the clock twice",
+        "conversation_id": "rsn-s5-gate-off",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        1,
+        "gate Off: no critique"
+    );
+    assert!(!events_of_type(&events, "phase")
+        .iter()
+        .any(|e| e["phase"] == "reflecting"));
+
+    // Always + single-tool ⇒ the critique runs.
+    h.unary_count.store(0, Ordering::SeqCst);
+    h.unary_bodies.lock().unwrap().clear();
+    h.stream_count.store(0, Ordering::SeqCst);
+    set_reasoning(ReasoningConfig {
+        enabled: true,
+        reflect_gate: ReflectGate::Always,
+        ..ReasoningConfig::default()
+    });
+    *h.unary_script.lock().unwrap() = vec![
+        unary_reply(&canned_plan(), 100, 40),
+        unary_reply(
+            &json!({"goal_satisfied": true, "gaps": [], "lesson": null}).to_string(),
+            20,
+            10,
+        ),
+    ];
+    set_stream_script(h, &[TOOL_CALL_1, "noon"]);
+    let events = run_streaming_turn(json!({
+        "user_message": "what time is it?",
+        "conversation_id": "rsn-s5-gate-always",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        2,
+        "gate Always: plan + critique"
+    );
+    assert!(events_of_type(&events, "phase")
+        .iter()
+        .any(|e| e["phase"] == "reflecting"));
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s.starts_with("Reflection: the answer covers the goal")),
+        "{steps:?}"
+    );
+
+    // Restore the shared default config for the rest of the binary.
+    set_reasoning_enabled(false);
+}
+
+/// Fail-soft (the non-negotiable): a critique the parser can't read
+/// finalizes the turn verbatim — visible notice, no gap round, and the
+/// wasted call still lands on the honest meter.
+#[tokio::test]
+async fn reflection_garbage_never_breaks_the_turn() {
+    let (_g, h) = test_guard().await;
+    set_reasoning_enabled(true);
+    *h.unary_script.lock().unwrap() = vec![
+        unary_reply(&two_probe_plan().to_string(), 100, 40),
+        unary_reply("I have no critique to offer, sorry.", 20, 10),
+    ];
+    set_stream_script(h, &[TOOL_CALL_1, TOOL_CALL_2, "the draft answer"]);
+
+    let events = run_streaming_turn(json!({
+        "user_message": "probe the clock twice",
+        "conversation_id": "rsn-s5-garbage",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        steps
+            .iter()
+            .any(|s| s == "Reflection output invalid — finalizing"),
+        "visible notice: {steps:?}"
+    );
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "the draft answer"
+    );
+    assert_eq!(
+        h.stream_count.load(Ordering::SeqCst),
+        3,
+        "no gap round after a failed critique"
+    );
+    let usage = events_of_type(&events, "usage");
+    let final_usage = usage
+        .iter()
+        .find(|e| e["done"] == true)
+        .expect("final usage");
+    assert_eq!(final_usage["prompt_tokens"], 100 + 20 + 3 * 7);
+    assert_eq!(final_usage["completion_tokens"], 40 + 10 + 3 * 3);
 }
