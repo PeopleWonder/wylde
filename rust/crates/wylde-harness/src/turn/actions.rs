@@ -1038,7 +1038,18 @@ async fn drive_streaming_turn(
             .await;
             if reasoning_state.is_some() {
                 if let Some(content) = tool_msg.get("content").and_then(Value::as_str) {
-                    round_results.push((call.name.clone(), content.to_owned()));
+                    // Record the CANONICAL tool id so the plan step's
+                    // outcome check binds to a dispatch of the step's own
+                    // tool (the plan stores canonical ids; the model emits
+                    // dotted/aliased names). Without this, `finish_round`'s
+                    // tool-match would never fire and every step would look
+                    // un-executed. Falls back to the raw name for a tool the
+                    // alias map doesn't know.
+                    let canonical = alias_map
+                        .get(&call.name)
+                        .cloned()
+                        .unwrap_or_else(|| call.name.clone());
+                    round_results.push((canonical, content.to_owned()));
                 }
             } else if let Some(watch) = &mut escalation_watch {
                 // S4b: pure hard-failure counting on a watched Fast turn
