@@ -133,3 +133,41 @@ made:
 Recommended follow-up on GitHub: dismiss #17/#19/#20 as *vulnerable code not
 used* (removed manifest); keep #1 and #18 tracked against a future `wry`/gtk-rs
 and `gpui`-rev bump respectively (or dismiss #1 as not-buildable-on-target).
+
+---
+
+## Addendum — 2026-07-14 (hygiene pass)
+
+Re-verified the two Rust alerts independently and stood up the automated
+dependency machinery that was missing. See
+[`dependency-hygiene-policy.md`](dependency-hygiene-policy.md).
+
+**#1 `glib` — confirmed unfixable, hypothesis that `wry`/`tray-icon` are dead
+Tauri deps is FALSE.** Both are live gpui-era code: `wry` is wrapped by the
+`wylde-webview` crate and driven by `Core/GUI/Shell/src/shell_root.rs`
+(`IframeHost`, `probe_url`, `slot_bounds`) for extension iframe panels;
+`tray-icon` is wired by `Core/GUI/Shell/src/{main,tray,window}.rs` as the
+`tauri::tray` replacement. Neither is removable, so `glib` can't be dropped that
+way. It stays Linux-only / not-in-shipped-binary. **Accepted** in
+`Core/GUI/deny.toml` (RUSTSEC-2024-0429) with a review date.
+
+**#18 `async-tar` — confirmed unfixable, with new evidence.** Advancing the gpui
+git rev cannot fix it: Zed's `http_client` still requires `async-tar ^0.5.1`, and
+**even Zed `main` still pins `async-tar = "0.5.1"`** (checked 2026-07-14 against
+`zed-industries/zed`), while Zed `main` has moved to edition 2024 (a large
+breaking jump). No RUSTSEC id exists for it yet, so cargo-deny can't gate it;
+**Dependabot remains the gate.** Documented in the hygiene policy.
+
+**New advisories the fresh RustSec DB surfaced (post-dating this triage) and what
+was done:**
+
+| Crate | Advisory | Disposition |
+|-------|----------|-------------|
+| `crossbeam-epoch` 0.9.18 | RUSTSEC-2026-0204 (vuln) | **FIXED** — `cargo update` → 0.9.20 (both workspaces) |
+| `anyhow` 1.0.102 | RUSTSEC-2026-0190 (unsound) | **FIXED** — `cargo update` → 1.0.103 (both workspaces) |
+| `quick-xml` 0.30/0.39 | RUSTSEC-2026-0194/0195 (DoS) | Accepted — Linux-only (`xcb`/`zbus_xml`), not in shipped binary |
+| `bincode` 1.3.3 | RUSTSEC-2025-0141 (unmaintained) | Accepted — direct dep, no safe upgrade (2.x rewrite) |
+
+After the two `cargo update` fixes: `rust/` has **zero** outstanding
+vulnerabilities; `Core/GUI` has only the Linux-only `quick-xml` entries left, all
+allow-listed. `cargo deny check advisories` is green for both workspaces.

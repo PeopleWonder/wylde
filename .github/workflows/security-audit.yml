@@ -1,0 +1,54 @@
+# Security audit — cargo-deny advisory gate.
+#
+# Runs on every PR (so a bump that pulls a vulnerable crate is caught before
+# merge) AND on a weekly schedule (so a newly-PUBLISHED advisory against an
+# already-pinned dependency turns this red within days — instead of surfacing
+# months later as a `git push` warning, which is the backlog this repo is
+# escaping).
+#
+# Policy lives in the per-workspace deny.toml files and
+# docs/security/dependency-hygiene-policy.md. Accepting an advisory = adding it
+# to the relevant deny.toml `ignore` list WITH a reason and a review date.
+name: Security audit
+
+on:
+  pull_request:
+    # Only re-run when something that can change the advisory posture changes.
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "**/deny.toml"
+      - ".github/workflows/security-audit.yml"
+  push:
+    branches:
+      - main
+      - "feat/thought-bubble-system"
+  schedule:
+    # Mondays 07:00 UTC — an hour after Dependabot opens its weekly PRs.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (advisories)
+    runs-on: ubuntu-latest
+    # cargo-deny resolves the dependency graph from the lockfile and its
+    # deny.toml pins the targets (windows + linux) explicitly, so the runner OS
+    # does not affect the result — ubuntu is just the cheapest runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        manifest:
+          - rust/Cargo.toml
+          - Core/GUI/Cargo.toml
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo-deny check advisories
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: ${{ matrix.manifest }}
+          command: check advisories

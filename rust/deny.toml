@@ -1,0 +1,50 @@
+# cargo-deny policy — Wylde backend workspace (`rust/`).
+#
+# Gate: CI runs `cargo deny check advisories` on every PR and on a weekly
+# schedule (see `.github/workflows/security-audit.yml`). A new advisory against
+# any dependency turns the check red the moment it lands in the RustSec DB —
+# not months later in a `git push` warning.
+#
+# Policy for accepting an advisory (adding to `ignore` below): every entry
+# MUST carry a `reason` that states (a) why it is not fixable now and (b) a
+# "Review by <date>" so it is revisited rather than silently ignored forever.
+# See `docs/security/dependency-hygiene-policy.md` for the full policy.
+
+[advisories]
+version = 2
+# Yanked crates: surface but do not fail CI. The only yanked crate in the tree
+# is `spin` (deep transitive under the crypto stack); nothing we can re-pin.
+yanked = "warn"
+# Only flag `unmaintained` advisories for crates a workspace member depends on
+# directly. Transitive unmaintained crates (backoff, bincode, instant, paste,
+# rustls-pemfile, fxhash, …) have no maintained replacement reachable without an
+# upstream move; treating every one as a hard failure would make the gate noise,
+# not signal. Direct unmaintained deps still fail, which is what we can act on.
+unmaintained = "workspace"
+# No security *vulnerabilities* are outstanding in this workspace (crossbeam-epoch
+# and anyhow were bumped 2026-07-14). The one accepted advisory is an unmaintained
+# direct dep with no safe upgrade. When an unavoidable advisory appears, add it
+# WITH a reason + review date.
+ignore = [
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is unmaintained. Direct dep of wylde-gateway (msgpack/binary framing). bincode 2.x is a from-scratch rewrite with an incompatible API — 'no safe upgrade available'. Not a vulnerability (informational unmaintained notice). Tracked for a deliberate 2.x port. Review by 2026-10-14." },
+]
+
+# `licenses` / `bans` / `sources` are defined so a manual `cargo deny check all`
+# works, but CI gates only on `advisories` (the security signal). Kept permissive
+# to avoid false reds; tighten deliberately later if desired.
+[licenses]
+version = 2
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause",
+    "BSD-3-Clause", "ISC", "Zlib", "MPL-2.0", "Unicode-3.0", "Unicode-DFS-2016",
+    "CC0-1.0", "0BSD", "Unlicense", "GPL-3.0", "BSL-1.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# gpui pulls a wide graph; duplicate versions are expected. Surface, don't fail.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"

@@ -1,0 +1,91 @@
+# CI — build + test on every PR and on pushes to the trunk / main.
+#
+# This is the gate that makes dependency-bump PRs mergeable with confidence:
+# a Dependabot PR that breaks the build or the test suite turns this red, so
+# bumps stop being scary and stop accumulating.
+#
+# Runner is Windows: Wylde ships Windows-only (`wylde-gui.exe`), the GUI stack
+# (gpui + wry + tray-icon) binds Win32 APIs, and the harness IPC layer uses
+# named pipes — the e2e tests are `#![cfg(windows)]`. Building/testing anywhere
+# else would not reflect what ships.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "feat/thought-bubble-system"
+  workflow_dispatch:
+
+# One in-flight run per ref; a new push cancels the previous.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The pre-build guard inspects live daemon status, which does not exist on a
+  # clean CI runner. Skip it so builds don't false-fail. See
+  # rust/build-support/wylde-prebuild-guard.
+  WYLDE_PREBUILD_GUARD_SKIP: "1"
+
+jobs:
+  # --- Backend workspace (rust/) — build AND test. This is the suite with the
+  # 1167-test lib baseline + the reasoning_plan e2e (mock-pipe, offline). Live
+  # tests that need Ollama/Memgraph are `#[ignore]`-marked and skip here.
+  backend:
+    name: backend (rust/) build + test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (stable, honoring rust-toolchain.toml)
+        run: rustup show
+        working-directory: rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "rust -> target"
+      - name: cargo build
+        working-directory: rust
+        run: cargo build --workspace --locked
+      - name: cargo test
+        working-directory: rust
+        run: cargo test --workspace --locked
+
+  # --- GUI workspace (Core/GUI/) — build only. It compiles the gpui + wry +
+  # tray-icon graph, which is what dependency bumps here would break. Its
+  # windowed gpui tests need a desktop session and are not run headless in CI.
+  gui:
+    name: gui (Core/GUI/) build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (stable)
+        run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "Core/GUI -> target"
+      - name: cargo build
+        working-directory: Core/GUI
+        run: cargo build --workspace --locked
+
+  # --- Dev tooling workspaces (xtask, wylde-release) — cheap compile check so a
+  # bump that breaks the build orchestrator or the release tool is caught too.
+  tools:
+    name: tools build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (stable)
+        run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tools/xtask -> target
+            tools/wylde-release -> target
+      - name: build xtask
+        working-directory: tools/xtask
+        run: cargo build --locked
+      - name: build wylde-release
+        working-directory: tools/wylde-release
+        run: cargo build --locked
