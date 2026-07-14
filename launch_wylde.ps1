@@ -18,6 +18,13 @@
 
 $ErrorActionPreference = 'Stop'
 $WyldeRoot   = $PSScriptRoot
+# Export WYLDE_ROOT so the Rust Lifecycle daemon -- and every service it
+# spawns as a subprocess -- resolves the estate root from this env var
+# rather than from the process working directory (the `.` fallback in
+# wylde-lifecycle/src/paths.rs). This makes the whole stack independent of
+# where it was launched from, and a future estate move becomes a one-line
+# env-var update instead of a code/config hunt. Mirrors tools/dev/wylde-dev.ps1.
+$env:WYLDE_ROOT = $WyldeRoot
 $LogPath     = Join-Path $env:TEMP 'wylde-launch.log'
 
 function Log {

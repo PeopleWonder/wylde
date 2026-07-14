@@ -34,7 +34,8 @@ fn main() {
     std::env::set_var("WYLDE_BOLT_CONNECT_TIMEOUT_SECS", "1");
 
     let folder = std::env::args().nth(1).unwrap_or_else(|| {
-        r"C:\Users\aaron\Documents\Obsidian Vault\Wylde-release".to_owned()
+        std::env::var("WYLDE_ROOT")
+            .unwrap_or_else(|_| r"C:\Users\aaron\Documents\Obsidian Vault\Wylde-release".to_owned())
     });
     println!("== index_bench ==");
     println!("folder    : {folder}");

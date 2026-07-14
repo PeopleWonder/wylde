@@ -41,6 +41,9 @@ fn live_data_dir() -> PathBuf {
     if let Some(v) = std::env::var_os("WYLDE_EVAL_DATA_DIR") {
         return PathBuf::from(v);
     }
+    if let Some(root) = std::env::var_os("WYLDE_ROOT") {
+        return PathBuf::from(root).join(".wylde").join("data");
+    }
     PathBuf::from(r"C:\Users\aaron\Documents\Obsidian Vault\Wylde-release\.wylde\data")
 }
 
