@@ -383,15 +383,37 @@ fn service_folders(root: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Immediate child folders of an out-of-tree bucket (`<root>/<bucket>/`)
-/// that count as services. Same `is_dir` + `_`/`.`-prefix filter as
-/// [`list_service_folders`], but without the top-level `EXCLUDED_TOP_LEVEL`
-/// set (those names only matter at the repo root). **Clean no-op when the
-/// bucket is absent:** the `read_dir` guard returns an empty `Vec`, so a
-/// missing/empty `Services/` yields nothing and discovery is identical to
-/// a tree without the bucket. Sorted alphabetically.
+/// Resolve a service bucket's on-disk directory.
+///
+/// Default is the in-tree `<root>/<bucket>` — unchanged behavior. For the
+/// `Services` bucket an explicit `WYLDE_SERVICES` env var relocates it to an
+/// absolute path (the locked out-of-tree layout: `Services/` a *sibling* of
+/// Core rather than nested inside it), so moving the estate is a config
+/// change, not a code change. The override is honoured **only when walking
+/// the real estate root** (`root == wylde_root()`); tempdir-rooted callers
+/// (the whole test suite) keep the pure `<root>/<bucket>` join and stay
+/// env-independent. Unset or empty `WYLDE_SERVICES` ⇒ the in-tree default.
+fn resolve_bucket_dir(root: &Path, bucket: &str) -> PathBuf {
+    if bucket == "Services" && root == wylde_root().as_path() {
+        if let Some(v) = std::env::var_os("WYLDE_SERVICES") {
+            let p = PathBuf::from(v);
+            if !p.as_os_str().is_empty() {
+                return p;
+            }
+        }
+    }
+    root.join(bucket)
+}
+
+/// Immediate child folders of an out-of-tree bucket (`<root>/<bucket>/`, or
+/// the `WYLDE_SERVICES` override — see [`resolve_bucket_dir`]) that count as
+/// services. Same `is_dir` + `_`/`.`-prefix filter as [`list_service_folders`],
+/// but without the top-level `EXCLUDED_TOP_LEVEL` set (those names only matter
+/// at the repo root). **Clean no-op when the bucket is absent:** the `read_dir`
+/// guard returns an empty `Vec`, so a missing/empty `Services/` yields nothing
+/// and discovery is identical to a tree without the bucket. Sorted alphabetically.
 fn list_bucket_folders(root: &Path, bucket: &str) -> Vec<PathBuf> {
-    let dir = root.join(bucket);
+    let dir = resolve_bucket_dir(root, bucket);
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
@@ -1052,6 +1074,61 @@ mod tests {
         assert_eq!(images.folder, folder);
         let notes = found.iter().find(|d| d.name == "wylde-notes").unwrap();
         assert!(!notes.enabled);
+    }
+
+    #[test]
+    fn wylde_services_env_relocates_discovery_to_a_sibling_root() {
+        // Locked out-of-tree layout: Services/ is a *sibling* of Core, not
+        // nested under WYLDE_ROOT. WYLDE_SERVICES points discovery at that
+        // sibling dir so relocating the estate is a config change, not code.
+        // This drives the real default entry point `discovered_bucket_services`
+        // (which reads WYLDE_ROOT), so it sets + restores the process env.
+        let estate = TempDir::new().unwrap();
+        let siblings = TempDir::new().unwrap();
+        let services = siblings.path().join("Services");
+
+        write_json(
+            &services.join("wylde-organize").join("manifest.json"),
+            &json!({ "name": "wylde-organize", "enabled": true }),
+        );
+        write_json(
+            &services.join("wylde-tabulate").join("manifest.json"),
+            &json!({ "name": "wylde-tabulate", "enabled": true }),
+        );
+        // A decoy in the in-tree bucket must be ignored once the override is
+        // set — proving the relocation actually takes effect (not an additive walk).
+        write_json(
+            &estate
+                .path()
+                .join("Services")
+                .join("wylde-decoy")
+                .join("manifest.json"),
+            &json!({ "name": "wylde-decoy", "enabled": true }),
+        );
+
+        let saved_root = std::env::var_os("WYLDE_ROOT");
+        let saved_services = std::env::var_os("WYLDE_SERVICES");
+        std::env::set_var("WYLDE_ROOT", estate.path());
+        std::env::set_var("WYLDE_SERVICES", &services);
+
+        let found = discovered_bucket_services();
+
+        match saved_root {
+            Some(v) => std::env::set_var("WYLDE_ROOT", v),
+            None => std::env::remove_var("WYLDE_ROOT"),
+        }
+        match saved_services {
+            Some(v) => std::env::set_var("WYLDE_SERVICES", v),
+            None => std::env::remove_var("WYLDE_SERVICES"),
+        }
+
+        let mut names: Vec<&str> = found.iter().map(|d| d.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec!["wylde-organize", "wylde-tabulate"],
+            "WYLDE_SERVICES must relocate discovery to the sibling dir and ignore the in-tree decoy"
+        );
     }
 
     #[test]
