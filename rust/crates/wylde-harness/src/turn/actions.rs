@@ -914,6 +914,40 @@ async fn drive_streaming_turn(
         calls.extend(recovered_to_calls(&salvage_result));
 
         if calls.is_empty() {
+            // Agentic-reasoning S5, seam 4 (pre-finalize): on a
+            // plan-guided turn's natural completion, run the REFLECT
+            // critique — gate-checked, at most once per turn, entirely
+            // fail-soft (any reflection failure finalizes verbatim). A
+            // critique that finds gaps buys ONE extra EXECUTE round: the
+            // draft joins the tail as an assistant message, the gaps as a
+            // user message, and the loop continues — only when rounds
+            // remain, so the loop cap stays authoritative. The draft is
+            // never emitted to the user; the gap round's answer replaces
+            // it. Fast turns never construct the state, so this block is
+            // unreachable on the fast path (identity).
+            if let Some(rs) = &mut reasoning_state {
+                let flow = reasoning::maybe_reflect(
+                    cfg,
+                    &handle,
+                    &turn_id,
+                    rs,
+                    round_state.dispatched_hashes.len(),
+                    &final_text,
+                    round + 1 < tool_round::MAX_TOOL_LOOPS,
+                )
+                .await;
+                // The critique call is part of the turn's honest cost.
+                turn_prompt += flow.prompt_tokens;
+                turn_completion += flow.completion_tokens;
+                if let Some(gap_message) = flow.gap_message {
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": final_text.clone(),
+                    }));
+                    messages.push(gap_message);
+                    continue;
+                }
+            }
             // No tool calls — emit the cleaned text as a single Token
             // event (bulk emit; mirrors Python's no-stream-token path
             // in `_driver.py:416-419`) and finish. Prefix the graceful-

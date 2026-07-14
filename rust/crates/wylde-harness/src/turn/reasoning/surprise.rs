@@ -277,6 +277,12 @@ pub(crate) async fn check_and_maybe_replan(
         None => return flow,
     };
 
+    // The S5 critique reads this back: what surprised us is what a
+    // lesson is made of.
+    state
+        .surprise_log
+        .push(format!("{}: {}", surprise.step_id, surprise.summary));
+
     emit_step(
         handle,
         turn_id,

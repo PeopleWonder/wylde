@@ -65,6 +65,22 @@
 //!   failure degrades to plain ReAct. The e2e transcript proof pins the
 //!   zero- and one-failure cases byte-identical.
 //!
+//! Slice S5 closes the tier — REFLECT:
+//!
+//! * [`reflect_phase`] — the in-loop turn critique at the pre-finalize
+//!   seam: one reasoner call over {goal, plan, executed results,
+//!   surprises, draft answer} → a typed
+//!   [`reflect_phase::TurnCritique`] (grammar-constrained envelope; the
+//!   prose inside stays free). Gated by
+//!   [`ReasoningConfig::reflect_gate`] (default `MultiToolOnly` — only
+//!   plan-guided turns that dispatched ≥2 tools) via [`maybe_reflect`],
+//!   at most once per turn. A found gap buys ONE extra EXECUTE round; a
+//!   surviving lesson is written through the existing long-term
+//!   reflection path (τ=0.92 dedup — learned twice reinforces, never
+//!   duplicates) and resurfaces as the NEXT deep turn's
+//!   `PlanInputs.lessons` grounding. The memory-consolidation scheduler
+//!   is untouched — machinery reused, pass not.
+//!
 //! **Identity guarantee (narrowed 2026-07-14, Aaron):** with
 //! `ReasoningConfig.enabled == false` (the default), nothing in this
 //! module touches the turn — byte-identical, unconditionally. With
@@ -80,6 +96,7 @@ pub mod constrained;
 pub mod fit;
 pub mod inputs;
 pub mod plan_phase;
+pub mod reflect_phase;
 pub mod residency;
 pub mod surprise;
 pub mod template;
@@ -301,6 +318,14 @@ pub struct ReasoningState {
     abandoned: bool,
     /// Steps whose L2 check already ran (one L2 per step max).
     l2_checked: HashSet<String>,
+    /// One line per confirmed surprise, in order (S5): the critique
+    /// prompt's "Surprises this turn" block — what actually went sideways
+    /// is exactly what a lesson is made of.
+    surprise_log: Vec<String>,
+    /// REFLECT already ran this turn (S5, once per turn — set whether the
+    /// critique succeeded or fail-softed, so the post-gap-round
+    /// completion finalizes without a second reasoner call).
+    reflected: bool,
 }
 
 impl ReasoningState {
@@ -319,6 +344,8 @@ impl ReasoningState {
             replans_used: 0,
             abandoned: false,
             l2_checked: HashSet::new(),
+            surprise_log: Vec::new(),
+            reflected: false,
         }
     }
 
@@ -525,6 +552,37 @@ pub(crate) async fn maybe_plan(
         "reasoning: PLAN phase produced a plan"
     );
     Some(ReasoningState::new(outcome, depth))
+}
+
+// ── S5: the driver-facing REFLECT seam ──────────────────────────────────
+
+/// The single pre-finalize entry point (seam 4, plan §1): on a
+/// plan-guided turn's natural completion, evaluate the
+/// [`ReflectGate`] and — at most once per turn — run the REFLECT
+/// critique. Every skip path returns a zero-cost
+/// [`reflect_phase::ReflectFlow`] with no gap message and the caller
+/// finalizes verbatim. `tools_dispatched` is the turn's distinct
+/// dispatched-call count; `can_gap_round` says whether the round loop has
+/// room for one more EXECUTE round.
+pub(crate) async fn maybe_reflect(
+    cfg: &'static crate::config::Config,
+    handle: &Arc<TurnHandle>,
+    turn_id: &str,
+    state: &mut ReasoningState,
+    tools_dispatched: usize,
+    draft_answer: &str,
+    can_gap_round: bool,
+) -> reflect_phase::ReflectFlow {
+    if state.reflected {
+        return reflect_phase::ReflectFlow::default();
+    }
+    let gate = ReasoningConfig::current().reflect_gate;
+    if !reflect_phase::should_reflect(gate, tools_dispatched) {
+        return reflect_phase::ReflectFlow::default();
+    }
+    // Spent whether the critique lands or fail-softs — once per turn.
+    state.reflected = true;
+    reflect_phase::run(cfg, handle, turn_id, state, draft_answer, can_gap_round).await
 }
 
 // ── S4b: Fast→planning auto-escalation (Aaron's narrowed contract) ──────
