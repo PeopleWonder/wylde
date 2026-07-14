@@ -1,0 +1,71 @@
+# cargo-deny policy — Wylde GUI workspace (`Core/GUI/`).
+#
+# This workspace is deliberately separate from `rust/` (it pulls the heavy gpui
+# graphics graph via a pinned Zed git rev). It therefore has its own lockfile
+# and its own cargo-deny policy.
+#
+# Gate: CI runs `cargo deny check advisories` here on every PR and weekly. Every
+# `ignore` entry MUST carry a `reason` with (a) why it is not fixable now and
+# (b) a "Review by <date>". See `docs/security/dependency-hygiene-policy.md`.
+#
+# THE SHIPPED PRODUCT IS WINDOWS-ONLY (`wylde-gui.exe`). Several advisories below
+# are against crates that only compile on Linux (the GTK3 / X11 / D-Bus stack
+# that gpui + wry + tray-icon pull behind `cfg(target_os = "linux")`). Those are
+# genuinely not present in the shipped binary — verified with
+# `cargo tree -i <crate> --target x86_64-pc-windows-msvc` returning empty.
+
+# Scan BOTH the shipped Windows target and a Linux target. The product ships
+# Windows-only, but pinning both makes the gate deterministic regardless of the
+# CI runner OS AND lets cargo-deny see the Linux-only advisories (glib, quick-xml)
+# that Dependabot also reports — so the documented ignores below are actually
+# exercised rather than silently unused. The "not in the shipped binary" nuance
+# lives in each ignore's `reason`.
+[graph]
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
+
+[advisories]
+version = 2
+# `spin` is yanked deep in the transitive graph (ring/crypto); nothing to re-pin.
+yanked = "warn"
+# Only flag `unmaintained` for crates a workspace member depends on directly; the
+# large transitive GTK3 / font stack has no maintained replacement reachable
+# without an upstream (gpui/wry) move.
+unmaintained = "workspace"
+ignore = [
+    # --- glib: unsound iterator (GHSA-wrw7-89jp-8q8g). Dependabot alert #1. ---
+    { id = "RUSTSEC-2024-0429", reason = "glib 0.18.5 VariantStrIter unsoundness. Deep GTK3-binding transitive (glib <- gtk/gio/... <- libappindicator <- tray-icon, and <- webkit2gtk <- wry). The entire GTK3 stack is cfg(target_os=linux); `cargo tree -i glib --target x86_64-pc-windows-msvc` is EMPTY, so it is never compiled into the shipped Windows binary. Fix ships only in glib 0.20 (a full gtk-rs 0.18->0.20 migration), blocked by wry 0.54 / tray-icon 0.19 pinning the GTK3 bindings at ^0.18. Not deletable: wry (extension-iframe host) and tray-icon (system tray) are both LIVE gpui-era code, not dead Tauri deps. Review by 2026-10-14." },
+    # --- quick-xml: two DoS advisories, Linux-only provenance. ---
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic dup-attribute parse (DoS). Pulled only by xcb 0.30 (X11) and zbus_xml 0.39 (D-Bus) — both Linux-only gpui-platform deps; `cargo tree -i quick-xml --target x86_64-pc-windows-msvc` is EMPTY. Fix is quick-xml 0.41 (semver-major from 0.30), pinned by upstream xcb/zbus; not reachable via cargo update. Not in the shipped Windows binary. Review by 2026-10-14." },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml unbounded namespace-declaration allocation (DoS). Same Linux-only provenance (xcb/zbus_xml) and same upstream pin as RUSTSEC-2026-0194; not in the shipped Windows binary. Review by 2026-10-14." },
+    # NOTE — async-tar 0.5.1 (Dependabot alert #18, GHSA-35rm-7j9c-2f7m /
+    # CVE-2026-53600) is NOT listed here on purpose: RustSec has not assigned it a
+    # RUSTSEC id (as of 2026-07-14), so cargo-deny cannot see or ignore it (it
+    # sources the RustSec DB). Dependabot (GHSA-sourced) tracks it. Its full
+    # disposition — dormant, upstream-pinned, unfixable even by bumping the gpui
+    # rev because Zed `main` still pins async-tar 0.5.1 — is documented in
+    # docs/security/dependency-hygiene-policy.md and the dependabot triage doc.
+]
+
+# Defined for a manual `cargo deny check all`; CI gates only on `advisories`.
+[licenses]
+version = 2
+allow = [
+    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause",
+    "BSD-3-Clause", "ISC", "Zlib", "MPL-2.0", "Unicode-3.0", "Unicode-DFS-2016",
+    "CC0-1.0", "0BSD", "Unlicense", "GPL-3.0", "BSL-1.0", "OpenSSL",
+]
+confidence-threshold = 0.8
+
+[bans]
+# gpui's graph carries many duplicate versions by design. Surface, don't fail.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "warn"
+# gpui / gpui_platform / http_client come from the zed-industries/zed git repo at
+# a pinned rev. That is intentional (see Core/GUI/Cargo.toml); allow it explicitly.
+unknown-git = "warn"
+allow-git = ["https://github.com/zed-industries/zed"]

@@ -1,0 +1,69 @@
+# Dependabot configuration for PeopleWonder/wylde.
+#
+# Goal: dependency updates flow in as small, reviewable PRs on a predictable
+# cadence instead of accumulating until a `git push` advisory warning. Patch +
+# minor bumps are GROUPED into one PR per ecosystem/directory so the review load
+# stays low; MAJOR bumps come as individual PRs so a breaking change is never
+# hidden inside a group. Security updates flow as their own PRs (highest signal).
+#
+# See docs/security/dependency-hygiene-policy.md for the surrounding policy
+# (review cadence, how to accept an unfixable advisory, the gpui git-rev caveat).
+version: 2
+updates:
+  # --- Rust / Cargo --------------------------------------------------------
+  # One entry covering every Cargo manifest directory in the repo. Each has its
+  # own lockfile, so Dependabot opens a grouped PR per directory as needed.
+  #
+  # CAVEAT: the gpui / gpui_platform / http_client dependencies (Core/GUI) are
+  # pinned to a *git rev* of zed-industries/zed. Dependabot does NOT bump git
+  # revs, so those — and every transitive dep they pin, e.g. async-tar — cannot
+  # be updated here. They are managed manually per the hygiene policy.
+  - package-ecosystem: "cargo"
+    directories:
+      - "/rust"
+      - "/Core/GUI"
+      - "/tools/xtask"
+      - "/tools/wylde-release"
+      - "/rust/tests/parity"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+      prefix-development: "chore(deps-dev)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "rust"
+    groups:
+      # Patch + minor version bumps → a single PR per directory. Majors are
+      # intentionally excluded (no "major" in update-types) so they arrive as
+      # separate, individually-reviewable PRs.
+      cargo-minor-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # --- GitHub Actions ------------------------------------------------------
+  # Keeps the CI / security-audit workflows' action pins current (including this
+  # repo's own actions). Grouped — action bumps are low-risk and high-volume.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      github-actions-all:
+        patterns:
+          - "*"
