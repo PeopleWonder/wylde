@@ -454,7 +454,7 @@ fn print_report(base: &Baseline, report: &crate::bench::spec::Report) {
         base.recorded.reps,
         base.recorded.host.label
     );
-    println!("{:<44} {:<9} {}", "metric", "status", "detail");
+    println!("{:<44} {:<9} detail", "metric", "status");
     println!("{}", "-".repeat(88));
     for c in &report.comparisons {
         let mark = match c.status {
@@ -515,7 +515,7 @@ fn civil_from_epoch(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
     // days since 1970-01-01 → civil date
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as i64; // [0, 146096]
+    let doe = z - era * 146_097; // [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]

@@ -479,7 +479,7 @@ mod tests {
         m.mark_service_reason("wylde-x", Some("boom".into()));
         assert_eq!(m.reasons.get("wylde-x").map(String::as_str), Some("boom"));
         m.mark_service_reason("wylde-x", None);
-        assert!(m.reasons.get("wylde-x").is_none());
+        assert!(!m.reasons.contains_key("wylde-x"));
     }
 
     #[test]
