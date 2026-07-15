@@ -267,6 +267,19 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Fixed
 
+- **Long-term memories saved outside the model now embed on write.** The
+  `memory.long_term.save` / `memory.long_term.update` API/pipe handlers (the
+  Settings-UI "add memory" path, extensions, N8N — anything that isn't the
+  model tool) passed `None` for the vector and never read a caller-supplied
+  one, so the record landed in `long_term.json` with no entry in
+  `long_term.vec.bin`. Semantic search (`memory_search`, the per-turn gather
+  long-term retrieval) therefore couldn't rank it — only the text fallback
+  could — silently defeating cross-conversation recall for UI-curated
+  memories. Both handlers now auto-embed the body (budgeted, fail-soft) when
+  no vector is supplied, mirroring the model-tool and workspace-save paths;
+  update re-embeds the effective new body. Verified live: a memory saved via
+  the pipe verb now returns as the top semantic hit for a paraphrased query.
+  (fixes #43)
 - **Short-term memory store now honours encryption-at-rest (OI-14).** It
   used plain file IO on the same conversation documents the conversations
   store reads/writes encrypted; a lazy-migration read could flip a document
