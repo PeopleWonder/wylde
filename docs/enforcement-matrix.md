@@ -30,7 +30,7 @@ milestones, Dependabot) > **CI job that fails the build** > **runtime enforcemen
 | 11 | **`cargo fmt --check` (G6)** | CI job (staged) | unformatted code | `ci.yml` (commented stub) | ⏳ blocked — tree is **not** fmt-clean today (verified); run `cargo fmt` as its own slice, then enable |
 | 12 | **No vulnerable dependencies** | CI job `cargo-deny (advisories)` (PR + weekly cron) + Dependabot PRs | a bump/commit pulling a crate with an advisory | `security-audit.yml`, `dependabot.yml` | ✅ live / ⏳ mark required |
 | 13 | **Only maintainer-blessed `v*` tags; release tags immutable** | GitHub **tag ruleset** (`protect-version-tags`) — blocks deletion + moving a `v*` tag | deleting/re-pointing a published version tag (which would corrupt the updater's version history) | `.github/rulesets/protect-tags.json` | ⏳ apply |
-| 14 | **Release actually RAN the live preflight (L1–L7)** | **`wylde-release` refuses to `publish` without a green preflight receipt** for the exact commit (§Preflight receipt) + `release.yml` re-runs the CI-verifiable gates on the tag | shipping a build whose running system was never verified — *the actual "shipped broken" failure* | `release.yml` (CI subset) + `wylde-release preflight/publish` | ✅ **receipt mechanism built** — `preflight` writes a commit-bound receipt; `publish` refuses without a green, current one (rejects stale-commit / dirty-tree / wrong-version). Currently binds **G7 + the benchmark gate (L5)** (+ optional L1-lite build); the remaining L2/L3/L4/L6/L7 launch-checks feed the **same** receipt as each is scripted. |
+| 14 | **Release actually RAN the live preflight (L1–L7)** | **`wylde-release` refuses to `publish` without a green, launch-verified preflight receipt** for the exact commit (§Preflight receipt) + `release.yml` re-runs the CI-verifiable gates on the tag | shipping a build whose running system was never verified — *the actual "shipped broken" failure* | `release.yml` (CI subset) + `wylde-release preflight/publish` | ✅ **receipt + L2/L3 launch gate built** — `preflight` writes a commit-bound receipt; `publish` refuses without a green, current one (rejects stale-commit / dirty-tree / wrong-version / **not-launch-verified**). Binds **G7 + benchmark gate (L5)** (+ optional L1-lite build) and, via **`preflight --launch`**, the **L2 cold-start + L3 service-health** launch-and-verify checks (each folded into the receipt's `gates` map, fail-closed; `launch_verified` gates publish). Remaining L4/L6 stay manual; L7 has its own CI job (row 4b). |
 | 15 | **Service `min_core` compatibility floor** | **Runtime**: Core's loader refuses to spawn an incompatible sibling + the GUI shows why. **CI (service repos)**: a manifest-lint job in each service repo | an incompatible service booting into a silent dead panel | `wylde-lifecycle` (shipped); service-repo CI (spec) | ✅ runtime / ⏳ service-repo CI |
 | 16 | **Issue reports are structured** | GitHub **issue forms** (`blank_issues_enabled: false`) — GitHub enforces the form | free-text issues with no repro/version | `.github/ISSUE_TEMPLATE/` | ✅ live once on the **default branch** (see Aaron-action A) |
 | 17 | **Security disclosures are private** | GitHub **private vulnerability reporting** + `SECURITY.md` + issue-template `config.yml` contact link | a public 0-day issue | `SECURITY.md`, `.github/ISSUE_TEMPLATE/config.yml` + repo Security setting | ✅ files / ⏳ enable "Private vulnerability reporting" (Aaron-action) |
@@ -107,14 +107,16 @@ needs a real gate — and the only place that gate can live is the local release
 
 - **`wylde-release preflight`** runs the gates it can on the release machine and writes a **receipt**
   (`preflight-receipt.json`, gitignored): `{ schema, commit, git_dirty, version, timestamp, host,
-  gates: {name: pass|fail|skipped}, benchmarks: {metric: delta}, warnings, all_green }`. Today it binds
-  **G7 version-consistency + the benchmark gate (L5)** and an optional **L1-lite** artifact build
-  (`--build`); the remaining launch-checks (L2/L3/L4/L6/L7) feed the **same** receipt as each is
-  scripted into `preflight`.
+  gates: {name: pass|fail|skipped}, benchmarks: {metric: delta}, warnings, all_green, launch_verified }`.
+  It binds **G7 version-consistency + the benchmark gate (L5)**, an optional **L1-lite** artifact build
+  (`--build`), and — with **`--launch`** — the **L2 cold-start + L3 service-health** launch-and-verify
+  checks, each folded into the `gates` map under an `l2.*`/`l3.*` key (fail-closed). `launch_verified`
+  is `true` only when every launch check passed. The remaining L4/L6 stay manual; L7 is its own CI job.
 - **`wylde-release publish` refuses** unless a receipt exists whose `commit` == the commit being
-  published, `git_dirty == false`, `all_green == true`, and `version` == the tag. No green receipt for
-  *this* commit → no publish. This makes "the live system was verified" a **precondition of shipping**,
-  not a habit. A deliberate, loud `--no-preflight-receipt` escape hatch exists for emergencies.
+  published, `git_dirty == false`, `all_green == true`, **`launch_verified == true`**, and `version` ==
+  the tag. No green, launch-verified receipt for *this* commit → no publish. This makes "the live
+  system was launched and verified" a **precondition of shipping**, not a habit. A deliberate, loud
+  `--no-preflight-receipt` escape hatch exists for emergencies.
 - **Trust model — deliberately not cryptographic.** A JSON file is forgeable, but for a solo dev the
   threat is *forgetting to run the checks*, not fraud — so the complexity budget goes on the one
   property that prevents the real failure: **binding to the exact commit** (a stale or dirty-tree

@@ -22,7 +22,8 @@ For shipping a `0.1.x` build to Beta-channel users. Lighter bar than a stable pr
    - G1 backend build + test · G2 GUI build · G3 tools build · G5 cargo-deny advisories
    - **G7 version-consistency** (`version-consistency` job) — the two roots agree.
    - ⏳ G4 clippy `-D warnings`, ⏳ G6 `cargo fmt --check` (enable once the tree is clean).
-3. **Local preflight L1–L3** (mechanical smoke) on the release machine:
+3. **Local preflight L1–L3** (mechanical smoke) on the release machine — **`wylde-release preflight
+   --launch`** now scripts L2 + L3 (below) into the receipt; run it (add `--build` for L1-lite):
    - L1 build ALL shipped artifacts (`wylde-gui.exe`, every service binary, the NSIS installer).
    - L2 cold-start smoke (clean install/launch → daemon up → services discovered + spawned).
    - L3 service health (vram-broker inventories HW → Ollama up w/ `nomic-embed-text` → harness
@@ -46,8 +47,9 @@ The full bar. Only on the maintainer's explicit say-so. **This is the definition
 2. **Version.** Bump both workspace roots to `0.2.0` — together; G7 will enforce it.
 3. **CI green (G1–G7)** on the `develop` commit being promoted.
 4. **Local preflight — full L1–L7:**
-   - L1–L3 as above (build-all, cold-start, service-health).
-   - **L4 first-run bootstrap** completes on a clean profile.
+   - L1–L3 via **`wylde-release preflight --launch --build`** (build-all, cold-start, service-health —
+     each check reported individually into the receipt; fails closed).
+   - **L4 first-run bootstrap** completes on a clean profile. *(manual — not yet scripted)*
    - **L5 reasoning-eval guardrail** — run `wylde-release bench` (or the whole
      `wylde-release preflight`): the reasoning fast/think arms show no regression past the
      baseline's noise-calibrated threshold. Also confirm the shipped config keeps `enabled: false`.
@@ -95,20 +97,42 @@ The full bar. Only on the maintainer's explicit say-so. **This is the definition
 
 **`wylde-release` must refuse to publish if the preflight isn't green.** ✅ **Built:**
 `wylde-release preflight` runs **G7 + the benchmark gate (L5)** (+ optional `--build` for L1-lite),
-prints pass/fail per metric, and writes a commit-bound `preflight-receipt.json`. `wylde-release
-publish` refuses unless a receipt exists that is `all_green`, non-dirty, and whose `commit`/`version`
-match what's being shipped (deliberate `--no-preflight-receipt` escape hatch). ⏳ **Remaining
-(T0.1):** script the launch-checks **L2/L3** (cold-start + service health) into `preflight` so they
-feed the same receipt; today L2–L4/L6/L7 are still run by hand per the sections above. See
-`benchmarks/README.md` for the benchmark-gate design.
+and with **`--launch`** the **L2 cold-start + L3 service-health** launch-and-verify gate; it prints a
+per-check verdict and writes a commit-bound `preflight-receipt.json`. `wylde-release publish` refuses
+unless a receipt exists that is `all_green`, **`launch_verified`**, non-dirty, and whose
+`commit`/`version` match what's being shipped (deliberate `--no-preflight-receipt` escape hatch).
+
+- **L2 cold-start (⏳→✅):** launches the shipped daemon (`wylde-lifecycle.exe`) and GUI
+  (`wylde-gui.exe`) the way the launcher does — from a **neutral working directory** so it proves
+  env-var resolution, not cwd luck — and asserts each starts, stays up, and binds what it should
+  (`\\.\pipe\wylde-lifecycle`; GUI = process-alive + no panic, since window *content* is the CI
+  panel-walk's job). If a daemon is already running it *attaches* rather than spawn a sibling stack.
+- **L3 service-health (⏳→✅):** discrete assertions — daemon pipe answers · services discovered
+  (`service.list`) + core services reachable on their pipes · VRAM broker sees the GPU · Ollama has
+  the reasoner + embed models · **Memgraph holds real data** (Bolt node counts > 0 — the empty-graph
+  bug a port ping can't see) · RAG answers a fixture query · a chat turn completes · a memory
+  round-trips. Each **fails closed** (can't determine → FAIL) and reports individually so a failure
+  is diagnosable. Everything spawned is torn down (graceful `service.shutdown_all` + `taskkill /T`
+  backstop) — no orphan processes, no pipe collisions with a parallel session.
+
+⏳ **Still owed (T0.1):** **L4** first-run bootstrap and the **L6** human feel-test remain manual
+(the latter deliberately — visual correctness is not automatable); **L7** panel-walk is its own CI
+job. See `benchmarks/README.md` for the benchmark-gate design.
 
 ### Quick commands
 
 ```bash
 wylde-release bench                 # benchmark regression gate alone (non-zero exit on FAIL)
 wylde-release bench --accept-baseline   # deliberately re-record the baseline
-wylde-release preflight             # G7 + benchmarks → writes preflight-receipt.json
+wylde-release smoke                 # L2/L3 launch-and-verify alone (cold-starts the stack; diagnostic)
+wylde-release preflight             # G7 + benchmarks → writes preflight-receipt.json (NOT launch-verified)
 wylde-release preflight --build     # …also an L1-lite backend+GUI release build
-# then, only if the receipt is green:
+wylde-release preflight --launch    # …AND the L2/L3 launch gate → a launch-verified, publishable receipt
+# then, only if the receipt is green AND launch-verified:
 wylde-release publish --version v0.1.x --channel beta --binary <path> …
 ```
+
+> **A release-grade receipt needs `--launch`.** A plain `wylde-release preflight` writes a green
+> receipt for fast iteration, but `publish` refuses it as *not launch-verified*. Run
+> `wylde-release preflight --launch` on the release machine (with the stack able to come up) to
+> certify L2/L3 and produce a publishable receipt.

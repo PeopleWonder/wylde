@@ -92,6 +92,14 @@ pub struct Receipt {
     pub warnings: Vec<String>,
     /// The bottom line: every gate passed and nothing required was skipped.
     pub all_green: bool,
+    /// Whether the **L2 cold-start + L3 service-health** launch gate ran and
+    /// every one of its checks passed. `false` on any receipt written without
+    /// `preflight --launch` (and, via serde default, on any pre-launch-gate
+    /// receipt). `publish` refuses a receipt that is not launch-verified — that
+    /// is what makes the launch-and-verify checks un-skippable at release, the
+    /// exact "shipped a build whose running system was never verified" failure.
+    #[serde(default)]
+    pub launch_verified: bool,
 }
 
 impl Receipt {
@@ -121,6 +129,9 @@ pub enum ReceiptError {
     SchemaMismatch { found: u32, want: u32 },
     NotGreen,
     Dirty,
+    /// The receipt is green but its L2/L3 launch-and-verify gate never ran (or
+    /// didn't fully pass) — the running system was not verified.
+    NotLaunchVerified,
     CommitMismatch { receipt: String, head: String },
     VersionMismatch { receipt: String, tag: String },
 }
@@ -141,6 +152,12 @@ impl std::fmt::Display for ReceiptError {
                 f,
                 "receipt was taken over a dirty working tree — commit your changes and re-run \
                  `wylde-release preflight` so the receipt describes a real commit"
+            ),
+            ReceiptError::NotLaunchVerified => write!(
+                f,
+                "receipt is not launch-verified — the L2 cold-start + L3 service-health gate did \
+                 not run or did not fully pass. Run `wylde-release preflight --launch` on the \
+                 release machine (with the stack up) so the running system is actually verified"
             ),
             ReceiptError::CommitMismatch { receipt, head } => write!(
                 f,
@@ -185,6 +202,9 @@ pub fn validate_for_publish(
     }
     if r.git_dirty {
         return Err(ReceiptError::Dirty);
+    }
+    if !r.launch_verified {
+        return Err(ReceiptError::NotLaunchVerified);
     }
     if r.commit != head_commit {
         return Err(ReceiptError::CommitMismatch {
@@ -233,6 +253,7 @@ mod tests {
             benchmarks: BTreeMap::new(),
             warnings: vec![],
             all_green: true,
+            launch_verified: true,
         }
     }
 
@@ -268,6 +289,37 @@ mod tests {
         assert_eq!(
             validate_for_publish(&r, "deadbeefcafebabe0123", "0.1.5"),
             Err(ReceiptError::NotGreen)
+        );
+    }
+
+    #[test]
+    fn not_launch_verified_is_rejected() {
+        // A green receipt that never ran the L2/L3 launch gate (or ran it with a
+        // skipped/failed check) must not publish — the un-skippable wiring.
+        let mut r = green_receipt();
+        r.launch_verified = false;
+        assert_eq!(
+            validate_for_publish(&r, "deadbeefcafebabe0123", "0.1.5"),
+            Err(ReceiptError::NotLaunchVerified)
+        );
+    }
+
+    #[test]
+    fn launch_verified_defaults_false_on_older_receipts() {
+        // A receipt serialized before this field existed must deserialize with
+        // launch_verified=false (serde default) and therefore be rejected —
+        // fail-closed, never grandfathered in as verified.
+        let json = r#"{
+            "schema": 1, "commit": "deadbeefcafebabe0123", "git_dirty": false,
+            "version": "0.1.5", "timestamp": "2026-07-15T00:00:00Z",
+            "host": {"label":"r","cpu":"c","gpu":"g","ram":"m","os":"w","model":"x","ollama":"0"},
+            "gates": {}, "benchmarks": {}, "all_green": true
+        }"#;
+        let r: Receipt = serde_json::from_str(json).unwrap();
+        assert!(!r.launch_verified);
+        assert_eq!(
+            validate_for_publish(&r, "deadbeefcafebabe0123", "0.1.5"),
+            Err(ReceiptError::NotLaunchVerified)
         );
     }
 

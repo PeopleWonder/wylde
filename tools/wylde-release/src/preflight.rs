@@ -13,6 +13,7 @@ use clap::Args;
 
 use crate::bench::{self, Baseline, Provenance};
 use crate::receipt::{self, BenchDelta, GateOutcome, Receipt, RECEIPT_FILENAME, RECEIPT_SCHEMA};
+use crate::smoke::{self, CheckStatus, SmokeOpts, SmokeOutcome};
 
 /// The reasoner model + quant the arms run against — mirrors
 /// `wylde_harness::turn::reasoning::config::DEFAULT_REASONER_MODEL`. Informational
@@ -98,6 +99,53 @@ pub struct PreflightArgs {
     pub host_label: String,
     #[arg(long)]
     pub no_history: bool,
+    /// Also run the **L2 cold-start + L3 service-health** launch-and-verify gate
+    /// and fold each check into the receipt. Off by default because it launches
+    /// the real daemon + GUI and drives live services — but a **release-grade**
+    /// receipt needs it: `publish` refuses a receipt that is not launch-verified.
+    /// Run this on the release machine with the stack able to come up.
+    #[arg(long)]
+    pub launch: bool,
+    /// (with `--launch`) Attach to an already-running daemon instead of
+    /// cold-starting one; fail if none is bound.
+    #[arg(long)]
+    pub attach_only: bool,
+    /// (with `--launch`) Cold-start the daemon in NO-SPAWN parity mode — it
+    /// binds the pipe but does not fork the service tree. Validates this gate's
+    /// own plumbing only; the service-health checks will (correctly) fail.
+    #[arg(long)]
+    pub nospawn: bool,
+    /// (with `--launch`) Skip the GUI cold-start (L2.2) — e.g. no desktop
+    /// session, or to avoid a window flashing up. Recorded as skipped, which
+    /// keeps the receipt from being launch-verified (fail-closed).
+    #[arg(long)]
+    pub skip_gui: bool,
+    /// (with `--launch`) Skip the slow cargo-driven functional checks (RAG /
+    /// chat / memory). Recorded as skipped (fail-closed, as above).
+    #[arg(long)]
+    pub skip_functional: bool,
+}
+
+/// Args for the standalone `smoke` subcommand — the L2/L3 launch gate on its
+/// own, without the benchmark/receipt machinery. Exits non-zero on any failing
+/// check.
+#[derive(Args, Debug)]
+pub struct SmokeArgs {
+    /// Repo/install root (defaults to the git top-level of the current dir).
+    #[arg(long)]
+    pub repo_root: Option<PathBuf>,
+    /// Attach to an already-running daemon; fail if none is bound (never spawn).
+    #[arg(long)]
+    pub attach_only: bool,
+    /// Cold-start the daemon in NO-SPAWN parity mode (plumbing check only).
+    #[arg(long)]
+    pub nospawn: bool,
+    /// Skip the GUI cold-start (L2.2).
+    #[arg(long)]
+    pub skip_gui: bool,
+    /// Skip the slow cargo-driven functional checks (RAG / chat / memory).
+    #[arg(long)]
+    pub skip_functional: bool,
 }
 
 // ── `bench` ─────────────────────────────────────────────────────────────────
@@ -260,6 +308,50 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
         }
     }
 
+    // — L2/L3 launch-and-verify (opt-in; folds into the same receipt) —
+    let mut launch_verified = false;
+    if args.launch {
+        println!("\n== L2 cold-start + L3 service-health (launch-and-verify) ==");
+        // Reuse the benchmark's reasoning verdict for the chat-turn check rather
+        // than paying for a second live eval; `None` ⇒ the check runs its own
+        // `reasoning_eval --smoke` turn.
+        let chat_turn_ok = measurements
+            .values
+            .get("reasoning.fast.success_rate")
+            .map(|rate| *rate > 0.0);
+        let opts = SmokeOpts {
+            repo_root: repo_root.clone(),
+            attach_only: args.attach_only,
+            nospawn: args.nospawn,
+            skip_gui: args.skip_gui,
+            skip_functional: args.skip_functional,
+            chat_turn_ok,
+        };
+        let outcome = smoke::run(&opts);
+        print_smoke(&outcome);
+        for c in &outcome.checks {
+            gates.insert(
+                c.key.to_string(),
+                match c.status {
+                    CheckStatus::Pass => GateOutcome::Pass,
+                    CheckStatus::Fail => GateOutcome::Fail,
+                    CheckStatus::Skip => GateOutcome::Skipped,
+                },
+            );
+            if c.status != CheckStatus::Pass {
+                warnings.push(format!("{}: {}", c.title, c.detail));
+            }
+        }
+        // Launch-verified iff EVERY check passed — a skip counts as unverified.
+        launch_verified = outcome.all_passed();
+    } else {
+        warnings.push(
+            "L2/L3 launch gate NOT run — pass --launch for a release-grade, publishable receipt \
+             (`publish` refuses a receipt that is not launch-verified)"
+                .into(),
+        );
+    }
+
     // — Roll up + write the receipt —
     let benchmarks: std::collections::BTreeMap<String, BenchDelta> = report
         .comparisons
@@ -293,6 +385,7 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
         benchmarks,
         warnings: warnings.clone(),
         all_green,
+        launch_verified,
     };
     rec.save(&receipt_path)?;
     println!("\nreceipt → {}", receipt_path.display());
@@ -311,8 +404,63 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
     if !all_green {
         bail!("preflight is NOT green — see the failures above. `publish` will refuse this receipt.");
     }
-    println!("\n✓ preflight GREEN — receipt valid for {version} at {}", &commit[..8.min(commit.len())]);
+    let short = &commit[..8.min(commit.len())];
+    if launch_verified {
+        println!("\n✓ preflight GREEN + LAUNCH-VERIFIED — publishable receipt for {version} at {short}");
+    } else {
+        println!("\n✓ preflight GREEN — receipt for {version} at {short}");
+        println!(
+            "  ⚠ NOT launch-verified — `publish` will refuse this receipt. Re-run with --launch on \
+             the release machine (with the stack up) to certify L2/L3."
+        );
+    }
     Ok(())
+}
+
+/// Run the standalone `smoke` subcommand: the L2/L3 launch gate on its own,
+/// without touching the benchmark baseline or the receipt. A diagnostic aid —
+/// the un-skippable enforcement lives in `preflight --launch` + the receipt.
+pub fn run_smoke(args: SmokeArgs) -> Result<()> {
+    let repo_root = resolve_repo_root(args.repo_root.as_deref())?;
+    println!("== wylde-release smoke — L2 cold-start + L3 service health ==");
+    println!("root: {}", repo_root.display());
+    let opts = SmokeOpts {
+        repo_root,
+        attach_only: args.attach_only,
+        nospawn: args.nospawn,
+        skip_gui: args.skip_gui,
+        skip_functional: args.skip_functional,
+        chat_turn_ok: None,
+    };
+    let outcome = smoke::run(&opts);
+    print_smoke(&outcome);
+    if outcome.any_failed() {
+        bail!("smoke gate FAILED — see the failing checks above");
+    }
+    if outcome.all_passed() {
+        println!("\n✓ smoke gate PASSED — L2/L3 fully verified");
+    } else {
+        // No failures, but some checks were skipped: honest, but not a
+        // launch-verified state.
+        println!("\n✓ smoke gate had no failures, but some checks were skipped (not launch-verified)");
+    }
+    Ok(())
+}
+
+/// Print each L2/L3 check verdict, aligned, with a one-line roll-up.
+fn print_smoke(outcome: &SmokeOutcome) {
+    println!();
+    for c in &outcome.checks {
+        println!("  {:<26} {:<5} {}", c.title, c.status.tag(), c.detail);
+    }
+    let failed = outcome.checks.iter().filter(|c| c.status == CheckStatus::Fail).count();
+    let skipped = outcome.skipped().len();
+    let passed = outcome.checks.len() - failed - skipped;
+    println!("  {}", "-".repeat(72));
+    println!(
+        "  summary: {passed} passed · {failed} failed · {skipped} skipped  (daemon: {:?})",
+        outcome.daemon_mode
+    );
 }
 
 /// The publish-time gate: load the receipt next to the repo and validate it for

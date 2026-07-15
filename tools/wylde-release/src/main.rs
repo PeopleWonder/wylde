@@ -35,6 +35,7 @@ mod bench;
 mod host;
 mod preflight;
 mod receipt;
+mod smoke;
 
 /// Default location of the release **private** signing key, relative to
 /// the repo root. Never committed (`keys/.gitignore`); the public half is
@@ -177,6 +178,16 @@ enum Cmd {
     /// gate, plus an optional artifact build) and write a **receipt** bound to
     /// the current commit. `publish` refuses without a green, current receipt.
     Preflight(preflight::PreflightArgs),
+
+    /// Run the **L2 cold-start smoke + L3 service-health** launch-and-verify
+    /// gate on its own (without the benchmark/receipt machinery). Launches the
+    /// shipped daemon + GUI from a neutral cwd, then asserts the assembled
+    /// system is actually functional — services discovered, VRAM broker up,
+    /// Ollama has the models, **Memgraph has real data**, RAG answers, a chat
+    /// turn completes, a memory round-trips. Prints each check's verdict and
+    /// exits non-zero on any failure. `preflight --launch` runs the same checks
+    /// and folds them into the receipt.
+    Smoke(preflight::SmokeArgs),
 }
 
 /// Release channel mirror of `wylde_updater::Channel`. Local copy so the
@@ -241,6 +252,7 @@ fn main() -> Result<()> {
         Cmd::VerifyPublicKey { pubkey } => verify_public_key(&pubkey),
         Cmd::Bench(args) => preflight::run_bench(args),
         Cmd::Preflight(args) => preflight::run_preflight(args),
+        Cmd::Smoke(args) => preflight::run_smoke(args),
     }
 }
 
