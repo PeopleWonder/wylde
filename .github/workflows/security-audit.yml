@@ -22,6 +22,8 @@ on:
   push:
     branches:
       - main
+      - develop
+      # Transitional — see docs/migration-to-branch-model.md; drop after the rename.
       - "feat/thought-bubble-system"
   schedule:
     # Mondays 07:00 UTC — an hour after Dependabot opens its weekly PRs.
