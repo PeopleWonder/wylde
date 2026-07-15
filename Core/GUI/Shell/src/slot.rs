@@ -89,9 +89,11 @@ pub fn render_slot(
                 }
             }
         }
-        SlotState::ServiceUnavailable { key, missing } => {
-            render_unavailable(key, missing, rows, window, cx).into_any_element()
-        }
+        SlotState::ServiceUnavailable {
+            key,
+            missing,
+            reasons,
+        } => render_unavailable(key, missing, reasons, rows, window, cx).into_any_element(),
     };
 
     div()
@@ -208,6 +210,7 @@ fn render_mounting(key: &str, rows: &[NavRow]) -> gpui::Div {
 fn render_unavailable(
     key: &str,
     missing: &[String],
+    reasons: &[Option<String>],
     rows: &[NavRow],
     _window: &mut Window,
     cx: &mut Context<Shell>,
@@ -217,12 +220,6 @@ fn render_unavailable(
         .find(|r| r.key == key)
         .map(|r| r.title.clone())
         .unwrap_or_else(|| key.to_owned());
-
-    let missing_label = if missing.len() == 1 {
-        format!("Required service `{}` is not running.", missing[0])
-    } else {
-        format!("Required services not running: {}.", missing.join(", "))
-    };
 
     let mut card = div()
         .max_w(px(420.0))
@@ -241,43 +238,56 @@ fn render_unavailable(
                 .text_color(rgb(pack(TEXT_PRIMARY)))
                 .font_weight(FontWeight(weight::SEMIBOLD as f32))
                 .child(SharedString::from(format!("{title} unavailable"))),
-        )
-        .child(
+        );
+
+    // One block per missing service. A service the daemon reported a specific
+    // reason for (a min_core incompatibility) shows that reason and NO Start
+    // button — starting won't help; the user needs to update Wylde. A service
+    // that's merely not running keeps its "Start" affordance.
+    for (idx, service) in missing.iter().enumerate() {
+        let reason = reasons.get(idx).and_then(Option::as_deref);
+
+        let line = match reason {
+            Some(r) => format!("`{service}` {r}"),
+            None => format!("Required service `{service}` is not running."),
+        };
+        card = card.child(
             div()
                 .font_family(FAMILY_INTER)
                 .text_size(px(size::XS))
                 .text_color(rgb(pack(TEXT_SECONDARY)))
-                .child(SharedString::from(missing_label)),
+                .child(SharedString::from(line)),
         );
 
-    // One button per missing service — same shape repeated so the user
-    // can start them independently.
-    for (idx, service) in missing.iter().enumerate() {
-        let service_owned: Arc<str> = Arc::from(service.as_str());
-        let id: ElementId = ElementId::Name(format!("svc-start::{key}::{idx}").into());
-        let label = SharedString::from(format!("Start {service}"));
-        card = card.child(
-            div()
-                .id(id)
-                .px_3()
-                .py_2()
-                .rounded(px(4.0))
-                .bg(rgb(pack(BRAND)))
-                .border_1()
-                .border_color(rgb(pack(BORDER_DEFAULT)))
-                .cursor_pointer()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::SM))
-                .text_color(rgb(pack(TEXT_PRIMARY)))
-                .font_weight(FontWeight(weight::SEMIBOLD as f32))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(move |this: &mut Shell, _event, _window, cx| {
-                        this.on_start_service_click(service_owned.clone(), cx);
-                    }),
-                )
-                .child(label),
-        );
+        // Only offer "Start" when there's no incompatibility reason — an
+        // incompatible service can't be fixed by starting it.
+        if reason.is_none() {
+            let service_owned: Arc<str> = Arc::from(service.as_str());
+            let id: ElementId = ElementId::Name(format!("svc-start::{key}::{idx}").into());
+            let label = SharedString::from(format!("Start {service}"));
+            card = card.child(
+                div()
+                    .id(id)
+                    .px_3()
+                    .py_2()
+                    .rounded(px(4.0))
+                    .bg(rgb(pack(BRAND)))
+                    .border_1()
+                    .border_color(rgb(pack(BORDER_DEFAULT)))
+                    .cursor_pointer()
+                    .font_family(FAMILY_INTER)
+                    .text_size(px(size::SM))
+                    .text_color(rgb(pack(TEXT_PRIMARY)))
+                    .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(move |this: &mut Shell, _event, _window, cx| {
+                            this.on_start_service_click(service_owned.clone(), cx);
+                        }),
+                    )
+                    .child(label),
+            );
+        }
     }
 
     div()

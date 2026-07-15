@@ -55,6 +55,13 @@ pub struct NavModel {
     /// the panel mounts immediately rather than briefly flashing the
     /// stub while the first probe is in flight.
     pub health: BTreeMap<String, bool>,
+    /// Per-service human-readable reason for being unavailable, when the
+    /// daemon supplied one (currently: a `min_core` incompatibility — the
+    /// service needs a newer Wylde Core than is running). Absent means "down
+    /// for the ordinary reason" (not running); present means "present but
+    /// incompatible", which the stub renders differently (tells the user to
+    /// update Wylde rather than offering a futile Start).
+    pub reasons: BTreeMap<String, String>,
 }
 
 impl NavModel {
@@ -71,6 +78,7 @@ impl NavModel {
             rows,
             selected_key,
             health: BTreeMap::new(),
+            reasons: BTreeMap::new(),
         }
     }
 
@@ -102,6 +110,20 @@ impl NavModel {
         self.health.insert(name.to_owned(), healthy);
     }
 
+    /// Record (or clear) the human-readable reason a service is unavailable.
+    /// `Some(reason)` when the daemon reported a specific cause (a `min_core`
+    /// incompatibility); `None` clears it (back to the ordinary "not running").
+    pub fn mark_service_reason(&mut self, name: &str, reason: Option<String>) {
+        match reason {
+            Some(r) => {
+                self.reasons.insert(name.to_owned(), r);
+            }
+            None => {
+                self.reasons.remove(name);
+            }
+        }
+    }
+
     /// Look up the currently selected row.
     pub fn selected_row(&self) -> Option<&NavRow> {
         let key = self.selected_key.as_deref()?;
@@ -127,9 +149,17 @@ impl NavModel {
                 key: row.key.clone(),
             }
         } else {
+            // Parallel to `blocking`: the daemon-supplied reason for each
+            // blocking service (e.g. a min_core incompatibility), or `None`
+            // when it's down for the ordinary "not running" reason.
+            let reasons: Vec<Option<String>> = blocking
+                .iter()
+                .map(|svc| self.reasons.get(svc).cloned())
+                .collect();
             SlotState::ServiceUnavailable {
                 key: row.key.clone(),
                 missing: blocking,
+                reasons,
             }
         }
     }
@@ -157,6 +187,18 @@ pub const SVC_OLLAMA: &str = "wylde-ollama";
 /// compose the upstream probe) is treated as ready, so this never
 /// over-blocks against a daemon that predates the composed health shape.
 pub fn service_health_body_is_ready(name: &str, body: &serde_json::Value) -> bool {
+    // A service the daemon flagged incompatible (its manifest's min_core floor
+    // exceeds the running Core) is deliberately NOT ready: its panel must render
+    // the reason stub, not mount. The daemon returns `reply.incompatible = true`
+    // for these (see wylde-lifecycle `service_health_action`).
+    if body
+        .get("reply")
+        .and_then(|r| r.get("incompatible"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+    {
+        return false;
+    }
     if name == SVC_OLLAMA {
         return match body.get("reply").and_then(|r| r.get("upstream")) {
             Some(upstream) => upstream.as_str() == Some("ok"),
@@ -166,6 +208,16 @@ pub fn service_health_body_is_ready(name: &str, body: &serde_json::Value) -> boo
     true
 }
 
+/// The human-readable reason a service is unavailable, when the daemon supplied
+/// one on its `service.health` reply (currently: a `min_core` incompatibility).
+/// `None` when the reply carried no specific reason.
+pub fn service_health_reason(body: &serde_json::Value) -> Option<String> {
+    body.get("reply")
+        .and_then(|r| r.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+}
+
 /// What the panel slot is asked to render this frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SlotState {
@@ -173,9 +225,15 @@ pub enum SlotState {
     Empty,
     /// The selected panel's factory should mount.
     Mount { key: String },
-    /// One or more required services failed their health check — render
-    /// a stub with the names + a "Start service" button.
-    ServiceUnavailable { key: String, missing: Vec<String> },
+    /// One or more required services failed their health check — render a stub.
+    /// `reasons[i]` is the daemon-supplied cause for `missing[i]` (e.g. a
+    /// min_core incompatibility) or `None` for an ordinary "not running", which
+    /// the stub renders differently (update-Wylde vs a Start button).
+    ServiceUnavailable {
+        key: String,
+        missing: Vec<String>,
+        reasons: Vec<Option<String>>,
+    },
 }
 
 #[cfg(test)]
@@ -373,5 +431,78 @@ mod tests {
     fn empty_registry_produces_empty_slot() {
         let m = NavModel::new(vec![], None);
         assert_eq!(m.slot_state(), SlotState::Empty);
+    }
+
+    #[test]
+    fn slot_carries_incompatibility_reason_parallel_to_missing() {
+        let mut m = NavModel::new(
+            vec![first_party("ext/organize", 50, &["wylde-organize"])],
+            None,
+        );
+        m.mark_service_health("wylde-organize", false);
+        m.mark_service_reason(
+            "wylde-organize",
+            Some("needs Wylde Core >= 0.3.0, but this Core is 0.2.1 — update Wylde".into()),
+        );
+        match m.slot_state() {
+            SlotState::ServiceUnavailable {
+                missing, reasons, ..
+            } => {
+                assert_eq!(missing, vec!["wylde-organize".to_string()]);
+                assert_eq!(reasons.len(), missing.len(), "reasons parallel to missing");
+                assert!(reasons[0].as_deref().unwrap().contains("0.3.0"));
+            }
+            other => panic!("expected ServiceUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ordinary_down_service_has_no_reason() {
+        // A service that's merely not running (no daemon reason) yields a None
+        // reason slot, so the stub keeps its "Start" affordance.
+        let mut m = NavModel::new(
+            vec![first_party("core/chat", 10, &["wylde-harness"])],
+            None,
+        );
+        m.mark_service_health("wylde-harness", false);
+        match m.slot_state() {
+            SlotState::ServiceUnavailable { reasons, .. } => {
+                assert_eq!(reasons, vec![None]);
+            }
+            other => panic!("expected ServiceUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mark_service_reason_clears_on_none() {
+        let mut m = NavModel::new(vec![first_party("core/chat", 10, &[])], None);
+        m.mark_service_reason("wylde-x", Some("boom".into()));
+        assert_eq!(m.reasons.get("wylde-x").map(String::as_str), Some("boom"));
+        m.mark_service_reason("wylde-x", None);
+        assert!(m.reasons.get("wylde-x").is_none());
+    }
+
+    #[test]
+    fn incompatible_health_body_is_not_ready_and_yields_reason() {
+        let body = json!({
+            "name": "wylde-organize",
+            "reply": {
+                "ok": false,
+                "incompatible": true,
+                "reason": "needs Wylde Core >= 0.3.0 — update Wylde"
+            }
+        });
+        assert!(
+            !service_health_body_is_ready("wylde-organize", &body),
+            "an incompatible service must NOT be ready (stub, don't mount)"
+        );
+        assert_eq!(
+            service_health_reason(&body).as_deref(),
+            Some("needs Wylde Core >= 0.3.0 — update Wylde")
+        );
+        // An ordinary ok body: ready, no reason.
+        let ok = json!({ "name": "wylde-harness", "reply": { "ok": true } });
+        assert!(service_health_body_is_ready("wylde-harness", &ok));
+        assert_eq!(service_health_reason(&ok), None);
     }
 }
