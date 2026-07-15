@@ -61,13 +61,23 @@ A workspace manifest hardcodes old Obsidian-vault paths
 dead paths. Re-index or purge before demoing 0.2 (roadmap T0.5). Runtime data, not shipped in the
 artifact, but breaks the demo.
 
-## KI-6 — Six carrying-over test failures
-**Status:** NEEDS-DETAIL · **Labels:** `bug`, `test` · **Area:** unknown until enumerated
+## KI-6 — Carrying-over test failures (incl. a confirmed env-isolation bug)
+**Status:** OPEN (partial) · **Labels:** `bug`, `test` · **Area:** wylde-lifecycle + others
 
-A prior working session reported ~6 test failures carrying over with no tracked home. The specifics
-live in that session's record, not in this repo, so this entry is a **placeholder to be split into
-one issue per failure** once enumerated (`cargo test --workspace` on the current trunk will surface
-the live set). Do not close this until each real failure is filed or confirmed resolved.
+A prior session reported ~6 test failures with no tracked home. Enumerate with `cargo test
+--workspace` on trunk and file one issue per failure. **One is now root-caused** (found while
+building the min_core floor): two `wylde-lifecycle` tests are **not env-isolated** and flip on the
+ambient `WYLDE_SERVICES` variable in *opposite* directions —
+
+- `control::tests::service_start_accepts_discovered_sibling` **fails when `WYLDE_SERVICES` is set**
+  (it sets `WYLDE_ROOT` to a tempdir, but `WYLDE_SERVICES` takes precedence in discovery, so the
+  fixture sibling isn't found → `not_registered`).
+- `control::tests::shutdown_all_returns_structured_summary` **fails when `WYLDE_SERVICES` is unset**.
+
+**Fix:** these tests must save/clear/restore `WYLDE_SERVICES` (and `WYLDE_ROOT`) around the body, the
+way other registry tests guard the env — a discovery test must pin *both* variables, not one. This is
+a real test-hygiene bug, not a code defect, and it's exactly why a green suite isn't a green *system*.
+The remaining ~4 failures still need enumeration; don't close until each is filed or resolved.
 
 ## KI-7 — Move-stale doc references (old vault paths)
 **Status:** CHORE · **Labels:** `docs` · **Area:** docs
