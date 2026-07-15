@@ -385,10 +385,18 @@ mod tests {
         assert!((rms - 1.0).abs() < 1e-3, "rms {rms}");
     }
 
+    // `#[ignore]` for the same reason as the capture/playback device tests
+    // (mic.rs / playback.rs): it enumerates the host's input devices via
+    // `cpal::default_host()`, and on a headless CI runner WASAPI enumeration
+    // *access-violates* (STATUS_ACCESS_VIOLATION) rather than returning a
+    // catchable `mic_unavailable` — a native crash safe Rust can't intercept,
+    // so the graceful-reply assertion below never gets to run. Runs locally
+    // (`cargo test -- --ignored`) where a real audio device exists.
     #[tokio::test]
+    #[ignore = "requires a working default input device; cpal enumeration access-violates on headless CI"]
     async fn list_input_devices_dispatches_cleanly() {
-        // Either a device list (Ok) or a mic_unavailable error on a
-        // headless host — both are well-formed replies, never a panic.
+        // Either a device list (Ok) or a mic_unavailable error on a host with a
+        // real (but unusable) device — both are well-formed replies.
         let r = handle_list_input_devices(json!({})).await;
         if r.ok {
             assert!(r.data["devices"].is_array());
