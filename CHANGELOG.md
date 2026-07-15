@@ -19,6 +19,22 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Added
 
+- **GUI panel-walk test suite (L7) — the answer to "does every page load?"**
+  Every one of the 9 panels (Chat, Dashboard, Memory, Workspaces, Models,
+  Tools, Devices, Remote Access, Settings) — plus the Workspaces subtabs — now
+  has a headless windowed `#[gpui::test]` panel-walk (`tests/panel_walk.rs`)
+  that mounts the real view the way the Shell does and asserts it loads without
+  panic and detects its error state, under four backend conditions: healthy,
+  backend **down** (the daemon-in-no-spawn-mode case that shipped broken),
+  backend **error envelope**, and **empty**. Closes the Dashboard / Models /
+  Remote Access / Tools **zero-coverage gap**. Run the whole gate with
+  **`cargo panel-walk`** (from `Core/GUI/`); it now runs **headless in CI** as
+  the `gui panel-walk (L7)` job — the windowed gpui tests were verified to run
+  on the CI runner with no desktop session (gpui's mock `TestPlatform`), so the
+  suite gates **every PR**, not just the local preflight. `ScriptedBackend`
+  gained path-based routing (`on_path` / `on_path_err`) for the action-less
+  Remote Access panel. (issue #35, roadmap T0.1b; enforcement-matrix row 4b.)
+
 - **Benchmark regression gate + preflight receipt.** Wylde had benchmark
   *harnesses* but no recorded baselines and no gate — a benchmark run by hand
   and eyeballed is an experiment, not enforcement. New `wylde-release bench`

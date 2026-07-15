@@ -54,7 +54,9 @@ The full bar. Only on the maintainer's explicit say-so. **This is the definition
    - **L6 feel/function checklists** — human-judgment surface (visual/layout correctness the
      automated tests structurally can't assert).
    - **L7 GUI verification** — Tier-B panel-walk (all 9 panels + Workspaces subtabs mount, load,
-     no panic/error) + selective Tier-C on the ~20–30 critical-path controls.
+     no panic/error) is now a **CI job** (`gui panel-walk (L7)`, run via `cargo panel-walk`) — it
+     rides G-tier CI, not just the local preflight (issue #35 / enforcement-matrix row 4b). Still
+     owed for L7: selective Tier-C on the ~20–30 critical-path controls.
 5. **CHANGELOG + RELEASE_NOTES** current: close `[Unreleased]` into `## [0.2.0] — <date>`; refresh
    `release-artifacts/RELEASE_NOTES.md`.
 6. **Promote and release** (via a PR — branch protection blocks direct pushes to `main`):
