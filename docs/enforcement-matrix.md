@@ -35,6 +35,7 @@ milestones, Dependabot) > **CI job that fails the build** > **runtime enforcemen
 | 17 | **Security disclosures are private** | GitHub **private vulnerability reporting** + `SECURITY.md` + issue-template `config.yml` contact link | a public 0-day issue | `SECURITY.md`, `.github/ISSUE_TEMPLATE/config.yml` + repo Security setting | ✅ files / ⏳ enable "Private vulnerability reporting" (Aaron-action) |
 | 18 | **Dependencies stay current** | **Dependabot** (grouped weekly PRs) — native | dependency rot piling into a scary backlog | `.github/dependabot.yml` | ✅ live |
 | 19 | **PR-checklist items generally** | Converted to jobs 6–9 where automatable; the rest is the template | — | `.github/PULL_REQUEST_TEMPLATE.md` | ✅ (automatable items are now checks, not checkboxes) |
+| 20 | **0.2 can't ship with open prerequisite milestones** | `tools/check_release_milestones.py` — reads `tools/release-gates.json` (declared prerequisites) + an anti-drift cross-check (any `0.2`-prefixed milestone not listed fails); **fail-closed**; `--force "reason"` override recorded. Runs in `release.yml` (CI-visible) and is **called by `wylde-release publish`** (binding — spec) | tagging/publishing 0.2 while milestone `(1) gate & hygiene` or `(2) verified build` has open issues | `release.yml` + `tools/release-gates.json` | ✅ CI / ⏳ wylde-release wiring |
 
 **Legend:** ✅ live = active now on the trunk. ⏳ apply/build/required = needs a one-time Aaron action
 (below) or a tracked T0.1 build item.
@@ -111,6 +112,46 @@ needs a real gate — and the only place that gate can live is the local release
 
 This is the single most important studio-grade build item (roadmap **T0.1**) — the gate that stops
 the *next* broken release.
+
+---
+
+## Milestone gate — making the 0.2 milestone binding, not decorative
+
+GitHub milestones have no native dependency mechanism (a milestone is just a bucket of issues with a
+%). So "0.2 ships only after its prerequisite milestones complete" is built in two layers:
+
+**Visibility — the "Ship 0.2" tracking issue ([#41](https://github.com/PeopleWonder/wylde/issues/41)).**
+A parent issue whose **sub-issues** are the 12 prerequisite issues (all of `(1) gate & hygiene` +
+`(2) verified build`). GitHub renders the completion % automatically and **a parent can't close while
+a child is open**, so "is 0.2 ready?" becomes a number, not a judgement. The 0.2 definition-of-done
+is in its body. (Sub-issues work with the current `repo` scope — verified.)
+
+**Enforcement — `tools/check_release_milestones.py` (fail-closed).** Given a version tag it reads
+`tools/release-gates.json` and refuses if any prerequisite milestone still has open issues.
+
+- **Ordering source — an explicit config, not title-parsing.** `release-gates.json` declares, per
+  release tag, the milestones that must be complete first. Chosen over parsing title prefixes because
+  it's explicit and reviewable in a PR. **Anti-drift cross-check:** the script *also* fails if any
+  milestone whose title starts with the release's `prefix` (`0.2`) is missing from the list — so
+  adding a new 0.2 milestone and forgetting to declare it can't silently pass. Config declares intent;
+  the cross-check enforces completeness. Neither can drift silently.
+- **Fail-closed:** any API error, missing config entry, or renamed/empty required milestone → refuse.
+  Never assumes ready.
+- **Override:** `--force "reason"` opens it deliberately (0.2 ships on the maintainer's say-so); a
+  `--force` with no reason is rejected, and the reason is printed for the receipt to record.
+- **Live now** in `release.yml` (the `milestone-gate` job, fail-red on a `v*` tag). Verified: it
+  refuses `v0.2.0` today because `(1)` has 5 open and `(2)` has 7 open issues.
+
+**The binding wiring (spec — deliberately NOT implemented here).** `wylde-release`'s source is under
+active development in another session, so to avoid colliding with its WIP the one-line integration is
+specified rather than written: **`wylde-release publish` must call**
+`python tools/check_release_milestones.py <version>` **before tagging and refuse on a non-zero exit**,
+threading `--force "<reason>"` through when the operator overrides and recording that reason in the
+preflight receipt. That makes the *local publish* refuse (binding), with `release.yml` as the
+CI-visible backstop. Tracked in the ship issues (#33 preflight tool, #38 publish).
+
+**Auth at release time:** the script uses `gh api`, so `gh` must be authenticated locally, or
+`GH_TOKEN` set in CI (`release.yml` passes `${{ github.token }}`). Documented in the script header.
 
 ---
 
