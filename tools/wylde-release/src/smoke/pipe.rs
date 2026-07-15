@@ -94,7 +94,8 @@ fn write_frame(pipe: &mut std::fs::File, body: &[u8]) -> Result<()> {
 
 fn read_frame(pipe: &mut std::fs::File) -> Result<Vec<u8>> {
     let mut header = [0u8; 4];
-    pipe.read_exact(&mut header).context("reading frame header")?;
+    pipe.read_exact(&mut header)
+        .context("reading frame header")?;
     let n = u32::from_be_bytes(header) as usize;
     // Mirror the server's malformed-stream guards (0 or > 64 MiB).
     if n == 0 || n > 64 * 1024 * 1024 {
@@ -138,12 +139,7 @@ fn roundtrip_blocking(service: &str, method: &str, data: Value) -> Result<Value>
 
 /// Run a pipe round-trip on a worker thread, bounded by `timeout`. A hung
 /// server surfaces as an error (fail-closed) instead of blocking forever.
-fn with_timeout(
-    service: &str,
-    method: &str,
-    data: Value,
-    timeout: Duration,
-) -> Result<Value> {
+fn with_timeout(service: &str, method: &str, data: Value, timeout: Duration) -> Result<Value> {
     let (tx, rx) = mpsc::channel();
     let (service, method) = (service.to_string(), method.to_string());
     thread::spawn(move || {
@@ -151,7 +147,10 @@ fn with_timeout(
     });
     match rx.recv_timeout(timeout) {
         Ok(result) => result,
-        Err(_) => Err(anyhow!("pipe call timed out after {}s", timeout.as_secs_f64())),
+        Err(_) => Err(anyhow!(
+            "pipe call timed out after {}s",
+            timeout.as_secs_f64()
+        )),
     }
 }
 

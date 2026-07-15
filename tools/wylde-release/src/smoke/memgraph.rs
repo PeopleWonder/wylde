@@ -119,10 +119,22 @@ mod tests {
 
     #[test]
     fn populated_requires_a_nonzero_count() {
-        assert!(GraphCounts { chunks: 5, entities: 0 }.is_populated());
-        assert!(GraphCounts { chunks: 0, entities: 3 }.is_populated());
+        assert!(GraphCounts {
+            chunks: 5,
+            entities: 0
+        }
+        .is_populated());
+        assert!(GraphCounts {
+            chunks: 0,
+            entities: 3
+        }
+        .is_populated());
         // The empty-graph symptom: both zero → not populated.
-        assert!(!GraphCounts { chunks: 0, entities: 0 }.is_populated());
+        assert!(!GraphCounts {
+            chunks: 0,
+            entities: 0
+        }
+        .is_populated());
     }
 
     #[test]

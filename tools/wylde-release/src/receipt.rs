@@ -126,14 +126,23 @@ impl Receipt {
 /// variant is a distinct, human-actionable reason.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReceiptError {
-    SchemaMismatch { found: u32, want: u32 },
+    SchemaMismatch {
+        found: u32,
+        want: u32,
+    },
     NotGreen,
     Dirty,
     /// The receipt is green but its L2/L3 launch-and-verify gate never ran (or
     /// didn't fully pass) — the running system was not verified.
     NotLaunchVerified,
-    CommitMismatch { receipt: String, head: String },
-    VersionMismatch { receipt: String, tag: String },
+    CommitMismatch {
+        receipt: String,
+        head: String,
+    },
+    VersionMismatch {
+        receipt: String,
+        tag: String,
+    },
 }
 
 impl std::fmt::Display for ReceiptError {

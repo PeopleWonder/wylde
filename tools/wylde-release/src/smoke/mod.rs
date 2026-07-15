@@ -105,13 +105,28 @@ pub struct CheckResult {
 
 impl CheckResult {
     fn pass(key: &'static str, title: &'static str, detail: impl Into<String>) -> Self {
-        Self { key, title, status: CheckStatus::Pass, detail: detail.into() }
+        Self {
+            key,
+            title,
+            status: CheckStatus::Pass,
+            detail: detail.into(),
+        }
     }
     fn fail(key: &'static str, title: &'static str, detail: impl Into<String>) -> Self {
-        Self { key, title, status: CheckStatus::Fail, detail: detail.into() }
+        Self {
+            key,
+            title,
+            status: CheckStatus::Fail,
+            detail: detail.into(),
+        }
     }
     fn skip(key: &'static str, title: &'static str, detail: impl Into<String>) -> Self {
-        Self { key, title, status: CheckStatus::Skip, detail: detail.into() }
+        Self {
+            key,
+            title,
+            status: CheckStatus::Skip,
+            detail: detail.into(),
+        }
     }
     /// Collapse a `Result` into a pass/fail verdict — the fail-closed idiom used
     /// by every check: an `Err` (including a timeout or "couldn't determine") is
@@ -155,7 +170,10 @@ impl SmokeOutcome {
         self.checks.iter().any(|c| c.status == CheckStatus::Fail)
     }
     pub fn skipped(&self) -> Vec<&CheckResult> {
-        self.checks.iter().filter(|c| c.status == CheckStatus::Skip).collect()
+        self.checks
+            .iter()
+            .filter(|c| c.status == CheckStatus::Skip)
+            .collect()
     }
 }
 
@@ -221,14 +239,21 @@ pub fn run(opts: &SmokeOpts) -> SmokeOutcome {
         }
     } else {
         checks.push(check_rag_answers(&opts.repo_root));
-        checks.push(check_chat_turn(&opts.repo_root, &neutral, opts.chat_turn_ok));
+        checks.push(check_chat_turn(
+            &opts.repo_root,
+            &neutral,
+            opts.chat_turn_ok,
+        ));
         checks.push(check_memory_round_trip(&opts.repo_root));
     }
 
     // ── Cleanup — never leave orphans ─────────────────────────────────────
     teardown(daemon_mode, daemon_child, gui_child);
 
-    SmokeOutcome { checks, daemon_mode }
+    SmokeOutcome {
+        checks,
+        daemon_mode,
+    }
 }
 
 // ── L2: launch ────────────────────────────────────────────────────────────
@@ -320,7 +345,8 @@ fn launch_or_attach_daemon(
 
     // Spawn from the NEUTRAL cwd with an absolute WYLDE_ROOT, exactly as the
     // launcher does — so a pass proves env-var resolution, not cwd luck.
-    let root_abs = std::fs::canonicalize(&opts.repo_root).unwrap_or_else(|_| opts.repo_root.clone());
+    let root_abs =
+        std::fs::canonicalize(&opts.repo_root).unwrap_or_else(|_| opts.repo_root.clone());
     let stderr_log = neutral.join("daemon-stderr.log");
     let mut cmd = Command::new(&exe);
     cmd.current_dir(neutral)
@@ -345,7 +371,11 @@ fn launch_or_attach_daemon(
         Ok(c) => c,
         Err(e) => {
             return (
-                CheckResult::fail(KEY, TITLE, format!("could not spawn {}: {e}", exe.display())),
+                CheckResult::fail(
+                    KEY,
+                    TITLE,
+                    format!("could not spawn {}: {e}", exe.display()),
+                ),
                 DaemonMode::Absent,
                 None,
             );
@@ -356,7 +386,11 @@ fn launch_or_attach_daemon(
     let deadline = Instant::now() + DAEMON_LAUNCH_TIMEOUT;
     loop {
         if pipe::pipe_exists("wylde-lifecycle") {
-            let mode = if opts.nospawn { "no-spawn parity mode" } else { "cold start" };
+            let mode = if opts.nospawn {
+                "no-spawn parity mode"
+            } else {
+                "cold start"
+            };
             return (
                 CheckResult::pass(
                     KEY,
@@ -379,7 +413,11 @@ fn launch_or_attach_daemon(
                         TITLE,
                         format!(
                             "daemon exited early ({status}) before binding the pipe.{}",
-                            if tail.is_empty() { String::new() } else { format!(" stderr: {tail}") }
+                            if tail.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" stderr: {tail}")
+                            }
                         ),
                     ),
                     DaemonMode::Absent,
@@ -434,7 +472,8 @@ fn launch_gui(opts: &SmokeOpts, neutral: &Path) -> (CheckResult, Option<Child>) 
         );
     };
 
-    let root_abs = std::fs::canonicalize(&opts.repo_root).unwrap_or_else(|_| opts.repo_root.clone());
+    let root_abs =
+        std::fs::canonicalize(&opts.repo_root).unwrap_or_else(|_| opts.repo_root.clone());
     let stderr_log = neutral.join("gui-stderr.log");
     let mut cmd = Command::new(&exe);
     cmd.current_dir(neutral)
@@ -454,7 +493,11 @@ fn launch_gui(opts: &SmokeOpts, neutral: &Path) -> (CheckResult, Option<Child>) 
         Ok(c) => c,
         Err(e) => {
             return (
-                CheckResult::fail(KEY, TITLE, format!("could not spawn {}: {e}", exe.display())),
+                CheckResult::fail(
+                    KEY,
+                    TITLE,
+                    format!("could not spawn {}: {e}", exe.display()),
+                ),
                 None,
             );
         }
@@ -474,7 +517,11 @@ fn launch_gui(opts: &SmokeOpts, neutral: &Path) -> (CheckResult, Option<Child>) 
                         format!(
                             "GUI exited within {}s ({status}) — likely a panic on startup.{}",
                             GUI_ALIVE_WINDOW.as_secs(),
-                            if tail.is_empty() { String::new() } else { format!(" stderr: {tail}") }
+                            if tail.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" stderr: {tail}")
+                            }
                         ),
                     ),
                     None,
@@ -566,8 +613,13 @@ fn check_services_discovered(mode: DaemonMode, nospawn: bool) -> CheckResult {
 fn evaluate_services_once() -> Result<String> {
     // Discovery: the daemon walked its core set + the WYLDE_SERVICES bucket and
     // can report a roster.
-    let data = pipe::action("wylde-lifecycle", "service.list", serde_json::json!({}), PIPE_CALL_TIMEOUT)
-        .context("service.list")?;
+    let data = pipe::action(
+        "wylde-lifecycle",
+        "service.list",
+        serde_json::json!({}),
+        PIPE_CALL_TIMEOUT,
+    )
+    .context("service.list")?;
     let services = data
         .get("services")
         .and_then(Value::as_array)
@@ -601,15 +653,23 @@ fn check_vram_broker() -> CheckResult {
     const KEY: &str = "l3.vram_broker";
     const TITLE: &str = "L3.3 vram-broker";
     let result = (|| -> Result<String> {
-        let data = pipe::action("wylde-vram-broker", "vram.state", serde_json::json!({}), PIPE_CALL_TIMEOUT)
-            .context("vram.state")?;
+        let data = pipe::action(
+            "wylde-vram-broker",
+            "vram.state",
+            serde_json::json!({}),
+            PIPE_CALL_TIMEOUT,
+        )
+        .context("vram.state")?;
         let gpu = data.get("gpu").context("vram.state reply had no `gpu`")?;
         let total = gpu.get("total_bytes").and_then(Value::as_u64).unwrap_or(0);
         if total == 0 {
             bail!("broker reports 0 total VRAM (no GPU seen)");
         }
         let name = gpu.get("name").and_then(Value::as_str).unwrap_or("GPU");
-        Ok(format!("broker up; sees {name} with {} GiB VRAM", total / (1024 * 1024 * 1024)))
+        Ok(format!(
+            "broker up; sees {name} with {} GiB VRAM",
+            total / (1024 * 1024 * 1024)
+        ))
     })();
     match result {
         Ok(detail) => CheckResult::pass(KEY, TITLE, detail),
@@ -621,8 +681,10 @@ fn check_vram_broker() -> CheckResult {
 fn check_ollama_models() -> CheckResult {
     const KEY: &str = "l3.ollama_model";
     const TITLE: &str = "L3.4 ollama-model";
-    let want_reasoner = std::env::var("WYLDE_EVAL_MODEL").unwrap_or_else(|_| DEFAULT_REASONER_MODEL.to_string());
-    let want_embed = std::env::var("WYLDE_EMBED_MODEL").unwrap_or_else(|_| DEFAULT_EMBED_MODEL.to_string());
+    let want_reasoner =
+        std::env::var("WYLDE_EVAL_MODEL").unwrap_or_else(|_| DEFAULT_REASONER_MODEL.to_string());
+    let want_embed =
+        std::env::var("WYLDE_EMBED_MODEL").unwrap_or_else(|_| DEFAULT_EMBED_MODEL.to_string());
     let result = (|| -> Result<String> {
         let tags = ollama_get("/api/tags").context("GET /api/tags")?;
         let models: Vec<String> = tags
@@ -648,7 +710,10 @@ fn check_ollama_models() -> CheckResult {
         if !missing.is_empty() {
             bail!("Ollama reachable but missing {}", missing.join(" + "));
         }
-        Ok(format!("Ollama up with {} models incl. the reasoner + embed", models.len()))
+        Ok(format!(
+            "Ollama up with {} models incl. the reasoner + embed",
+            models.len()
+        ))
     })();
     match result {
         Ok(detail) => CheckResult::pass(KEY, TITLE, detail),
@@ -693,7 +758,10 @@ fn check_memgraph_has_data() -> CheckResult {
         Ok(counts) if counts.is_populated() => CheckResult::pass(
             KEY,
             TITLE,
-            format!("graph populated: {} chunks, {} entities", counts.chunks, counts.entities),
+            format!(
+                "graph populated: {} chunks, {} entities",
+                counts.chunks, counts.entities
+            ),
         ),
         Ok(counts) => CheckResult::fail(
             KEY,
@@ -736,9 +804,17 @@ fn check_chat_turn(repo_root: &Path, neutral: &Path, upstream: Option<bool>) -> 
     const TITLE: &str = "L3.7 chat-turn";
     if let Some(ok) = upstream {
         return if ok {
-            CheckResult::pass(KEY, TITLE, "a chat turn completed end-to-end in the benchmark reasoning run")
+            CheckResult::pass(
+                KEY,
+                TITLE,
+                "a chat turn completed end-to-end in the benchmark reasoning run",
+            )
         } else {
-            CheckResult::fail(KEY, TITLE, "the benchmark reasoning run produced no successful turn")
+            CheckResult::fail(
+                KEY,
+                TITLE,
+                "the benchmark reasoning run produced no successful turn",
+            )
         };
     }
     // Standalone: run a real turn via the reasoning_eval smoke path.
@@ -760,11 +836,15 @@ fn check_chat_turn(repo_root: &Path, neutral: &Path, upstream: Option<bool>) -> 
         let json = out_dir.join("reasoning-eval-results.json");
         let raw = std::fs::read_to_string(&json)
             .with_context(|| format!("reading {}", json.display()))?;
-        let parsed: Value = serde_json::from_str(&raw).context("parsing reasoning-eval-results.json")?;
+        let parsed: Value =
+            serde_json::from_str(&raw).context("parsing reasoning-eval-results.json")?;
         let any_ok = parsed
             .get("rows")
             .and_then(Value::as_array)
-            .map(|rows| rows.iter().any(|r| r.get("ok").and_then(Value::as_bool) == Some(true)))
+            .map(|rows| {
+                rows.iter()
+                    .any(|r| r.get("ok").and_then(Value::as_bool) == Some(true))
+            })
             .unwrap_or(false);
         if any_ok {
             Ok(())
@@ -772,7 +852,12 @@ fn check_chat_turn(repo_root: &Path, neutral: &Path, upstream: Option<bool>) -> 
             bail!("reasoning_eval ran but no turn succeeded")
         }
     })();
-    CheckResult::from_result(KEY, TITLE, "a chat turn completed end-to-end (reasoning_eval smoke)", result)
+    CheckResult::from_result(
+        KEY,
+        TITLE,
+        "a chat turn completed end-to-end (reasoning_eval smoke)",
+        result,
+    )
 }
 
 /// L3.8: memory round-trips — write a memory, retrieve it via a live embed
@@ -840,7 +925,10 @@ fn read_tail(path: &Path, max: usize) -> String {
     };
     let trimmed = text.trim();
     let start = trimmed.len().saturating_sub(max);
-    trimmed[start..].replace(['\n', '\r'], " ").trim().to_string()
+    trimmed[start..]
+        .replace(['\n', '\r'], " ")
+        .trim()
+        .to_string()
 }
 
 /// Kill a whole process tree via `taskkill /T /F` — the backstop that reaps the
@@ -909,12 +997,28 @@ mod tests {
         let pass = CheckResult::pass("k", "t", "");
         let skip = CheckResult::skip("k", "t", "");
         let fail = CheckResult::fail("k", "t", "");
-        assert!(SmokeOutcome { checks: vec![pass.clone()], daemon_mode: DaemonMode::ColdStarted }.all_passed());
+        assert!(SmokeOutcome {
+            checks: vec![pass.clone()],
+            daemon_mode: DaemonMode::ColdStarted
+        }
+        .all_passed());
         // A skip is not a pass — fail-closed.
-        assert!(!SmokeOutcome { checks: vec![pass.clone(), skip], daemon_mode: DaemonMode::ColdStarted }.all_passed());
-        assert!(!SmokeOutcome { checks: vec![pass, fail], daemon_mode: DaemonMode::ColdStarted }.all_passed());
+        assert!(!SmokeOutcome {
+            checks: vec![pass.clone(), skip],
+            daemon_mode: DaemonMode::ColdStarted
+        }
+        .all_passed());
+        assert!(!SmokeOutcome {
+            checks: vec![pass, fail],
+            daemon_mode: DaemonMode::ColdStarted
+        }
+        .all_passed());
         // Empty is not "all passed".
-        assert!(!SmokeOutcome { checks: vec![], daemon_mode: DaemonMode::Absent }.all_passed());
+        assert!(!SmokeOutcome {
+            checks: vec![],
+            daemon_mode: DaemonMode::Absent
+        }
+        .all_passed());
     }
 
     #[test]

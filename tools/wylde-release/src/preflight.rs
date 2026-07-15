@@ -440,7 +440,9 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
     }
     let short = &commit[..8.min(commit.len())];
     if launch_verified {
-        println!("\n✓ preflight GREEN + LAUNCH-VERIFIED — publishable receipt for {version} at {short}");
+        println!(
+            "\n✓ preflight GREEN + LAUNCH-VERIFIED — publishable receipt for {version} at {short}"
+        );
     } else {
         println!("\n✓ preflight GREEN — receipt for {version} at {short}");
         println!(
@@ -476,7 +478,9 @@ pub fn run_smoke(args: SmokeArgs) -> Result<()> {
     } else {
         // No failures, but some checks were skipped: honest, but not a
         // launch-verified state.
-        println!("\n✓ smoke gate had no failures, but some checks were skipped (not launch-verified)");
+        println!(
+            "\n✓ smoke gate had no failures, but some checks were skipped (not launch-verified)"
+        );
     }
     Ok(())
 }
@@ -487,7 +491,11 @@ fn print_smoke(outcome: &SmokeOutcome) {
     for c in &outcome.checks {
         println!("  {:<26} {:<5} {}", c.title, c.status.tag(), c.detail);
     }
-    let failed = outcome.checks.iter().filter(|c| c.status == CheckStatus::Fail).count();
+    let failed = outcome
+        .checks
+        .iter()
+        .filter(|c| c.status == CheckStatus::Fail)
+        .count();
     let skipped = outcome.skipped().len();
     let passed = outcome.checks.len() - failed - skipped;
     println!("  {}", "-".repeat(72));
