@@ -266,7 +266,10 @@ mod tests {
         let none = HashMap::new();
         // Above the clusters-first zoom → ordinary per-cluster logic.
         let f = desired_folds_at_zoom(&auto, &th, 1.5, &none, 0.35);
-        assert!(!f.contains("a") && f.contains("b"), "ordinary tier above threshold");
+        assert!(
+            !f.contains("a") && f.contains("b"),
+            "ordinary tier above threshold"
+        );
         // At/below it → every cluster in `thresholds` folds (the galaxy view),
         // even ones the auto-selector wouldn't have folded.
         let mut th2 = th.clone();

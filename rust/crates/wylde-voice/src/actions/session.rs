@@ -18,8 +18,8 @@
 //! Wire envelopes match the Python pipe exactly so the GUI doesn't see
 //! a behavioural change when `WYLDE_WYLDE_VOICE_IMPL` flips to `rust`.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use serde_json::{json, Value};
 use tokio::sync::Mutex as AsyncMutex;
@@ -46,7 +46,8 @@ fn session_lock() -> &'static AsyncMutex<()> {
 /// adapter wired into the orchestrator owns this; we keep an
 /// independent clone here so a stop call can fire even if the
 /// orchestrator hasn't bound a capture yet.
-fn cancel_handle() -> &'static std::sync::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> {
+fn cancel_handle(
+) -> &'static std::sync::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> {
     static CH: std::sync::OnceLock<
         std::sync::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
     > = std::sync::OnceLock::new();
@@ -83,10 +84,7 @@ pub async fn handle_voice_toggle(payload: Value) -> Reply {
     let guard = match lock.try_lock() {
         Ok(g) => g,
         Err(_) => {
-            return Reply::err(IpcError::new(
-                "busy",
-                "a session is already in flight",
-            ));
+            return Reply::err(IpcError::new("busy", "a session is already in flight"));
         }
     };
 
@@ -226,7 +224,9 @@ pub async fn handle_voice_get_config(_payload: Value) -> Reply {
 pub async fn handle_voice_set_config(payload: Value) -> Reply {
     if let Some(m) = payload.get("mode").and_then(Value::as_str) {
         if !ALL_MODES.contains(&m) {
-            return Reply::err(invalid_request(format!("mode must be one of {ALL_MODES:?}")));
+            return Reply::err(invalid_request(format!(
+                "mode must be one of {ALL_MODES:?}"
+            )));
         }
     }
     if let Some(b) = payload.get("stt_backend_pref").and_then(Value::as_str) {
@@ -340,10 +340,7 @@ pub async fn handle_voice_wake_word_pull_status(payload: Value) -> Reply {
 // ── voice.subscribe_status ────────────────────────────────────────────
 
 pub async fn handle_voice_subscribe_status(payload: Value) -> Reply {
-    let cursor = payload
-        .get("cursor")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let cursor = payload.get("cursor").and_then(Value::as_i64).unwrap_or(0);
     let max_wait_ms = payload
         .get("max_wait_ms")
         .and_then(Value::as_u64)
@@ -455,7 +452,8 @@ mod tests {
     async fn pull_wake_word_model_returns_job_id() {
         // We don't await the spawned task — that uses curl which may not
         // be present in CI. The handler returns the job id immediately.
-        let r = handle_voice_pull_wake_word_model(json!({"model": "openWakeWord/hey-jarvis"})).await;
+        let r =
+            handle_voice_pull_wake_word_model(json!({"model": "openWakeWord/hey-jarvis"})).await;
         assert!(r.ok);
         let job_id = r.data["job_id"].as_str().unwrap();
         assert_eq!(job_id.len(), 12);

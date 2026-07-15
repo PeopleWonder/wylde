@@ -60,7 +60,11 @@ fn workspaces_healthy_mounts_and_loads(cx: &mut TestAppContext) {
         .update(cx, |panel, _w, _cx| {
             assert!(panel.error.is_none(), "no error on the happy path");
             assert!(!panel.loading, "the registry spinner cleared");
-            assert_eq!(panel.tab, WorkspacesTab::Registry, "lands on the Registry tab");
+            assert_eq!(
+                panel.tab,
+                WorkspacesTab::Registry,
+                "lands on the Registry tab"
+            );
         })
         .unwrap();
     assert_eq!(fake.count_for("workspaces.list_mru"), 1);
@@ -68,8 +72,10 @@ fn workspaces_healthy_mounts_and_loads(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn workspaces_survives_backend_down(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new()
-        .on_err("workspaces.list_mru", "pipe_unavailable: workspaces not running");
+    let fake = ScriptedBackend::new().on_err(
+        "workspaces.list_mru",
+        "pipe_unavailable: workspaces not running",
+    );
     let _guard = fake.install();
 
     let window = mount(cx);
@@ -87,15 +93,20 @@ fn workspaces_survives_backend_down(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn workspaces_surfaces_backend_error_envelope(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new()
-        .on_err("workspaces.list_mru", "internal_error: workspaces store blew up");
+    let fake = ScriptedBackend::new().on_err(
+        "workspaces.list_mru",
+        "internal_error: workspaces store blew up",
+    );
     let _guard = fake.install();
 
     let window = mount(cx);
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.error.is_some(), "an error envelope surfaces on the panel");
+            assert!(
+                panel.error.is_some(),
+                "an error envelope surfaces on the panel"
+            );
             assert!(!panel.loading);
         })
         .unwrap();
@@ -133,7 +144,9 @@ fn workspaces_every_tab_selects_without_panic(cx: &mut TestAppContext) {
     // handler does; driving to quiescence after each proves the switch + any
     // spawned load settles without panic.
     window
-        .update(cx, |panel, _w, cx| panel.enter_workspace("ws-a".to_owned(), cx))
+        .update(cx, |panel, _w, cx| {
+            panel.enter_workspace("ws-a".to_owned(), cx)
+        })
         .unwrap();
     cx.run_until_parked();
 
@@ -176,7 +189,11 @@ fn vocabulary_every_subtab_switches_without_panic(cx: &mut TestAppContext) {
 
     window
         .update(cx, |tab, _w, _cx| {
-            assert_eq!(tab.sub_tab(), VocabSubTab::Vocabulary, "defaults to Vocabulary");
+            assert_eq!(
+                tab.sub_tab(),
+                VocabSubTab::Vocabulary,
+                "defaults to Vocabulary"
+            );
         })
         .unwrap();
 
@@ -206,8 +223,10 @@ fn vocabulary_every_subtab_switches_without_panic(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn concepts_view_mounts_and_settles(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new()
-        .on("workspaces.list_mru", json!({ "active_id": "ws-a", "workspaces": [ws_row("ws-a", "C:/a")] }));
+    let fake = ScriptedBackend::new().on(
+        "workspaces.list_mru",
+        json!({ "active_id": "ws-a", "workspaces": [ws_row("ws-a", "C:/a")] }),
+    );
     let _guard = fake.install();
 
     let window = cx.add_window(|_w, cx| ConceptsView::new(cx));
@@ -215,15 +234,20 @@ fn concepts_view_mounts_and_settles(cx: &mut TestAppContext) {
 
     window
         .update(cx, |view, _w, _cx| {
-            assert!(!view.is_loading(), "the Concepts view settles (no stuck spinner)");
+            assert!(
+                !view.is_loading(),
+                "the Concepts view settles (no stuck spinner)"
+            );
         })
         .unwrap();
 }
 
 #[gpui::test]
 fn hierarchy_view_mounts_and_settles(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new()
-        .on("workspaces.list_mru", json!({ "active_id": "ws-a", "workspaces": [ws_row("ws-a", "C:/a")] }));
+    let fake = ScriptedBackend::new().on(
+        "workspaces.list_mru",
+        json!({ "active_id": "ws-a", "workspaces": [ws_row("ws-a", "C:/a")] }),
+    );
     let _guard = fake.install();
 
     let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
@@ -238,8 +262,10 @@ fn hierarchy_view_mounts_and_settles(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn relations_view_mounts_and_settles(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new()
-        .on("workspaces.list_mru", json!({ "active_id": "ws-a", "workspaces": [ws_row("ws-a", "C:/a")] }));
+    let fake = ScriptedBackend::new().on(
+        "workspaces.list_mru",
+        json!({ "active_id": "ws-a", "workspaces": [ws_row("ws-a", "C:/a")] }),
+    );
     let _guard = fake.install();
 
     let window = cx.add_window(|_w, cx| RelationsView::new(cx));

@@ -233,12 +233,18 @@ fn push_term_clauses(
     path_boost: f32,
 ) {
     for tok in terms {
-        let content_q = TermQuery::new(Term::from_field_text(f.content, tok), IndexRecordOption::WithFreqs);
+        let content_q = TermQuery::new(
+            Term::from_field_text(f.content, tok),
+            IndexRecordOption::WithFreqs,
+        );
         clauses.push((
             Occur::Should,
             Box::new(BoostQuery::new(Box::new(content_q), content_boost)),
         ));
-        let path_q = TermQuery::new(Term::from_field_text(f.path_text, tok), IndexRecordOption::WithFreqs);
+        let path_q = TermQuery::new(
+            Term::from_field_text(f.path_text, tok),
+            IndexRecordOption::WithFreqs,
+        );
         clauses.push((
             Occur::Should,
             Box::new(BoostQuery::new(Box::new(path_q), path_boost)),
@@ -404,8 +410,16 @@ mod tests {
         let ws = "lx-build";
         assert!(!has_lexical_index(ws), "no index before build");
         let chunks = vec![
-            chunk("c0", "/src/search.rs", "const ANCHOR_BOOST_CAP: f64 = 0.30;"),
-            chunk("c1", "/src/notes.md", "some loosely related prose about boosting"),
+            chunk(
+                "c0",
+                "/src/search.rs",
+                "const ANCHOR_BOOST_CAP: f64 = 0.30;",
+            ),
+            chunk(
+                "c1",
+                "/src/notes.md",
+                "some loosely related prose about boosting",
+            ),
             chunk("c2", "/src/other.rs", "fn unrelated() {}"),
         ];
         build_from_chunks(ws, &chunks).unwrap();
@@ -582,9 +596,17 @@ mod tests {
             ws,
             &[
                 // Defining file: the symbol is in its PATH (highest-boosted field).
-                chunk("c0", "/src/run_it_handler.rs", "fn run_it_handler() { work() }"),
+                chunk(
+                    "c0",
+                    "/src/run_it_handler.rs",
+                    "fn run_it_handler() { work() }",
+                ),
                 // A file that merely mentions the symbol in its body.
-                chunk("c1", "/src/caller.rs", "calls run_it_handler from here somewhere"),
+                chunk(
+                    "c1",
+                    "/src/caller.rs",
+                    "calls run_it_handler from here somewhere",
+                ),
                 // Unrelated.
                 chunk("c2", "/src/other.rs", "totally different content"),
             ],
@@ -593,8 +615,14 @@ mod tests {
         // With the anchor folded in as a boosted sub-query, the defining file
         // (path match, highest boost) ranks above the mere mention.
         let hits = search_boosted(ws, "where is it", &["run_it_handler".to_owned()], 5);
-        assert_eq!(hits[0].0, "c0", "anchor path-boost ranks the defining file top");
-        assert!(hits.iter().any(|(id, _)| id == "c1"), "the mention still matches");
+        assert_eq!(
+            hits[0].0, "c0",
+            "anchor path-boost ranks the defining file top"
+        );
+        assert!(
+            hits.iter().any(|(id, _)| id == "c1"),
+            "the mention still matches"
+        );
     }
 
     #[test]
@@ -624,7 +652,10 @@ mod tests {
         let ws = "lx-boosted-plain";
         build_from_chunks(
             ws,
-            &[chunk("c0", "/a.rs", "alphaword body"), chunk("c1", "/b.rs", "betaword body")],
+            &[
+                chunk("c0", "/a.rs", "alphaword body"),
+                chunk("c1", "/b.rs", "betaword body"),
+            ],
         )
         .unwrap();
         // No anchors ⇒ same matched set as the plain body search.

@@ -46,7 +46,10 @@ fn tools_healthy_mounts_and_loads(cx: &mut TestAppContext) {
     window
         .update(cx, |panel, _w, _cx| {
             assert!(panel.error.is_none(), "no error on the happy path");
-            assert!(!panel.loading, "the loading spinner clears once the list arrives");
+            assert!(
+                !panel.loading,
+                "the loading spinner clears once the list arrives"
+            );
             assert_eq!(panel.extensions.len(), 1, "the extension row loaded");
         })
         .unwrap();
@@ -57,7 +60,10 @@ fn tools_healthy_mounts_and_loads(cx: &mut TestAppContext) {
 fn tools_survives_backend_down(cx: &mut TestAppContext) {
     let fake = ScriptedBackend::new()
         .on_err("ext.list", "pipe_unavailable: extension-bridge not running")
-        .on_err("extensions.list_panels", "pipe_unavailable: extension-bridge not running");
+        .on_err(
+            "extensions.list_panels",
+            "pipe_unavailable: extension-bridge not running",
+        );
     let _guard = fake.clone().install();
 
     let window = mount(cx);
@@ -68,7 +74,10 @@ fn tools_survives_backend_down(cx: &mut TestAppContext) {
                 panel.error.is_some(),
                 "a down bridge surfaces a visible error — not a silent empty list"
             );
-            assert!(!panel.loading, "the spinner still clears on failure (no stuck spinner)");
+            assert!(
+                !panel.loading,
+                "the spinner still clears on failure (no stuck spinner)"
+            );
         })
         .unwrap();
 }
@@ -82,7 +91,10 @@ fn tools_surfaces_backend_error_envelope(cx: &mut TestAppContext) {
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.error.is_some(), "an error envelope surfaces on the panel");
+            assert!(
+                panel.error.is_some(),
+                "an error envelope surfaces on the panel"
+            );
             assert!(!panel.loading);
         })
         .unwrap();
@@ -101,7 +113,10 @@ fn tools_tolerates_empty_backend(cx: &mut TestAppContext) {
         .update(cx, |panel, _w, _cx| {
             assert!(panel.error.is_none(), "empty ok-replies are not an error");
             assert!(!panel.loading);
-            assert!(panel.extensions.is_empty(), "an empty bridge yields an empty list");
+            assert!(
+                panel.extensions.is_empty(),
+                "an empty bridge yields an empty list"
+            );
         })
         .unwrap();
 }

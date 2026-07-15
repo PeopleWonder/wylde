@@ -103,7 +103,9 @@ impl VaultBackend {
             .ok()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| SecretsError("VAULT_TOKEN not set".to_owned()))?;
-        let namespace = std::env::var("VAULT_NAMESPACE").ok().filter(|s| !s.is_empty());
+        let namespace = std::env::var("VAULT_NAMESPACE")
+            .ok()
+            .filter(|s| !s.is_empty());
         let kv_mount = std::env::var("WYLDE_VAULT_KV_MOUNT")
             .ok()
             .filter(|s| !s.is_empty())

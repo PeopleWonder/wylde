@@ -229,12 +229,18 @@ mod tests {
     #[test]
     fn node_ref_round_trips_the_tagged_wire_shape() {
         let c = NodeRefView::concept("dir:src/graph");
-        assert_eq!(c.to_payload(), json!({ "node": "concept", "id": "dir:src/graph" }));
+        assert_eq!(
+            c.to_payload(),
+            json!({ "node": "concept", "id": "dir:src/graph" })
+        );
         let back: NodeRefView = serde_json::from_value(c.to_payload()).unwrap();
         assert_eq!(back, c);
 
         let v = NodeRefView::vocab("nextcloud");
-        assert_eq!(v.to_payload(), json!({ "node": "vocab", "identifier": "nextcloud" }));
+        assert_eq!(
+            v.to_payload(),
+            json!({ "node": "vocab", "identifier": "nextcloud" })
+        );
         let back: NodeRefView = serde_json::from_value(v.to_payload()).unwrap();
         assert_eq!(back, v);
         assert_eq!(back.key(), "nextcloud");

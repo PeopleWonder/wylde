@@ -1103,7 +1103,10 @@ mod tests {
         assert!(!reply.ok, "blank id must be rejected by the handler");
         let code = reply.error.unwrap().code;
         assert_eq!(code, "bad_request", "served by the handler, got {code:?}");
-        assert_ne!(code, "no_action", "must NOT be the unknown-action fallthrough");
+        assert_ne!(
+            code, "no_action",
+            "must NOT be the unknown-action fallthrough"
+        );
 
         reset_for_tests();
     }
@@ -1132,8 +1135,14 @@ mod tests {
             let reply = dispatch_action(json!({"action": verb, "payload": {}})).await;
             assert!(!reply.ok, "{verb}: blank payload must be rejected");
             let code = reply.error.unwrap().code;
-            assert_eq!(code, "bad_request", "{verb} served by handler, got {code:?}");
-            assert_ne!(code, "no_action", "{verb} must NOT be the unknown-action fallthrough");
+            assert_eq!(
+                code, "bad_request",
+                "{verb} served by handler, got {code:?}"
+            );
+            assert_ne!(
+                code, "no_action",
+                "{verb} must NOT be the unknown-action fallthrough"
+            );
         }
 
         reset_for_tests();

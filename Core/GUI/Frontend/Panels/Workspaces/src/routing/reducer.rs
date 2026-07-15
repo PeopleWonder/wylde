@@ -99,7 +99,10 @@ pub struct GroupEdge {
 /// authoring groups. Positive/Negative are symmetric (the focus may be stored
 /// as either endpoint — we surface the *other* end); Dependency splits by
 /// direction: `focus → X` is DEPENDS ON, `X → focus` is DEPENDED ON BY.
-pub fn group_edges(focus: &NodeRefView, touching: &[RelationView]) -> Vec<(RelGroup, Vec<GroupEdge>)> {
+pub fn group_edges(
+    focus: &NodeRefView,
+    touching: &[RelationView],
+) -> Vec<(RelGroup, Vec<GroupEdge>)> {
     let mut depends_on = Vec::new();
     let mut depended_on_by = Vec::new();
     let mut relates_to = Vec::new();
@@ -271,7 +274,11 @@ mod tests {
         // the OTHER endpoint, not the focus.
         let touching = vec![rel(wylde(), nc(), RelationKindView::Negative)];
         let groups = group_edges(&focus, &touching);
-        let is_not = &groups.iter().find(|(k, _)| *k == RelGroup::IsNot).unwrap().1;
+        let is_not = &groups
+            .iter()
+            .find(|(k, _)| *k == RelGroup::IsNot)
+            .unwrap()
+            .1;
         assert_eq!(is_not[0].other, wylde());
     }
 
@@ -331,10 +338,7 @@ mod tests {
             label_for(&NodeRefView::concept("ghost"), &u),
             "concept: ghost"
         );
-        assert_eq!(
-            label_for(&NodeRefView::vocab("orphan"), &u),
-            "{{orphan}}"
-        );
+        assert_eq!(label_for(&NodeRefView::vocab("orphan"), &u), "{{orphan}}");
     }
 
     #[test]

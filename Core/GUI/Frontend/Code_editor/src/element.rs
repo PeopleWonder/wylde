@@ -12,8 +12,8 @@
 
 use gpui::{
     fill, point, px, relative, size, App, AvailableSpace, Bounds, Element, ElementId,
-    GlobalElementId, Hsla, IntoElement, LayoutId, PaintQuad, Pixels, SharedString, Style, TextAlign,
-    TextRun, TextStyle, WrappedLine,
+    GlobalElementId, Hsla, IntoElement, LayoutId, PaintQuad, Pixels, SharedString, Style,
+    TextAlign, TextRun, TextStyle, WrappedLine,
 };
 use wylde_theme::colors::{BORDER_EMPHASIS, SURFACE_950, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY};
 
@@ -92,7 +92,13 @@ fn shape_solid(
     };
     window
         .text_system()
-        .shape_text(SharedString::from(text.to_owned()), font_size, &[run], None, None)
+        .shape_text(
+            SharedString::from(text.to_owned()),
+            font_size,
+            &[run],
+            None,
+            None,
+        )
         .ok()
         .and_then(|v| v.into_iter().next())
 }
@@ -122,7 +128,10 @@ impl Element for EditorElement {
         style.size.height = relative(1.0).into();
         let layout_id = window.request_measured_layout(style, move |known, available, _w, _cx| {
             let w = known.width.or(definite(available.width)).unwrap_or(px(0.0));
-            let h = known.height.or(definite(available.height)).unwrap_or(px(0.0));
+            let h = known
+                .height
+                .or(definite(available.height))
+                .unwrap_or(px(0.0));
             size(w, h)
         });
         (layout_id, ())
@@ -184,7 +193,8 @@ impl Element for EditorElement {
         let first_line = (scroll_top / line_height).floor() as usize;
         let visible_rows = (bounds.size.height / line_height).ceil() as usize + 1 + OVERSCAN_ROWS;
         let first_line = first_line.saturating_sub(OVERSCAN_ROWS);
-        let last_line = (first_line + visible_rows + OVERSCAN_ROWS).min(line_count.saturating_sub(1));
+        let last_line =
+            (first_line + visible_rows + OVERSCAN_ROWS).min(line_count.saturating_sub(1));
 
         // Precompute logical line byte ranges once.
         let line_spans = line_byte_spans(&text);
@@ -192,7 +202,10 @@ impl Element for EditorElement {
         let mut visible: Vec<VisibleLine> = Vec::new();
         let mut gutter_numbers: Vec<(gpui::Point<Pixels>, WrappedLine)> = Vec::new();
         for line_ix in first_line..=last_line {
-            let (ls, le) = line_spans.get(line_ix).copied().unwrap_or((text.len(), text.len()));
+            let (ls, le) = line_spans
+                .get(line_ix)
+                .copied()
+                .unwrap_or((text.len(), text.len()));
             let line_text = &text[ls..le];
             let line_y = text_bounds.origin.y + line_height * line_ix as f32 - scroll_top;
 
@@ -210,9 +223,7 @@ impl Element for EditorElement {
             } else {
                 // Empty line — still register it (zero-width) so the caret and
                 // hit-testing resolve on blank lines.
-                if let Some(empty) =
-                    shape_line_runs(" ", font_size, &[blank_run(&style)], window)
-                {
+                if let Some(empty) = shape_line_runs(" ", font_size, &[blank_run(&style)], window) {
                     // Use a real shaped space but record byte_len 0 so columns
                     // beyond the (empty) content clamp to the line start.
                     visible.push(VisibleLine {
@@ -311,13 +322,17 @@ impl Element for EditorElement {
         for line in &prepaint.snapshot.lines {
             let origin = point(
                 prepaint.snapshot.text_bounds.origin.x - prepaint.snapshot.scroll_left,
-                prepaint.snapshot.text_bounds.origin.y
-                    + prepaint.line_height * line.line_ix as f32
+                prepaint.snapshot.text_bounds.origin.y + prepaint.line_height * line.line_ix as f32
                     - prepaint.snapshot.scroll_top,
             );
-            let _ = line
-                .shaped
-                .paint(origin, prepaint.line_height, TextAlign::Left, None, window, cx);
+            let _ = line.shaped.paint(
+                origin,
+                prepaint.line_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
         }
 
         // Caret above text.
@@ -330,7 +345,14 @@ impl Element for EditorElement {
             window.paint_quad(bg);
         }
         for (origin, num) in &prepaint.gutter_numbers {
-            let _ = num.paint(*origin, prepaint.line_height, TextAlign::Left, None, window, cx);
+            let _ = num.paint(
+                *origin,
+                prepaint.line_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
         }
 
         // Publish the painted-frame snapshot for metrics + hit-testing.
@@ -371,7 +393,13 @@ fn shape_line_runs(
     }
     window
         .text_system()
-        .shape_text(SharedString::from(text.to_owned()), font_size, runs, None, None)
+        .shape_text(
+            SharedString::from(text.to_owned()),
+            font_size,
+            runs,
+            None,
+            None,
+        )
         .ok()
         .and_then(|v| v.into_iter().next())
 }

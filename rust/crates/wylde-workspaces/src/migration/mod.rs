@@ -389,11 +389,18 @@ mod tests {
         assert_eq!(store::load_chunks(&def.id).len(), 1);
 
         // Second run is marker-skipped even though a fresh artifact chunk lands.
-        store::save_chunks(&def.id, &[mk("src/main.rs", 0), mk("target-dev/doc/c.html", 0)])
-            .unwrap();
+        store::save_chunks(
+            &def.id,
+            &[mk("src/main.rs", 0), mk("target-dev/doc/c.html", 0)],
+        )
+        .unwrap();
         let r2 = run_index_hygiene_pending().await;
         assert!(r2.skipped);
-        assert_eq!(store::load_chunks(&def.id).len(), 2, "untouched after marker");
+        assert_eq!(
+            store::load_chunks(&def.id).len(),
+            2,
+            "untouched after marker"
+        );
     }
 
     #[test]

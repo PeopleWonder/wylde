@@ -99,7 +99,11 @@ pub fn label_for_dir(breadcrumb: &[String], member_count: usize) -> (String, Str
     } else {
         format!("`{}`", breadcrumb.join("/"))
     };
-    let noun = if member_count == 1 { "symbol" } else { "symbols" };
+    let noun = if member_count == 1 {
+        "symbol"
+    } else {
+        "symbols"
+    };
     let description = format!(
         "Code under {path} ({member_count} {noun}). Directory-derived stand-in concept (Phase 0); \
          a semantic re-clustering pass will refine this."
@@ -189,7 +193,11 @@ mod tests {
             edges: vec![],
             clusters: vec![
                 cluster("src/graph", &["alpha", "beta"], &["src", "graph"]),
-                cluster("src/graph/cluster", &["gamma"], &["src", "graph", "cluster"]),
+                cluster(
+                    "src/graph/cluster",
+                    &["gamma"],
+                    &["src", "graph", "cluster"],
+                ),
                 cluster("src/rag", &["delta"], &["src", "rag"]),
             ],
         }
@@ -209,7 +217,11 @@ mod tests {
         let cs = build_concepts(&sample_graph());
         let graph_c = cs.iter().find(|c| c.id == "dir:src/graph").unwrap();
         assert_eq!(graph_c.members, vec!["alpha", "beta"]);
-        assert_eq!(graph_c.member_files, vec!["src/graph/api.rs"], "deduped files");
+        assert_eq!(
+            graph_c.member_files,
+            vec!["src/graph/api.rs"],
+            "deduped files"
+        );
     }
 
     #[test]
@@ -248,7 +260,9 @@ mod tests {
     fn directory_concepts_have_no_centroid() {
         let cs = build_concepts(&sample_graph());
         assert!(cs.iter().all(|c| c.centroid.is_none()));
-        assert!(cs.iter().all(|c| c.source == ConceptSource::DirectoryCluster));
+        assert!(cs
+            .iter()
+            .all(|c| c.source == ConceptSource::DirectoryCluster));
     }
 
     #[test]
@@ -270,7 +284,14 @@ mod tests {
         // differ across calls, so compare everything *but* the stamps).
         let strip = |cs: &[Concept]| -> Vec<(String, String, Vec<String>, Vec<String>)> {
             cs.iter()
-                .map(|c| (c.id.clone(), c.label.clone(), c.members.clone(), c.parent_concepts.clone()))
+                .map(|c| {
+                    (
+                        c.id.clone(),
+                        c.label.clone(),
+                        c.members.clone(),
+                        c.parent_concepts.clone(),
+                    )
+                })
                 .collect()
         };
         assert_eq!(strip(&a), strip(&b));

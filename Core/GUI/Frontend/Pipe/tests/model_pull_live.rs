@@ -21,8 +21,8 @@ use wylde_gui_pipe::{install_runtime, pull_model, PullAggregate, PullProgress};
 #[test]
 #[ignore = "streams a real ollama.pull over the production bridge path"]
 fn pull_model_streams_progress_to_success_via_bridge() {
-    let model = std::env::var("WYLDE_PULL_TEST_MODEL")
-        .unwrap_or_else(|_| "nomic-embed-text".to_owned());
+    let model =
+        std::env::var("WYLDE_PULL_TEST_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_owned());
 
     // 1) Stand up the bridge exactly like the GUI does and register it.
     let bridge = tokio::runtime::Builder::new_multi_thread()
@@ -73,7 +73,10 @@ fn pull_model_streams_progress_to_success_via_bridge() {
         (status, pct, ok)
     });
 
-    assert!(saw_status, "expected at least one progress frame carrying a status");
+    assert!(
+        saw_status,
+        "expected at least one progress frame carrying a status"
+    );
     assert!(
         saw_overall_percent,
         "expected the aggregate to yield an overall percent for the bar"

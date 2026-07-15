@@ -61,7 +61,9 @@ impl PeerStore {
 
     pub fn get(&self, public_key: &str) -> Option<PeerRecord> {
         let _g = self.lock.lock().expect("peer store lock poisoned");
-        load(&self.path).ok().and_then(|m| m.get(public_key).cloned())
+        load(&self.path)
+            .ok()
+            .and_then(|m| m.get(public_key).cloned())
     }
 
     pub fn upsert(&self, peer: PeerRecord) -> Result<()> {
@@ -111,8 +113,7 @@ fn save(path: &Path, peers: &std::collections::HashMap<String, PeerRecord>) -> R
     }
     let tmp = path.with_extension("tmp");
     let body = serde_json::to_vec_pretty(peers).context("peer store: serialize")?;
-    std::fs::write(&tmp, &body)
-        .with_context(|| format!("peer store: write {}", tmp.display()))?;
+    std::fs::write(&tmp, &body).with_context(|| format!("peer store: write {}", tmp.display()))?;
     std::fs::rename(&tmp, path)
         .with_context(|| format!("peer store: rename to {}", path.display()))?;
     Ok(())

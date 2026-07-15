@@ -34,9 +34,7 @@ use wylde_concept_routing::relations::{NodeRef, RelationGraph, RelationKind};
 use wylde_shared::anchor::Anchor;
 
 use crate::config::HierarchyConfig;
-use crate::model::{
-    Definition, DefSource, HierGraph, HierNode, NodeId, NodeKind, XRef, XRefKind,
-};
+use crate::model::{DefSource, Definition, HierGraph, HierNode, NodeId, NodeKind, XRef, XRefKind};
 use std::collections::HashMap;
 
 /// The concept fields the projection reads -- a pure, Core-free input view of a
@@ -64,7 +62,11 @@ pub struct ConceptView {
 
 impl ConceptView {
     /// Construct a view from its parts (test + bridge convenience).
-    pub fn new(id: impl Into<String>, label: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         ConceptView {
             id: id.into(),
             label: label.into(),
@@ -158,7 +160,8 @@ pub fn build_view(
         if index.contains_key(&id) {
             continue; // duplicate concept id: keep the first, defensively
         }
-        let definition = Definition::resolve(None, Some(&c.description), DefSource::InheritedConcept);
+        let definition =
+            Definition::resolve(None, Some(&c.description), DefSource::InheritedConcept);
         index.insert(id.clone(), nodes.len());
         nodes.push(HierNode {
             id,
@@ -176,7 +179,8 @@ pub fn build_view(
         if index.contains_key(&id) {
             continue; // a vocab id already taken (or a duplicate anchor)
         }
-        let definition = Definition::resolve(None, Some(&a.description), DefSource::InheritedAnchor);
+        let definition =
+            Definition::resolve(None, Some(&a.description), DefSource::InheritedAnchor);
         index.insert(id.clone(), nodes.len());
         nodes.push(HierNode {
             id,
@@ -199,7 +203,12 @@ pub fn build_view(
     }
     for a in anchors {
         if let Some(p) = &a.parent_anchor {
-            add_containment(&mut nodes, &index, &NodeId::vocab(p), &NodeId::vocab(&a.identifier));
+            add_containment(
+                &mut nodes,
+                &index,
+                &NodeId::vocab(p),
+                &NodeId::vocab(&a.identifier),
+            );
         }
     }
 
@@ -210,7 +219,14 @@ pub fn build_view(
         for term in &c.described_by {
             let to = NodeId::vocab(term);
             if index.contains_key(&from) && index.contains_key(&to) {
-                push_xref(&mut xrefs, XRef { from: from.clone(), to, kind: XRefKind::Names });
+                push_xref(
+                    &mut xrefs,
+                    XRef {
+                        from: from.clone(),
+                        to,
+                        kind: XRefKind::Names,
+                    },
+                );
             }
         }
     }
@@ -220,7 +236,14 @@ pub fn build_view(
         let from = noderef_to_id(&r.from);
         let to = noderef_to_id(&r.to);
         if index.contains_key(&from) && index.contains_key(&to) {
-            push_xref(&mut xrefs, XRef { from, to, kind: xref_kind(r.kind) });
+            push_xref(
+                &mut xrefs,
+                XRef {
+                    from,
+                    to,
+                    kind: xref_kind(r.kind),
+                },
+            );
         }
     }
 
@@ -259,7 +282,9 @@ mod tests {
         let mut a = Anchor::new(
             identifier,
             AnchorKind::Concept,
-            AnchorTarget::Concept { text: identifier.into() },
+            AnchorTarget::Concept {
+                text: identifier.into(),
+            },
             AnchorScope::Global,
             description,
         );
@@ -288,7 +313,10 @@ mod tests {
         assert_eq!(auth_n.parents, vec![NodeId::concept("sem:0000")]);
         // Auth has no children (Security is its PARENT), so Auth is a leaf.
         assert!(auth_n.children.is_empty());
-        assert!(auth_n.is_leaf, "a node with no children is a definition-only leaf");
+        assert!(
+            auth_n.is_leaf,
+            "a node with no children is a definition-only leaf"
+        );
 
         // The parent got the reverse child edge.
         let root_n = by(&NodeId::concept("sem:0000"));
@@ -335,16 +363,26 @@ mod tests {
         let g = build_view(&[a, b, c, d], &[], &RelationGraph::empty());
 
         // D appears exactly once, listing BOTH parents.
-        let ds: Vec<_> = g.nodes.iter().filter(|n| n.id == NodeId::concept("d")).collect();
+        let ds: Vec<_> = g
+            .nodes
+            .iter()
+            .filter(|n| n.id == NodeId::concept("d"))
+            .collect();
         assert_eq!(ds.len(), 1, "shared node is one node, never duplicated");
-        assert_eq!(ds[0].parents, vec![NodeId::concept("b"), NodeId::concept("c")]);
+        assert_eq!(
+            ds[0].parents,
+            vec![NodeId::concept("b"), NodeId::concept("c")]
+        );
         assert!(ds[0].is_leaf);
     }
 
     #[test]
     fn typed_relations_become_xrefs_skipping_dangling() {
         let c1 = ConceptView::new("c1", "C1", "one");
-        let anchors = vec![anchor("nextcloud", "a server", None), anchor("ddns", "dynamic dns", None)];
+        let anchors = vec![
+            anchor("nextcloud", "a server", None),
+            anchor("ddns", "dynamic dns", None),
+        ];
 
         let mut g_in = RelationGraph::empty();
         g_in.relations.push(Relation::normalized(
@@ -376,7 +414,11 @@ mod tests {
             to: NodeId::vocab("ddns"),
             kind: XRefKind::Dependency,
         }));
-        assert_eq!(g.xrefs.len(), 1, "dangling + ghost-endpoint relations dropped");
+        assert_eq!(
+            g.xrefs.len(),
+            1,
+            "dangling + ghost-endpoint relations dropped"
+        );
     }
 
     #[test]
@@ -409,9 +451,17 @@ mod tests {
             anchor("workflows", "an automation graph", Some("n8n")),
         ];
         let g = build_view(&[], &anchors, &RelationGraph::empty());
-        let wf = g.nodes.iter().find(|n| n.id == NodeId::vocab("workflows")).unwrap();
+        let wf = g
+            .nodes
+            .iter()
+            .find(|n| n.id == NodeId::vocab("workflows"))
+            .unwrap();
         assert_eq!(wf.parents, vec![NodeId::vocab("n8n")]);
-        let n8n = g.nodes.iter().find(|n| n.id == NodeId::vocab("n8n")).unwrap();
+        let n8n = g
+            .nodes
+            .iter()
+            .find(|n| n.id == NodeId::vocab("n8n"))
+            .unwrap();
         assert_eq!(n8n.children, vec![NodeId::vocab("workflows")]);
     }
 

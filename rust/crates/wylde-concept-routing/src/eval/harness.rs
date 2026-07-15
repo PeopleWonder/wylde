@@ -185,8 +185,8 @@ fn aggregate(cases: &[CaseResult]) -> Vec<ArmAgg> {
             let ndcgs: Vec<f64> = group.iter().map(|c| c.ndcg).collect();
             let tokens: Vec<f64> = group.iter().map(|c| c.injected_tokens as f64).collect();
             let activated: Vec<f64> = group.iter().map(|c| c.activated_count as f64).collect();
-            let fallback = group.iter().filter(|c| c.fell_back).count() as f64
-                / (group.len().max(1) as f64);
+            let fallback =
+                group.iter().filter(|c| c.fell_back).count() as f64 / (group.len().max(1) as f64);
 
             let conf: Vec<f64> = group
                 .iter()
@@ -295,10 +295,25 @@ mod tests {
     fn clean_corpus() -> (EvalCorpus, GoldSet, HashMap<String, Vec<f32>>) {
         // 4-D space, one axis per concept.
         let concepts = [
-            ("auth", "Authentication", "src/auth/login.rs", [1.0, 0.0, 0.0, 0.0]),
-            ("rag", "Retrieval", "src/rag/search.rs", [0.0, 1.0, 0.0, 0.0]),
+            (
+                "auth",
+                "Authentication",
+                "src/auth/login.rs",
+                [1.0, 0.0, 0.0, 0.0],
+            ),
+            (
+                "rag",
+                "Retrieval",
+                "src/rag/search.rs",
+                [0.0, 1.0, 0.0, 0.0],
+            ),
             ("ddns", "DDNS", "src/net/ddns.rs", [0.0, 0.0, 1.0, 0.0]),
-            ("nextcloud", "Nextcloud", "src/net/nextcloud.rs", [0.0, 0.0, 0.0, 1.0]),
+            (
+                "nextcloud",
+                "Nextcloud",
+                "src/net/nextcloud.rs",
+                [0.0, 0.0, 0.0, 1.0],
+            ),
         ];
         let chunks = concepts
             .iter()
@@ -522,8 +537,7 @@ mod tests {
             "exclusion keeps the conflated file out"
         );
         assert!(
-            seed.conflation_suppression_rate.unwrap()
-                <= rel.conflation_suppression_rate.unwrap(),
+            seed.conflation_suppression_rate.unwrap() <= rel.conflation_suppression_rate.unwrap(),
             "relations never suppress worse than seed-only"
         );
     }

@@ -52,8 +52,10 @@ fn devices_healthy_mounts_and_loads(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn devices_survives_backend_down(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new()
-        .on_err("device_gate.list_devices", "pipe_unavailable: device-gate not running");
+    let fake = ScriptedBackend::new().on_err(
+        "device_gate.list_devices",
+        "pipe_unavailable: device-gate not running",
+    );
     let _guard = fake.clone().install();
 
     let window = mount(cx);
@@ -71,15 +73,20 @@ fn devices_survives_backend_down(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn devices_surfaces_backend_error_envelope(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new()
-        .on_err("device_gate.list_devices", "internal_error: device-gate blew up");
+    let fake = ScriptedBackend::new().on_err(
+        "device_gate.list_devices",
+        "internal_error: device-gate blew up",
+    );
     let _guard = fake.install();
 
     let window = mount(cx);
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.error.is_some(), "an error envelope surfaces on the panel");
+            assert!(
+                panel.error.is_some(),
+                "an error envelope surfaces on the panel"
+            );
             assert!(!panel.loading_devices);
         })
         .unwrap();

@@ -114,11 +114,26 @@ struct RepoFile {
 }
 
 const WHISPER_FILES: &[RepoFile] = &[
-    RepoFile { repo_path: "config.json", optional: false },
-    RepoFile { repo_path: "generation_config.json", optional: true },
-    RepoFile { repo_path: "tokenizer.json", optional: false },
-    RepoFile { repo_path: "onnx/encoder_model.onnx", optional: false },
-    RepoFile { repo_path: "onnx/decoder_model.onnx", optional: false },
+    RepoFile {
+        repo_path: "config.json",
+        optional: false,
+    },
+    RepoFile {
+        repo_path: "generation_config.json",
+        optional: true,
+    },
+    RepoFile {
+        repo_path: "tokenizer.json",
+        optional: false,
+    },
+    RepoFile {
+        repo_path: "onnx/encoder_model.onnx",
+        optional: false,
+    },
+    RepoFile {
+        repo_path: "onnx/decoder_model.onnx",
+        optional: false,
+    },
 ];
 
 /// Number of file fetches the progress counter ticks through:
@@ -300,7 +315,9 @@ pub fn whisper_source_repo(stt_model: &str) -> String {
 /// already present (idempotent skip).
 async fn fetch_to(http: &dyn ModelHttp, url: &str, dest: &Path) -> Result<bool, String> {
     if dest.is_file() {
-        let nonempty = std::fs::metadata(dest).map(|m| m.len() > 0).unwrap_or(false);
+        let nonempty = std::fs::metadata(dest)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
         if nonempty {
             return Ok(false);
         }
@@ -337,7 +354,10 @@ async fn ensure_whisper(
         match fetch_to(http, &url, &dest).await {
             Ok(_) => {}
             Err(e) if rf.optional => {
-                tracing::warn!("wylde-voice: optional whisper file {} skipped: {e}", rf.repo_path);
+                tracing::warn!(
+                    "wylde-voice: optional whisper file {} skipped: {e}",
+                    rf.repo_path
+                );
             }
             Err(e) => return Err(format!("whisper {}: {e}", rf.repo_path)),
         }
@@ -422,7 +442,10 @@ pub async fn ensure_models(
     let endpoint = hf_endpoint();
     let whisper_dir = ensure_whisper(http, hf_root, &endpoint, stt_model, bump).await?;
     let kokoro_dir = ensure_kokoro(http, hf_root, &endpoint, bump).await?;
-    Ok(EnsureOutcome { whisper_dir, kokoro_dir })
+    Ok(EnsureOutcome {
+        whisper_dir,
+        kokoro_dir,
+    })
 }
 
 // --------------------------------------------------------------------- //
@@ -432,9 +455,17 @@ pub async fn ensure_models(
 /// Status of a background bootstrap job, polled via [`EnsureJobs::status`].
 #[derive(Debug, Clone)]
 pub enum EnsureStatus {
-    InProgress { done: usize, total: usize },
-    Done { whisper_dir: PathBuf, kokoro_dir: PathBuf },
-    Failed { error: String },
+    InProgress {
+        done: usize,
+        total: usize,
+    },
+    Done {
+        whisper_dir: PathBuf,
+        kokoro_dir: PathBuf,
+    },
+    Failed {
+        error: String,
+    },
 }
 
 /// Process-wide store of in-flight + completed bootstrap jobs. Uses a
@@ -453,7 +484,9 @@ impl EnsureJobs {
 
     pub fn global() -> Arc<EnsureJobs> {
         static SINGLETON: OnceLock<Arc<EnsureJobs>> = OnceLock::new();
-        SINGLETON.get_or_init(|| Arc::new(EnsureJobs::new())).clone()
+        SINGLETON
+            .get_or_init(|| Arc::new(EnsureJobs::new()))
+            .clone()
     }
 
     fn record(&self, job_id: &str, status: EnsureStatus) {
@@ -554,11 +587,19 @@ mod tests {
             self.bodies.lock().unwrap().insert(url.to_owned(), body);
         }
         fn install_with_sha(&self, url: &str, body: Vec<u8>, sha: &str) {
-            self.shas.lock().unwrap().insert(url.to_owned(), sha.to_owned());
+            self.shas
+                .lock()
+                .unwrap()
+                .insert(url.to_owned(), sha.to_owned());
             self.install(url, body);
         }
         fn hit_count(&self, url: &str) -> usize {
-            self.seen.lock().unwrap().iter().filter(|u| *u == url).count()
+            self.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|u| *u == url)
+                .count()
         }
     }
 
@@ -574,7 +615,10 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| format!("no stub for {url}"))?;
             let sha256 = self.shas.lock().unwrap().get(url).cloned();
-            Ok(FetchedFile { bytes: body, sha256 })
+            Ok(FetchedFile {
+                bytes: body,
+                sha256,
+            })
         }
     }
 
@@ -630,7 +674,10 @@ mod tests {
         );
         // Explicit override wins.
         std::env::set_var("WYLDE_VOICE_STT_DOWNLOAD_REPO", "myorg/custom-onnx");
-        assert_eq!(whisper_source_repo("openai/whisper-small"), "myorg/custom-onnx");
+        assert_eq!(
+            whisper_source_repo("openai/whisper-small"),
+            "myorg/custom-onnx"
+        );
         std::env::remove_var("WYLDE_VOICE_STT_DOWNLOAD_REPO");
     }
 

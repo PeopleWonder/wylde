@@ -26,7 +26,7 @@ use wylde_shared::ipc::{IpcError, Reply, StreamSender};
 
 use crate::actions::error::invalid_request;
 use crate::mic::{
-    list_input_device_names, DEFAULT_MIC_CHUNK_SAMPLES, MicCapture, MicError, TARGET_SAMPLE_RATE,
+    list_input_device_names, MicCapture, MicError, DEFAULT_MIC_CHUNK_SAMPLES, TARGET_SAMPLE_RATE,
 };
 use crate::state;
 use crate::synth::wav::{encode_base64, encode_wav};
@@ -280,7 +280,9 @@ fn read_chunk_samples(payload: &Value) -> Result<usize, IpcError> {
                 return Err(invalid_request("chunk_samples must be > 0"));
             }
             if n > 32_000 {
-                return Err(invalid_request("chunk_samples must be ≤ 32000 (2 s at 16 kHz)"));
+                return Err(invalid_request(
+                    "chunk_samples must be ≤ 32000 (2 s at 16 kHz)",
+                ));
             }
             Ok(n as usize)
         }
@@ -297,12 +299,11 @@ fn pcm_to_le_bytes(samples: &[i16]) -> Vec<u8> {
 
 pub(crate) fn mic_error_to_ipc(e: MicError) -> IpcError {
     match e {
-        MicError::NoDevice => {
-            IpcError::new("mic_unavailable", "no default input device")
-        }
-        MicError::NoSupportedConfig(m) => {
-            IpcError::new("mic_unavailable", format!("default input has no supported config: {m}"))
-        }
+        MicError::NoDevice => IpcError::new("mic_unavailable", "no default input device"),
+        MicError::NoSupportedConfig(m) => IpcError::new(
+            "mic_unavailable",
+            format!("default input has no supported config: {m}"),
+        ),
         MicError::Build(m) => IpcError::new("mic_unavailable", format!("cpal stream build: {m}")),
         MicError::Play(m) => IpcError::new("mic_unavailable", format!("cpal stream play: {m}")),
     }
@@ -335,8 +336,14 @@ mod tests {
 
     #[test]
     fn read_chunk_samples_uses_default_when_missing() {
-        assert_eq!(read_chunk_samples(&json!({})).unwrap(), DEFAULT_MIC_CHUNK_SAMPLES);
-        assert_eq!(read_chunk_samples(&json!({"chunk_samples": null})).unwrap(), DEFAULT_MIC_CHUNK_SAMPLES);
+        assert_eq!(
+            read_chunk_samples(&json!({})).unwrap(),
+            DEFAULT_MIC_CHUNK_SAMPLES
+        );
+        assert_eq!(
+            read_chunk_samples(&json!({"chunk_samples": null})).unwrap(),
+            DEFAULT_MIC_CHUNK_SAMPLES
+        );
     }
 
     #[test]
@@ -353,8 +360,14 @@ mod tests {
 
     #[test]
     fn read_chunk_samples_accepts_legit_values() {
-        assert_eq!(read_chunk_samples(&json!({"chunk_samples": 1_280})).unwrap(), 1_280);
-        assert_eq!(read_chunk_samples(&json!({"chunk_samples": 800})).unwrap(), 800);
+        assert_eq!(
+            read_chunk_samples(&json!({"chunk_samples": 1_280})).unwrap(),
+            1_280
+        );
+        assert_eq!(
+            read_chunk_samples(&json!({"chunk_samples": 800})).unwrap(),
+            800
+        );
     }
 
     #[test]

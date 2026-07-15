@@ -168,10 +168,7 @@ impl PushStore {
 
     /// Construct with an injectable webhook client — used by unit tests
     /// to avoid touching the network.
-    pub fn with_client<P: AsRef<Path>>(
-        data_dir: P,
-        client: Box<dyn WebhookClient>,
-    ) -> Self {
+    pub fn with_client<P: AsRef<Path>>(data_dir: P, client: Box<dyn WebhookClient>) -> Self {
         Self {
             path: data_dir.as_ref().join("push.json"),
             lock: Mutex::new(()),
@@ -183,12 +180,7 @@ impl PushStore {
     ///
     /// `kind` must be `"webhook"` or `"poll"`; for `webhook` the
     /// `endpoint` URL must be non-empty.
-    pub fn subscribe(
-        &self,
-        public_key: &str,
-        kind: &str,
-        endpoint: &str,
-    ) -> Result<Subscription> {
+    pub fn subscribe(&self, public_key: &str, kind: &str, endpoint: &str) -> Result<Subscription> {
         if kind != "webhook" && kind != "poll" {
             return Err(anyhow!(r#"kind must be "webhook" or "poll""#));
         }
@@ -202,7 +194,9 @@ impl PushStore {
         };
         let _g = self.lock.lock().unwrap();
         let mut state = self.load();
-        state.subscriptions.insert(public_key.to_string(), sub.clone());
+        state
+            .subscriptions
+            .insert(public_key.to_string(), sub.clone());
         self.save(&state)?;
         Ok(sub)
     }
@@ -294,10 +288,7 @@ impl PushStore {
         // Webhook failed (or subscription was poll-mode or absent) — enqueue.
         let _g = self.lock.lock().unwrap();
         let mut state = self.load();
-        let q = state
-            .queued
-            .entry(public_key.to_string())
-            .or_default();
+        let q = state.queued.entry(public_key.to_string()).or_default();
         q.push(payload);
         if q.len() > QUEUE_CAP {
             let drop = q.len() - QUEUE_CAP;
@@ -358,8 +349,7 @@ impl PushStore {
         }
         let body = serde_json::to_vec_pretty(state).context("push: serialize")?;
         let tmp = self.path.with_extension("tmp");
-        std::fs::write(&tmp, &body)
-            .with_context(|| format!("push: write {}", tmp.display()))?;
+        std::fs::write(&tmp, &body).with_context(|| format!("push: write {}", tmp.display()))?;
         std::fs::rename(&tmp, &self.path)
             .with_context(|| format!("push: rename to {}", self.path.display()))?;
         Ok(())
@@ -461,9 +451,7 @@ mod tests {
         store
             .subscribe("peer1", "webhook", "https://wh.example/p")
             .unwrap();
-        let r = store
-            .notify("peer1", "hello", "body", Map::new())
-            .await;
+        let r = store.notify("peer1", "hello", "body", Map::new()).await;
         assert!(r.delivered);
         assert!(!r.queued);
 
@@ -483,9 +471,7 @@ mod tests {
         store
             .subscribe("peer1", "webhook", "https://wh.example/p")
             .unwrap();
-        let r = store
-            .notify("peer1", "hello", "body", Map::new())
-            .await;
+        let r = store.notify("peer1", "hello", "body", Map::new()).await;
         assert!(!r.delivered);
         assert!(r.queued);
 
@@ -500,9 +486,7 @@ mod tests {
     async fn notify_poll_subscription_always_queues() {
         let (_dir, store, client) = fresh_store(vec![]);
         store.subscribe("peer1", "poll", "").unwrap();
-        let r = store
-            .notify("peer1", "hi", "hi", Map::new())
-            .await;
+        let r = store.notify("peer1", "hi", "hi", Map::new()).await;
         assert!(!r.delivered);
         assert!(r.queued);
         // Webhook client must not have been called.
@@ -526,9 +510,7 @@ mod tests {
         let (_dir, store, _) = fresh_store(vec![]);
         store.subscribe("p", "poll", "").unwrap();
         for i in 0..70 {
-            store
-                .notify("p", &format!("t{i}"), "", Map::new())
-                .await;
+            store.notify("p", &format!("t{i}"), "", Map::new()).await;
         }
         let q = store.drain_pending("p");
         assert_eq!(q.len(), QUEUE_CAP);
@@ -547,9 +529,7 @@ mod tests {
         store
             .subscribe("b", "webhook", "https://b.example/")
             .unwrap();
-        let r = store
-            .broadcast("title", "body", Map::new())
-            .await;
+        let r = store.broadcast("title", "body", Map::new()).await;
         assert_eq!(r.recipients, 2);
         assert_eq!(r.delivered, 1);
         assert_eq!(r.queued, 1);

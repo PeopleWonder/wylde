@@ -202,7 +202,9 @@ async fn main() -> Result<()> {
 
 /// mDNS LAN advertisement. Registers `_wylde-link._udp.local.` if the
 /// `discovery.mdns.enabled` YAML key is true (the default).
-fn start_mdns(cfg: &wylde_vpn::config::Config) -> Option<wylde_vpn::discovery::mdns::MdnsAdvertiser> {
+fn start_mdns(
+    cfg: &wylde_vpn::config::Config,
+) -> Option<wylde_vpn::discovery::mdns::MdnsAdvertiser> {
     if !cfg.mdns_enabled {
         tracing::info!("mdns: disabled via discovery.mdns.enabled = false");
         return None;
@@ -219,16 +221,15 @@ fn start_mdns(cfg: &wylde_vpn::config::Config) -> Option<wylde_vpn::discovery::m
             service_type.push_str(".local.");
         }
     }
-    let adv = wylde_vpn::discovery::mdns::MdnsAdvertiser::new(
-        wylde_vpn::discovery::mdns::MdnsConfig {
+    let adv =
+        wylde_vpn::discovery::mdns::MdnsAdvertiser::new(wylde_vpn::discovery::mdns::MdnsConfig {
             hostname,
             port: cfg.link_listen_port,
             service_type,
             instance_name: cfg.mdns_instance_name.clone(),
             gateway_port: 8021,
             version: "1.0".to_string(),
-        },
-    );
+        });
     if adv.start() {
         Some(adv)
     } else {

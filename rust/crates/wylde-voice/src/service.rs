@@ -263,9 +263,7 @@ pub fn install() {
 
     register_action_with_meta(
         "voice.set_active_conversation",
-        |payload: Value| async move {
-            session::handle_voice_set_active_conversation(payload).await
-        },
+        |payload: Value| async move { session::handle_voice_set_active_conversation(payload).await },
         "Bind the voice service to a conversation id so transcribed \
          utterances are routed there. Payload: {conversation_id}. \
          Reply: {conversation_id}.",
@@ -283,9 +281,7 @@ pub fn install() {
 
     register_action_with_meta(
         "voice.check_wake_word_model",
-        |payload: Value| async move {
-            session::handle_voice_check_wake_word_model(payload).await
-        },
+        |payload: Value| async move { session::handle_voice_check_wake_word_model(payload).await },
         "Check the model_registry for the openWakeWord bundle. \
          Payload: {model?} (defaults to the configured wake-word model). \
          Reply: {installed, model}.",
@@ -294,9 +290,7 @@ pub fn install() {
 
     register_action_with_meta(
         "voice.pull_wake_word_model",
-        |payload: Value| async move {
-            session::handle_voice_pull_wake_word_model(payload).await
-        },
+        |payload: Value| async move { session::handle_voice_pull_wake_word_model(payload).await },
         "Kick a background pull of the wake-word bundle into \
          <wakeword_models_dir>/<vendor>/<name>/. Returns immediately with \
          a job_id the GUI can poll via voice.wake_word_pull_status. \
@@ -306,9 +300,7 @@ pub fn install() {
 
     register_action_with_meta(
         "voice.wake_word_pull_status",
-        |payload: Value| async move {
-            session::handle_voice_wake_word_pull_status(payload).await
-        },
+        |payload: Value| async move { session::handle_voice_wake_word_pull_status(payload).await },
         "Poll the in-progress / done / failed status of a wake-word \
          pull. Payload: {job_id}. Reply: {job_id, state, bundle_dir?, \
          error?}.",
@@ -317,9 +309,7 @@ pub fn install() {
 
     register_action_with_meta(
         "voice.subscribe_status",
-        |payload: Value| async move {
-            session::handle_voice_subscribe_status(payload).await
-        },
+        |payload: Value| async move { session::handle_voice_subscribe_status(payload).await },
         "Long-poll cursor over the status event ring. Payload: \
          {cursor?, max_wait_ms?} (max_wait_ms capped at 25 s). \
          Reply: {events: [...], next_cursor}. Feed next_cursor back \
@@ -548,7 +538,13 @@ mod tests {
         .await;
         assert!(reply.ok, "voice.list_models should reply ok");
         assert!(reply.data["stt"]["models"].is_array());
-        assert_eq!(reply.data["tts"]["model"]["voices"].as_array().unwrap().len(), 28);
+        assert_eq!(
+            reply.data["tts"]["model"]["voices"]
+                .as_array()
+                .unwrap()
+                .len(),
+            28
+        );
         reset_for_tests();
     }
 }

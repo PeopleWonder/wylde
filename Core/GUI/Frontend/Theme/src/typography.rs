@@ -40,12 +40,12 @@ pub const FAMILY_MONO: &str = "Cascadia Mono";
 
 /// Fallback monospace families, in request order.
 pub const MONO_FALLBACK_FAMILIES: &[&str] = &[
-    "Consolas",          // Windows
-    "SF Mono",           // macOS
-    "Menlo",             // macOS
-    "DejaVu Sans Mono",  // Linux
-    "Liberation Mono",   // Linux
-    "monospace",         // generic — always resolvable
+    "Consolas",         // Windows
+    "SF Mono",          // macOS
+    "Menlo",            // macOS
+    "DejaVu Sans Mono", // Linux
+    "Liberation Mono",  // Linux
+    "monospace",        // generic — always resolvable
 ];
 
 /// Named text sizes in pixels at the default DPI.  Map roughly to the

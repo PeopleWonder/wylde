@@ -26,12 +26,12 @@
 //! same drop-oldest semantics the Python `MicrophoneStream` queue has
 //! in `Voice/record.py`.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 
-use cpal::SampleFormat;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::SampleFormat;
 use thiserror::Error;
 use tokio::sync::broadcast;
 
@@ -86,9 +86,7 @@ impl MicCapture {
     /// sized i16 mono frames at 16 kHz on the returned broadcast.
     pub fn start(chunk_samples: usize) -> Result<Self, MicError> {
         if chunk_samples == 0 {
-            return Err(MicError::Build(
-                "chunk_samples must be > 0".to_owned(),
-            ));
+            return Err(MicError::Build("chunk_samples must be > 0".to_owned()));
         }
 
         let host = cpal::default_host();
@@ -196,9 +194,7 @@ impl Drop for MicCapture {
 /// empty in that case too.
 pub fn list_input_device_names() -> Result<(Option<String>, Vec<String>), MicError> {
     let host = cpal::default_host();
-    let default_name = host
-        .default_input_device()
-        .and_then(|d| d.name().ok());
+    let default_name = host.default_input_device().and_then(|d| d.name().ok());
     let mut names = Vec::new();
     let devices = host
         .input_devices()
@@ -261,10 +257,8 @@ fn run_capture_thread(
                 {
                     let chunks_tx = chunks_tx.clone();
                     move |data: &[i16], _info: &cpal::InputCallbackInfo| {
-                        let buf: Vec<f32> = data
-                            .iter()
-                            .map(|&s| s as f32 / i16::MAX as f32)
-                            .collect();
+                        let buf: Vec<f32> =
+                            data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
                         ingest_samples(
                             &buf,
                             input_channels,
@@ -498,8 +492,7 @@ mod tests {
     #[test]
     #[ignore = "requires a working default input device"]
     fn live_default_input_emits_chunks() {
-        let cap = MicCapture::start(WAKEWORD_FRAME_SAMPLES)
-            .expect("default input available");
+        let cap = MicCapture::start(WAKEWORD_FRAME_SAMPLES).expect("default input available");
         let mut rx = cap.subscribe();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let mut received_any = false;

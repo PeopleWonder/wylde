@@ -663,9 +663,7 @@ fn annotate_staleness(infos: &mut [ServiceInfo]) {
             None => siblings
                 .iter()
                 .find(|d| d.name == info.name)
-                .and_then(|d| {
-                    crate::state::services::sibling_binary_path(&d.folder, &info.name)
-                }),
+                .and_then(|d| crate::state::services::sibling_binary_path(&d.folder, &info.name)),
         };
         let Some(path) = path else {
             continue;
@@ -1570,9 +1568,15 @@ mod tests {
         // Binary older than the process (normal: built, then started) ⇒ fresh.
         assert!(!binary_predates_process(3600.0, 60.0));
         // Within the grace window ⇒ not flagged (rebuild-then-start jitter).
-        assert!(!binary_predates_process(100.0, 100.0 + STALE_BINARY_GRACE_S - 1.0));
+        assert!(!binary_predates_process(
+            100.0,
+            100.0 + STALE_BINARY_GRACE_S - 1.0
+        ));
         // Just past grace ⇒ flagged.
-        assert!(binary_predates_process(100.0, 100.0 + STALE_BINARY_GRACE_S + 1.0));
+        assert!(binary_predates_process(
+            100.0,
+            100.0 + STALE_BINARY_GRACE_S + 1.0
+        ));
         // Missing started_at (infinite process age) is never stale, and an
         // unreadable binary (infinite age) likewise.
         assert!(!binary_predates_process(60.0, f64::INFINITY));

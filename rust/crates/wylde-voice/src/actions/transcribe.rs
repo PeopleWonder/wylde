@@ -282,7 +282,9 @@ pub async fn handle_transcribe_stream(payload: Value, sender: StreamSender) {
         Ok(p) => p,
         Err(e) => {
             let _ = sender // wylde-check: discard-result-ok
-                .send(Err(invalid_request(format!("build_prompt({language}): {e}"))))
+                .send(Err(invalid_request(format!(
+                    "build_prompt({language}): {e}"
+                ))))
                 .await;
             return;
         }
@@ -436,8 +438,7 @@ fn read_audio_payload(payload: &Value) -> Result<Vec<u8>, IpcError> {
         if trimmed.is_empty() {
             return Err(invalid_request("payload.audio_b64 is empty"));
         }
-        return decode_base64(trimmed)
-            .map_err(|e| invalid_request(format!("audio_b64: {e}")));
+        return decode_base64(trimmed).map_err(|e| invalid_request(format!("audio_b64: {e}")));
     }
 
     Err(invalid_request(
@@ -453,14 +454,13 @@ async fn ensure_encoder() -> Result<Arc<WhisperEncoder>, wylde_shared::ipc::IpcE
     }
 
     let cfg = Config::get();
-    let encoder_path = resolve_encoder_path(cfg)
-        .ok_or_else(|| {
-            model_not_loaded(format!(
-                "no encoder ONNX found for {} (override via WYLDE_VOICE_STT_ENCODER_PATH; \
+    let encoder_path = resolve_encoder_path(cfg).ok_or_else(|| {
+        model_not_loaded(format!(
+            "no encoder ONNX found for {} (override via WYLDE_VOICE_STT_ENCODER_PATH; \
                  first-run setup downloads + ONNX-exports the configured whisper model)",
-                cfg.stt_model
-            ))
-        })?;
+            cfg.stt_model
+        ))
+    })?;
 
     let bytes_hint = std::fs::metadata(&encoder_path).map(|m| m.len()).ok(); // wylde-check: discard-result-ok
     let lease = match lease::acquire(&format!("{}#encoder", cfg.stt_model), bytes_hint).await {
@@ -485,12 +485,8 @@ async fn ensure_encoder() -> Result<Arc<WhisperEncoder>, wylde_shared::ipc::IpcE
         WhisperLoadError::NotFound(p) => {
             model_not_loaded(format!("encoder ONNX not found at {}", p.display()))
         }
-        WhisperLoadError::OpenVinoUnavailable(m) => {
-            npu_unavailable(m)
-        }
-        WhisperLoadError::SessionBuild(m) => {
-            inference_failed(format!("ort session build: {m}"))
-        }
+        WhisperLoadError::OpenVinoUnavailable(m) => npu_unavailable(m),
+        WhisperLoadError::SessionBuild(m) => inference_failed(format!("ort session build: {m}")),
     })?;
 
     let arc = Arc::new(loaded);
@@ -509,14 +505,13 @@ async fn ensure_decoder() -> Result<Arc<WhisperDecoder>, wylde_shared::ipc::IpcE
     }
 
     let cfg = Config::get();
-    let decoder_path = resolve_decoder_path(cfg)
-        .ok_or_else(|| {
-            model_not_loaded(format!(
-                "no decoder ONNX found for {} (expected `decoder_model.onnx` next to \
+    let decoder_path = resolve_decoder_path(cfg).ok_or_else(|| {
+        model_not_loaded(format!(
+            "no decoder ONNX found for {} (expected `decoder_model.onnx` next to \
                  the encoder; first-run setup downloads + ONNX-exports the model)",
-                cfg.stt_model
-            ))
-        })?;
+            cfg.stt_model
+        ))
+    })?;
 
     let bytes_hint = std::fs::metadata(&decoder_path).map(|m| m.len()).ok(); // wylde-check: discard-result-ok
     let lease = match lease::acquire(&format!("{}#decoder", cfg.stt_model), bytes_hint).await {
@@ -566,12 +561,10 @@ async fn ensure_tokenizer() -> Result<Arc<WhisperTokenizer>, wylde_shared::ipc::
         TokenizerLoadError::NotFound(p) => {
             model_not_loaded(format!("tokenizer.json not found at {}", p.display()))
         }
-        TokenizerLoadError::Load(m) => {
-            inference_failed(format!("tokenizer load: {m}"))
-        }
-        TokenizerLoadError::MissingSpecialToken(t) => {
-            inference_failed(format!("tokenizer vocab missing required special token: {t}"))
-        }
+        TokenizerLoadError::Load(m) => inference_failed(format!("tokenizer load: {m}")),
+        TokenizerLoadError::MissingSpecialToken(t) => inference_failed(format!(
+            "tokenizer vocab missing required special token: {t}"
+        )),
     })?;
 
     let arc = Arc::new(loaded);
@@ -615,7 +608,11 @@ fn resolve_decoder_path(cfg: &Config) -> Option<PathBuf> {
 fn resolve_tokenizer_path(cfg: &Config) -> Option<PathBuf> {
     let snap = first_model_snapshot(cfg)?;
     let p = snap.join("tokenizer.json");
-    if p.exists() { Some(p) } else { None }
+    if p.exists() {
+        Some(p)
+    } else {
+        None
+    }
 }
 
 /// Whisper's `*.en` config.json forces a 1-element `forced_decoder_ids`
@@ -647,7 +644,12 @@ fn first_model_snapshot(cfg: &Config) -> Option<PathBuf> {
         .or_else(|| {
             std::env::var_os("USERPROFILE")
                 .or_else(|| std::env::var_os("HOME"))
-                .map(|h| PathBuf::from(h).join(".cache").join("huggingface").join("hub"))
+                .map(|h| {
+                    PathBuf::from(h)
+                        .join(".cache")
+                        .join("huggingface")
+                        .join("hub")
+                })
         })?;
     let snapshots = hf_root.join(&cache_dir_name).join("snapshots");
     let entries = std::fs::read_dir(&snapshots).ok()?;

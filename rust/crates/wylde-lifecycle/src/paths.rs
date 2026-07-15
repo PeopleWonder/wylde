@@ -180,7 +180,10 @@ fn resolve_with(store: &ServicePaths, root: &Path, service: &str) -> PathBuf {
 /// `WYLDE_IMAGES_DATA_DIR`). Matches the plan's §3 example exactly.
 pub fn data_dir_env_name(service: &str) -> String {
     let stripped = service.strip_prefix("wylde-").unwrap_or(service);
-    format!("WYLDE_{}_DATA_DIR", stripped.to_uppercase().replace('-', "_"))
+    format!(
+        "WYLDE_{}_DATA_DIR",
+        stripped.to_uppercase().replace('-', "_")
+    )
 }
 
 fn wylde_root() -> PathBuf {
@@ -268,10 +271,7 @@ mod tests {
     #[test]
     fn data_dir_env_name_strips_and_uppercases() {
         assert_eq!(data_dir_env_name("wylde-images"), "WYLDE_IMAGES_DATA_DIR");
-        assert_eq!(
-            data_dir_env_name("wylde-foo-bar"),
-            "WYLDE_FOO_BAR_DATA_DIR"
-        );
+        assert_eq!(data_dir_env_name("wylde-foo-bar"), "WYLDE_FOO_BAR_DATA_DIR");
         // A name without the prefix is uppercased as-is.
         assert_eq!(data_dir_env_name("images"), "WYLDE_IMAGES_DATA_DIR");
     }

@@ -328,7 +328,11 @@ mod tests {
             !g.adjacency().contains_key(&NodeRef::concept("sem:0001")),
             "dangling endpoint absent from adjacency"
         );
-        assert_eq!(g.of_kind(RelationKind::Dependency).count(), 0, "dangling skipped");
+        assert_eq!(
+            g.of_kind(RelationKind::Dependency).count(),
+            0,
+            "dangling skipped"
+        );
         assert_eq!(g.of_kind(RelationKind::Positive).count(), 1, "live kept");
         assert_eq!(
             g.adjacency()[&NodeRef::vocab("ddns")].len(),

@@ -45,17 +45,13 @@ pub fn install() {
     );
     register_action_with_meta(
         "ollama.list_models",
-        |payload: Value| async move {
-            models::handle_list_models(payload, upstream::client()).await
-        },
+        |payload: Value| async move { models::handle_list_models(payload, upstream::client()).await },
         "GET /api/tags — full installed-model list (passthrough envelope).",
         "wylde_ollama::actions::models",
     );
     register_action_with_meta(
         "ollama.list_loaded",
-        |payload: Value| async move {
-            models::handle_list_loaded(payload, upstream::client()).await
-        },
+        |payload: Value| async move { models::handle_list_loaded(payload, upstream::client()).await },
         "GET /api/ps — currently-loaded models with VRAM/expires_at.",
         "wylde_ollama::actions::models",
     );

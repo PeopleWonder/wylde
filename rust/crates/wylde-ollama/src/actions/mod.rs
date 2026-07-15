@@ -16,6 +16,4 @@ pub mod error;
 pub mod models;
 pub mod pull;
 
-pub use error::{
-    invalid_request, ollama_http_err, ollama_unreachable_err,
-};
+pub use error::{invalid_request, ollama_http_err, ollama_unreachable_err};

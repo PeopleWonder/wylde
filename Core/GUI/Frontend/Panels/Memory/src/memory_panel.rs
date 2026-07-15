@@ -622,7 +622,9 @@ fn copy_in_button(
     let ws_for_click = workspace_id.to_owned();
     let label = SharedString::from(format!("Copy to “{workspace_id}”"));
     div()
-        .id(ElementId::Name(format!("memory-copyin::{record_id}").into()))
+        .id(ElementId::Name(
+            format!("memory-copyin::{record_id}").into(),
+        ))
         .self_start()
         .px_3()
         .py_1()

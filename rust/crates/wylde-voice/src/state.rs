@@ -102,7 +102,10 @@ pub fn set_whisper_decoder(handle: Arc<WhisperDecoder>, lease: Option<Lease>) {
 }
 
 pub fn whisper_tokenizer() -> Option<Arc<WhisperTokenizer>> {
-    state().read().ok().and_then(|s| s.whisper_tokenizer.clone())
+    state()
+        .read()
+        .ok()
+        .and_then(|s| s.whisper_tokenizer.clone())
 }
 
 pub fn set_whisper_tokenizer(handle: Arc<WhisperTokenizer>) {
@@ -177,7 +180,10 @@ pub fn take_mic_capture() -> Option<Arc<MicCapture>> {
 }
 
 pub fn wakeword_pipeline() -> Option<Arc<WakeWordPipeline>> {
-    state().read().ok().and_then(|s| s.wakeword_pipeline.clone())
+    state()
+        .read()
+        .ok()
+        .and_then(|s| s.wakeword_pipeline.clone())
 }
 
 pub fn set_wakeword_pipeline(handle: Arc<WakeWordPipeline>) {
@@ -187,7 +193,10 @@ pub fn set_wakeword_pipeline(handle: Arc<WakeWordPipeline>) {
 }
 
 pub fn wakeword_listener() -> Option<Arc<WakeWordListener>> {
-    state().read().ok().and_then(|s| s.wakeword_listener.clone())
+    state()
+        .read()
+        .ok()
+        .and_then(|s| s.wakeword_listener.clone())
 }
 
 pub fn set_wakeword_listener(handle: Arc<WakeWordListener>) {
@@ -197,7 +206,10 @@ pub fn set_wakeword_listener(handle: Arc<WakeWordListener>) {
 }
 
 pub fn take_wakeword_listener() -> Option<Arc<WakeWordListener>> {
-    state().write().ok().and_then(|mut s| s.wakeword_listener.take())
+    state()
+        .write()
+        .ok()
+        .and_then(|mut s| s.wakeword_listener.take())
 }
 
 /// Drop the wake-word listener + pipeline + mic. Called from

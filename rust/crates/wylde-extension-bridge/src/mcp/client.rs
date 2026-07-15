@@ -502,7 +502,10 @@ mod tests {
     fn cwd_unknown_placeholder_is_an_error() {
         let err = resolve_cwd_placeholders("${WYLDE_BOGUS}/sub")
             .expect_err("an unknown placeholder must not silently pass through");
-        assert!(err.contains("${WYLDE_BOGUS}"), "error names the bad token: {err}");
+        assert!(
+            err.contains("${WYLDE_BOGUS}"),
+            "error names the bad token: {err}"
+        );
     }
 
     #[test]

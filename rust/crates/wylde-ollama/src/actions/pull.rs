@@ -116,11 +116,7 @@ pub async fn handle_pull(payload: Value, sender: StreamSender, up: Arc<Upstream>
 
 /// One attempt at a streaming pull. Returns `Err(msg)` to trigger the
 /// retry loop; returns `Ok(())` on a stream that saw a `status: success`.
-async fn pull_once(
-    resolved: &str,
-    sender: &StreamSender,
-    up: Arc<Upstream>,
-) -> Result<(), String> {
+async fn pull_once(resolved: &str, sender: &StreamSender, up: Arc<Upstream>) -> Result<(), String> {
     let body = json!({"name": resolved, "stream": true});
     let url = format!("{}/api/pull", up.base_url);
     let resp = match up

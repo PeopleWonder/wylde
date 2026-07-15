@@ -106,8 +106,7 @@ impl Baseline {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
-        let mut json = serde_json::to_string_pretty(self)
-            .context("serialising baseline")?;
+        let mut json = serde_json::to_string_pretty(self).context("serialising baseline")?;
         json.push('\n'); // trailing newline — friendlier diffs
         std::fs::write(path, json)
             .with_context(|| format!("writing baseline {}", path.display()))?;
@@ -153,7 +152,10 @@ pub fn default_specs() -> BTreeMap<String, MetricBaseline> {
             // Fail-gated but a WIDE band: wall-clock on a shared GPU is ~±25 %
             // noisy, so only a cliff (>40 %) is real; smaller drift only warns.
             gate: Gate::Fail,
-            compare: Compare::Relative { warn_pct: 20.0, fail_pct: 40.0 },
+            compare: Compare::Relative {
+                warn_pct: 20.0,
+                fail_pct: 40.0,
+            },
             note: "Fast-path chat turn latency — the number users feel. Wide \
                    band: GPU-shared wall-clock is ~±25% noisy, so this catches \
                    a latency cliff, not drift (drift → the trend history)."
@@ -169,7 +171,10 @@ pub fn default_specs() -> BTreeMap<String, MetricBaseline> {
             gate: Gate::Fail,
             // Absolute points: one flaky task at n≈12 is ~0.08, so warn early
             // but only fail on a ≥0.10 (multi-task) collapse.
-            compare: Compare::Absolute { warn_delta: 0.01, fail_delta: 0.10 },
+            compare: Compare::Absolute {
+                warn_delta: 0.01,
+                fail_delta: 0.10,
+            },
             note: "Fast ReAct success rate. Absolute-point band; one model \
                    refusal flake (~0.08 at n=12) warns, a ≥0.10 collapse fails."
                 .into(),
@@ -184,7 +189,10 @@ pub fn default_specs() -> BTreeMap<String, MetricBaseline> {
             unit: "rate".into(),
             direction: Direction::HigherIsBetter,
             gate: Gate::Fail,
-            compare: Compare::Absolute { warn_delta: 0.01, fail_delta: 0.10 },
+            compare: Compare::Absolute {
+                warn_delta: 0.01,
+                fail_delta: 0.10,
+            },
             note: "Planning-tier success — the S6 regression class. Must not \
                    drop below the fast control by construction."
                 .into(),
@@ -199,7 +207,10 @@ pub fn default_specs() -> BTreeMap<String, MetricBaseline> {
             gate: Gate::Fail,
             // Tokens are far less noisy than wall-clock (grammar-constrained,
             // budget-capped) — a tighter band is honest here.
-            compare: Compare::Relative { warn_pct: 15.0, fail_pct: 30.0 },
+            compare: Compare::Relative {
+                warn_pct: 15.0,
+                fail_pct: 30.0,
+            },
             note: "Planning-tier token cost. Tokens are much steadier than \
                    wall-clock, so a 30% jump means the tier genuinely got \
                    heavier, not noise."
@@ -215,7 +226,10 @@ pub fn default_specs() -> BTreeMap<String, MetricBaseline> {
             // Warn-only: think-tier wall is the noisiest number we have
             // (deliberating tiers swung ±25% in S6). Watch it, don't gate on it.
             gate: Gate::Warn,
-            compare: Compare::Relative { warn_pct: 25.0, fail_pct: 50.0 },
+            compare: Compare::Relative {
+                warn_pct: 25.0,
+                fail_pct: 50.0,
+            },
             note: "Planning-tier wall-clock. WARN-only: the noisiest metric we \
                    have; token-cost is the sharp cost gate instead."
                 .into(),
@@ -232,7 +246,10 @@ pub fn default_specs() -> BTreeMap<String, MetricBaseline> {
             gate: Gate::Fail,
             // Boolean invariant: 1.0 holds, 0.0 broke. A 0.5 band makes any
             // break fail regardless of corpus.
-            compare: Compare::Absolute { warn_delta: 0.5, fail_delta: 0.5 },
+            compare: Compare::Absolute {
+                warn_delta: 0.5,
+                fail_delta: 0.5,
+            },
             note: "Invariant: fused (RRF) recall ≥ dense recall on the lexical \
                    class. Corpus-independent, so a hard gate — fusion must \
                    never lose exact-token recall."
@@ -246,7 +263,10 @@ pub fn default_specs() -> BTreeMap<String, MetricBaseline> {
             unit: "bool".into(),
             direction: Direction::HigherIsBetter,
             gate: Gate::Fail,
-            compare: Compare::Absolute { warn_delta: 0.5, fail_delta: 0.5 },
+            compare: Compare::Absolute {
+                warn_delta: 0.5,
+                fail_delta: 0.5,
+            },
             note: "Guardrail invariant: fusion must not hurt semantic-class \
                    recall vs dense. Corpus-independent hard gate."
                 .into(),
@@ -262,7 +282,10 @@ pub fn default_specs() -> BTreeMap<String, MetricBaseline> {
             // drifts as the index is rebuilt — a real drop should be noticed
             // but not block a release on a corpus change.
             gate: Gate::Warn,
-            compare: Compare::Absolute { warn_delta: 0.05, fail_delta: 0.15 },
+            compare: Compare::Absolute {
+                warn_delta: 0.05,
+                fail_delta: 0.15,
+            },
             note: "Absolute fused recall on the lexical class. WARN-only: \
                    corpus-dependent (drifts with the live index), so it tracks \
                    quality without gating on a legitimate corpus change."
@@ -323,7 +346,8 @@ pub fn run_all(opts: &RunOpts) -> Result<Measurements> {
     let mut all = Measurements::default();
 
     if opts.skip_reasoning {
-        all.skips.push("reasoning: skipped by --skip-reasoning".into());
+        all.skips
+            .push("reasoning: skipped by --skip-reasoning".into());
     } else {
         all.merge(run_reasoning(opts));
     }
@@ -345,7 +369,10 @@ fn run_reasoning(opts: &RunOpts) -> Measurements {
     // `None` = reused an existing run (no spawn); `Some(status)` = we ran it.
     let status: Option<std::io::Result<std::process::ExitStatus>> =
         if opts.reuse && json_path.exists() {
-            println!("▶ reasoning_eval — reusing existing {}", json_path.display());
+            println!(
+                "▶ reasoning_eval — reusing existing {}",
+                json_path.display()
+            );
             None
         } else {
             // Remove any stale output so a failed run can't be read as success.
@@ -376,7 +403,10 @@ fn run_reasoning(opts: &RunOpts) -> Measurements {
 
     match parse_reasoning(&json_path) {
         Ok(m) => m,
-        Err(e) => skipped(reasoning_metric_keys(), &format!("reasoning: {}", spawn_why(status, e))),
+        Err(e) => skipped(
+            reasoning_metric_keys(),
+            &format!("reasoning: {}", spawn_why(status, e)),
+        ),
     }
 }
 
@@ -413,8 +443,8 @@ struct EvalFile {
 fn parse_reasoning(json_path: &Path) -> Result<Measurements> {
     let raw = std::fs::read_to_string(json_path)
         .with_context(|| format!("reading {}", json_path.display()))?;
-    let file: EvalFile = serde_json::from_str(&raw)
-        .with_context(|| format!("parsing {}", json_path.display()))?;
+    let file: EvalFile =
+        serde_json::from_str(&raw).with_context(|| format!("parsing {}", json_path.display()))?;
     if file.rows.is_empty() {
         bail!("no rows in {}", json_path.display());
     }
@@ -432,8 +462,10 @@ fn parse_reasoning(json_path: &Path) -> Result<Measurements> {
         let tok_median =
             spec::median(&rows.iter().map(|r| r.completion_tokens).collect::<Vec<_>>());
 
-        out.values.insert(format!("{prefix}.success_rate"), success_rate);
-        out.values.insert(format!("{prefix}.wall_ms_median"), wall_median);
+        out.values
+            .insert(format!("{prefix}.success_rate"), success_rate);
+        out.values
+            .insert(format!("{prefix}.wall_ms_median"), wall_median);
         if arm == "think" {
             out.values
                 .insert(format!("{prefix}.completion_tokens_median"), tok_median);
@@ -481,7 +513,10 @@ fn run_lexical(opts: &RunOpts) -> Measurements {
 
     match parse_lexical(&json_path) {
         Ok(m) => m,
-        Err(e) => skipped(lexical_metric_keys(), &format!("lexical: {}", spawn_why(status, e))),
+        Err(e) => skipped(
+            lexical_metric_keys(),
+            &format!("lexical: {}", spawn_why(status, e)),
+        ),
     }
 }
 
@@ -497,8 +532,8 @@ struct LexicalSummary {
 fn parse_lexical(json_path: &Path) -> Result<Measurements> {
     let raw = std::fs::read_to_string(json_path)
         .with_context(|| format!("reading {}", json_path.display()))?;
-    let s: LexicalSummary = serde_json::from_str(&raw)
-        .with_context(|| format!("parsing {}", json_path.display()))?;
+    let s: LexicalSummary =
+        serde_json::from_str(&raw).with_context(|| format!("parsing {}", json_path.display()))?;
 
     // Degenerate-corpus guard. If *both* dense arms recall nothing, the live
     // index does not contain the gold set's files — a stale/empty index (the
@@ -514,11 +549,24 @@ fn parse_lexical(json_path: &Path) -> Result<Measurements> {
 
     let mut out = Measurements::default();
     // The invariants the live harness itself asserts, lifted into gate metrics.
-    let lex_ok = if s.fused_lexical_recall >= s.dense_lexical_recall { 1.0 } else { 0.0 };
-    let sem_ok = if s.fused_semantic_recall + 0.001 >= s.dense_semantic_recall { 1.0 } else { 0.0 };
-    out.values.insert("retrieval.lexical.fused_ge_dense".into(), lex_ok);
-    out.values.insert("retrieval.semantic.fused_ge_dense".into(), sem_ok);
-    out.values.insert("retrieval.lexical.fused_recall".into(), s.fused_lexical_recall);
+    let lex_ok = if s.fused_lexical_recall >= s.dense_lexical_recall {
+        1.0
+    } else {
+        0.0
+    };
+    let sem_ok = if s.fused_semantic_recall + 0.001 >= s.dense_semantic_recall {
+        1.0
+    } else {
+        0.0
+    };
+    out.values
+        .insert("retrieval.lexical.fused_ge_dense".into(), lex_ok);
+    out.values
+        .insert("retrieval.semantic.fused_ge_dense".into(), sem_ok);
+    out.values.insert(
+        "retrieval.lexical.fused_recall".into(),
+        s.fused_lexical_recall,
+    );
     Ok(out)
 }
 
@@ -594,7 +642,9 @@ pub struct HistoryRecord<'a> {
 /// (junctioned into Core), so the trend is versioned + backed up but not
 /// published. Silently no-ops if the directory isn't mounted.
 pub fn append_history(path: &Path, rec: &HistoryRecord) -> Result<bool> {
-    let Some(parent) = path.parent() else { return Ok(false) };
+    let Some(parent) = path.parent() else {
+        return Ok(false);
+    };
     if !parent.exists() {
         // Planning-repo junction not mounted — don't fail the gate over it.
         return Ok(false);
@@ -705,7 +755,9 @@ mod tests {
         ]);
         let base = record_baseline(None, &m, provenance()).unwrap();
         let mut broke = m.clone();
-        broke.values.insert("retrieval.lexical.fused_ge_dense".into(), 0.0);
+        broke
+            .values
+            .insert("retrieval.lexical.fused_ge_dense".into(), 0.0);
         let report = compare(&base, &broke);
         assert!(report.any_failed());
     }
@@ -756,7 +808,10 @@ mod tests {
         let mut base = record_baseline(None, &m, provenance()).unwrap();
         // Reviewer tightens the fast-latency band in the committed file.
         if let Some(mb) = base.metrics.get_mut("reasoning.fast.wall_ms_median") {
-            mb.compare = Compare::Relative { warn_pct: 5.0, fail_pct: 10.0 };
+            mb.compare = Compare::Relative {
+                warn_pct: 5.0,
+                fail_pct: 10.0,
+            };
         }
         // Re-record with new numbers; the tuned band must survive.
         let m2 = measurements(&[
@@ -772,7 +827,10 @@ mod tests {
         let base2 = record_baseline(Some(&base), &m2, provenance()).unwrap();
         assert_eq!(
             base2.metrics["reasoning.fast.wall_ms_median"].compare,
-            Compare::Relative { warn_pct: 5.0, fail_pct: 10.0 }
+            Compare::Relative {
+                warn_pct: 5.0,
+                fail_pct: 10.0
+            }
         );
         assert_eq!(base2.metrics["reasoning.fast.wall_ms_median"].value, 9000.0);
     }

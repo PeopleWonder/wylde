@@ -46,7 +46,10 @@ pub async fn handle_get(host: Arc<Host>, payload: Value) -> Reply {
     };
     match host.get_status(name).await {
         Some(s) => Reply::ok(serde_json::to_value(s).unwrap_or(json!({}))),
-        None => Reply::err(IpcError::new("extension_not_found", format!("no extension `{name}`"))),
+        None => Reply::err(IpcError::new(
+            "extension_not_found",
+            format!("no extension `{name}`"),
+        )),
     }
 }
 
@@ -109,7 +112,10 @@ pub async fn handle_tools_list(host: Arc<Host>, payload: Value) -> Reply {
 
 pub async fn handle_tools_call(host: Arc<Host>, payload: Value) -> Reply {
     let Some(extension) = payload.get("extension").and_then(Value::as_str) else {
-        return Reply::err(IpcError::new("bad_request", "`extension` (string) required"));
+        return Reply::err(IpcError::new(
+            "bad_request",
+            "`extension` (string) required",
+        ));
     };
     let Some(tool) = payload.get("tool").and_then(Value::as_str) else {
         return Reply::err(IpcError::new("bad_request", "`tool` (string) required"));
@@ -127,7 +133,10 @@ pub async fn handle_tools_call(host: Arc<Host>, payload: Value) -> Reply {
 
 pub async fn handle_health(host: Arc<Host>, payload: Value) -> Reply {
     let Some(extension) = payload.get("extension").and_then(Value::as_str) else {
-        return Reply::err(IpcError::new("bad_request", "`extension` (string) required"));
+        return Reply::err(IpcError::new(
+            "bad_request",
+            "`extension` (string) required",
+        ));
     };
     match host.ping(extension).await {
         Ok(()) => Reply::ok(json!({ "extension": extension, "ok": true })),
@@ -141,7 +150,10 @@ pub async fn handle_health(host: Arc<Host>, payload: Value) -> Reply {
 
 pub async fn handle_restart(host: Arc<Host>, payload: Value) -> Reply {
     let Some(extension) = payload.get("extension").and_then(Value::as_str) else {
-        return Reply::err(IpcError::new("bad_request", "`extension` (string) required"));
+        return Reply::err(IpcError::new(
+            "bad_request",
+            "`extension` (string) required",
+        ));
     };
     match host.restart(extension).await {
         Ok(s) => Reply::ok(serde_json::to_value(s).unwrap_or(json!({}))),

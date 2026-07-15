@@ -221,7 +221,9 @@ mod tests {
     /// return the status + parsed `{ok, data}` envelope.
     async fn call_local(method: &str, body: Option<&str>) -> (StatusCode, Value) {
         let app = router();
-        let builder = Request::builder().method(method).uri("/api/settings/ollama");
+        let builder = Request::builder()
+            .method(method)
+            .uri("/api/settings/ollama");
         let mut req = match body {
             Some(b) => builder
                 .header("content-type", "application/json")
@@ -298,7 +300,11 @@ mod tests {
         isolate(tmp.path());
 
         // Seed: an active model with one stored per-model override.
-        assert!(handle_set_active(json!({ "model": "parity:model" })).await.ok);
+        assert!(
+            handle_set_active(json!({ "model": "parity:model" }))
+                .await
+                .ok
+        );
         assert!(
             handle_set_overrides(json!({
                 "model": "parity:model",

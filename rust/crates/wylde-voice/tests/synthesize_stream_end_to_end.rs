@@ -54,8 +54,7 @@ fn kokoro_snapshot_present() -> bool {
 
 // Three sentences of phonemes — "Hello world. How are you? I am fine."
 // espeak-ng en-us output, with stress + preserve_punctuation=True.
-const MULTI_SENTENCE_PHONEMES: &str =
-    "həlˈoʊ wˈɜːld. hˈaʊ ɑːɹ jˈuː? aɪ ˈæm fˈaɪn.";
+const MULTI_SENTENCE_PHONEMES: &str = "həlˈoʊ wˈɜːld. hˈaʊ ɑːɹ jˈuː? aɪ ˈæm fˈaɪn.";
 
 #[tokio::test]
 #[ignore = "requires Kokoro ONNX + voices.npz cached locally"]

@@ -184,7 +184,7 @@ pub fn compare_metric(key: &str, base: &MetricBaseline, current: Option<f64>) ->
     // means "worse".
     let raw_delta = cur - base.value; // + = value went up
     let worse_sign = match base.direction {
-        Direction::LowerIsBetter => 1.0, // up is worse
+        Direction::LowerIsBetter => 1.0,   // up is worse
         Direction::HigherIsBetter => -1.0, // down is worse
     };
 
@@ -206,7 +206,10 @@ pub fn compare_metric(key: &str, base: &MetricBaseline, current: Option<f64>) ->
             let status = classify(reg, warn_pct, fail_pct);
             (reg, true, status)
         }
-        Compare::Absolute { warn_delta, fail_delta } => {
+        Compare::Absolute {
+            warn_delta,
+            fail_delta,
+        } => {
             let reg = raw_delta * worse_sign;
             let status = classify(reg, warn_delta, fail_delta);
             (reg, false, status)
@@ -286,13 +289,17 @@ impl Report {
     /// Any soft (non-blocking) regression this run — used by the roll-up.
     #[allow(dead_code)] // exercised in unit tests; part of the report surface
     pub fn any_warned(&self) -> bool {
-        self.comparisons.iter().any(|c| matches!(c.status, Status::Warn))
+        self.comparisons
+            .iter()
+            .any(|c| matches!(c.status, Status::Warn))
     }
 
     /// Any metric that improved past its fail band (baseline is now pessimistic).
     #[allow(dead_code)] // exercised in unit tests; part of the report surface
     pub fn any_improved(&self) -> bool {
-        self.comparisons.iter().any(|c| matches!(c.status, Status::Improved))
+        self.comparisons
+            .iter()
+            .any(|c| matches!(c.status, Status::Improved))
     }
 
     /// Fail-gated metrics whose benchmark did not run. These are the dangerous
@@ -346,7 +353,10 @@ mod tests {
             unit: "ms".into(),
             direction: dir,
             gate,
-            compare: Compare::Relative { warn_pct: warn, fail_pct: fail },
+            compare: Compare::Relative {
+                warn_pct: warn,
+                fail_pct: fail,
+            },
             note: String::new(),
         }
     }
@@ -357,7 +367,10 @@ mod tests {
             unit: "rate".into(),
             direction: dir,
             gate,
-            compare: Compare::Absolute { warn_delta: warn, fail_delta: fail },
+            compare: Compare::Absolute {
+                warn_delta: warn,
+                fail_delta: fail,
+            },
             note: String::new(),
         }
     }

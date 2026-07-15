@@ -234,13 +234,20 @@ mod tests {
             NodeId::concept("dir:src/graph").split(),
             Some(("concept", "dir:src/graph"))
         );
-        assert_eq!(NodeId::vocab("nextcloud").split(), Some(("vocab", "nextcloud")));
+        assert_eq!(
+            NodeId::vocab("nextcloud").split(),
+            Some(("vocab", "nextcloud"))
+        );
     }
 
     #[test]
     fn definition_priority_authored_beats_inherited_beats_missing() {
         // Authored wins.
-        let d = Definition::resolve(Some("hand-written"), Some("from record"), DefSource::InheritedConcept);
+        let d = Definition::resolve(
+            Some("hand-written"),
+            Some("from record"),
+            DefSource::InheritedConcept,
+        );
         assert_eq!(d.source, DefSource::Authored);
         assert_eq!(d.text, "hand-written");
         // No authored -> inherited (with the kind the caller named).

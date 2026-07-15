@@ -348,7 +348,10 @@ mod tests {
         assert!(c.curate_before_inject, "never silent by default");
         assert_eq!(c.mode, InjectionMode::Augment);
         assert_eq!(c.max_concepts, 3);
-        assert!((c.abs_threshold - 0.62).abs() < 1e-6, "R4-calibrated abs floor");
+        assert!(
+            (c.abs_threshold - 0.62).abs() < 1e-6,
+            "R4-calibrated abs floor"
+        );
         assert!((c.relative_floor - 0.6).abs() < 1e-6);
         assert!(c.scope_to_active_region);
         assert_eq!(c.inject_token_budget, 1500);
