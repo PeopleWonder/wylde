@@ -52,50 +52,50 @@ set_tier() {  # $1 = item id, $2 = "Tier N"
     --field-id "$tier_fid" --single-select-option-id "$oid" >/dev/null 2>&1 || true
 }
 
-echo "Adding the 8 backlog issues…"
+echo "Adding the tracked issues…"
+# The Project auto-populates a built-in Milestone field from each issue, so the
+# milestone structure (0.2 gate&hygiene -> verified build -> ship; 0.3) shows up
+# without extra work here. We just set the Tier field.
 # issue number -> tier
-declare -A ISSUE_TIER=( [25]="Tier 3" [26]="Tier 0" [27]="Tier 0" [28]="Tier 0" [29]="Tier 0" [30]="Tier 1" [31]="Tier 1" [32]="Tier 1" )
-for n in 25 26 27 28 29 30 31 32; do
+declare -A ISSUE_TIER=(
+  [25]="Tier 3"
+  [26]="Tier 0" [27]="Tier 0" [28]="Tier 0" [29]="Tier 0"
+  [30]="Tier 1" [31]="Tier 1" [32]="Tier 1"
+  [33]="Tier 0" [34]="Tier 0" [35]="Tier 0" [36]="Tier 0" [37]="Tier 0" [38]="Tier 0"
+  [39]="Tier 2" [40]="Tier 2"
+)
+for n in 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do
   iid=$(gh project item-add "$num" --owner "$OWNER" --url "https://github.com/$REPO/issues/$n" --format json | jq -r '.id')
   set_tier "$iid" "${ISSUE_TIER[$n]}"
   echo "  + #$n (${ISSUE_TIER[$n]})"
 done
 
-echo "Creating roadmap tier draft items…"
+echo "Creating draft items for tier work that is NOT (yet) a tracked issue…"
+# Milestone-gating work is already a real Issue above. Drafts here are the
+# lighter tier items that don't gate a milestone (cleanup) or are deferred-by-
+# design (no milestone on purpose) — so the board is complete without inventing
+# issues for trivia.
 draft() {  # $1 = "Tier N", $2 = title, $3 = body
   local iid; iid=$(gh project item-create "$num" --owner "$OWNER" --title "$2" --body "$3" --format json | jq -r '.id')
   set_tier "$iid" "$1"
   echo "  + $2"
 }
 
-# Tier 0 — release gating + the 0.2 release
-draft "Tier 0" "T0.0 Adopt branch model + migrate (prerequisite)" "Rename trunk->develop, default->develop, protect main+develop, freeze main until 0.2. See docs/enforcement-matrix.md Aaron-actions."
-draft "Tier 0" "T0.1 Build the release gate (G4-G7 + local preflight L1-L3 + release-checklist)" "The launch-and-verify one-command preflight + receipt that publish refuses to run without."
-draft "Tier 0" "T0.1b GUI verification suite (L7 panel-walk + selective control checks)" "Extend the gpui harness across all 9 panels + Workspaces subtabs."
-draft "Tier 0" "T0.2 Bump + reconcile versions to the 0.2 scheme; refresh CHANGELOG/RELEASE_NOTES" "0.1.x experimental -> 0.2.0 stable; G7 enforces."
-draft "Tier 0" "T0.3 Rebuild + redeploy from trunk, then run the preflight" "Proves RAG/Neo4j/GUI fixes live."
-draft "Tier 0" "T0.4 Fix whatever the preflight surfaces (scope-on-discovery)" "The honest stabilisation bucket."
-draft "Tier 0" "T0.5 Re-index/purge the move-stale workspace" "Linked issue: workspace index pins a stale path (#28)."
-draft "Tier 0" "T0.6 Tag + wylde-release publish once the 0.2 gate is green" "Verify the updater distributes it."
+# Tier 1 — cheap hygiene that doesn't gate a milestone (not filed as issues)
+draft "Tier 1" "T1.1 Delete merged branches/worktrees" "Reviewed cleanup of the ~180 stale locals. Not a 0.2 gate."
+draft "Tier 1" "T1.2 Delete dead Python references" "Scrub torch/lancedb/Python-service doc mentions. Not a 0.2 gate."
+draft "Tier 1" "T1.4 Adopt the gpui-pin policy" "Write-it-down; the advisory acceptance is issue #30."
+draft "Tier 1" "T1.5 Salvage wylde-fswalk crate" "Prerequisite for Organize (#39)."
+# DONE (kept as visible markers, not work)
+draft "Tier 1" "T1.6 min_core compatibility floor — DONE" "Shipped in wylde-lifecycle + GUI."
+draft "Tier 1" "T1.7 Artifact homes + lifecycle tracking — DONE" "Private wylde-planning repo + junctions + frontmatter/index/CI; Nextcloud retired."
 
-# Tier 1 — consolidation & hygiene
-draft "Tier 1" "T1.1 Delete merged branches/worktrees" "Reviewed cleanup of the ~180 stale locals."
-draft "Tier 1" "T1.2 Delete dead Python references" "Scrub torch/lancedb/Python-service doc mentions."
-draft "Tier 1" "T1.3 Scrub move-stale docs" "Linked issue: stale old-vault path refs (#31)."
-draft "Tier 1" "T1.4 Adopt the gpui-pin policy" "Write-it-down; linked issue: pinned advisories (#30)."
-draft "Tier 1" "T1.5 Salvage wylde-fswalk crate" "Prerequisite for T2.1 Organize."
-draft "Tier 1" "T1.6 min_core compatibility floor — DONE" "Shipped in wylde-lifecycle + GUI. Add floor to the external service manifests when touched."
-draft "Tier 1" "T1.7 Resolve artifact homes — DONE (planning repo + junctions), enable G4/G6 (#32)" "Private wylde-planning repo created + junctioned; Nextcloud retired."
+# Tier 2 — post-0.2 (the gating features are issues #39/#40; n8n is a product call)
+draft "Tier 2" "T2.3 feat/n8n-embedded-service" "Priority is a product call; not milestoned yet."
 
-# Tier 2 — feature forward-ports (post-0.2)
-draft "Tier 2" "T2.1 Organize + Tabulate panels" "Build the external services, drop binaries, forward-port branches."
-draft "Tier 2" "T2.2 feat/temporal-memory-graph (bi-temporal edges, gated)" "Forward-port, ship gated, prove identity."
-draft "Tier 2" "T2.3 feat/n8n-embedded-service" "Priority is a product call."
-
-# Tier 3 — deferred-by-design
-draft "Tier 3" "T3.1 Reasoning tier v2 (kill-criterion-gated)" "Linked issue: planner/executor vocab mismatch (#25). Off by default; blocks nothing."
-draft "Tier 3" "T3.2 Concept query-routing + security P4+ + webcrawler egress" "Post-0.2."
-draft "Tier 3" "T3.3 Mobile app, Wylde IDE, gateway wave-2 / Vault secrets" "Long-horizon."
+# Tier 3 — deferred-by-design (NO milestone on purpose; reasoning-v2 is issue #25)
+draft "Tier 3" "T3.2 Concept query-routing + security P4+ + webcrawler egress" "Post-0.2, deferred."
+draft "Tier 3" "T3.3 Mobile app, Wylde IDE, gateway wave-2 / Vault secrets" "Long-horizon, deferred."
 
 echo ""
 echo "Done. Open it:  gh project view $num --owner $OWNER --web"
