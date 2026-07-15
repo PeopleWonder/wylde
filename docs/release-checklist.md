@@ -56,14 +56,15 @@ The full bar. Only on the maintainer's explicit say-so. **This is the definition
      no panic/error) + selective Tier-C on the ~20–30 critical-path controls.
 5. **CHANGELOG + RELEASE_NOTES** current: close `[Unreleased]` into `## [0.2.0] — <date>`; refresh
    `release-artifacts/RELEASE_NOTES.md`.
-6. **Promote and release:**
+6. **Promote and release** (via a PR — branch protection blocks direct pushes to `main`):
    ```bash
-   git checkout main
-   git merge --no-ff develop            # the merge promotes
-   git tag -a v0.2.0 -m "Wylde 0.2.0"   # the tag releases (full release, NOT pre-release)
-   git push origin main --follow-tags
-   wylde-release publish --version 0.2.0 --channel stable --binary <path> …
-   git checkout develop && git merge --no-ff main   # keep develop current with the promotion
+   gh pr create --base main --head develop --title "Release 0.2.0"
+   gh pr merge --merge                   # merges once CI (G1–G7) is green; a --no-ff merge commit
+   git checkout main && git pull
+   git tag -a v0.2.0 -m "Wylde 0.2.0"    # the tag releases (full release, NOT pre-release)
+   git push origin v0.2.0                # release.yml re-verifies G1/G2/G7 on the tag
+   wylde-release publish --version 0.2.0 --channel stable --binary <path> …   # refuses without a green preflight receipt
+   git checkout develop && git merge --no-ff main && git push   # keep develop current
    ```
 7. **Verify distribution:** the Stable channel updater picks `0.2.0` up on a second machine/profile
    (and a Beta user also receives it, since Beta ⊇ Stable).

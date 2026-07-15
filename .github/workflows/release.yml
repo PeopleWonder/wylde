@@ -1,0 +1,78 @@
+# Release gate — runs on a version tag (`v*`) and RE-VERIFIES the CI-checkable
+# gates on the exact tagged commit. This is the machine half of the release
+# gate: it fails loudly (red on the tag/commit) if a tag was cut on a commit
+# that doesn't build, doesn't pass tests, or whose version doesn't match the
+# tag.
+#
+# What this canNOT do — and why the local preflight still matters: GitHub CI
+# cannot touch a GPU, Ollama, Memgraph, or a desktop session, so the
+# launch-and-verify smoke (L1–L7) — the check that actually caught "shipped
+# broken" — runs on the maintainer's release machine and is enforced by
+# `wylde-release` refusing to publish without a green preflight receipt (see
+# docs/release-checklist.md + docs/enforcement-matrix.md). This workflow is the
+# CI-verifiable subset (G1–G3, G7); tag protection (maintainer-only `v*` tags)
+# is the access gate.
+name: Release gate
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WYLDE_PREBUILD_GUARD_SKIP: "1"
+
+jobs:
+  # G7 — the tag must equal the stamped workspace version, and the two
+  # workspaces must agree. Cheap; run first so a mis-tag fails fast.
+  version-and-tag:
+    name: version + tag consistency (G7)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tag matches workspace version (and workspaces agree)
+        run: bash tools/check-versions.sh   # reads GITHUB_REF; enforces tag == version on a tag build
+
+  # G1 — backend build + full test suite on the tagged commit.
+  backend:
+    name: backend build + test (G1)
+    runs-on: windows-latest
+    needs: version-and-tag
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (honoring rust-toolchain.toml)
+        run: rustup show
+        working-directory: rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "rust -> target"
+      - run: cargo build --workspace --locked
+        working-directory: rust
+      - run: cargo test --workspace --locked
+        working-directory: rust
+
+  # G2 — GUI builds on the tagged commit.
+  gui:
+    name: gui build (G2)
+    runs-on: windows-latest
+    needs: version-and-tag
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "Core/GUI -> target"
+      - run: cargo build --workspace --locked
+        working-directory: Core/GUI
+
+  # A green summary others can gate on. If any gate above failed, this fails.
+  release-gate:
+    name: release gate summary
+    runs-on: ubuntu-latest
+    needs: [version-and-tag, backend, gui]
+    steps:
+      - run: echo "CI-verifiable release gates (G1, G2, G7) green for ${{ github.ref_name }}. Local preflight (L1–L7) receipt still required by wylde-release before publish."

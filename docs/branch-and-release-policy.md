@@ -217,25 +217,30 @@ Promotion is a **`--no-ff` merge of `develop` into `main`, immediately tagged**,
 - **Local preflight L1–L7** green on the maintainer's release machine (the launch-and-verify
   smoke + panel-walk that CI structurally cannot run — GPU/Ollama/Memgraph/desktop).
 
-**The promotion itself:**
+**The promotion itself** — a **PR from `develop` into `main`** (branch protection blocks direct
+pushes to `main`, so the promotion *is* a PR; that's deliberate — even the maintainer promotes
+through the gate):
 
 ```bash
 # on the gated develop commit, versions already bumped to 0.2.0 and G7-consistent
-git checkout main
-git merge --no-ff develop          # the merge IS the promotion; preserves the branch topology
-git tag -a v0.2.0 -m "Wylde 0.2.0" # the tag IS the release
-git push origin main --follow-tags
-wylde-release publish --version 0.2.0 --channel stable --binary <path> …
-# then: confirm the updater picks it up on a second machine/profile (L on the checklist)
+gh pr create --base main --head develop --title "Release 0.2.0" --body "Promotion — gates + preflight green"
+# CI (G1–G7) runs on the PR; the local preflight (L1–L7) receipt is green on this commit
+gh pr merge --merge        # a --no-ff merge commit; branch protection lets it in once checks are green
+git checkout main && git pull
+git tag -a v0.2.0 -m "Wylde 0.2.0"   # the tag IS the release (Stable = a non-prerelease GitHub release)
+git push origin v0.2.0               # tag ruleset allows create, blocks later delete/move
+wylde-release publish --version 0.2.0 --channel stable --binary <path> …   # refuses without a green preflight receipt
+git checkout develop && git merge --no-ff main && git push   # keep develop current with the promotion
 ```
 
-The **merge** promotes; the **tag** releases; the **gates** are the entry condition; the
-**say-so** is the trigger. Nothing reaches `main` — and therefore the Stable channel — that
-hasn't passed all three.
+The **PR merge** promotes; the **tag** releases; the **gates + preflight receipt** are the entry
+condition; the **say-so** is the trigger. Nothing reaches `main` — and therefore the Stable channel —
+that hasn't passed all of them, and GitHub *enforces* it (`docs/enforcement-matrix.md`).
 
-**Hotfixes** (a stable release is broken in the field): branch `fix/*` off `main`, fix, gate,
-`--no-ff` into `main`, tag `0.2.1`, then merge `main` back into `develop` so the fix isn't lost.
-This is the only path that writes to `main` without going through `develop` first, and it's rare.
+**Hotfixes** (a stable release is broken in the field): branch `hotfix/*` (or `fix/*`) off `main`,
+fix, gate, open a PR **into `main`** (the branch-target guard allows `hotfix/*`/`fix/*` → `main`),
+merge, tag `0.2.1`, then merge `main` back into `develop` so the fix isn't lost. This is the only
+path that writes to `main` without coming from `develop`, and it's rare.
 
 ---
 
@@ -259,7 +264,8 @@ The reason alpha shipped broken repeatedly is not that the docs were unclear —
 stopped it.** A studio wouldn't have caught those four defects with better documentation; they'd have
 been **blocked by a gate.** So the test for every item here is one question: **what does it block?**
 If the answer is "nothing, it's a norm," it's ceremony and it's excluded (and I say why below, so you
-can overrule).
+can overrule). **The full accounting — every policy → mechanism → what it blocks → where configured →
+live-yet, plus the exact `gh` commands to apply the rulesets — is `docs/enforcement-matrix.md`.**
 
 **Enforced by machines (these BLOCK):**
 

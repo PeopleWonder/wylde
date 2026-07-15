@@ -79,6 +79,17 @@ way other registry tests guard the env — a discovery test must pin *both* vari
 a real test-hygiene bug, not a code defect, and it's exactly why a green suite isn't a green *system*.
 The remaining ~4 failures still need enumeration; don't close until each is filed or resolved.
 
+## KI-8 — Enable clippy (G4) + fmt (G6) gates — needs a cleanup pass first
+**Status:** CHORE · **Labels:** `ci`, `chore` · **Area:** tooling
+
+The `cargo fmt --check` (G6) and `cargo clippy -D warnings` (G4) gates are staged as commented stubs
+in `ci.yml` but **not enabled**, because the tree isn't clean yet — `cargo fmt --check` on `rust/`
+reports diffs today (verified; e.g. `build-support/wylde-prebuild-guard/src/lib.rs`). Enabling a gate
+on a dirty tree red-walls CI for every PR. **Do:** run `cargo fmt --all` (each workspace) as its own
+slice, land it, then uncomment the G6 stub; separately do a `cargo clippy --workspace` pass, fix or
+`#[allow]`-with-reason the warnings, then uncomment G4. Once enabled they become required checks
+(add to the rulesets). This is the last piece of the enforcement matrix still marked ⏳-blocked.
+
 ## KI-7 — Move-stale doc references (old vault paths)
 **Status:** CHORE · **Labels:** `docs` · **Area:** docs
 
