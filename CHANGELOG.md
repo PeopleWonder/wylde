@@ -19,6 +19,31 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Added
 
+- **L2/L3 launch-and-verify preflight gate — the check that would have caught every
+  "shipped broken" defect.** `wylde-release preflight --launch` (and the standalone
+  `wylde-release smoke`) now *launch the shipped artifacts and exercise the assembled,
+  running system*, feeding each result into the same commit-bound `preflight-receipt.json`
+  that `publish` already gates on. Unit tests verify code; only launching verifies assembly.
+  - **L2 cold-start** — spawns the real daemon (`wylde-lifecycle.exe`) and GUI
+    (`wylde-gui.exe`) the way the launcher does, from a **neutral working directory** so a
+    pass proves env-var resolution rather than cwd luck, and asserts each starts, stays up,
+    and binds what it should (`\\.\pipe\wylde-lifecycle`; GUI = process-alive + no panic —
+    window content stays the CI panel-walk's job). Attaches to an already-running daemon
+    instead of spawning a sibling stack.
+  - **L3 service-health** — discrete, individually-reported assertions: daemon pipe answers ·
+    services discovered (`service.list`) + core services reachable on their own pipes · VRAM
+    broker sees the GPU · Ollama has the reasoner + embed models · **Memgraph holds real
+    data** (Bolt node counts > 0 — the empty-graph boot bug a port-liveness ping structurally
+    cannot see) · RAG answers a fixture query · a chat turn completes · a memory round-trips.
+  - **Un-skippable + fail-closed.** Every check fails closed (can't determine → FAIL); the
+    receipt gains `launch_verified`, and `publish` now refuses a receipt that is green but not
+    launch-verified (deliberate `--no-preflight-receipt` escape hatch unchanged). Everything
+    spawned is torn down (graceful `service.shutdown_all` + `taskkill /T` backstop) — no
+    orphan processes, no pipe collisions with a parallel session. New deps on the standalone
+    `wylde-release` crate: `rmp-serde` (a tiny hand-rolled msgpack pipe client, wire-compatible
+    with `wylde_shared::ipc`) and `neo4rs`/`tokio` (the Memgraph content query, same Bolt
+    driver the product uses). (roadmap T0.1; enforcement-matrix row 14.)
+
 - **GUI panel-walk test suite (L7) — the answer to "does every page load?"**
   Every one of the 9 panels (Chat, Dashboard, Memory, Workspaces, Models,
   Tools, Devices, Remote Access, Settings) — plus the Workspaces subtabs — now

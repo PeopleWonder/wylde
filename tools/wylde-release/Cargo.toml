@@ -50,3 +50,19 @@ serde_json = "1"
 # against `rust/Cargo.toml` regardless of this crate's standalone status —
 # the GUI workspace depends on it the same way.
 wylde-updater = { path = "../../rust/crates/wylde-updater" }
+# msgpack framing for the L2/L3 launch-and-verify gate's minimal pipe client.
+# The lifecycle daemon + vram-broker speak `[u32 BE len][rmp-serde named]` over
+# `\\.\pipe\wylde-*` (see `wylde_shared::ipc::wire`); rather than pull the whole
+# async `wylde-shared` IPC stack (tokio named pipes, futures, uuid) into this
+# standalone dev tool, `smoke::pipe` hand-rolls the handshake + one request over
+# blocking std pipe I/O, encoding/decoding the frames with rmp-serde — kept
+# wire-compatible by matching the server's exact field names.
+rmp-serde = "1"
+# The L3 "Memgraph has REAL data" check queries Bolt directly and asserts node
+# counts > 0 — the empty-graph bug a port-liveness ping cannot catch. `neo4rs`
+# is the same Bolt driver the product uses (`wylde-harness` / `wylde-workspaces`
+# pin neo4rs 0.8), so the gate speaks to the graph exactly as the app does. It
+# is tokio-async; `tokio` (current-thread) drives a single query under a hard
+# timeout so a hung DB fails the gate closed rather than hanging it.
+neo4rs = "0.8"
+tokio = { version = "1", features = ["rt", "macros", "time"] }
