@@ -60,6 +60,39 @@ async fn long_term_save_persists_record_and_returns_dict() {
 }
 
 #[tokio::test]
+async fn long_term_save_mirrors_caller_supplied_vector(/* regression: fix #43 */) {
+    // Before the fix the API/pipe save handler passed `None` for the
+    // vector — even a caller-supplied embedding was dropped, so the record
+    // never entered `long_term.vec.bin` and vector search couldn't rank it.
+    // Now the handler threads the caller vector through. Deterministic:
+    // a unit basis vector at the default embed dim, no live embedder.
+    let _env = TestEnv::new();
+    let api = DefaultHarnessApi;
+    let dim = crate::memory::common::embed_dim();
+    let mut v = vec![0.0f32; dim];
+    v[0] = 1.0;
+
+    let reply = api
+        .memory_long_term_save(json!({ "body": "the mirrored memory", "vector": v.clone() }))
+        .await;
+    assert!(reply.ok, "save failed: {reply:?}");
+    let id = reply.data["id"].as_str().unwrap().to_owned();
+
+    // Store-level vector search with the SAME vector: a mirrored vector
+    // ranks at similarity ~1.0; a dropped one wouldn't appear at all.
+    let hits = crate::memory::long_term::search(v, 5, None);
+    let hit = hits
+        .iter()
+        .find(|h| h.id == id)
+        .expect("caller vector was not mirrored — vector search found nothing");
+    assert!(
+        hit.similarity > 0.99,
+        "expected self-similarity ~1.0, got {}",
+        hit.similarity
+    );
+}
+
+#[tokio::test]
 async fn long_term_save_accepts_float_importance() {
     let _env = TestEnv::new();
     let api = DefaultHarnessApi;
