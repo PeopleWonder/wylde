@@ -341,7 +341,7 @@ pub async fn list_recent(
         })
         .collect();
 
-    hits.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
+    hits.sort_by_key(|b| std::cmp::Reverse(b.last_active_at));
     hits.truncate(limit);
     Ok(SearchResult { hits, degraded })
 }
