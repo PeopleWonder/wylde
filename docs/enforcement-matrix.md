@@ -41,6 +41,34 @@ milestones, Dependabot) > **CI job that fails the build** > **runtime enforcemen
 
 ---
 
+## Planning repo (`PeopleWonder/wylde-planning`, private) — its own gates
+
+A private repo still runs Actions, and the whole point of the planning repo is that plans *know*
+whether they're current (a stale plan you act on is worse than none — this bit us repeatedly). So its
+lifecycle tracking is CI-enforced too: `.github/workflows/plans-check.yml` → `tools/check_plans.py`
+(green on GitHub).
+
+| # | Policy | Mechanism | What it BLOCKS | Live? |
+|---|---|---|---|---|
+| P1 | Every plan declares a valid lifecycle | `check_plans.py` — frontmatter present + `status` ∈ {active,deferred,done,superseded,legacy} | a plan silently rotting with no/unknown status | ✅ |
+| P2 | No dangling "replaced by" | `check_plans.py` — `superseded` needs a `superseded_by` that resolves to a real plan | a supersession pointer to nowhere | ✅ |
+| P3 | Real dates | `check_plans.py` — `created`/`last_reviewed` must be `YYYY-MM-DD` | undated/guessed plans | ✅ |
+| P4 | Indexes are generated, never hand-edited | `check_plans.py` — regenerate `INDEX.md`/`OUTPUTS_INDEX.md` in-memory and diff (EOL-insensitive) | a hand-edited/stale index — the exact rot this repo exists to prevent | ✅ |
+| P5 | Surface stale `active` plans | `check_plans.py` — **warn** when an `active` doc is >90d unreviewed | — (warn only; a machine can't force a re-read) | ✅ |
+
+Negative-tested: a bogus status, a dangling `superseded_by`, and a hand-edited index each fail the
+check. **Optional Aaron-action:** add a branch ruleset requiring the "Planning check" status on the
+planning repo's `main` (same pattern as Core's rulesets) if you want it to *block* direct pushes
+rather than just go red.
+
+**Project ↔ plan link — not machine-enforced, justified.** A plan's `tracks:` field lists the issues
+its work lives in; the Project item links back. The rule — **Project = source of truth for STATUS,
+plan = source of truth for WHY; the Project wins on conflict** — is a convention a human upholds (no
+check can know a plan *should* be `done` because its issue closed). Kept because it's the load-bearing
+discipline; the P5 staleness warn is the closest automated nudge.
+
+---
+
 ## Deliberately NOT machine-enforced — justified (overrule any of these)
 
 An honest "nothing enforces this" for each, and why it's kept anyway:
