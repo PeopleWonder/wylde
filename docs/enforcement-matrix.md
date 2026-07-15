@@ -16,20 +16,20 @@ milestones, Dependabot) > **CI job that fails the build** > **runtime enforcemen
 
 | # | Policy / artifact | Enforcement mechanism | What it BLOCKS | Where configured | Live? |
 |---|---|---|---|---|---|
-| 1 | **No direct pushes / force-push / deletion of `main` (stable)** | GitHub **branch ruleset** (`protect-main`) | pushing/force-pushing/deleting stable; the exact "experimental lands on stable" bug | `.github/rulesets/protect-main.json` → apply via `gh` (Aaron) | ⏳ apply |
-| 2 | **Green CI before merge** | **Required status checks** in the ruleset (`strict` = branch must be up to date) | merging a PR whose build/tests/version-check are red or stale | rulesets (main + develop) | ⏳ apply |
-| 3 | **Backend builds + 1167 tests pass** | CI job `backend (rust/) build + test` | a PR/tag that doesn't compile or fails tests | `.github/workflows/ci.yml` + `release.yml` | ✅ live (CI) / ⏳ required |
-| 4 | **GUI builds** | CI job `gui (Core/GUI/) build` | a GUI-breaking change | `ci.yml`, `release.yml` | ✅ / ⏳ required |
-| 4b | **Every GUI page loads + detects its error state (L7 panel-walk)** | CI job `gui panel-walk (L7)` — headless windowed `#[gpui::test]`s mount all 9 panels + the Workspaces subtabs under 4 backend conditions (healthy / down / error-envelope / empty) and assert each loads without panic and isn't in a wrong/stuck error state | a page that panics, stuck-loads, or mis-detects "down" (esp. **the daemon-down case** — a panel that crashes when a service isn't running); the "shipped a GUI page that never loads" class the L2/L3 smoke misses | `ci.yml` (`gui panel-walk (L7)` job) + `Core/GUI/.cargo/config.toml` (`panel-walk` alias) | ✅ **live (CI)** — the windowed tests **do** run headless on the CI runner (gpui mock `TestPlatform`); resolves the §3g "CI-vs-local" open question in the affirmative |
+| 1 | **No direct pushes / force-push / deletion of `main` (stable)** | GitHub **branch ruleset** (`protect-main`) | pushing/force-pushing/deleting stable; the exact "experimental lands on stable" bug | `.github/rulesets/protect-main.json` | ✅ **LIVE** (ruleset id **19015305**) — direct push to `main` is server-rejected ("Changes must be made through a pull request") |
+| 2 | **Green CI before merge** | **Required status checks** in the ruleset (`strict` = branch must be up to date) | merging a PR whose build/tests/version-check are red or stale | rulesets (main + develop) | ✅ **LIVE** — 9 required contexts on both `protect-main` + `protect-develop` |
+| 3 | **Backend builds + 1167 tests pass** | CI job `backend (rust/) build + test` | a PR/tag that doesn't compile or fails tests | `.github/workflows/ci.yml` + `release.yml` | ✅ live (CI) — **required** (both rulesets) |
+| 4 | **GUI builds** | CI job `gui (Core/GUI/) build` | a GUI-breaking change | `ci.yml`, `release.yml` | ✅ live (CI) — **required** (both rulesets) |
+| 4b | **Every GUI page loads + detects its error state (L7 panel-walk)** | CI job `gui panel-walk (L7)` — headless windowed `#[gpui::test]`s mount all 9 panels + the Workspaces subtabs under 4 backend conditions (healthy / down / error-envelope / empty) and assert each loads without panic and isn't in a wrong/stuck error state | a page that panics, stuck-loads, or mis-detects "down" (esp. **the daemon-down case** — a panel that crashes when a service isn't running); the "shipped a GUI page that never loads" class the L2/L3 smoke misses | `ci.yml` (`gui panel-walk (L7)` job) + `Core/GUI/.cargo/config.toml` (`panel-walk` alias) | ✅ **live (CI)** — the windowed tests **do** run headless on the CI runner (gpui mock `TestPlatform`); resolves the §3g "CI-vs-local" open question in the affirmative; **required** in both rulesets |
 | 5 | **Version consistency across the two workspaces (G7)** | CI job `version consistency (G7)` — **fails**, not warns; `wylde-release` refuses to publish on failure | a release where `rust/` and `Core/GUI/` versions disagree, or a tag ≠ the stamped version | `tools/check-versions.sh` + `ci.yml`/`release.yml` | ✅ live |
 | 6 | **PR targets `develop`, not `main`** | CI job `branch target + name` (fails if base=main and head∉{develop, hotfix/*, fix/*}) | accidentally PRing experimental work straight at stable | `.github/workflows/pr-checks.yml` | ✅ live |
 | 7 | **Branch naming convention** | same `branch target + name` job (head must match `feat|fix|chore|docs|test|refactor|perf|hotfix/*`) | the `chore/`-vs-`feat/` drift + junk branch names | `pr-checks.yml` | ✅ live |
 | 8 | **Conventional Commits** | CI job `conventional commits` (lints every non-merge commit subject) | commits the changelog/branch scheme can't parse; escape via `skip-commit-lint` label | `pr-checks.yml` | ✅ live |
 | 9 | **CHANGELOG updated for user-facing changes** | CI job `changelog updated` — fails a PR touching `rust/`/`Core/` product source without a `CHANGELOG.md` entry; escape via `skip-changelog` label | silent, undocumented user-facing changes (the changelog rotting) | `pr-checks.yml` | ✅ live |
-| 10 | **Clippy `-D warnings` (G4)** | CI job `clippy (G4) + fmt (G6)` — `cargo clippy --workspace --all-targets --locked -- -D warnings` on each CI-built workspace | a warning landing anywhere in rust/, Core/GUI/, or the two tools/ crates | `ci.yml` (`lint` job) | ✅ **live (CI)** — armed once the tree went clippy-clean (issue #32); the `voice-npu-spike` workspace has no build/test job, so it is fmt'd but not gated |
-| 11 | **`cargo fmt --check` (G6)** | CI job `clippy (G4) + fmt (G6)` — `cargo fmt --all -- --check` on each CI-built workspace | unformatted code in rust/, Core/GUI/, or the two tools/ crates | `ci.yml` (`lint` job) | ✅ **live (CI)** — armed after a tree-wide `cargo fmt --all` landed as its own `chore(fmt)` commit (issue #32) |
-| 12 | **No vulnerable dependencies** | CI job `cargo-deny (advisories)` (PR + weekly cron) + Dependabot PRs | a bump/commit pulling a crate with an advisory | `security-audit.yml`, `dependabot.yml` | ✅ live / ⏳ mark required |
-| 13 | **Only maintainer-blessed `v*` tags; release tags immutable** | GitHub **tag ruleset** (`protect-version-tags`) — blocks deletion + moving a `v*` tag | deleting/re-pointing a published version tag (which would corrupt the updater's version history) | `.github/rulesets/protect-tags.json` | ⏳ apply |
+| 10 | **Clippy `-D warnings` (G4)** | CI job `clippy (G4) + fmt (G6)` — `cargo clippy --workspace --all-targets --locked -- -D warnings` on each CI-built workspace | a warning landing anywhere in rust/, Core/GUI/, or the two tools/ crates | `ci.yml` (`lint` job) | ✅ **live (CI)** — armed once the tree went clippy-clean (issue #32); **now required** in both rulesets (context `clippy (G4) + fmt (G6)`); the `voice-npu-spike` workspace has no build/test job, so it is fmt'd but not gated |
+| 11 | **`cargo fmt --check` (G6)** | CI job `clippy (G4) + fmt (G6)` — `cargo fmt --all -- --check` on each CI-built workspace | unformatted code in rust/, Core/GUI/, or the two tools/ crates | `ci.yml` (`lint` job) | ✅ **live (CI)** — armed after a tree-wide `cargo fmt --all` landed as its own `chore(fmt)` commit (issue #32); **required** via the shared `clippy (G4) + fmt (G6)` context |
+| 12 | **No vulnerable dependencies** | CI job `cargo-deny (advisories)` (PR + weekly cron) + Dependabot PRs | a bump/commit pulling a crate with an advisory | `security-audit.yml`, `dependabot.yml` | ✅ live — **deliberately NOT a required check**: `security-audit.yml` is `paths:`-filtered, so it never runs on PRs that don't touch `Cargo.*`/`deny.toml`; a required check that never reports would hang every such PR forever. It still blocks dep-touching PRs (runs there) + weekly cron. |
+| 13 | **Only maintainer-blessed `v*` tags; release tags immutable** | GitHub **tag ruleset** (`protect-version-tags`) — blocks deletion + moving a `v*` tag | deleting/re-pointing a published version tag (which would corrupt the updater's version history) | `.github/rulesets/protect-tags.json` | ✅ **LIVE** (ruleset id **19015193**) |
 | 14 | **Release actually RAN the live preflight (L1–L7)** | **`wylde-release` refuses to `publish` without a green, launch-verified preflight receipt** for the exact commit (§Preflight receipt) + `release.yml` re-runs the CI-verifiable gates on the tag | shipping a build whose running system was never verified — *the actual "shipped broken" failure* | `release.yml` (CI subset) + `wylde-release preflight/publish` | ✅ **receipt + L2/L3 launch gate built** — `preflight` writes a commit-bound receipt; `publish` refuses without a green, current one (rejects stale-commit / dirty-tree / wrong-version / **not-launch-verified**). Binds **G7 + benchmark gate (L5)** (+ optional L1-lite build) and, via **`preflight --launch`**, the **L2 cold-start + L3 service-health** launch-and-verify checks (each folded into the receipt's `gates` map, fail-closed; `launch_verified` gates publish). Remaining L4/L6 stay manual; L7 has its own CI job (row 4b). |
 | 15 | **Service `min_core` compatibility floor** | **Runtime**: Core's loader refuses to spawn an incompatible sibling + the GUI shows why. **CI (service repos)**: a manifest-lint job in each service repo | an incompatible service booting into a silent dead panel | `wylde-lifecycle` (shipped); service-repo CI (spec) | ✅ runtime / ⏳ service-repo CI |
 | 16 | **Issue reports are structured** | GitHub **issue forms** (`blank_issues_enabled: false`) — GitHub enforces the form | free-text issues with no repro/version | `.github/ISSUE_TEMPLATE/` | ✅ live once on the **default branch** (see Aaron-action A) |
@@ -205,8 +205,13 @@ gh api -X PATCH repos/PeopleWonder/wylde -F security_and_analysis='{"secret_scan
 #   Settings → Code security and analysis → Private vulnerability reporting → Enable.
 ```
 
-**D. Let CI run once on `develop`** (open any small PR, or push) so the check names below are
-*observed* by GitHub. Then apply the rulesets:
+**D. Apply the rulesets** — ✅ **DONE** (all three live, `enforcement: active`):
+
+| ruleset | id | target | proven to block |
+|---|---|---|---|
+| `protect-main` | 19015305 | branch `main` | direct push rejected: "Changes must be made through a pull request" + "9 of 9 required status checks are expected" |
+| `protect-develop` | 19015304 | branch `develop` | same rule set as main (merge-only, squash also allowed, 9 required checks) |
+| `protect-version-tags` | 19015193 | tag `v*` | blocks deletion + non-fast-forward on published tags |
 
 ```bash
 gh api -X POST repos/PeopleWonder/wylde/rulesets --input .github/rulesets/protect-develop.json
@@ -214,13 +219,20 @@ gh api -X POST repos/PeopleWonder/wylde/rulesets --input .github/rulesets/protec
 gh api -X POST repos/PeopleWonder/wylde/rulesets --input .github/rulesets/protect-tags.json
 ```
 
-> **Required-check name caveat.** The `required_status_checks` contexts in the ruleset JSON must match
-> the workflow **job names** exactly. The seven listed (`backend (rust/) build + test`, `gui (Core/GUI/)
-> build`, `tools build`, `version consistency (G7)`, `branch target + name`, `conventional commits`,
-> `changelog updated`) are stable. **`cargo-deny` is a matrix job**, so its contexts are environment-
-> specific (`cargo-deny (advisories) (rust/Cargo.toml)` + `(Core/GUI/Cargo.toml)`) — add those to the
-> required list via the UI (Settings → Rules → protect-develop → Require status checks → pick from the
-> observed list) after the first run, rather than guessing the exact string here.
+> **Required-check names — verified against reality (2026-07-15).** The `required_status_checks`
+> contexts must match the workflow **job names** exactly, or a required check that never reports hangs
+> every PR forever. The **nine** required in both rulesets, each confirmed against a live run's job
+> names (`gh run view` / commit check-runs): `backend (rust/) build + test`, `gui (Core/GUI/) build`,
+> `gui panel-walk (L7)`, `clippy (G4) + fmt (G6)` (**one combined job** — do *not* split into
+> `clippy (G4)` + `fmt (G6)`, those contexts don't exist), `tools build`, `version consistency (G7)`,
+> `branch target + name`, `conventional commits`, `changelog updated`. The label escape hatches still
+> work: a job skipped by `skip-commit-lint`/`skip-changelog` reports conclusion `skipped`, which branch
+> protection counts as passing.
+> **`cargo-deny` is deliberately NOT required** — `security-audit.yml` is `paths:`-filtered (only runs
+> when `Cargo.*`/`deny.toml` change), so as a required check it would never report on unrelated PRs and
+> hang them forever. It still blocks dep-touching PRs (where it runs) + the weekly cron. If you ever
+> want it required, gate it on paths *and* add a companion "always-green when not applicable" job, or
+> drop the path filter — don't just add the matrix contexts.
 
 **E. (Optional, when a second contributor appears)** flip `required_approving_review_count` to 1 in the
 ruleset JSONs and add a `CODEOWNERS`. Not before — see §6.1.
