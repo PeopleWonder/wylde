@@ -48,8 +48,9 @@ The full bar. Only on the maintainer's explicit say-so. **This is the definition
 4. **Local preflight — full L1–L7:**
    - L1–L3 as above (build-all, cold-start, service-health).
    - **L4 first-run bootstrap** completes on a clean profile.
-   - **L5 reasoning-eval guardrail** — the tier (off by default) shows no regression; confirm the
-     shipped config keeps `enabled: false`.
+   - **L5 reasoning-eval guardrail** — run `wylde-release bench` (or the whole
+     `wylde-release preflight`): the reasoning fast/think arms show no regression past the
+     baseline's noise-calibrated threshold. Also confirm the shipped config keeps `enabled: false`.
    - **L6 feel/function checklists** — human-judgment surface (visual/layout correctness the
      automated tests structurally can't assert).
    - **L7 GUI verification** — Tier-B panel-walk (all 9 panels + Workspaces subtabs mount, load,
@@ -90,6 +91,22 @@ The full bar. Only on the maintainer's explicit say-so. **This is the definition
 | Trigger | maintainer | maintainer's explicit say-so |
 | Updater reach | Beta only | Stable + Beta |
 
-**`wylde-release` must refuse to publish if G7 (version-consistency) fails.** ⏳ Add a `preflight`
-subcommand (or `xtask release-check`) that runs G7 + L1–L3 and prints pass/fail per line, and gate
-`publish` behind it (roadmap T0.1).
+**`wylde-release` must refuse to publish if the preflight isn't green.** ✅ **Built:**
+`wylde-release preflight` runs **G7 + the benchmark gate (L5)** (+ optional `--build` for L1-lite),
+prints pass/fail per metric, and writes a commit-bound `preflight-receipt.json`. `wylde-release
+publish` refuses unless a receipt exists that is `all_green`, non-dirty, and whose `commit`/`version`
+match what's being shipped (deliberate `--no-preflight-receipt` escape hatch). ⏳ **Remaining
+(T0.1):** script the launch-checks **L2/L3** (cold-start + service health) into `preflight` so they
+feed the same receipt; today L2–L4/L6/L7 are still run by hand per the sections above. See
+`benchmarks/README.md` for the benchmark-gate design.
+
+### Quick commands
+
+```bash
+wylde-release bench                 # benchmark regression gate alone (non-zero exit on FAIL)
+wylde-release bench --accept-baseline   # deliberately re-record the baseline
+wylde-release preflight             # G7 + benchmarks → writes preflight-receipt.json
+wylde-release preflight --build     # …also an L1-lite backend+GUI release build
+# then, only if the receipt is green:
+wylde-release publish --version v0.1.x --channel beta --binary <path> …
+```

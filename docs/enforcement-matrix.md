@@ -29,13 +29,16 @@ milestones, Dependabot) > **CI job that fails the build** > **runtime enforcemen
 | 11 | **`cargo fmt --check` (G6)** | CI job (staged) | unformatted code | `ci.yml` (commented stub) | ⏳ blocked — tree is **not** fmt-clean today (verified); run `cargo fmt` as its own slice, then enable |
 | 12 | **No vulnerable dependencies** | CI job `cargo-deny (advisories)` (PR + weekly cron) + Dependabot PRs | a bump/commit pulling a crate with an advisory | `security-audit.yml`, `dependabot.yml` | ✅ live / ⏳ mark required |
 | 13 | **Only maintainer-blessed `v*` tags; release tags immutable** | GitHub **tag ruleset** (`protect-version-tags`) — blocks deletion + moving a `v*` tag | deleting/re-pointing a published version tag (which would corrupt the updater's version history) | `.github/rulesets/protect-tags.json` | ⏳ apply |
-| 14 | **Release actually RAN the live preflight (L1–L7)** | **`wylde-release` refuses to `publish` without a green preflight receipt** for the exact commit (spec §Preflight receipt) + `release.yml` re-runs the CI-verifiable gates on the tag | shipping a build whose running system was never verified — *the actual "shipped broken" failure* | `release.yml` (CI subset) + `wylde-release preflight/publish` (⏳ T0.1) | ⏳ build (T0.1) |
+| 14 | **Release actually RAN the live preflight (L1–L7)** | **`wylde-release` refuses to `publish` without a green preflight receipt** for the exact commit (§Preflight receipt) + `release.yml` re-runs the CI-verifiable gates on the tag | shipping a build whose running system was never verified — *the actual "shipped broken" failure* | `release.yml` (CI subset) + `wylde-release preflight/publish` | ✅ **receipt mechanism built** — `preflight` writes a commit-bound receipt; `publish` refuses without a green, current one (rejects stale-commit / dirty-tree / wrong-version). Currently binds **G7 + the benchmark gate (L5)** (+ optional L1-lite build); the remaining L2/L3/L4/L6/L7 launch-checks feed the **same** receipt as each is scripted. |
 | 15 | **Service `min_core` compatibility floor** | **Runtime**: Core's loader refuses to spawn an incompatible sibling + the GUI shows why. **CI (service repos)**: a manifest-lint job in each service repo | an incompatible service booting into a silent dead panel | `wylde-lifecycle` (shipped); service-repo CI (spec) | ✅ runtime / ⏳ service-repo CI |
 | 16 | **Issue reports are structured** | GitHub **issue forms** (`blank_issues_enabled: false`) — GitHub enforces the form | free-text issues with no repro/version | `.github/ISSUE_TEMPLATE/` | ✅ live once on the **default branch** (see Aaron-action A) |
 | 17 | **Security disclosures are private** | GitHub **private vulnerability reporting** + `SECURITY.md` + issue-template `config.yml` contact link | a public 0-day issue | `SECURITY.md`, `.github/ISSUE_TEMPLATE/config.yml` + repo Security setting | ✅ files / ⏳ enable "Private vulnerability reporting" (Aaron-action) |
 | 18 | **Dependencies stay current** | **Dependabot** (grouped weekly PRs) — native | dependency rot piling into a scary backlog | `.github/dependabot.yml` | ✅ live |
 | 19 | **PR-checklist items generally** | Converted to jobs 6–9 where automatable; the rest is the template | — | `.github/PULL_REQUEST_TEMPLATE.md` | ✅ (automatable items are now checks, not checkboxes) |
 | 20 | **0.2 can't ship with open prerequisite milestones** | `tools/check_release_milestones.py` — reads `tools/release-gates.json` (declared prerequisites) + an anti-drift cross-check (any `0.2`-prefixed milestone not listed fails); **fail-closed**; `--force "reason"` override recorded. Runs in `release.yml` (CI-visible) and is **called by `wylde-release publish`** (binding — spec) | tagging/publishing 0.2 while milestone `(1) gate & hygiene` or `(2) verified build` has open issues | `release.yml` + `tools/release-gates.json` | ✅ CI / ⏳ wylde-release wiring |
+| 21 | **No performance/quality regression past a threshold (L5 benchmark guardrail)** | **`wylde-release bench`** runs the eval harnesses against live Ollama, medians over reps, and compares each metric to the committed baseline (`benchmarks/baselines/wylde-benchmarks.json`) with a **noise-calibrated per-metric band** — **fails** on a real regression, **warns** on a small one, **flags** an improvement to re-record. Run inside `preflight`, so it rides the receipt gate (row 14). | a silent latency/success/token regression shipping — "planning got 2× slower and nothing noticed" | `tools/wylde-release` (`bench`) + `benchmarks/` | ✅ **built + baselined** (reasoning fast/think arms recorded); retrieval invariants wired, baseline pending the T0.5 re-index |
+| 22 | **Baselines can't drift upward silently** | The baseline moves **only** on an explicit `wylde-release bench --accept-baseline`; a compare run never rewrites it, and re-recording **preserves tuned bands** (values move, policy doesn't). A regression can become the new normal only on purpose. | a bad number quietly becoming the accepted baseline | `tools/wylde-release` | ✅ built |
+| 23 | **Benchmark trend is retained, not just last-compare** | Every `bench`/`preflight` run appends a JSON line (timestamp, commit, green?, all values) to `outputs/benchmarks/history.jsonl` in the **private planning repo** (junctioned in) — drift over time, not just pass/fail. Silent no-op when the junction isn't mounted. | losing the "benchmarks to work from" record | `tools/wylde-release` + planning repo | ✅ built |
 
 **Legend:** ✅ live = active now on the trunk. ⏳ apply/build/required = needs a one-time Aaron action
 (below) or a tracked T0.1 build item.
@@ -94,19 +97,28 @@ If a row's mechanism is "nothing" and it's not in this justified list, it should
 
 ---
 
-## Preflight receipt — the one legitimately-bespoke enforcement (spec, T0.1)
+## Preflight receipt — the one legitimately-bespoke enforcement (✅ BUILT, T0.1)
 
 CI structurally **cannot** run the launch-and-verify smoke (L1–L7): no GPU, Ollama, Memgraph, or
 desktop session on a GitHub runner. That's exactly the surface where "shipped broken" happened, so it
-needs a real gate — and the only place that gate can live is the local release tool. Design:
+needs a real gate — and the only place that gate can live is the local release tool. **Built** in
+`tools/wylde-release/` (`preflight.rs` + `receipt.rs`, unit-tested):
 
-- **`wylde-release preflight`** runs L1–L7 on the release machine and writes a **receipt**
-  (`preflight-receipt.json`): `{ commit, version, timestamp, gates: {L1..L7: pass|fail}, all_green,
-  host }`.
+- **`wylde-release preflight`** runs the gates it can on the release machine and writes a **receipt**
+  (`preflight-receipt.json`, gitignored): `{ schema, commit, git_dirty, version, timestamp, host,
+  gates: {name: pass|fail|skipped}, benchmarks: {metric: delta}, warnings, all_green }`. Today it binds
+  **G7 version-consistency + the benchmark gate (L5)** and an optional **L1-lite** artifact build
+  (`--build`); the remaining launch-checks (L2/L3/L4/L6/L7) feed the **same** receipt as each is
+  scripted into `preflight`.
 - **`wylde-release publish` refuses** unless a receipt exists whose `commit` == the commit being
-  published, `all_green == true`, and `version` == the tag. No green receipt for *this* commit → no
-  publish. This makes "the live system was verified" a **precondition of shipping**, not a habit.
-- The receipt is attached to the GitHub Release (auditable: anyone can see the build was preflighted).
+  published, `git_dirty == false`, `all_green == true`, and `version` == the tag. No green receipt for
+  *this* commit → no publish. This makes "the live system was verified" a **precondition of shipping**,
+  not a habit. A deliberate, loud `--no-preflight-receipt` escape hatch exists for emergencies.
+- **Trust model — deliberately not cryptographic.** A JSON file is forgeable, but for a solo dev the
+  threat is *forgetting to run the checks*, not fraud — so the complexity budget goes on the one
+  property that prevents the real failure: **binding to the exact commit** (a stale or dirty-tree
+  receipt can't validate a new build), not signatures. Forward-compatible with attaching the receipt
+  to the GitHub Release + signing its hash if a second maintainer ever makes forgery a real threat.
 - Backstop: `release.yml` (already added) re-runs the CI-verifiable gates (G1/G2/G7) on the tag, so
   even the machine-checkable subset is enforced at tag time independent of the local tool.
 
