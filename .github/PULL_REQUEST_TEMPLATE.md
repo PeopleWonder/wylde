@@ -22,15 +22,17 @@ docs/branch-and-release-policy.md. A PR into `main` is almost always a mistake
 
 ## Checklist
 
-- [ ] Targets **`develop`**, not `main`.
-- [ ] Branch is named `feat|fix|chore|docs|test|refactor|perf/<slug>` and is short-lived.
-- [ ] Commits follow Conventional Commits (`type(scope): subject`).
-- [ ] `cargo build --workspace --locked` passes in each affected workspace (G1–G3).
-- [ ] `cargo test --workspace --locked` passes for `rust/` if backend code changed (G1).
-- [ ] cargo-deny is happy, or any new advisory is documented in `deny.toml` with a reason + review date (G5).
-- [ ] If the version changed, **both** workspace roots moved together (`tools/check-versions.sh` green — G7).
-- [ ] CHANGELOG `[Unreleased]` updated for any user-facing change (Keep-a-Changelog; `tools/changelog-draft.sh` can seed it).
-- [ ] Docs updated if behaviour, config, or a public interface changed.
+Items marked **(CI)** are enforced by a required status check — a ticked box over a red check does
+**not** merge (see `docs/enforcement-matrix.md`). The rest are human judgment.
+
+- [ ] **(CI)** Targets **`develop`**, not `main`.
+- [ ] **(CI)** Branch is named `feat|fix|chore|docs|test|refactor|perf/<slug>` and is short-lived.
+- [ ] **(CI)** Commits follow Conventional Commits (`type(scope): subject`) — escape: `skip-commit-lint` label.
+- [ ] **(CI)** Backend/GUI/tools build + `rust/` tests pass (G1–G3).
+- [ ] **(CI)** cargo-deny is happy, or any new advisory is documented in `deny.toml` with a reason + review date (G5).
+- [ ] **(CI)** If the version changed, **both** workspace roots moved together (G7).
+- [ ] **(CI)** CHANGELOG `[Unreleased]` updated for any user-facing change — escape: `skip-changelog` label. (`tools/changelog-draft.sh` seeds it.)
+- [ ] Docs updated if behaviour, config, or a public interface changed. *(human judgment)*
 
 ## Verification
 
