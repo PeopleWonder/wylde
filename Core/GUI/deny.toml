@@ -36,17 +36,31 @@ yanked = "warn"
 unmaintained = "workspace"
 ignore = [
     # --- glib: unsound iterator (GHSA-wrw7-89jp-8q8g). Dependabot alert #1. ---
-    { id = "RUSTSEC-2024-0429", reason = "glib 0.18.5 VariantStrIter unsoundness. Deep GTK3-binding transitive (glib <- gtk/gio/... <- libappindicator <- tray-icon, and <- webkit2gtk <- wry). The entire GTK3 stack is cfg(target_os=linux); `cargo tree -i glib --target x86_64-pc-windows-msvc` is EMPTY, so it is never compiled into the shipped Windows binary. Fix ships only in glib 0.20 (a full gtk-rs 0.18->0.20 migration), blocked by wry 0.54 / tray-icon 0.19 pinning the GTK3 bindings at ^0.18. Not deletable: wry (extension-iframe host) and tray-icon (system tray) are both LIVE gpui-era code, not dead Tauri deps. Review by 2026-10-14." },
+    # This advisory is `informational = "unsound"`. Under `[advisories] version = 2`
+    # cargo-deny does NOT fail the gate on informational advisories, so it reports
+    # `warning[advisory-not-detected]` for THIS ignore — that is EXPECTED, not a
+    # mistake and not a stale entry. The entry is kept deliberately: it is the
+    # recorded, reviewed acceptance of this advisory (see #30 / KI-3), and it still
+    # suppresses the finding should glib ever be reclassified to a hard
+    # vulnerability. Do NOT delete it as "unused".
+    { id = "RUSTSEC-2024-0429", reason = "glib 0.18.5 VariantStrIter unsoundness. Deep GTK3-binding transitive (glib <- gtk/gio/... <- libappindicator <- tray-icon, and <- webkit2gtk <- wry). The entire GTK3 stack is cfg(target_os=linux); `cargo tree -i glib --target x86_64-pc-windows-msvc` is EMPTY, so it is never compiled into the shipped Windows binary. Fix ships only in glib 0.20 (a full gtk-rs 0.18->0.20 migration), blocked by wry 0.54 / tray-icon 0.19 pinning the GTK3 bindings at ^0.18. Not deletable: wry (extension-iframe host) and tray-icon (system tray) are both LIVE gpui-era code, not dead Tauri deps. REVIEW TRIGGER: re-check when the gpui git rev (b3d93d44, see Core/GUI/Cargo.toml) bumps — that rev pin is what freezes the wry/tray-icon -> glib chain, so a deliberate rev bump is the real event that can clear this. The 2026-10-14 quarterly date is only a backstop. Review by 2026-10-14." },
     # --- quick-xml: two DoS advisories, Linux-only provenance. ---
     { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic dup-attribute parse (DoS). Pulled only by xcb 0.30 (X11) and zbus_xml 0.39 (D-Bus) — both Linux-only gpui-platform deps; `cargo tree -i quick-xml --target x86_64-pc-windows-msvc` is EMPTY. Fix is quick-xml 0.41 (semver-major from 0.30), pinned by upstream xcb/zbus; not reachable via cargo update. Not in the shipped Windows binary. Review by 2026-10-14." },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml unbounded namespace-declaration allocation (DoS). Same Linux-only provenance (xcb/zbus_xml) and same upstream pin as RUSTSEC-2026-0194; not in the shipped Windows binary. Review by 2026-10-14." },
     # NOTE — async-tar 0.5.1 (Dependabot alert #18, GHSA-35rm-7j9c-2f7m /
-    # CVE-2026-53600) is NOT listed here on purpose: RustSec has not assigned it a
-    # RUSTSEC id (as of 2026-07-14), so cargo-deny cannot see or ignore it (it
-    # sources the RustSec DB). Dependabot (GHSA-sourced) tracks it. Its full
-    # disposition — dormant, upstream-pinned, unfixable even by bumping the gpui
-    # rev because Zed `main` still pins async-tar 0.5.1 — is documented in
+    # CVE-2026-53600) is NOT listed here on purpose: RustSec has still NOT assigned
+    # it a RUSTSEC id (re-verified 2026-07-15 against a freshly-fetched advisory-db),
+    # so cargo-deny cannot see or ignore it — it sources the RustSec DB, and a raw
+    # GHSA/CVE id in this list would only produce `advisory-not-detected` noise.
+    # Dependabot (GHSA-sourced) is the gate for this one. Its full disposition —
+    # dormant (no untrusted-tar path reaches it; the self-updater is the separate,
+    # minisign-verified `wylde-updater`, not http_client), upstream-pinned via
+    # Zed's http_client behind the gpui rev, and unfixable by a rev bump alone
+    # because Zed `main` still pins async-tar 0.5.1 — is documented in
     # docs/security/dependency-hygiene-policy.md and the dependabot triage doc.
+    # REVIEW TRIGGER: at the next gpui git-rev (b3d93d44) bump, re-check whether the
+    # new rev carries async-tar >= 0.6.1 AND whether RustSec has since ingested the
+    # advisory — if it has, add the RUSTSEC id here. Backstop date: 2026-10-14.
 ]
 
 # Defined for a manual `cargo deny check all`; CI gates only on `advisories`.
