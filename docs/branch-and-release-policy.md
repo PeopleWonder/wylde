@@ -176,6 +176,34 @@ nothing** — no stable release exists yet. That is the right, safe state until 
 > needs a new `Channel` variant *and* SemVer-pre-release-identifier filtering in `candidates()`
 > (parse `-alpha` vs `-beta`). Not needed for the two-line model — noted so it isn't reinvented.
 
+### 4.1 Staged rollout (ship to 1% before 100%) — assessed, not now
+
+Real studios stage a release: 1% → 10% → 100%, watching crash telemetry between rings, so a bad
+build hits a handful of users, not everyone. Should Wylde? **Honest answer: no — the two-channel
+model already gives you the same protection at this scale, and true percentage rollout costs
+infrastructure Wylde deliberately doesn't have.**
+
+- **What staged rollout needs:** a server that hands different clients different "latest" answers by
+  cohort, plus **crash/health telemetry** flowing back to decide whether to widen the ring. Wylde's
+  updater polls a *static* GitHub Releases list (every client sees the same releases), and Wylde is
+  **local-first with no telemetry by design** — there is no phone-home to watch a canary's health.
+  Building percentage rollout means building a rollout server and a telemetry pipe, both of which cut
+  against the privacy thesis.
+- **What you already have that does the same job:** the **Beta channel is your canary ring.** Beta
+  users run `develop`'s `0.1.x` pre-releases first; problems surface there before a build is ever
+  promoted to Stable. That is a staged rollout — just opt-in by channel instead of by percentage.
+  Combined with the local preflight (L1–L7) that must pass before promotion, a broken build has to
+  clear (a) the gate and (b) the Beta cohort before it can reach a Stable user.
+- **The one cheap upgrade worth considering later, not now:** if Beta ever has enough users that you
+  want a "soak" signal, add a **minimum soak time** to the release checklist — "a `0.1.x` must sit on
+  Beta for N days with no new blocker Issue before it's eligible for promotion." That's a checklist
+  line, not infrastructure, and it approximates ring-widening without a server or telemetry.
+
+**Recommendation:** stable-vs-experimental (Stable/Beta) **is** the right-sized staged rollout for
+Wylde's user count and privacy posture. Revisit percentage rollout only if the user base grows large
+enough that "the whole Beta cohort" is too big a blast radius — which is a good problem to have and a
+long way off.
+
 ---
 
 ## 5. What exactly promotes experimental → stable
@@ -224,6 +252,63 @@ via `docs/release-checklist.md`. Branch policy's contribution is *where each gat
 - **G7** (version-consistency) is live as of this change; **G4 (clippy `-D warnings`)** and
   **G6 (`cargo fmt --check`)** are staged as commented stubs in `ci.yml` — turn them on once the
   tree is clean (roadmap T0.1), because flipping them on a dirty tree red-walls CI for no gain.
+
+### 6.1 Studio-grade enforcement — what actually blocks what
+
+The reason alpha shipped broken repeatedly is not that the docs were unclear — it's that **nothing
+stopped it.** A studio wouldn't have caught those four defects with better documentation; they'd have
+been **blocked by a gate.** So the test for every item here is one question: **what does it block?**
+If the answer is "nothing, it's a norm," it's ceremony and it's excluded (and I say why below, so you
+can overrule).
+
+**Enforced by machines (these BLOCK):**
+
+| Control | What it blocks | Where it's enforced |
+|---|---|---|
+| **Branch protection on `main`** | any direct push / force-push / deletion of stable; any merge whose CI is red | GitHub ruleset (§ setup below). *The* control that makes "stable is only proven code" true rather than aspirational. |
+| **Branch protection on `develop`** | force-push / deletion; merging a red PR | GitHub ruleset |
+| **Required status checks** (backend, gui, tools, security-audit, **version-consistency**) | merging a PR that fails to build, fails tests, pulls a vulnerable crate, or has a split version | GitHub ruleset → the CI/security-audit jobs already defined |
+| **G7 version-consistency job** | a release where the two workspaces disagree, or a tag ≠ the stamped version | `tools/check-versions.sh` in CI, and `wylde-release` refuses to publish on failure |
+| **The local preflight (L1–L7) as the promotion gate** | promoting `develop`→`main` when the running system doesn't actually work (the launch-and-verify smoke CI can't run) | ⏳ `wylde-release preflight` / `xtask release-check` — the one-command gate `publish` refuses to run without (roadmap T0.1) |
+| **`min_core` floor** | a service incompatible with the running Core spawning and failing confusingly | `wylde-lifecycle` (shipped; §8.1) |
+
+**The rule of thumb:** discipline lives in **automation**, not in memory. A release checklist a human
+*reads* is a fallback; a `publish` command that *refuses to run* until the checklist is green is the
+gate. The roadmap's T0.1 turns L1–L7 from a doc into that command — that is the single most important
+studio-grade upgrade, because it's the gate that stops the *next* broken release.
+
+**Deliberately excluded as ceremony (a solo repo can't sustain them, and they block nothing useful) —
+overrule any of these if you disagree:**
+
+- **Required PR reviews / approvals.** With one maintainer, "require 1 approval" either blocks you
+  from merging your own work or is satisfied by self-approval — it protects nothing and adds friction.
+  *Adopt the moment a second regular contributor exists.*
+- **`CODEOWNERS`.** Its job is to auto-request the right reviewer per path. With one owner it
+  auto-requests you for everything — noise, not signal. It also *documents* ownership, but for a
+  solo repo the README does that. *Add a one-line `* @PeopleWonder` (plus per-path owners) when
+  contributors appear and you want auto-assignment.* **Not created now** — it would be pure ceremony.
+- **`CODE_OF_CONDUCT.md`.** Governs a community that doesn't exist yet; folded into a CONTRIBUTING
+  paragraph until it does (already done).
+- **Signed-commit requirement.** Real value, real friction (key setup, CI verification). Worth it if
+  Wylde ever ships to an audience that verifies provenance; over-process for now. The *release
+  artifacts* are already signed (minisign, `wylde-release`), which is where signing actually protects
+  users. *Commit signing is a later upgrade.*
+- **Merge-queue.** Solves contention when many PRs race to merge. One dev, no contention. *Later.*
+
+**Branch-protection setup (the concrete config — maintainer applies once, GitHub web UI).** Public
+repos get branch protection / rulesets free. For each of `main` and `develop`, add a **ruleset**
+(Settings → Rules → Rulesets → New branch ruleset) targeting the branch with:
+
+- ✅ **Restrict deletions** and ✅ **Block force pushes.**
+- ✅ **Require status checks to pass** → add: `backend (rust/) build + test`, `gui (Core/GUI/) build`,
+  `tools build`, `version consistency (G7)`, `cargo-deny (advisories)`. ✅ **Require branches to be
+  up to date before merging.**
+- On **`main`** additionally: ✅ **Require a pull request before merging** (so nothing lands on stable
+  except via a reviewed PR / the promotion merge) — but **leave "required approvals" at 0** (solo).
+- **Do not** enable required reviews, signed commits, or a merge queue yet (see exclusions above).
+
+This is the difference between a policy and a guarantee: after this, "you can't push experimental code
+straight to stable" is enforced by GitHub, not remembered by a human.
 
 ---
 

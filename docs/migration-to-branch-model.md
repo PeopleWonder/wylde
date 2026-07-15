@@ -82,17 +82,16 @@ Any worktree checked out on `feat/thought-bubble-system` should be moved to `dev
 
 ## 5. Step D — branch protection *(maintainer, GitHub web UI)*
 
-Protect **both** long-lived branches (Settings → Branches → add rules). For a solo repo, keep it
-light but real:
+Protect **both** long-lived branches. The exact ruleset config — which checks to require, what to
+block, and what to deliberately leave off for a solo repo — is specified in
+**`docs/branch-and-release-policy.md` §6.1 ("Studio-grade enforcement")**. In short: for each of
+`main` and `develop`, add a ruleset that **blocks force-pushes + deletions** and **requires the CI
+status checks** (backend, gui, tools, version-consistency, cargo-deny) to pass; on `main` also
+**require a PR** but leave required approvals at **0** (solo). Skip required reviews, signed commits,
+and merge-queue (ceremony at this scale — see §6.1 for why).
 
-- **`main`:** require the CI status checks (backend, gui, tools, security-audit, version-consistency)
-  to pass before merge; disallow direct pushes and force-pushes; disallow deletion. (Skip "require
-  PR reviews" — there's one reviewer; requiring a second approval would just block you.)
-- **`develop`:** require the same CI checks; disallow force-push and deletion. Direct pushes may
-  stay allowed if you sometimes commit small chores straight to `develop`, but prefer topic
-  branches + `--no-ff` per policy.
-
-This is the setting that makes "don't break stable" *enforced* rather than aspirational.
+This is the setting that makes "don't break stable" *enforced by GitHub* rather than remembered by a
+human — the whole point of the migration.
 
 ## 6. Step E — freeze `main` until the 0.2 gate *(policy, no action)*
 

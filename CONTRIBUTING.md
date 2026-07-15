@@ -79,6 +79,16 @@ don't need a changelog entry.
 Use the **[bug report or feature request templates](.github/ISSUE_TEMPLATE/)**. Search first — Wylde
 has an opinionated roadmap, and a good idea may still be deferred if it's off the current line.
 
+## Where things live
+
+- **Code, changelog, security, this guide** — this repo.
+- **Bugs & feature requests** — [GitHub Issues](https://github.com/PeopleWonder/wylde/issues), tracked
+  toward the **`0.2` milestone**. Use the [templates](.github/ISSUE_TEMPLATE/).
+- **Direction** — [`ROADMAP.md`](ROADMAP.md) (milestones); the detailed internal roadmap is
+  maintainer-private.
+- **How releases work** — [`docs/branch-and-release-policy.md`](docs/branch-and-release-policy.md) and
+  [`docs/release-checklist.md`](docs/release-checklist.md).
+
 ## Conduct
 
 Be decent: assume good faith, keep discussion technical and respectful, and don't be a jerk. Wylde is
