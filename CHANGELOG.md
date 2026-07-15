@@ -284,6 +284,22 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Security
 
+- **Formally accepted the two unbumpable, gpui-pinned advisories in `deny.toml`
+  with a documented review trigger (closes #30 / KI-3).** Both ride behind the
+  pinned `gpui` git rev (`b3d93d44`), which Dependabot cannot bump: `glib` 0.18.5
+  `VariantStrIter` unsoundness (RUSTSEC-2024-0429 / GHSA-wrw7-89jp-8q8g) — a
+  GTK3-only transitive, `cfg(linux)`-gated and absent from the shipped Windows
+  binary; and `async-tar` 0.5.1 PAX entry-smuggling (GHSA-35rm-7j9c-2f7m /
+  CVE-2026-53600) — compiled but dormant (no untrusted-tar path; the self-updater
+  is the separate, minisign-verified `wylde-updater`). The `glib` acceptance is
+  recorded as an ignore in `Core/GUI/deny.toml`; `async-tar` still has no RUSTSEC
+  id (re-verified 2026-07-15), so cargo-deny cannot ignore it and Dependabot
+  remains its gate — its disposition is documented there in a comment. The real
+  review trigger for both is the next deliberate `gpui`-rev bump (with a
+  2026-10-14 quarterly backstop, adjustable); policy in
+  `docs/security/dependency-hygiene-policy.md`. `cargo deny check advisories`
+  passes green on both the `rust/` and `Core/GUI/` workspaces.
+
 - **Dependency advisory sweep (RustSec / GitHub Dependabot).** Bumped two
   transitive crates to their patched releases across the affected lockfiles:
   `quinn-proto` 0.11.14 → 0.11.15 (RUSTSEC-2026-0185, HIGH — remote memory
