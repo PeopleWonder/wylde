@@ -192,7 +192,7 @@ impl Default for TierBudgets {
 /// Split vs Single mode (scope §3.5, DECISION #11 — confirmed by Aaron).
 /// Derived-but-overridable: `fast == reasoner ⇒ Single`. Default `Single`
 /// per Aaron's 2026-07-13 same-model decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasonMode {
     /// fast slot ≠ reasoner slot — reason ONCE on the reasoner, execute on
@@ -200,29 +200,19 @@ pub enum ReasonMode {
     Split,
     /// fast slot == reasoner slot — one brain plans AND executes. The
     /// default (Aaron: plan+execute on the same model).
+    #[default]
     Single,
-}
-
-impl Default for ReasonMode {
-    fn default() -> Self {
-        ReasonMode::Single
-    }
 }
 
 /// When the in-loop REFLECT critique fires (scope §5, OQ-6 recommended
 /// default). Inert until S5.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ReflectGate {
     Off,
+    #[default]
     MultiToolOnly,
     Always,
-}
-
-impl Default for ReflectGate {
-    fn default() -> Self {
-        ReflectGate::MultiToolOnly
-    }
 }
 
 /// The three co-resident, user-swappable model slots (scope §3.1). The

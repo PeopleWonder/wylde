@@ -82,7 +82,12 @@ async fn dispatch(method: &str, id: Value, params: Value) -> Value {
         "tools/list" => ok(id, json!({ "tools": tool_catalog() })),
         "tools/call" => handle_tools_call(id, params).await,
         "ping" => ok(id, json!({})),
-        other => err(id, -32601, &format!("method `{other}` not implemented"), None),
+        other => err(
+            id,
+            -32601,
+            &format!("method `{other}` not implemented"),
+            None,
+        ),
     }
 }
 
@@ -230,9 +235,15 @@ mod tests {
         .await;
         assert_eq!(r["result"]["isError"], false);
         assert_eq!(r["result"]["structuredContent"]["status"], "ok");
-        assert_eq!(r["result"]["structuredContent"]["extracted_data"]["h"], "Hi");
+        assert_eq!(
+            r["result"]["structuredContent"]["extracted_data"]["h"],
+            "Hi"
+        );
         // `content[0].text` is the JSON-stringified structured result.
-        assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("\"status\""));
+        assert!(r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("\"status\""));
     }
 
     #[tokio::test]

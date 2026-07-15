@@ -205,7 +205,9 @@ pub fn sibling_binary_path(folder: &Path, service: &str) -> Option<PathBuf> {
 pub async fn start_discovered(svc: &crate::registry::DiscoveredService) -> Result<()> {
     let name = svc.name.as_str();
     if is_service_alive(name) {
-        let pid = manifest_pid(name).or_else(|| service_pid(name)).unwrap_or(0);
+        let pid = manifest_pid(name)
+            .or_else(|| service_pid(name))
+            .unwrap_or(0);
         tracing::info!("{name}: already alive (manifest pid={pid}); skipping spawn");
         return Ok(());
     }
@@ -219,10 +221,8 @@ pub async fn start_discovered(svc: &crate::registry::DiscoveredService) -> Resul
     // service is the "panel present but dead" failure class). The reason is also
     // surfaced to the GUI via registry::build_info (service.list) and
     // service.health, so the panel shows *why* rather than just "unavailable".
-    let compat = crate::registry::check_core_floor(
-        crate::registry::core_version(),
-        svc.min_core.as_deref(),
-    );
+    let compat =
+        crate::registry::check_core_floor(crate::registry::core_version(), svc.min_core.as_deref());
     if let Some(reason) = compat.reason() {
         tracing::error!(
             service = name,
@@ -692,7 +692,10 @@ pub async fn start_memgraph() -> Result<()> {
         // Append-mode JVM log, same location the Python wrapper used.
         // Absolute root (see `memgraph_root_abs`) so the log path is stable
         // even if the daemon CWD differs from the repo root.
-        let logs_dir = memgraph_root_abs().join("Core").join("Memgraph").join("logs");
+        let logs_dir = memgraph_root_abs()
+            .join("Core")
+            .join("Memgraph")
+            .join("logs");
         std::fs::create_dir_all(&logs_dir)
             .with_context(|| format!("create {}", logs_dir.display()))?;
         let log = std::fs::OpenOptions::new()
@@ -1663,10 +1666,7 @@ mod tests {
         let bin_name = format!("wylde-gallery{}", if cfg!(windows) { ".exe" } else { "" });
         let bin = dir.path().join(&bin_name);
         std::fs::write(&bin, b"#!stub").unwrap();
-        assert_eq!(
-            sibling_binary_path(dir.path(), "wylde-gallery"),
-            Some(bin)
-        );
+        assert_eq!(sibling_binary_path(dir.path(), "wylde-gallery"), Some(bin));
     }
 
     #[tokio::test]

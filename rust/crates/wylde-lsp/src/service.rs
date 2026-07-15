@@ -133,7 +133,11 @@ async fn handle_open(p: Value) -> Reply {
     let (Some(root), Some(path)) = (require_str(&p, "root"), require_str(&p, "path")) else {
         return Reply::err_msg("bad_request", "root and path are required");
     };
-    let text = p.get("text").and_then(Value::as_str).unwrap_or("").to_owned();
+    let text = p
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
     let language_id = require_str(&p, "language").unwrap_or_else(|| "rust".to_owned());
     let uri = path_to_uri(&path);
     let outcome: Result<(), String> = match ask(|reply| LspCommand::Open {
@@ -158,7 +162,11 @@ async fn handle_change(p: Value) -> Reply {
     let Some(path) = require_str(&p, "path") else {
         return Reply::err_msg("bad_request", "path is required");
     };
-    let text = p.get("text").and_then(Value::as_str).unwrap_or("").to_owned();
+    let text = p
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
     let version = p.get("version").and_then(Value::as_i64).unwrap_or(2);
     let uri = path_to_uri(&path);
     let outcome: Result<(), String> = match ask(|reply| LspCommand::Change {
@@ -218,7 +226,9 @@ async fn handle_diagnostics(p: Value) -> Reply {
     };
     let uri = path_to_uri(&path);
     match ask(|reply| LspCommand::Diagnostics { uri, reply }).await {
-        Ok(diags) => Reply::ok(json!({ "diagnostics": diags.iter().map(simplify_diagnostic).collect::<Vec<_>>() })),
+        Ok(diags) => Reply::ok(
+            json!({ "diagnostics": diags.iter().map(simplify_diagnostic).collect::<Vec<_>>() }),
+        ),
         Err(e) => err_reply(e),
     }
 }
@@ -278,10 +288,7 @@ pub fn parse_hover(v: &Value) -> String {
         return String::new();
     };
     if let Some(arr) = contents.as_array() {
-        arr.iter()
-            .filter_map(one)
-            .collect::<Vec<_>>()
-            .join("\n")
+        arr.iter().filter_map(one).collect::<Vec<_>>().join("\n")
     } else {
         one(contents).unwrap_or_default()
     }

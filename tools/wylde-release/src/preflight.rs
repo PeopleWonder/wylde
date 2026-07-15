@@ -193,7 +193,13 @@ pub fn run_bench(args: BenchArgs) -> Result<()> {
             baseline_path.display()
         );
         print_recorded(&baseline);
-        maybe_append_history(&args.no_history, &repo_root, &baseline.recorded.commit, true, &measurements);
+        maybe_append_history(
+            &args.no_history,
+            &repo_root,
+            &baseline.recorded.commit,
+            true,
+            &measurements,
+        );
         return Ok(());
     }
 
@@ -243,7 +249,10 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
     let commit = crate::host::head_commit(&repo_root)?;
     let git_dirty = crate::host::is_dirty(&repo_root)?;
     let version = workspace_version(&repo_root)?;
-    println!("commit  : {commit}{}", if git_dirty { " (DIRTY)" } else { "" });
+    println!(
+        "commit  : {commit}{}",
+        if git_dirty { " (DIRTY)" } else { "" }
+    );
     println!("version : {version}");
 
     let mut gates: std::collections::BTreeMap<String, GateOutcome> = Default::default();
@@ -253,18 +262,32 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
     let g7 = run_g7(&repo_root)?;
     gates.insert(
         "version_consistency_g7".into(),
-        if g7 { GateOutcome::Pass } else { GateOutcome::Fail },
+        if g7 {
+            GateOutcome::Pass
+        } else {
+            GateOutcome::Fail
+        },
     );
-    println!("G7 version-consistency: {}", if g7 { "PASS" } else { "FAIL" });
+    println!(
+        "G7 version-consistency: {}",
+        if g7 { "PASS" } else { "FAIL" }
+    );
 
     // — Optional L1-lite artifact build —
     if args.build {
         let built = run_build(&repo_root);
         gates.insert(
             "build_artifacts".into(),
-            if built { GateOutcome::Pass } else { GateOutcome::Fail },
+            if built {
+                GateOutcome::Pass
+            } else {
+                GateOutcome::Fail
+            },
         );
-        println!("L1 build (backend + GUI, release): {}", if built { "PASS" } else { "FAIL" });
+        println!(
+            "L1 build (backend + GUI, release): {}",
+            if built { "PASS" } else { "FAIL" }
+        );
     } else {
         gates.insert("build_artifacts".into(), GateOutcome::Skipped);
         warnings.push("L1 artifact build skipped (pass --build to include it)".into());
@@ -294,7 +317,11 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
     let bench_green = report.is_green(args.allow_skips);
     gates.insert(
         "benchmarks".into(),
-        if bench_green { GateOutcome::Pass } else { GateOutcome::Fail },
+        if bench_green {
+            GateOutcome::Pass
+        } else {
+            GateOutcome::Fail
+        },
     );
     for c in &report.comparisons {
         if matches!(c.status, crate::bench::spec::Status::Warn) {
@@ -370,9 +397,8 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
         })
         .collect();
 
-    let all_green = !git_dirty
-        && gates.values().all(|g| !matches!(g, GateOutcome::Fail))
-        && bench_green;
+    let all_green =
+        !git_dirty && gates.values().all(|g| !matches!(g, GateOutcome::Fail)) && bench_green;
 
     let rec = Receipt {
         schema: RECEIPT_SCHEMA,
@@ -393,7 +419,13 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
         println!("  ⚠ {w}");
     }
 
-    maybe_append_history(&args.no_history, &repo_root, &commit, all_green, &measurements);
+    maybe_append_history(
+        &args.no_history,
+        &repo_root,
+        &commit,
+        all_green,
+        &measurements,
+    );
 
     if git_dirty {
         bail!(
@@ -402,7 +434,9 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
         );
     }
     if !all_green {
-        bail!("preflight is NOT green — see the failures above. `publish` will refuse this receipt.");
+        bail!(
+            "preflight is NOT green — see the failures above. `publish` will refuse this receipt."
+        );
     }
     let short = &commit[..8.min(commit.len())];
     if launch_verified {
@@ -526,7 +560,10 @@ fn workspace_version(repo_root: &Path) -> Result<String> {
             }
         }
     }
-    bail!("could not find [workspace.package] version in {}", toml_path.display())
+    bail!(
+        "could not find [workspace.package] version in {}",
+        toml_path.display()
+    )
 }
 
 /// Run G7 (`tools/check-versions.sh`) via bash; success = green.
@@ -568,7 +605,10 @@ fn maybe_append_history(
         return;
     }
     // Default history lives in the private planning repo (junctioned in).
-    let path = repo_root.join("outputs").join("benchmarks").join("history.jsonl");
+    let path = repo_root
+        .join("outputs")
+        .join("benchmarks")
+        .join("history.jsonl");
     let rec = bench::HistoryRecord {
         timestamp: &now_utc_iso(),
         commit,
@@ -602,7 +642,7 @@ fn print_report(base: &Baseline, report: &crate::bench::spec::Report) {
         base.recorded.reps,
         base.recorded.host.label
     );
-    println!("{:<44} {:<9} {}", "metric", "status", "detail");
+    println!("{:<44} {:<9} detail", "metric", "status");
     println!("{}", "-".repeat(88));
     for c in &report.comparisons {
         let mark = match c.status {
@@ -624,7 +664,11 @@ fn print_report(base: &Baseline, report: &crate::bench::spec::Report) {
         .iter()
         .filter(|c| crate::bench::spec::Comparison::blocks(c))
         .count();
-    let warned = report.comparisons.iter().filter(|c| matches!(c.status, crate::bench::spec::Status::Warn)).count();
+    let warned = report
+        .comparisons
+        .iter()
+        .filter(|c| matches!(c.status, crate::bench::spec::Status::Warn))
+        .count();
     let skipped = report.required_skipped().len();
     println!(
         "{}\nsummary: {failed} failing · {warned} warnings · {skipped} required-skipped",
@@ -663,7 +707,7 @@ fn civil_from_epoch(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
     // days since 1970-01-01 → civil date
     let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as i64; // [0, 146096]
+    let doe = z - era * 146_097; // [0, 146096]
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]

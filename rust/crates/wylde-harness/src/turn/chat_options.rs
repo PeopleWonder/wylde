@@ -160,6 +160,12 @@ async fn declared_num_ctx(model: &str) -> Option<u64> {
 }
 
 #[cfg(test)]
+// These async tests hold the sync `TEST_ENV_LOCK` across the `slot_budget`
+// `.await` to serialise process-global env-var mutation (`WYLDE_DATA_DIR`,
+// the token-budget override) against the sibling env-mutating suites. The
+// awaited code never acquires `TEST_ENV_LOCK`, so there's no deadlock risk
+// and the lint is a false positive here.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::memory::common::TEST_ENV_LOCK;

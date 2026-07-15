@@ -65,12 +65,18 @@ impl IndexProgress {
                 .and_then(|x| x.as_str())
                 .unwrap_or("embed")
                 .to_owned(),
-            determinate: o.get("determinate").and_then(|x| x.as_bool()).unwrap_or(false),
+            determinate: o
+                .get("determinate")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
             files_done: o.get("files_done").and_then(|x| x.as_u64()).unwrap_or(0),
             files_total: o.get("files_total").and_then(|x| x.as_u64()).unwrap_or(0),
             chunks_done: o.get("chunks_done").and_then(|x| x.as_u64()).unwrap_or(0),
             chunks_total: o.get("chunks_total").and_then(|x| x.as_u64()).unwrap_or(0),
-            items_per_sec: o.get("items_per_sec").and_then(|x| x.as_f64()).unwrap_or(0.0),
+            items_per_sec: o
+                .get("items_per_sec")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.0),
             eta_secs: o.get("eta_secs").and_then(|x| x.as_f64()),
         })
     }
@@ -101,7 +107,8 @@ impl IndexProgress {
 
     /// `"~2m 30s remaining"`, or `None` when no ETA is available yet.
     pub fn eta_label(&self) -> Option<String> {
-        self.eta_secs.map(|s| format!("~{} remaining", format_eta(s)))
+        self.eta_secs
+            .map(|s| format!("~{} remaining", format_eta(s)))
     }
 }
 
@@ -434,7 +441,8 @@ mod tests {
     #[test]
     fn progress_guards_zero_total() {
         // A determinate-but-zero-total snapshot must not divide by zero.
-        let v = json!({ "phase": "embed", "determinate": true, "chunks_done": 0, "chunks_total": 0 });
+        let v =
+            json!({ "phase": "embed", "determinate": true, "chunks_done": 0, "chunks_total": 0 });
         let p = IndexProgress::from_value(&v).expect("parses");
         assert_eq!(p.ratio(), None);
         assert_eq!(p.percent(), None);

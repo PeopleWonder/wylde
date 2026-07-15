@@ -312,20 +312,14 @@ fn generate_key(key: Option<PathBuf>, comment: &str) -> Result<()> {
         // Don't regenerate — a fresh keypair would orphan every already
         // shipped, already-signed build. Report the existing public key
         // for embedding instead.
-        println!(
-            "A signing key already exists at {}.",
-            key_path.display()
-        );
+        println!("A signing key already exists at {}.", key_path.display());
         match std::fs::read_to_string(&pub_path) {
             Ok(contents) => match extract_pubkey(&contents) {
                 Some(line) => {
                     println!("\nPublic key (embed this in wylde-updater::PUBLIC_KEY):");
                     println!("{line}");
                 }
-                None => println!(
-                    "(could not parse a key line out of {})",
-                    pub_path.display()
-                ),
+                None => println!("(could not parse a key line out of {})", pub_path.display()),
             },
             Err(_) => println!(
                 "(no matching public key at {} — pass the right --key, or \
@@ -529,7 +523,10 @@ fn resolve_notes(
             .with_context(|| format!("reading notes file {}", path.display()));
     }
     Ok(notes.map(str::to_owned).unwrap_or_else(|| {
-        format!("Automated release {version} ({} channel).", channel_name(channel))
+        format!(
+            "Automated release {version} ({} channel).",
+            channel_name(channel)
+        )
     }))
 }
 
@@ -548,8 +545,8 @@ fn verify_public_key(input: &str) -> Result<()> {
     } else {
         input.to_owned()
     };
-    let candidate = extract_pubkey(&raw)
-        .context("could not parse a base64 public-key line from the input")?;
+    let candidate =
+        extract_pubkey(&raw).context("could not parse a base64 public-key line from the input")?;
 
     if !wylde_updater::has_signing_key() {
         // The shipped build still carries the placeholder, so there is
@@ -722,8 +719,14 @@ mod tests {
                 notes_file,
                 ..
             } => {
-                assert_eq!(binary, PathBuf::from("wylde-gui-x86_64-pc-windows-msvc.exe"));
-                assert_eq!(extra_asset, vec![PathBuf::from("WyldeSetup-0.1.0-alpha.1.exe")]);
+                assert_eq!(
+                    binary,
+                    PathBuf::from("wylde-gui-x86_64-pc-windows-msvc.exe")
+                );
+                assert_eq!(
+                    extra_asset,
+                    vec![PathBuf::from("WyldeSetup-0.1.0-alpha.1.exe")]
+                );
                 assert_eq!(notes_file, Some(PathBuf::from("RELEASE_NOTES.md")));
             }
             other => panic!("expected Publish, got {other:?}"),
@@ -761,10 +764,12 @@ mod tests {
     fn resolve_notes_reads_file_over_string() {
         // No tempfile dep on this standalone crate — use the OS temp dir
         // with a pid-unique name so parallel test runs don't collide.
-        let path = std::env::temp_dir().join(format!("wylde-release-notes-{}.md", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("wylde-release-notes-{}.md", std::process::id()));
         std::fs::write(&path, "# From file\n").unwrap();
         // notes-file wins over an also-present --notes string.
-        let resolved = resolve_notes(Some("ignored"), Some(&path), "v1.0.0", Channel::Beta).unwrap();
+        let resolved =
+            resolve_notes(Some("ignored"), Some(&path), "v1.0.0", Channel::Beta).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(resolved, "# From file\n");
     }

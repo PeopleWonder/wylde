@@ -1348,7 +1348,11 @@ impl GraphView {
                         GraphRecovery::StartService,
                     )
                 };
-                col = col.child(overlay_text(banner.to_owned(), font_size::XS, weight::REGULAR));
+                col = col.child(overlay_text(
+                    banner.to_owned(),
+                    font_size::XS,
+                    weight::REGULAR,
+                ));
                 // The one-click recovery button.
                 col = col.child(
                     overlay_text(label.to_owned(), font_size::XS, weight::SEMIBOLD)
@@ -1356,24 +1360,30 @@ impl GraphView {
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |this: &mut GraphView, _ev: &MouseDownEvent, _w, cx| {
-                                cx.stop_propagation();
-                                this.spawn_recovery(action, cx);
-                            }),
+                            cx.listener(
+                                move |this: &mut GraphView, _ev: &MouseDownEvent, _w, cx| {
+                                    cx.stop_propagation();
+                                    this.spawn_recovery(action, cx);
+                                },
+                            ),
                         ),
                 );
                 // Retry once the underlying fix has landed.
                 col = col.child(
-                    overlay_text("Click to retry".to_owned(), font_size::MICRO, weight::REGULAR)
-                        .id("workspaces-graph-retry")
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|_this, _ev: &MouseDownEvent, _w, cx| {
-                                cx.stop_propagation();
-                                GraphView::spawn_load(cx);
-                            }),
-                        ),
+                    overlay_text(
+                        "Click to retry".to_owned(),
+                        font_size::MICRO,
+                        weight::REGULAR,
+                    )
+                    .id("workspaces-graph-retry")
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_this, _ev: &MouseDownEvent, _w, cx| {
+                            cx.stop_propagation();
+                            GraphView::spawn_load(cx);
+                        }),
+                    ),
                 );
             } else {
                 col = col.child(overlay_text(
@@ -2065,7 +2075,10 @@ mod tests {
         let _guard = ScriptedBackend::new().install();
 
         let g = WorkspaceGraph {
-            nodes: vec![node("sym::foo", "src/foo.rs"), node("sym::bar", "src/bar.rs")],
+            nodes: vec![
+                node("sym::foo", "src/foo.rs"),
+                node("sym::bar", "src/bar.rs"),
+            ],
             edges: vec![],
             clusters: vec![],
         };
@@ -2077,7 +2090,10 @@ mod tests {
         let hit = window
             .update(cx, |gv, _w, cx| gv.focus_node("sym::foo", cx))
             .unwrap();
-        assert!(hit, "a present node is focused — the vocab-word deep-link terminal");
+        assert!(
+            hit,
+            "a present node is focused — the vocab-word deep-link terminal"
+        );
         cx.run_until_parked();
         window
             .update(cx, |gv, _w, _cx| {
@@ -2093,10 +2109,17 @@ mod tests {
         let miss = window
             .update(cx, |gv, _w, cx| gv.focus_node("sym::missing", cx))
             .unwrap();
-        assert!(!miss, "a deep-link to a node not in the loaded graph is a no-op");
+        assert!(
+            !miss,
+            "a deep-link to a node not in the loaded graph is a no-op"
+        );
         window
             .update(cx, |gv, _w, _cx| {
-                assert_eq!(gv.last_clicked.as_deref(), Some("sym::foo"), "selection unchanged");
+                assert_eq!(
+                    gv.last_clicked.as_deref(),
+                    Some("sym::foo"),
+                    "selection unchanged"
+                );
             })
             .unwrap();
     }
@@ -2112,7 +2135,10 @@ mod tests {
     // empty Ok load — recovery without a graph-DB).
     #[gpui::test]
     fn retry_reloads_the_graph_and_clears_the_down_state(cx: &mut TestAppContext) {
-        let fake = ScriptedBackend::new().on("workspaces.list_mru", serde_json::json!({ "active_id": "" }));
+        let fake = ScriptedBackend::new().on(
+            "workspaces.list_mru",
+            serde_json::json!({ "active_id": "" }),
+        );
         let _guard = fake.clone().install();
 
         let window = cx.add_window(|_w, _cx| {
@@ -2127,12 +2153,17 @@ mod tests {
         cx.run_until_parked();
 
         // The retry chip calls spawn_load (mirrors the Registry tab's Retry).
-        window.update(cx, |_gv, _w, cx| GraphView::spawn_load(cx)).unwrap();
+        window
+            .update(cx, |_gv, _w, cx| GraphView::spawn_load(cx))
+            .unwrap();
         cx.run_until_parked();
 
         window
             .update(cx, |gv, _w, _cx| {
-                assert!(gv.error.is_none(), "retry re-loaded and cleared the down-state error");
+                assert!(
+                    gv.error.is_none(),
+                    "retry re-loaded and cleared the down-state error"
+                );
                 assert!(!gv.loading, "the reload settled");
             })
             .unwrap();
@@ -2154,7 +2185,10 @@ mod tests {
         let _guard = ScriptedBackend::new().install();
 
         let g = WorkspaceGraph {
-            nodes: vec![node("sym::foo", "src/foo.rs"), node("sym::bar", "src/bar.rs")],
+            nodes: vec![
+                node("sym::foo", "src/foo.rs"),
+                node("sym::bar", "src/bar.rs"),
+            ],
             edges: vec![],
             clusters: vec![],
         };

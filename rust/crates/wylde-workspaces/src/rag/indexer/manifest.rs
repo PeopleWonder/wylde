@@ -218,14 +218,12 @@ where
                         // Touched (mtime/size moved, bytes identical) — keep the
                         // vectors, refresh the recorded mtime/size. No re-embed.
                         out.keep_paths.insert(s.path.clone());
-                        out.file_meta
-                            .insert(s.path.clone(), (h, s.size, s.mtime));
+                        out.file_meta.insert(s.path.clone(), (h, s.size, s.mtime));
                     }
                     Some(h) => {
                         // Real content change.
                         out.to_embed.push(s.path.clone());
-                        out.file_meta
-                            .insert(s.path.clone(), (h, s.size, s.mtime));
+                        out.file_meta.insert(s.path.clone(), (h, s.size, s.mtime));
                     }
                     None => {
                         // Unreadable now — keep the prior vectors rather than
@@ -375,7 +373,9 @@ pub fn update_file(
 /// hash/chunk ids — the touch/no-op short-circuit. No-op if the entry is absent.
 /// Call under the index lock.
 pub fn touch_file(workspace_id: &str, path: &str, size: u64, mtime: f64) {
-    let Some(mut m) = load(workspace_id) else { return };
+    let Some(mut m) = load(workspace_id) else {
+        return;
+    };
     if let Some(e) = m.files.get_mut(path) {
         e.size = size;
         e.mtime = mtime;
@@ -387,7 +387,9 @@ pub fn touch_file(workspace_id: &str, path: &str, size: u64, mtime: f64) {
 /// `<canonical><sep>` (a deleted directory's subtree). Call under the index
 /// lock, after the matching chunk removal.
 pub fn remove_files(workspace_id: &str, canonical: &str) {
-    let Some(mut m) = load(workspace_id) else { return };
+    let Some(mut m) = load(workspace_id) else {
+        return;
+    };
     let prefix = format!("{canonical}{}", std::path::MAIN_SEPARATOR);
     let before = m.files.len();
     m.files
@@ -478,7 +480,9 @@ mod tests {
         // mtime moved (touch / checkout) but the hash is identical.
         let prior = manifest_with(&[("/a.rs", entry("hashA", 10, 100.0, &["c0"]))]);
         let stats = vec![stat("/a.rs", 999.0, 10)];
-        let d = diff(&prior, &stats, &HashMap::new(), |_| Some("hashA".to_owned()));
+        let d = diff(&prior, &stats, &HashMap::new(), |_| {
+            Some("hashA".to_owned())
+        });
         assert!(d.keep_paths.contains("/a.rs"), "touched file is kept");
         assert!(d.to_embed.is_empty(), "no re-embed for identical bytes");
         // mtime refreshed in the recorded meta.
@@ -489,7 +493,9 @@ mod tests {
     fn changed_bytes_get_reembedded() {
         let prior = manifest_with(&[("/a.rs", entry("hashA", 10, 100.0, &["c0"]))]);
         let stats = vec![stat("/a.rs", 200.0, 12)];
-        let d = diff(&prior, &stats, &HashMap::new(), |_| Some("hashB".to_owned()));
+        let d = diff(&prior, &stats, &HashMap::new(), |_| {
+            Some("hashB".to_owned())
+        });
         assert_eq!(d.to_embed, vec!["/a.rs".to_owned()]);
         assert!(!d.keep_paths.contains("/a.rs"));
         assert_eq!(d.file_meta["/a.rs"], ("hashB".to_owned(), 12, 200.0));
@@ -499,7 +505,9 @@ mod tests {
     fn new_file_is_embedded() {
         let prior = Manifest::current_env();
         let stats = vec![stat("/new.rs", 50.0, 5)];
-        let d = diff(&prior, &stats, &HashMap::new(), |_| Some("hashN".to_owned()));
+        let d = diff(&prior, &stats, &HashMap::new(), |_| {
+            Some("hashN".to_owned())
+        });
         assert_eq!(d.to_embed, vec!["/new.rs".to_owned()]);
         assert_eq!(d.file_meta["/new.rs"], ("hashN".to_owned(), 5, 50.0));
     }
@@ -514,7 +522,10 @@ mod tests {
         let d = diff(&prior, &stats, &HashMap::new(), |_| Some("x".to_owned()));
         assert_eq!(d.deleted, vec!["/gone.rs".to_owned()]);
         assert!(d.keep_paths.contains("/keep.rs"));
-        assert!(!d.file_meta.contains_key("/gone.rs"), "deleted file dropped");
+        assert!(
+            !d.file_meta.contains_key("/gone.rs"),
+            "deleted file dropped"
+        );
     }
 
     #[test]
@@ -572,7 +583,11 @@ mod tests {
             },
         ];
         let m = build(&meta, &chunks);
-        assert_eq!(m.files["/a.rs"].chunk_ids, vec!["a0", "a1"], "ordered by idx");
+        assert_eq!(
+            m.files["/a.rs"].chunk_ids,
+            vec!["a0", "a1"],
+            "ordered by idx"
+        );
         assert_eq!(m.files["/a.rs"].chunk_count, 2);
         assert_eq!(m.files["/b.rs"].chunk_count, 0, "no chunks ⇒ empty entry");
         assert!(m.is_compatible());

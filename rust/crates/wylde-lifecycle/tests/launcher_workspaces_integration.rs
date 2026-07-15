@@ -91,7 +91,10 @@ async fn daemon_starts_workspaces_health_probe_then_clean_stop() {
     // leak the child.
     let stop_result = stop_workspaces().await;
 
-    assert!(healthy, "wylde-workspaces pipe did not become healthy within 5s of launch");
+    assert!(
+        healthy,
+        "wylde-workspaces pipe did not become healthy within 5s of launch"
+    );
     stop_result.expect("stop_workspaces should tear the child down cleanly");
 
     // ── confirm the pipe is gone (give the OS a beat to retract it) ──────
@@ -104,6 +107,9 @@ async fn daemon_starts_workspaces_health_probe_then_clean_stop() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(gone, "wylde-workspaces pipe should be gone after stop_workspaces");
+    assert!(
+        gone,
+        "wylde-workspaces pipe should be gone after stop_workspaces"
+    );
     eprintln!("[launcher] clean stop confirmed — pipe retracted");
 }

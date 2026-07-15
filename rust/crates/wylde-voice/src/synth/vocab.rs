@@ -24,21 +24,21 @@ pub fn lookup(ch: char) -> Option<u32> {
         '.' => 4,
         '!' => 5,
         '?' => 6,
-        '\u{2014}' => 9,    // em-dash —
-        '\u{2026}' => 10,   // ellipsis …
+        '\u{2014}' => 9,  // em-dash —
+        '\u{2026}' => 10, // ellipsis …
         '"' => 11,
         '(' => 12,
         ')' => 13,
-        '\u{201C}' => 14,   // “
-        '\u{201D}' => 15,   // ”
+        '\u{201C}' => 14, // “
+        '\u{201D}' => 15, // ”
         ' ' => 16,
-        '\u{0303}' => 17,   // combining tilde
+        '\u{0303}' => 17, // combining tilde
         'ʣ' => 18,
         'ʥ' => 19,
         'ʦ' => 20,
         'ʨ' => 21,
         'ᵝ' => 22,
-        '\u{AB67}' => 23,   // ꭧ (latin small letter glottal stop with stroke)
+        '\u{AB67}' => 23, // ꭧ (latin small letter glottal stop with stroke)
         'A' => 24,
         'I' => 25,
         'O' => 31,
@@ -191,8 +191,8 @@ mod tests {
         // Kokoro's `n_token` is 178; every id we emit must fit so the
         // input_ids tensor stays inside the embedding bound.
         let probe_chars: &[char] = &[
-            ';', ':', ',', '.', '!', '?', '\u{2014}', ' ', 'A', 'a', 'z',
-            'ə', 'ʃ', 'θ', 'ɹ', '↓', 'ᵻ', 'ʰ',
+            ';', ':', ',', '.', '!', '?', '\u{2014}', ' ', 'A', 'a', 'z', 'ə', 'ʃ', 'θ', 'ɹ', '↓',
+            'ᵻ', 'ʰ',
         ];
         for &c in probe_chars {
             let id = lookup(c).expect("probe char in vocab");

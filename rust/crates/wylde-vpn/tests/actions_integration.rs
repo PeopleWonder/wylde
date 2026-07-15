@@ -156,11 +156,9 @@ async fn link_config_patch_rejects_unknown_fields() {
     let cfg_path = dir.path().join("config.yaml");
     std::fs::write(&cfg_path, "link:\n  enabled: false\n").unwrap();
 
-    let err = wylde_vpn::config::patch_link_config_at(
-        &cfg_path,
-        &json!({"totally_made_up_key": 42}),
-    )
-    .expect_err("should reject unknown field");
+    let err =
+        wylde_vpn::config::patch_link_config_at(&cfg_path, &json!({"totally_made_up_key": 42}))
+            .expect_err("should reject unknown field");
     let msg = format!("{err:#}");
     assert!(msg.contains("totally_made_up_key"), "got: {msg}");
 }
@@ -171,11 +169,8 @@ async fn link_config_patch_coerces_string_bool_to_real_bool() {
     let cfg_path = dir.path().join("config.yaml");
     std::fs::write(&cfg_path, "link:\n  enabled: false\n").unwrap();
 
-    let r = wylde_vpn::config::patch_link_config_at(
-        &cfg_path,
-        &json!({"enabled": "true"}),
-    )
-    .unwrap();
+    let r =
+        wylde_vpn::config::patch_link_config_at(&cfg_path, &json!({"enabled": "true"})).unwrap();
     assert_eq!(r.view["enabled"], true);
     let written = std::fs::read_to_string(&cfg_path).unwrap();
     assert!(written.contains("enabled: true"));

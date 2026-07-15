@@ -109,7 +109,10 @@ impl ScriptedBackend {
 
     /// Script a unary `action` to fail with `code: message`-style `err`.
     pub fn on_err(self: Arc<Self>, action: impl Into<String>, err: impl Into<String>) -> Arc<Self> {
-        self.errors.lock().unwrap().insert(action.into(), err.into());
+        self.errors
+            .lock()
+            .unwrap()
+            .insert(action.into(), err.into());
         self
     }
 
@@ -132,7 +135,10 @@ impl ScriptedBackend {
         path: impl Into<String>,
         err: impl Into<String>,
     ) -> Arc<Self> {
-        self.path_errors.lock().unwrap().insert(path.into(), err.into());
+        self.path_errors
+            .lock()
+            .unwrap()
+            .insert(path.into(), err.into());
         self
     }
 
@@ -145,7 +151,10 @@ impl ScriptedBackend {
 
     /// Convenience: set the `conversations.list` response from a row list.
     pub fn conversations(self: Arc<Self>, rows: Vec<Value>) -> Arc<Self> {
-        self.on("conversations.list", serde_json::json!({ "conversations": rows }))
+        self.on(
+            "conversations.list",
+            serde_json::json!({ "conversations": rows }),
+        )
     }
 
     /// Install this backend on the current thread for the life of the

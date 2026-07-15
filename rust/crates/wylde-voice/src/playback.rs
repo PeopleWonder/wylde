@@ -32,13 +32,13 @@
 //! to it — same approach `mic::resample_to_16k` uses on the input side
 //! but in the opposite direction.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use cpal::SampleFormat;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::SampleFormat;
 use thiserror::Error;
 
 /// Reasonable safety cap on a single playback call (60 s of 24 kHz
@@ -107,7 +107,10 @@ pub async fn play_blocking(pcm_i16: Vec<i16>, sample_rate: u32) -> Result<(), Pl
 fn run_playback(pcm_i16: Vec<i16>, sample_rate: u32) -> Result<(), PlaybackError> {
     // Convert to f32 once in the calling thread so the audio-driver
     // callback stays branch-free.
-    let pcm_f32: Vec<f32> = pcm_i16.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+    let pcm_f32: Vec<f32> = pcm_i16
+        .iter()
+        .map(|&s| s as f32 / i16::MAX as f32)
+        .collect();
 
     let done = Arc::new(AtomicBool::new(false));
     let done_for_worker = Arc::clone(&done);
@@ -130,7 +133,9 @@ fn open_and_play(
     total_samples: usize,
 ) -> Result<(), PlaybackError> {
     let host = cpal::default_host();
-    let device = host.default_output_device().ok_or(PlaybackError::NoDevice)?;
+    let device = host
+        .default_output_device()
+        .ok_or(PlaybackError::NoDevice)?;
     let supported = device
         .default_output_config()
         .map_err(|e| PlaybackError::NoSupportedConfig(e.to_string()))?;
@@ -210,7 +215,9 @@ fn open_and_play(
         }
     };
 
-    stream.play().map_err(|e| PlaybackError::Play(e.to_string()))?;
+    stream
+        .play()
+        .map_err(|e| PlaybackError::Play(e.to_string()))?;
     tracing::info!(
         "wylde-voice: playback running on {:?} ({} Hz, {} ch, fmt {:?}) — {} input samples @ {} Hz",
         device.name().ok(),
@@ -223,7 +230,8 @@ fn open_and_play(
 
     // Poll the done flag with a timeout proportional to the audio length
     // (audio_seconds * 1.5 + 1s headroom) — guards against a stuck device.
-    let buffer_seconds = buffer.len() as f32 / (device_rate.max(1) as f32 * device_channels.max(1) as f32);
+    let buffer_seconds =
+        buffer.len() as f32 / (device_rate.max(1) as f32 * device_channels.max(1) as f32);
     let timeout = Duration::from_secs_f32(buffer_seconds * 1.5 + 1.0);
     let deadline = std::time::Instant::now() + timeout;
     while !done.load(Ordering::SeqCst) {

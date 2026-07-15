@@ -169,7 +169,9 @@ pub fn evaluate(
     current_version: &str,
 ) -> Result<UpdateStatus, UpdateError> {
     let current = parse_tag(current_version).ok_or_else(|| {
-        UpdateError::Version(format!("current version `{current_version}` is not valid semver"))
+        UpdateError::Version(format!(
+            "current version `{current_version}` is not valid semver"
+        ))
     })?;
 
     let Some(release) = select_release(releases, channel) else {

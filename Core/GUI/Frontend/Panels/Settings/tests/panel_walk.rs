@@ -45,7 +45,10 @@ fn settings_healthy_mounts_and_loads(cx: &mut TestAppContext) {
     window
         .update(cx, |panel, _w, _cx| {
             assert!(panel.error.is_none(), "no page-level error at mount");
-            assert!(!panel.voice_offline, "the voice section is online when it answers");
+            assert!(
+                !panel.voice_offline,
+                "the voice section is online when it answers"
+            );
         })
         .unwrap();
 }
@@ -57,7 +60,10 @@ fn settings_survives_backend_down(cx: &mut TestAppContext) {
     let fake = ScriptedBackend::new()
         .on_err("voice.get_config", "pipe_unavailable: voice not running")
         .on_err("consent.list", "pipe_unavailable: harness not running")
-        .on_err("models.get_effective", "pipe_unavailable: harness not running");
+        .on_err(
+            "models.get_effective",
+            "pipe_unavailable: harness not running",
+        );
     let _guard = fake.install();
 
     let window = mount(cx);
@@ -85,8 +91,14 @@ fn settings_surfaces_backend_error_envelope(cx: &mut TestAppContext) {
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.error.is_none(), "still no page-level banner on an error envelope");
-            assert!(panel.voice_offline, "the voice section reads offline on an error envelope");
+            assert!(
+                panel.error.is_none(),
+                "still no page-level banner on an error envelope"
+            );
+            assert!(
+                panel.voice_offline,
+                "the voice section reads offline on an error envelope"
+            );
         })
         .unwrap();
 }
@@ -103,7 +115,10 @@ fn settings_tolerates_empty_backend(cx: &mut TestAppContext) {
     window
         .update(cx, |panel, _w, _cx| {
             assert!(panel.error.is_none(), "empty ok-replies are not an error");
-            assert!(!panel.voice_offline, "an empty voice envelope parses to online defaults");
+            assert!(
+                !panel.voice_offline,
+                "an empty voice envelope parses to online defaults"
+            );
         })
         .unwrap();
 }

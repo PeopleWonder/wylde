@@ -53,9 +53,7 @@ pub async fn handle_chat(payload: Value, up: Arc<Upstream>) -> Reply {
     let messages = match payload.get("messages") {
         Some(v) if v.is_array() => v.clone(),
         _ => {
-            return Reply::err(invalid_request(
-                "payload.messages is required (array)",
-            ));
+            return Reply::err(invalid_request("payload.messages is required (array)"));
         }
     };
 
@@ -224,7 +222,7 @@ pub async fn handle_chat_stream(payload: Value, sender: StreamSender, up: Arc<Up
         Ok(r) => r,
         Err(e) => {
             let _ = sender.send(Err(ollama_unreachable_err(&e))).await; // wylde-check: discard-result-ok
-            // Lease drop on guard going out of scope.
+                                                                        // Lease drop on guard going out of scope.
             drop(lease_guard);
             return;
         }

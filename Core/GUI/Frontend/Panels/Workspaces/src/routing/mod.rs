@@ -282,8 +282,7 @@ impl RelationsView {
         };
         let note_input = self.note_input.clone();
         cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
-            let outcome =
-                ipc::add_relation(&ws, &focus, &target, kind, note.as_deref()).await;
+            let outcome = ipc::add_relation(&ws, &focus, &target, kind, note.as_deref()).await;
             let _ = this.update(app_cx, |v, cx| {
                 match outcome {
                     Ok(_) => {
@@ -759,10 +758,7 @@ impl Render for RelationsView {
                             div()
                                 .text_size(px(size::MICRO))
                                 .text_color(group_color(group))
-                                .child(SharedString::from(format!(
-                                    "{} {to_label}",
-                                    group.glyph()
-                                ))),
+                                .child(SharedString::from(format!("{} {to_label}", group.glyph()))),
                         );
                     }
                     list = list.child(card);

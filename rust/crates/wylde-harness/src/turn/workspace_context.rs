@@ -196,6 +196,11 @@ pub(crate) fn apply_degraded_notice(text: String, degraded: bool) -> String {
 }
 
 #[cfg(test)]
+// This async test holds the sync env lock across the `gather` `.await` to
+// serialise `WYLDE_HARNESS_WORKSPACES_SERVICE` mutation against the sibling
+// env-mutating suites. The awaited code never acquires that lock, so there's
+// no deadlock risk and the lint is a false positive here.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use std::sync::{Mutex, MutexGuard};

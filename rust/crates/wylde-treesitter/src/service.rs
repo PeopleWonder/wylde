@@ -113,9 +113,7 @@ pub fn handle_highlight(payload: Value) -> Reply {
     };
     // Optional inline `source` — the live-editor path (IDE S4): highlight the
     // caller's in-memory buffer instead of reading `path` from disk.
-    let source = payload
-        .get("source")
-        .and_then(Value::as_str);
+    let source = payload.get("source").and_then(Value::as_str);
     match highlight::highlight(path, language, source) {
         Ok(v) => Reply::ok(v),
         Err(e) => Reply::err(e),

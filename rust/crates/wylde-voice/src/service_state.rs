@@ -22,9 +22,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, Notify};
 
-use crate::config_persist::{
-    load_config, save_config, VoiceConfig, ALL_MODES,
-};
+use crate::config_persist::{load_config, save_config, VoiceConfig, ALL_MODES};
 
 /// Lowercase wire strings; lined up with `Voice/state.py::STATE_*` and
 /// [`crate::orchestrator::STATE_*`].
@@ -458,7 +456,9 @@ mod tests {
         // Emitted a state event.
         let v = s.poll_events(0, 0).await;
         let evs = v["events"].as_array().unwrap();
-        assert!(evs.iter().any(|e| e["type"] == "state" && e["mode"] == "always_on"));
+        assert!(evs
+            .iter()
+            .any(|e| e["type"] == "state" && e["mode"] == "always_on"));
     }
 
     #[tokio::test]
@@ -597,7 +597,10 @@ mod tests {
         s.set_mode("always_on").await.unwrap();
         let v = waiter.await.unwrap();
         let evs = v["events"].as_array().unwrap();
-        assert!(!evs.is_empty(), "subscriber should have seen the state event");
+        assert!(
+            !evs.is_empty(),
+            "subscriber should have seen the state event"
+        );
     }
 
     #[tokio::test]
@@ -606,7 +609,10 @@ mod tests {
         s.set_wake_word_installed(true).await;
         let v = s.poll_events(0, 0).await;
         let evs = v["events"].as_array().unwrap();
-        let found = evs.iter().find(|e| e["type"] == "wake_word_status").unwrap();
+        let found = evs
+            .iter()
+            .find(|e| e["type"] == "wake_word_status")
+            .unwrap();
         assert_eq!(found["installed"], true);
         assert_eq!(found["model"], DEFAULT_WAKE_WORD_MODEL_VALUE);
         // snapshot also reflects it.
@@ -625,6 +631,5 @@ mod tests {
         assert!(count <= MAX_EVENTS);
     }
 
-    const DEFAULT_WAKE_WORD_MODEL_VALUE: &str =
-        crate::config_persist::DEFAULT_WAKE_WORD_MODEL;
+    const DEFAULT_WAKE_WORD_MODEL_VALUE: &str = crate::config_persist::DEFAULT_WAKE_WORD_MODEL;
 }

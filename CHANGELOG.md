@@ -217,6 +217,18 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Changed
 
+- **Clippy (G4) + fmt (G6) CI gates are now LIVE.** The two staged enforcement
+  gates were armed: a new `clippy (G4) + fmt (G6)` CI job runs
+  `cargo fmt --all -- --check` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` across every
+  CI-built workspace (rust/, Core/GUI/, tools/xtask, tools/wylde-release) and
+  **fails the build** on any warning or unformatted file. Getting there took a
+  workspace-wide `cargo fmt` (its own `chore(fmt)` commit) and a behavior-neutral
+  clippy cleanup — derivable `Default`s, `contains` over `iter().any(==)`,
+  struct-init over `default()`-then-reassign in tests, scoping a cfg(test)
+  `test_support` to `pub(crate)`, and a justified `await_holding_lock` allow on
+  env-serializing async tests. Harness lib stays 1168/0. Enforcement-matrix rows
+  10 + 11 move from ⏳-staged to ✅-live. (issue #32)
 - **Full-Rust cutover.** Every remaining Python runtime component was ported
   to Rust and its source deleted (~350 files): the Lifecycle daemon +
   rollback path (`Core/Lifecycle/`), the Python harness runtime
@@ -308,6 +320,25 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Fixed
 
+- **De-flaked the `wylde-workspaces` gather-prompt breaker integration test
+  (a CI-red-training flake).** `gather_prompt_degrades_then_trips_breaker_when_service_dies`
+  intermittently failed on PRs with no `rust/` changes, then passed on re-run.
+  Root cause was **not** timing or test ordering: the file's two
+  `#[tokio::test]`s run concurrently in one process and each minted its service
+  (pipe) name from `pid + timestamp`. The pid is identical and the timestamp
+  can resolve to the same tick when both tests start together, so the names
+  could **collide** (measured ~0.009% for two simultaneous threads on an idle
+  box — higher on a loaded runner). Because the IPC server binds pipes without
+  `first_pipe_instance`, two services on one name coexist and **share** the
+  pipe; the negative test then kills *its* service but its post-kill
+  `gather_prompt` calls reach the still-alive positive-test service, succeed,
+  and the circuit breaker never accrues the 5 failures the test asserts. Proven
+  deterministically with a forced-collision repro (all 5 post-kill calls
+  returned `Ok`, breaker never tripped). Fix: the integration tests now mint
+  collision-proof names with a random `uuid` suffix, matching the convention
+  already used by `integration_rag_indexer.rs` (why `uuid` is a dev-dependency).
+  Applied to the four sibling integration tests sharing the same latent pattern
+  (`verbs_roundtrip`, `pipe_roundtrip`, `fs_verbs`, `anchors`). (fixes #29)
 - **Long-term memories saved outside the model now embed on write.** The
   `memory.long_term.save` / `memory.long_term.update` API/pipe handlers (the
   Settings-UI "add memory" path, extensions, N8N — anything that isn't the

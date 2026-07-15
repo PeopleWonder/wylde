@@ -616,7 +616,7 @@ pub(crate) async fn maybe_reflect(
 /// How many hard tool failures a watched Fast turn absorbs before it
 /// escalates to planning. Aaron's 2026-07-14 contract: "reasoning enabled
 /// + Fast tier is byte-identical to today EXCEPT after ≥2 hard tool
-/// failures".
+///   failures".
 pub const ESCALATE_AFTER_HARD_FAILURES: usize = 2;
 
 /// Char cap on each failure digest carried into the escalated plan

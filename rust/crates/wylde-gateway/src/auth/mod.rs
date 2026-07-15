@@ -371,10 +371,8 @@ mod tests {
             .route("/x", get(ok_handler))
             .route_layer(from_fn(require_local));
         let mut req = Request::builder().uri("/x").body(Body::empty()).unwrap();
-        req.extensions_mut().insert(ConnectInfo(SocketAddr::from((
-            [203, 0, 113, 7],
-            51000,
-        ))));
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([203, 0, 113, 7], 51000))));
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         let body = to_bytes(resp.into_body(), 1024).await.unwrap();

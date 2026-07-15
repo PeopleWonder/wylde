@@ -56,8 +56,14 @@ fn memory_healthy_mounts_and_loads(cx: &mut TestAppContext) {
 #[gpui::test]
 fn memory_survives_backend_down(cx: &mut TestAppContext) {
     let fake = ScriptedBackend::new()
-        .on_err("memory.long_term.list", "pipe_unavailable: harness not running")
-        .on_err("workspaces.list_mru", "pipe_unavailable: workspaces not running");
+        .on_err(
+            "memory.long_term.list",
+            "pipe_unavailable: harness not running",
+        )
+        .on_err(
+            "workspaces.list_mru",
+            "pipe_unavailable: workspaces not running",
+        );
     let _guard = fake.clone().install();
 
     let window = mount(cx);
@@ -75,15 +81,20 @@ fn memory_survives_backend_down(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn memory_surfaces_backend_error_envelope(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new()
-        .on_err("memory.long_term.list", "internal_error: memory store blew up");
+    let fake = ScriptedBackend::new().on_err(
+        "memory.long_term.list",
+        "internal_error: memory store blew up",
+    );
     let _guard = fake.install();
 
     let window = mount(cx);
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.error.is_some(), "an error envelope surfaces on the panel");
+            assert!(
+                panel.error.is_some(),
+                "an error envelope surfaces on the panel"
+            );
             assert!(!panel.loading_long_term);
         })
         .unwrap();
@@ -100,7 +111,10 @@ fn memory_tolerates_empty_backend(cx: &mut TestAppContext) {
         .update(cx, |panel, _w, _cx| {
             assert!(panel.error.is_none(), "no curated memories is not an error");
             assert!(!panel.loading_long_term);
-            assert!(panel.long_term.is_empty(), "an empty store yields an empty list");
+            assert!(
+                panel.long_term.is_empty(),
+                "an empty store yields an empty list"
+            );
         })
         .unwrap();
 }

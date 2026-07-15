@@ -21,16 +21,27 @@
 #![cfg(windows)]
 
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use wylde_workspaces_client::WorkspacesClient;
 
+/// A globally-unique service (and therefore pipe) name for one test.
+///
+/// Must be collision-proof: this file's two `#[tokio::test]`s run concurrently
+/// in one process, and the negative test kills *its* service and asserts the
+/// next calls fail. A `pid + timestamp` name can tie (same pid; the timestamp
+/// resolves to the same tick when both tests start together), and the IPC
+/// server does not set `first_pipe_instance`, so two services on one name
+/// share the pipe: the negative test's post-kill calls then reach the still
+/// alive positive-test service, succeed, and the breaker never trips (#29).
+/// The random `uuid` removes that tie — same convention as
+/// `integration_rag_indexer.rs` (why `uuid` is a dev-dependency).
 fn unique_service_name() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("wylde-workspaces-gather-{}-{}", std::process::id(), nanos)
+    format!(
+        "wylde-workspaces-gather-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 fn spawn_service(

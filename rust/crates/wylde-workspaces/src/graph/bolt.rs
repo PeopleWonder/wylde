@@ -709,7 +709,12 @@ fn concepts_to_boltlist(workspace: &str, rows: &[Value]) -> BoltList {
         m.put("id".into(), BoltType::from(id.to_owned()));
         m.put(
             "label".into(),
-            BoltType::from(r.get("label").and_then(Value::as_str).unwrap_or("").to_owned()),
+            BoltType::from(
+                r.get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+            ),
         );
         m.put(
             "description".into(),
@@ -722,10 +727,21 @@ fn concepts_to_boltlist(workspace: &str, rows: &[Value]) -> BoltList {
         );
         m.put(
             "source".into(),
-            BoltType::from(r.get("source").and_then(Value::as_str).unwrap_or("").to_owned()),
+            BoltType::from(
+                r.get("source")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+            ),
         );
-        m.put("members".into(), BoltType::List(str_array_to_boltlist(r.get("members"))));
-        m.put("parents".into(), BoltType::List(str_array_to_boltlist(r.get("parents"))));
+        m.put(
+            "members".into(),
+            BoltType::List(str_array_to_boltlist(r.get("members"))),
+        );
+        m.put(
+            "parents".into(),
+            BoltType::List(str_array_to_boltlist(r.get("parents"))),
+        );
         list.push(BoltType::Map(m));
     }
     list

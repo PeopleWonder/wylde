@@ -210,7 +210,9 @@ fn hierarchy_definition_block(workspace_id: &str, curated_ids: &[String]) -> Opt
     let mut lines: Vec<String> = Vec::new();
     for id in curated_ids {
         let nid = NodeId::concept(id);
-        let Some(node) = graph.node(&nid) else { continue };
+        let Some(node) = graph.node(&nid) else {
+            continue;
+        };
         if node.definition.is_missing() {
             continue; // never inject an empty definition (plan SS3 invariant)
         }
@@ -381,9 +383,9 @@ mod tests {
     // ── H5: definitional ancestor-chain injection (gated) ─────────────────
 
     fn hier_enable() {
-        wylde_concept_hierarchy::HierarchyConfig::persist(wylde_concept_hierarchy::HierarchyConfig {
-            enabled: true,
-        })
+        wylde_concept_hierarchy::HierarchyConfig::persist(
+            wylde_concept_hierarchy::HierarchyConfig { enabled: true },
+        )
         .expect("enable hierarchy");
     }
     fn hier_disable() {
@@ -394,12 +396,22 @@ mod tests {
 
     /// Seed a two-level concept DAG: `token` (child) under `auth` (root).
     fn seed_hier(ws: &str) {
-        let mut token = Concept::new("token", "Token", "a bearer credential", ConceptSource::Manual);
+        let mut token = Concept::new(
+            "token",
+            "Token",
+            "a bearer credential",
+            ConceptSource::Manual,
+        );
         token.parent_concepts = vec!["auth".into()];
         store::save(
             ws,
             &[
-                Concept::new("auth", "Auth", "the authentication layer", ConceptSource::Manual),
+                Concept::new(
+                    "auth",
+                    "Auth",
+                    "the authentication layer",
+                    ConceptSource::Manual,
+                ),
                 token,
             ],
         )
@@ -423,8 +435,14 @@ mod tests {
         let ws = "inject-hier-on0";
         seed_hier(ws);
         let block = hierarchy_definition_block(ws, &["token".into()]).expect("on ⇒ a block");
-        assert!(block.contains("Token — a bearer credential"), "node label + definition");
-        assert!(block.contains("under Auth"), "primary containment chain named");
+        assert!(
+            block.contains("Token — a bearer credential"),
+            "node label + definition"
+        );
+        assert!(
+            block.contains("under Auth"),
+            "primary containment chain named"
+        );
         hier_disable();
     }
 
@@ -434,7 +452,11 @@ mod tests {
         hier_enable();
         let ws = "inject-hier-mis";
         // A concept with a blank description ⇒ Missing ⇒ never injected.
-        store::save(ws, &[Concept::new("bare", "Bare", "   ", ConceptSource::Manual)]).unwrap();
+        store::save(
+            ws,
+            &[Concept::new("bare", "Bare", "   ", ConceptSource::Manual)],
+        )
+        .unwrap();
         assert_eq!(
             hierarchy_definition_block(ws, &["bare".into()]),
             None,
@@ -451,7 +473,10 @@ mod tests {
         seed_hier(ws);
         let out = inject_curated(ws, &["token".into()], None);
         let joined = out.blocks.join("\n");
-        assert!(joined.contains("Token — a bearer credential — under Auth"), "{joined}");
+        assert!(
+            joined.contains("Token — a bearer credential — under Auth"),
+            "{joined}"
+        );
         hier_disable();
     }
 

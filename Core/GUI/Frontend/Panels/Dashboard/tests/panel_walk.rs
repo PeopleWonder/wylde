@@ -44,7 +44,10 @@ fn mount(cx: &mut TestAppContext) -> gpui::WindowHandle<DashboardPanel> {
 fn dashboard_healthy_mounts_and_loads(cx: &mut TestAppContext) {
     let fake = ScriptedBackend::new()
         .on("service.health", json!({ "ok": true }))
-        .on("system.inventory", json!({ "cpu_brand": "Test CPU", "cpu_cores": 8 }))
+        .on(
+            "system.inventory",
+            json!({ "cpu_brand": "Test CPU", "cpu_cores": 8 }),
+        )
         .on("ollama.list_loaded", json!({ "models": [] }))
         .on("memory.long_term.list", json!({ "memories": [] }));
     let _guard = fake.clone().install();
@@ -78,9 +81,15 @@ fn dashboard_survives_backend_down(cx: &mut TestAppContext) {
     // panic, and still finish its load cycle.
     let fake = ScriptedBackend::new()
         .on_err("service.health", "pipe_unavailable: lifecycle not running")
-        .on_err("system.inventory", "pipe_unavailable: vram-broker not running")
+        .on_err(
+            "system.inventory",
+            "pipe_unavailable: vram-broker not running",
+        )
         .on_err("ollama.list_loaded", "pipe_unavailable: ollama not running")
-        .on_err("memory.long_term.list", "pipe_unavailable: harness not running");
+        .on_err(
+            "memory.long_term.list",
+            "pipe_unavailable: harness not running",
+        );
     let _guard = fake.clone().install();
 
     let window = mount(cx);
@@ -118,7 +127,10 @@ fn dashboard_surfaces_backend_error_envelope(cx: &mut TestAppContext) {
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.initial_load_done, "loader completes on error envelopes");
+            assert!(
+                panel.initial_load_done,
+                "loader completes on error envelopes"
+            );
             assert!(
                 panel
                     .service_health
@@ -143,7 +155,10 @@ fn dashboard_tolerates_empty_backend(cx: &mut TestAppContext) {
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.initial_load_done, "loader completes against empty ok-replies");
+            assert!(
+                panel.initial_load_done,
+                "loader completes against empty ok-replies"
+            );
             assert!(
                 !panel.hardware_ever_read,
                 "an empty inventory is treated as 'not read', not a bogus zero card"

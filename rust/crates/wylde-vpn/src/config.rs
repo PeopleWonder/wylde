@@ -101,9 +101,7 @@ impl Config {
         let link_stun_servers_raw = std::env::var("LINK_STUN_SERVERS")
             .ok()
             .or_else(|| yaml.link.stun_servers.clone())
-            .unwrap_or_else(|| {
-                "stun.l.google.com:19302,stun1.l.google.com:19302".to_string()
-            });
+            .unwrap_or_else(|| "stun.l.google.com:19302,stun1.l.google.com:19302".to_string());
         let link_stun_servers: Vec<String> = link_stun_servers_raw
             .split(',')
             .map(|s| s.trim().to_string())
@@ -118,7 +116,10 @@ impl Config {
             port: env_u16("PORT", yaml.service.port.unwrap_or(DEFAULT_PORT)),
 
             vpn_enabled: env_bool("VPN_ENABLED", yaml.vpn.enabled.unwrap_or(false)),
-            vpn_endpoint: env_str("VPN_ENDPOINT", yaml.vpn.endpoint.clone().unwrap_or_default()),
+            vpn_endpoint: env_str(
+                "VPN_ENDPOINT",
+                yaml.vpn.endpoint.clone().unwrap_or_default(),
+            ),
             vpn_peer_pubkey: env_str(
                 "VPN_PEER_PUBKEY",
                 yaml.vpn.peer_pubkey.clone().unwrap_or_default(),
@@ -136,7 +137,10 @@ impl Config {
             ),
             vpn_dns: env_str(
                 "VPN_DNS",
-                yaml.vpn.dns.clone().unwrap_or_else(|| "1.1.1.1".to_string()),
+                yaml.vpn
+                    .dns
+                    .clone()
+                    .unwrap_or_else(|| "1.1.1.1".to_string()),
             ),
             vpn_allowed_ips: env_str(
                 "VPN_ALLOWED_IPS",
@@ -173,7 +177,10 @@ impl Config {
             ),
             link_token_ttl: env_u64("LINK_TOKEN_TTL", yaml.link.token_ttl.unwrap_or(300)),
             link_pair_rate_max: env_u32("LINK_PAIR_RATE_MAX", yaml.link.pair_rate_max.unwrap_or(5)),
-            link_pair_rate_win: env_u64("LINK_PAIR_RATE_WIN", yaml.link.pair_rate_win.unwrap_or(60)),
+            link_pair_rate_win: env_u64(
+                "LINK_PAIR_RATE_WIN",
+                yaml.link.pair_rate_win.unwrap_or(60),
+            ),
 
             link_relay_host: env_str(
                 "LINK_RELAY_HOST",
@@ -550,10 +557,7 @@ pub fn patch_link_config(patch: &Value) -> anyhow::Result<LinkConfigPatchResult>
     do_patch(&cfg.yaml_path(), patch)
 }
 
-fn do_patch(
-    yaml_path: &std::path::Path,
-    patch: &Value,
-) -> anyhow::Result<LinkConfigPatchResult> {
+fn do_patch(yaml_path: &std::path::Path, patch: &Value) -> anyhow::Result<LinkConfigPatchResult> {
     let cfg = Config::get();
     let patch_obj = patch
         .as_object()
@@ -715,7 +719,13 @@ fn yaml_to_json(v: &serde_yaml::Value) -> Value {
             .as_i64()
             .map(Value::from)
             .or_else(|| n.as_u64().map(Value::from))
-            .or_else(|| n.as_f64().map(|f| serde_json::Number::from_f64(f).map(Value::from).unwrap_or(Value::Null)))
+            .or_else(|| {
+                n.as_f64().map(|f| {
+                    serde_json::Number::from_f64(f)
+                        .map(Value::from)
+                        .unwrap_or(Value::Null)
+                })
+            })
             .unwrap_or(Value::Null),
         serde_yaml::Value::String(s) => Value::String(s.clone()),
         serde_yaml::Value::Sequence(seq) => Value::Array(seq.iter().map(yaml_to_json).collect()),
@@ -724,7 +734,10 @@ fn yaml_to_json(v: &serde_yaml::Value) -> Value {
             for (k, v) in map {
                 let key = match k {
                     serde_yaml::Value::String(s) => s.clone(),
-                    other => serde_yaml::to_string(other).unwrap_or_default().trim().to_string(),
+                    other => serde_yaml::to_string(other)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
                 };
                 obj.insert(key, yaml_to_json(v));
             }
@@ -812,7 +825,10 @@ mod tests {
         assert!(!cfg.link_enabled);
         assert_eq!(cfg.link_listen_port, DEFAULT_LINK_LISTEN_PORT);
         assert_eq!(cfg.dns_stub_port, DEFAULT_DNS_STUB_PORT);
-        assert!(cfg.link_stun_servers.iter().any(|s| s.contains("stun.l.google.com")));
+        assert!(cfg
+            .link_stun_servers
+            .iter()
+            .any(|s| s.contains("stun.l.google.com")));
     }
 
     #[test]

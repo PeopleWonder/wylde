@@ -89,7 +89,8 @@ pub async fn handle_build(payload: Value) -> Reply {
     let chunks = crate::rag::indexer::store::load_chunks(&ws);
     let have_vectors = chunks.iter().filter(|c| !c.vector.is_empty()).count();
     if have_vectors >= 2 {
-        return build_semantic_stable(&ws, &chunks, super::semantic::SemanticParams::default()).await;
+        return build_semantic_stable(&ws, &chunks, super::semantic::SemanticParams::default())
+            .await;
     }
 
     // Fallback: label the directory clusters from the live code graph.
@@ -259,7 +260,12 @@ pub async fn handle_create(payload: Value) -> Reply {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned();
-    let mut concept = Concept::new(id, label, description, super::concept::ConceptSource::Manual);
+    let mut concept = Concept::new(
+        id,
+        label,
+        description,
+        super::concept::ConceptSource::Manual,
+    );
     if let Some(m) = opt_str_array(&payload, "members") {
         concept.members = m;
     }
@@ -432,10 +438,11 @@ pub async fn handle_retrieve(payload: Value) -> Reply {
     let Some(concept) = store::get(&ws, &id) else {
         return Reply::err_msg("not_found", format!("no concept {id:?} in this workspace"));
     };
-    let allowed: std::collections::HashSet<String> = super::lens::lens(&concept.member_files, scope.as_deref())
-        .into_iter()
-        .cloned()
-        .collect();
+    let allowed: std::collections::HashSet<String> =
+        super::lens::lens(&concept.member_files, scope.as_deref())
+            .into_iter()
+            .cloned()
+            .collect();
     let chunks = crate::rag::indexer::store::load_chunks(&ws);
     let snippets =
         super::retrieve::select_member_chunks(concept.centroid.as_deref(), &chunks, &allowed, k);
@@ -496,13 +503,21 @@ pub async fn handle_propose(payload: Value) -> Reply {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned();
-    let mut concept = Concept::new(id, label, description, super::concept::ConceptSource::Manual);
+    let mut concept = Concept::new(
+        id,
+        label,
+        description,
+        super::concept::ConceptSource::Manual,
+    );
     if let Some(m) = opt_str_array(&payload, "members") {
         concept.members = m;
     }
     let proposal = super::proposals::PendingConceptProposal {
         concept,
-        confidence: payload.get("confidence").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+        confidence: payload
+            .get("confidence")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0) as f32,
         rationale: payload
             .get("rationale")
             .and_then(Value::as_str)
@@ -576,10 +591,20 @@ mod tests {
     use crate::test_support::TestEnv;
 
     fn seed(ws: &str) {
-        let mut a = Concept::new("dir:src/graph", "Graph", "the graph", ConceptSource::DirectoryCluster);
+        let mut a = Concept::new(
+            "dir:src/graph",
+            "Graph",
+            "the graph",
+            ConceptSource::DirectoryCluster,
+        );
         a.members = vec!["alpha".into(), "shared".into()];
         a.member_files = vec!["src/graph/api.rs".into()];
-        let mut b = Concept::new("dir:src/rag", "Rag", "retrieval", ConceptSource::DirectoryCluster);
+        let mut b = Concept::new(
+            "dir:src/rag",
+            "Rag",
+            "retrieval",
+            ConceptSource::DirectoryCluster,
+        );
         b.members = vec!["shared".into()];
         b.member_files = vec!["src/rag/search.rs".into()];
         b.parent_concepts = vec!["dir:src/graph".into()];
@@ -636,7 +661,8 @@ mod tests {
         let _env = TestEnv::new();
         let ws = "ws-api-under-000";
         seed(ws);
-        let r = handle_list_under(json!({ "workspace_id": ws, "parent_id": "dir:src/graph" })).await;
+        let r =
+            handle_list_under(json!({ "workspace_id": ws, "parent_id": "dir:src/graph" })).await;
         assert!(r.ok);
         assert_eq!(r.data["count"], 1);
         assert_eq!(r.data["concepts"][0]["id"], "dir:src/rag");
@@ -648,7 +674,8 @@ mod tests {
         let ws = "ws-api-rev-0000";
         seed(ws);
         // "shared" is a member of both concepts.
-        let by_sym = handle_reverse_lookup(json!({ "workspace_id": ws, "symbol_id": "shared" })).await;
+        let by_sym =
+            handle_reverse_lookup(json!({ "workspace_id": ws, "symbol_id": "shared" })).await;
         assert!(by_sym.ok);
         assert_eq!(by_sym.data["concepts"].as_array().unwrap().len(), 2);
 
@@ -682,7 +709,11 @@ mod tests {
 
     fn idx_chunk(id: &str, path: &str, v: Vec<f32>) -> crate::rag::indexer::store::IndexedChunk {
         let n: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        let v: Vec<f32> = if n > 0.0 { v.iter().map(|x| x / n).collect() } else { v };
+        let v: Vec<f32> = if n > 0.0 {
+            v.iter().map(|x| x / n).collect()
+        } else {
+            v
+        };
         crate::rag::indexer::store::IndexedChunk {
             id: id.to_owned(),
             path: path.to_owned(),
@@ -700,13 +731,20 @@ mod tests {
         let _env = TestEnv::new();
         let ws = "ws-api-sem-0000";
         // A hand-authored concept must survive a rebuild.
-        handle_create(json!({ "workspace_id": ws, "id": "manual:keep", "label": "Keep" }))
-            .await;
+        handle_create(json!({ "workspace_id": ws, "id": "manual:keep", "label": "Keep" })).await;
         // Write a tiny two-theme index.
         let mut chunks = Vec::new();
         for j in 0..4 {
-            chunks.push(idx_chunk(&format!("a{j}"), "src/auth/a.rs", vec![1.0, 0.02 * j as f32, 0.0]));
-            chunks.push(idx_chunk(&format!("g{j}"), "src/graph/g.rs", vec![0.0, 0.02 * j as f32, 1.0]));
+            chunks.push(idx_chunk(
+                &format!("a{j}"),
+                "src/auth/a.rs",
+                vec![1.0, 0.02 * j as f32, 0.0],
+            ));
+            chunks.push(idx_chunk(
+                &format!("g{j}"),
+                "src/graph/g.rs",
+                vec![0.0, 0.02 * j as f32, 1.0],
+            ));
         }
         crate::rag::indexer::store::save_chunks(ws, &chunks).unwrap();
 
@@ -716,7 +754,9 @@ mod tests {
         let all = store::load(ws);
         // manual concept preserved + semantic concepts added.
         assert!(all.iter().any(|c| c.id == "manual:keep"));
-        assert!(all.iter().any(|c| c.id.starts_with("sem:") && c.centroid.is_some()));
+        assert!(all
+            .iter()
+            .any(|c| c.id.starts_with("sem:") && c.centroid.is_some()));
     }
 
     #[tokio::test]
@@ -726,8 +766,16 @@ mod tests {
         // A clean two-theme index.
         let mut chunks = Vec::new();
         for j in 0..5 {
-            chunks.push(idx_chunk(&format!("a{j}"), "src/auth/a.rs", vec![1.0, 0.02 * j as f32, 0.0]));
-            chunks.push(idx_chunk(&format!("g{j}"), "src/graph/g.rs", vec![0.0, 0.02 * j as f32, 1.0]));
+            chunks.push(idx_chunk(
+                &format!("a{j}"),
+                "src/auth/a.rs",
+                vec![1.0, 0.02 * j as f32, 0.0],
+            ));
+            chunks.push(idx_chunk(
+                &format!("g{j}"),
+                "src/graph/g.rs",
+                vec![0.0, 0.02 * j as f32, 1.0],
+            ));
         }
         crate::rag::indexer::store::save_chunks(ws, &chunks).unwrap();
 
@@ -754,13 +802,19 @@ mod tests {
         // live (not dangling) and the ids are unchanged.
         let r2 = handle_build_semantic(json!({ "workspace_id": ws, "k": 2 })).await;
         assert!(r2.ok, "{:?}", r2.error);
-        assert_eq!(r2.data["dangling_count"], 0, "carried-over ids keep the relation live");
+        assert_eq!(
+            r2.data["dangling_count"], 0,
+            "carried-over ids keep the relation live"
+        );
         let ids_after: Vec<String> = store::load(ws)
             .into_iter()
             .filter(|c| c.id.starts_with("sem:"))
             .map(|c| c.id)
             .collect();
-        assert_eq!(ids_before, ids_after, "semantic ids stable across recompute");
+        assert_eq!(
+            ids_before, ids_after,
+            "semantic ids stable across recompute"
+        );
     }
 
     #[tokio::test]
@@ -781,8 +835,16 @@ mod tests {
         let _env = TestEnv::new();
         let ws = "ws-api-cprop-00";
         // Propose two concepts.
-        assert!(handle_propose(json!({ "workspace_id": ws, "id": "p1", "label": "P1" })).await.ok);
-        assert!(handle_propose(json!({ "workspace_id": ws, "id": "p2", "label": "P2" })).await.ok);
+        assert!(
+            handle_propose(json!({ "workspace_id": ws, "id": "p1", "label": "P1" }))
+                .await
+                .ok
+        );
+        assert!(
+            handle_propose(json!({ "workspace_id": ws, "id": "p2", "label": "P2" }))
+                .await
+                .ok
+        );
         let listed = handle_list_proposals(json!({ "workspace_id": ws })).await;
         assert_eq!(listed.data["count"], 2);
 
@@ -795,7 +857,12 @@ mod tests {
         let rej = handle_reject_proposal(json!({ "workspace_id": ws, "id": "p2" })).await;
         assert!(rej.ok);
         assert_eq!(rej.data["rejected"], true);
-        assert_eq!(handle_list_proposals(json!({ "workspace_id": ws })).await.data["count"], 0);
+        assert_eq!(
+            handle_list_proposals(json!({ "workspace_id": ws }))
+                .await
+                .data["count"],
+            0
+        );
         // Re-proposing p2 inside the window is suppressed.
         let re = handle_propose(json!({ "workspace_id": ws, "id": "p2", "label": "P2" })).await;
         assert_eq!(re.data["outcome"], "suppressed");
@@ -805,17 +872,20 @@ mod tests {
     async fn lens_intersects_members_with_scope() {
         let _env = TestEnv::new();
         let ws = "ws-api-lens-000";
-        let mut c = Concept::new("dir:services", "Services", "d", ConceptSource::DirectoryCluster);
-        c.member_files = vec![
-            "services/vpn/a.rs".into(),
-            "services/auth/b.rs".into(),
-        ];
+        let mut c = Concept::new(
+            "dir:services",
+            "Services",
+            "d",
+            ConceptSource::DirectoryCluster,
+        );
+        c.member_files = vec!["services/vpn/a.rs".into(), "services/auth/b.rs".into()];
         store::create(ws, c).unwrap();
         let all = handle_lens(json!({ "workspace_id": ws, "id": "dir:services" })).await;
         assert_eq!(all.data["count"], 2);
-        let scoped =
-            handle_lens(json!({ "workspace_id": ws, "id": "dir:services", "scope": "services/vpn" }))
-                .await;
+        let scoped = handle_lens(
+            json!({ "workspace_id": ws, "id": "dir:services", "scope": "services/vpn" }),
+        )
+        .await;
         assert_eq!(scoped.data["count"], 1);
         assert_eq!(scoped.data["files"][0], "services/vpn/a.rs");
     }

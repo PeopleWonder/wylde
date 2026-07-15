@@ -261,8 +261,7 @@ mod tests {
         assert!(service_health_body_is_ready("wylde-ollama", &ok));
 
         for down in ["unreachable", "timeout"] {
-            let body =
-                json!({ "name": "wylde-ollama", "reply": { "ok": true, "upstream": down } });
+            let body = json!({ "name": "wylde-ollama", "reply": { "ok": true, "upstream": down } });
             assert!(
                 !service_health_body_is_ready("wylde-ollama", &body),
                 "upstream={down} must gate the panel"
@@ -460,10 +459,7 @@ mod tests {
     fn ordinary_down_service_has_no_reason() {
         // A service that's merely not running (no daemon reason) yields a None
         // reason slot, so the stub keeps its "Start" affordance.
-        let mut m = NavModel::new(
-            vec![first_party("core/chat", 10, &["wylde-harness"])],
-            None,
-        );
+        let mut m = NavModel::new(vec![first_party("core/chat", 10, &["wylde-harness"])], None);
         m.mark_service_health("wylde-harness", false);
         match m.slot_state() {
             SlotState::ServiceUnavailable { reasons, .. } => {
@@ -479,7 +475,7 @@ mod tests {
         m.mark_service_reason("wylde-x", Some("boom".into()));
         assert_eq!(m.reasons.get("wylde-x").map(String::as_str), Some("boom"));
         m.mark_service_reason("wylde-x", None);
-        assert!(m.reasons.get("wylde-x").is_none());
+        assert!(!m.reasons.contains_key("wylde-x"));
     }
 
     #[test]

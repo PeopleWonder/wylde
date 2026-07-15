@@ -29,8 +29,7 @@ async fn main() -> Result<()> {
 /// `wylde_shared::logging::configure_logging` here because it installs a
 /// stdout writer, which would corrupt the protocol stream.
 fn init_stderr_logging() {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(filter)

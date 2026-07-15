@@ -112,22 +112,44 @@ jobs:
         shell: bash
         run: bash tools/check-versions.sh
 
-  # --- STAGED gates (roadmap T0.1). These are cheap and high-value, but flipping
-  # them on a not-yet-clean tree would red-wall CI for no gain. Enable each once
-  # the tree passes it locally (`cargo clippy --workspace`, `cargo fmt --check`).
-  #
-  #   # G4 — clippy across all three workspaces, warnings-as-errors:
-  #   lint:
-  #     name: clippy (G4) + fmt (G6)
-  #     runs-on: windows-latest
-  #     steps:
-  #       - uses: actions/checkout@v4
-  #       - run: rustup component add clippy rustfmt
-  #       - name: cargo fmt --check (G6)
-  #         run: cargo fmt --all --manifest-path rust/Cargo.toml -- --check
-  #       - name: cargo clippy -D warnings (G4)
-  #         run: cargo clippy --workspace --manifest-path rust/Cargo.toml --locked -- -D warnings
-  #   (repeat the fmt/clippy steps for Core/GUI/Cargo.toml and the tools/ workspaces.)
+  # --- G4 (clippy, warnings-as-errors) + G6 (fmt --check) — ARMED (was staged).
+  # The tree is now clippy- and fmt-clean across every CI-built workspace
+  # (issue #32), so these steps FAIL the build on the first warning or
+  # unformatted file — a staged gate that can't be turned on protects nothing.
+  # Scope: the four workspaces CI actually builds — rust/, Core/GUI/, and the
+  # two tools/ crates. The rust/spikes/voice-npu-spike workspace is NOT CI-built
+  # (no build/test job), so it is fmt'd for hygiene but deliberately not gated
+  # here. See docs/enforcement-matrix.md rows 10 (G4) + 11 (G6).
+  lint:
+    name: clippy (G4) + fmt (G6)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clippy + rustfmt (stable)
+        run: rustup component add clippy rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> target
+            Core/GUI -> target
+            tools/xtask -> target
+            tools/wylde-release -> target
+      - name: cargo fmt --check (G6)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ws in rust Core/GUI tools/xtask tools/wylde-release; do
+            echo "== fmt --check $ws =="
+            cargo fmt --all --manifest-path "$ws/Cargo.toml" -- --check
+          done
+      - name: cargo clippy -D warnings (G4)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ws in rust Core/GUI tools/xtask tools/wylde-release; do
+            echo "== clippy $ws =="
+            cargo clippy --manifest-path "$ws/Cargo.toml" --workspace --all-targets --locked -- -D warnings
+          done
 
   # --- Dev tooling workspaces (xtask, wylde-release) — cheap compile check so a
   # bump that breaks the build orchestrator or the release tool is caught too.

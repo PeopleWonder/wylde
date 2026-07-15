@@ -34,8 +34,7 @@ use thiserror::Error;
 pub const VOICE_STYLE_LENGTHS: usize = 510;
 pub const VOICE_STYLE_INNER: usize = 1;
 pub const VOICE_STYLE_DIM: usize = 256;
-pub const VOICE_STYLE_TOTAL_F32: usize =
-    VOICE_STYLE_LENGTHS * VOICE_STYLE_INNER * VOICE_STYLE_DIM;
+pub const VOICE_STYLE_TOTAL_F32: usize = VOICE_STYLE_LENGTHS * VOICE_STYLE_INNER * VOICE_STYLE_DIM;
 
 #[derive(Debug, Error)]
 pub enum VoicesLoadError {
@@ -215,10 +214,8 @@ fn read_zip_central_directory(f: &mut File) -> Result<Vec<ZipEntry>, VoicesLoadE
                  voices.npz must be uncompressed (np.savez default)"
             )));
         }
-        let compressed_size =
-            u32::from_le_bytes(cd[cur + 20..cur + 24].try_into().unwrap());
-        let uncompressed_size =
-            u32::from_le_bytes(cd[cur + 24..cur + 28].try_into().unwrap());
+        let compressed_size = u32::from_le_bytes(cd[cur + 20..cur + 24].try_into().unwrap());
+        let uncompressed_size = u32::from_le_bytes(cd[cur + 24..cur + 28].try_into().unwrap());
         if compressed_size != uncompressed_size {
             return Err(VoicesLoadError::Format(format!(
                 "compressed/uncompressed sizes disagree ({compressed_size} vs \
@@ -494,8 +491,13 @@ pub fn write_voices_npz(voices: &[(String, Vec<u8>)], dest: &Path) -> Result<(),
     let tmp = dest.with_extension("npz.tmp");
     std::fs::write(&tmp, &archive)
         .map_err(|e| VoicesLoadError::Io(format!("write {}: {e}", tmp.display())))?;
-    std::fs::rename(&tmp, dest)
-        .map_err(|e| VoicesLoadError::Io(format!("rename {} → {}: {e}", tmp.display(), dest.display())))?;
+    std::fs::rename(&tmp, dest).map_err(|e| {
+        VoicesLoadError::Io(format!(
+            "rename {} → {}: {e}",
+            tmp.display(),
+            dest.display()
+        ))
+    })?;
     Ok(())
 }
 
@@ -540,7 +542,11 @@ fn crc32(data: &[u8]) -> u32 {
             let mut c = i as u32;
             let mut k = 0;
             while k < 8 {
-                c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+                c = if c & 1 != 0 {
+                    0xEDB8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
                 k += 1;
             }
             t[i] = c;
@@ -563,7 +569,11 @@ fn extract_shape(header: &str) -> Result<[usize; 3], String> {
         .ok_or_else(|| format!("shape missing '(' prefix: {raw:?}"))?
         .trim_end_matches(',')
         .trim_end_matches(')');
-    let parts: Vec<&str> = trimmed.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
     if parts.len() != 3 {
         return Err(format!("expected 3-d shape, got {parts:?}"));
     }
@@ -683,10 +693,18 @@ mod tests {
         let loaded = Voices::load(&npz_path).expect("assembled .npz loads");
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded.names(), vec!["af_heart", "am_adam"]);
-        let row = loaded.get("af_heart").unwrap().style_for_token_len(3).unwrap();
+        let row = loaded
+            .get("af_heart")
+            .unwrap()
+            .style_for_token_len(3)
+            .unwrap();
         assert_eq!(row.len(), VOICE_STYLE_DIM);
         assert!((row[0] - 0.25).abs() < 1e-6);
-        let row2 = loaded.get("am_adam").unwrap().style_for_token_len(0).unwrap();
+        let row2 = loaded
+            .get("am_adam")
+            .unwrap()
+            .style_for_token_len(0)
+            .unwrap();
         assert!((row2[VOICE_STYLE_DIM - 1] + 0.5).abs() < 1e-6);
     }
 
@@ -715,17 +733,17 @@ mod tests {
             let local_offset = bytes.len() as u64;
             let mut local = Vec::new();
             local.extend_from_slice(&LOCAL_SIGNATURE.to_le_bytes());
-            local.extend_from_slice(&20_u16.to_le_bytes());   // version needed
-            local.extend_from_slice(&0_u16.to_le_bytes());    // flags
-            local.extend_from_slice(&0_u16.to_le_bytes());    // method=stored
-            local.extend_from_slice(&0_u16.to_le_bytes());    // mod time
-            local.extend_from_slice(&0_u16.to_le_bytes());    // mod date
-            local.extend_from_slice(&0_u32.to_le_bytes());    // crc32 (we don't verify)
+            local.extend_from_slice(&20_u16.to_le_bytes()); // version needed
+            local.extend_from_slice(&0_u16.to_le_bytes()); // flags
+            local.extend_from_slice(&0_u16.to_le_bytes()); // method=stored
+            local.extend_from_slice(&0_u16.to_le_bytes()); // mod time
+            local.extend_from_slice(&0_u16.to_le_bytes()); // mod date
+            local.extend_from_slice(&0_u32.to_le_bytes()); // crc32 (we don't verify)
             let size = payload.len() as u32;
             local.extend_from_slice(&size.to_le_bytes());
             local.extend_from_slice(&size.to_le_bytes());
             local.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            local.extend_from_slice(&0_u16.to_le_bytes());    // extra len
+            local.extend_from_slice(&0_u16.to_le_bytes()); // extra len
             local.extend_from_slice(name.as_bytes());
             bytes.extend(local);
             bytes.extend_from_slice(payload);

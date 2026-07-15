@@ -17,7 +17,10 @@ use wylde_panel_devices::DevicesPanel;
 fn open_pairing(
     cx: &mut TestAppContext,
     fake: std::sync::Arc<ScriptedBackend>,
-) -> (gpui::WindowHandle<DevicesPanel>, wylde_gui_test_support::BackendGuard) {
+) -> (
+    gpui::WindowHandle<DevicesPanel>,
+    wylde_gui_test_support::BackendGuard,
+) {
     let fake = fake.on(
         "device_gate.start_pairing",
         json!({ "code": "123456", "expires_at": 9_999_999_999.0_f64 }),
@@ -28,14 +31,17 @@ fn open_pairing(
     window.update(cx, |p, _w, cx| p.start_pairing(cx)).unwrap();
     cx.run_until_parked();
     window
-        .update(cx, |p, _w, _cx| assert!(p.pairing.is_some(), "pairing window opened"))
+        .update(cx, |p, _w, _cx| {
+            assert!(p.pairing.is_some(), "pairing window opened")
+        })
         .unwrap();
     (window, guard)
 }
 
 #[gpui::test]
 fn cancel_pairing_dispatches_the_cancel_verb_and_clears_the_card(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new().on("device_gate.cancel_pairing", json!({ "cancelled": true }));
+    let fake =
+        ScriptedBackend::new().on("device_gate.cancel_pairing", json!({ "cancelled": true }));
     let (window, _guard) = open_pairing(cx, fake.clone());
 
     window.update(cx, |p, _w, cx| p.cancel_pairing(cx)).unwrap();
@@ -62,8 +68,14 @@ fn a_failed_cancel_against_a_down_service_is_surfaced(cx: &mut TestAppContext) {
     // the follow-up refresh fail — and assert the panel ends in a visible error
     // state (not silently "all good"), with the cancel verb actually attempted.
     let fake = ScriptedBackend::new()
-        .on_err("device_gate.cancel_pairing", "pipe_unavailable: device-gate not running")
-        .on_err("device_gate.list_devices", "pipe_unavailable: device-gate not running");
+        .on_err(
+            "device_gate.cancel_pairing",
+            "pipe_unavailable: device-gate not running",
+        )
+        .on_err(
+            "device_gate.list_devices",
+            "pipe_unavailable: device-gate not running",
+        );
     let (window, _guard) = open_pairing(cx, fake.clone());
 
     window.update(cx, |p, _w, cx| p.cancel_pairing(cx)).unwrap();

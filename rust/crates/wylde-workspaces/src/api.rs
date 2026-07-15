@@ -209,7 +209,10 @@ fn def_with_index_state(def: &registry::WorkspaceDefinition) -> Value {
         // Live progress (phase / counts / rate / ETA) rides the same row so the
         // GUI can render a determinate bar + ETA mid-index; absent when idle.
         if let Some(p) = &st.progress {
-            obj.insert("progress".to_owned(), serde_json::to_value(p).unwrap_or(Value::Null));
+            obj.insert(
+                "progress".to_owned(),
+                serde_json::to_value(p).unwrap_or(Value::Null),
+            );
         }
     }
     v

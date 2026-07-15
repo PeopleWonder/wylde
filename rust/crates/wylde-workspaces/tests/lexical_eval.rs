@@ -99,7 +99,10 @@ fn embed_query(client: &reqwest::blocking::Client, text: &str) -> Option<Vec<f32
     let v: serde_json::Value = resp.json().ok()?;
     let arr = v.get("embeddings")?.as_array()?;
     let first = arr.first()?.as_array()?;
-    let vec: Vec<f32> = first.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect();
+    let vec: Vec<f32> = first
+        .iter()
+        .filter_map(|x| x.as_f64().map(|f| f as f32))
+        .collect();
     (!vec.is_empty()).then_some(vec)
 }
 
@@ -130,20 +133,48 @@ fn gold() -> Vec<LexGoldCase> {
     };
     vec![
         // ── Lexical class — exact tokens the embedder can't recover ──
-        lex("anchor_boost_cap", "ANCHOR_BOOST_CAP", &["rag/indexer/search.rs"]),
+        lex(
+            "anchor_boost_cap",
+            "ANCHOR_BOOST_CAP",
+            &["rag/indexer/search.rs"],
+        ),
         lex("embed_dim", "WYLDE_EMBED_DIM", &["common.rs"]),
         lex("rdcw", "ReadDirectoryChangesW", &["Cargo.toml"]),
         lex("nucleo", "nucleo-matcher", &["wylde-workspaces/Cargo.toml"]),
-        lex("compose_fn", "compose_retrieval_query", &["turn/context_gather.rs"]),
+        lex(
+            "compose_fn",
+            "compose_retrieval_query",
+            &["turn/context_gather.rs"],
+        ),
         lex("oserr32", "os error 32", &["wylde-prebuild-guard"]),
         lex("min_abs", "MIN_ABSOLUTE_SCORE", &["rag/indexer/search.rs"]),
         lex("rrf_fuse", "rrf_k fuse", &["rag/indexer/fuse.rs"]),
         // ── Semantic class — topical queries dense should nail ──
-        sem("watcher", "how does the file watcher debounce save events", &["watcher"]),
-        sem("embed", "how are workspace chunks embedded for retrieval", &["embeddings.rs"]),
-        sem("anchorbias", "how does anchor-biased retrieval boost the defining file", &["rag/indexer/search.rs"]),
-        sem("manifest", "how does the content-hash manifest decide what to re-embed", &["rag/indexer/manifest.rs"]),
-        sem("mmr", "how are near-duplicate chunks pruned from results", &["rag/indexer/search.rs"]),
+        sem(
+            "watcher",
+            "how does the file watcher debounce save events",
+            &["watcher"],
+        ),
+        sem(
+            "embed",
+            "how are workspace chunks embedded for retrieval",
+            &["embeddings.rs"],
+        ),
+        sem(
+            "anchorbias",
+            "how does anchor-biased retrieval boost the defining file",
+            &["rag/indexer/search.rs"],
+        ),
+        sem(
+            "manifest",
+            "how does the content-hash manifest decide what to re-embed",
+            &["rag/indexer/manifest.rs"],
+        ),
+        sem(
+            "mmr",
+            "how are near-duplicate chunks pruned from results",
+            &["rag/indexer/search.rs"],
+        ),
         // ── Off-topic — should ground nothing ──
         off("pizza", "best pizza dough hydration ratio"),
         off("weather", "will it rain tomorrow in seattle"),
@@ -167,7 +198,10 @@ fn run_full_eval() {
     let ws = "lexeval";
     let t1 = std::time::Instant::now();
     build_corpus_index(ws, &chunks);
-    eprintln!("built scratch BM25 index in {:?} (no embedder)", t1.elapsed());
+    eprintln!(
+        "built scratch BM25 index in {:?} (no embedder)",
+        t1.elapsed()
+    );
 
     let gold = gold();
     let (lexn, semn, offn) = gold.iter().fold((0, 0, 0), |(l, s, o), c| match c.class {
@@ -175,7 +209,10 @@ fn run_full_eval() {
         LexClass::Semantic => (l, s + 1, o),
         LexClass::OffTopic => (l, s, o + 1),
     });
-    eprintln!("gold: {} cases (lexical {lexn} / semantic {semn} / off-topic {offn})", gold.len());
+    eprintln!(
+        "gold: {} cases (lexical {lexn} / semantic {semn} / off-topic {offn})",
+        gold.len()
+    );
 
     // Embed every gold query against the live Ollama.
     let client = reqwest::blocking::Client::builder()
@@ -248,16 +285,26 @@ fn run_full_eval() {
         query_vecs.len(),
         K,
     ));
-    md.push_str(&render_report_markdown(&report, "Arms × class — recall@k / nDCG@k / precision@k"));
+    md.push_str(&render_report_markdown(
+        &report,
+        "Arms × class — recall@k / nDCG@k / precision@k",
+    ));
     md.push('\n');
-    md.push_str(&render_sweep_markdown(&sweep, "RRF parameter sweep (fused arm)"));
+    md.push_str(&render_sweep_markdown(
+        &sweep,
+        "RRF parameter sweep (fused arm)",
+    ));
     md.push('\n');
-    md.push_str(&render_floor_markdown(&floors, "Relative-floor cutoff calibration"));
+    md.push_str(&render_floor_markdown(
+        &floors,
+        "Relative-floor cutoff calibration",
+    ));
 
     let out = std::env::var_os("WYLDE_EVAL_OUTPUT")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../outputs/lexical-bm25-eval-results.md")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../outputs/lexical-bm25-eval-results.md")
         });
     if let Some(parent) = out.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -271,10 +318,22 @@ fn run_full_eval() {
     println!("{}", render_floor_markdown(&floors, "Floor calibration"));
 
     // Sanity gate so a regression in the live numbers is loud.
-    let dense_lex = report.agg(Arm::Dense, LexClass::Lexical).map(|a| a.recall).unwrap_or(0.0);
-    let fused_lex = report.agg(Arm::Fused, LexClass::Lexical).map(|a| a.recall).unwrap_or(0.0);
-    let dense_sem = report.agg(Arm::Dense, LexClass::Semantic).map(|a| a.recall).unwrap_or(0.0);
-    let fused_sem = report.agg(Arm::Fused, LexClass::Semantic).map(|a| a.recall).unwrap_or(0.0);
+    let dense_lex = report
+        .agg(Arm::Dense, LexClass::Lexical)
+        .map(|a| a.recall)
+        .unwrap_or(0.0);
+    let fused_lex = report
+        .agg(Arm::Fused, LexClass::Lexical)
+        .map(|a| a.recall)
+        .unwrap_or(0.0);
+    let dense_sem = report
+        .agg(Arm::Dense, LexClass::Semantic)
+        .map(|a| a.recall)
+        .unwrap_or(0.0);
+    let fused_sem = report
+        .agg(Arm::Fused, LexClass::Semantic)
+        .map(|a| a.recall)
+        .unwrap_or(0.0);
     eprintln!("lexical recall: dense {dense_lex:.3} → fused {fused_lex:.3}");
     eprintln!("semantic recall (guardrail): dense {dense_sem:.3} → fused {fused_sem:.3}");
 
@@ -290,10 +349,19 @@ fn run_full_eval() {
         if let Err(e) = std::fs::write(&json_path, json) {
             eprintln!("WARN: could not write WYLDE_EVAL_JSON sidecar: {e}");
         } else {
-            eprintln!("wrote bench sidecar {}", PathBuf::from(&json_path).display());
+            eprintln!(
+                "wrote bench sidecar {}",
+                PathBuf::from(&json_path).display()
+            );
         }
     }
 
-    assert!(fused_lex >= dense_lex, "fused must not lose lexical-class recall");
-    assert!(fused_sem + 0.001 >= dense_sem, "fused must not hurt the semantic guardrail");
+    assert!(
+        fused_lex >= dense_lex,
+        "fused must not lose lexical-class recall"
+    );
+    assert!(
+        fused_sem + 0.001 >= dense_sem,
+        "fused must not hurt the semantic guardrail"
+    );
 }

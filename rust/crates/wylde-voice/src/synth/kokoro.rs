@@ -39,8 +39,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use ort::inputs;
-use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
+use ort::session::Session;
 use ort::value::TensorRef;
 use thiserror::Error;
 

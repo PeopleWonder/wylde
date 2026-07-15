@@ -24,8 +24,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use ort::inputs;
-use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
+use ort::session::Session;
 use ort::value::TensorRef;
 use thiserror::Error;
 
@@ -158,8 +158,11 @@ impl WhisperDecoder {
             let input_shape: Vec<i64> = vec![1, tokens.len() as i64];
             let input_ids = TensorRef::from_array_view((input_shape, tokens.as_slice()))
                 .map_err(|e| WhisperInferError::Run(format!("input_ids tensor: {e}")))?;
-            let enc_input = TensorRef::from_array_view((encoder_shape.to_vec(), encoder_hidden_states))
-                .map_err(|e| WhisperInferError::Run(format!("encoder_hidden_states tensor: {e}")))?;
+            let enc_input =
+                TensorRef::from_array_view((encoder_shape.to_vec(), encoder_hidden_states))
+                    .map_err(|e| {
+                        WhisperInferError::Run(format!("encoder_hidden_states tensor: {e}"))
+                    })?;
 
             let outputs = session
                 .run(inputs![
@@ -168,9 +171,9 @@ impl WhisperDecoder {
                 ])
                 .map_err(|e| WhisperInferError::Run(e.to_string()))?;
 
-            let logits = outputs
-                .get("logits")
-                .ok_or_else(|| WhisperInferError::OutputShape("decoder missing logits".to_owned()))?;
+            let logits = outputs.get("logits").ok_or_else(|| {
+                WhisperInferError::OutputShape("decoder missing logits".to_owned())
+            })?;
             let (logits_shape, logits_data) = logits
                 .try_extract_tensor::<f32>()
                 .map_err(|e| WhisperInferError::OutputShape(e.to_string()))?;

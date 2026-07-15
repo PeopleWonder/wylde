@@ -142,8 +142,7 @@ async fn link_pair_route(
 
     let mut payload = unwrap_body(body);
     if let Value::Object(ref mut obj) = payload {
-        obj.entry("_remote_ip")
-            .or_insert(Value::String(remote_ip));
+        obj.entry("_remote_ip").or_insert(Value::String(remote_ip));
     } else {
         payload = json!({"_remote_ip": remote_ip});
     }
@@ -162,10 +161,7 @@ async fn link_peers_route(_state: State<Arc<()>>) -> Response {
     reply_to_response(handle_link_peers(Value::Null).await)
 }
 
-async fn link_peers_remove_route(
-    _state: State<Arc<()>>,
-    body: Option<Json<Value>>,
-) -> Response {
+async fn link_peers_remove_route(_state: State<Arc<()>>, body: Option<Json<Value>>) -> Response {
     reply_to_response(handle_link_peers_remove(unwrap_body(body)).await)
 }
 
@@ -186,12 +182,7 @@ async fn link_qr_route(_state: State<Arc<()>>, Path(token): Path<String>) -> Res
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    (
-        StatusCode::OK,
-        [("content-type", "image/svg+xml")],
-        svg,
-    )
-        .into_response()
+    (StatusCode::OK, [("content-type", "image/svg+xml")], svg).into_response()
 }
 
 async fn link_config_get_route(_state: State<Arc<()>>) -> Response {
@@ -202,10 +193,7 @@ async fn link_services_route(_state: State<Arc<()>>) -> Response {
     reply_to_response(handle_link_services(Value::Null).await)
 }
 
-async fn link_config_patch_route(
-    _state: State<Arc<()>>,
-    body: Option<Json<Value>>,
-) -> Response {
+async fn link_config_patch_route(_state: State<Arc<()>>, body: Option<Json<Value>>) -> Response {
     reply_to_response(handle_link_config_patch(unwrap_body(body)).await)
 }
 
@@ -229,9 +217,9 @@ fn reply_to_response(reply: Reply) -> Response {
     if reply.ok {
         return (StatusCode::OK, Json(reply.data)).into_response();
     }
-    let err = reply.error.unwrap_or_else(|| {
-        wylde_shared::ipc::IpcError::new("unknown", "unknown error")
-    });
+    let err = reply
+        .error
+        .unwrap_or_else(|| wylde_shared::ipc::IpcError::new("unknown", "unknown error"));
     let status = match err.code.as_str() {
         "bad_request" => StatusCode::BAD_REQUEST,
         "not_found" => StatusCode::NOT_FOUND,
@@ -263,14 +251,20 @@ mod tests {
 
     #[tokio::test]
     async fn reply_to_response_maps_service_unavailable_to_503() {
-        let r = Reply::err(wylde_shared::ipc::IpcError::new("service_unavailable", "deferred"));
+        let r = Reply::err(wylde_shared::ipc::IpcError::new(
+            "service_unavailable",
+            "deferred",
+        ));
         let resp = reply_to_response(r);
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
     async fn reply_to_response_maps_bad_request_to_400() {
-        let r = Reply::err(wylde_shared::ipc::IpcError::new("bad_request", "missing field"));
+        let r = Reply::err(wylde_shared::ipc::IpcError::new(
+            "bad_request",
+            "missing field",
+        ));
         let resp = reply_to_response(r);
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }

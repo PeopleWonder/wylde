@@ -142,8 +142,7 @@ async fn live_wake_word_pull_and_load() {
     assert!(pull.ok, "pull failed: {:?}", pull.error);
     let job_id = pull.data["job_id"].as_str().unwrap().to_owned();
 
-    let deadline =
-        std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     let mut last_state = String::new();
     while std::time::Instant::now() < deadline {
         let st = dispatch_action(json!({

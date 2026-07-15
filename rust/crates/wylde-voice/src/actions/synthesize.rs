@@ -38,19 +38,17 @@ use std::time::Instant;
 use serde_json::{json, Value};
 use wylde_shared::ipc::{IpcError, Reply, StreamSender};
 
-use crate::actions::error::{
-    inference_failed, invalid_request, model_not_loaded,
-};
+use crate::actions::error::{inference_failed, invalid_request, model_not_loaded};
 use crate::config::Config;
 use crate::lease;
 use crate::state;
 use crate::synth::kokoro::{KokoroInferError, KokoroLoadError, KokoroSynth};
+use crate::synth::vocab::{KOKORO_SAMPLE_RATE, MAX_PHONEME_LENGTH};
 use crate::synth::voices::{VoiceStyle, Voices, VoicesLoadError};
 use crate::synth::{
     british_for_voice, encode_base64, encode_wav_kokoro, pad_with_zero, split_phonemes,
     text_to_phonemes, tokenize,
 };
-use crate::synth::vocab::{KOKORO_SAMPLE_RATE, MAX_PHONEME_LENGTH};
 
 /// Default voice when the payload doesn't specify one. Matches the
 /// Python service's `Voice/config.yaml` default + the wylde-voice
@@ -332,8 +330,11 @@ pub async fn handle_synthesize_stream(payload: Value, sender: StreamSender) {
 
     for (index, chunk) in chunk_strs.iter().enumerate() {
         let chunk_clone = chunk.clone();
-        let voice_obj = voices.get(&voice_name).expect("voice presence checked above");
-        let synth_result = synthesize_one_chunk(&chunk_clone, voice_obj, Arc::clone(&kokoro), speed);
+        let voice_obj = voices
+            .get(&voice_name)
+            .expect("voice presence checked above");
+        let synth_result =
+            synthesize_one_chunk(&chunk_clone, voice_obj, Arc::clone(&kokoro), speed);
         match synth_result {
             Ok(out) => {
                 total_samples += out.audio_samples as u64;
@@ -550,7 +551,11 @@ fn resolve_model_path(_cfg: &Config) -> Option<PathBuf> {
 fn resolve_voices_path(_cfg: &Config) -> Option<PathBuf> {
     let snap = first_kokoro_snapshot()?;
     let candidate = snap.join("voices.npz");
-    if candidate.exists() { Some(candidate) } else { None }
+    if candidate.exists() {
+        Some(candidate)
+    } else {
+        None
+    }
 }
 
 /// First snapshot dir for the Kokoro repo in the HF cache.
@@ -562,7 +567,12 @@ fn first_kokoro_snapshot() -> Option<PathBuf> {
         .or_else(|| {
             std::env::var_os("USERPROFILE")
                 .or_else(|| std::env::var_os("HOME"))
-                .map(|h| PathBuf::from(h).join(".cache").join("huggingface").join("hub"))
+                .map(|h| {
+                    PathBuf::from(h)
+                        .join(".cache")
+                        .join("huggingface")
+                        .join("hub")
+                })
         })?;
     let snapshots = hf_root.join(cache_dir_name).join("snapshots");
     let entries = std::fs::read_dir(&snapshots).ok()?;
@@ -649,8 +659,8 @@ mod tests {
         // A `b…` voice routes through the en-GB lexicon. We don't assert
         // exact phonemes (dialect tables differ) — just that both dialects
         // produce in-vocab tokens, exercising the GB engine init path.
-        let gb = resolve_phonemes(&json!({"text": "schedule"}), "bf_emma")
-            .expect("GB text phonemises");
+        let gb =
+            resolve_phonemes(&json!({"text": "schedule"}), "bf_emma").expect("GB text phonemises");
         assert!(!tokenize(&gb).tokens.is_empty(), "no GB tokens: {gb:?}");
     }
 
@@ -661,5 +671,4 @@ mod tests {
         let chunk = rx.recv().await.expect("at least one chunk");
         assert_eq!(chunk.unwrap_err().code, "invalid_request");
     }
-
 }

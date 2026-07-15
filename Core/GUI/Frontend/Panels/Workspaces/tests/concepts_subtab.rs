@@ -79,17 +79,17 @@ fn concepts_subtab_loads_concepts_on_mount(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn build_button_issues_build_then_reloads(cx: &mut TestAppContext) {
-    let fake = backend(0)
-        .on("workspaces.concepts.build", json!({ "workspace_id": "ws-a", "built": 5 }));
+    let fake = backend(0).on(
+        "workspaces.concepts.build",
+        json!({ "workspace_id": "ws-a", "built": 5 }),
+    );
     let _guard = fake.clone().install();
 
     let window = cx.add_window(|_w, cx| ConceptsView::new(cx));
     cx.run_until_parked();
 
     let searches_before = fake.count_for("workspaces.concepts.search");
-    window
-        .update(cx, |view, _w, cx| view.build(cx))
-        .unwrap();
+    window.update(cx, |view, _w, cx| view.build(cx)).unwrap();
     cx.run_until_parked();
 
     let build = fake
@@ -116,7 +116,11 @@ fn vocabulary_tab_switches_to_concepts_subtab(cx: &mut TestAppContext) {
     // (it's built + spawns its load in `VocabularyTab::new`).
     window
         .update(cx, |tab, _w, cx| {
-            assert_eq!(tab.sub_tab(), VocabSubTab::Vocabulary, "defaults to Vocabulary");
+            assert_eq!(
+                tab.sub_tab(),
+                VocabSubTab::Vocabulary,
+                "defaults to Vocabulary"
+            );
             assert_eq!(
                 tab.concepts_view().read(cx).results_len(),
                 2,

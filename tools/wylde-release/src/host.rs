@@ -51,7 +51,10 @@ pub fn is_dirty(repo_root: &Path) -> Result<bool> {
 fn ollama_version() -> String {
     let host = std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://127.0.0.1:11434".into());
     let url = format!("{}/api/version", host.trim_end_matches('/'));
-    let Ok(out) = Command::new("curl").args(["-s", "--max-time", "3", &url]).output() else {
+    let Ok(out) = Command::new("curl")
+        .args(["-s", "--max-time", "3", &url])
+        .output()
+    else {
         return String::new();
     };
     if !out.status.success() {
