@@ -39,6 +39,11 @@ clap = { version = "4", features = ["derive"] }
 # Coarse error type; every subcommand bubbles up `anyhow::Result` and
 # `main` prints the chain.
 anyhow = "1"
+# Baseline / receipt (de)serialization for the benchmark regression gate and
+# the preflight receipt. `serde_json` reads the machine-readable output the
+# eval harnesses already emit and writes the committed baseline + the receipt.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # The updater crate, by path, purely so `verify-public-key` can compare a
 # candidate against the key actually baked into the shipped binary
 # (`wylde_updater::PUBLIC_KEY`). Resolves its own workspace inheritance

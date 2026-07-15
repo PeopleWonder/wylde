@@ -277,6 +277,23 @@ fn run_full_eval() {
     let fused_sem = report.agg(Arm::Fused, LexClass::Semantic).map(|a| a.recall).unwrap_or(0.0);
     eprintln!("lexical recall: dense {dense_lex:.3} → fused {fused_lex:.3}");
     eprintln!("semantic recall (guardrail): dense {dense_sem:.3} → fused {fused_sem:.3}");
+
+    // Machine-readable sidecar for the benchmark regression gate
+    // (`wylde-release bench`). Written only when `WYLDE_EVAL_JSON` is set, so
+    // the hand-run default behaviour is unchanged. The gate lifts the two
+    // relative invariants below into corpus-independent hard gates and tracks
+    // the absolute fused-lexical recall as a warn-only quality signal.
+    if let Some(json_path) = std::env::var_os("WYLDE_EVAL_JSON") {
+        let json = format!(
+            "{{\n  \"dense_lexical_recall\": {dense_lex:.6},\n  \"fused_lexical_recall\": {fused_lex:.6},\n  \"dense_semantic_recall\": {dense_sem:.6},\n  \"fused_semantic_recall\": {fused_sem:.6}\n}}\n"
+        );
+        if let Err(e) = std::fs::write(&json_path, json) {
+            eprintln!("WARN: could not write WYLDE_EVAL_JSON sidecar: {e}");
+        } else {
+            eprintln!("wrote bench sidecar {}", PathBuf::from(&json_path).display());
+        }
+    }
+
     assert!(fused_lex >= dense_lex, "fused must not lose lexical-class recall");
     assert!(fused_sem + 0.001 >= dense_sem, "fused must not hurt the semantic guardrail");
 }

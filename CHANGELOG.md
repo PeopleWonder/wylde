@@ -19,6 +19,23 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Added
 
+- **Benchmark regression gate + preflight receipt.** Wylde had benchmark
+  *harnesses* but no recorded baselines and no gate — a benchmark run by hand
+  and eyeballed is an experiment, not enforcement. New `wylde-release bench`
+  runs the eval harnesses against live Ollama, compares each metric to a
+  committed baseline (`benchmarks/baselines/wylde-benchmarks.json`) with a
+  **noise-calibrated per-metric threshold** — fail on a real regression, warn on
+  a small one, flag an improvement to re-record — and appends every run to a
+  trend history. The reasoning fast/think arms are baselined with real recorded
+  numbers (fast 7.5 s median / think 30.9 s, success + token cost); retrieval
+  (BM25/RRF invariants) is wired and gates once the tree is re-indexed. New
+  `wylde-release preflight` runs the gate plus version-consistency (G7) and
+  writes a **receipt bound to the commit**; `wylde-release publish` now refuses
+  to ship without a green, current receipt (a stale or dirty-tree receipt can't
+  validate a new build). See `benchmarks/README.md` for the design and the
+  honest limitations. (roadmap T0.1 — the preflight receipt; enforcement-matrix
+  rows 21–23.)
+
 - **Indexer progress + ETA.** The workspace re-index now reports real, live
   progress instead of a bare "Indexing…". The indexer emits a structured
   snapshot — current phase (scanning / embedding / saving), files and chunks

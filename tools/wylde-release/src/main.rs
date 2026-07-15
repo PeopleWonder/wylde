@@ -31,6 +31,11 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
+mod bench;
+mod host;
+mod preflight;
+mod receipt;
+
 /// Default location of the release **private** signing key, relative to
 /// the repo root. Never committed (`keys/.gitignore`); the public half is
 /// what gets embedded into `wylde-updater::PUBLIC_KEY`.
@@ -139,6 +144,17 @@ enum Cmd {
         /// executing them. Use this to rehearse a release safely.
         #[arg(long)]
         dry_run: bool,
+        /// **Deliberate escape hatch.** Skip the preflight-receipt gate. The
+        /// gate exists to stop a build shipping unverified (the exact "shipped
+        /// broken" failure), so this prints a loud warning and should be used
+        /// only when you know precisely why. `--dry-run` never checks the
+        /// receipt (it's a rehearsal).
+        #[arg(long)]
+        no_preflight_receipt: bool,
+        /// Repo root to look for `preflight-receipt.json` in. Defaults to the
+        /// git top-level of the current directory.
+        #[arg(long)]
+        repo_root: Option<PathBuf>,
     },
 
     /// Compare a candidate public key against the one embedded in
@@ -148,6 +164,19 @@ enum Cmd {
         /// The base64 public-key line, or a path to a `.pub` file.
         pubkey: String,
     },
+
+    /// Run the benchmark suite, compare against the committed baseline, and
+    /// **fail on a regression past the per-metric threshold**. This is the
+    /// standalone regression gate; `preflight` runs it as one of its steps.
+    ///
+    /// The suite drives live Ollama (reasoning arms) and reads the live index
+    /// (lexical eval), so it runs on the release machine, not CI.
+    Bench(preflight::BenchArgs),
+
+    /// Run the full local preflight (version-consistency G7 + the benchmark
+    /// gate, plus an optional artifact build) and write a **receipt** bound to
+    /// the current commit. `publish` refuses without a green, current receipt.
+    Preflight(preflight::PreflightArgs),
 }
 
 /// Release channel mirror of `wylde_updater::Channel`. Local copy so the
@@ -193,6 +222,8 @@ fn main() -> Result<()> {
             notes,
             notes_file,
             dry_run,
+            no_preflight_receipt,
+            repo_root,
         } => publish(
             &version,
             channel,
@@ -204,8 +235,12 @@ fn main() -> Result<()> {
             notes.as_deref(),
             notes_file.as_deref(),
             dry_run,
+            no_preflight_receipt,
+            repo_root,
         ),
         Cmd::VerifyPublicKey { pubkey } => verify_public_key(&pubkey),
+        Cmd::Bench(args) => preflight::run_bench(args),
+        Cmd::Preflight(args) => preflight::run_preflight(args),
     }
 }
 
@@ -383,10 +418,30 @@ fn publish(
     notes: Option<&str>,
     notes_file: Option<&Path>,
     dry_run: bool,
+    no_preflight_receipt: bool,
+    repo_root: Option<PathBuf>,
 ) -> Result<()> {
     if !binary.exists() {
         bail!("binary to publish does not exist: {}", binary.display());
     }
+
+    // ── The preflight-receipt gate (enforcement-matrix row 14). Refuse to
+    // publish a build whose running system was never verified. Skipped for a
+    // dry-run rehearsal, or via the deliberate, loud `--no-preflight-receipt`.
+    if dry_run {
+        println!("[dry-run] (skipping preflight-receipt gate — rehearsal only)");
+    } else if no_preflight_receipt {
+        eprintln!(
+            "⚠️  --no-preflight-receipt: shipping WITHOUT a verified preflight receipt.\n\
+             ⚠️  This is the exact gate that stops a broken build from shipping. Proceed only if\n\
+             ⚠️  you know why the normal `wylde-release preflight` path was bypassed."
+        );
+    } else {
+        preflight::enforce_receipt_for_publish(repo_root.as_deref(), version)
+            .context("preflight-receipt gate")?;
+        println!("✓ preflight receipt validates for {version} at HEAD.");
+    }
+
     let key = resolve_key_path(key);
 
     // Every uploadable asset is the file itself plus its `.minisig`. The
