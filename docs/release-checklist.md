@@ -1,0 +1,94 @@
+# Wylde — Release Checklist
+
+**Purpose:** turn "release" from lore into a procedure. This is the runbook the maintainer follows
+to cut an experimental (Beta) or stable (Stable) release. It operationalises the gates from the
+roadmap (`docs/plans/repo-wide-roadmap-2026-07.md` §3) and the promotion rule from
+`docs/branch-and-release-policy.md` §5.
+
+> The gates below reference **G1–G7** (CI-enforceable) and **L1–L7** (local preflight — the
+> launch-and-verify checks CI structurally cannot run). Items marked ⏳ are staged/not-yet-built
+> (roadmap T0.1); do them manually until the tooling exists.
+
+---
+
+## A. Experimental release (Beta channel, cut from `develop`)
+
+For shipping a `0.1.x` build to Beta-channel users. Lighter bar than a stable promotion — but not
+*no* bar.
+
+1. **Version.** Bump both workspace roots to `0.1.x` (`rust/Cargo.toml`, `Core/GUI/Cargo.toml`) —
+   together. ⏳ `xtask set-version 0.1.x` once it exists.
+2. **CI green (G1–G7)** on the `develop` commit:
+   - G1 backend build + test · G2 GUI build · G3 tools build · G5 cargo-deny advisories
+   - **G7 version-consistency** (`version-consistency` job) — the two roots agree.
+   - ⏳ G4 clippy `-D warnings`, ⏳ G6 `cargo fmt --check` (enable once the tree is clean).
+3. **Local preflight L1–L3** (mechanical smoke) on the release machine:
+   - L1 build ALL shipped artifacts (`wylde-gui.exe`, every service binary, the NSIS installer).
+   - L2 cold-start smoke (clean install/launch → daemon up → services discovered + spawned).
+   - L3 service health (vram-broker inventories HW → Ollama up w/ `nomic-embed-text` → harness
+     answers → **Memgraph has real data** → RAG answers → GUI renders → a chat turn completes).
+4. **CHANGELOG.** Move the relevant `[Unreleased]` entries under a new `## [0.1.x] — <date>`
+   heading; regenerate a draft with `tools/changelog-draft.sh` and edit it into shape.
+5. **Publish as a pre-release:**
+   ```bash
+   git tag -a v0.1.x -m "Wylde 0.1.x (experimental)"
+   git push origin develop --follow-tags
+   wylde-release publish --version 0.1.x --channel beta --binary <path> …
+   ```
+6. **Verify** the Beta channel picks it up on a second machine/profile.
+
+## B. Stable release / the 0.2 gate (Stable channel, promoted to `main`)
+
+The full bar. Only on the maintainer's explicit say-so. **This is the definition of done for 0.2**
+(roadmap §3e).
+
+1. **Say-so.** The maintainer decides the gate is open. 0.2 is not a date.
+2. **Version.** Bump both workspace roots to `0.2.0` — together; G7 will enforce it.
+3. **CI green (G1–G7)** on the `develop` commit being promoted.
+4. **Local preflight — full L1–L7:**
+   - L1–L3 as above (build-all, cold-start, service-health).
+   - **L4 first-run bootstrap** completes on a clean profile.
+   - **L5 reasoning-eval guardrail** — the tier (off by default) shows no regression; confirm the
+     shipped config keeps `enabled: false`.
+   - **L6 feel/function checklists** — human-judgment surface (visual/layout correctness the
+     automated tests structurally can't assert).
+   - **L7 GUI verification** — Tier-B panel-walk (all 9 panels + Workspaces subtabs mount, load,
+     no panic/error) + selective Tier-C on the ~20–30 critical-path controls.
+5. **CHANGELOG + RELEASE_NOTES** current: close `[Unreleased]` into `## [0.2.0] — <date>`; refresh
+   `release-artifacts/RELEASE_NOTES.md`.
+6. **Promote and release:**
+   ```bash
+   git checkout main
+   git merge --no-ff develop            # the merge promotes
+   git tag -a v0.2.0 -m "Wylde 0.2.0"   # the tag releases (full release, NOT pre-release)
+   git push origin main --follow-tags
+   wylde-release publish --version 0.2.0 --channel stable --binary <path> …
+   git checkout develop && git merge --no-ff main   # keep develop current with the promotion
+   ```
+7. **Verify distribution:** the Stable channel updater picks `0.2.0` up on a second machine/profile
+   (and a Beta user also receives it, since Beta ⊇ Stable).
+
+## C. Hotfix (a shipped stable release is broken in the field)
+
+1. Branch `fix/<slug>` off **`main`**.
+2. Fix; CI green (G1–G7); preflight L1–L3 (at minimum) on the release machine.
+3. `git checkout main && git merge --no-ff fix/<slug>`; bump patch (`0.2.1`); tag; publish
+   `--channel stable`.
+4. **Merge `main` back into `develop`** so the fix isn't lost on the next promotion.
+
+---
+
+## Gate quick-reference
+
+| | Beta (0.1.x) | Stable (0.2.0) |
+|---|---|---|
+| Cut from | `develop` | `main` (promoted from `develop`) |
+| GitHub flag | pre-release | full release |
+| CI | G1–G7 | G1–G7 |
+| Preflight | L1–L3 | **L1–L7** |
+| Trigger | maintainer | maintainer's explicit say-so |
+| Updater reach | Beta only | Stable + Beta |
+
+**`wylde-release` must refuse to publish if G7 (version-consistency) fails.** ⏳ Add a `preflight`
+subcommand (or `xtask release-check`) that runs G7 + L1–L3 and prints pass/fail per line, and gate
+`publish` behind it (roadmap T0.1).

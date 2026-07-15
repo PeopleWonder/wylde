@@ -1,7 +1,19 @@
 # Changelog
 
-All notable changes to Wylde are recorded here. Versions follow
-[SemVer](https://semver.org/); pre-1.0 alphas may break between builds.
+All notable changes to Wylde are recorded here. Format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
+[SemVer](https://semver.org/), and pre-1.0 alphas may break between builds
+(see [`docs/branch-and-release-policy.md`](docs/branch-and-release-policy.md) §3).
+
+<!--
+Maintenance: this changelog is hand-curated (deliberately richer than an
+auto-generated bullet list). For any user-facing change, add an entry under
+[Unreleased] in the matching section. `tools/changelog-draft.sh` seeds a draft
+from Conventional Commits since the last tag — edit it into narrative form.
+Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
+0.2.0 (Stable channel), cut only on the maintainer's say-so. On release, move the
+[Unreleased] entries under a new dated version heading.
+-->
 
 ## [Unreleased]
 

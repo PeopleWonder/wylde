@@ -15,6 +15,10 @@ on:
   push:
     branches:
       - main
+      - develop
+      # Transitional: the experimental trunk is being renamed
+      # feat/thought-bubble-system -> develop (see docs/migration-to-branch-model.md).
+      # Keep the old name here until the rename lands, then drop this line.
       - "feat/thought-bubble-system"
   workflow_dispatch:
 
@@ -68,6 +72,36 @@ jobs:
       - name: cargo build
         working-directory: Core/GUI
         run: cargo build --workspace --locked
+
+  # --- Version consistency (G7) — the two workspace roots (rust/ + Core/GUI/)
+  # must carry the same version, and on a tag build the tag must match it. A
+  # split version is the silent inconsistency release-gating exists to catch.
+  # Cheap and OS-independent; runs on the default (git-bash) shell.
+  version-consistency:
+    name: version consistency (G7)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: check workspace versions agree (and match the tag on a tag build)
+        shell: bash
+        run: tools/check-versions.sh
+
+  # --- STAGED gates (roadmap T0.1). These are cheap and high-value, but flipping
+  # them on a not-yet-clean tree would red-wall CI for no gain. Enable each once
+  # the tree passes it locally (`cargo clippy --workspace`, `cargo fmt --check`).
+  #
+  #   # G4 — clippy across all three workspaces, warnings-as-errors:
+  #   lint:
+  #     name: clippy (G4) + fmt (G6)
+  #     runs-on: windows-latest
+  #     steps:
+  #       - uses: actions/checkout@v4
+  #       - run: rustup component add clippy rustfmt
+  #       - name: cargo fmt --check (G6)
+  #         run: cargo fmt --all --manifest-path rust/Cargo.toml -- --check
+  #       - name: cargo clippy -D warnings (G4)
+  #         run: cargo clippy --workspace --manifest-path rust/Cargo.toml --locked -- -D warnings
+  #   (repeat the fmt/clippy steps for Core/GUI/Cargo.toml and the tools/ workspaces.)
 
   # --- Dev tooling workspaces (xtask, wylde-release) — cheap compile check so a
   # bump that breaks the build orchestrator or the release tool is caught too.

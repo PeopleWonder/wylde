@@ -1,0 +1,82 @@
+name: Bug report
+description: Something in Wylde doesn't work the way it should.
+title: "bug: <short summary>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Wylde is a local-first desktop app under active alpha
+        development — the more of the environment below you can fill in, the faster
+        it's fixable. **Do not paste secrets, tokens, or private data** from logs.
+  - type: input
+    id: version
+    attributes:
+      label: Wylde version
+      description: Settings → About, or the `wylde-gui` window title / installer name (e.g. 0.1.3).
+      placeholder: "0.1.x"
+    validations:
+      required: true
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Update channel
+      options:
+        - Stable
+        - Beta (experimental)
+        - Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        1. Opened the Workspaces panel
+        2. Clicked Re-index
+        3. Expected a progress bar; got a spinner that never resolved
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The minimal sequence that triggers it. "Every time" vs "once" matters.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area (best guess — optional)
+      description: Which part of Wylde? Helps triage; a wrong guess is fine.
+      options:
+        - "Chat / turn engine (harness)"
+        - "Workspaces / RAG / indexing"
+        - "Memory / knowledge graph (Memgraph)"
+        - "Models / Ollama / VRAM broker"
+        - "GUI panel / layout / rendering"
+        - "Voice"
+        - "Remote access / VPN / device pairing"
+        - "Installer / self-updater / lifecycle daemon"
+        - "Other / not sure"
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: >
+        Paste any error text or a relevant slice of the daemon/service logs.
+        Redact anything private first. This is rendered as code — no need for backticks.
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware / OS
+      description: GPU + VRAM, RAM, and Windows version help a lot for model/rendering bugs.
+      placeholder: "Windows 11, RTX 4070 (12 GB), 32 GB RAM"
+    validations:
+      required: false
