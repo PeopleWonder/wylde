@@ -84,7 +84,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: check workspace versions agree (and match the tag on a tag build)
         shell: bash
-        run: tools/check-versions.sh
+        run: bash tools/check-versions.sh
 
   # --- STAGED gates (roadmap T0.1). These are cheap and high-value, but flipping
   # them on a not-yet-clean tree would red-wall CI for no gain. Enable each once
