@@ -392,12 +392,10 @@ pub(crate) fn decode_response(data: &[u8], transaction_id: [u8; 12]) -> Option<S
                     }
                 }
             }
-            ATTR_OTHER_ADDRESS => {
-                if val.len() >= 8 {
-                    let port = u16::from_be_bytes([val[2], val[3]]);
-                    let ip = std::net::Ipv4Addr::new(val[4], val[5], val[6], val[7]).to_string();
-                    other = Some((ip, port));
-                }
+            ATTR_OTHER_ADDRESS if val.len() >= 8 => {
+                let port = u16::from_be_bytes([val[2], val[3]]);
+                let ip = std::net::Ipv4Addr::new(val[4], val[5], val[6], val[7]).to_string();
+                other = Some((ip, port));
             }
             _ => {}
         }

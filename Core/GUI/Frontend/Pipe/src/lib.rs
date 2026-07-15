@@ -733,10 +733,8 @@ pub async fn try_dispatch_harness<A: HarnessApi + ?Sized>(
         r
     } else if let Some(r) = tools::dispatch(api, verb, payload.clone()).await {
         r
-    } else if let Some(r) = memory_long_term::dispatch(api, verb, payload).await {
-        r
     } else {
-        return None;
+        memory_long_term::dispatch(api, verb, payload).await?
     };
 
     Some(reply_to_result(reply))
