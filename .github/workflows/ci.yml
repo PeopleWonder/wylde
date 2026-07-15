@@ -57,8 +57,11 @@ jobs:
         run: cargo test --workspace --locked
 
   # --- GUI workspace (Core/GUI/) — build only. It compiles the gpui + wry +
-  # tray-icon graph, which is what dependency bumps here would break. Its
-  # windowed gpui tests need a desktop session and are not run headless in CI.
+  # tray-icon graph, which is what dependency bumps here would break. (The
+  # windowed gpui tests DO run headless — see the `gui-panel-walk` job below;
+  # the earlier "needs a desktop session" claim was caution, not a real
+  # platform dependency. gpui's test platform is a mock `TestPlatform` with no
+  # GPU/display.)
   gui:
     name: gui (Core/GUI/) build
     runs-on: windows-latest
@@ -72,6 +75,29 @@ jobs:
       - name: cargo build
         working-directory: Core/GUI
         run: cargo build --workspace --locked
+
+  # --- GUI panel-walk (L7) — the "does every page load?" gate. Mounts all 9
+  # panels + the Workspaces subtabs as headless windowed `#[gpui::test]`s and
+  # asserts each loads + detects its error state under four backend conditions
+  # (healthy / down / error envelope / empty). Runs on the CI runner because
+  # gpui's test platform is a mock `TestPlatform` — no desktop session, GPU, or
+  # display needed. Scoped to the panel crates (the `panel-walk` cargo alias),
+  # NOT `--workspace`, so it never links the Shell's tray-icon/wry graph or the
+  # rust/ audio stack (`wylde-voice`/cpal, which segfaults headless). See
+  # docs/enforcement-matrix.md row 4b + issue #35.
+  gui-panel-walk:
+    name: gui panel-walk (L7)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (stable)
+        run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "Core/GUI -> target"
+      - name: cargo panel-walk (headless windowed gpui tests)
+        working-directory: Core/GUI
+        run: cargo panel-walk
 
   # --- Version consistency (G7) — the two workspace roots (rust/ + Core/GUI/)
   # must carry the same version, and on a tag build the tag must match it. A

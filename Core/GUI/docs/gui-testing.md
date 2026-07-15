@@ -127,10 +127,16 @@ fn my_panel_does_x(cx: &mut TestAppContext) {
 |---|---|
 | `.on(action, json)` | unary `action` → `Ok(json)` |
 | `.on_err(action, "code: msg")` | unary `action` → `Err` |
+| `.on_path(path, json)` | path-routed call → `Ok(json)` — for the **action-less** panels (RemoteAccess issues `GET /api/link/*` with no `"action"` envelope) |
+| `.on_path_err(path, "code: msg")` | path-routed call → `Err` |
 | `.on_stream(action, vec![chunk, …])` | streaming `action` replays chunks then ends |
 | `.conversations(rows)` | shortcut for `conversations.list` |
-| `.calls()` / `.calls_for(a)` / `.last_call_for(a)` / `.count_for(a)` | inspect recorded calls |
+| `.calls()` / `.calls_for(a)` / `.last_call_for(a)` / `.count_for(a)` / `.count_for_path(p)` | inspect recorded calls |
 | `RecordedCall::payload_str(k)` / `.workspace_id()` | read a payload field |
+
+Routing order: action-error → action-ok → path-error → path-ok → soft default
+(`Ok({})`). Action maps only match when the call carries a `body["action"]`;
+the action-less HTTP-style calls (RemoteAccess) fall through to the path maps.
 
 Harness action strings live in each panel's `ipc.rs` (`grep '"action":'`).
 
@@ -152,9 +158,28 @@ Harness action strings live in each panel's `ipc.rs` (`grep '"action":'`).
 
 ## What's covered, and what to add next
 
-**Covered** (`tests/dock_scoping.rs`): the docked ChatPanel's enter→scoped
-list / leave→restore, docked turn carries `workspace_id`, Global stays
-workspace-free (D1), and the three C6 empty-state enter cases.
+**The L7 panel-walk (`tests/panel_walk.rs` in every panel crate — issue #35).**
+The Tier-B answer to "does *every* page load?" Each of the 9 panels (and the
+Workspaces subtabs) has a `panel_walk.rs` that mounts the real view the way the
+Shell does (`new` + the panel's `spawn_*` loader) and asserts it loads without
+panic and isn't in a wrong/stuck error state — under **four backend
+conditions**: healthy, backend **down** (every call `on_err` — the daemon-in-
+no-spawn-mode case), backend **error envelope**, and **empty** (the default
+fake's `Ok({})` — degraded services answer ok/empty, not errors). "Error state"
+is per-panel and read from the code, not a uniform notion: Models/Tools/Devices/
+Memory/Workspaces expose `error: Option<String>` + a `loading` flag;
+RemoteAccess uses `last_error` (only status failures surface); Dashboard has no
+error field and *degrades per card* (assert `initial_load_done` + per-service
+`HealthStatus`); Settings degrades every section to defaults (`voice_offline`
+flags the optional voice service). Run the whole gate with **`cargo panel-walk`**
+(from `Core/GUI/`); it runs headless in CI as the `gui panel-walk (L7)` job.
+
+**Covered (behavioural, panel-specific):** `tests/dock_scoping.rs` — the docked
+ChatPanel's enter→scoped list / leave→restore, docked turn carries
+`workspace_id`, Global stays workspace-free (D1), the three C6 empty-state enter
+cases; plus `conversations.rs`, `virtualization.rs`, `processing_indicator.rs`
+(Chat), `copy_in.rs` (Memory), `cancel_pairing.rs` (Devices), `prefs_dispatch.rs`
+(Settings), and the Workspaces subtab suites.
 
 **Good next windowed tests** (retire more owed feel-tests with the same
 recipe):

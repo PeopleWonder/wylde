@@ -1,0 +1,16 @@
+# Core/GUI cargo config.
+#
+# `cargo panel-walk` — the L7 GUI verification gate (issue #35, roadmap T0.1b).
+# Runs the headless windowed `#[gpui::test]` panel-walk across all 9 panels:
+# every page mounts + loads without panic and detects an error state per panel,
+# under four backend conditions (healthy / down / error envelope / empty).
+# Deterministic and desktop-session-free — the gpui test platform is a mock
+# `TestPlatform` (no GPU/display), so this runs the same locally and in CI.
+#
+# Invoke from this directory (`Core/GUI/`):  cargo panel-walk
+# The preflight (L7) and CI (ci.yml `gui panel-walk (L7)` job) both call it.
+#
+# Scoped to the panel crates on purpose — NOT `--workspace` — so the gate never
+# links the Shell (tray-icon / wry) or drags in the `rust/` audio stack.
+[alias]
+panel-walk = "test -p wylde-panel-chat -p wylde-panel-dashboard -p wylde-panel-memory -p wylde-panel-workspaces -p wylde-panel-models -p wylde-panel-tools -p wylde-panel-devices -p wylde-panel-remote-access -p wylde-panel-settings --test panel_walk"
