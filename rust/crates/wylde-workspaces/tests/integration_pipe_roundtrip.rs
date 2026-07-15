@@ -12,17 +12,21 @@
 #![cfg(windows)]
 
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use wylde_workspaces_client::WorkspacesClient;
 
-/// Unique service/pipe name for this test run.
+/// A collision-proof service/pipe name for this test run. A `pid + timestamp`
+/// name can tie between the file's concurrently-running tests (same pid, same
+/// clock tick); the IPC server sets no `first_pipe_instance`, so two services
+/// on one name share the pipe and cross-talk. The random `uuid` removes the
+/// tie (same convention as `integration_rag_indexer.rs`; see #29).
 fn unique_service_name() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("wylde-workspaces-it-{}-{}", std::process::id(), nanos)
+    format!(
+        "wylde-workspaces-it-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 #[tokio::test]

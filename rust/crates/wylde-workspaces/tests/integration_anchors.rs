@@ -11,17 +11,22 @@
 #![cfg(windows)]
 
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use wylde_workspaces_client::WorkspacesClient;
 
+/// A collision-proof service/pipe name. A `pid + timestamp` name can tie
+/// between this file's concurrently-running tests (same pid, same clock tick);
+/// the IPC server sets no `first_pipe_instance`, so two services on one name
+/// share the pipe and cross-talk. The random `uuid` removes the tie (same
+/// convention as `integration_rag_indexer.rs`; see #29).
 fn unique_service_name() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("wylde-workspaces-anchors-{}-{}", std::process::id(), nanos)
+    format!(
+        "wylde-workspaces-anchors-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 fn spawn_service(
