@@ -30,7 +30,7 @@ Auth: uses `gh api`, so `gh` must be authenticated (locally) or GH_TOKEN set
 (CI: env GH_TOKEN: ${{ github.token }}).
 """
 from __future__ import annotations
-import argparse, json, subprocess, sys, pathlib
+import argparse, json, re, subprocess, sys, pathlib
 
 HERE = pathlib.Path(__file__).resolve().parent
 CONFIG = HERE / "release-gates.json"
@@ -70,12 +70,19 @@ def main() -> None:
         die(f"{CONFIG} is not valid JSON: {e} (fail-closed).")
 
     repo = cfg.get("repo")
-    entry = (cfg.get("releases") or {}).get(args.tag)
     if not repo:
         die("release-gates.json has no `repo`.")
+
+    entry = (cfg.get("releases") or {}).get(args.tag)
     if entry is None:
-        die(f"no release-gate entry for tag {args.tag!r} in release-gates.json — "
-            f"add one before tagging (fail-closed).")
+        # No entry. Gate only tags that policy says MUST be gated (stable releases);
+        # experimental tags (e.g. the 0.1.x line) are ungated by design and pass.
+        pattern = cfg.get("require_entry_for")
+        if pattern and re.search(pattern, args.tag):
+            die(f"tag {args.tag!r} matches require_entry_for {pattern!r} (a gated release) but "
+                f"has no entry in release-gates.json — add one before tagging (fail-closed).")
+        print(f"OK: {args.tag} is not a milestone-gated release (no matching config entry) — clear to ship.")
+        return
 
     required = entry.get("requires_milestones") or []
     prefix = entry.get("prefix")

@@ -1,6 +1,8 @@
 {
-  "_comment": "Release gates: which GitHub milestones must be COMPLETE (0 open issues) before a version tag may ship. Enforced by tools/check_release_milestones.py, wired into release.yml and (spec) wylde-release publish. GitHub has no native milestone ordering/dependency, so ordering is declared HERE explicitly and cross-checked against reality: any milestone whose title starts with a release's `prefix` but is NOT listed in requires_milestones fails the gate (so adding a 0.2 milestone and forgetting to list it can't silently pass). A version tag with no entry here fails CLOSED.",
+  "_comment": "Release gates: which GitHub milestones must be COMPLETE (0 open issues) before a version tag may ship. Enforced by tools/check_release_milestones.py, wired into release.yml and (spec) wylde-release publish. GitHub has no native milestone ordering/dependency, so ordering is declared HERE explicitly and cross-checked against reality: any milestone whose title starts with a release's `prefix` but is NOT listed in requires_milestones fails the gate (so adding a 0.2 milestone and forgetting to list it can't silently pass).",
+  "_gating_policy": "A tag matching `require_entry_for` MUST have an entry below or the gate fails CLOSED (a stable release must not ship ungated). Tags that do NOT match are ungated and pass — this is how the experimental 0.1.x line ships without milestone gating. Extend the pattern when the line reaches 1.0.",
   "repo": "PeopleWonder/wylde",
+  "require_entry_for": "^v0\\.[2-9][0-9]*\\.",
   "releases": {
     "v0.2.0": {
       "prefix": "0.2",
