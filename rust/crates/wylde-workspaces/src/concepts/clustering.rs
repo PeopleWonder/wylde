@@ -95,10 +95,7 @@ fn kmeans_pp_init(points: &[Vec<f32>], k: usize, rng: &mut Rng) -> Vec<Vec<f32>>
         let weights: Vec<f32> = points
             .iter()
             .map(|p| {
-                let nearest_sim = centroids
-                    .iter()
-                    .map(|c| dot(p, c))
-                    .fold(f32::MIN, f32::max);
+                let nearest_sim = centroids.iter().map(|c| dot(p, c)).fold(f32::MIN, f32::max);
                 let d = (1.0 - nearest_sim).max(0.0);
                 d * d
             })
@@ -276,7 +273,10 @@ mod tests {
         let res = cluster(&pts, 3, 25, 1);
         for c in &res.centroids {
             let norm: f32 = c.iter().map(|x| x * x).sum::<f32>().sqrt();
-            assert!((norm - 1.0).abs() < 1e-3, "centroid not unit-length: {norm}");
+            assert!(
+                (norm - 1.0).abs() < 1e-3,
+                "centroid not unit-length: {norm}"
+            );
         }
     }
 
@@ -286,7 +286,11 @@ mod tests {
         let res = cluster(&pts, 3, 25, 3);
         let soft = soft_members(&pts, &res.centroids, 0.0);
         let total: usize = soft.iter().map(Vec::len).sum();
-        assert_eq!(total, pts.len(), "zero margin ⇒ each point in exactly one cluster");
+        assert_eq!(
+            total,
+            pts.len(),
+            "zero margin ⇒ each point in exactly one cluster"
+        );
     }
 
     #[test]

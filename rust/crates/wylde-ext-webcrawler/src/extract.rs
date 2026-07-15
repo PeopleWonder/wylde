@@ -43,8 +43,14 @@ fn extract_field(doc: &Html, rule: &Value) -> Value {
         None => return Value::Null,
     };
     let selector_str = rule.get("selector").and_then(Value::as_str).unwrap_or("");
-    let attribute = rule.get("attribute").and_then(Value::as_str).unwrap_or("text");
-    let multiple = rule.get("multiple").and_then(Value::as_bool).unwrap_or(false);
+    let attribute = rule
+        .get("attribute")
+        .and_then(Value::as_str)
+        .unwrap_or("text");
+    let multiple = rule
+        .get("multiple")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 
     if selector_str.is_empty() {
         return Value::Null;
@@ -118,7 +124,8 @@ mod tests {
 
     #[test]
     fn multiple_collects_all() {
-        let r = rules(json!({ "links": { "selector": "a", "attribute": "href", "multiple": true } }));
+        let r =
+            rules(json!({ "links": { "selector": "a", "attribute": "href", "multiple": true } }));
         let out = extract_by_rules(HTML, &r);
         assert_eq!(out["links"], json!(["/one", "/two"]));
     }

@@ -212,8 +212,7 @@ async fn noip(
     match client.get(&url, Some((user, pass)), &headers).await {
         Ok((status, body)) => {
             let trimmed = body.trim();
-            let ok =
-                trimmed.starts_with("good ") || trimmed.starts_with("nochg ");
+            let ok = trimmed.starts_with("good ") || trimmed.starts_with("nochg ");
             UpdateResult {
                 ok,
                 message: trimmed.to_string(),
@@ -249,11 +248,7 @@ async fn cloudflare(
     let mut ip_owned: Option<String> = ip_in.map(|s| s.to_string());
 
     if record_id.is_empty() {
-        let lookup_url = format!(
-            "{}?name={}&type=A",
-            base,
-            urlencode(domain)
-        );
+        let lookup_url = format!("{}?name={}&type=A", base, urlencode(domain));
         let (status, body) = match client.get(&lookup_url, None, &headers).await {
             Ok(t) => t,
             Err(e) => return UpdateResult::fail(e),
@@ -261,8 +256,8 @@ async fn cloudflare(
         if !(200..300).contains(&status) {
             return UpdateResult::fail(format!("cloudflare lookup failed: {body}"));
         }
-        let parsed: serde_json::Value = serde_json::from_str(&body)
-            .unwrap_or(serde_json::Value::Null);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
         let results = parsed
             .get("result")
             .and_then(|v| v.as_array())
@@ -314,11 +309,7 @@ async fn cloudflare(
     }
 }
 
-async fn afraid(
-    client: &dyn HttpClient,
-    token: &str,
-    ip: Option<&str>,
-) -> UpdateResult {
+async fn afraid(client: &dyn HttpClient, token: &str, ip: Option<&str>) -> UpdateResult {
     // Afraid.org passes the token + IP as positional query-string
     // tokens, NOT as standard key=value pairs, so we don't urlencode
     // the `?TOKEN&IP` segments.
@@ -412,7 +403,10 @@ mod tests {
             self.get_calls.lock().unwrap().push((
                 url.to_string(),
                 basic_auth.map(|(u, p)| (u.to_string(), p.to_string())),
-                headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                headers
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
             ));
             self.get_responses
                 .lock()
@@ -429,7 +423,10 @@ mod tests {
             self.put_calls.lock().unwrap().push((
                 url.to_string(),
                 body.clone(),
-                headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+                headers
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
             ));
             self.put_responses
                 .lock()
@@ -490,7 +487,14 @@ mod tests {
     #[tokio::test]
     async fn cloudflare_requires_zone_id() {
         let s = Scripted::new();
-        let r = cloudflare(&s, "x.example.com", "tok", Some("1.2.3.4"), &BTreeMap::new()).await;
+        let r = cloudflare(
+            &s,
+            "x.example.com",
+            "tok",
+            Some("1.2.3.4"),
+            &BTreeMap::new(),
+        )
+        .await;
         assert!(!r.ok);
         assert!(r.message.contains("zone_id"));
     }
@@ -536,10 +540,7 @@ mod tests {
             serde_json::json!({"result": [{"id": "R", "content": "5.5.5.5"}], "success": true})
                 .to_string(),
         )));
-        s.enqueue_put(Ok((
-            200,
-            serde_json::json!({"success": true}).to_string(),
-        )));
+        s.enqueue_put(Ok((200, serde_json::json!({"success": true}).to_string())));
         let mut extra = BTreeMap::new();
         extra.insert("zone_id".to_string(), "Z".to_string());
         let r = cloudflare(&s, "h.example.com", "TOK", None, &extra).await;

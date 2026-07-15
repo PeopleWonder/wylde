@@ -16,8 +16,8 @@
 //! * `think_harder` — PLAN on, 4096 think budget.
 //! * `ultrathink`   — PLAN on, 10240 think budget.
 //! * `fast_auto`    — reasoning on but Fast tier + auto-escalate (S4b): a
-//!                    Fast turn that escalates to planning after 2 hard
-//!                    tool failures. (Optional, `--arms` opt-in.)
+//!   Fast turn that escalates to planning after 2 hard tool failures.
+//!   (Optional, `--arms` opt-in.)
 //!
 //! ## How it stays hermetic + re-runnable
 //!

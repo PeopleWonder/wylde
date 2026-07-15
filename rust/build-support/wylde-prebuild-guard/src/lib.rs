@@ -517,13 +517,17 @@ mod tests {
             ),
         )
         .unwrap();
-        let manifests = wylde_shared::manifest_status::list_runtime_statuses(tmp.path())
-            .expect("Some(vec)");
+        let manifests =
+            wylde_shared::manifest_status::list_runtime_statuses(tmp.path()).expect("Some(vec)");
         let live = vec!["wylde-gateway.exe".to_string()];
         let (blocking, advisory) = classify(&live, &manifests);
         assert_eq!(blocking.len(), 1, "gateway is live → blocking");
         assert_eq!(blocking[0].pid, Some(32240));
-        assert_eq!(advisory.len(), 1, "vram-broker stale manifest only → advisory");
+        assert_eq!(
+            advisory.len(),
+            1,
+            "vram-broker stale manifest only → advisory"
+        );
         assert!(advisory[0].label.contains("wylde-vram-broker"));
     }
 }

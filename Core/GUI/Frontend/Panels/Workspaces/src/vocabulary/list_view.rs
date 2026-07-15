@@ -326,7 +326,10 @@ mod tests {
         let rows = vec![row("a", Some("b")), row("b", Some("a"))];
         let h = hierarchy_order(&rows);
         assert_eq!(h.len(), 2);
-        let mut ids: Vec<&str> = h.iter().map(|(r, _)| r.anchor.identifier.as_str()).collect();
+        let mut ids: Vec<&str> = h
+            .iter()
+            .map(|(r, _)| r.anchor.identifier.as_str())
+            .collect();
         ids.sort();
         assert_eq!(ids, vec!["a", "b"]);
     }

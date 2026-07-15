@@ -55,11 +55,7 @@ fn whisper_tiny_en_snapshot() -> Option<PathBuf> {
 #[ignore = "requires whisper-tiny.en model files cached locally"]
 async fn jfk_wav_transcribes_to_expected_quote() {
     let wav = jfk_wav_path();
-    assert!(
-        wav.exists(),
-        "jfk.wav fixture missing at {}",
-        wav.display()
-    );
+    assert!(wav.exists(), "jfk.wav fixture missing at {}", wav.display());
 
     let snapshot = whisper_tiny_en_snapshot().expect("whisper-tiny.en not in HF cache");
     let enc = snapshot.join("onnx").join("encoder_model.onnx");
@@ -79,8 +75,7 @@ async fn jfk_wav_transcribes_to_expected_quote() {
     //     first session-build; without ORT_DYLIB_PATH the symbol
     //     resolution silently looks in PATH only and blocks forever
     //     on some Windows setups.
-    let ort_dll = project_root()
-        .join("spikes/voice-npu-spike/target/release/onnxruntime.dll");
+    let ort_dll = project_root().join("spikes/voice-npu-spike/target/release/onnxruntime.dll");
     unsafe {
         std::env::set_var("WYLDE_VOICE_STT_MODEL", "onnx-community/whisper-tiny.en");
         std::env::set_var("WYLDE_VOICE_STT_ENCODER_PATH", &enc);

@@ -415,8 +415,8 @@ async fn read_frame(reader: &mut BufReader<ChildStdout>) -> Result<Value, String
         }
         headers.push_str(&line);
     }
-    let len = jsonrpc::content_length(&headers)
-        .ok_or_else(|| "missing Content-Length".to_owned())?;
+    let len =
+        jsonrpc::content_length(&headers).ok_or_else(|| "missing Content-Length".to_owned())?;
     let mut buf = vec![0u8; len];
     reader
         .read_exact(&mut buf)
@@ -432,9 +432,6 @@ mod tests {
     #[test]
     fn path_to_uri_windows_and_posix() {
         assert_eq!(path_to_uri("/home/x/proj"), "file:///home/x/proj");
-        assert_eq!(
-            path_to_uri(r"C:\Users\x\proj"),
-            "file:///C:/Users/x/proj"
-        );
+        assert_eq!(path_to_uri(r"C:\Users\x\proj"), "file:///C:/Users/x/proj");
     }
 }

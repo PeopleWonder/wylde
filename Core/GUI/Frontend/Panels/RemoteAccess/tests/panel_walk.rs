@@ -47,7 +47,10 @@ fn remote_access_healthy_mounts_and_loads(cx: &mut TestAppContext) {
                 "public_key": "abcDEF123456=",
             }),
         )
-        .on_path("/api/link/config", json!({ "public_host": "wylde.example.com" }))
+        .on_path(
+            "/api/link/config",
+            json!({ "public_host": "wylde.example.com" }),
+        )
         .on_path("/api/link/peers", json!({ "peers": [] }))
         .on_path("/api/link/services", json!({ "services": [] }));
     let _guard = fake.clone().install();
@@ -56,13 +59,20 @@ fn remote_access_healthy_mounts_and_loads(cx: &mut TestAppContext) {
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.last_error.is_none(), "no error when wylde-vpn answers");
+            assert!(
+                panel.last_error.is_none(),
+                "no error when wylde-vpn answers"
+            );
             assert!(panel.initial_load_done, "the first refresh cycle completed");
             assert!(panel.status_ever_read, "the status read landed");
             assert!(!panel.status.is_unknown(), "a live link is not 'unknown'");
         })
         .unwrap();
-    assert_eq!(fake.count_for_path(STATUS), 1, "the status route was read once");
+    assert_eq!(
+        fake.count_for_path(STATUS),
+        1,
+        "the status route was read once"
+    );
 }
 
 #[gpui::test]
@@ -71,9 +81,15 @@ fn remote_access_survives_backend_down(cx: &mut TestAppContext) {
     // `last_error` (the rest degrade per-card) — and the panel must not panic.
     let fake = ScriptedBackend::new()
         .on_path_err(STATUS, "pipe_unavailable: wylde-vpn not running")
-        .on_path_err("/api/link/config", "pipe_unavailable: wylde-vpn not running")
+        .on_path_err(
+            "/api/link/config",
+            "pipe_unavailable: wylde-vpn not running",
+        )
         .on_path_err("/api/link/peers", "pipe_unavailable: wylde-vpn not running")
-        .on_path_err("/api/link/services", "pipe_unavailable: wylde-vpn not running");
+        .on_path_err(
+            "/api/link/services",
+            "pipe_unavailable: wylde-vpn not running",
+        );
     let _guard = fake.clone().install();
 
     let window = mount(cx);
@@ -98,7 +114,10 @@ fn remote_access_surfaces_backend_error_envelope(cx: &mut TestAppContext) {
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.last_error.is_some(), "an error envelope on status surfaces");
+            assert!(
+                panel.last_error.is_some(),
+                "an error envelope on status surfaces"
+            );
             assert!(panel.initial_load_done);
         })
         .unwrap();
@@ -115,7 +134,10 @@ fn remote_access_tolerates_empty_backend(cx: &mut TestAppContext) {
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.last_error.is_none(), "an empty envelope is not an error");
+            assert!(
+                panel.last_error.is_none(),
+                "an empty envelope is not an error"
+            );
             assert!(panel.initial_load_done);
             assert!(
                 panel.status.is_unknown(),

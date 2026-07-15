@@ -40,7 +40,10 @@ impl Default for BenchConfig {
         // 2 warmups covers the NPU cold-compile + a cache-hit reload; 10
         // timed passes is enough to get a stable p50/p90 at the ~100 ms
         // latencies we're measuring without making first-launch slow.
-        Self { warmup: 2, iters: 10 }
+        Self {
+            warmup: 2,
+            iters: 10,
+        }
     }
 }
 
@@ -96,14 +99,8 @@ pub fn summarize(samples: &[f64]) -> Option<Summary> {
         return None;
     }
     let mean = samples.iter().sum::<f64>() / samples.len() as f64;
-    let min = samples
-        .iter()
-        .copied()
-        .fold(f64::INFINITY, f64::min);
-    let max = samples
-        .iter()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
+    let min = samples.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = samples.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     Some(Summary {
         p50_ms: percentile(samples, 50.0),
         p90_ms: percentile(samples, 90.0),

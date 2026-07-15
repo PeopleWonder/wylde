@@ -139,7 +139,12 @@ mod tests {
 
     #[test]
     fn new_stamps_timestamps_and_defaults() {
-        let c = Concept::new("dir:src/graph", "Graph", "the graph layer", ConceptSource::DirectoryCluster);
+        let c = Concept::new(
+            "dir:src/graph",
+            "Graph",
+            "the graph layer",
+            ConceptSource::DirectoryCluster,
+        );
         assert_eq!(c.id, "dir:src/graph");
         assert_eq!(c.label, "Graph");
         assert!(c.members.is_empty() && c.member_files.is_empty());
@@ -181,12 +186,22 @@ mod tests {
 
     #[test]
     fn source_wire_strings_stable() {
-        assert_eq!(ConceptSource::DirectoryCluster.as_str(), "directory_cluster");
+        assert_eq!(
+            ConceptSource::DirectoryCluster.as_str(),
+            "directory_cluster"
+        );
         assert_eq!(ConceptSource::Embedding.as_str(), "embedding");
         assert_eq!(ConceptSource::Manual.as_str(), "manual");
         // serde rename matches as_str.
-        for s in [ConceptSource::DirectoryCluster, ConceptSource::Embedding, ConceptSource::Manual] {
-            assert_eq!(serde_json::to_value(s).unwrap(), serde_json::Value::String(s.as_str().to_owned()));
+        for s in [
+            ConceptSource::DirectoryCluster,
+            ConceptSource::Embedding,
+            ConceptSource::Manual,
+        ] {
+            assert_eq!(
+                serde_json::to_value(s).unwrap(),
+                serde_json::Value::String(s.as_str().to_owned())
+            );
         }
     }
 }

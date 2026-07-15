@@ -139,7 +139,11 @@ fn build_all(args: BuildAllArgs) -> Result<()> {
 
     for br in &roots {
         if !br.dir.join("Cargo.toml").exists() {
-            println!("  SKIP  {} — no Cargo.toml at {}", br.label, br.dir.display());
+            println!(
+                "  SKIP  {} — no Cargo.toml at {}",
+                br.label,
+                br.dir.display()
+            );
             continue;
         }
         println!("\n==> building {} ({})", br.label, br.dir.display());
@@ -190,7 +194,11 @@ fn build_all(args: BuildAllArgs) -> Result<()> {
         );
     }
     if !failures.is_empty() {
-        bail!("build-all: {} target(s) failed: {}", failures.len(), failures.join(", "));
+        bail!(
+            "build-all: {} target(s) failed: {}",
+            failures.len(),
+            failures.join(", ")
+        );
     }
     println!("  all targets green.");
     Ok(())
@@ -280,9 +288,7 @@ fn manifest_service_name(repo: &Path) -> Option<String> {
 /// then `<stripped>` (host exe suffix). `<stripped>` drops a `wylde-`
 /// prefix from the service name.
 fn staged_binary_candidates(service_name: &str) -> Vec<String> {
-    let stripped = service_name
-        .strip_prefix("wylde-")
-        .unwrap_or(service_name);
+    let stripped = service_name.strip_prefix("wylde-").unwrap_or(service_name);
     let suffix = std::env::consts::EXE_SUFFIX;
     vec![
         format!("wylde-{stripped}{suffix}"),
@@ -325,7 +331,11 @@ fn run_cargo_build(dir: &Path, debug: bool) -> Result<()> {
         .status()
         .with_context(|| format!("spawn cargo build in {}", dir.display()))?;
     if !status.success() {
-        bail!("cargo build failed in {} (exit {:?})", dir.display(), status.code());
+        bail!(
+            "cargo build failed in {} (exit {:?})",
+            dir.display(),
+            status.code()
+        );
     }
     Ok(())
 }
@@ -359,10 +369,22 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         // A real bucket repo (has Cargo.toml + manifest).
-        touch(&root.join("Services").join("wylde-images").join("Cargo.toml"));
-        touch(&root.join("Services").join("wylde-images").join("manifest.json"));
+        touch(
+            &root
+                .join("Services")
+                .join("wylde-images")
+                .join("Cargo.toml"),
+        );
+        touch(
+            &root
+                .join("Services")
+                .join("wylde-images")
+                .join("manifest.json"),
+        );
         fs::write(
-            root.join("Services").join("wylde-images").join("manifest.json"),
+            root.join("Services")
+                .join("wylde-images")
+                .join("manifest.json"),
             br#"{"name":"wylde-images"}"#,
         )
         .unwrap();

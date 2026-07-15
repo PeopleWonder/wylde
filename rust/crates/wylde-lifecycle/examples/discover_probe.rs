@@ -12,7 +12,8 @@
 //! ./target/debug/examples/discover_probe
 //! ```
 fn main() {
-    let root = std::env::var("WYLDE_ROOT").unwrap_or_else(|_| "<unset -> \".\" cwd fallback>".into());
+    let root =
+        std::env::var("WYLDE_ROOT").unwrap_or_else(|_| "<unset -> \".\" cwd fallback>".into());
     let services =
         std::env::var("WYLDE_SERVICES").unwrap_or_else(|_| "<unset -> WYLDE_ROOT/Services>".into());
     let cwd = std::env::current_dir()

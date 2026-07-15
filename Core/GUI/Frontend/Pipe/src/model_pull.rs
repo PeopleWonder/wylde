@@ -243,7 +243,10 @@ mod tests {
 
     #[test]
     fn returns_none_for_unrelated_errors() {
-        assert_eq!(parse_pullable_model("ollama_unreachable: upstream down"), None);
+        assert_eq!(
+            parse_pullable_model("ollama_unreachable: upstream down"),
+            None
+        );
         assert_eq!(parse_pullable_model("vram admission denied"), None);
         assert_eq!(parse_pullable_model(""), None);
     }
@@ -278,7 +281,9 @@ mod tests {
     fn aggregate_overall_percent_across_layers() {
         let mut agg = PullAggregate::default();
         // Manifest frame: status only, no bar yet.
-        agg.update(&PullProgress::from_value(&json!({ "status": "pulling manifest" })));
+        agg.update(&PullProgress::from_value(
+            &json!({ "status": "pulling manifest" }),
+        ));
         assert_eq!(agg.overall_ratio(), None);
         assert_eq!(agg.label(), "pulling manifest…");
 

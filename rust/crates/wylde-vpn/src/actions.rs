@@ -441,9 +441,7 @@ pub async fn handle_link_pair(payload: Value) -> Reply {
 pub async fn handle_link_register(payload: Value) -> Reply {
     let obj = match payload.as_object() {
         Some(o) => o,
-        None => {
-            return Reply::err(IpcError::new("bad_request", "payload must be an object"))
-        }
+        None => return Reply::err(IpcError::new("bad_request", "payload must be an object")),
     };
     let token = obj
         .get("token")
@@ -532,11 +530,8 @@ fn build_stun_info(cfg: &Config) -> Value {
         cfg.link_listen_port,
         std::time::Duration::from_secs(3),
     );
-    let classification = crate::nat::stun::classify(
-        &cfg.link_stun_servers,
-        cfg.link_listen_port,
-        stun_timeout,
-    );
+    let classification =
+        crate::nat::stun::classify(&cfg.link_stun_servers, cfg.link_listen_port, stun_timeout);
 
     let mut relay: Option<Value> = None;
     if !cfg.link_relay_host.is_empty() {
@@ -817,7 +812,10 @@ fn peer_record_to_json(p: &crate::peers::PeerRecord) -> Value {
     obj.insert("public_key".into(), Value::String(p.public_key.clone()));
     obj.insert("label".into(), Value::String(p.label.clone()));
     obj.insert("tunnel_ip".into(), Value::String(p.tunnel_ip.clone()));
-    obj.insert("registered_at".into(), Value::String(p.registered_at.clone()));
+    obj.insert(
+        "registered_at".into(),
+        Value::String(p.registered_at.clone()),
+    );
     obj.insert(
         "last_seen".into(),
         p.last_seen

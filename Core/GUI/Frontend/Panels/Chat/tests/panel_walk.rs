@@ -72,9 +72,18 @@ fn chat_survives_backend_down(cx: &mut TestAppContext) {
     // coherent (the "services not running" state is a render affordance) — it
     // must NOT panic.
     let fake = ScriptedBackend::new()
-        .on_err("conversations.list", "pipe_unavailable: harness not running")
-        .on_err("workspaces.list_mru", "pipe_unavailable: workspaces not running")
-        .on_err("models.get_effective", "pipe_unavailable: harness not running");
+        .on_err(
+            "conversations.list",
+            "pipe_unavailable: harness not running",
+        )
+        .on_err(
+            "workspaces.list_mru",
+            "pipe_unavailable: workspaces not running",
+        )
+        .on_err(
+            "models.get_effective",
+            "pipe_unavailable: harness not running",
+        );
     let _guard = fake.install();
 
     let window = mount(cx);
@@ -83,15 +92,20 @@ fn chat_survives_backend_down(cx: &mut TestAppContext) {
     // panic when every backend was down.
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.error.is_none(), "the dock degrades silently, no mount-time banner");
+            assert!(
+                panel.error.is_none(),
+                "the dock degrades silently, no mount-time banner"
+            );
         })
         .unwrap();
 }
 
 #[gpui::test]
 fn chat_surfaces_backend_error_envelope(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new()
-        .on_err("conversations.list", "internal_error: conversation store blew up");
+    let fake = ScriptedBackend::new().on_err(
+        "conversations.list",
+        "internal_error: conversation store blew up",
+    );
     let _guard = fake.install();
 
     let window = mount(cx);
@@ -100,8 +114,14 @@ fn chat_surfaces_backend_error_envelope(cx: &mut TestAppContext) {
     // envelope without panicking; the list simply stays empty.
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.error.is_none(), "mount loaders don't banner on an error envelope");
-            assert!(panel.conversations.is_empty(), "a failed list load leaves an empty list");
+            assert!(
+                panel.error.is_none(),
+                "mount loaders don't banner on an error envelope"
+            );
+            assert!(
+                panel.conversations.is_empty(),
+                "a failed list load leaves an empty list"
+            );
         })
         .unwrap();
 }
@@ -115,8 +135,14 @@ fn chat_tolerates_empty_backend(cx: &mut TestAppContext) {
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.error.is_none(), "an empty backend is not an error for Chat");
-            assert!(panel.conversations.is_empty(), "no threads yet is a clean empty state");
+            assert!(
+                panel.error.is_none(),
+                "an empty backend is not an error for Chat"
+            );
+            assert!(
+                panel.conversations.is_empty(),
+                "no threads yet is a clean empty state"
+            );
         })
         .unwrap();
 }

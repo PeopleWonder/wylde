@@ -29,10 +29,10 @@ pub(crate) fn verify_with_key(
     data: &[u8],
     minisig: &str,
 ) -> Result<(), UpdateError> {
-    let public_key = PublicKey::from_base64(public_key_b64)
-        .map_err(|_| UpdateError::NoSigningKey)?;
-    let signature =
-        Signature::decode(minisig).map_err(|e| UpdateError::Verify(format!("bad signature: {e}")))?;
+    let public_key =
+        PublicKey::from_base64(public_key_b64).map_err(|_| UpdateError::NoSigningKey)?;
+    let signature = Signature::decode(minisig)
+        .map_err(|e| UpdateError::Verify(format!("bad signature: {e}")))?;
     // `allow_legacy = false`: require the modern prehashed signature
     // algorithm that both rsign2 and the `minisign` crate emit by default.
     public_key

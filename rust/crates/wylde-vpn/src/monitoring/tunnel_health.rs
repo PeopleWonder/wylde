@@ -79,8 +79,7 @@ pub struct HandshakeRecord {
 
 /// Callback signature — fires on every state transition. The argument
 /// tuple matches `(peer_pubkey, previous, current, last_rx_age_s)`.
-pub type OnStateChange =
-    Arc<dyn Fn(&str, PeerState, PeerState, Option<f64>) + Send + Sync>;
+pub type OnStateChange = Arc<dyn Fn(&str, PeerState, PeerState, Option<f64>) + Send + Sync>;
 
 /// Live monitor handle — controls the background tokio task that polls
 /// the tunnel + peer store and emits transition callbacks.
@@ -171,7 +170,12 @@ impl TunnelHealth {
                         // callbacks that call back into the monitor
                         // (or take other locks) don't deadlock.
                         drop(state);
-                        cb(&rec.peer_pubkey, prev_state, rec.state, rec.last_handshake_age_s);
+                        cb(
+                            &rec.peer_pubkey,
+                            prev_state,
+                            rec.state,
+                            rec.last_handshake_age_s,
+                        );
                         state = inner.state.lock().unwrap();
                     }
                 }
@@ -215,30 +219,12 @@ mod tests {
 
     #[test]
     fn classify_thresholds() {
-        assert_eq!(
-            PeerState::classify(Some(5.0), 180.0),
-            PeerState::Online
-        );
-        assert_eq!(
-            PeerState::classify(Some(29.999), 180.0),
-            PeerState::Online
-        );
-        assert_eq!(
-            PeerState::classify(Some(30.0), 180.0),
-            PeerState::Stale
-        );
-        assert_eq!(
-            PeerState::classify(Some(179.999), 180.0),
-            PeerState::Stale
-        );
-        assert_eq!(
-            PeerState::classify(Some(180.0), 180.0),
-            PeerState::Offline
-        );
-        assert_eq!(
-            PeerState::classify(None, 180.0),
-            PeerState::Offline
-        );
+        assert_eq!(PeerState::classify(Some(5.0), 180.0), PeerState::Online);
+        assert_eq!(PeerState::classify(Some(29.999), 180.0), PeerState::Online);
+        assert_eq!(PeerState::classify(Some(30.0), 180.0), PeerState::Stale);
+        assert_eq!(PeerState::classify(Some(179.999), 180.0), PeerState::Stale);
+        assert_eq!(PeerState::classify(Some(180.0), 180.0), PeerState::Offline);
+        assert_eq!(PeerState::classify(None, 180.0), PeerState::Offline);
     }
 
     #[test]
@@ -251,14 +237,8 @@ mod tests {
     #[test]
     fn classify_respects_custom_stale_threshold() {
         // A shorter `stale_after` flips earlier into `offline`.
-        assert_eq!(
-            PeerState::classify(Some(60.0), 45.0),
-            PeerState::Offline
-        );
+        assert_eq!(PeerState::classify(Some(60.0), 45.0), PeerState::Offline);
         // A longer `stale_after` keeps the peer `stale` for longer.
-        assert_eq!(
-            PeerState::classify(Some(300.0), 600.0),
-            PeerState::Stale
-        );
+        assert_eq!(PeerState::classify(Some(300.0), 600.0), PeerState::Stale);
     }
 }

@@ -292,13 +292,15 @@ mod tests {
 
     #[test]
     fn round_trips_through_json() {
-        let mut p = UserProfile::default();
-        p.name = Some("Aaron".into());
+        let mut p = UserProfile {
+            name: Some("Aaron".into()),
+            style: Some("direct, no hedging".into()),
+            free_text_rules: "Always show me the diff.".into(),
+            ..Default::default()
+        };
         p.preferences
             .insert("communication_style".into(), "terse".into());
         p.recurring_topics.push("rust".into());
-        p.style = Some("direct, no hedging".into());
-        p.free_text_rules = "Always show me the diff.".into();
 
         let s = serde_json::to_string(&p).unwrap();
         let back: UserProfile = serde_json::from_str(&s).unwrap();
@@ -351,8 +353,10 @@ mod tests {
 
     #[test]
     fn apply_patch_ignores_unknown_keys_and_wrong_types() {
-        let mut p = UserProfile::default();
-        p.name = Some("keep".into());
+        let mut p = UserProfile {
+            name: Some("keep".into()),
+            ..Default::default()
+        };
         p.apply_patch(&patch(json!({"unknown": "x", "name": 42})));
         // wrong-typed name → `as_str()` None → cleared; unknown ignored.
         assert_eq!(p.name, None);
@@ -389,9 +393,11 @@ mod tests {
     #[test]
     fn prompt_block_is_empty_when_unset_and_populated_otherwise() {
         assert!(UserProfile::default().to_prompt_block().is_empty());
-        let mut p = UserProfile::default();
-        p.name = Some("Aaron".into());
-        p.free_text_rules = "Be terse.".into();
+        let p = UserProfile {
+            name: Some("Aaron".into()),
+            free_text_rules: "Be terse.".into(),
+            ..Default::default()
+        };
         let block = p.to_prompt_block();
         assert!(block.contains("Name: Aaron"));
         assert!(block.contains("Be terse."));
@@ -399,8 +405,10 @@ mod tests {
 
     #[test]
     fn prompt_block_caps_oversized_rules_with_marker() {
-        let mut p = UserProfile::default();
-        p.free_text_rules = "r".repeat(FREE_TEXT_RULES_MAX_CHARS + 1000);
+        let mut p = UserProfile {
+            free_text_rules: "r".repeat(FREE_TEXT_RULES_MAX_CHARS + 1000),
+            ..Default::default()
+        };
         let block = p.to_prompt_block();
         assert!(block.contains("[user rules truncated at"), "marker present");
         assert!(

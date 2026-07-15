@@ -206,7 +206,11 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let tmp = parent.join(format!(".{leaf}.wylde-tmp-{}-{}", std::process::id(), nanos));
+    let tmp = parent.join(format!(
+        ".{leaf}.wylde-tmp-{}-{}",
+        std::process::id(),
+        nanos
+    ));
 
     // Scope the handle so it's flushed+closed before the rename.
     {
@@ -299,8 +303,10 @@ pub async fn handle_list_dir(payload: Value) -> Reply {
         // jail-validated, and the canonical root may carry path components
         // (e.g. a dot-prefixed temp dir, or a `\\?\` prefix) that would
         // otherwise be mis-read as "hidden" and wrongly ignore everything.
-        let ignored =
-            !crate::rag::indexer::walk::is_indexable_path(&resolved.to_string_lossy(), &full.to_string_lossy());
+        let ignored = !crate::rag::indexer::walk::is_indexable_path(
+            &resolved.to_string_lossy(),
+            &full.to_string_lossy(),
+        );
         let (size_bytes, mtime) = match entry.metadata() {
             Ok(m) => (
                 if m.is_file() { Some(m.len()) } else { None },
@@ -401,7 +407,10 @@ mod tests {
         .await;
         // Parent "new/" doesn't exist yet — write should still fail cleanly
         // (we don't auto-mkdir); assert the error is io, not a panic.
-        assert!(!w.ok, "writing into a missing dir should be a clean io error");
+        assert!(
+            !w.ok,
+            "writing into a missing dir should be a clean io error"
+        );
         assert_eq!(w.error.unwrap().code, "io");
 
         // Now a top-level file whose parent (root) exists.
@@ -437,7 +446,10 @@ mod tests {
         assert!(!w.ok);
         assert_eq!(w.error.unwrap().code, "conflict");
         // The file is untouched.
-        assert_eq!(std::fs::read_to_string(td.path().join("f.rs")).unwrap(), "v1");
+        assert_eq!(
+            std::fs::read_to_string(td.path().join("f.rs")).unwrap(),
+            "v1"
+        );
     }
 
     #[tokio::test]
@@ -456,7 +468,10 @@ mod tests {
         assert!(r.ok, "list_dir failed: {:?}", r.error);
         let entries = r.data["entries"].as_array().unwrap();
         // One level only — "deep.rs" is NOT here.
-        let names: Vec<&str> = entries.iter().map(|e| e["name"].as_str().unwrap()).collect();
+        let names: Vec<&str> = entries
+            .iter()
+            .map(|e| e["name"].as_str().unwrap())
+            .collect();
         assert!(names.contains(&"main.rs"));
         assert!(names.contains(&"src"));
         assert!(names.contains(&"target"));

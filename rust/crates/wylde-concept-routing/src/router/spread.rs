@@ -680,7 +680,13 @@ mod tests {
             inhibition_strength: 1.5,
             ..params()
         };
-        let out = spread(seed(&[(x.clone(), 1.0), (y.clone(), 0.9)]), &[], &[], &g, &p);
+        let out = spread(
+            seed(&[(x.clone(), 1.0), (y.clone(), 0.9)]),
+            &[],
+            &[],
+            &g,
+            &p,
+        );
         assert!(
             approx(out.activation_of(&y), 0.9 * 0.15),
             "floor caps the damp"
@@ -768,7 +774,10 @@ mod tests {
         };
         let s = seed(&[(nc.clone(), 0.64), (ddns.clone(), 0.30)]);
         let out = spread(s, &[], &[], &g, &params());
-        assert!(approx(out.activation_of(&ddns), 0.32), "dep result unchanged");
+        assert!(
+            approx(out.activation_of(&ddns), 0.32),
+            "dep result unchanged"
+        );
         assert!(
             out.provenance
                 .values()
@@ -793,7 +802,10 @@ mod tests {
             &RelationGraph::empty(),
             &params(),
         );
-        assert!(approx(up.activation_of(&p_node), 0.4), "child→parent strong");
+        assert!(
+            approx(up.activation_of(&p_node), 0.4),
+            "child→parent strong"
+        );
         match up.provenance_of(&p_node) {
             Provenance::Containment { from, hops } => {
                 assert_eq!(from, c_node);
@@ -811,7 +823,10 @@ mod tests {
             &RelationGraph::empty(),
             &params(),
         );
-        assert!(approx(down.activation_of(&c_node), 0.12), "parent→child weak");
+        assert!(
+            approx(down.activation_of(&c_node), 0.12),
+            "parent→child weak"
+        );
         assert!(
             down.activation_of(&c_node) < up.activation_of(&p_node),
             "asymmetry: up-strong beats down-weak (OQ-5)"
@@ -832,7 +847,10 @@ mod tests {
             &RelationGraph::empty(), // empty relations
             &params(),
         );
-        assert!(approx(out.activation_of(&p_node), 0.5), "containment still fired");
+        assert!(
+            approx(out.activation_of(&p_node), 0.5),
+            "containment still fired"
+        );
     }
 
     #[test]
@@ -888,7 +906,10 @@ mod tests {
             &RelationGraph::empty(),
             &params(),
         );
-        assert!(approx(out.activation_of(&a), 1.0), "seed keeps its own activation");
+        assert!(
+            approx(out.activation_of(&a), 1.0),
+            "seed keeps its own activation"
+        );
         // b is a's child (down-weak 0.15) but also reachable up from c; it
         // settles to its best finite value and the walk halts.
         assert!(out.activation_of(&b) > 0.0 && out.activation_of(&b) <= 1.0);

@@ -128,10 +128,8 @@ async fn transcribe_stream_emits_encoder_then_tokens_then_complete() {
     );
 
     // Token chunks: indices monotonically increasing from 0.
-    let token_chunks: Vec<&serde_json::Value> = chunks
-        .iter()
-        .filter(|c| c["type"] == "token")
-        .collect();
+    let token_chunks: Vec<&serde_json::Value> =
+        chunks.iter().filter(|c| c["type"] == "token").collect();
     assert!(!token_chunks.is_empty(), "no token chunks streamed");
     for (i, tok) in token_chunks.iter().enumerate() {
         assert_eq!(tok["index"].as_u64().unwrap(), i as u64);

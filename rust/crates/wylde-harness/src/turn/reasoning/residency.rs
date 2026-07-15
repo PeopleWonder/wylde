@@ -123,6 +123,11 @@ pub fn spawn_warm_slots(reason: &'static str) -> bool {
 }
 
 #[cfg(test)]
+// These async tests hold the sync `TEST_ENV_LOCK` across the `warm_slots_via`
+// `.await` to serialise `WYLDE_EMBED_MODEL` mutation against the sibling
+// env-mutating suites. The awaited closures never acquire `TEST_ENV_LOCK`, so
+// there's no deadlock risk and the lint is a false positive here.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::memory::common::TEST_ENV_LOCK;

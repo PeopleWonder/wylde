@@ -42,7 +42,10 @@ fn models_healthy_mounts_and_loads(cx: &mut TestAppContext) {
                 { "name": "llama3:8b", "family": "llama", "parameter_size": "8B" },
             ]}),
         )
-        .on("system.inventory", json!({ "cpu_brand": "Test CPU", "cpu_cores": 8 }))
+        .on(
+            "system.inventory",
+            json!({ "cpu_brand": "Test CPU", "cpu_cores": 8 }),
+        )
         .on("ollama.list_loaded", json!({ "models": [] }))
         .on("models.get_default", json!({ "model": "llama3:8b" }));
     let _guard = fake.clone().install();
@@ -52,7 +55,10 @@ fn models_healthy_mounts_and_loads(cx: &mut TestAppContext) {
     window
         .update(cx, |panel, _w, _cx| {
             assert!(panel.error.is_none(), "no error on the happy path");
-            assert!(!panel.loading_installed, "the installed-list spinner cleared");
+            assert!(
+                !panel.loading_installed,
+                "the installed-list spinner cleared"
+            );
             assert!(!panel.loading_hardware, "the hardware spinner cleared");
             assert_eq!(panel.installed.len(), 1, "the installed model loaded");
         })
@@ -64,9 +70,15 @@ fn models_healthy_mounts_and_loads(cx: &mut TestAppContext) {
 fn models_survives_backend_down(cx: &mut TestAppContext) {
     let fake = ScriptedBackend::new()
         .on_err("ollama.list_models", "pipe_unavailable: ollama not running")
-        .on_err("system.inventory", "pipe_unavailable: vram-broker not running")
+        .on_err(
+            "system.inventory",
+            "pipe_unavailable: vram-broker not running",
+        )
         .on_err("ollama.list_loaded", "pipe_unavailable: ollama not running")
-        .on_err("models.get_default", "pipe_unavailable: harness not running");
+        .on_err(
+            "models.get_default",
+            "pipe_unavailable: harness not running",
+        );
     let _guard = fake.clone().install();
 
     let window = mount(cx);
@@ -85,14 +97,18 @@ fn models_survives_backend_down(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn models_surfaces_backend_error_envelope(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new().on_err("ollama.list_models", "internal_error: ollama blew up");
+    let fake =
+        ScriptedBackend::new().on_err("ollama.list_models", "internal_error: ollama blew up");
     let _guard = fake.clone().install();
 
     let window = mount(cx);
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.error.is_some(), "an error envelope surfaces on the panel");
+            assert!(
+                panel.error.is_some(),
+                "an error envelope surfaces on the panel"
+            );
             assert!(!panel.loading_installed);
         })
         .unwrap();
@@ -111,7 +127,10 @@ fn models_tolerates_empty_backend(cx: &mut TestAppContext) {
         .update(cx, |panel, _w, _cx| {
             assert!(panel.error.is_none(), "empty ok-replies are not an error");
             assert!(!panel.loading_installed);
-            assert!(panel.installed.is_empty(), "no installed models is a clean empty state");
+            assert!(
+                panel.installed.is_empty(),
+                "no installed models is a clean empty state"
+            );
         })
         .unwrap();
 }

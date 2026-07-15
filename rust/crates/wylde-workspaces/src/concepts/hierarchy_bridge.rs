@@ -225,7 +225,9 @@ pub fn sweep_dangling(workspace_id: &str) -> usize {
     }
     if changed {
         if let Err(e) = save_overlay(workspace_id, &overlay) {
-            tracing::warn!("workspaces.hierarchy: sweep_dangling save failed for {workspace_id}: {e}");
+            tracing::warn!(
+                "workspaces.hierarchy: sweep_dangling save failed for {workspace_id}: {e}"
+            );
         }
     }
     dangling
@@ -337,12 +339,24 @@ pub async fn handle_get_node(payload: Value) -> Reply {
     if graph.node(&id).is_none() {
         return Reply::err_msg("not_found", format!("no node {}", id.as_str()));
     }
-    let parents: Vec<Value> = graph.parents_of(&id).iter().map(|p| node_summary(&graph, p)).collect();
-    let children: Vec<Value> = graph.children_of(&id).iter().map(|c| node_summary(&graph, c)).collect();
+    let parents: Vec<Value> = graph
+        .parents_of(&id)
+        .iter()
+        .map(|p| node_summary(&graph, p))
+        .collect();
+    let children: Vec<Value> = graph
+        .children_of(&id)
+        .iter()
+        .map(|c| node_summary(&graph, c))
+        .collect();
     // The definitional ancestor chain, nearest-first (start at index 0), each
     // resolved to its definition -- the "leaf — under category — under root"
     // payload H5 will inject.
-    let chain: Vec<Value> = graph.ancestor_chain(&id).iter().map(|a| node_summary(&graph, a)).collect();
+    let chain: Vec<Value> = graph
+        .ancestor_chain(&id)
+        .iter()
+        .map(|a| node_summary(&graph, a))
+        .collect();
     let xrefs: Vec<Value> = graph
         .xrefs
         .iter()
@@ -381,7 +395,10 @@ pub async fn handle_set_definition(payload: Value) -> Reply {
     if !HierarchyConfig::current().enabled {
         return disabled_err();
     }
-    let definition = payload.get("definition").and_then(Value::as_str).map(str::to_owned);
+    let definition = payload
+        .get("definition")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let label = payload
         .get("label")
         .and_then(Value::as_str)
@@ -391,7 +408,10 @@ pub async fn handle_set_definition(payload: Value) -> Reply {
         Some("llm_draft") => DefSource::LlmDraft,
         Some("authored") | None => DefSource::Authored,
         Some(other) => {
-            return Reply::err_msg("bad_request", format!("unknown source `{other}` (authored|llm_draft)"))
+            return Reply::err_msg(
+                "bad_request",
+                format!("unknown source `{other}` (authored|llm_draft)"),
+            )
         }
     };
 
@@ -399,7 +419,12 @@ pub async fn handle_set_definition(payload: Value) -> Reply {
     let mut overlay = load_overlay(&ws);
     let now = wylde_shared::anchor::epoch_now();
 
-    let id = match payload.get("id").and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()) {
+    let id = match payload
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some(s) => {
             let id = NodeId(s.to_owned());
             if !resolves(&id, &base, &overlay) {
@@ -409,8 +434,16 @@ pub async fn handle_set_definition(payload: Value) -> Reply {
         }
         None => {
             // Creating a brand-new authored node: a definition is required.
-            if definition.as_deref().map(str::trim).unwrap_or("").is_empty() {
-                return Reply::err_msg("bad_request", "a new node requires a non-empty `definition`");
+            if definition
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+            {
+                return Reply::err_msg(
+                    "bad_request",
+                    "a new node requires a non-empty `definition`",
+                );
             }
             let mut identity = load_identity(&ws);
             let id = identity.mint();
@@ -439,9 +472,15 @@ pub async fn handle_set_definition(payload: Value) -> Reply {
         }
         None => overlay.nodes.push(OverlayNode {
             id: id.clone(),
-            definition: definition.as_deref().filter(|d| !d.trim().is_empty()).map(str::to_owned),
+            definition: definition
+                .as_deref()
+                .filter(|d| !d.trim().is_empty())
+                .map(str::to_owned),
             definition_source: source,
-            label_override: label.as_deref().filter(|l| !l.is_empty()).map(str::to_owned),
+            label_override: label
+                .as_deref()
+                .filter(|l| !l.is_empty())
+                .map(str::to_owned),
             created_at: now,
             updated_at: now,
         }),
@@ -485,18 +524,32 @@ pub async fn handle_add_edge(payload: Value) -> Reply {
         Err(m) => return Reply::err_msg("bad_request", m),
     };
     if parent == child {
-        return Reply::err_msg("bad_request", "a containment edge cannot connect a node to itself");
+        return Reply::err_msg(
+            "bad_request",
+            "a containment edge cannot connect a node to itself",
+        );
     }
     let base = base_graph(&ws);
     let mut overlay = load_overlay(&ws);
     if !resolves(&parent, &base, &overlay) {
-        return Reply::err_msg("bad_request", format!("unknown parent node: {}", parent.as_str()));
+        return Reply::err_msg(
+            "bad_request",
+            format!("unknown parent node: {}", parent.as_str()),
+        );
     }
     if !resolves(&child, &base, &overlay) {
-        return Reply::err_msg("bad_request", format!("unknown child node: {}", child.as_str()));
+        return Reply::err_msg(
+            "bad_request",
+            format!("unknown child node: {}", child.as_str()),
+        );
     }
     let now = wylde_shared::anchor::epoch_now();
-    let probe = OverlayEdge { parent: parent.clone(), child: child.clone(), created_at: now, dangling: false };
+    let probe = OverlayEdge {
+        parent: parent.clone(),
+        child: child.clone(),
+        created_at: now,
+        dangling: false,
+    };
     if let Some(existing) = overlay.edges.iter_mut().find(|e| e.same_edge(&probe)) {
         if existing.dangling {
             existing.dangling = false; // re-point: bring a retained edge back
@@ -538,7 +591,12 @@ pub async fn handle_remove_edge(payload: Value) -> Reply {
         Ok(n) => n,
         Err(m) => return Reply::err_msg("bad_request", m),
     };
-    let target = OverlayEdge { parent, child, created_at: 0.0, dangling: false };
+    let target = OverlayEdge {
+        parent,
+        child,
+        created_at: 0.0,
+        dangling: false,
+    };
     let mut overlay = load_overlay(&ws);
     let before = overlay.edges.len();
     overlay.edges.retain(|e| !e.same_edge(&target));
@@ -578,13 +636,24 @@ pub async fn handle_merge_nodes(payload: Value) -> Reply {
     let base = base_graph(&ws);
     let mut overlay = load_overlay(&ws);
     if !resolves(&primary, &base, &overlay) {
-        return Reply::err_msg("bad_request", format!("unknown primary node: {}", primary.as_str()));
+        return Reply::err_msg(
+            "bad_request",
+            format!("unknown primary node: {}", primary.as_str()),
+        );
     }
     if !resolves(&alias, &base, &overlay) {
-        return Reply::err_msg("bad_request", format!("unknown alias node: {}", alias.as_str()));
+        return Reply::err_msg(
+            "bad_request",
+            format!("unknown alias node: {}", alias.as_str()),
+        );
     }
     let now = wylde_shared::anchor::epoch_now();
-    let probe = NodeMerge { primary: primary.clone(), alias: alias.clone(), created_at: now, dangling: false };
+    let probe = NodeMerge {
+        primary: primary.clone(),
+        alias: alias.clone(),
+        created_at: now,
+        dangling: false,
+    };
     if let Some(existing) = overlay.merges.iter_mut().find(|m| m.same_merge(&probe)) {
         if existing.dangling {
             existing.dangling = false;
@@ -626,7 +695,12 @@ pub async fn handle_remove_merge(payload: Value) -> Reply {
         Ok(n) => n,
         Err(m) => return Reply::err_msg("bad_request", m),
     };
-    let target = NodeMerge { primary, alias, created_at: 0.0, dangling: false };
+    let target = NodeMerge {
+        primary,
+        alias,
+        created_at: 0.0,
+        dangling: false,
+    };
     let mut overlay = load_overlay(&ws);
     let before = overlay.merges.len();
     overlay.merges.retain(|m| !m.same_merge(&target));
@@ -688,7 +762,10 @@ pub async fn handle_set_enabled(payload: Value) -> Reply {
     };
     match HierarchyConfig::persist(HierarchyConfig { enabled }) {
         Ok(()) => Reply::ok(json!({ "enabled": enabled })),
-        Err(e) => Reply::err_msg("io", format!("toggle saved in-session but disk write failed: {e}")),
+        Err(e) => Reply::err_msg(
+            "io",
+            format!("toggle saved in-session but disk write failed: {e}"),
+        ),
     }
 }
 
@@ -713,8 +790,12 @@ mod tests {
         let mut a = Anchor::new(
             identifier,
             AnchorKind::Concept,
-            AnchorTarget::Concept { text: identifier.into() },
-            AnchorScope::Workspace { workspace_id: ws.into() },
+            AnchorTarget::Concept {
+                text: identifier.into(),
+            },
+            AnchorScope::Workspace {
+                workspace_id: ws.into(),
+            },
             format!("the {identifier}"),
         );
         a.parent_anchor = parent.map(str::to_owned);
@@ -728,7 +809,12 @@ mod tests {
             &[
                 Concept::new("auth", "Auth", "authentication", ConceptSource::Manual),
                 {
-                    let mut c = Concept::new("token", "Token", "a bearer credential", ConceptSource::Manual);
+                    let mut c = Concept::new(
+                        "token",
+                        "Token",
+                        "a bearer credential",
+                        ConceptSource::Manual,
+                    );
                     c.parent_concepts = vec!["auth".into()];
                     c
                 },
@@ -801,8 +887,14 @@ mod tests {
         }))
         .await;
         assert!(clear.ok);
-        assert_eq!(clear.data["node"]["definition_source"], json!("inherited_concept"));
-        assert!(load_overlay(ws).is_empty(), "emptied override pruned to ground state");
+        assert_eq!(
+            clear.data["node"]["definition_source"],
+            json!("inherited_concept")
+        );
+        assert!(
+            load_overlay(ws).is_empty(),
+            "emptied override pruned to ground state"
+        );
         disable();
     }
 
@@ -823,7 +915,8 @@ mod tests {
         // The allocator advanced + persisted (never reused).
         assert_eq!(load_identity(ws).next_node_ordinal, 1);
         // A second mint gets the next ordinal.
-        let r2 = handle_set_definition(json!({ "workspace_id": ws, "definition": "another" })).await;
+        let r2 =
+            handle_set_definition(json!({ "workspace_id": ws, "definition": "another" })).await;
         assert_eq!(r2.data["id"], json!("node:0001"));
         disable();
     }
@@ -852,8 +945,20 @@ mod tests {
         .await;
         assert_eq!(dup.error.unwrap().code, "already_exists");
         // Self-edge + unknown endpoint rejected.
-        assert!(!handle_add_edge(json!({ "workspace_id": ws, "parent": "vocab:n8n", "child": "vocab:n8n" })).await.ok);
-        assert!(!handle_add_edge(json!({ "workspace_id": ws, "parent": "vocab:n8n", "child": "vocab:ghost" })).await.ok);
+        assert!(
+            !handle_add_edge(
+                json!({ "workspace_id": ws, "parent": "vocab:n8n", "child": "vocab:n8n" })
+            )
+            .await
+            .ok
+        );
+        assert!(
+            !handle_add_edge(
+                json!({ "workspace_id": ws, "parent": "vocab:n8n", "child": "vocab:ghost" })
+            )
+            .await
+            .ok
+        );
         // Remove it.
         let rm = handle_remove_edge(json!({
             "workspace_id": ws, "parent": "vocab:n8n", "child": "vocab:workflows"
@@ -877,7 +982,10 @@ mod tests {
         .await;
         assert!(m.ok, "{:?}", m.error);
         let g = current_graph(ws);
-        assert!(g.node(&NodeId::vocab("workflows")).is_none(), "alias folded away");
+        assert!(
+            g.node(&NodeId::vocab("workflows")).is_none(),
+            "alias folded away"
+        );
         // Duplicate merge -> already_exists.
         let dup = handle_merge_nodes(json!({
             "workspace_id": ws, "primary": "concept:auth", "alias": "vocab:workflows"
@@ -892,7 +1000,10 @@ mod tests {
         .await;
         assert!(rm.ok && rm.data["removed"] == json!(true));
         let g = current_graph(ws);
-        assert!(g.node(&NodeId::vocab("workflows")).is_some(), "alias restored after unmerge");
+        assert!(
+            g.node(&NodeId::vocab("workflows")).is_some(),
+            "alias restored after unmerge"
+        );
         disable();
     }
 
@@ -921,10 +1032,14 @@ mod tests {
         // edge to the vanished vocab term is gone).
         let g = current_graph(ws);
         assert!(
-            !g.children_of(&NodeId::concept("auth")).contains(&NodeId::vocab("workflows")),
+            !g.children_of(&NodeId::concept("auth"))
+                .contains(&NodeId::vocab("workflows")),
             "dangling edge absent from traversal"
         );
-        assert!(g.node(&NodeId::vocab("workflows")).is_none(), "vanished node absent too");
+        assert!(
+            g.node(&NodeId::vocab("workflows")).is_none(),
+            "vanished node absent too"
+        );
 
         // The anchor returns -> the flag clears.
         anchor_store::save(ws, &[vocab(ws, "n8n", None), vocab(ws, "workflows", None)]).unwrap();
@@ -944,7 +1059,9 @@ mod tests {
             "workspace_id": ws, "id": "concept:auth", "definition": "stable override"
         }))
         .await;
-        let created = handle_set_definition(json!({ "workspace_id": ws, "definition": "authored leaf" })).await;
+        let created =
+            handle_set_definition(json!({ "workspace_id": ws, "definition": "authored leaf" }))
+                .await;
         let authored_id = created.data["id"].as_str().unwrap().to_owned();
 
         // Simulate a concept recompute: rebuild the concept set with the SAME
@@ -952,7 +1069,12 @@ mod tests {
         concept_store::save(
             ws,
             &[
-                Concept::new("auth", "Auth (rebuilt)", "fresh inherited text", ConceptSource::Embedding),
+                Concept::new(
+                    "auth",
+                    "Auth (rebuilt)",
+                    "fresh inherited text",
+                    ConceptSource::Embedding,
+                ),
                 {
                     let mut c = Concept::new("token", "Token", "x", ConceptSource::Embedding);
                     c.parent_concepts = vec!["auth".into()];
@@ -965,10 +1087,16 @@ mod tests {
         // The authored override re-binds to `concept:auth` (still wins the ladder).
         let g = current_graph(ws);
         let auth = g.node(&NodeId::concept("auth")).unwrap();
-        assert_eq!(auth.definition.text, "stable override", "override survived recompute");
+        assert_eq!(
+            auth.definition.text, "stable override",
+            "override survived recompute"
+        );
         assert_eq!(auth.definition.source, DefSource::Authored);
         // The authored node persists with its minted id untouched.
-        assert!(g.node(&NodeId(authored_id.clone())).is_some(), "authored node survived");
+        assert!(
+            g.node(&NodeId(authored_id.clone())).is_some(),
+            "authored node survived"
+        );
         disable();
     }
 
@@ -990,7 +1118,11 @@ mod tests {
         assert_eq!(r.data["enabled"], json!(true));
         let edges = r.data["edges"].as_array().unwrap();
         assert_eq!(edges.len(), 1, "the authored edge is RETAINED + surfaced");
-        assert_eq!(edges[0]["dangling"], json!(true), "and flagged dangling for re-point");
+        assert_eq!(
+            edges[0]["dangling"],
+            json!(true),
+            "and flagged dangling for re-point"
+        );
 
         // OFF ⇒ inert empty.
         disable();
@@ -1013,7 +1145,9 @@ mod tests {
         assert!(HierarchyConfig::current().enabled);
         // A read verb is now live.
         assert_eq!(
-            handle_get_tree(json!({ "workspace_id": "hier-cfg-00000" })).await.data["enabled"],
+            handle_get_tree(json!({ "workspace_id": "hier-cfg-00000" }))
+                .await
+                .data["enabled"],
             json!(true)
         );
         // Bad payload rejected.

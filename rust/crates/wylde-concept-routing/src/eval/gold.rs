@@ -113,7 +113,10 @@ mod tests {
         // The three kinds are all represented (conflation + dependency are the
         // relation-model's whole point).
         let (easy, conf, dep) = g.counts();
-        assert!(easy > 0 && conf > 0 && dep > 0, "kinds: {easy}/{conf}/{dep}");
+        assert!(
+            easy > 0 && conf > 0 && dep > 0,
+            "kinds: {easy}/{conf}/{dep}"
+        );
     }
 
     #[test]

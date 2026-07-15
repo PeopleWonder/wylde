@@ -62,8 +62,14 @@ fn backend() -> std::sync::Arc<ScriptedBackend> {
         )
         .on("workspaces.concepts.search", concepts_reply())
         .on("workspaces.anchors.list", anchors_reply())
-        .on("workspaces.concepts.relations.graph", json!({ "count": 0, "relations": [] }))
-        .on("workspaces.concepts.relations.list", json!({ "count": 0, "relations": [] }))
+        .on(
+            "workspaces.concepts.relations.graph",
+            json!({ "count": 0, "relations": [] }),
+        )
+        .on(
+            "workspaces.concepts.relations.list",
+            json!({ "count": 0, "relations": [] }),
+        )
 }
 
 // ── (a) loads the node universe + graph on mount ─────────────────────────
@@ -234,7 +240,11 @@ fn vocabulary_tab_switches_to_relations_subtab(cx: &mut TestAppContext) {
 
     window
         .update(cx, |tab, _w, cx| {
-            assert_eq!(tab.sub_tab(), VocabSubTab::Vocabulary, "defaults to Vocabulary");
+            assert_eq!(
+                tab.sub_tab(),
+                VocabSubTab::Vocabulary,
+                "defaults to Vocabulary"
+            );
             // The Relations child built + loaded its universe.
             assert_eq!(tab.relations_view().read(cx).universe_len(), 2);
             tab.set_sub_tab(VocabSubTab::Relations, cx);
@@ -244,7 +254,11 @@ fn vocabulary_tab_switches_to_relations_subtab(cx: &mut TestAppContext) {
 
     window
         .update(cx, |tab, _w, _cx| {
-            assert_eq!(tab.sub_tab(), VocabSubTab::Relations, "switched to Relations");
+            assert_eq!(
+                tab.sub_tab(),
+                VocabSubTab::Relations,
+                "switched to Relations"
+            );
         })
         .unwrap();
 

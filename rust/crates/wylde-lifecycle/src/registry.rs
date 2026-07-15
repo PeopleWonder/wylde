@@ -493,7 +493,11 @@ fn service_folders(root: &Path) -> Vec<(String, PathBuf)> {
     // Out-of-tree sibling buckets — one level under each bucket. Absent or
     // empty bucket ⇒ zero extra folders (clean no-op).
     for bucket in SERVICE_BUCKETS {
-        out.extend(list_bucket_folders(root, bucket).into_iter().map(folder_tuple));
+        out.extend(
+            list_bucket_folders(root, bucket)
+                .into_iter()
+                .map(folder_tuple),
+        );
     }
     let core_path = root.join("Core");
     if core_path.join("manifest.json").exists() {
@@ -871,7 +875,11 @@ mod tests {
     fn empty_registry_returns_no_services() {
         let tmp = TempDir::new().unwrap();
         let infos = list_services_in(tmp.path());
-        assert!(infos.is_empty(), "expected empty, got {} entries", infos.len());
+        assert!(
+            infos.is_empty(),
+            "expected empty, got {} entries",
+            infos.len()
+        );
     }
 
     #[test]

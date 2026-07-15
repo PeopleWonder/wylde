@@ -77,9 +77,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    tracing::info!(
-        "wylde-ollama: actions registered; opening pipe at \\\\.\\pipe\\wylde-ollama"
-    );
+    tracing::info!("wylde-ollama: actions registered; opening pipe at \\\\.\\pipe\\wylde-ollama");
 
     let serve_fut = ipc::serve(SERVICE_NAME, None);
     tokio::select! {

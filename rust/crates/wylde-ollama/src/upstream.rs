@@ -144,22 +144,21 @@ impl Upstream {
     /// connection reconnects instead of false-reddening the dashboard.
     pub async fn probe(&self, timeout_s: u64) -> UpstreamProbe {
         let started = std::time::Instant::now();
-        match self.request(Method::GET, "/api/tags", None, timeout_s).await {
+        match self
+            .request(Method::GET, "/api/tags", None, timeout_s)
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 // Measure latency at first-byte (status received) rather
                 // than after the body decode below, so a large /api/tags
                 // payload doesn't inflate the "is the daemon responsive?"
                 // signal the Dashboard reads.
                 let latency_ms = started.elapsed().as_millis() as u64;
-                let models = resp
-                    .json::<Value>()
-                    .await
-                    .ok()
-                    .and_then(|v| {
-                        v.get("models")
-                            .and_then(Value::as_array)
-                            .map(|a| a.len() as u64)
-                    });
+                let models = resp.json::<Value>().await.ok().and_then(|v| {
+                    v.get("models")
+                        .and_then(Value::as_array)
+                        .map(|a| a.len() as u64)
+                });
                 UpstreamProbe {
                     status: UpstreamStatus::Ok,
                     models,
@@ -240,8 +239,7 @@ pub fn client() -> Arc<Upstream> {
         .get_or_init(|| {
             let cfg = Config::get();
             Arc::new(
-                Upstream::new(cfg)
-                    .expect("upstream reqwest::Client construction failed at boot"),
+                Upstream::new(cfg).expect("upstream reqwest::Client construction failed at boot"),
             )
         })
         .clone()

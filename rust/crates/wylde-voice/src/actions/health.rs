@@ -15,7 +15,10 @@ pub async fn handle_health(_payload: Value) -> Reply {
     let cfg = Config::get();
     let whisper_loaded = state::whisper_encoder().is_some();
     let (whisper_device, whisper_path) = match state::whisper_encoder() {
-        Some(enc) => (Some(enc.device().to_owned()), Some(enc.encoder_path().display().to_string())),
+        Some(enc) => (
+            Some(enc.device().to_owned()),
+            Some(enc.encoder_path().display().to_string()),
+        ),
         None => (None, None),
     };
     let tts_loaded = state::kokoro_synth().is_some();

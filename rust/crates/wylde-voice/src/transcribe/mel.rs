@@ -20,8 +20,8 @@
 
 use std::sync::OnceLock;
 
-use rustfft::FftPlanner;
 use rustfft::num_complex::Complex32;
+use rustfft::FftPlanner;
 
 /// Whisper encoder input dimensions: `[batch=1, n_mels=80, n_frames=3000]`.
 pub const N_MELS: usize = 80;
@@ -370,6 +370,9 @@ mod tests {
         // And it should dominate the lowest band (which only sees sub-200 Hz).
         col.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let median = col[col.len() / 2];
-        assert!(max > median + 0.5, "tone energy not concentrated: max={max} median={median}");
+        assert!(
+            max > median + 0.5,
+            "tone energy not concentrated: max={max} median={median}"
+        );
     }
 }

@@ -95,7 +95,8 @@ fn write_to_path(path: &std::path::Path, cfg: &HierarchyConfig) -> Result<(), St
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("hierarchy: mkdir: {e}"))?;
     }
-    let body = serde_json::to_vec_pretty(&cfg.to_value()).map_err(|e| format!("hierarchy: encode: {e}"))?;
+    let body = serde_json::to_vec_pretty(&cfg.to_value())
+        .map_err(|e| format!("hierarchy: encode: {e}"))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &body).map_err(|e| format!("hierarchy: write: {e}"))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("hierarchy: rename: {e}"))?;
@@ -140,7 +141,10 @@ mod tests {
 
     #[test]
     fn default_is_off() {
-        assert!(!HierarchyConfig::default().enabled, "master toggle defaults OFF");
+        assert!(
+            !HierarchyConfig::default().enabled,
+            "master toggle defaults OFF"
+        );
     }
 
     #[test]

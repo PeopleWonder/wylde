@@ -76,7 +76,10 @@ fn hierarchy_loads_tree_on_mount(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn toggle_off_is_inert_and_enable_issues_set_enabled(cx: &mut TestAppContext) {
-    let fake = backend(false).on("workspaces.hierarchy.set_enabled", json!({ "enabled": true }));
+    let fake = backend(false).on(
+        "workspaces.hierarchy.set_enabled",
+        json!({ "enabled": true }),
+    );
     let _guard = fake.clone().install();
 
     let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
@@ -154,7 +157,10 @@ fn save_definition_issues_set_definition(cx: &mut TestAppContext) {
         .last_call_for("workspaces.hierarchy.set_definition")
         .expect("Save must issue set_definition");
     assert_eq!(call.payload.get("id"), Some(&json!("concept:token")));
-    assert_eq!(call.payload.get("definition"), Some(&json!("a bearer credential")));
+    assert_eq!(
+        call.payload.get("definition"),
+        Some(&json!("a bearer credential"))
+    );
     // A save reloads the tree.
     assert!(fake.count_for("workspaces.hierarchy.get_tree") >= 2);
 }
@@ -163,7 +169,10 @@ fn save_definition_issues_set_definition(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn clear_definition_sends_empty_override(cx: &mut TestAppContext) {
-    let fake = backend(true).on("workspaces.hierarchy.set_definition", json!({ "id": "concept:auth" }));
+    let fake = backend(true).on(
+        "workspaces.hierarchy.set_definition",
+        json!({ "id": "concept:auth" }),
+    );
     let _guard = fake.clone().install();
 
     let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
@@ -181,14 +190,21 @@ fn clear_definition_sends_empty_override(cx: &mut TestAppContext) {
         .last_call_for("workspaces.hierarchy.set_definition")
         .expect("Clear must issue set_definition");
     assert_eq!(call.payload.get("id"), Some(&json!("concept:auth")));
-    assert_eq!(call.payload.get("definition"), Some(&json!("")), "empty clears the override");
+    assert_eq!(
+        call.payload.get("definition"),
+        Some(&json!("")),
+        "empty clears the override"
+    );
 }
 
 // ── (H4) new-node creation mints via set_definition (no id) ──────────────
 
 #[gpui::test]
 fn create_node_mints_authored_node(cx: &mut TestAppContext) {
-    let fake = backend(true).on("workspaces.hierarchy.set_definition", json!({ "id": "node:0000" }));
+    let fake = backend(true).on(
+        "workspaces.hierarchy.set_definition",
+        json!({ "id": "node:0000" }),
+    );
     let _guard = fake.clone().install();
 
     let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
@@ -206,7 +222,10 @@ fn create_node_mints_authored_node(cx: &mut TestAppContext) {
         .last_call_for("workspaces.hierarchy.set_definition")
         .expect("create must issue set_definition");
     assert_eq!(call.payload.get("id"), None, "no id ⇒ mint a new node");
-    assert_eq!(call.payload.get("definition"), Some(&json!("a net-new theme")));
+    assert_eq!(
+        call.payload.get("definition"),
+        Some(&json!("a net-new theme"))
+    );
     assert_eq!(call.payload.get("label"), Some(&json!("Theme")));
 }
 
@@ -228,10 +247,15 @@ fn add_child_issues_add_edge(cx: &mut TestAppContext) {
         .unwrap();
     cx.run_until_parked();
 
-    let call = fake.last_call_for("workspaces.hierarchy.add_edge").expect("add_edge issued");
+    let call = fake
+        .last_call_for("workspaces.hierarchy.add_edge")
+        .expect("add_edge issued");
     assert_eq!(call.payload.get("parent"), Some(&json!("concept:auth")));
     assert_eq!(call.payload.get("child"), Some(&json!("concept:token")));
-    assert!(fake.count_for("workspaces.hierarchy.get_tree") >= 2, "reloads after authoring");
+    assert!(
+        fake.count_for("workspaces.hierarchy.get_tree") >= 2,
+        "reloads after authoring"
+    );
 }
 
 // ── (H4) merge + undo issue merge_nodes / remove_merge ───────────────────
@@ -240,7 +264,10 @@ fn add_child_issues_add_edge(cx: &mut TestAppContext) {
 fn merge_and_unmerge_issue_their_verbs(cx: &mut TestAppContext) {
     let fake = backend(true)
         .on("workspaces.hierarchy.merge_nodes", json!({ "merge": {} }))
-        .on("workspaces.hierarchy.remove_merge", json!({ "removed": true }));
+        .on(
+            "workspaces.hierarchy.remove_merge",
+            json!({ "removed": true }),
+        );
     let _guard = fake.clone().install();
 
     let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
@@ -253,15 +280,21 @@ fn merge_and_unmerge_issue_their_verbs(cx: &mut TestAppContext) {
         })
         .unwrap();
     cx.run_until_parked();
-    let m = fake.last_call_for("workspaces.hierarchy.merge_nodes").expect("merge issued");
+    let m = fake
+        .last_call_for("workspaces.hierarchy.merge_nodes")
+        .expect("merge issued");
     assert_eq!(m.payload.get("primary"), Some(&json!("concept:auth")));
     assert_eq!(m.payload.get("alias"), Some(&json!("concept:token")));
 
     window
-        .update(cx, |view, _w, cx| view.remove_merge("concept:auth", "concept:token", cx))
+        .update(cx, |view, _w, cx| {
+            view.remove_merge("concept:auth", "concept:token", cx)
+        })
         .unwrap();
     cx.run_until_parked();
-    let u = fake.last_call_for("workspaces.hierarchy.remove_merge").expect("unmerge issued");
+    let u = fake
+        .last_call_for("workspaces.hierarchy.remove_merge")
+        .expect("unmerge issued");
     assert_eq!(u.payload.get("alias"), Some(&json!("concept:token")));
 }
 
@@ -284,7 +317,11 @@ fn overlay_section_loads_authored_edges(cx: &mut TestAppContext) {
 
     window
         .update(cx, |view, _w, _cx| {
-            assert_eq!(view.overlay_edge_count(), 1, "authored (dangling) edge surfaced for re-point");
+            assert_eq!(
+                view.overlay_edge_count(),
+                1,
+                "authored (dangling) edge surfaced for re-point"
+            );
         })
         .unwrap();
     assert!(fake.count_for("workspaces.hierarchy.get_overlay") >= 1);
@@ -294,18 +331,25 @@ fn overlay_section_loads_authored_edges(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn remove_edge_issues_remove_edge(cx: &mut TestAppContext) {
-    let fake = backend(true).on("workspaces.hierarchy.remove_edge", json!({ "removed": true }));
+    let fake = backend(true).on(
+        "workspaces.hierarchy.remove_edge",
+        json!({ "removed": true }),
+    );
     let _guard = fake.clone().install();
 
     let window = cx.add_window(|_w, cx| HierarchyView::new(cx));
     cx.run_until_parked();
 
     window
-        .update(cx, |view, _w, cx| view.remove_edge("concept:auth", "vocab:gone", cx))
+        .update(cx, |view, _w, cx| {
+            view.remove_edge("concept:auth", "vocab:gone", cx)
+        })
         .unwrap();
     cx.run_until_parked();
 
-    let call = fake.last_call_for("workspaces.hierarchy.remove_edge").expect("remove_edge issued");
+    let call = fake
+        .last_call_for("workspaces.hierarchy.remove_edge")
+        .expect("remove_edge issued");
     assert_eq!(call.payload.get("parent"), Some(&json!("concept:auth")));
     assert_eq!(call.payload.get("child"), Some(&json!("vocab:gone")));
 }
@@ -322,7 +366,11 @@ fn vocabulary_tab_switches_to_hierarchy_subtab(cx: &mut TestAppContext) {
 
     window
         .update(cx, |tab, _w, cx| {
-            assert_eq!(tab.sub_tab(), VocabSubTab::Vocabulary, "defaults to Vocabulary");
+            assert_eq!(
+                tab.sub_tab(),
+                VocabSubTab::Vocabulary,
+                "defaults to Vocabulary"
+            );
             // The Hierarchy child built + loaded its tree on mount.
             assert_eq!(tab.hierarchy_view().read(cx).node_count(), 2);
             tab.set_sub_tab(VocabSubTab::Hierarchy, cx);
@@ -332,7 +380,11 @@ fn vocabulary_tab_switches_to_hierarchy_subtab(cx: &mut TestAppContext) {
 
     window
         .update(cx, |tab, _w, _cx| {
-            assert_eq!(tab.sub_tab(), VocabSubTab::Hierarchy, "switched to Hierarchy");
+            assert_eq!(
+                tab.sub_tab(),
+                VocabSubTab::Hierarchy,
+                "switched to Hierarchy"
+            );
         })
         .unwrap();
 

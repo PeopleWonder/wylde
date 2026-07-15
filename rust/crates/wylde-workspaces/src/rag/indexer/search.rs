@@ -386,7 +386,8 @@ pub fn rank_with(
         .into_iter()
         .map(|c| {
             let cos = cosine(query_vec, &c.vector);
-            let eff = (cos + anchor_boost(&c, anchors) + active_file_boost(&c, active_file)).min(1.0);
+            let eff =
+                (cos + anchor_boost(&c, anchors) + active_file_boost(&c, active_file)).min(1.0);
             (eff, cos, c)
         })
         .collect();
@@ -451,7 +452,10 @@ fn rank_fused(
     let n = chunks.len();
 
     // ── DENSE arm: cosine per chunk + a full descending-cosine ordering. ──
-    let cosines: Vec<f64> = chunks.iter().map(|c| cosine(query_vec, &c.vector)).collect();
+    let cosines: Vec<f64> = chunks
+        .iter()
+        .map(|c| cosine(query_vec, &c.vector))
+        .collect();
     let mut dense_order: Vec<usize> = (0..n).collect();
     dense_order.sort_by(|&a, &b| {
         cosines[b]
@@ -718,8 +722,16 @@ mod tests {
         let query = vec![1.0_f32, 0.0, 0.0, 0.0];
         let chunks = vec![
             chunk("/a.md", vec![0.8, 0.6, 0.0, 0.0], "first"),
-            chunk("/a-dup.md", vec![0.8, 0.6, 0.0, 0.0], "near-duplicate of first"),
-            chunk("/b.md", vec![0.8, 0.0, 0.6, 0.0], "equally relevant but distinct"),
+            chunk(
+                "/a-dup.md",
+                vec![0.8, 0.6, 0.0, 0.0],
+                "near-duplicate of first",
+            ),
+            chunk(
+                "/b.md",
+                vec![0.8, 0.0, 0.6, 0.0],
+                "equally relevant but distinct",
+            ),
         ];
         let hits = rank(&query, chunks, 2, &[]);
         assert_eq!(hits.len(), 2);
@@ -746,7 +758,10 @@ mod tests {
         let hits = rank(&query, chunks, 2, &[]);
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].file_path, "/near.md");
-        assert_eq!(hits[1].file_path, "/mid.md", "relevant mid beats orthogonal");
+        assert_eq!(
+            hits[1].file_path, "/mid.md",
+            "relevant mid beats orthogonal"
+        );
     }
 
     /// Build descending `(effective, cosine, chunk)` triples for direct
@@ -771,7 +786,10 @@ mod tests {
     fn dynamic_k_zero_when_best_hit_is_noise() {
         // Top hit below the absolute floor → nothing on-topic, inject none.
         let noise = MIN_ABSOLUTE_SCORE - 0.05;
-        assert_eq!(dynamic_k(&scored(&[noise, noise - 0.05, noise - 0.1]), 5), 0);
+        assert_eq!(
+            dynamic_k(&scored(&[noise, noise - 0.05, noise - 0.1]), 5),
+            0
+        );
     }
 
     #[test]
@@ -877,7 +895,10 @@ mod tests {
                  [anchors: compose_retrieval_query GatherWith run_it]";
         let terms = extract_anchor_terms(q);
         // Lowercased, length-filtered, order-preserving, deduped.
-        assert_eq!(terms, vec!["compose_retrieval_query", "gatherwith", "run_it"]);
+        assert_eq!(
+            terms,
+            vec!["compose_retrieval_query", "gatherwith", "run_it"]
+        );
     }
 
     #[test]
@@ -892,7 +913,11 @@ mod tests {
     #[test]
     fn anchor_boost_weights_path_over_body_and_caps() {
         let path_hit = chunk("/src/compose_retrieval_query.rs", vec![1.0, 0.0], "fn body");
-        let body_hit = chunk("/src/other.rs", vec![1.0, 0.0], "calls compose_retrieval_query here");
+        let body_hit = chunk(
+            "/src/other.rs",
+            vec![1.0, 0.0],
+            "calls compose_retrieval_query here",
+        );
         let miss = chunk("/src/unrelated.rs", vec![1.0, 0.0], "nothing relevant");
         let anchors = vec!["compose_retrieval_query".to_owned()];
         assert!((anchor_boost(&path_hit, &anchors) - ANCHOR_PATH_BOOST).abs() < 1e-9);
@@ -900,7 +925,9 @@ mod tests {
         assert_eq!(anchor_boost(&miss, &anchors), 0.0);
         assert_eq!(anchor_boost(&path_hit, &[]), 0.0, "no anchors → no boost");
         // Many path hits saturate at the cap.
-        let many: Vec<String> = (0..10).map(|_| "compose_retrieval_query".to_owned()).collect();
+        let many: Vec<String> = (0..10)
+            .map(|_| "compose_retrieval_query".to_owned())
+            .collect();
         assert_eq!(anchor_boost(&path_hit, &many), ANCHOR_BOOST_CAP);
     }
 
@@ -915,7 +942,11 @@ mod tests {
             c.content = "fn run_it_handler() {}".into();
             c
         };
-        let rival = chunk("/src/notes.md", vec_with_cosine(0.70), "loosely related prose");
+        let rival = chunk(
+            "/src/notes.md",
+            vec_with_cosine(0.70),
+            "loosely related prose",
+        );
         let anchors = vec!["run_it_handler".to_owned()];
         let hits = rank(&query, vec![rival.clone(), defining.clone()], 2, &anchors);
         assert_eq!(hits.len(), 2);
@@ -992,7 +1023,11 @@ mod tests {
         assert!((active_file_boost(&exact, active) - ACTIVE_FILE_PATH_BOOST).abs() < 1e-9);
         assert!((active_file_boost(&sibling, active) - ACTIVE_FILE_DIR_BOOST).abs() < 1e-9);
         assert_eq!(active_file_boost(&elsewhere, active), 0.0);
-        assert_eq!(active_file_boost(&exact, None), 0.0, "no active file → no boost");
+        assert_eq!(
+            active_file_boost(&exact, None),
+            0.0,
+            "no active file → no boost"
+        );
         // A root-level open file never dir-matches every other root file.
         let root_a = chunk("a.rs", vec![1.0, 0.0], "");
         let root_b = chunk("b.rs", vec![1.0, 0.0], "");
@@ -1005,8 +1040,16 @@ mod tests {
         // The open file has a lower cosine than a rival, but the active-file
         // boost lifts it to the top; the reported score stays the true cosine.
         let query = vec![1.0_f32, 0.0];
-        let open = chunk("services/x/foo.rs", vec_with_cosine(0.60), "the file in the editor");
-        let rival = chunk("services/y/other.rs", vec_with_cosine(0.70), "a higher-cosine rival");
+        let open = chunk(
+            "services/x/foo.rs",
+            vec_with_cosine(0.60),
+            "the file in the editor",
+        );
+        let rival = chunk(
+            "services/y/other.rs",
+            vec_with_cosine(0.70),
+            "a higher-cosine rival",
+        );
         let hits = rank_with(
             &query,
             vec![rival.clone(), open.clone()],
@@ -1111,7 +1154,12 @@ mod tests {
         rows.iter()
             .enumerate()
             .map(|(i, &(fused, cos, lex))| {
-                (fused, cos, lex, chunk(&format!("/c{i}.rs"), vec![1.0, 0.0], "c"))
+                (
+                    fused,
+                    cos,
+                    lex,
+                    chunk(&format!("/c{i}.rs"), vec![1.0, 0.0], "c"),
+                )
             })
             .collect()
     }
@@ -1152,8 +1200,8 @@ mod tests {
         let top = 0.030_f64;
         let s = fscored(&[
             (top, 0.80, None),
-            (0.62 * top, 0.50, None),     // above 0.6·top → kept
-            (0.40 * top, 0.40, None),     // below 0.6·top → trimmed
+            (0.62 * top, 0.50, None), // above 0.6·top → kept
+            (0.40 * top, 0.40, None), // below 0.6·top → trimmed
         ]);
         assert_eq!(dynamic_k_fused(&s, 5, &cfg), 2);
     }
@@ -1237,7 +1285,11 @@ mod tests {
             cos_vec(MIN_ABSOLUTE_SCORE - 0.20),
             "fn zqxjrare_handler() { do_work() }",
         );
-        let decoy = chunk("/other.rs", cos_vec(MIN_ABSOLUTE_SCORE - 0.30), "unrelated prose body");
+        let decoy = chunk(
+            "/other.rs",
+            cos_vec(MIN_ABSOLUTE_SCORE - 0.30),
+            "unrelated prose body",
+        );
         store::save_chunks(ws, &[target, decoy]).unwrap();
         let q = vec![1.0_f32, 0.0];
 
@@ -1252,7 +1304,10 @@ mod tests {
         // (the approved §1.4 bypass) and the low-cosine defining file is rescued.
         enable_fusion();
         let hits = query_with_vec(ws, &q, "zqxjrare_handler", 5);
-        assert!(!hits.is_empty(), "ON: lexical hit rescues the low-cosine chunk");
+        assert!(
+            !hits.is_empty(),
+            "ON: lexical hit rescues the low-cosine chunk"
+        );
         assert_eq!(hits[0].file_path, "/defining.rs");
         assert!(hits[0].lexical_score.is_some(), "carries BM25 provenance");
         assert!(hits[0].fused_score.is_some());
@@ -1268,7 +1323,11 @@ mod tests {
     fn fused_off_topic_to_both_injects_nothing() {
         let _env = crate::test_support::TestEnv::new();
         let ws = "fuse-offtopic";
-        let target = chunk("/a.rs", cos_vec(MIN_ABSOLUTE_SCORE - 0.20), "fn zqxjrare_handler() {}");
+        let target = chunk(
+            "/a.rs",
+            cos_vec(MIN_ABSOLUTE_SCORE - 0.20),
+            "fn zqxjrare_handler() {}",
+        );
         store::save_chunks(ws, &[target]).unwrap();
         let q = vec![1.0_f32, 0.0];
         enable_fusion();

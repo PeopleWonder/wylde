@@ -134,7 +134,9 @@ async fn release_inner(lease_id: &str) {
 ///     all. The harness can choose whether to retry or fall through.
 pub async fn acquire(req: LeaseRequest) -> Result<Lease, IpcError> {
     let cfg = Config::get();
-    let nonce = req.nonce.unwrap_or_else(|| Uuid::new_v4().simple().to_string());
+    let nonce = req
+        .nonce
+        .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
 
     let mut payload = json!({
         "service": "wylde-ollama",

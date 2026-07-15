@@ -192,6 +192,18 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Changed
 
+- **Clippy (G4) + fmt (G6) CI gates are now LIVE.** The two staged enforcement
+  gates were armed: a new `clippy (G4) + fmt (G6)` CI job runs
+  `cargo fmt --all -- --check` and
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` across every
+  CI-built workspace (rust/, Core/GUI/, tools/xtask, tools/wylde-release) and
+  **fails the build** on any warning or unformatted file. Getting there took a
+  workspace-wide `cargo fmt` (its own `chore(fmt)` commit) and a behavior-neutral
+  clippy cleanup — derivable `Default`s, `contains` over `iter().any(==)`,
+  struct-init over `default()`-then-reassign in tests, scoping a cfg(test)
+  `test_support` to `pub(crate)`, and a justified `await_holding_lock` allow on
+  env-serializing async tests. Harness lib stays 1168/0. Enforcement-matrix rows
+  10 + 11 move from ⏳-staged to ✅-live. (issue #32)
 - **Full-Rust cutover.** Every remaining Python runtime component was ported
   to Rust and its source deleted (~350 files): the Lifecycle daemon +
   rollback path (`Core/Lifecycle/`), the Python harness runtime

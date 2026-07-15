@@ -433,10 +433,7 @@ mod tests {
         // health_timeout_s defaults to 3s — too long for a fast test, so
         // probe directly with a 1s deadline against the slow mock.
         let probe = up.probe(1).await;
-        assert_eq!(
-            probe.status,
-            crate::upstream::UpstreamStatus::Timeout
-        );
+        assert_eq!(probe.status, crate::upstream::UpstreamStatus::Timeout);
     }
 
     #[tokio::test]

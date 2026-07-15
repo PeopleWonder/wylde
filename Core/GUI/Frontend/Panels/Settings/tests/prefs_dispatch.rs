@@ -33,8 +33,12 @@ fn toggle_updates_enabled_persists_the_flipped_flag(cx: &mut TestAppContext) {
     let _guard = fake.clone().install();
     let window = mount(cx);
 
-    let before = window.update(cx, |p, _w, _cx| p.update_prefs.enabled).unwrap();
-    window.update(cx, |p, _w, cx| p.toggle_updates_enabled(cx)).unwrap();
+    let before = window
+        .update(cx, |p, _w, _cx| p.update_prefs.enabled)
+        .unwrap();
+    window
+        .update(cx, |p, _w, cx| p.toggle_updates_enabled(cx))
+        .unwrap();
     cx.run_until_parked();
 
     let call = fake
@@ -51,7 +55,10 @@ fn toggle_updates_enabled_persists_the_flipped_flag(cx: &mut TestAppContext) {
     );
     window
         .update(cx, |p, _w, _cx| {
-            assert_eq!(p.update_prefs.enabled, !before, "the merged reply is adopted");
+            assert_eq!(
+                p.update_prefs.enabled, !before,
+                "the merged reply is adopted"
+            );
             assert!(p.error.is_none(), "a registered verb means no error banner");
         })
         .unwrap();
@@ -67,7 +74,9 @@ fn cycle_channel_persists_the_channel_patch(cx: &mut TestAppContext) {
     window.update(cx, |p, _w, cx| p.cycle_channel(cx)).unwrap();
     cx.run_until_parked();
 
-    let call = fake.last_call_for("updater.set_prefs").expect("channel cycle persists");
+    let call = fake
+        .last_call_for("updater.set_prefs")
+        .expect("channel cycle persists");
     assert_eq!(
         call.payload_str("channel").as_deref(),
         Some("beta"),
@@ -79,18 +88,25 @@ fn cycle_channel_persists_the_channel_patch(cx: &mut TestAppContext) {
 fn a_prefs_write_failure_surfaces_in_the_error_banner(cx: &mut TestAppContext) {
     // The pre-fix symptom: the verb wasn't registered → no_action. The panel
     // must surface that, not swallow it.
-    let fake = ScriptedBackend::new()
-        .on_err("updater.set_prefs", "no_action: unknown action updater.set_prefs");
+    let fake = ScriptedBackend::new().on_err(
+        "updater.set_prefs",
+        "no_action: unknown action updater.set_prefs",
+    );
     let _guard = fake.clone().install();
     let window = mount(cx);
 
-    window.update(cx, |p, _w, cx| p.toggle_auto_check(cx)).unwrap();
+    window
+        .update(cx, |p, _w, cx| p.toggle_auto_check(cx))
+        .unwrap();
     cx.run_until_parked();
 
     window
         .update(cx, |p, _w, _cx| {
             let e = p.error.as_deref().unwrap_or_default();
-            assert!(e.contains("update prefs"), "a failed prefs write is surfaced: {e:?}");
+            assert!(
+                e.contains("update prefs"),
+                "a failed prefs write is surfaced: {e:?}"
+            );
         })
         .unwrap();
 }

@@ -503,7 +503,10 @@ mod tests {
             "live-pid manifest should not be removed, got {:?}",
             report.removed
         );
-        assert!(path.exists(), "live-pid manifest must survive the boot sweep");
+        assert!(
+            path.exists(),
+            "live-pid manifest must survive the boot sweep"
+        );
     }
 
     #[tokio::test]
@@ -579,7 +582,10 @@ mod tests {
             report.removed
         );
         assert!(
-            report.would_remove.iter().any(|s| s == "wylde-boot-nospawn"),
+            report
+                .would_remove
+                .iter()
+                .any(|s| s == "wylde-boot-nospawn"),
             "expected wylde-boot-nospawn in would_remove, got {:?}",
             report.would_remove
         );

@@ -247,9 +247,7 @@ mod tests {
         .unwrap();
         let spans = out["spans"].as_array().unwrap();
         assert!(!spans.is_empty(), "inline source should produce spans");
-        assert!(spans
-            .iter()
-            .any(|s| s["scope"].as_str() == Some("keyword")));
+        assert!(spans.iter().any(|s| s["scope"].as_str() == Some("keyword")));
     }
 
     /// The scope names highlighting `src` produced, plus the raw reply.

@@ -131,8 +131,14 @@ mod tests {
                             path: "/ok".into(),
                             value: serde_json::json!(true),
                         },
-                        OutcomePredicate::Contains { needle: "x".into(), ci: true },
-                        OutcomePredicate::CountAtLeast { path: "/m".into(), n: 1 },
+                        OutcomePredicate::Contains {
+                            needle: "x".into(),
+                            ci: true,
+                        },
+                        OutcomePredicate::CountAtLeast {
+                            path: "/m".into(),
+                            n: 1,
+                        },
                         OutcomePredicate::NoError,
                     ],
                     assertion: String::new(),
@@ -176,7 +182,11 @@ mod tests {
         let schema = plan_dag_format();
 
         let req: Vec<&str> = schema["required"]
-            .as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap())
+            .collect();
         for k in req {
             assert!(v.get(k).is_some(), "dag missing top-level required key {k}");
         }
@@ -187,7 +197,10 @@ mod tests {
         }
         let exp_schema = &step_schema["properties"]["expected"];
         for k in exp_schema["required"].as_array().unwrap() {
-            assert!(step["expected"].get(k.as_str().unwrap()).is_some(), "expected missing {k}");
+            assert!(
+                step["expected"].get(k.as_str().unwrap()).is_some(),
+                "expected missing {k}"
+            );
         }
     }
 
@@ -197,13 +210,25 @@ mod tests {
     fn predicate_union_mirrors_serde_variants() {
         let arms = predicate_schema()["anyOf"].as_array().unwrap().clone();
         assert_eq!(arms.len(), 6, "one arm per OutcomePredicate variant");
-        let kinds: Vec<String> = arms.iter()
-            .map(|a| a["properties"]["kind"]["const"].as_str().unwrap().to_owned())
+        let kinds: Vec<String> = arms
+            .iter()
+            .map(|a| {
+                a["properties"]["kind"]["const"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
             .collect();
         assert_eq!(
             kinds,
-            ["non_empty", "json_path_exists", "json_path_equals",
-             "contains", "count_at_least", "no_error"]
+            [
+                "non_empty",
+                "json_path_exists",
+                "json_path_equals",
+                "contains",
+                "count_at_least",
+                "no_error"
+            ]
         );
         // Every serde variant serializes to a kind the union admits.
         for p in sample_dag().steps[0].expected.predicates.iter() {
@@ -224,7 +249,10 @@ mod tests {
             (SurpriseAction::Continue, "continue"),
             (SurpriseAction::Abort, "abort"),
         ] {
-            assert_eq!(serde_json::to_value(action).unwrap(), serde_json::json!(wire));
+            assert_eq!(
+                serde_json::to_value(action).unwrap(),
+                serde_json::json!(wire)
+            );
             assert!(
                 allowed.as_array().unwrap().iter().any(|v| v == wire),
                 "{wire} missing from schema enum"

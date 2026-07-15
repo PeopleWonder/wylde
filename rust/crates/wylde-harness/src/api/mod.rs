@@ -77,8 +77,8 @@ mod tests_memory;
 mod tests_tools;
 
 use consent::{consent_snapshot_value, consent_stream_pending_impl, handle_consent_decide};
-pub(crate) use helpers::{optional_string, require_string};
 use helpers::{float_array, record_to_value, string_array};
+pub(crate) use helpers::{optional_string, require_string};
 
 /// The harness's GUI-facing action surface, expressed as Rust methods so
 /// in-process callers (Tauri) can dispatch without the IPC hop.

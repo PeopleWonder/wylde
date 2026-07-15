@@ -97,7 +97,11 @@ pub fn queue(
             return Ok(QueueOutcome::Suppressed);
         }
     }
-    if file.pending.iter().any(|p| p.concept.id == proposal.concept.id) {
+    if file
+        .pending
+        .iter()
+        .any(|p| p.concept.id == proposal.concept.id)
+    {
         return Ok(QueueOutcome::AlreadyPending);
     }
     file.pending.push(proposal);
@@ -160,7 +164,10 @@ mod tests {
     fn queue_take_round_trip() {
         let _env = TestEnv::new();
         let ws = "ws-cprop-0000";
-        assert_eq!(queue(ws, proposal("c1"), 1.0).unwrap(), QueueOutcome::Queued);
+        assert_eq!(
+            queue(ws, proposal("c1"), 1.0).unwrap(),
+            QueueOutcome::Queued
+        );
         assert_eq!(
             queue(ws, proposal("c1"), 2.0).unwrap(),
             QueueOutcome::AlreadyPending

@@ -94,7 +94,9 @@ impl HierGraph {
     /// Drill DOWN: the direct containment children of `id` (empty if `id` is a
     /// leaf or is absent).
     pub fn children_of(&self, id: &NodeId) -> Vec<NodeId> {
-        self.node(id).map(|n| n.children.clone()).unwrap_or_default()
+        self.node(id)
+            .map(|n| n.children.clone())
+            .unwrap_or_default()
     }
 
     /// Drill UP: the direct containment parents of `id` (empty if `id` is a root
@@ -215,7 +217,10 @@ impl HierGraph {
             if let Some(neighbours) = adj.get(&cur) {
                 for ne in neighbours {
                     if visited.insert(ne.clone()) {
-                        out.push(Reached { id: ne.clone(), hops: hops + 1 });
+                        out.push(Reached {
+                            id: ne.clone(),
+                            hops: hops + 1,
+                        });
                         queue.push_back((ne.clone(), hops + 1));
                     }
                 }
@@ -258,7 +263,7 @@ fn step(n: &HierNode, dir: Dir) -> &[NodeId] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Definition, DefSource, HierNode, NodeKind, XRef};
+    use crate::model::{DefSource, Definition, HierNode, NodeKind, XRef};
 
     /// A bare concept node with the given parents (children are filled by the
     /// builder below), for hand-built graph fixtures.
@@ -309,8 +314,14 @@ mod tests {
             ],
             vec![],
         );
-        assert_eq!(g.children_of(&NodeId::concept("wylde")), vec![NodeId::concept("service")]);
-        assert_eq!(g.parents_of(&NodeId::concept("workflows")), vec![NodeId::concept("n8n")]);
+        assert_eq!(
+            g.children_of(&NodeId::concept("wylde")),
+            vec![NodeId::concept("service")]
+        );
+        assert_eq!(
+            g.parents_of(&NodeId::concept("workflows")),
+            vec![NodeId::concept("n8n")]
+        );
         assert_eq!(g.roots(), vec![NodeId::concept("wylde")]);
         assert_eq!(g.leaves(), vec![NodeId::concept("workflows")]);
         // Absent node -> empty, never a panic.
@@ -340,7 +351,10 @@ mod tests {
             ]
         );
         // A root's chain is just itself.
-        assert_eq!(g.ancestor_chain(&NodeId::concept("wylde")), vec![NodeId::concept("wylde")]);
+        assert_eq!(
+            g.ancestor_chain(&NodeId::concept("wylde")),
+            vec![NodeId::concept("wylde")]
+        );
     }
 
     #[test]
@@ -358,14 +372,22 @@ mod tests {
         );
         assert_eq!(
             g.ancestor_chain(&NodeId::concept("d")),
-            vec![NodeId::concept("d"), NodeId::concept("b"), NodeId::concept("a")],
+            vec![
+                NodeId::concept("d"),
+                NodeId::concept("b"),
+                NodeId::concept("a")
+            ],
             "chain follows the first parent deterministically"
         );
         let mut anc = g.ancestors(&NodeId::concept("d"));
         anc.sort();
         assert_eq!(
             anc,
-            vec![NodeId::concept("a"), NodeId::concept("b"), NodeId::concept("c")],
+            vec![
+                NodeId::concept("a"),
+                NodeId::concept("b"),
+                NodeId::concept("c")
+            ],
             "full ancestor set covers BOTH parents, a appears once"
         );
     }
@@ -385,7 +407,11 @@ mod tests {
         desc.sort();
         assert_eq!(
             desc,
-            vec![NodeId::concept("b"), NodeId::concept("c"), NodeId::concept("d")],
+            vec![
+                NodeId::concept("b"),
+                NodeId::concept("c"),
+                NodeId::concept("d")
+            ],
             "shared descendant d reached once"
         );
     }
@@ -394,11 +420,7 @@ mod tests {
     fn traversal_is_cycle_safe() {
         // A 3-cycle: a -> b -> c -> a (each is the other's parent).
         let g = graph(
-            vec![
-                node("a", &["c"]),
-                node("b", &["a"]),
-                node("c", &["b"]),
-            ],
+            vec![node("a", &["c"]), node("b", &["a"]), node("c", &["b"])],
             vec![],
         );
         // ancestors terminates and covers the other two exactly once.
@@ -424,14 +446,21 @@ mod tests {
         );
 
         // Containment-only from a reaches b (1 hop) but NOT x.
-        let reached = g.cross_reference_walk(&NodeId::concept("a"), &WalkOptions::containment_only(5));
+        let reached =
+            g.cross_reference_walk(&NodeId::concept("a"), &WalkOptions::containment_only(5));
         let ids: Vec<_> = reached.iter().map(|r| r.id.clone()).collect();
         assert!(ids.contains(&NodeId::concept("b")));
-        assert!(!ids.contains(&NodeId::concept("x")), "x is only reachable via the xref");
+        assert!(
+            !ids.contains(&NodeId::concept("x")),
+            "x is only reachable via the xref"
+        );
 
         // Following all kinds reaches x via b's dependency edge, at 2 hops.
         let reached = g.cross_reference_walk(&NodeId::concept("a"), &WalkOptions::all(5));
-        let x = reached.iter().find(|r| r.id == NodeId::concept("x")).expect("x reached via xref");
+        let x = reached
+            .iter()
+            .find(|r| r.id == NodeId::concept("x"))
+            .expect("x reached via xref");
         assert_eq!(x.hops, 2, "a->b (containment) then b->x (dependency)");
     }
 
@@ -447,11 +476,15 @@ mod tests {
             ],
             vec![],
         );
-        let reached = g.cross_reference_walk(&NodeId::concept("a"), &WalkOptions::containment_only(2));
+        let reached =
+            g.cross_reference_walk(&NodeId::concept("a"), &WalkOptions::containment_only(2));
         let ids: Vec<_> = reached.iter().map(|r| r.id.clone()).collect();
         assert!(ids.contains(&NodeId::concept("b")), "1 hop");
         assert!(ids.contains(&NodeId::concept("c")), "2 hops");
-        assert!(!ids.contains(&NodeId::concept("d")), "3 hops exceeds the cap of 2");
+        assert!(
+            !ids.contains(&NodeId::concept("d")),
+            "3 hops exceeds the cap of 2"
+        );
     }
 
     #[test]

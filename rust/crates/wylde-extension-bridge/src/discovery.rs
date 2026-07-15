@@ -49,7 +49,9 @@ pub fn discover(extensions_dir: &Path) -> BTreeMap<String, ExtensionRecord> {
             if !path.is_dir() {
                 continue;
             }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
             if is_reserved(name) {
                 continue;
             }
@@ -69,7 +71,10 @@ pub fn discover(extensions_dir: &Path) -> BTreeMap<String, ExtensionRecord> {
             }
         }
     }
-    *guard = Some(Cache { signature: Some(sig), extensions: out.clone() });
+    *guard = Some(Cache {
+        signature: Some(sig),
+        extensions: out.clone(),
+    });
     out
 }
 
@@ -130,14 +135,26 @@ mod tests {
     fn discovers_extensions_skipping_reserved() {
         reset_for_tests();
         let td = TempDir::new().unwrap();
-        write_ext(td.path(), "good",
-            r#"{"name":"good","transport":"stdio","command":["x"]}"#);
-        write_ext(td.path(), "extension_bridge",
-            r#"{"name":"bridge","transport":"stdio","command":["x"]}"#);
-        write_ext(td.path(), "_shim",
-            r#"{"name":"shim","transport":"stdio","command":["x"]}"#);
-        write_ext(td.path(), ".hidden",
-            r#"{"name":"hidden","transport":"stdio","command":["x"]}"#);
+        write_ext(
+            td.path(),
+            "good",
+            r#"{"name":"good","transport":"stdio","command":["x"]}"#,
+        );
+        write_ext(
+            td.path(),
+            "extension_bridge",
+            r#"{"name":"bridge","transport":"stdio","command":["x"]}"#,
+        );
+        write_ext(
+            td.path(),
+            "_shim",
+            r#"{"name":"shim","transport":"stdio","command":["x"]}"#,
+        );
+        write_ext(
+            td.path(),
+            ".hidden",
+            r#"{"name":"hidden","transport":"stdio","command":["x"]}"#,
+        );
         let m = discover(td.path());
         assert_eq!(m.len(), 1);
         assert!(m.contains_key("good"));
@@ -147,8 +164,11 @@ mod tests {
     fn cache_hits_when_signature_unchanged() {
         reset_for_tests();
         let td = TempDir::new().unwrap();
-        write_ext(td.path(), "a",
-            r#"{"name":"a","transport":"stdio","command":["x"]}"#);
+        write_ext(
+            td.path(),
+            "a",
+            r#"{"name":"a","transport":"stdio","command":["x"]}"#,
+        );
         let first = discover(td.path());
         let second = discover(td.path());
         assert_eq!(first.len(), second.len());

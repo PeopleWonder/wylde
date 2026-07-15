@@ -206,7 +206,9 @@ impl Default for IconConfig {
         }
 
         // ── Category fallbacks (Lucide) for everything without a language glyph ──
-        for e in ["txt", "text", "rst", "adoc", "asciidoc", "org", "rtf", "log"] {
+        for e in [
+            "txt", "text", "rst", "adoc", "asciidoc", "org", "rtf", "log",
+        ] {
             by_extension.insert(e.to_owned(), IconRule::new("doc"));
         }
         for e in [
@@ -221,10 +223,14 @@ impl Default for IconConfig {
         ] {
             by_extension.insert(e.to_owned(), IconRule::new("config"));
         }
-        for e in ["csv", "tsv", "parquet", "sql", "db", "sqlite", "sqlite3", "arrow"] {
+        for e in [
+            "csv", "tsv", "parquet", "sql", "db", "sqlite", "sqlite3", "arrow",
+        ] {
             by_extension.insert(e.to_owned(), IconRule::new("data"));
         }
-        for e in ["png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp", "avif", "tiff"] {
+        for e in [
+            "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp", "avif", "tiff",
+        ] {
             by_extension.insert(e.to_owned(), IconRule::new("image"));
         }
         // Remaining source-ish extensions with no dedicated Seti glyph → generic `code`.
@@ -378,7 +384,7 @@ impl IconConfig {
     fn ancestor_rule(&self, rel_path: &str) -> Option<&FolderRule> {
         let mut parts: Vec<&str> = rel_path.split('/').collect();
         parts.pop(); // drop the file name itself
-        // Closest first.
+                     // Closest first.
         for folder in parts.iter().rev() {
             if let Some(rule) = self.by_folder.get(*folder) {
                 if rule.applies_to_children {
@@ -517,27 +523,83 @@ mod tests {
         let cfg = IconConfig::default();
         // Languages with a dedicated Seti glyph resolve to it (not the generic
         // `code` category).
-        assert_eq!(cfg.resolve(&entry("main.rs", Kind::File, "src/main.rs"), false).icon, "rust");
-        assert_eq!(cfg.resolve(&entry("app.py", Kind::File, "app.py"), false).icon, "python");
-        assert_eq!(cfg.resolve(&entry("index.ts", Kind::File, "index.ts"), false).icon, "typescript");
-        assert_eq!(cfg.resolve(&entry("App.tsx", Kind::File, "App.tsx"), false).icon, "react");
-        assert_eq!(cfg.resolve(&entry("main.go", Kind::File, "main.go"), false).icon, "go");
-        assert_eq!(cfg.resolve(&entry("notes.md", Kind::File, "notes.md"), false).icon, "markdown");
-        assert_eq!(cfg.resolve(&entry("data.json", Kind::File, "data.json"), false).icon, "json");
-        assert_eq!(cfg.resolve(&entry("Lib.hs", Kind::File, "Lib.hs"), false).icon, "haskell");
+        assert_eq!(
+            cfg.resolve(&entry("main.rs", Kind::File, "src/main.rs"), false)
+                .icon,
+            "rust"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("app.py", Kind::File, "app.py"), false)
+                .icon,
+            "python"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("index.ts", Kind::File, "index.ts"), false)
+                .icon,
+            "typescript"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("App.tsx", Kind::File, "App.tsx"), false)
+                .icon,
+            "react"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("main.go", Kind::File, "main.go"), false)
+                .icon,
+            "go"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("notes.md", Kind::File, "notes.md"), false)
+                .icon,
+            "markdown"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("data.json", Kind::File, "data.json"), false)
+                .icon,
+            "json"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("Lib.hs", Kind::File, "Lib.hs"), false)
+                .icon,
+            "haskell"
+        );
     }
 
     #[test]
     fn extension_maps_to_lucide_category_when_no_language_glyph() {
         let cfg = IconConfig::default();
         // No per-language Seti glyph → fall through to a Lucide category.
-        assert_eq!(cfg.resolve(&entry("logo.png", Kind::File, "logo.png"), false).icon, "image");
-        assert_eq!(cfg.resolve(&entry("notes.txt", Kind::File, "notes.txt"), false).icon, "doc");
-        assert_eq!(cfg.resolve(&entry("ruff.toml", Kind::File, "ruff.toml"), false).icon, "config");
-        assert_eq!(cfg.resolve(&entry("rows.csv", Kind::File, "rows.csv"), false).icon, "data");
-        assert_eq!(cfg.resolve(&entry("q.sql", Kind::File, "q.sql"), false).icon, "data");
+        assert_eq!(
+            cfg.resolve(&entry("logo.png", Kind::File, "logo.png"), false)
+                .icon,
+            "image"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("notes.txt", Kind::File, "notes.txt"), false)
+                .icon,
+            "doc"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("ruff.toml", Kind::File, "ruff.toml"), false)
+                .icon,
+            "config"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("rows.csv", Kind::File, "rows.csv"), false)
+                .icon,
+            "data"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("q.sql", Kind::File, "q.sql"), false)
+                .icon,
+            "data"
+        );
         // A source language with no dedicated glyph → generic `code`.
-        assert_eq!(cfg.resolve(&entry("build.gradle", Kind::File, "build.gradle"), false).icon, "code");
+        assert_eq!(
+            cfg.resolve(&entry("build.gradle", Kind::File, "build.gradle"), false)
+                .icon,
+            "code"
+        );
     }
 
     #[test]
@@ -559,34 +621,47 @@ mod tests {
     #[test]
     fn folder_rules_override_default_folder() {
         let cfg = IconConfig::default();
-        assert_eq!(cfg.resolve(&entry(".git", Kind::Dir, ".git"), false).icon, "git");
-        assert_eq!(cfg.resolve(&entry("target", Kind::Dir, "target"), false).icon, "package");
+        assert_eq!(
+            cfg.resolve(&entry(".git", Kind::Dir, ".git"), false).icon,
+            "git"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("target", Kind::Dir, "target"), false)
+                .icon,
+            "package"
+        );
     }
 
     #[test]
     fn files_inherit_nearest_ancestor_container_rule() {
         let cfg = IconConfig::default();
         // A file with no extension rule, inside target/ → inherits `package`.
-        let spec = cfg.resolve(
-            &entry("blob", Kind::File, "target/debug/blob"),
-            false,
-        );
+        let spec = cfg.resolve(&entry("blob", Kind::File, "target/debug/blob"), false);
         assert_eq!(spec.icon, "package");
         // But a recognised extension still wins over the ancestor rule.
-        let rs = cfg.resolve(
-            &entry("build.rs", Kind::File, "target/build.rs"),
-            false,
-        );
+        let rs = cfg.resolve(&entry("build.rs", Kind::File, "target/build.rs"), false);
         assert_eq!(rs.icon, "rust");
     }
 
     #[test]
     fn exact_name_tool_files_get_their_glyph() {
         let cfg = IconConfig::default();
-        assert_eq!(cfg.resolve(&entry("Dockerfile", Kind::File, "Dockerfile"), false).icon, "docker");
-        assert_eq!(cfg.resolve(&entry("Makefile", Kind::File, "Makefile"), false).icon, "makefile");
+        assert_eq!(
+            cfg.resolve(&entry("Dockerfile", Kind::File, "Dockerfile"), false)
+                .icon,
+            "docker"
+        );
+        assert_eq!(
+            cfg.resolve(&entry("Makefile", Kind::File, "Makefile"), false)
+                .icon,
+            "makefile"
+        );
         // Manifests stay on `package`; the exact-name rule beats the extension.
-        assert_eq!(cfg.resolve(&entry("go.mod", Kind::File, "go.mod"), false).icon, "package");
+        assert_eq!(
+            cfg.resolve(&entry("go.mod", Kind::File, "go.mod"), false)
+                .icon,
+            "package"
+        );
     }
 
     #[test]
@@ -616,7 +691,11 @@ mod tests {
         }
         for n in names {
             let p = icons_dir.join(format!("{n}.svg"));
-            assert!(p.exists(), "mapped icon {n:?} has no asset at {}", p.display());
+            assert!(
+                p.exists(),
+                "mapped icon {n:?} has no asset at {}",
+                p.display()
+            );
         }
     }
 
@@ -637,14 +716,23 @@ mod tests {
 
     #[test]
     fn asset_path_uses_the_bundle_namespace() {
-        let spec = IconSpec { icon: "code".to_owned(), tint: None };
+        let spec = IconSpec {
+            icon: "code".to_owned(),
+            tint: None,
+        };
         assert_eq!(spec.asset_path(), "icons/file-tree/code.svg");
     }
 
     #[test]
     fn color_resolution_tokens_and_hex() {
-        assert_eq!(resolve_color("$text_primary"), Some(wylde_theme::colors::TEXT_PRIMARY));
-        assert_eq!(resolve_color("$brand_light"), Some(wylde_theme::colors::BRAND_LIGHT));
+        assert_eq!(
+            resolve_color("$text_primary"),
+            Some(wylde_theme::colors::TEXT_PRIMARY)
+        );
+        assert_eq!(
+            resolve_color("$brand_light"),
+            Some(wylde_theme::colors::BRAND_LIGHT)
+        );
         assert_eq!(resolve_color("$nope"), None);
         let hex = resolve_color("#dea584").unwrap();
         assert!((hex.r - 0xde as f32 / 255.0).abs() < 1e-6);
@@ -658,7 +746,11 @@ mod tests {
         // built-in defaults intact (the YAML block is sparse/optional).
         let cfg = IconConfig::load();
         assert_eq!(cfg.default.file.icon, "file");
-        assert_eq!(cfg.resolve(&entry("main.rs", Kind::File, "main.rs"), false).icon, "rust");
+        assert_eq!(
+            cfg.resolve(&entry("main.rs", Kind::File, "main.rs"), false)
+                .icon,
+            "rust"
+        );
     }
 
     #[test]
@@ -674,6 +766,9 @@ file_tree_icons:
         // The override wins; other defaults are untouched.
         let rs = cfg.resolve(&entry("main.rs", Kind::File, "main.rs"), false);
         assert_eq!(rs.icon, "package");
-        assert_eq!(cfg.resolve(&entry("a.py", Kind::File, "a.py"), false).icon, "python");
+        assert_eq!(
+            cfg.resolve(&entry("a.py", Kind::File, "a.py"), false).icon,
+            "python"
+        );
     }
 }

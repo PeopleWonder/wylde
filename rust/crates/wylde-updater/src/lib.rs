@@ -150,7 +150,9 @@ fn stage_update(bytes: &[u8]) -> Result<PathBuf, UpdateError> {
 
 fn stage_update_in(dir: &Path, bytes: &[u8]) -> Result<PathBuf, UpdateError> {
     if bytes.is_empty() {
-        return Err(UpdateError::Io("refusing to stage an empty update payload".into()));
+        return Err(UpdateError::Io(
+            "refusing to stage an empty update payload".into(),
+        ));
     }
     let path = dir.join(STAGED_NAME);
     std::fs::write(&path, bytes).map_err(|e| UpdateError::Io(format!("staging write: {e}")))?;
