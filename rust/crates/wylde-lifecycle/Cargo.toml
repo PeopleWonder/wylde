@@ -27,6 +27,10 @@ tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
+# min_core compatibility floor: parse + compare a service manifest's declared
+# minimum-Core version against the running Core. Already a vetted workspace
+# transitive dep (wylde-updater uses it for release-tag comparison).
+semver = "1"
 
 # OpenProcess / GetExitCodeProcess / GenerateConsoleCtrlEvent for the
 # orphan sweep's pid-liveness probe and graceful Windows shutdown. We

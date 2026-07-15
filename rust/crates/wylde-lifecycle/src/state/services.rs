@@ -214,6 +214,25 @@ pub async fn start_discovered(svc: &crate::registry::DiscoveredService) -> Resul
         tracing::info!("{name}: NO-SPAWN — would-have-spawned recorded; no child forked");
         return Ok(());
     }
+    // min_core compatibility floor — refuse to spawn a sibling that needs a
+    // newer Core than is running, LOUDLY (never a silent skip; a silently-absent
+    // service is the "panel present but dead" failure class). The reason is also
+    // surfaced to the GUI via registry::build_info (service.list) and
+    // service.health, so the panel shows *why* rather than just "unavailable".
+    let compat = crate::registry::check_core_floor(
+        crate::registry::core_version(),
+        svc.min_core.as_deref(),
+    );
+    if let Some(reason) = compat.reason() {
+        tracing::error!(
+            service = name,
+            min_core = svc.min_core.as_deref().unwrap_or(""),
+            core = crate::registry::core_version(),
+            "refusing to start {name}: {reason}. The service will NOT spawn; its \
+             panel will show why. Update Wylde Core, or correct the service's min_core."
+        );
+        return Ok(());
+    }
     let Some(bin) = sibling_binary_path(&svc.folder, name) else {
         tracing::warn!(
             "{name}: no binary found beside its manifest ({}); the sibling will not start — \
@@ -1661,12 +1680,40 @@ mod tests {
             name: "wylde-phantom".to_string(),
             folder: std::path::PathBuf::from("Services/wylde-phantom"),
             enabled: true,
+            min_core: None,
         };
         let result = start_discovered(&svc).await;
         std::env::remove_var("WYLDE_WYLDE_PHANTOM_BIN");
         assert!(
             result.is_ok(),
             "start_discovered with no binary must be a non-fatal no-op, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_discovered_refuses_incompatible_min_core() {
+        // A sibling that needs a newer Core than is running is REFUSED before any
+        // spawn — non-fatal (Ok), no child forked. The BIN override points at a
+        // real-but-unexecutable file: had the floor check NOT fired first,
+        // start_discovered would reach the spawn and return Err trying to exec it.
+        // So `Ok` proves the floor short-circuited ahead of the spawn. (The
+        // comparison logic itself is proven in
+        // registry::tests::check_core_floor_semantics.)
+        let dir = tempfile::tempdir().unwrap();
+        let fake_bin = dir.path().join("not-an-exe.txt");
+        std::fs::write(&fake_bin, b"not executable").unwrap();
+        std::env::set_var("WYLDE_WYLDE_INCOMPAT_BIN", &fake_bin);
+        let svc = crate::registry::DiscoveredService {
+            name: "wylde-incompat".to_string(),
+            folder: dir.path().to_path_buf(),
+            enabled: true,
+            min_core: Some("99.0.0".to_string()), // far above any real Core
+        };
+        let result = start_discovered(&svc).await;
+        std::env::remove_var("WYLDE_WYLDE_INCOMPAT_BIN");
+        assert!(
+            result.is_ok(),
+            "an incompatible sibling must be refused non-fatally BEFORE spawn, got {result:?}"
         );
     }
 }

@@ -714,6 +714,15 @@ fn shape_service_list(infos: Vec<ServiceInfo>) -> Value {
             // (`dead-orphan`) from one the crash-restart breaker gave up on
             // (`failed`). Null for declarative-only entries (no runtime file).
             "lifecycle_state": info.state.clone().map(Value::String).unwrap_or(Value::Null),
+            // min_core floor unmet: the service is present but needs a newer
+            // Core than is running. Carries the human-readable reason so the GUI
+            // shows *why* the feature is unavailable rather than a silent
+            // absence. Null when compatible / no floor declared.
+            "incompatible_reason": info
+                .incompatible_reason
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
             // F1: the live process is running an out-of-date binary (rebuilt
             // after it started). Distinct from down/inactive — the service is
             // up but predates code it may be asked to serve.
@@ -820,6 +829,20 @@ async fn service_list_action(_payload: Value) -> Reply {
 /// forced the switch). On success returns `{name, reply: <ping data>}`;
 /// on transport failure `probe_failed`; on a service-level not-ok
 /// `service_unhealthy`.
+/// If `name` is a discovered sibling whose declared `min_core` floor the
+/// running Core does not meet, return the human-readable incompatibility reason
+/// (`None` when the service is unknown, has no floor, or is compatible). Used by
+/// [`service_health_action`] to surface "needs a newer Core" instead of a bare
+/// "down", so the panel gate shows the real cause.
+fn incompatible_sibling_reason(name: &str) -> Option<String> {
+    registry::discovered_bucket_services()
+        .into_iter()
+        .find(|s| s.name == name)
+        .and_then(|s| {
+            registry::check_core_floor(registry::core_version(), s.min_core.as_deref()).reason()
+        })
+}
+
 async fn service_health_action(payload: Value) -> Reply {
     let name = match require_name(&payload) {
         Ok(n) => n,
@@ -845,6 +868,21 @@ async fn service_health_action(payload: Value) -> Reply {
     // Dashboard can render a degraded/yellow tile.
     if name == service_name::OLLAMA {
         return ollama_health().await;
+    }
+    // min_core special-case: a discovered sibling whose declared floor exceeds
+    // the running Core never spawned (see state::services::start_discovered), so
+    // a plain pipe probe would just report it "down" with no reason. Surface the
+    // real cause — "present but needs a newer Core" — so the panel shows *why*,
+    // not a misleading "not running / Start" affordance.
+    if let Some(reason) = incompatible_sibling_reason(&name) {
+        return Reply::ok(json!({
+            "name": name,
+            "reply": {
+                "ok": false,
+                "incompatible": true,
+                "reason": reason,
+            },
+        }));
     }
     let reply = send_with_verb(
         &name,

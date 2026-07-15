@@ -276,50 +276,88 @@ broken service is **non-fatal** — Core logs a warning and skips the spawn (`st
 - Add a `develop` line only if one ever grows enough concurrent work to need it. Until then, `main`
   + tags is sufficient.
 
-### 8.1 The `min_core_version` compatibility floor — concrete spec
+### 8.1 The `min_core` compatibility floor — **implemented** (decided requirement)
 
-**What it is:** a service manifest declares the oldest Core it is compatible with; Core refuses to
-spawn a service whose floor it doesn't meet, instead of letting an incompatible service boot and
-fail in confusing ways.
+Aaron confirmed the decision: **service repos version independently and declare a minimum-Core
+compatibility floor; not lockstep.** This is built and shipped in `wylde-lifecycle` (not a
+post-0.2 spec) — code + tests below.
 
-**Manifest field** (in each service's folder `manifest.json`, alongside `name`/`enabled`/`version`):
+**What it is:** a service manifest declares the oldest Wylde Core it is compatible with. Core
+**refuses to spawn** a service whose floor exceeds the running Core and **surfaces the reason to the
+user** — never a silent skip, because a silently-absent feature is exactly the "the panel is there
+but does nothing" failure class.
+
+**Manifest field** — `min_core` in each service's folder `manifest.json`, a plain version string:
 
 ```json
 {
   "name": "wylde-organize",
   "enabled": true,
   "version": "1.4.0",
-  "min_core_version": "0.2.0"
+  "min_core": "0.2.0"
 }
 ```
 
-- Optional. Absent ⇒ "no floor declared" ⇒ Core spawns it (back-compatible with today's manifests).
+- Optional. Absent/empty ⇒ no floor ⇒ Core spawns it (back-compatible with today's manifests).
+- (Field name is `min_core`, not `min_core_version` — the value is obviously a version; keeping it
+  short matches the manifest's other keys.)
 
-**Comparison semantics:** Core parses both its own version (`env!("CARGO_PKG_VERSION")`) and the
-floor with the `semver` crate and spawns iff `core_version >= min_core_version`.
+**Comparison semantics** (`registry::check_core_floor`, unit-tested): compatible iff Core's
+**release** version (`major.minor.patch`, with any pre-release/build identifier stripped) `>=` the
+floor. Core's version is `env!("CARGO_PKG_VERSION")` of the lifecycle crate (= the workspace version).
 
-- **Pre-release caveat (must be handled deliberately):** SemVer orders `0.2.0-alpha.1 < 0.2.0`.
-  So a Core running `0.2.0-alpha.1` does **not** satisfy a floor of `0.2.0`. Since services are a
-  post-0.2 concern and Core will be at a released `0.2.x` when they ship, **floors should target a
-  released Core version** (`0.2.0`, not `0.2.0-alpha.1`). If a service must run against a Core
-  pre-release, compare against the floor's release-equivalent (strip Core's pre-release identifier
-  before comparing) — document whichever rule is chosen at the comparison site.
+- **Pre-release rule — decided:** the pre-release identifier is **stripped from Core** before
+  comparing, so a Core pre-release on the run-up to X (`0.2.0-alpha.3`) **satisfies** a floor of X
+  (`0.2.0`). Rationale: during the experimental line Core ships pre-releases; blocking every service
+  on every pre-release would be useless. Trade-off (accepted, solo dev): an early `0.2.0-alpha.1`
+  might not yet carry all of `0.2.0`'s surface. Floors should still target a **released** version.
+- **Malformed floor ⇒ fail-closed** (`CoreCompat::BadFloor`): a manifest typo is treated as
+  incompatible with a "fix the manifest" reason, so a broken declaration surfaces loudly instead of
+  silently disabling the gate.
 
-**What Core does when the floor isn't met:** mirror the existing non-fatal contract — **log a
-loud warning naming the service, its floor, and Core's version, then skip the spawn and continue**
-(`Ok(())`). Core is unaffected; the incompatible service simply does not start. The GUI panel that
-lists the service in `required_services` will then render its existing `ServiceUnavailable` stub,
-which is the correct user-facing signal.
+**Reverse direction (a MAX) — assessed, not needed.** A floor alone suffices. The failure a max
+would guard (Core got too new and broke the service) is, for a solo dev who ships Core and the
+services from the same release process, caught at the break — you bump Core and move the service's
+floor together. A `max_core` would also invite the "pinned below current, silently disabled" trap.
+The field is **forward-compatible**: if a genuine upper bound is ever needed (an unmaintained
+third-party service), add a separate `core` field carrying a full semver `VersionReq`
+(`>=0.2.0, <0.4.0`) without changing `min_core`'s meaning. Not built now.
 
-**Where it lands in code** (implementation is a post-0.2 roadmap item, not part of this hygiene
-change):
+**What Core does when the floor isn't met** (`state::services::start_discovered`): logs a **loud
+`tracing::error!`** naming the service, its floor, and Core's version, then **skips the spawn** and
+continues (`Ok(())`, non-fatal — Core is unaffected). Independently, `registry::build_info` marks
+the service `state = "incompatible"` with the reason, so it's carried on `service.list`, and
+`service.health` short-circuits to a structured `{ ok:false, incompatible:true, reason }` reply.
 
-- Add `min_core_version: Option<String>` to `DiscoveredService` (`wylde-lifecycle/src/registry.rs`,
-  ~line 179) and read it in `discovered_bucket_services_in` (~line 223) next to `name`/`enabled`.
-- Enforce in `start_discovered` (`wylde-lifecycle/src/state/services.rs`, ~line 205) right after
-  the `enabled` check, before resolving the binary — skip-with-warning on failure.
-- Add `semver = "1"` to `wylde-lifecycle/Cargo.toml` (already a vetted workspace transitive dep via
-  `wylde-updater`; no new third-party review).
+**What the user sees (GUI):** the panel that lists the service in `required_services` renders its
+`ServiceUnavailable` stub — but now with the **specific reason** ("`wylde-organize` needs Wylde Core
+>= 0.3.0, but this Core is 0.2.1 — update Wylde") and **no futile "Start" button** (starting can't
+fix an incompatibility; the fix is updating Wylde). An ordinary down service still shows "not
+running" + Start. Threaded through `nav::service_health_body_is_ready`/`service_health_reason` →
+`NavModel` → `SlotState::ServiceUnavailable { reasons }` → `slot::render_unavailable`.
+
+**Where it lives in code** (shipped in this work, with tests):
+
+- `wylde-lifecycle/src/registry.rs`: `core_version()`, `CoreCompat`, `check_core_floor()`;
+  `DiscoveredService.min_core` (read in `discovered_bucket_services_in`); `ServiceInfo.incompatible_reason`
+  (computed in `build_info`). Tests: `check_core_floor_semantics`, `discovered_bucket_services_reads_min_core_floor`, `core_version_is_valid_semver`.
+- `wylde-lifecycle/src/state/services.rs`: the refusal in `start_discovered`. Test:
+  `start_discovered_refuses_incompatible_min_core`.
+- `wylde-lifecycle/src/control.rs`: `service.health` short-circuit + `service.list` `incompatible_reason` field.
+- `Core/GUI/Shell/src/{nav,slot,shell_root}.rs`: the GUI reason display. Tests in `nav::tests`.
+- `semver = "1"` added to `wylde-lifecycle/Cargo.toml`.
+- Applied as a live example to `Services/wylde-images/manifest.json` (`"min_core": "0.1.0"`, compatible).
+
+**For the two external service repos** (`wylde-organize`, `wylde-tabulate`) — add to each repo's
+folder `manifest.json` when their repos are next touched (they aren't in Core's tree):
+
+```jsonc
+// wylde-organize/manifest.json and wylde-tabulate/manifest.json
+{ "name": "wylde-organize", "enabled": true, "min_core": "0.2.0" }
+```
+
+Set the floor to whichever Core release first carries the IPC/API surface the service depends on
+(≥ `0.2.0`, since the panels are post-0.2).
 
 ---
 

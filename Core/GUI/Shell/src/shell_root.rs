@@ -142,8 +142,17 @@ impl Shell {
 
     /// Health-probe reply handler.  Called from the async startup task
     /// in `main.rs` for each `required_services` membership.
-    pub fn apply_service_health(&mut self, name: &str, healthy: bool, cx: &mut Context<Self>) {
+    pub fn apply_service_health(
+        &mut self,
+        name: &str,
+        healthy: bool,
+        reason: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         self.nav.mark_service_health(name, healthy);
+        // Carry the daemon's specific cause (e.g. a min_core incompatibility) so
+        // the stub can show *why* rather than a generic "not running".
+        self.nav.mark_service_reason(name, reason);
         cx.notify();
     }
 
@@ -175,13 +184,16 @@ impl Shell {
                 // `is_ok()` alone is not enough for wylde-ollama: its
                 // service.health stays ok (with an `upstream` flag) even when
                 // the Ollama daemon is down, so gate readiness on the body.
-                let healthy = match wylde_gui_pipe::service_health(&svc).await {
-                    Ok(body) => crate::nav::service_health_body_is_ready(&svc, &body),
-                    Err(_) => false,
+                let (healthy, reason) = match wylde_gui_pipe::service_health(&svc).await {
+                    Ok(body) => (
+                        crate::nav::service_health_body_is_ready(&svc, &body),
+                        crate::nav::service_health_reason(&body),
+                    ),
+                    Err(_) => (false, None),
                 };
                 let alive = this
                     .update(app_cx, |this, cx| {
-                        this.apply_service_health(&svc, healthy, cx);
+                        this.apply_service_health(&svc, healthy, reason, cx);
                     })
                     .is_ok();
                 // Entity torn down (Shell dropped) → stop the loop.
@@ -412,12 +424,15 @@ impl Shell {
             // stops showing the stub the moment the daemon is up. Same
             // body-aware readiness gate as the poll loop — for ollama the
             // pipe answering ok isn't enough; the upstream daemon must be up.
-            let healthy = match wylde_gui_pipe::service_health(&service_for_async).await {
-                Ok(body) => crate::nav::service_health_body_is_ready(&service_for_async, &body),
-                Err(_) => false,
+            let (healthy, reason) = match wylde_gui_pipe::service_health(&service_for_async).await {
+                Ok(body) => (
+                    crate::nav::service_health_body_is_ready(&service_for_async, &body),
+                    crate::nav::service_health_reason(&body),
+                ),
+                Err(_) => (false, None),
             };
             let _ = this.update(cx, |this, cx| {
-                this.apply_service_health(&service_for_async, healthy, cx);
+                this.apply_service_health(&service_for_async, healthy, reason, cx);
             });
         });
         task.detach();
@@ -460,6 +475,9 @@ impl Render for Shell {
                 IframeHealth::Unhealthy(msg) => Some(SlotState::ServiceUnavailable {
                     key: key.clone(),
                     missing: vec![format!("URL probe: {msg}")],
+                    // The iframe path already carries its message in `missing`;
+                    // no separate incompatibility reason applies here.
+                    reasons: vec![None],
                 }),
                 _ => None,
             },

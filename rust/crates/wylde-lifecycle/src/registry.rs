@@ -99,6 +99,12 @@ pub struct ServiceInfo {
     /// (`dead-orphan`) from one the crash-restart supervisor gave up on
     /// (`failed`). `None` for declarative-only entries with no runtime file.
     pub state: Option<String>,
+    /// Set when the manifest declares a `min_core` floor the running Core does
+    /// not meet: carries the human-readable reason for the GUI so an
+    /// incompatible service reads as "present but needs a newer Core", never a
+    /// silent absence. `None` when compatible / no floor. When set, `state` is
+    /// `"incompatible"`, `running` is `false`, and the daemon refuses to spawn.
+    pub incompatible_reason: Option<String>,
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -167,6 +173,106 @@ pub fn list_services_in(root: &Path) -> Vec<ServiceInfo> {
     out
 }
 
+// ── Minimum-Core compatibility floor ──────────────────────────────────
+//
+// A sibling service may declare `"min_core": "0.2.0"` in its manifest.json —
+// the oldest Wylde Core it is compatible with. Core refuses to spawn a service
+// whose floor exceeds the running Core (enforced in
+// [`crate::state::services::start_discovered`]) and surfaces the reason to the
+// GUI (see [`build_info`] / `service.health`). It is never a silent skip: a
+// silently-absent feature is exactly the "the panel is there but does nothing"
+// failure class this gate exists to prevent.
+//
+// Only a floor (minimum) is enforced, deliberately. A max/range is NOT needed
+// for a solo dev who ships Core and the services through the same release
+// process: when Core makes a service-breaking change it bumps and the service's
+// floor moves with it. The field is forward-compatible — if a genuine upper
+// bound is ever needed (e.g. an unmaintained third-party service), a separate
+// `"core"` field can carry a full semver `VersionReq` (`>=0.2.0, <0.4.0`)
+// without changing `min_core`'s meaning. See docs/branch-and-release-policy.md.
+
+/// The running Core version. This crate inherits the workspace version
+/// (`version.workspace = true`), so `CARGO_PKG_VERSION` *is* Core's version.
+pub fn core_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// Outcome of checking a service's declared `min_core` floor against the
+/// running Core.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoreCompat {
+    /// No floor declared, or the running Core satisfies it.
+    Ok,
+    /// The service requires a newer Core than is running.
+    TooOld { required: String, running: String },
+    /// The floor string is not valid semver. **Fail-closed** (treated as
+    /// incompatible) so a manifest typo surfaces loudly instead of silently
+    /// disabling the gate — a silently-ignored bad floor is the same
+    /// "looks-fine, does-nothing" trap the gate exists to avoid.
+    BadFloor { raw: String },
+}
+
+impl CoreCompat {
+    /// `true` only when the running Core satisfies the floor.
+    pub fn is_ok(&self) -> bool {
+        matches!(self, CoreCompat::Ok)
+    }
+
+    /// A human-readable reason when incompatible (`None` when `Ok`), suitable
+    /// both for a daemon log line and for surfacing to the GUI.
+    pub fn reason(&self) -> Option<String> {
+        match self {
+            CoreCompat::Ok => None,
+            CoreCompat::TooOld { required, running } => Some(format!(
+                "needs Wylde Core >= {required}, but this Core is {running} — update Wylde"
+            )),
+            CoreCompat::BadFloor { raw } => Some(format!(
+                "manifest declares an invalid min_core \"{raw}\" (not a version) — fix the manifest"
+            )),
+        }
+    }
+}
+
+/// Check a service's `min_core` floor against the running Core.
+///
+/// Compatible iff the running Core's *release* version (its major.minor.patch,
+/// with any pre-release/build identifier stripped) is `>=` the floor. Stripping
+/// the pre-release is deliberate: a Core pre-release on the run-up to version X
+/// (e.g. `0.2.0-alpha.3`) is treated as satisfying a floor of `0.2.0`, so
+/// services aren't blocked on every experimental Core build. Trade-off: an
+/// early `0.2.0-alpha.1` might not yet carry all of `0.2.0`'s surface — accepted
+/// for a solo dev who controls both sides of the release.
+///
+/// - `floor == None` or empty ⇒ [`CoreCompat::Ok`] (no floor declared).
+/// - unparseable floor ⇒ [`CoreCompat::BadFloor`] (fail-closed).
+/// - unparseable Core (our own bug — should never happen) ⇒ [`CoreCompat::Ok`]
+///   (fail-open: don't block a service over a Core-side defect).
+pub fn check_core_floor(core: &str, floor: Option<&str>) -> CoreCompat {
+    let Some(floor_raw) = floor.map(str::trim).filter(|s| !s.is_empty()) else {
+        return CoreCompat::Ok;
+    };
+    let Ok(floor_ver) = semver::Version::parse(floor_raw) else {
+        return CoreCompat::BadFloor {
+            raw: floor_raw.to_owned(),
+        };
+    };
+    let Ok(mut core_ver) = semver::Version::parse(core.trim()) else {
+        return CoreCompat::Ok;
+    };
+    // Compare on the release version: drop pre-release + build metadata so a
+    // pre-release run-up to X satisfies a floor of X.
+    core_ver.pre = semver::Prerelease::EMPTY;
+    core_ver.build = semver::BuildMetadata::EMPTY;
+    if core_ver >= floor_ver {
+        CoreCompat::Ok
+    } else {
+        CoreCompat::TooOld {
+            required: floor_raw.to_owned(),
+            running: core.trim().to_owned(),
+        }
+    }
+}
+
 // ── Out-of-tree sibling discovery (lifecycle supervision) ─────────────
 
 /// A sibling service discovered under an out-of-tree bucket
@@ -187,6 +293,12 @@ pub struct DiscoveredService {
     /// The manifest's `enabled` flag (default `false` when absent) — the
     /// boot loop only auto-starts enabled siblings.
     pub enabled: bool,
+    /// The manifest's `min_core` floor (the oldest Wylde Core this service is
+    /// compatible with), verbatim. `None` when absent. Checked against the
+    /// running Core in [`crate::state::services::start_discovered`] via
+    /// [`check_core_floor`]; an incompatible sibling is refused (loudly), not
+    /// spawned.
+    pub min_core: Option<String>,
 }
 
 /// Walk the out-of-tree [`SERVICE_BUCKETS`] and return every child folder
@@ -224,10 +336,17 @@ pub fn discovered_bucket_services_in(root: &Path) -> Vec<DiscoveredService> {
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let min_core = manifest
+                .get("min_core")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
             out.push(DiscoveredService {
                 name: name_with_wylde_prefix(declared),
                 folder,
                 enabled,
+                min_core,
             });
         }
     }
@@ -580,6 +699,7 @@ fn build_info(
         manifest_path: None,
         stale_binary: false,
         state: None,
+        incompatible_reason: None,
     };
 
     if let Some(rt) = runtime_doc {
@@ -600,7 +720,25 @@ fn build_info(
         }
     }
 
-    info.running = is_running(&info);
+    // min_core compatibility floor (see [`check_core_floor`]). Enforcement —
+    // refusing to spawn — lives in `state::services::start_discovered`; here we
+    // surface the *reason* to the GUI (via `service.list`) so an incompatible
+    // sibling reads as "present but needs a newer Core", never a silent absence.
+    let min_core = folder_manifest
+        .get("min_core")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match check_core_floor(core_version(), min_core) {
+        CoreCompat::Ok => {
+            info.running = is_running(&info);
+        }
+        incompat => {
+            info.incompatible_reason = incompat.reason();
+            info.state = Some("incompatible".to_owned());
+            info.running = false;
+        }
+    }
     Some(info)
 }
 
@@ -664,6 +802,7 @@ fn runtime_only_info(name: &str, runtime_doc: &Value) -> ServiceInfo {
         manifest_path: None,
         stale_binary: false,
         state: None,
+        incompatible_reason: None,
     };
 
     if let Some(status) = runtime_doc.get("status").and_then(Value::as_object) {
@@ -1074,6 +1213,90 @@ mod tests {
         assert_eq!(images.folder, folder);
         let notes = found.iter().find(|d| d.name == "wylde-notes").unwrap();
         assert!(!notes.enabled);
+    }
+
+    #[test]
+    fn discovered_bucket_services_reads_min_core_floor() {
+        let tmp = TempDir::new().unwrap();
+        write_json(
+            &tmp.path()
+                .join("Services")
+                .join("wylde-organize")
+                .join("manifest.json"),
+            &json!({ "name": "wylde-organize", "enabled": true, "min_core": "0.2.0" }),
+        );
+        write_json(
+            &tmp.path()
+                .join("Services")
+                .join("wylde-legacy")
+                .join("manifest.json"),
+            &json!({ "name": "wylde-legacy", "enabled": true }),
+        );
+        let found = discovered_bucket_services_in(tmp.path());
+        let organize = found.iter().find(|d| d.name == "wylde-organize").unwrap();
+        assert_eq!(organize.min_core.as_deref(), Some("0.2.0"));
+        let legacy = found.iter().find(|d| d.name == "wylde-legacy").unwrap();
+        assert_eq!(legacy.min_core, None, "absent min_core => None (no floor)");
+    }
+
+    #[test]
+    fn check_core_floor_semantics() {
+        // No floor / empty => Ok (no constraint declared).
+        assert!(check_core_floor("0.1.0", None).is_ok());
+        assert!(check_core_floor("0.1.0", Some("")).is_ok());
+        assert!(check_core_floor("0.1.0", Some("   ")).is_ok());
+
+        // Core meets / exceeds the floor => Ok.
+        assert!(check_core_floor("0.2.0", Some("0.2.0")).is_ok());
+        assert!(check_core_floor("0.2.3", Some("0.2.0")).is_ok());
+        assert!(check_core_floor("1.0.0", Some("0.2.0")).is_ok());
+
+        // Core below the floor => TooOld, reason names both versions.
+        let compat = check_core_floor("0.1.9", Some("0.2.0"));
+        assert!(!compat.is_ok());
+        match &compat {
+            CoreCompat::TooOld { required, running } => {
+                assert_eq!(required, "0.2.0");
+                assert_eq!(running, "0.1.9");
+            }
+            other => panic!("expected TooOld, got {other:?}"),
+        }
+        let reason = compat.reason().unwrap();
+        assert!(
+            reason.contains("0.2.0") && reason.contains("0.1.9"),
+            "reason should name both versions: {reason}"
+        );
+
+        // A pre-release Core on the run-up to X satisfies a floor of X (the
+        // pre-release identifier is stripped for the comparison).
+        assert!(
+            check_core_floor("0.2.0-alpha.3", Some("0.2.0")).is_ok(),
+            "a 0.2.0 pre-release must satisfy a 0.2.0 floor"
+        );
+        // ...but a pre-release genuinely below the floor still fails.
+        assert!(!check_core_floor("0.1.0-alpha.1", Some("0.2.0")).is_ok());
+        // Build metadata is ignored.
+        assert!(check_core_floor("0.2.0+g1234abc", Some("0.2.0")).is_ok());
+
+        // A malformed floor => fail-closed (BadFloor), reason says fix the manifest.
+        let bad = check_core_floor("0.2.0", Some("not-a-version"));
+        assert!(!bad.is_ok());
+        match &bad {
+            CoreCompat::BadFloor { raw } => assert_eq!(raw, "not-a-version"),
+            other => panic!("expected BadFloor, got {other:?}"),
+        }
+        assert!(bad.reason().unwrap().contains("manifest"));
+    }
+
+    #[test]
+    fn core_version_is_valid_semver() {
+        // The gate compares against this; if Core's own version stopped parsing
+        // the floor check would fail-open silently. Pin that it's always semver.
+        assert!(
+            semver::Version::parse(core_version()).is_ok(),
+            "core_version() must be valid semver, got {:?}",
+            core_version()
+        );
     }
 
     #[test]
