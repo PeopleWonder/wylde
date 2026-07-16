@@ -39,7 +39,10 @@ fn live_data_dir() -> PathBuf {
     if let Some(root) = std::env::var_os("WYLDE_ROOT") {
         return PathBuf::from(root).join(".wylde").join("data");
     }
-    PathBuf::from(r"C:\Users\aaron\Documents\Obsidian Vault\Wylde-release\.wylde\data")
+    panic!(
+        "no live data dir: set WYLDE_EVAL_DATA_DIR to a <data>/ holding workspaces/, \
+         or WYLDE_ROOT to an estate root (its .wylde/data is used)"
+    )
 }
 
 /// The single workspace dir holding an index.

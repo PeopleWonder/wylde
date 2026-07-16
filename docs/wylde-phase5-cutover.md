@@ -1,7 +1,7 @@
 # Phase 5 cutover — chat-turn driver (2026-05-25)
 
 Slice 5.D of the Wylde Rust migration. Closes Phase 5 of
-[wylde-rust-migration-master-plan.md](wylde-rust-migration-master-plan.md).
+[wylde-rust-migration-master-plan.md](plans/wylde-rust-migration-master-plan.md).
 
 ## What flipped
 

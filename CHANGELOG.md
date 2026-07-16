@@ -17,6 +17,38 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ## [Unreleased]
 
+### Fixed
+
+- **Three eval/bench targets no longer default to a folder that doesn't exist.** `lexical_eval.rs`,
+  `live_eval.rs` (`live_data_dir()`) and `index_bench.rs` each fell back to a hardcoded
+  `C:\Users\aaron\Documents\Obsidian Vault\Wylde-release` path when `WYLDE_ROOT` was unset. That vault
+  is gone, so the fallback silently read a dead directory and the evals reported an empty corpus rather
+  than a misconfiguration — the same flattering-green shape #28 was made of. They now **fail closed**
+  with a message naming the variable to set (`WYLDE_EVAL_DATA_DIR` / `WYLDE_ROOT`); `index_bench` exits
+  `2` with a usage line. The #31 scrub swept docs and missed these because they're Rust.
+- **The three private plan docs that had no backup now have one.** `privacy-plan.md`,
+  `wylde-android-app-plan.md` and `wylde-rust-migration-master-plan.md` (retired `legacy` — the
+  full-Rust cutover it plans already happened) moved into the `wylde-planning` repo, reachable at
+  `docs/plans/` through the junction, and their `.gitignore` entries are gone. That closes the
+  one-disk-no-backup durability gap for them; the remaining entries in that list are still one-disk.
+  Companion-doc links in `wylde-pairing-future-cd.md`, `wylde-passwords-self-healing-extension.md` and
+  `wylde-phase5-cutover.md` were repointed at `plans/` so they don't dangle.
+- **`docs/wylde-repo-organization.md` no longer tells you the repo isn't a repo.** The stale-vault-path
+  scrub (#31) turned up one reference that was worse than a dead path: a doc marked
+  `status: living reference` whose §1 stated the tree lived at `%USERPROFILE%\Documents\Obsidian
+  Vault\Wylde\`, had no `.git/`, would make `git status` "refuse", and that version history was
+  therefore implicit in progress-memory files with every file "authoritative current state". The tree
+  is under git with `develop` as trunk, so a living reference was actively instructing readers to
+  distrust git. §1 now describes the actual git layout, and §11's auto-memory path derives its slug
+  from wherever the repo lives instead of hardcoding the vault one. Paths are repo-relative on purpose
+  so they don't rot the same way twice. `WYLDE_ENDPOINTS.md:504` (`cwd=vault root` → `repo root`) also
+  scrubbed.
+  - **`docs/security/pre-alpha-release-2026-05-31.md` deliberately keeps its vault paths** — it's a
+    dated log of actions actually taken, and rewriting it would falsify the record. It gets a header
+    note (paths as-of that date, locations gone, don't navigate by it) instead of a scrub. Same call
+    for `docs/mypy_baseline.txt`, whose paths are captured tool *stdout*; it's a Python-era artifact
+    due for deletion with the Python scrub (T1.2), which is where that decision belongs.
+
 ### Changed
 
 - **The GPLv3 license gate is now a REQUIRED check, and the ruleset JSONs match live
