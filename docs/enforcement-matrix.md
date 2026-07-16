@@ -28,8 +28,8 @@ milestones, Dependabot) > **CI job that fails the build** > **runtime enforcemen
 | 9 | **CHANGELOG updated for user-facing changes** | CI job `changelog updated` — fails a PR touching `rust/`/`Core/` product source without a `CHANGELOG.md` entry; escape via `skip-changelog` label | silent, undocumented user-facing changes (the changelog rotting) | `pr-checks.yml` | ✅ live |
 | 10 | **Clippy `-D warnings` (G4)** | CI job `clippy (G4) + fmt (G6)` — `cargo clippy --workspace --all-targets --locked -- -D warnings` on each CI-built workspace | a warning landing anywhere in rust/, Core/GUI/, or the two tools/ crates | `ci.yml` (`lint` job) | ✅ **live (CI)** — armed once the tree went clippy-clean (issue #32); **now required** in both rulesets (context `clippy (G4) + fmt (G6)`); the `voice-npu-spike` workspace has no build/test job, so it is fmt'd but not gated |
 | 11 | **`cargo fmt --check` (G6)** | CI job `clippy (G4) + fmt (G6)` — `cargo fmt --all -- --check` on each CI-built workspace | unformatted code in rust/, Core/GUI/, or the two tools/ crates | `ci.yml` (`lint` job) | ✅ **live (CI)** — armed after a tree-wide `cargo fmt --all` landed as its own `chore(fmt)` commit (issue #32); **required** via the shared `clippy (G4) + fmt (G6)` context |
-| 12 | **No vulnerable dependencies** | CI job `cargo-deny (advisories)` (PR + weekly cron) + Dependabot PRs | a bump/commit pulling a crate with an advisory | `security-audit.yml`, `dependabot.yml` | ✅ live — **deliberately NOT a required check**: `security-audit.yml` is `paths:`-filtered, so it never runs on PRs that don't touch `Cargo.*`/`deny.toml`; a required check that never reports would hang every such PR forever. It still blocks dep-touching PRs (runs there) + weekly cron. |
-| 12c | **GPLv3-compatible dependency licenses (copyleft compliance)** | CI job `cargo-deny (licenses)` (PR + weekly cron) — an allow-list of GPLv3-**compatible** licenses vetted against the FSF matrix, in both `deny.toml` `[licenses]` sections; deny-by-default | a dependency **or** first-party crate under a GPL-incompatible license — SSPL/BUSL/CDDL/EPL, **GPL-2.0-only**, the historical OpenSSL license, or proprietary/unlicensed. Core is `GPL-3.0-or-later`; copyleft inherits, so one incompatible dep is a real legal defect | `.github/workflows/license-check.yml` + `rust/deny.toml` & `Core/GUI/deny.toml` `[licenses]` | ✅ **live (CI)** — runs unfiltered on **every** PR (same path-filter-free mechanism #49 gave the advisory gate, so it's safe to require) and passes green on both workspaces today (**no GPL-incompatible dep exists**). ⏳ **required pending the ruleset context**: add `cargo-deny (licenses) (rust/Cargo.toml)` + `cargo-deny (licenses) (Core/GUI/Cargo.toml)` to both rulesets — must land **together with #49's `cargo-deny (advisories)` context edit** to the same files (coordinate; don't clobber). |
+| 12 | **No vulnerable dependencies** | CI job `cargo-deny (advisories)` (PR + weekly cron) + Dependabot PRs | a bump/commit pulling a crate with an advisory | `security-audit.yml`, `dependabot.yml` | ✅ live (CI) — **required** (both rulesets), as `cargo-deny (advisories) (rust/Cargo.toml)` + `cargo-deny (advisories) (Core/GUI/Cargo.toml)`. #49 dropped the `paths:` filter *first* so the job reports on every PR; only then was it safe to require. **Never require a path-filtered context** — it never reports on an unrelated PR and hangs it forever. |
+| 12c | **GPLv3-compatible dependency licenses (copyleft compliance)** | CI job `cargo-deny (licenses)` (PR + weekly cron) — an allow-list of GPLv3-**compatible** licenses vetted against the FSF matrix, in both `deny.toml` `[licenses]` sections; deny-by-default | a dependency **or** first-party crate under a GPL-incompatible license — SSPL/BUSL/CDDL/EPL, **GPL-2.0-only**, the historical OpenSSL license, or proprietary/unlicensed. Core is `GPL-3.0-or-later`; copyleft inherits, so one incompatible dep is a real legal defect | `.github/workflows/license-check.yml` + `rust/deny.toml` & `Core/GUI/deny.toml` `[licenses]` | ✅ **live (CI)** — **required** (both rulesets) as `cargo-deny (licenses) (rust/Cargo.toml)` + `cargo-deny (licenses) (Core/GUI/Cargo.toml)` (#57). Runs unfiltered on **every** PR (same path-filter-free mechanism #49 gave the advisory gate), so it always reports and is safe to require. Passes green on both workspaces today (**no GPL-incompatible dep exists**). |
 | 13 | **Only maintainer-blessed `v*` tags; release tags immutable** | GitHub **tag ruleset** (`protect-version-tags`) — blocks deletion + moving a `v*` tag | deleting/re-pointing a published version tag (which would corrupt the updater's version history) | `.github/rulesets/protect-tags.json` | ✅ **LIVE** (ruleset id **19015193**) |
 | 14 | **Release actually RAN the live preflight (L1–L7)** | **`wylde-release` refuses to `publish` without a green, launch-verified preflight receipt** for the exact commit (§Preflight receipt) + `release.yml` re-runs the CI-verifiable gates on the tag | shipping a build whose running system was never verified — *the actual "shipped broken" failure* | `release.yml` (CI subset) + `wylde-release preflight/publish` | ✅ **receipt + L2/L3 launch gate built** — `preflight` writes a commit-bound receipt; `publish` refuses without a green, current one (rejects stale-commit / dirty-tree / wrong-version / **not-launch-verified**). Binds **G7 + benchmark gate (L5)** (+ optional L1-lite build) and, via **`preflight --launch`**, the **L2 cold-start + L3 service-health** launch-and-verify checks (each folded into the receipt's `gates` map, fail-closed; `launch_verified` gates publish). Remaining L4/L6 stay manual; L7 has its own CI job (row 4b). |
 | 15 | **Service `min_core` compatibility floor** | **Runtime**: Core's loader refuses to spawn an incompatible sibling + the GUI shows why. **CI (service repos)**: a manifest-lint job in each service repo | an incompatible service booting into a silent dead panel | `wylde-lifecycle` (shipped); service-repo CI (spec) | ✅ runtime / ⏳ service-repo CI |
@@ -222,18 +222,29 @@ gh api -X POST repos/PeopleWonder/wylde/rulesets --input .github/rulesets/protec
 
 > **Required-check names — verified against reality (2026-07-15).** The `required_status_checks`
 > contexts must match the workflow **job names** exactly, or a required check that never reports hangs
-> every PR forever. The **nine** required in both rulesets, each confirmed against a live run's job
+> every PR forever. The **thirteen** required in both rulesets, each confirmed against a live run's job
 > names (`gh run view` / commit check-runs): `backend (rust/) build + test`, `gui (Core/GUI/) build`,
 > `gui panel-walk (L7)`, `clippy (G4) + fmt (G6)` (**one combined job** — do *not* split into
 > `clippy (G4)` + `fmt (G6)`, those contexts don't exist), `tools build`, `version consistency (G7)`,
-> `branch target + name`, `conventional commits`, `changelog updated`. The label escape hatches still
-> work: a job skipped by `skip-commit-lint`/`skip-changelog` reports conclusion `skipped`, which branch
-> protection counts as passing.
-> **`cargo-deny` is deliberately NOT required** — `security-audit.yml` is `paths:`-filtered (only runs
-> when `Cargo.*`/`deny.toml` change), so as a required check it would never report on unrelated PRs and
-> hang them forever. It still blocks dep-touching PRs (where it runs) + the weekly cron. If you ever
-> want it required, gate it on paths *and* add a companion "always-green when not applicable" job, or
-> drop the path filter — don't just add the matrix contexts.
+> `branch target + name`, `conventional commits`, `changelog updated`, and the four `cargo-deny` matrix
+> legs: `cargo-deny (advisories) (rust/Cargo.toml)`, `cargo-deny (advisories) (Core/GUI/Cargo.toml)`
+> (#49), `cargo-deny (licenses) (rust/Cargo.toml)`, `cargo-deny (licenses) (Core/GUI/Cargo.toml)`
+> (#57). The label escape hatches still work: a job skipped by `skip-commit-lint`/`skip-changelog`
+> reports conclusion `skipped`, which branch protection counts as passing.
+>
+> **Never require a path-filtered context.** Both `security-audit.yml` and `license-check.yml` are
+> unfiltered *on purpose*, and that is a precondition of requiring them — a required check on a
+> path-filtered workflow never reports on a PR that touches none of those paths, and GitHub blocks
+> that PR forever waiting for a status that never arrives. #49 hit this and fixed it by dropping the
+> filter first. If you ever add a `paths:` filter to either workflow, you must drop its contexts from
+> both rulesets in the same change.
+>
+> **Re-applying a ruleset is a REPLACE, not a merge.** `gh api ... --method PUT` swaps the whole rule
+> set, so always apply from a branch whose JSON carries the *full* context list — applying a file that
+> lists only some contexts silently drops the rest of the live requirements. Verify after every apply
+> with `gh api repos/PeopleWonder/wylde/rulesets/19015304` (protect-develop) / `/19015305`
+> (protect-main) and expect **13** contexts each. (#49 applied its two contexts live but never updated
+> these JSONs; the drift sat undetected until #57 reconciled them.)
 
 **E. (Optional, when a second contributor appears)** flip `required_approving_review_count` to 1 in the
 ruleset JSONs and add a `CODEOWNERS`. Not before — see §6.1.
