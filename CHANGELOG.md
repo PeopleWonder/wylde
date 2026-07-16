@@ -17,6 +17,26 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ## [Unreleased]
 
+### Changed
+
+- **The GPLv3 license gate is now a REQUIRED check, and the ruleset JSONs match live
+  again.** #52 built the license gate but merged it reporting-only, so a PR introducing a
+  GPL-incompatible dependency went red and stayed mergeable — a linter, not a gate.
+  `cargo-deny (licenses) (rust/Cargo.toml)` and `cargo-deny (licenses) (Core/GUI/Cargo.toml)`
+  are now required on both `protect-develop` and `protect-main`. Safe to require because
+  `license-check.yml` is unfiltered and therefore always reports — the #49 lesson (**never
+  require a path-filtered context**, or GitHub hangs every PR that touches none of those
+  paths) held here rather than being relearned.
+  - **Fixed live/file drift that would have silently un-required the advisory gate.** #49
+    added its two `cargo-deny (advisories)` contexts to the *live* rulesets via `gh api` but
+    never updated `.github/rulesets/*.json`, leaving the files listing 9 contexts while live
+    carried 11. Since applying a ruleset is a **replace, not a merge**, the next apply from
+    those files would have quietly dropped the advisory requirements. Both JSONs now carry
+    the full **13** contexts, verified live after applying.
+  - `docs/enforcement-matrix.md` rows 12/12c and the required-checks note were stale (they
+    still described `cargo-deny` as path-filtered and deliberately not required); they now
+    match reality and record both traps.
+
 ### Added
 
 - **L5 shipped-config assertion — the experimental reasoning tier can no longer ship
