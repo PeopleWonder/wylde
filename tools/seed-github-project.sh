@@ -126,9 +126,16 @@ declare -A ISSUE_TIER=(
   [44]="Tier 3"   # rag(dx): wire in the functional RAG graph — deferred post-stabilization, no milestone
   [47]="Tier 0"   # preflight --launch self-collision
   [49]="Tier 1"   # ci: cargo-deny (advisories) as a required check
-  [55]="Tier 0"   # L4 first-run bootstrap check (split out of #33)
+  [55]="Tier 3"   # L4 first-run bootstrap check — DEFERRED post-0.2 with #66; left the 0.2 gate
   [56]="Tier 0"   # GUI behavioural tests aren't run by any required check
   [57]="Tier 1"   # ci: cargo-deny (licenses) as a required check
+  # Tier 3 = deferred-by-design / no milestone (same bucket as #25 and #44).
+  # The `post 0.2` label is the human-facing marker; Tier 3 is how the board
+  # sorts them away from the 0.2 gate.
+  [66]="Tier 3"   # bootstrap → deliberately guided first-run UX (post 0.2)
+  [67]="Tier 3"   # install wizard (post 0.2)
+  [68]="Tier 3"   # deps: Dependabot auto-merge policy (post 0.2)
+  [69]="Tier 3"   # updater: what "auto-update" means beyond auto-check (post 0.2)
 )
 # Iterate the map itself (numerically sorted) rather than a hand-kept second
 # list — that duplication is what let #41–#49 get added by hand and never make

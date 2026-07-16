@@ -2,10 +2,47 @@
 title: First-run bootstrap (LLM playbook)
 audience: the on-device LLM running the very first conversation after install
 authored: 2026-05-27
-status: living reference
+status: SUPERSEDED 2026-07-16 — retained for its rationale; see the banner below
 ---
 
 # First-run bootstrap
+
+> ## ⚠️ SUPERSEDED — 2026-07-16. Do not implement this as written. See #66.
+>
+> **The direction reversed.** This document specifies an *invisible* first run: the LLM reads
+> its own playbook and configures the stack, and the user "never sees a wizard". The maintainer
+> has since decided first-run should be a **deliberately guided user experience**, with an
+> **install wizard** (#67) — and that it is **post-0.2**, not the day-1 Phase 12 requirement it
+> was written as:
+>
+> > "so for the bootstrap I want it to be a deliberately guided user experience. that will be
+> > sometime further down the road. we don't need bootstrapping right now per se."
+>
+> **This doc is kept, not deleted, because the rationale is worth reading before redesigning.**
+> The argument was that a wizard is a chore the user shouldn't have to complete, and that a model
+> capable of running the product is capable of configuring it. That still has force; it lost on the
+> grounds that "invisible" also means *unguided*, not on the grounds that it was wrong. Step 6's
+> refusal to emit a completion event ("Do not say 'bootstrap complete'… The conversation flows")
+> is the sharpest expression of it — and the thing a guided UX most directly overturns.
+>
+> ### What is actually true today
+>
+> **None of this is implemented. It is documentation.** Every code reference to this file is a
+> *comment* (`recommend.rs:6`, `consent.rs:321`, `inventory.rs:3`) — nothing does `include_str!`,
+> nothing injects it into a prompt, **nothing feeds this playbook to the model**. And there is
+> **no first-run detection anywhere** in `rust/crates` or `Core/GUI` (no `is_first_run`,
+> `first_launch`, `onboard`, …): Wylde cannot currently tell a first launch from the thousandth.
+>
+> The one real thing here is **`rust/crates/wylde-harness/tests/bootstrap_doc_validity.rs`**,
+> which pins every tool/pipe/broker id in the appendix to the live registry so the doc can't rot
+> into naming dead verbs. That test is design-independent and **should survive the redesign**.
+>
+> This is also why preflight **L4** was never scriptable and is now deferred (**#55**): it asserted
+> the completion of something designed not to signal completion *and* not implemented at all.
+> ⚠️ The **clean-install** requirement is separate, still 0.2, and lives in **#37** — it did not
+> defer with L4.
+>
+> **Read on for the rationale and the verb reference; do not read it as current behaviour.**
 
 This document is for **you**, the language model running the very
 first conversation on a fresh Wylde install. There is no human-driven

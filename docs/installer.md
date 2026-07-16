@@ -83,8 +83,7 @@ to it is the staging dir; both are gitignored).
 The staging phase assembles the install tree from two sources:
 
 1. **The committed repo tree** via `git archive HEAD` — the Python service
-   trees (`Core/`, `Extensions/`, `N8N/`, …), `docs/` (the first-run LLM
-   bootstrap reads `docs/first-run-bootstrap.md`), `launch_wylde.ps1`,
+   trees (`Core/`, `Extensions/`, `N8N/`, …), `docs/`, `launch_wylde.ps1`,
    `LICENSE`, manifests, etc. `git archive` automatically omits everything
    gitignored: `.venv/`, `data/`, `logs/`, build caches, local plans.
 2. **The built binaries**, overlaid exactly where `launch_wylde.ps1` looks:
