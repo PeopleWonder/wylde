@@ -284,6 +284,17 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Security
 
+- **`cargo-deny (advisories)` is now a blocking gate, not advisory-in-name-only
+  (G5; closes #49).** The security-audit workflow's `pull_request` path filter was
+  removed so both matrix legs — `cargo-deny (advisories) (rust/Cargo.toml)` and
+  `… (Core/GUI/Cargo.toml)` — run on *every* PR (like `ci.yml`), and both contexts
+  were added to the required-check list on the `protect-develop` and `protect-main`
+  rulesets. Previously the check ran only when `Cargo.*`/`deny.toml` changed and was
+  absent from the required set, so a PR that introduced a new advisory was still
+  mergeable. Making a path-filtered check *required* would have silently blocked every
+  Cargo-untouching PR forever (GitHub waits for a status the skipped workflow never
+  reports); running it unconditionally is what makes it safe to require.
+
 - **Formally accepted the two unbumpable, gpui-pinned advisories in `deny.toml`
   with a documented review trigger (closes #30 / KI-3).** Both ride behind the
   pinned `gpui` git rev (`b3d93d44`), which Dependabot cannot bump: `glib` 0.18.5

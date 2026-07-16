@@ -12,13 +12,16 @@
 name: Security audit
 
 on:
+  # Runs on EVERY PR — deliberately NOT path-filtered. The two
+  # `cargo-deny (advisories)` matrix legs are required status checks
+  # (protect-develop / protect-main); a required check on a path-filtered
+  # workflow never runs on a PR that touches no Cargo/deny files, and GitHub
+  # then blocks that PR forever waiting for a status that never arrives. ci.yml
+  # is unfiltered for exactly this reason. Bonus: the advisory DB shifts over
+  # time, so a newly-published advisory against an already-pinned crate can turn
+  # an otherwise-unrelated PR red — which is the posture we want. Cost is ~1
+  # min per matrix leg on the cheapest (ubuntu) runners.
   pull_request:
-    # Only re-run when something that can change the advisory posture changes.
-    paths:
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - "**/deny.toml"
-      - ".github/workflows/security-audit.yml"
   push:
     branches:
       - main
