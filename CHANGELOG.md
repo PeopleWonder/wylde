@@ -37,6 +37,28 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
     still described `cargo-deny` as path-filtered and deliberately not required); they now
     match reality and record both traps.
 
+- **The GUI's required check now enforces 890 tests instead of 41.** The `gui panel-walk (L7)`
+  gate ran through the `panel-walk` cargo alias, which carried `--test panel_walk` — meaning it
+  ran `tests/panel_walk.rs` **and nothing else**. Roughly 130 behavioural windowed tests that
+  already existed and already passed — chat workspace-id scoping on send
+  (`Chat/tests/dock_scoping.rs`, `conversations.rs`), memory copy-in provenance
+  (`Memory/tests/copy_in.rs`), workspace registry nav (`Workspaces/tests/registry_nav.rs`),
+  settings prefs dispatch (`Settings/tests/prefs_dispatch.rs`), device pairing cancel
+  (`Devices/tests/cancel_pairing.rs`), and the rest — were enforced by **nothing**. They ran only
+  under a full local `cargo test`, which no required check performs, so a regression they would
+  have caught turned nothing red and the coverage could rot silently. Dropping the `--test` filter
+  collects coverage the project had already paid for. Verified green first: **890 passed / 0
+  failed** via the exact CI invocation, ~1 min warm. (issue #56; enforcement-matrix row 4b.)
+  - **The `-p` crate scoping is untouched and must stay** — NOT `--workspace`, so the gate still
+    never links the Shell's tray-icon/wry graph or the `rust/` audio stack (`wylde-voice`/cpal,
+    which segfaults headless). Widen test *targets*, never the crate set.
+  - **The status-check context name is deliberately unchanged** even though the job now runs more
+    than the panel-walk. Renaming a required context means the old one never reports again, and
+    GitHub blocks every PR forever waiting for it — including the PR doing the rename, which then
+    cannot merge to fix itself. Same family as the #49/#57 "never require a path-filtered context"
+    lesson. The rename recipe (add the new context live first, merge, then drop the old) is
+    recorded in `ci.yml` and the alias comment.
+
 ### Added
 
 - **L5 shipped-config assertion — the experimental reasoning tier can no longer ship
