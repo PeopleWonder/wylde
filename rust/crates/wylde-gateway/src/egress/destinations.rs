@@ -473,10 +473,27 @@ pub(crate) fn reset_for_test() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex as StdMutex;
+    use crate::egress::kill_switch::EGRESS_TEST_LOCK;
     use tempfile::TempDir;
 
-    static REGISTRY_LOCK: StdMutex<()> = StdMutex::new(());
+    // ── One resource, ONE lock ───────────────────────────────────────────
+    // These tests mutate the process-global destination registry
+    // (`reset_for_test` / `reload`). So do `egress::client`'s and
+    // `crate::pipe`'s tests — and those take `EGRESS_TEST_LOCK`. This module
+    // used to take its own private `REGISTRY_LOCK` instead, and **two different
+    // mutexes guarding one shared resource provide no mutual exclusion at all**:
+    // each module was internally serialised and completely unsynchronised
+    // against the other, so a `reload` here wiped the registry out from under a
+    // `client` test mid-request. It surfaced as `forward_ssrf_blocks_metadata` /
+    // `forward_ssrf_blocks_private` failing with
+    // `Denied("caller \"Caller\" declares no egress destinations")` instead of
+    // the `Ssrf` they assert — a flake in a REQUIRED check (4 failures in 20
+    // runs of `--lib egress::`, vs 0 in 20 for `egress::client` alone; that gap
+    // is the whole proof).
+    //
+    // Every test touching the registry must take THIS lock. It's a tokio mutex,
+    // hence `#[tokio::test]` on the registry-touching tests below; the pure ones
+    // (parsing, `split_scheme`, …) stay sync `#[test]` and need no lock.
 
     fn write_manifest(dir: &Path, component: &str, body: &str) {
         let comp = dir.join(component);
@@ -484,18 +501,18 @@ mod tests {
         std::fs::write(comp.join("manifest.json"), body).unwrap();
     }
 
-    #[test]
-    fn empty_registry_when_root_missing() {
-        let _g = REGISTRY_LOCK.lock().expect("registry lock");
+    #[tokio::test]
+    async fn empty_registry_when_root_missing() {
+        let _g = EGRESS_TEST_LOCK.lock().await;
         reset_for_test();
         let path = PathBuf::from("/nonexistent-wylde-egress-test-root");
         reload(Some(&path));
         assert!(list_destinations().is_empty());
     }
 
-    #[test]
-    fn reload_picks_up_egress_entries() {
-        let _g = REGISTRY_LOCK.lock().expect("registry lock");
+    #[tokio::test]
+    async fn reload_picks_up_egress_entries() {
+        let _g = EGRESS_TEST_LOCK.lock().await;
         reset_for_test();
         let tmp = TempDir::new().unwrap();
         write_manifest(
@@ -512,9 +529,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reload_collects_from_extensions_subdir() {
-        let _g = REGISTRY_LOCK.lock().expect("registry lock");
+    #[tokio::test]
+    async fn reload_collects_from_extensions_subdir() {
+        let _g = EGRESS_TEST_LOCK.lock().await;
         reset_for_test();
         let tmp = TempDir::new().unwrap();
         let ext_dir = tmp.path().join("Extensions").join("MyExt");
@@ -528,9 +545,9 @@ mod tests {
         assert!(list_destinations().contains_key("MyExt"));
     }
 
-    #[test]
-    fn resolve_rejects_cross_component_access() {
-        let _g = REGISTRY_LOCK.lock().expect("registry lock");
+    #[tokio::test]
+    async fn resolve_rejects_cross_component_access() {
+        let _g = EGRESS_TEST_LOCK.lock().await;
         reset_for_test();
         let tmp = TempDir::new().unwrap();
         write_manifest(
