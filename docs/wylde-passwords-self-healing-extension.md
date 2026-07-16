@@ -7,9 +7,9 @@ parallel improvements over upstream: (A) a click-to-inject autofill UX
 matching native browser password managers, and (B) an AI-driven self-healing
 loop that auto-generates per-site fix rules from instrumented failure
 reports.
-**Companion docs:** [`wylde-rust-migration-master-plan.md`](wylde-rust-migration-master-plan.md),
-[`wylde-android-app-plan.md`](wylde-android-app-plan.md),
-[`privacy-plan.md`](privacy-plan.md),
+**Companion docs:** [`wylde-rust-migration-master-plan.md`](plans/wylde-rust-migration-master-plan.md),
+[`wylde-android-app-plan.md`](plans/wylde-android-app-plan.md),
+[`privacy-plan.md`](plans/privacy-plan.md),
 [`mcp_surface.md`](mcp_surface.md).
 
 This document is the durable proposal. It does **not** propose code; it
@@ -470,7 +470,7 @@ the page, the full HTML, any element outside the form's bounding box.
 **Submitting reports.** A single POST to `/api/passwords/report` on the
 Gateway, bearer auth via the extension's pre-registered device token
 (same machinery the future mobile app uses, per
-[`wylde-android-app-plan.md`](wylde-android-app-plan.md) §5). The
+[`wylde-android-app-plan.md`](plans/wylde-android-app-plan.md) §5). The
 extension queues reports if the Gateway is unreachable and drains the
 queue on reconnect, with a per-domain dedupe so a runaway form doesn't
 flood the queue with hundreds of identical reports.
@@ -534,7 +534,7 @@ deserialised report (the same JSON the Gateway received), and its job is:
 
 This lives in the Phase 6 tool registry, which is exactly the surface
 the Rust migration plan creates for in-tree tools
-([`wylde-rust-migration-master-plan.md`](wylde-rust-migration-master-plan.md)
+([`wylde-rust-migration-master-plan.md`](plans/wylde-rust-migration-master-plan.md)
 §Phase 6). No new pipe, no new top-level crate — one new tool family.
 
 **The prompt template.** A system prompt that establishes role
@@ -973,7 +973,7 @@ by how expensive a wrong call is.
    on install (manual, simple); (b) the extension performs a
    browser-side pairing flow with the desktop GUI analogous to the
    mobile pairing flow in
-   [`wylde-android-app-plan.md`](wylde-android-app-plan.md) §5.
+   [`wylde-android-app-plan.md`](plans/wylde-android-app-plan.md) §5.
    *Recommendation:* (a) for B3 — it's a five-minute setup — and
    reconsider (b) if the extension ever ships beyond the Wylde user's own
    machines.
@@ -982,7 +982,7 @@ by how expensive a wrong call is.
 
 ## 14. Companions and dependencies
 
-**[`wylde-rust-migration-master-plan.md`](wylde-rust-migration-master-plan.md)
+**[`wylde-rust-migration-master-plan.md`](plans/wylde-rust-migration-master-plan.md)
 — Phase 6 (tooling) is the explicit foundation, and it shipped
 2026-05-25.** The `passwords.debug_report` tool lives in
 `rust/crates/wylde-harness/src/tooling/tools/passwords/`, registered
@@ -993,7 +993,7 @@ depends on exists in its permanent form. **Phase 9** (the Rust pipe
 surface) is when the whole harness is rust-native end-to-end —
 preferable, not strictly required, for B3 onwards.
 
-**[`wylde-android-app-plan.md`](wylde-android-app-plan.md)
+**[`wylde-android-app-plan.md`](plans/wylde-android-app-plan.md)
 — mobile autofill is the next problem after this one.** Android system
 autofill is a different beast (the OS arbitrates, not the browser; apps
 opt in to the autofill framework) and lives outside this document's
@@ -1005,7 +1005,7 @@ substrate-agnostic). Whether the Android app implements its own
 self-healing loop or just consumes the rules DB the desktop extension
 populates is a question for the Android plan, not this one.
 
-**[`privacy-plan.md`](privacy-plan.md) §3.3 — this extension is the
+**[`privacy-plan.md`](plans/privacy-plan.md) §3.3 — this extension is the
 "in progress" half of that line item.** §3.3 currently reads "Strong
 passwords + password manager. ✅ In progress — Nextcloud Passwords being
 set up." This document is the proposal for the *enhanced* half: the

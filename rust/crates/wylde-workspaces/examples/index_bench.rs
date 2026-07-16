@@ -17,7 +17,7 @@
 //! ```text
 //! cargo run -p wylde-workspaces --example index_bench --release -- "<folder>"
 //! ```
-//! Defaults the folder to the Wylde-release checkout if omitted.
+//! Defaults the folder to `WYLDE_ROOT` if omitted.
 
 use std::time::Instant;
 
@@ -34,8 +34,10 @@ fn main() {
     std::env::set_var("WYLDE_BOLT_CONNECT_TIMEOUT_SECS", "1");
 
     let folder = std::env::args().nth(1).unwrap_or_else(|| {
-        std::env::var("WYLDE_ROOT")
-            .unwrap_or_else(|_| r"C:\Users\aaron\Documents\Obsidian Vault\Wylde-release".to_owned())
+        std::env::var("WYLDE_ROOT").unwrap_or_else(|_| {
+            eprintln!("usage: index_bench \"<folder>\"  (or set WYLDE_ROOT)");
+            std::process::exit(2)
+        })
     });
     println!("== index_bench ==");
     println!("folder    : {folder}");
