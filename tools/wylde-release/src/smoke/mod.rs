@@ -9,7 +9,7 @@
 //! segfaulted on a clean runner. The only thing that would have caught them is
 //! *launching the shipped artifacts and exercising them*. That is this module.
 //!
-//! ## The two ladders (each check is a discrete, individually-reported verdict)
+//! ## The ladders (each check is a discrete, individually-reported verdict)
 //!
 //! * **L2 cold-start** — do the shipped artifacts actually LAUNCH? We start the
 //!   real daemon binary (not `cargo run`) from a **neutral working directory**
@@ -20,6 +20,12 @@
 //!   discovers its services; the VRAM broker answers; Ollama has the reasoner +
 //!   embed models; **Memgraph holds real data** (not just an open port); RAG
 //!   answers a query; a chat turn completes; a memory round-trips.
+//! * **L5 shipped-config** — did we ship the right *switches*? A system can
+//!   launch and be perfectly healthy while shipping an experimental tier turned
+//!   on. `l5.reasoning_disabled` (issue #27) asks the running harness for its
+//!   effective reasoning config and fails unless `enabled:false`. (L5's other
+//!   half, the reasoning-eval guardrail, is the benchmark gate in
+//!   [`crate::bench`].)
 //!
 //! ## Fail closed, clean up, honest
 //!
@@ -228,6 +234,12 @@ pub fn run(opts: &SmokeOpts) -> SmokeOutcome {
     checks.push(check_vram_broker());
     checks.push(check_ollama_models());
     checks.push(check_memgraph_has_data());
+
+    // ── L5 shipped-config assertion (issue #27) ───────────────────────────
+    // Not behind `--skip-functional`: it's a single cheap pipe read, and a
+    // release-grade receipt should never be able to skip "did we ship the
+    // experimental tier switched on?".
+    checks.push(check_reasoning_disabled());
 
     if opts.skip_functional {
         for (key, title) in [
@@ -773,6 +785,121 @@ fn check_memgraph_has_data() -> CheckResult {
             ),
         ),
         Err(e) => CheckResult::fail(KEY, TITLE, format!("{e:#}")),
+    }
+}
+
+/// L5: the SHIPPED config keeps the reasoning tier off (issue #27).
+///
+/// The tier is a post-0.2 experiment and must ship `enabled:false`. The *code*
+/// default already says so (`ReasoningConfig::default`, unit-tested), but a unit
+/// test only proves the fallback — it cannot see a `reasoning.json` that ships
+/// (or gets written) with the tier on. That file is what the running system
+/// actually obeys, so it is what this asserts.
+///
+/// Asks the **running harness** for its effective config rather than reading a
+/// file, which is deliberate: `ReasoningConfig::current()` is the value the turn
+/// engine uses, already resolved through the same
+/// `WYLDE_DATA_DIR`/`DATA_DIR`/`WYLDE_ROOT` chain the product resolves. So one
+/// live read subsumes both halves — a shipped file that enables the tier fails
+/// here, and so does an in-memory value that disagrees with the file. Reading
+/// `<data_dir>/settings/reasoning.json` ourselves would re-implement that
+/// resolution and could pass while the running system disagreed.
+///
+/// **Honest limit:** this asserts the config of the install the preflight runs
+/// against. On a clean install there is no `reasoning.json`, so the tier falls
+/// back to the unit-tested default (off) — but a *clean-install* run is what
+/// #37 tracks; on a warm rig this proves that rig ships it off.
+///
+/// Fails closed: a missing/non-boolean `enabled`, or a harness that won't
+/// answer, is a FAIL — "couldn't determine" never counts as "it's off".
+fn check_reasoning_disabled() -> CheckResult {
+    const KEY: &str = "l5.reasoning_disabled";
+    const TITLE: &str = "L5 shipped-config reasoning-off";
+    let result = (|| -> Result<String> {
+        let cfg = pipe::action(
+            "wylde-harness",
+            "settings.reasoning.get",
+            serde_json::json!({}),
+            PIPE_CALL_TIMEOUT,
+        )
+        .context("settings.reasoning.get")?;
+        reasoning_verdict(&cfg)
+    })();
+    match result {
+        Ok(detail) => CheckResult::pass(KEY, TITLE, detail),
+        Err(e) => CheckResult::fail(KEY, TITLE, format!("{e:#}")),
+    }
+}
+
+/// The pure verdict for [`check_reasoning_disabled`], split from the pipe call so
+/// the fail-closed contract is unit-testable without a running stack.
+///
+/// `Ok` ⇒ the tier is provably off. Every other shape — enabled, missing key,
+/// wrong type, non-object — is `Err` ⇒ FAIL. There is deliberately no
+/// "assume off" branch: this gate exists because a *silent* on is the defect.
+fn reasoning_verdict(cfg: &Value) -> Result<String> {
+    let enabled = cfg
+        .get("enabled")
+        .and_then(Value::as_bool)
+        .context("settings.reasoning.get reply had no boolean `enabled` — cannot determine")?;
+    if enabled {
+        bail!(
+            "shipped config has reasoning enabled:TRUE — the tier is a post-0.2 experiment and \
+             must ship OFF (issue #27). Set it false in `<data_dir>/settings/reasoning.json` \
+             (or via settings.reasoning.set) before shipping"
+        );
+    }
+    let depth = cfg
+        .get("default_depth")
+        .and_then(Value::as_str)
+        .unwrap_or("<unset>");
+    Ok(format!(
+        "running harness reports reasoning enabled:false (default_depth {depth})"
+    ))
+}
+
+#[cfg(test)]
+mod reasoning_gate_tests {
+    use super::reasoning_verdict;
+    use serde_json::json;
+
+    #[test]
+    fn disabled_config_passes_and_reports_depth() {
+        let d = reasoning_verdict(&json!({"enabled": false, "default_depth": "Fast"})).unwrap();
+        assert!(d.contains("enabled:false"), "{d}");
+        assert!(d.contains("Fast"), "{d}");
+    }
+
+    #[test]
+    fn enabled_config_fails() {
+        let e = reasoning_verdict(&json!({"enabled": true, "default_depth": "Think"}))
+            .expect_err("enabled:true must FAIL the gate");
+        assert!(format!("{e:#}").contains("must ship OFF"));
+    }
+
+    /// Fail-closed: the whole point. A reply we can't read is NOT a pass.
+    #[test]
+    fn undeterminable_replies_fail_closed() {
+        for bad in [
+            json!({}),                   // key absent
+            json!({"enabled": "false"}), // string, not bool — a real serde slip
+            json!({"enabled": 0}),       // falsy but not a bool
+            json!({"enabled": null}),    // explicit null
+            json!("enabled=false"),      // not an object at all
+        ] {
+            assert!(
+                reasoning_verdict(&bad).is_err(),
+                "must fail closed, got a pass for {bad}"
+            );
+        }
+    }
+
+    /// A missing `default_depth` is cosmetic — it must not turn a provably-off
+    /// config into a failure.
+    #[test]
+    fn missing_depth_still_passes_when_disabled() {
+        let d = reasoning_verdict(&json!({"enabled": false})).unwrap();
+        assert!(d.contains("<unset>"), "{d}");
     }
 }
 

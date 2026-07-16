@@ -79,6 +79,28 @@ way other registry tests guard the env — a discovery test must pin *both* vari
 a real test-hygiene bug, not a code defect, and it's exactly why a green suite isn't a green *system*.
 The remaining ~4 failures still need enumeration; don't close until each is filed or resolved.
 
+**A second one in this class is now FOUND AND FIXED (2026-07-16):**
+`wylde-extension-bridge`'s `mcp::client::tests` mutated the process-global `WYLDE_BIN` / `WYLDE_ROOT`
+while `cargo test` ran them in **parallel threads** — `cwd_wylde_root_token_resolves_to_real_root`
+set `WYLDE_ROOT=/the/real/root` while `wylde_bin_token_falls_back_to_release_dir` was mid-assert
+against `/repo`. **Reproduced at ~8% (2 failures in 25 local runs)**; 0 in 40 after the fix. It
+red-walled CI on a PR that touched **no Rust at all**, which is how it was caught.
+
+Two lessons worth generalising:
+
+- **The tests carried a comment asserting `// SAFETY: single-threaded test`.** That was simply
+  false — cargo is multi-threaded by default — and the wrong premise is what let the race in.
+  Deleted, not corrected-in-place.
+- **Fixed with `#[serial]`** (serial_test), the guard the rest of the tree already uses
+  (`wylde-shared`, `wylde-harness`, `wylde-concept-routing`, `wylde-concept-hierarchy`). **Any test
+  that calls `set_var`/`remove_var` must be `#[serial]`.** Same shape as the `wylde-lifecycle` bug
+  above: a test that pins one variable but depends on two.
+
+**Flaky ≠ ignorable.** An ~8% flake in a *required* check is a random tax on every PR and trains
+people to hit re-run instead of reading the failure. Enumerate the remaining ~4 with a repeat loop
+(`for i in $(seq 1 25); do cargo test …; done`), not a single run — a single green run proves nothing
+about a race.
+
 ## KI-8 — Enable clippy (G4) + fmt (G6) gates — needs a cleanup pass first
 **Status:** CHORE · **Labels:** `ci`, `chore` · **Area:** tooling
 
