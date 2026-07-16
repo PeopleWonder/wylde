@@ -89,7 +89,7 @@ experimental line can carry plain `0.1.x` strings and still be legitimately "not
 |---|---|---|---|---|
 | **Experimental** (`develop`) | `0.1.x` — `x` increments per shipped experimental milestone | **pre-release** | Beta only | "The 0.1 line, building toward 0.2." Unstable by pre-1.0 definition. |
 | **Stable gate** (`main`) | `0.2.0` | full release | Stable **and** Beta | The maintainer opened the gate. First verified release of the modern stack. |
-| **Stable patches** (`main`) | `0.2.1`, `0.2.2`, … | full release | Stable and Beta | Post-0.2 fixes promoted through the same gate. |
+| **The 0.2 series** (`main`) | `0.2.1`, `0.2.2`, … `0.2.24`, … | full release | Stable and Beta | A **running series**, not a bugfix-only track — see §3.2. |
 
 Why plain `0.1.x` and not `0.2.0-alpha.N`:
 
@@ -100,16 +100,48 @@ Why plain `0.1.x` and not `0.2.0-alpha.N`:
 - `0.1.x → 0.2.0` is monotonic (`0.2.0 > 0.1.9 > … > 0.1.0-alpha.1`), so opening the gate is a
   clean forward step and *every* user — Stable and Beta — upgrades to `0.2.0` when it lands.
 
-> **One decision left to the maintainer** (does not change routing, gates, or promotion — only
-> the literal string): if you'd rather the experimental strings *read* as the run-up to 0.2, use
-> `0.2.0-alpha.N` instead of `0.1.x`. Both are pre-release-flagged, both sort below `0.2.0`, both
-> route identically. `0.1.x` is the recommendation because it matches the stated scheme; the
-> current shipped tag `v0.1.0-alpha.1` is already below every `0.1.x`, so either path is monotonic.
+> **DECIDED — 2026-07-16 (was "one decision left to the maintainer").** The first release is
+> plain **`0.2.0`**, *not* `0.2.0-alpha.N`. The existing `v0.1.0-alpha.1` tag is left alone —
+> it's history (and `protect-version-tags` makes `v*` tags immutable anyway). Recorded verbatim:
+>
+> > "leave the tag alone. we'll bump to 0.2 and track from there. initial release 0.2.0, and we
+> > count up from there until I decide it's complete enough to seem it worthy of a 0.3.
+> > therefore: 0.2.0, 0.2.1, 0.2.2.....0.2.24....."
 
-**Steady state after 0.2:** once `0.2.0` is stable, `develop` carries the run-up to the next
-minor as pre-releases (`0.3.0-dev.N`, or `0.2.x` experimental patches pre-release-flagged),
-and the next gate drops the pre-release marker to ship `0.3.0` / `0.2.x` stable. Same mechanism,
-forever.
+### 3.2 The 0.2 series is a running series, and 0.3 is declared — not derived
+
+Two things follow from the decision above, and both are **deliberate departures from
+SemVer orthodoxy**. They are written down here so nobody "corrects" them later:
+
+1. **`0.2.x` patch bumps will carry features, not just fixes.** `0.2.1 … 0.2.24` is a running
+   series — the ordinary way work ships on the 0.2 line. Do **not** read a patch bump as
+   "bugfix-only", and do **not** propose a minor bump because a release contains a feature.
+2. **`0.3` is a maintainer declaration, not a semver derivation.** 0.3 happens when the
+   maintainer decides the line is "complete enough to seem it worthy of a 0.3" — a judgement
+   call about product substance, not a rule triggered by change type. Nothing automated should
+   ever compute the next minor.
+
+This is coherent because pre-1.0 SemVer already says anything may change within `0.y.z` (§3.1) —
+the series just uses that latitude deliberately. The gate, the channels, and the promotion path
+are unchanged; only the *meaning* of an increment is.
+
+**Steady state during 0.2:** `develop` carries the run-up to the next `0.2.x` as pre-releases;
+each gate opening drops the pre-release marker and ships `0.2.x` stable. Same mechanism as §3.1,
+repeated for as long as the maintainer keeps the 0.2 line open.
+
+### 3.3 The bump itself is gated on the maintainer's say-so
+
+**Status: NOT bumped.** The workspace versions are still `0.1.0-alpha.1`. The *scheme* above is
+decided; **executing** the bump is not — it is gated on the maintainer's explicit go-ahead, in
+the same bucket as tagging + publishing (#38), for the same reason: he does not consider the
+codebase ready to carry the 0.2 name yet.
+
+> "im not ready to switch to 0.2 yet, it's not ready" — 2026-07-16
+
+So **#36 stays open and is blocked on a decision, not on engineering.** Read this section as
+"the scheme we will use when we bump", not "we are at 0.2". When the go-ahead comes, the bump
+must be uniform across `rust/` and `Core/GUI/` — `version consistency (G7)` is a required check
+and will fail a split version.
 
 ### 3.2 Build metadata (traceability)
 
