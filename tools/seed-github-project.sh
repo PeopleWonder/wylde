@@ -123,7 +123,7 @@ declare -A ISSUE_TIER=(
   [39]="Tier 2" [40]="Tier 2"
   [41]="Tier 0"   # Ship 0.2 — release readiness gate (tracking)
   [43]="Tier 0"   # memory.long_term.save/update never embeds (0.2 verified build)
-  [44]="Tier 0"   # rag(dx): wire in the functional RAG graph
+  [44]="Tier 3"   # rag(dx): wire in the functional RAG graph — deferred post-stabilization, no milestone
   [47]="Tier 0"   # preflight --launch self-collision
   [49]="Tier 1"   # ci: cargo-deny (advisories) as a required check
   [55]="Tier 0"   # L4 first-run bootstrap check (split out of #33)
