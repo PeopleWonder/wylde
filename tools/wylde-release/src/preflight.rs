@@ -273,8 +273,13 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
         if g7 { "PASS" } else { "FAIL" }
     );
 
-    // — Optional L1-lite artifact build —
-    if args.build {
+    // — L1-lite artifact build. `--launch` IMPLIES it: a launch-verified,
+    //   release-grade receipt must certify the **release** artifacts that ship,
+    //   and the gate must have those artifacts to cold-start (a debug fallback
+    //   daemon locks `target/debug/` against the test-profile functional checks
+    //   — issue #47, Mechanism 2). So we build release up front, then run only
+    //   pre-built binaries during L2/L3. —
+    if args.build || args.launch {
         let built = run_build(&repo_root);
         gates.insert(
             "build_artifacts".into(),
@@ -285,9 +290,20 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
             },
         );
         println!(
-            "L1 build (backend + GUI, release): {}",
-            if built { "PASS" } else { "FAIL" }
+            "L1 build (backend + GUI, release): {}{}",
+            if built { "PASS" } else { "FAIL" },
+            if args.launch && !args.build {
+                " (implied by --launch)"
+            } else {
+                ""
+            }
         );
+        // Pre-build the exact cargo artifacts the launch checks exercise, while
+        // the stack is still DOWN — so L2/L3 run already-built binaries and
+        // never invoke a compile against the live stack.
+        if args.launch && built {
+            prebuild_launch_artifacts(&repo_root);
+        }
     } else {
         gates.insert("build_artifacts".into(), GateOutcome::Skipped);
         warnings.push("L1 artifact build skipped (pass --build to include it)".into());
@@ -600,6 +616,80 @@ fn run_build(repo_root: &Path) -> bool {
         .map(|s| s.success())
         .unwrap_or(false);
     backend && gui
+}
+
+/// Pre-build the exact cargo artifacts the L2/L3 launch checks will run, BEFORE
+/// the stack is cold-started. This is the structural fix for issue #47: the
+/// launch checks shell out to `cargo`, and cargo cannot (re)build a Wylde crate
+/// while that crate's binary is running (the prebuild-guard panics on a live
+/// release build; Windows holds a file-lock on a running debug exe). By
+/// compiling everything up front — while the stack is still down — those checks
+/// find fresh artifacts and merely *run* them; no compile races the live stack.
+///
+/// Best-effort: a failure here isn't fatal on its own. The stack cold-starts
+/// from **release** (`target/release/`) while these test binaries are
+/// debug/test-profile (`target/debug/`), so even an un-prebuilt check can't
+/// lock a running exe — it just pays its own build cost later. We surface any
+/// failure so the operator sees it.
+fn prebuild_launch_artifacts(repo_root: &Path) {
+    let rust = repo_root.join("rust");
+    println!("  ↳ pre-building launch-check artifacts (stack still down)…");
+    // Release `reasoning_eval` example — the benchmark reasoning arm and the
+    // standalone L3.7 chat-turn both run it (`cargo run --release --example`).
+    let steps: [(&str, Vec<&str>); 3] = [
+        (
+            "reasoning_eval example (release)",
+            vec![
+                "build",
+                "--release",
+                "--example",
+                "reasoning_eval",
+                "--locked",
+            ],
+        ),
+        // L3.6 rag-answers — the hermetic indexer fixture test (test profile).
+        (
+            "integration_rag_indexer test bin",
+            vec![
+                "test",
+                "-p",
+                "wylde-workspaces",
+                "--test",
+                "integration_rag_indexer",
+                "--no-run",
+                "--locked",
+            ],
+        ),
+        // L3.8 memory round-trip — the live embed test (test profile).
+        (
+            "embed_live test bin",
+            vec![
+                "test",
+                "-p",
+                "wylde-harness",
+                "--test",
+                "embed_live",
+                "--no-run",
+                "--locked",
+            ],
+        ),
+    ];
+    for (label, cargo_args) in steps {
+        let ok = Command::new("cargo")
+            .current_dir(&rust)
+            .args(&cargo_args)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        println!(
+            "    · {label}: {}",
+            if ok {
+                "built"
+            } else {
+                "BUILD FAILED (check will rebuild during L3)"
+            }
+        );
+    }
 }
 
 fn maybe_append_history(

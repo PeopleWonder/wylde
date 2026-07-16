@@ -347,6 +347,30 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Fixed
 
+- **`preflight --launch` can now produce a launch-verified receipt — the gate no
+  longer collides with its own running stack.** The launch checks shell out to
+  `cargo`, but a Wylde crate can't be (re)built while its binary is running, so
+  the gate structurally contradicted itself and `all_green`/`launch_verified`
+  could never both be true — blocking `publish` (which refuses a non-launch-verified
+  receipt) and the 0.2 preflight. Two complementary fixes:
+  - **`wylde-prebuild-guard` now blocks only on the crate's *own* exe.** The
+    guard's job is one question — "will the linker fail to overwrite the target
+    `.exe`?" — and building crate `X` only ever relinks `X.exe`. It previously
+    blocked on *any* live `wylde-*.exe`, so a running `wylde-release.exe` (the
+    preflight tool itself — a standalone crate that isn't even a member of the
+    `rust/` workspace, and which no build overwrites) false-positived and
+    aborted the reasoning benchmark. Both the live-process and runtime-manifest
+    signals are now narrowed to `<current_crate>.exe` before classification.
+  - **`--launch` now builds the release artifacts up front and cold-starts the
+    *release* stack.** `--launch` implies the L1 release build (a launch-verified
+    receipt must certify what actually ships), then pre-builds the exact
+    functional-check binaries (`reasoning_eval` example, `integration_rag_indexer`
+    + `embed_live` test bins) while the stack is still down. The running services
+    then live in `target/release/` while the debug/test-profile functional checks
+    write `target/debug/` — disjoint paths, so the Windows exe file-lock that
+    failed L3.8 (`Access is denied (os error 5)` relinking a running
+    `wylde-harness.exe`) can no longer occur, and L2/L3 run only pre-built
+    binaries. (fixes #47)
 - **De-flaked the `wylde-workspaces` gather-prompt breaker integration test
   (a CI-red-training flake).** `gather_prompt_degrades_then_trips_breaker_when_service_dies`
   intermittently failed on PRs with no `rust/` changes, then passed on re-run.
