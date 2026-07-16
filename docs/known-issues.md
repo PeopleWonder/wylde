@@ -96,6 +96,29 @@ Two lessons worth generalising:
   that calls `set_var`/`remove_var` must be `#[serial]`.** Same shape as the `wylde-lifecycle` bug
   above: a test that pins one variable but depends on two.
 
+**Two MORE found and fixed in `wylde-gateway` (2026-07-16), and one was a real product bug:**
+
+- **`egress` — two mutexes guarding one resource.** `egress::destinations`' tests took a private
+  `REGISTRY_LOCK`; `egress::client`'s and `pipe`'s took `EGRESS_TEST_LOCK` — for the *same*
+  process-global destination registry. **Two different mutexes over one resource give no mutual
+  exclusion**: each module was internally serialised and completely unsynchronised against the
+  other. A `reload` in one wiped the registry under a request in the other, so the SSRF tests
+  failed with `Denied("caller ... declares no egress destinations")` instead of the `Ssrf` they
+  assert. Unified on `EGRESS_TEST_LOCK`. **The measurement that proved it:** `egress::client`
+  alone = 0/20, `egress::` (client + destinations) = **4/20**. That gap *is* the diagnosis — the
+  race is *between* modules, so a per-module loop would have found nothing. Widen the scope until
+  the flake appears.
+- **`routes::dev::append_line` — a genuine product defect, not a test bug.** It called `write_all()`
+  on a `tokio::fs::File` and never flushed. Tokio buffers and defers to a blocking task, does not
+  guarantee a flush on drop, and swallows drop-time errors — so the route returned
+  `{"recorded": true}` while the record never reached disk. **The GUI error sink could silently
+  lose the error it had just confirmed.** Fixed with an explicit `flush().await`. Surfaced as a ~3%
+  flake (file created but empty): **the test was right and the product was wrong.**
+
+**A flake is a hypothesis, not a verdict.** Two of the four found today were tests being *correct*
+about broken behaviour — one product bug, one genuinely unsafe test premise. "Flaky, re-run it" would
+have shipped both.
+
 **Flaky ≠ ignorable.** An ~8% flake in a *required* check is a random tax on every PR and trains
 people to hit re-run instead of reading the failure. Enumerate the remaining ~4 with a repeat loop
 (`for i in $(seq 1 25); do cargo test …; done`), not a single run — a single green run proves nothing

@@ -143,6 +143,19 @@ fn normalize(payload: &Value) -> Value {
 
 /// Append one JSON line to `logs/gui_errors.jsonl`, creating the `logs/`
 /// directory if it does not exist yet.
+///
+/// **The `flush` is load-bearing — do not drop it.** `tokio::fs::File` buffers
+/// and hands the write to a background blocking task; it does **not** guarantee
+/// a flush when the handle drops, and any error at drop-time is silently
+/// discarded. Without this, `write_all().await` could return `Ok(())`, this
+/// function could report success, and the record could still never reach disk —
+/// leaving an empty `gui_errors.jsonl` that the route had just cheerfully
+/// confirmed with `{"recorded": true}`. A silently-dropped error report is the
+/// worst possible failure mode for an error sink: the one thing it exists to do,
+/// failing in the one way nobody would notice.
+///
+/// This surfaced as a ~3% flake in `records_a_well_formed_event` (the file was
+/// created but empty) — the test was right and the route was wrong.
 async fn append_line(record: &Value) -> std::io::Result<()> {
     let path = log_path();
     if let Some(parent) = path.parent() {
@@ -155,7 +168,8 @@ async fn append_line(record: &Value) -> std::io::Result<()> {
         .append(true)
         .open(&path)
         .await?;
-    file.write_all(line.as_bytes()).await
+    file.write_all(line.as_bytes()).await?;
+    file.flush().await
 }
 
 /// Build the `/api/dev` sub-router.
