@@ -19,8 +19,11 @@
 #   1. A private Project (v2) titled "Wylde Roadmap" under PeopleWonder.
 #   2. Custom fields: Tier (single-select Tier 0–3), Target version (text).
 #      (Status — Todo/In Progress/Done — exists by default.)
-#   3. The tracked backlog issues (#25–#40), Tier set.
+#   3. Every tracked backlog issue, Tier set.
 #   4. A draft item per lighter tier item (cleanup / deferred-by-design), Tier set.
+#
+# ADDING AN ISSUE: add one line to the ISSUE_TIER map below — that map is the
+# single source of truth and the seeding loop iterates it directly.
 #
 # The Roadmap (timeline) *view* is a UI toggle the CLI can't create — after this
 # runs, open the project → new view → "Roadmap" if you want the calendar layout.
@@ -118,9 +121,17 @@ declare -A ISSUE_TIER=(
   [30]="Tier 1" [31]="Tier 1" [32]="Tier 1"
   [33]="Tier 0" [34]="Tier 0" [35]="Tier 0" [36]="Tier 0" [37]="Tier 0" [38]="Tier 0"
   [39]="Tier 2" [40]="Tier 2"
+  [41]="Tier 0"   # Ship 0.2 — release readiness gate (tracking)
+  [43]="Tier 0"   # memory.long_term.save/update never embeds (0.2 verified build)
+  [44]="Tier 0"   # rag(dx): wire in the functional RAG graph
+  [47]="Tier 0"   # preflight --launch self-collision
+  [49]="Tier 1"   # ci: cargo-deny (advisories) as a required check
 )
+# Iterate the map itself (numerically sorted) rather than a hand-kept second
+# list — that duplication is what let #41–#49 get added by hand and never make
+# it into the script.
 echo "Ensuring tracked issues…"
-for n in 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do
+for n in $(printf '%s\n' "${!ISSUE_TIER[@]}" | sort -n); do
   if issue_present "$n"; then
     echo "  = #$n already on board (skip)"
     continue
