@@ -44,7 +44,13 @@ A point-in-time reference for "where does X live, why, what are the conventions,
 
 ## 1. Top-level repo layout
 
-The vault root (`%USERPROFILE%\Documents\Obsidian Vault\Wylde\`) contains everything; it is **not a git repository** as currently configured — there is no `.git/` directory, `git status` will refuse — so all version history is implicit in the daily progress memory files and the `docs/` lineage. Treat every file as authoritative current state.
+The repo root contains everything, and it **is** a git repository: trunk is `develop` (the default branch), `main` is stable-only, and both are protected by rulesets (PR-only, required checks). Version history lives in git — use `git log`, not the `docs/` lineage, as the record of what changed when.
+
+> **Stale-path note (scrubbed for #31).** This section used to state that the root was
+> `%USERPROFILE%\Documents\Obsidian Vault\Wylde\`, that there was no `.git/`, and that
+> "`git status` will refuse" — so version history was implicit in progress-memory files. All of
+> that is now false: the tree moved out of the Obsidian vault and is under git. Paths in this doc
+> are deliberately **repo-relative** rather than absolute, so they don't rot the same way again.
 
 | Folder | Purpose |
 | --- | --- |
@@ -302,7 +308,14 @@ The planning + handoff dir. Important entries:
 
 ## 11. Auto-memory system
 
-the Wylde user's Claude sessions persist memory between conversations at `%USERPROFILE%\.claude\projects\C--Users-<user>-Documents-Obsidian-Vault-Wylde\memory\`. The directory is **outside the repo** — it's part of the Claude config, not version-controlled with Wylde. Convention:
+the Wylde user's Claude sessions persist memory between conversations at
+`%USERPROFILE%\.claude\projects\<repo-path-slug>\memory\`, where `<repo-path-slug>` is the repo's
+absolute path with drive/separator characters replaced by `-` (for the current checkout at
+`C:\Users\aaron\Wylde\Core`, that is `C--Users-aaron-Wylde-Core`). The slug is **derived from wherever
+the repo lives**, so it changes if the tree moves — it previously read
+`C--Users-<user>-Documents-Obsidian-Vault-Wylde`, from the retired Obsidian-vault location (#31). The
+directory is **outside the repo** — it's part of the Claude config, not version-controlled with Wylde.
+Convention:
 
 * Each memory is its own MD file with frontmatter (`name`, `description`, `metadata.type`).
 * Types: `user` (who the Wylde user is + preferences), `feedback` (corrections + validated approaches), `project` (in-progress work + decisions), `reference` (pointers to external systems).

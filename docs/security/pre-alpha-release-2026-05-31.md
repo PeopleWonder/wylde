@@ -1,5 +1,12 @@
 # Pre-Alpha Public-Release Preparation — 2026-05-31
 
+> **Historical record — paths below are as-of 2026-05-31 and are deliberately NOT updated (#31).**
+> This is a dated log of actions actually taken, so rewriting its paths would falsify the record.
+> The tree has since moved **out of the Obsidian vault** and is now a git repository; the
+> `Obsidian Vault\Wylde` / `Obsidian Vault\Wylde-release` locations referenced below no longer
+> exist. For current layout see [`../wylde-repo-organization.md`](../wylde-repo-organization.md).
+> Do not use this document to locate anything today.
+
 This document records every action taken to turn the private working repo into the
 public-alpha copy at `Wylde-release/`. Three parts: **(1) copy**, **(2) scrub** (secrets /
 personal info / dev artifacts), **(3) documentation audit**. All work happened in the copy;
