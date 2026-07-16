@@ -417,6 +417,34 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Fixed
 
+- **The GUI error sink could silently lose the error it just told you it recorded.**
+  `routes::dev::append_line` — the `POST /api/dev/gui_error` handler backing
+  `logs/gui_errors.jsonl` — called `write_all()` on a `tokio::fs::File` and never flushed. Tokio
+  buffers the write and hands it to a background blocking task; it does **not** guarantee a flush
+  when the handle drops, and discards any drop-time error. So `write_all().await` returned
+  `Ok(())`, the route answered `{"recorded": true}`, and the record could still never reach disk.
+  **A silently-dropped error report is the worst failure mode an error sink has** — the one thing
+  it exists to do, failing in the one way nobody notices. Now flushed explicitly.
+  - Found via a **~3% flake** in `records_a_well_formed_event` (the file was created but empty).
+    The test was right and the route was wrong — worth stating, because the tempting read of a
+    rare red on an unrelated PR is "flaky test, re-run it".
+
+- **A test race in `wylde-gateway`'s egress registry — two mutexes guarding one resource.**
+  `egress::destinations`' tests took a private `REGISTRY_LOCK` while `egress::client`'s and
+  `pipe`'s tests took `EGRESS_TEST_LOCK` — **for the same process-global destination registry**.
+  Two different mutexes over one shared resource provide *no* mutual exclusion: each module was
+  internally serialised and entirely unsynchronised against the other, so a `reload` in one wiped
+  the registry out from under a request in the other. It surfaced as `forward_ssrf_blocks_private`
+  / `forward_ssrf_blocks_metadata` failing with
+  `Denied("caller \"Caller\" declares no egress destinations")` instead of the `Ssrf` they assert —
+  an SSRF test failing for a reason that had nothing to do with SSRF.
+  - The registry-touching `destinations` tests now take the same `EGRESS_TEST_LOCK` (and are
+    `#[tokio::test]` accordingly); the pure parsing tests stay sync and lock-free.
+  - **The measurement that proved it:** `egress::client` alone was **0 failures in 20 runs**, but
+    `egress::` (client + destinations together) was **4 in 20**. That gap is the whole diagnosis —
+    a race between modules, not within one. After the fix: **0 in 25** together, and **0 in 40**
+    across the full `wylde-gateway --lib`.
+
 - **A flaky env race in `wylde-extension-bridge`'s tests that red-walled CI on PRs touching no
   Rust at all.** `mcp::client::tests` mutated the process-global `WYLDE_BIN` / `WYLDE_ROOT` while
   `cargo test` ran them in **parallel threads**: `cwd_wylde_root_token_resolves_to_real_root` set
