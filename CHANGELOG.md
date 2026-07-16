@@ -397,6 +397,26 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Fixed
 
+- **A flaky env race in `wylde-extension-bridge`'s tests that red-walled CI on PRs touching no
+  Rust at all.** `mcp::client::tests` mutated the process-global `WYLDE_BIN` / `WYLDE_ROOT` while
+  `cargo test` ran them in **parallel threads**: `cwd_wylde_root_token_resolves_to_real_root` set
+  `WYLDE_ROOT=/the/real/root` while `wylde_bin_token_falls_back_to_release_dir` was mid-assert
+  against `/repo`, so the latter failed on a value it never set. Reproduced at **~8% (2 failures in
+  25 local runs)**; **0 in 40** after the fix. Caught because it failed the `backend (rust/) build +
+  test` required check on a **docs-and-ruleset-only PR** — an ~8% flake in a required check is a
+  random tax on every PR and trains people to hit re-run instead of reading the failure.
+  - Fixed with **`#[serial]`** (serial_test) on every env-mutating test in the module — the guard
+    the rest of the tree already uses (`wylde-shared`, `wylde-harness`, `wylde-concept-routing`,
+    `wylde-concept-hierarchy`).
+  - The tests carried a comment asserting `// SAFETY: single-threaded test`. That was **false** —
+    cargo is multi-threaded by default — and the wrong premise is precisely what let the race in.
+    Removed rather than corrected in place, and replaced with a note that any new `set_var` /
+    `remove_var` test here must be `#[serial]`.
+  - Same shape as the `wylde-lifecycle` env-isolation bug already tracked in `known-issues.md`
+    KI-6: **a test that pins one variable but depends on two.** KI-6 now records this one as the
+    second confirmed instance, plus the method — enumerate the remaining failures with a repeat
+    loop, since a single green run proves nothing about a race.
+
 - **`preflight --launch` can now produce a launch-verified receipt — the gate no
   longer collides with its own running stack.** The launch checks shell out to
   `cargo`, but a Wylde crate can't be (re)built while its binary is running, so
