@@ -61,6 +61,33 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Added
 
+- **Tier-C coverage for two critical-path controls: type-and-send, and happy-path device
+  pairing.** Both are controls #35 names, and both were untested at the seam a user actually
+  drives.
+  - **`Chat/tests/type_and_send.rs`** enters at the *composer*, not at `send_user_message`.
+    The turn dispatch itself was already covered — what nothing touched was everything
+    upstream of it: the `prompt_input` → `InputEvent::Submit` → `submit_text` wiring that
+    pressing Enter goes through. It asserts the typed text reaches the turn, the composer is
+    cleared afterwards (or the user silently re-sends), a whitespace-only Enter starts no turn,
+    and — the one with teeth — a **double Enter starts exactly one turn**. That last is the
+    regression `starting` exists for: between Enter and `start_turn` returning, `active_turn_id`
+    is still `None`, so a second Enter would slip past that guard and start a duplicate turn.
+    Verified non-vacuous by deleting the `starting` guard and watching the test fail with a real
+    double-send.
+  - **`Devices/tests/complete_pairing.rs`** covers the path a user actually takes; its sibling
+    `cancel_pairing.rs` only covered the abort. **No real peer device is needed** — the panel
+    never talks to the phone, it polls `device_gate.get_pairing_status`, so "a phone completed"
+    is just the server reporting `{pairing_active: false}`. Asserts the card closes itself and
+    the new device lands in the list, and that a **transient** status failure keeps the card open
+    (a blipping device-gate must not strand a user mid-pair against a code the server still
+    considers live). Drives the poll loop with `advance_clock` rather than sleeping — the first
+    use of it in the GUI suite; the loop waits on a gpui executor timer, so this is deterministic
+    and runs in 0.04s.
+  - Both run automatically: `tests/` targets auto-discover, and `cargo panel-walk` (the required
+    `gui panel-walk (L7)` check) runs every test target in the 9 panel crates since #56 dropped
+    its `--test` filter. Neither needed a `Cargo.toml` change — both panels already carry the
+    test-support dev-dep block.
+
 - **L5 shipped-config assertion — the experimental reasoning tier can no longer ship
   switched on.** The reasoning tier is a post-0.2 experiment that must ship
   `enabled:false`. `ReasoningConfig::default` said so and was unit-tested — but a unit test
