@@ -439,6 +439,36 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Fixed
 
+- **The reasoning planner and the executor spoke different tool vocabularies, so no plan step
+  ever realised.** The planner's catalog (`reasoning::inputs::render_tool_catalog`) filtered only
+  on `status == "active"` and rendered *every* active tool. But the verb-tool cutover
+  (`WYLDE_HARNESS_VERB_TOOLS`, default **ON** since 2026-06-03) means the executor's turn
+  advertises only the eight `wylde_*` verbs plus a small surviving tail. So the planner proposed
+  `read_file`, the executor could only dispatch `wylde_get`, and `PlanState::finish_round` — which
+  binds a step's result **only** to a dispatch of that step's own tool, matched by exact name —
+  never fired. Steps never realised, `expected` / `on_surprise` / the whole surprise machinery
+  never evaluated, and the tier was decorative on exactly the multi-step tasks it exists for.
+  (issue #25 / KI-1; reasoning-v2 Slice B.)
+  - **One filter, not two.** `turn::prompt::advertise` is now `pub(crate)` and is *the* definition
+    of "what the model may name"; the planner applies it (and `MAX_CATALOG_TOOLS`) against the
+    live `verb_mode`, off the same `catalog_payload`. Two catalogs was the bug. The struct's own
+    doc already described `tool_catalog` as "verb — description" lines — the intent was always the
+    advertised surface; the code had drifted from it.
+  - **The planner is now told the legal `resource_type` values** (`PlanInputs::resource_catalog`,
+    rendered into PLAN *and* REPLAN). Without this the fix would only have traded one failure for
+    another: the executor discovers resource types by calling `wylde_describe` at runtime — the
+    verb guidance says outright they are "NOT in this prompt" — but PLAN is a single call that must
+    emit a complete DAG, so it would have named `wylde_get` correctly and then invented the
+    `resource_type`. Uses the same no-arg `wylde_describe` payload (`summary_rows`), one compact
+    line each; empty (and omitted) in legacy mode.
+  - **The invariant is now pinned by a test that fails on the old code** —
+    `planner_never_names_a_tool_the_executor_wont_advertise`, asserted in **both** modes against a
+    real registry. It compares in the right identifier space: the executor advertises `name`
+    (often dotted, e.g. `ollama.auto_evict_lru`), the model emits that, and `actions.rs` resolves
+    it through `alias_map` to the canonical id before `round_results` — *"the plan stores canonical
+    ids; the model emits dotted/aliased names"*. So a plan step's tool must be a canonical id some
+    advertised name resolves to. Reverting the fix reproduces the exact failure.
+
 - **The GUI error sink could silently lose the error it just told you it recorded.**
   `routes::dev::append_line` — the `POST /api/dev/gui_error` handler backing
   `logs/gui_errors.jsonl` — called `write_all()` on a `tokio::fs::File` and never flushed. Tokio

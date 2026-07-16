@@ -49,7 +49,15 @@ The full bar. Only on the maintainer's explicit say-so. **This is the definition
 4. **Local preflight — full L1–L7:**
    - L1–L3 via **`wylde-release preflight --launch --build`** (build-all, cold-start, service-health —
      each check reported individually into the receipt; fails closed).
-   - **L4 first-run bootstrap** completes on a clean profile. *(manual — not yet scripted)*
+   - ~~**L4 first-run bootstrap** completes on a clean profile.~~ **DROPPED from the 0.2 gate
+     (2026-07-16).** First-run bootstrap is now **post-0.2** (#66) and is being redesigned as a
+     deliberately guided UX + install wizard (#67), so 0.2 does not gate on it. It was never
+     scriptable anyway: it asserted the completion of something the old design explicitly refused
+     to signal ("the conversation flows") *and* that **does not exist as code** — no first-run
+     detection exists, and nothing feeds the playbook to the model. #55 is deferred alongside.
+     ⚠️ **The clean-install requirement did NOT go with it** — "a clean profile cold-starts into a
+     serving system" is still a 0.2 gate and lives in **#37**. Don't read this line's removal as
+     dropping that.
    - **L5 reasoning-eval guardrail** — run `wylde-release bench` (or the whole
      `wylde-release preflight`): the reasoning fast/think arms show no regression past the
      baseline's noise-calibrated threshold.
@@ -125,9 +133,12 @@ unless a receipt exists that is `all_green`, **`launch_verified`**, non-dirty, a
   reasoning `enabled:false`, so the post-0.2 experimental tier cannot ship switched on. Not
   skippable by `--skip-functional`: a release-grade receipt should never be able to omit it.
 
-⏳ **Still owed (T0.1):** **L4** first-run bootstrap remains manual (**#55** scripts it) and the
-**L6** human feel-test remains manual deliberately — visual correctness is not automatable; **L7**
-panel-walk is its own CI job. See `benchmarks/README.md` for the benchmark-gate design.
+⏳ **Still owed (T0.1):** the **L6** human feel-test remains manual, deliberately — visual
+correctness is not automatable, so it is *not* debt; **L7** panel-walk is its own CI job.
+**L4 is no longer owed:** first-run bootstrap moved **post-0.2** (#66) and L4 left the 0.2 gate with
+it (#55 deferred) — it had been "owed" for months because it asserted the completion of an event the
+design refused to emit, for a feature that was never implemented. See `benchmarks/README.md` for the
+benchmark-gate design.
 
 ### Quick commands
 
