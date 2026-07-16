@@ -126,6 +126,9 @@ declare -A ISSUE_TIER=(
   [44]="Tier 0"   # rag(dx): wire in the functional RAG graph
   [47]="Tier 0"   # preflight --launch self-collision
   [49]="Tier 1"   # ci: cargo-deny (advisories) as a required check
+  [55]="Tier 0"   # L4 first-run bootstrap check (split out of #33)
+  [56]="Tier 0"   # GUI behavioural tests aren't run by any required check
+  [57]="Tier 1"   # ci: cargo-deny (licenses) as a required check
 )
 # Iterate the map itself (numerically sorted) rather than a hand-kept second
 # list — that duplication is what let #41–#49 get added by hand and never make

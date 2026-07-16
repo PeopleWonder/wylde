@@ -224,8 +224,9 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
   back into either list. A board rebuilt from scratch would have silently come up
   five issues short. The loop now iterates the `ISSUE_TIER` map directly (numerically
   sorted), so the map is the single source of truth and adding an issue is a one-line
-  change that cannot drift. The five missing issues are now in the map with their
-  Tiers. Re-running remains a no-op against a fully-seeded board.
+  change that cannot drift. The missing issues are now in the map with their Tiers,
+  along with the newly-filed #55/#56/#57. Re-running remains a no-op against a
+  fully-seeded board.
 
 - **Clippy (G4) + fmt (G6) CI gates are now LIVE.** The two staged enforcement
   gates were armed: a new `clippy (G4) + fmt (G6)` CI job runs
