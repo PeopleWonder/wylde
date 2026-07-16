@@ -33,7 +33,11 @@
           { "context": "version consistency (G7)" },
           { "context": "branch target + name" },
           { "context": "conventional commits" },
-          { "context": "changelog updated" }
+          { "context": "changelog updated" },
+          { "context": "cargo-deny (advisories) (rust/Cargo.toml)" },
+          { "context": "cargo-deny (advisories) (Core/GUI/Cargo.toml)" },
+          { "context": "cargo-deny (licenses) (rust/Cargo.toml)" },
+          { "context": "cargo-deny (licenses) (Core/GUI/Cargo.toml)" }
         ]
       }
     }
