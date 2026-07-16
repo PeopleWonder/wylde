@@ -38,3 +38,7 @@ rmcp = "1.7"
 
 [dev-dependencies]
 tempfile = "3"
+# Serialises the tests that mutate process-global env (WYLDE_BIN / WYLDE_ROOT).
+# Same guard the other env-touching crates use (wylde-shared, wylde-harness,
+# wylde-concept-routing, wylde-concept-hierarchy).
+serial_test = { workspace = true }
