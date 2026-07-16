@@ -63,15 +63,59 @@ ignore = [
     # advisory — if it has, add the RUSTSEC id here. Backstop date: 2026-10-14.
 ]
 
-# Defined for a manual `cargo deny check all`; CI gates only on `advisories`.
+# ---------------------------------------------------------------------------
+# LICENSE COMPLIANCE — GPLv3 copyleft gate (GUI workspace).
+#
+# Policy is IDENTICAL to rust/deny.toml (see that file's header for the full
+# GPLv3-compatibility rationale) — kept in sync deliberately so one review
+# governs both workspaces. CI runs `cargo deny check licenses` here on every PR
+# (.github/workflows/license-check.yml) as a REQUIRED status check; anything not
+# allow-listed is denied by default.
+#
+# NOTE — "OpenSSL" was REMOVED from this list (it was previously allowed here but
+# not in rust/). The historical OpenSSL license carries an advertising-style
+# clause the FSF classifies as GPL-INCOMPATIBLE, and it is NOT present in this
+# tree (ring 0.17 resolves to Apache-2.0/MIT/ISC). Allowing it would be a silent
+# hole in a copyleft gate; if a future dep genuinely pulls OpenSSL-licensed code
+# the gate SHOULD flag it for a human decision. Do not re-add without review.
+#
+# DENIED by design: GPL-2.0-only, LGPL-2.0-only, CDDL, EPL, MS-PL/MS-RL,
+# SSPL-1.0, BUSL-1.1, CC-BY-NC-*, OpenSSL, and any proprietary/unlicensed crate.
+# ---------------------------------------------------------------------------
 [licenses]
 version = 2
-allow = [
-    "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause",
-    "BSD-3-Clause", "ISC", "Zlib", "MPL-2.0", "Unicode-3.0", "Unicode-DFS-2016",
-    "CC0-1.0", "0BSD", "Unlicense", "GPL-3.0", "BSL-1.0", "OpenSSL",
-]
 confidence-threshold = 0.8
+unused-allowed-license = "allow"
+allow = [
+    # Permissive / public-domain — trivially GPLv3-compatible.
+    "0BSD", "BSD-1-Clause", "BSD-2-Clause", "BSD-3-Clause",
+    "MIT", "MIT-0", "ISC", "Zlib", "zlib-acknowledgement",
+    "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
+    "BSL-1.0", "bzip2-1.0.6",
+    "Unicode-3.0", "Unicode-DFS-2016",
+    "CC0-1.0", "Unlicense", "WTFPL", "CDLA-Permissive-2.0",
+    # Weak copyleft — GPLv3-compatible.
+    "MPL-2.0",
+    "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later",
+    # Strong copyleft — this project's own license and compatible upgrades.
+    "GPL-3.0-only", "GPL-3.0-or-later", "GPL-2.0-or-later",
+]
+
+# gpui_util and gpui_shared_string are internal gpui support crates from the
+# pinned zed-industries/zed git rev. They ship no `license` field in Cargo.toml
+# but each carries a LICENSE-APACHE file (they are Apache-2.0, like gpui itself).
+# Clarify so the gate reads them as Apache-2.0 instead of failing them as
+# unlicensed. The file hash re-validates on a gpui rev bump — if Zed relicenses
+# these, the clarify goes stale and the gate turns red for a deliberate re-review.
+[[licenses.clarify]]
+name = "gpui_util"
+expression = "Apache-2.0"
+license-files = [{ path = "LICENSE-APACHE", hash = 0x8a8d02f6 }]
+
+[[licenses.clarify]]
+name = "gpui_shared_string"
+expression = "Apache-2.0"
+license-files = [{ path = "LICENSE-APACHE", hash = 0x8a8d02f6 }]
 
 [bans]
 # gpui's graph carries many duplicate versions by design. Surface, don't fail.
