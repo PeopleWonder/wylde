@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 publish = false
+# First-party Wylde crate; carries Core's copyleft. Explicit (not
+# `license.workspace`) because this crate is `exclude`d from the rust workspace.
+license = "GPL-3.0-or-later"
 description = "Cross-language parity gate: diffs Python vs Rust service responses (lifecycle) + live-Ollama smoke."
 
 [features]
