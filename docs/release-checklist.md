@@ -52,7 +52,14 @@ The full bar. Only on the maintainer's explicit say-so. **This is the definition
    - **L4 first-run bootstrap** completes on a clean profile. *(manual — not yet scripted)*
    - **L5 reasoning-eval guardrail** — run `wylde-release bench` (or the whole
      `wylde-release preflight`): the reasoning fast/think arms show no regression past the
-     baseline's noise-calibrated threshold. Also confirm the shipped config keeps `enabled: false`.
+     baseline's noise-calibrated threshold.
+   - **L5 shipped-config assertion** — `preflight --launch` now asserts this (issue #27); it is no
+     longer a manual "also confirm". The `l5.reasoning_disabled` check asks the **running harness**
+     for its effective config (`settings.reasoning.get`) and fails closed unless `enabled:false`.
+     Asking the live system, not a file, is the point: `ReasoningConfig::current()` is the value the
+     turn engine actually obeys, already resolved through the product's own
+     `WYLDE_DATA_DIR`/`DATA_DIR`/`WYLDE_ROOT` chain — so a shipped `reasoning.json` that turns the
+     tier on fails the gate. The unit-tested code default only ever proved the *fallback*.
    - **L6 feel/function checklists** — human-judgment surface (visual/layout correctness the
      automated tests structurally can't assert).
    - **L7 GUI verification** — Tier-B panel-walk (all 9 panels + Workspaces subtabs mount, load,
@@ -114,10 +121,13 @@ unless a receipt exists that is `all_green`, **`launch_verified`**, non-dirty, a
   round-trips. Each **fails closed** (can't determine → FAIL) and reports individually so a failure
   is diagnosable. Everything spawned is torn down (graceful `service.shutdown_all` + `taskkill /T`
   backstop) — no orphan processes, no pipe collisions with a parallel session.
+- **L5 shipped-config** (`l5.reasoning_disabled`, issue #27) — asserts the running harness reports
+  reasoning `enabled:false`, so the post-0.2 experimental tier cannot ship switched on. Not
+  skippable by `--skip-functional`: a release-grade receipt should never be able to omit it.
 
-⏳ **Still owed (T0.1):** **L4** first-run bootstrap and the **L6** human feel-test remain manual
-(the latter deliberately — visual correctness is not automatable); **L7** panel-walk is its own CI
-job. See `benchmarks/README.md` for the benchmark-gate design.
+⏳ **Still owed (T0.1):** **L4** first-run bootstrap remains manual (**#55** scripts it) and the
+**L6** human feel-test remains manual deliberately — visual correctness is not automatable; **L7**
+panel-walk is its own CI job. See `benchmarks/README.md` for the benchmark-gate design.
 
 ### Quick commands
 
