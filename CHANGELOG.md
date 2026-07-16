@@ -295,6 +295,23 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
   Cargo-untouching PR forever (GitHub waits for a status the skipped workflow never
   reports); running it unconditionally is what makes it safe to require.
 
+- **GPLv3 license compliance is now an enforced CI gate, not a norm.** Wylde Core
+  is `GPL-3.0-or-later`; copyleft *inherits*, so every dependency compiled or linked
+  into a Wylde binary must carry a GPLv3-**compatible** license — a single
+  incompatible dep (SSPL/BUSL/CDDL/EPL, GPL-2.0-only, the historical OpenSSL license,
+  or an unlicensed crate) is a real legal defect. Both `deny.toml` files already
+  *defined* `[licenses]`, but CI only ran `check advisories`, so nothing enforced it.
+  New `.github/workflows/license-check.yml` runs `cargo deny check licenses` on both
+  workspaces, **unfiltered on every PR** (same path-filter-free mechanism as the
+  advisory gate, so the `cargo-deny (licenses)` legs can be *required* without hanging
+  Cargo-untouching PRs). The allow-list was rewritten as a real, FSF-matrix-vetted
+  GPLv3-compatibility policy — including the fix that it previously allowed deprecated
+  `GPL-3.0` but **not** `GPL-3.0-or-later` (the project's own license), so the gate
+  would have rejected every first-party crate; `OpenSSL` was removed from the GUI list
+  as FSF-incompatible with GPL and absent from the tree. **No GPL-incompatible
+  dependency exists in either tree today** (`cargo deny check licenses` → `licenses ok`
+  on both). Making the legs *required* is a one-line ruleset addition, to land the same
+  way #49 added its advisory contexts to the `protect-develop`/`protect-main` rulesets.
 - **Formally accepted the two unbumpable, gpui-pinned advisories in `deny.toml`
   with a documented review trigger (closes #30 / KI-3).** Both ride behind the
   pinned `gpui` git rev (`b3d93d44`), which Dependabot cannot bump: `glib` 0.18.5
