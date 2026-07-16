@@ -683,7 +683,11 @@ fn prebuild_launch_artifacts(repo_root: &Path) {
             .unwrap_or(false);
         println!(
             "    · {label}: {}",
-            if ok { "built" } else { "BUILD FAILED (check will rebuild during L3)" }
+            if ok {
+                "built"
+            } else {
+                "BUILD FAILED (check will rebuild during L3)"
+            }
         );
     }
 }
