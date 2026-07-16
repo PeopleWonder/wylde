@@ -111,14 +111,17 @@ Core/Memgraph/vendor/
 # it is now the signpost. Keep it accurate if the arrangement changes.
 docs/plans/
 
-# Private planning/design docs — genuinely local-only, unlike docs/plans/ above.
-# These are NOT in wylde-planning and NOT tracked anywhere: they exist on one
-# disk with no backup. That is the durability gap the planning repo was created
-# to close for docs/plans/; these three were never moved. Moving them is the
-# maintainer's call.
-docs/privacy-plan.md
-docs/wylde-rust-migration-master-plan.md
-docs/wylde-android-app-plan.md
+# Private planning/design docs — STILL genuinely local-only, unlike docs/plans/
+# above. These are NOT in wylde-planning and NOT tracked anywhere: they exist on
+# one disk, with no backup. That is the same durability gap the planning repo was
+# created to close for docs/plans/, and these never got moved into it.
+#
+# Three of them have now BEEN moved (2026-07-16, maintainer's call) and their
+# entries are gone from this list — `privacy-plan.md` (active),
+# `wylde-android-app-plan.md` (deferred) and `wylde-rust-migration-master-plan.md`
+# (retired `legacy`: the full-Rust cutover it plans already happened) now live in
+# wylde-planning and are reachable at `docs/plans/` through the junction. The
+# rest below are still one-disk; moving any of them is the maintainer's call.
 docs/wylde-gpui-rewrite-plan.md
 docs/wylde-gui-panel-architecture-plan.md
 docs/wylde-ollama-design.md
