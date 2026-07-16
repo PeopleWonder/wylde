@@ -86,10 +86,36 @@ secrets.json
 
 Core/Memgraph/vendor/
 
-# Local-only planning docs (kept on disk for reference, not published)
+# ─── PLANNING DOCS: PRIVATE, *NOT* UNTRACKED — read this before assuming ───
+#
+# `docs/plans/` is a **DIRECTORY JUNCTION** into a separate private repo:
+#     C:\Users\aaron\Wylde\Core\docs\plans  ->  C:\Users\aaron\Wylde\wylde-planning\plans
+#
+# Ignoring it HERE is the mechanism that keeps internal strategy out of THIS
+# public repo. It does **not** mean the content is untracked, local-only, or
+# disposable. It is version-controlled — in `PeopleWonder/wylde-planning`
+# (private), not in `wylde`.
+#
+# ⚠️ Edits you make under `docs/plans/` land in wylde-planning's WORKING TREE.
+#    They are real and they are NOT committed by anything in this repo:
+#        cd ../wylde-planning && git status && git add -A && git commit && git push
+#    `git status` here will never mention them. That repo has its own CI
+#    (`plans-check.yml`): frontmatter/lifecycle validity, and `INDEX.md` must be
+#    REGENERATED (`tools/gen_index.py`), never hand-edited. Bump `last_reviewed`
+#    when you revise a plan.
+#
+# This comment used to read "Local-only planning docs (kept on disk for
+# reference, not published)". That predated wylde-planning and the junction, and
+# it was read — reasonably — as "not version-controlled anywhere", which caused
+# real roadmap edits to be dismissed as worthless scratch. The line was false;
+# it is now the signpost. Keep it accurate if the arrangement changes.
 docs/plans/
 
-# Private planning/design docs (kept locally, not published)
+# Private planning/design docs — genuinely local-only, unlike docs/plans/ above.
+# These are NOT in wylde-planning and NOT tracked anywhere: they exist on one
+# disk with no backup. That is the durability gap the planning repo was created
+# to close for docs/plans/; these three were never moved. Moving them is the
+# maintainer's call.
 docs/privacy-plan.md
 docs/wylde-rust-migration-master-plan.md
 docs/wylde-android-app-plan.md
