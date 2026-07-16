@@ -501,7 +501,7 @@ Voice is a subprocess of the Lifecycle daemon (Phase 2e in `Core/Lifecycle/daemo
 | Component | Surface | File:line |
 |---|---|---|
 | `device_gate/pipe.py` | Ten `device_gate.*` action handlers; `start()` brings up the pipe via `Core.shared.ipc.serve_forever_background` | `device_gate/pipe.py:start` |
-| `device_gate/run.py` | Process entry; the Lifecycle daemon spawns this with cwd=vault root via `py -3 "device_gate/run.py"` | `device_gate/run.py` |
+| `device_gate/run.py` | Process entry; the Lifecycle daemon spawns this with cwd=repo root via `py -3 "device_gate/run.py"` | `device_gate/run.py` |
 | `device_gate/core.py` | `DeviceGateService` — pairing, tokens, tier, rotate, revoke, pending-events queue. Pure-Python, no transport | `device_gate/core.py` |
 | `device_gate/store.py` | JSON-backed device store; tier constants + rank table; `Device` dataclass | `device_gate/store.py` |
 | `device_gate/auth.py` | htpasswd credential check (passlib + crypt + APR1 inline fallback for Windows-without-passlib) | `device_gate/auth.py` |

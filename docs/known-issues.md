@@ -91,12 +91,29 @@ slice, land it, then uncomment the G6 stub; separately do a `cargo clippy --work
 (add to the rulesets). This is the last piece of the enforcement matrix still marked ⏳-blocked.
 
 ## KI-7 — Move-stale doc references (old vault paths)
-**Status:** CHORE · **Labels:** `docs` · **Area:** docs
+**Status:** RESOLVED (#31) · **Labels:** `docs` · **Area:** docs
 
-Several docs reference the old `Obsidian Vault\Wylde-release` path and are superseded:
-`HANDOFF_TO_FABLE_5.md` (untracked, 2026-06-09), and per roadmap T1.3:
-`docs/security/pre-alpha-release-2026-05-31.md`, `docs/mypy_baseline.txt`, `WYLDE_ENDPOINTS.md:504`.
-Scrub or delete. Low priority; grouped so the tree stops implying stale locations/a Python runtime.
+Docs referenced the retired `Obsidian Vault\Wylde` / `Wylde-release` locations. Scrubbed in #31:
+
+- **`docs/wylde-repo-organization.md` — the one that actually mattered.** A `status: living reference`
+  doc whose §1 stated the root was `%USERPROFILE%\Documents\Obsidian Vault\Wylde\`, that there was no
+  `.git/`, and that "`git status` will refuse" — so history lived in progress-memory files, and every
+  file was "authoritative current state". All flatly false: the tree is under git, trunk `develop`.
+  A living reference asserting the repo isn't a repo actively misleads. Corrected, and its §11
+  auto-memory slug now derives from the repo path instead of hardcoding the vault one.
+- **`WYLDE_ENDPOINTS.md:504`** — `cwd=vault root` → `cwd=repo root`.
+- **`docs/security/pre-alpha-release-2026-05-31.md` — deliberately NOT scrubbed.** It is a dated log
+  of "every action taken" on 2026-05-31; rewriting its paths would falsify the record. It carries a
+  header note instead: paths are as-of that date, the locations no longer exist, don't navigate by it.
+
+**Deliberately left (belongs to T1.2, not here):** `docs/mypy_baseline.txt` — its vault paths sit
+inside captured mypy/uv *stdout*, so it's a tool-output log, not a location claim; rewriting it has
+the same falsification problem as the security record. The whole file is a Python-era artifact due for
+deletion with the Python scrub (T1.2 / KI-3), which is where that call belongs.
+
+**Also left:** `HANDOFF_TO_FABLE_5.md` — **untracked**, so it isn't part of the tree and can't imply a
+stale location to anyone who clones. It's a local scratch file; deleting someone's untracked local
+file isn't this issue's business.
 
 ---
 

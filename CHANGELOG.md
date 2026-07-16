@@ -364,6 +364,21 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Fixed
 
+- **`docs/wylde-repo-organization.md` no longer tells you the repo isn't a repo.** The stale-vault-path
+  scrub (#31) turned up one reference worse than a dead path: a doc marked `status: living reference`
+  whose §1 stated the tree lived at `%USERPROFILE%\Documents\Obsidian Vault\Wylde\`, had no `.git/`,
+  would make `git status` "refuse", and that version history was therefore implicit in progress-memory
+  files with every file "authoritative current state". The tree is under git with `develop` as trunk —
+  so a living reference was actively instructing readers to distrust git. §1 now describes the real
+  git layout, and §11's auto-memory path derives its slug from wherever the repo lives instead of
+  hardcoding the vault one. Paths are repo-relative on purpose, so they don't rot the same way twice.
+  `WYLDE_ENDPOINTS.md:504` (`cwd=vault root` → `cwd=repo root`) scrubbed too.
+  - **`docs/security/pre-alpha-release-2026-05-31.md` deliberately keeps its vault paths.** It is a
+    dated log of actions actually taken; rewriting it would falsify the record. It gets a header note
+    (paths as-of that date, those locations are gone, don't navigate by it) instead of a scrub. Same
+    call for `docs/mypy_baseline.txt`, whose vault paths sit inside captured tool *stdout* — it's a
+    Python-era artifact due for deletion with the Python scrub (T1.2), which is where that call belongs.
+
 - **`preflight --launch` can now produce a launch-verified receipt — the gate no
   longer collides with its own running stack.** The launch checks shell out to
   `cargo`, but a Wylde crate can't be (re)built while its binary is running, so
