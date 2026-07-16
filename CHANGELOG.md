@@ -19,6 +19,28 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Added
 
+- **L5 shipped-config assertion — the experimental reasoning tier can no longer ship
+  switched on.** The reasoning tier is a post-0.2 experiment that must ship
+  `enabled:false`. `ReasoningConfig::default` said so and was unit-tested — but a unit test
+  only ever proved the **fallback**. Nothing checked the config the shipped system actually
+  obeys, so a `reasoning.json` shipping (or being written) with the tier on would have sailed
+  through a fully green, launch-verified receipt. `preflight --launch` now runs
+  `l5.reasoning_disabled` (issue #27), which folds into the receipt's `gates` map like every
+  other check and counts toward `launch_verified`.
+  - **Asks the running harness, not a file.** The check calls `settings.reasoning.get` and
+    asserts `enabled:false`. `ReasoningConfig::current()` is the value the turn engine actually
+    obeys, already resolved through the product's own `WYLDE_DATA_DIR`/`DATA_DIR`/`WYLDE_ROOT`
+    chain — so one live read covers both a shipped file that enables the tier and an in-memory
+    value that disagrees with the file. Reading the JSON ourselves would re-implement that
+    resolution and could pass while the running system disagreed.
+  - **Fails closed, and not skippable.** A missing or non-boolean `enabled`, or a harness that
+    won't answer, is a FAIL — "couldn't determine" never counts as "it's off". Unlike the slow
+    functional checks it is exempt from `--skip-functional` (it's a single cheap pipe read): a
+    release-grade receipt should never be able to omit "did we ship the experiment switched
+    on?". The verdict logic is split into a pure `reasoning_verdict` and unit-tested for the
+    fail-closed contract without needing a live stack. (enforcement-matrix row 14;
+    `release-checklist.md` L5 — previously a manual "also confirm".)
+
 - **L2/L3 launch-and-verify preflight gate — the check that would have caught every
   "shipped broken" defect.** `wylde-release preflight --launch` (and the standalone
   `wylde-release smoke`) now *launch the shipped artifacts and exercise the assembled,

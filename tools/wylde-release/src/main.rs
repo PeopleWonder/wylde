@@ -179,14 +179,15 @@ enum Cmd {
     /// the current commit. `publish` refuses without a green, current receipt.
     Preflight(preflight::PreflightArgs),
 
-    /// Run the **L2 cold-start smoke + L3 service-health** launch-and-verify
-    /// gate on its own (without the benchmark/receipt machinery). Launches the
-    /// shipped daemon + GUI from a neutral cwd, then asserts the assembled
-    /// system is actually functional — services discovered, VRAM broker up,
-    /// Ollama has the models, **Memgraph has real data**, RAG answers, a chat
-    /// turn completes, a memory round-trips. Prints each check's verdict and
-    /// exits non-zero on any failure. `preflight --launch` runs the same checks
-    /// and folds them into the receipt.
+    /// Run the **L2 cold-start smoke + L3 service-health + L5 shipped-config**
+    /// launch-and-verify gate on its own (without the benchmark/receipt
+    /// machinery). Launches the shipped daemon + GUI from a neutral cwd, then
+    /// asserts the assembled system is actually functional — services
+    /// discovered, VRAM broker up, Ollama has the models, **Memgraph has real
+    /// data**, the **reasoning tier is shipped OFF**, RAG answers, a chat turn
+    /// completes, a memory round-trips. Prints each check's verdict and exits
+    /// non-zero on any failure. `preflight --launch` runs the same checks and
+    /// folds them into the receipt.
     Smoke(preflight::SmokeArgs),
 }
 

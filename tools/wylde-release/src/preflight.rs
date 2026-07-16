@@ -99,7 +99,7 @@ pub struct PreflightArgs {
     pub host_label: String,
     #[arg(long)]
     pub no_history: bool,
-    /// Also run the **L2 cold-start + L3 service-health** launch-and-verify gate
+    /// Also run the **L2 cold-start + L3 service-health + L5 shipped-config** launch-and-verify gate
     /// and fold each check into the receipt. Off by default because it launches
     /// the real daemon + GUI and drives live services — but a **release-grade**
     /// receipt needs it: `publish` refuses a receipt that is not launch-verified.
@@ -354,7 +354,9 @@ pub fn run_preflight(args: PreflightArgs) -> Result<()> {
     // — L2/L3 launch-and-verify (opt-in; folds into the same receipt) —
     let mut launch_verified = false;
     if args.launch {
-        println!("\n== L2 cold-start + L3 service-health (launch-and-verify) ==");
+        println!(
+            "\n== L2 cold-start + L3 service-health + L5 shipped-config (launch-and-verify) =="
+        );
         // Reuse the benchmark's reasoning verdict for the chat-turn check rather
         // than paying for a second live eval; `None` ⇒ the check runs its own
         // `reasoning_eval --smoke` turn.
