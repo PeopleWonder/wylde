@@ -501,6 +501,13 @@ pub(crate) fn render_replan_prompt(
         &mut s,
     );
     section("Available tools", &inputs.tool_catalog, &mut s);
+    // REPLAN must see the same vocabulary PLAN did, or it would re-introduce
+    // the #25 mismatch on exactly the turns that already went wrong.
+    section(
+        "Resource types for the wylde_* verbs (use one as `resource_type`)",
+        &inputs.resource_catalog,
+        &mut s,
+    );
 
     let plan_lines: Vec<String> = dag
         .steps
