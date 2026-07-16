@@ -76,15 +76,27 @@ jobs:
         working-directory: Core/GUI
         run: cargo build --workspace --locked
 
-  # --- GUI panel-walk (L7) — the "does every page load?" gate. Mounts all 9
-  # panels + the Workspaces subtabs as headless windowed `#[gpui::test]`s and
-  # asserts each loads + detects its error state under four backend conditions
-  # (healthy / down / error envelope / empty). Runs on the CI runner because
-  # gpui's test platform is a mock `TestPlatform` — no desktop session, GPU, or
-  # display needed. Scoped to the panel crates (the `panel-walk` cargo alias),
-  # NOT `--workspace`, so it never links the Shell's tray-icon/wry graph or the
-  # rust/ audio stack (`wylde-voice`/cpal, which segfaults headless). See
-  # docs/enforcement-matrix.md row 4b + issue #35.
+  # --- GUI panel tests (L7) — the "does every page load, and does it still
+  # behave?" gate. Runs every test target in the 9 panel crates as headless
+  # windowed `#[gpui::test]`s:
+  #   * the panel-walk — all 9 panels + the Workspaces subtabs mount, load, and
+  #     detect their error state under four backend conditions (healthy / down /
+  #     error envelope / empty); and
+  #   * the behavioural tests — chat workspace-scoping on send, memory copy-in
+  #     provenance, workspace registry nav, settings prefs dispatch, device
+  #     pairing cancel (issue #56).
+  # Runs on the CI runner because gpui's test platform is a mock `TestPlatform`
+  # — no desktop session, GPU, or display needed. Scoped to the panel crates
+  # (the `panel-walk` cargo alias), NOT `--workspace`, so it never links the
+  # Shell's tray-icon/wry graph or the rust/ audio stack (`wylde-voice`/cpal,
+  # which segfaults headless). See docs/enforcement-matrix.md row 4b + #35/#56.
+  #
+  # The job `name:` is the REQUIRED status-check context and is deliberately
+  # unchanged even though the job now runs more than the panel-walk: renaming it
+  # would stop the required context from ever reporting, and GitHub would block
+  # every PR forever waiting on it — including the PR doing the rename. To
+  # rename: add the new context to both rulesets live FIRST, merge, then drop
+  # the old one.
   gui-panel-walk:
     name: gui panel-walk (L7)
     runs-on: windows-latest
@@ -95,9 +107,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "Core/GUI -> target"
-      - name: cargo panel-walk (headless windowed gpui tests)
+      - name: cargo panel-walk (panel-walk + behavioural, headless windowed gpui tests)
         working-directory: Core/GUI
-        run: cargo panel-walk
+        run: cargo panel-walk --locked
 
   # --- Version consistency (G7) — the two workspace roots (rust/ + Core/GUI/)
   # must carry the same version, and on a tag build the tag must match it. A
