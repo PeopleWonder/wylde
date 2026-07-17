@@ -44,3 +44,10 @@ windows = { workspace = true, features = [
 [dev-dependencies]
 tempfile = "3"
 tokio-test = "0.4"
+# Serialises every test that mutates the process-global WYLDE_ROOT /
+# WYLDE_SERVICES. This crate previously guarded them with TWO different async
+# mutexes (`registry_guard` in control, `state_guard` in state) plus one test
+# with no guard at all — three disciplines over one global, which is no mutual
+# exclusion at all. `#[serial]` is one lock for all of them, and is the pattern
+# already used by wylde-shared / wylde-harness / wylde-concept-{routing,hierarchy}.
+serial_test.workspace = true

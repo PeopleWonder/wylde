@@ -260,6 +260,7 @@ pub(crate) fn dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     // These tests write / delete the process-shared `core.json`. So does
@@ -275,6 +276,7 @@ mod tests {
         // process, which is the only realistic environment.
     }
 
+    #[serial]
     #[tokio::test]
     async fn write_then_read_core_manifest() {
         let _g = crate::state::tests::state_guard().await;
@@ -311,6 +313,7 @@ mod tests {
         delete_manifest_file("wylde-core");
     }
 
+    #[serial]
     #[tokio::test]
     async fn preserves_started_at_across_rewrite() {
         let _g = crate::state::tests::state_guard().await;
