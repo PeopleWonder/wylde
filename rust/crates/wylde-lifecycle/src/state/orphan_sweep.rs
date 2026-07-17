@@ -326,6 +326,7 @@ pub fn stop_orphan_sweep() {
 mod tests {
     use super::*;
     use serde_json::json;
+    use serial_test::serial;
     use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::sync::Mutex as AsyncMutex;
@@ -342,6 +343,7 @@ mod tests {
     /// state singleton, which caches `WYLDE_ROOT` from the process
     /// environment at first read. Tests can still operate on the
     /// resolved dir by checking what the singleton returns.
+    #[serial]
     #[tokio::test]
     async fn sweep_dead_pid_marks_orphan() {
         let _g = ENV_LOCK.lock().await;
@@ -376,6 +378,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[tokio::test]
     async fn sweep_live_pid_skipped() {
         let _g = ENV_LOCK.lock().await;
@@ -407,6 +410,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[tokio::test]
     async fn sweep_skips_stopped_manifests() {
         let _g = ENV_LOCK.lock().await;
@@ -437,6 +441,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[tokio::test]
     async fn boot_sweep_removes_dead_pid_manifest() {
         let _g = ENV_LOCK.lock().await;
@@ -473,6 +478,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[tokio::test]
     async fn boot_sweep_keeps_live_pid_manifest() {
         let _g = ENV_LOCK.lock().await;
@@ -509,6 +515,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[tokio::test]
     async fn boot_sweep_skips_stopped_manifest() {
         let _g = ENV_LOCK.lock().await;
@@ -544,6 +551,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[tokio::test]
     async fn boot_sweep_nospawn_inspects_but_does_not_delete() {
         // Acquire the state singleton guard too — this test mutates the

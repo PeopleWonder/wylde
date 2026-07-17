@@ -862,6 +862,7 @@ fn wylde_root() -> PathBuf {
 mod tests {
     use super::*;
     use serde_json::json;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     fn write_json(path: &Path, value: &Value) {
@@ -1307,6 +1308,7 @@ mod tests {
         );
     }
 
+    #[serial]
     #[test]
     fn wylde_services_env_relocates_discovery_to_a_sibling_root() {
         // Locked out-of-tree layout: Services/ is a *sibling* of Core, not

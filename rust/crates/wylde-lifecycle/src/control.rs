@@ -1282,15 +1282,56 @@ async fn lifecycle_start_service_action(payload: Value) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
     use wylde_shared::ipc::{dispatch_action, list_actions, unregister_action};
 
     // The action registry is a process-global. Without a guard,
     // parallel tests race each other's register/cleanup pairs and
     // some lookups land between a sibling's cleanup and re-register.
+    //
+    // NOTE: this guard covers the ACTION REGISTRY only. Tests that also mutate
+    // the process-global WYLDE_ROOT / WYLDE_SERVICES need `#[serial]` on top —
+    // `state_guard` guards the same env vars from the `state` module with a
+    // *different* mutex, and two locks over one resource is no mutual exclusion.
     async fn registry_guard() -> MutexGuard<'static, ()> {
         static LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
         LOCK.lock().await
+    }
+
+    /// Pins BOTH variables that feed service discovery at a known estate, and
+    /// restores them on drop — including on a panicking assert, which a manual
+    /// save/restore around the assertion would leak.
+    ///
+    /// Both, not one: `WYLDE_ROOT` selects the estate and `WYLDE_SERVICES`
+    /// independently relocates the Services bucket within it. A test that pins
+    /// only one still reads the other from the developer's real environment.
+    struct RestoreEnv {
+        root: Option<std::ffi::OsString>,
+        services: Option<std::ffi::OsString>,
+    }
+    impl RestoreEnv {
+        fn pin(root: &std::path::Path) -> Self {
+            let saved = Self {
+                root: std::env::var_os("WYLDE_ROOT"),
+                services: std::env::var_os("WYLDE_SERVICES"),
+            };
+            std::env::set_var("WYLDE_ROOT", root);
+            std::env::remove_var("WYLDE_SERVICES");
+            saved
+        }
+    }
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            match self.root.take() {
+                Some(v) => std::env::set_var("WYLDE_ROOT", v),
+                None => std::env::remove_var("WYLDE_ROOT"),
+            }
+            match self.services.take() {
+                Some(v) => std::env::set_var("WYLDE_SERVICES", v),
+                None => std::env::remove_var("WYLDE_SERVICES"),
+            }
+        }
     }
 
     /// Every action `register_with_ipc` binds — kept in one place so the
@@ -1490,6 +1531,7 @@ mod tests {
         cleanup();
     }
 
+    #[serial]
     #[tokio::test]
     async fn service_start_accepts_discovered_sibling() {
         // The accept-list is discovery-driven, not a fixed array: a sibling
@@ -1522,17 +1564,18 @@ mod tests {
         )
         .unwrap();
 
-        let saved_root = std::env::var_os("WYLDE_ROOT");
-        std::env::set_var("WYLDE_ROOT", tmp.path());
+        // Pin BOTH variables that feed discovery, not just one. This test used
+        // to set only WYLDE_ROOT, so an ambient WYLDE_SERVICES relocated the
+        // bucket to the developer's REAL Services/ estate instead of `tmp` —
+        // `wylde-foo` isn't there, so it failed `not_registered` on every
+        // machine with Wylde configured. Green on CI only because CI has
+        // neither set.
+        let _restore = RestoreEnv::pin(tmp.path());
         let reply = dispatch_action(json!({
             "action": "service.start",
             "payload": {"name": "wylde-foo"},
         }))
         .await;
-        match saved_root {
-            Some(v) => std::env::set_var("WYLDE_ROOT", v),
-            None => std::env::remove_var("WYLDE_ROOT"),
-        }
 
         if let Some(err) = reply.error {
             assert_ne!(
@@ -1872,6 +1915,7 @@ mod tests {
         format!("{nanos:x}")
     }
 
+    #[serial]
     #[tokio::test]
     async fn shutdown_all_returns_structured_summary() {
         let _g = registry_guard().await;
@@ -1882,6 +1926,19 @@ mod tests {
         // This test exercises the real (spawning) path; pin the flag off so a
         // prior test's leftover can't flip us into the no-spawn branch.
         crate::state::set_nospawn(false);
+        // KNOWN LOCAL FAILURE, deliberately NOT fixed here (KI-6).
+        //
+        // `count == 0` means "nothing was discovered to stop". On a machine with
+        // an ambient `WYLDE_ROOT` (i.e. any configured Wylde dev box) this comes
+        // back 10 and the test fails; unsetting WYLDE_ROOT alone makes it pass,
+        // verified by isolation. It fails even when run ALONE, so it is NOT the
+        // parallel env race this change fixes.
+        //
+        // Pinning the env from inside the test does not help — the root is
+        // already resolved by the time this body runs — which is why it needs a
+        // real fix (inject the root, or stub the teardown steps) rather than an
+        // env guard. Out of scope for the race fix; called out in the PR so it
+        // isn't mistaken for something this change was supposed to cover.
         cleanup();
         register_with_ipc();
         // No services are spawned in this unit test; the action
