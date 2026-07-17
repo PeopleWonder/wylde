@@ -19,6 +19,19 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Fixed
 
+- **The Workspaces graph-IPC test no longer claims the live service's pipe.** `integration_graph_ipc`
+  stood up its fixture server on the **production** endpoint (`\\.\pipe\wylde-workspaces`), which the
+  real service already owns — so it failed with `ERROR_ACCESS_DENIED` / `ERROR_PIPE_BUSY` on any machine
+  actually running Wylde, and blocked `cargo panel-walk` (the L7 gate's own invocation) on a live rig.
+  It passed in CI throughout, because CI never runs the stack — the inverse of a flake, and the reason
+  it survived review. The root cause was a missing seam rather than a bad constant: the GUI *client*
+  (`wylde_gui_pipe`) resolved the pipe name itself with no injection point, while the service side
+  (`WYLDE_WORKSPACES_PIPE_NAME`) and the whole `rust/` workspace already had one (#29). `pipe_name()`
+  now consults a `test-support`-gated override, so a fixture server owns a private per-process pipe and
+  the shipped Shell keeps **no** override path at all — deliberately not an env var, which would have
+  been a live pipe-hijacking surface. A new static check (`fixture_pipes_are_private.rs`) scans the GUI
+  tree for literal production binds inside the already-required `gui panel-walk (L7)` context; static
+  because CI, having no live stack, can never observe this class at runtime (#75).
 - **Three eval/bench targets no longer default to a folder that doesn't exist.** `lexical_eval.rs`,
   `live_eval.rs` (`live_data_dir()`) and `index_bench.rs` each fell back to a hardcoded
   `C:\Users\aaron\Documents\Obsidian Vault\Wylde-release` path when `WYLDE_ROOT` was unset. That vault
