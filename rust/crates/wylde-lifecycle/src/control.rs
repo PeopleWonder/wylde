@@ -1926,19 +1926,12 @@ mod tests {
         // This test exercises the real (spawning) path; pin the flag off so a
         // prior test's leftover can't flip us into the no-spawn branch.
         crate::state::set_nospawn(false);
-        // KNOWN LOCAL FAILURE, deliberately NOT fixed here (KI-6).
-        //
-        // `count == 0` means "nothing was discovered to stop". On a machine with
-        // an ambient `WYLDE_ROOT` (i.e. any configured Wylde dev box) this comes
-        // back 10 and the test fails; unsetting WYLDE_ROOT alone makes it pass,
-        // verified by isolation. It fails even when run ALONE, so it is NOT the
-        // parallel env race this change fixes.
-        //
-        // Pinning the env from inside the test does not help — the root is
-        // already resolved by the time this body runs — which is why it needs a
-        // real fix (inject the root, or stub the teardown steps) rather than an
-        // env guard. Out of scope for the race fix; called out in the PR so it
-        // isn't mistaken for something this change was supposed to cover.
+        // `count == 0` means "nothing was discovered to stop", which holds
+        // because this crate's tests resolve their root to a per-process
+        // scratch path that has no manifests in it — see `State::resolve_root`.
+        // Until #80 this read the ambient `WYLDE_ROOT` and returned 11: the
+        // developer's real manifests, counted as if the fixture had stopped
+        // them.
         cleanup();
         register_with_ipc();
         // No services are spawned in this unit test; the action

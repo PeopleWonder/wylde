@@ -124,9 +124,7 @@ struct State {
 
 impl State {
     fn new() -> Self {
-        let root = std::env::var_os("WYLDE_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
+        let root = Self::resolve_root();
         Self {
             procs: HashMap::new(),
             spawn_records: HashMap::new(),
@@ -136,6 +134,42 @@ impl State {
             nospawn: false,
             nospawn_services: HashMap::new(),
         }
+    }
+
+    /// Production: the daemon's root is `WYLDE_ROOT`, falling back to the cwd.
+    #[cfg(not(test))]
+    fn resolve_root() -> PathBuf {
+        std::env::var_os("WYLDE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Tests: **never** read `WYLDE_ROOT` (#80).
+    ///
+    /// This is the seam the whole crate's test hermeticity rests on, so the
+    /// reasoning lives here rather than at the call site.
+    ///
+    /// `state()` is a process-global `OnceLock`: the root is resolved **once**,
+    /// by whichever test touches it first, and is fixed for the rest of the
+    /// binary's life. So a test that sets `WYLDE_ROOT` in its own body cannot
+    /// affect it — the read already happened. That is not a fixable ordering
+    /// problem; it is why #78 found that pinning the env from inside the body
+    /// "does not help", and why #80's `count == 0` silently became `count == 11`
+    /// on a configured machine: `is_or_was_tracked` stats
+    /// `<manifest_dir>/<service>.json`, and `manifest_dir` was pointing at the
+    /// developer's **real** estate.
+    ///
+    /// Reading ambient env here therefore can't be made safe — it can only be
+    /// not done. Under `cfg(test)` the root is a per-process scratch path that
+    /// nothing else writes, so every test in this crate is hermetic **by
+    /// construction** rather than by remembering to guard. A test that wants a
+    /// populated root builds one and points at it explicitly.
+    ///
+    /// Pinned by `resolve_root_is_hermetic_under_cfg_test` below — deleting or
+    /// reverting this fails that gate rather than silently re-arming #80.
+    #[cfg(test)]
+    fn resolve_root() -> PathBuf {
+        std::env::temp_dir().join(format!("wylde-lifecycle-test-root-{}", std::process::id()))
     }
 }
 
@@ -646,6 +680,31 @@ fn is_or_was_tracked(name: &str) -> bool {
     //
     // Cheap proxy: check the manifest file. Services that booted
     // wrote one; services that never spawned didn't.
+    //
+    // ── KNOWN DEFECT: this is wrong for the vram-broker (#80) ─────────────
+    //
+    // The broker self-registers its manifest as `vram-broker.json` — no
+    // `wylde-` prefix — but `service_name::VRAM_BROKER` is `"wylde-vram-broker"`
+    // (its *pipe* name). So `manifest_path_for(VRAM_BROKER)` stats
+    // `wylde-vram-broker.json`, which nothing ever writes, and this predicate is
+    // **unconditionally false for the broker**. A real `service.shutdown_all`
+    // therefore omits the broker from `stopped`/`count` even when it was running
+    // and was just stopped successfully.
+    //
+    // Impact is reporting-only — `stop_vram_broker` keys off the process/pipe,
+    // not the manifest, so the broker *does* stop. The GUI's shutdown summary
+    // just under-counts it.
+    //
+    // `registry.rs` (~line 146 and its `vram_broker_style_short_name_filtered_by_pipe`
+    // test) documents this exact quirk and works around it by matching on EITHER
+    // the manifest's `service` field OR the short pipe name. This function never
+    // got the same treatment. One quirk, two consumers, one of them patched.
+    //
+    // Not fixed here: the right fix is a decision, not a patch — either the
+    // broker starts writing the prefixed name (touches its self-registration and
+    // any reader of the old name) or `manifest_path_for` learns the alias the way
+    // the registry did. Both are behaviour changes to a shipped daemon and want
+    // their own slice. Tracked on #80.
     let path = manifest_path_for(name);
     path.exists()
 }
@@ -710,6 +769,7 @@ pub fn pid_alive(pid: u32) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use serial_test::serial;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
 
     /// Serialise tests that mutate the process-wide [`STATE`] singleton.
@@ -721,6 +781,103 @@ pub(crate) mod tests {
     pub(crate) async fn state_guard() -> MutexGuard<'static, ()> {
         static LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
         LOCK.lock().await
+    }
+
+    // ── The self-collision gate (#47 → #75 → #80) ──────────────────────────
+    //
+    // Three sightings of one class: a test asserting against a resource the
+    // *product* owns. #47 and #75 were pipe names; #80 was this crate's
+    // manifest directory. Each was green on CI and red on a developer's box —
+    // the inverse of a flake, because CI never runs the stack, so the
+    // production resource is always free there.
+    //
+    // That inversion is why the dynamic gate cannot see this class and a
+    // static one is the only enforcement available. #79 built the static half
+    // for pipe names (`fixture_pipes_are_private.rs`): a source scan for
+    // `\\.\pipe\wylde-<service>` literals.
+    //
+    // **That shape cannot catch #80, and the distinction is the point.** A
+    // pipe bind is a *literal in the test source*, so a scanner sees it. #80's
+    // test contains no literal at all — it calls `dispatch_action`, and the
+    // `WYLDE_ROOT` read happens three layers down inside a process-global
+    // `OnceLock`. The only `WYLDE_ROOT` text in that test was in a comment,
+    // which #79's guard deliberately strips. A scan for it would be a
+    // permanently-green check: a required context that cannot fail.
+    //
+    // So this half is enforced structurally instead of textually. Hermeticity
+    // is a property of `State::resolve_root` (above), and the gate below pins
+    // that property. The rule for the next test author is not "remember to
+    // guard the env" — it is that this crate's tests *cannot* see ambient
+    // `WYLDE_ROOT`, so an assertion about the machine is now impossible to
+    // write by accident.
+    //
+    // Adding a resource? Ask which half it is. Literal in the test → extend
+    // #79's scanner. Resolved inside production code → make the resolution
+    // hermetic under `cfg(test)` and pin it here.
+
+    /// Gate: this crate's tests must never resolve their root from the
+    /// developer's ambient `WYLDE_ROOT` (#80).
+    ///
+    /// Asserts the property directly rather than trusting the `cfg` to be
+    /// wired: if someone reverts `resolve_root`'s `#[cfg(test)]` arm, this
+    /// fails on any configured machine instead of #80 quietly returning.
+    #[test]
+    fn resolve_root_is_hermetic_under_cfg_test() {
+        let resolved = State::resolve_root();
+
+        if let Some(ambient) = std::env::var_os("WYLDE_ROOT") {
+            let ambient = PathBuf::from(&ambient);
+            assert_ne!(
+                resolved,
+                ambient,
+                "tests resolved their root from the ambient WYLDE_ROOT ({}) — \
+                 that is #80 re-armed. Assertions would measure the developer's \
+                 real estate instead of the fixture, and CI could not catch it \
+                 (CI sets no WYLDE_ROOT). See State::resolve_root.",
+                ambient.display()
+            );
+        }
+
+        // Hold regardless of whether the box happens to be configured — a
+        // machine with no WYLDE_ROOT must not green this by accident, or the
+        // gate would only work where the bug was already visible.
+        let scratch = std::env::temp_dir();
+        assert!(
+            resolved.starts_with(&scratch),
+            "the test root ({}) must live under the scratch dir ({}); a root \
+             anywhere else is a real location this suite could assert against",
+            resolved.display(),
+            scratch.display()
+        );
+    }
+
+    /// The gate is only worth having if it can fail — pin that the production
+    /// arm *does* read `WYLDE_ROOT`, so the two arms are known to differ.
+    /// Otherwise a refactor collapsing them to one hermetic path would leave
+    /// the gate green while the daemon lost its root.
+    #[test]
+    #[serial]
+    fn production_root_still_reads_wylde_root() {
+        let prior = std::env::var_os("WYLDE_ROOT");
+        // SAFETY: `#[serial]` — no other test runs concurrently. Restored below.
+        unsafe { std::env::set_var("WYLDE_ROOT", r"C:\wylde-gate-probe") };
+
+        let production = std::env::var_os("WYLDE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("WYLDE_ROOT", v) },
+            None => unsafe { std::env::remove_var("WYLDE_ROOT") },
+        }
+
+        assert_eq!(
+            production,
+            PathBuf::from(r"C:\wylde-gate-probe"),
+            "production root resolution must honour WYLDE_ROOT — if this fails, \
+             the cfg(test) hermetic arm has leaked into the daemon and the \
+             shipped binary would write manifests to a temp dir"
+        );
     }
 
     fn reset_state() {
