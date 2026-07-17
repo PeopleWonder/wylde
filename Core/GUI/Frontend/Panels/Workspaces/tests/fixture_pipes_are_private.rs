@@ -23,8 +23,33 @@
 //! `rust/` workspace has followed the equivalent convention since #29
 //! (`unique_service_name()` + the `WYLDE_*_PIPE_NAME` service overrides).
 //!
-//! Scope is the `Core/GUI` tree — the `rust/` workspace is a separate cargo
-//! workspace with its own gates, and already complies.
+//! ## Scope — and the half this guard cannot cover
+//!
+//! Scope is the `Core/GUI` tree; `rust/` is a separate cargo workspace with its
+//! own gates and complies with the *pipe-name* convention (#29).
+//!
+//! **That is narrower than it sounds, and #80 proved it.** This guard is a scan
+//! of source text, so it can only catch a production resource that appears *as a
+//! literal in the test*. A pipe bind does. A resource resolved **inside
+//! production code** does not:
+//! `wylde-lifecycle`'s `shutdown_all_returns_structured_summary` asserted
+//! `count == 0` and got `11` on any configured machine, because the root was
+//! read from the ambient `WYLDE_ROOT` three layers down, in a process-global
+//! `OnceLock`. Its test source contained no marker at all — the only
+//! `WYLDE_ROOT` text was a comment, which `strip_line_comments` strips. A
+//! textual gate for it would be permanently green: a required check that cannot
+//! fail.
+//!
+//! So the class has two halves, enforced differently:
+//!
+//! | half | tell | enforcement | sightings |
+//! |---|---|---|---|
+//! | literal in the test | `\\.\pipe\wylde-x` | **this scan** | #47, #75 |
+//! | resolved in production code | *(none — invisible)* | **hermetic `cfg(test)`** + a gate pinning it (`rust/crates/wylde-lifecycle/src/state/mod.rs`, `resolve_root_is_hermetic_under_cfg_test`) | #80 |
+//!
+//! Adding a resource? Ask which half it is before reaching for this file. If the
+//! test never names it, extending this scan will buy a green check and no
+//! safety — make the resolution hermetic under `cfg(test)` instead.
 
 use std::fs;
 use std::path::{Path, PathBuf};

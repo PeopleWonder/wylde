@@ -208,6 +208,18 @@ error field and *degrades per card* (assert `initial_load_done` + per-service
 flags the optional voice service). Run the whole gate with **`cargo panel-walk`**
 (from `Core/GUI/`); it runs headless in CI as the `gui panel-walk (L7)` job.
 
+> ### ⚠ `cargo test --workspace` does not run these tests
+>
+> The windowed gpui tests sit behind a required feature (`test-support`, enabled
+> by the `panel-walk` alias). A plain `cargo test --workspace` from `Core/GUI/`
+> compiles and reports **`0 passed` for all 8 binaries** — it does not skip
+> loudly, it does not error, it **looks green while testing nothing.**
+>
+> That is a trap worth naming: the habit of "run `--workspace`, see green" is
+> correct in `rust/` and silently wrong here. It was hit during the KI-6
+> enumeration (2026-07-17) and nearly caused the GUI tree to be reported clean
+> without a single GUI test having run. **Always use `cargo panel-walk`.**
+
 **Covered (behavioural, panel-specific):** `tests/dock_scoping.rs` — the docked
 ChatPanel's enter→scoped list / leave→restore, docked turn carries
 `workspace_id`, Global stays workspace-free (D1), the three C6 empty-state enter

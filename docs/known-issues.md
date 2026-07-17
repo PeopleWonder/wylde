@@ -120,8 +120,39 @@ predicate is therefore unconditionally false for the broker, so a real `service.
 under-reports it as not-stopped even when it was just stopped. `registry.rs:1056` documents this
 exact quirk and works around it; the teardown reporter doesn't. One quirk, two paths, one patched.
 
-**Don't close KI-6 until #80 closes** — but note that everything else this entry claimed is now
-either fixed or was never true.
+**#80 is FIXED, and the class now has a gate (2026-07-17).** `State::resolve_root` no longer reads
+`WYLDE_ROOT` under `cfg(test)`; it returns a per-process scratch path, so every test in
+`wylde-lifecycle` is hermetic **by construction** rather than by remembering to guard.
+`cargo test --workspace` is now green on a configured box for the first time (106 binaries, exit 0) —
+previously impossible.
+
+**Why the gate is structural and not another source scan.** The obvious move was to extend #79's
+`fixture_pipes_are_private.rs` from pipe names to the data dir. **That cannot work, and the reason is
+the durable lesson.** #79's guard is a scan of *source text*: it catches a production resource that
+appears **as a literal in the test**. #80's test contained no literal — it called `dispatch_action`,
+and the env read happened three layers down in a process-global `OnceLock`; the only `WYLDE_ROOT`
+text in it was a comment, which that guard deliberately strips. A textual gate for #80 would have
+been **permanently green — a required check that cannot fail**, which is worse than no gate because
+it reads as coverage.
+
+So the class has two halves, and they need different enforcement:
+
+| half | tell | enforcement | sightings |
+|---|---|---|---|
+| literal in the test | `\\.\pipe\wylde-x` | source scan (#79's `fixture_pipes_are_private.rs`) | #47, #75 |
+| resolved inside production code | *none — invisible* | hermetic `cfg(test)` + a gate pinning the property (`state/mod.rs::resolve_root_is_hermetic_under_cfg_test`) | #80 |
+
+**Before extending either, ask which half the resource is.** If the test never names it, a scan buys
+a green check and no safety.
+
+The gate was verified to *fail* both ways before being trusted: re-arming #80 trips it **with**
+ambient `WYLDE_ROOT` (`assert_ne`) **and without it** (the scratch-dir assertion) — the second matters
+most, because it is what makes the gate work in CI, the environment that is blind to the bug itself.
+A companion test pins that the *production* arm still reads `WYLDE_ROOT`, so a refactor collapsing the
+two arms can't leave the gate green while the shipped daemon writes manifests to a temp dir.
+
+**KI-6 can close when #80 closes** — nothing else in this entry is outstanding. Everything else it
+claimed is now either fixed or was never true.
 
 **A second one in this class is now FOUND AND FIXED (2026-07-16):**
 `wylde-extension-bridge`'s `mcp::client::tests` mutated the process-global `WYLDE_BIN` / `WYLDE_ROOT`
@@ -204,12 +235,37 @@ deletion with the Python scrub (T1.2 / KI-3), which is where that call belongs.
 stale location to anyone who clones. It's a local scratch file; deleting someone's untracked local
 file isn't this issue's business.
 
+> **DELETED 2026-07-17 on the maintainer's say-so.** The reasoning above still stands for *this issue's*
+> scope — it was never KI-7's to delete. It went as its own decision: dated 2026-06-09, it named the dead
+> vault path as the repo root, told its reader to treat **Nextcloud as authoritative** (retired from canon),
+> declared `feat/thought-bubble-system` the trunk, and hard-ruled *"NEVER merge to main"* — which now
+> contradicts the develop→main promotion model outright. Nothing unique was lost: its hard rules live in
+> agent memory, and its plan content is superseded by `ROADMAP.md`, the issues, and `docs/plans`.
+
+## KI-9 — One worktree outside `worktrees\` (`wt-license-gate`)
+**Status:** CHORE · **Labels:** `chore` · **Area:** dev environment
+
+**Recorded so it isn't forgotten, not because it's broken.** The 2026-07-17 worktree sweep removed the
+14 merged worktrees under `C:\Users\aaron\Wylde\worktrees\`. **`C:\Users\aaron\Wylde\wt-license-gate`
+(`chore/license-compliance-gate`) sits outside that directory** and was left alone: the approval was
+scoped to `worktrees\`, and widening it on a technicality wasn't this sweep's call.
+
+It qualifies on the merits — **branch merged into `develop`, tree clean** (verified in the same sweep) —
+so it is removable whenever the maintainer says. `git worktree remove <path>`; the branch survives
+removal either way.
+
+Six worktrees remain under `worktrees\` **by design, not neglect** — each carries real unmerged commits
+(`feeltest/all-hier` 10, `feeltest/organize+tabulate` 7, `feat/wylde-organize-v1` 3,
+`feat/temporal-memory-graph` 2, `feat/n8n-embedded-service` 1, `feat/tabulate-panel` 1). The last three
+feed **#39/#40** (0.3). **Don't sweep them.**
+
 ---
 
 ## How these map to the roadmap
 
 - KI-2, KI-4, KI-5 are **release-preflight verifications** folded into 0.2 gating (roadmap Tier 0).
 - KI-1 is **post-0.2** reasoning-v2 work (companion plan, Slice B).
+- KI-9 is a **dev-environment chore** — off every gate; needs one word from the maintainer, not work.
 - KI-3, KI-7 are **Tier-1 hygiene** (roadmap T1.2/T1.3 and §6).
 - KI-6 is **enumerated (2026-07-17) and hides no 0.2 blocker** — one real failure, #80, Tier 1. The
   "do this early, it may hide a blocker" instruction has been discharged; it doesn't need repeating.

@@ -57,6 +57,11 @@ don't need a changelog entry.
 - `cargo build --workspace --locked` in each workspace you touched
   (`rust/`, `Core/GUI/`, `tools/xtask`, `tools/wylde-release`).
 - `cargo test --workspace --locked` in `rust/` if you changed backend code.
+- **`cargo panel-walk` in `Core/GUI/` if you changed GUI code — `--workspace` does NOT run the GUI
+  tests.** The windowed gpui tests sit behind a required feature, so `cargo test --workspace` in
+  `Core/GUI/` reports `0 passed` for every binary and **looks green while testing nothing**. The
+  `panel-walk` alias is what the required `gui panel-walk (L7)` CI job runs; see
+  [`Core/GUI/docs/gui-testing.md`](Core/GUI/docs/gui-testing.md).
 - If you changed the version, bump **both** workspace roots together and run
   `tools/check-versions.sh` (the CI `version-consistency` gate, G7).
 - Green tests are necessary but **not sufficient** — Wylde's own history is that a fully green suite
