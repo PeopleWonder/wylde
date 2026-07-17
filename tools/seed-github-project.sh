@@ -7,10 +7,22 @@
 # else installed. (A prior version required standalone `jq` and failed with
 # "jq required" on a machine that didn't have it.)
 #
-# IDEMPOTENT: safe to re-run. It reuses the existing "Wylde Roadmap" project if
-# one already exists (it never creates a second), creates the custom fields only
-# if they're missing, and adds each issue / draft only if it isn't already on the
-# board. A re-run against a fully-seeded project makes no changes.
+# IDEMPOTENT + RECONCILING: safe to re-run. It reuses the existing "Wylde
+# Roadmap" project if one already exists (it never creates a second), creates the
+# custom fields only if they're missing, and adds each issue / draft only if it
+# isn't already on the board. A re-run against an in-sync board makes no visible
+# change.
+#
+# It does NOT merely skip what's already present — it re-asserts each item's Tier
+# from the ISSUE_TIER map. That distinction matters: the original version set Tier
+# only on the add path, so once an item was on the board its Tier could never be
+# corrected by a re-run. Editing the map afterward was a silent no-op forever,
+# which is exactly how #44 sat at Tier 0 while the map said Tier 3. "Idempotent"
+# has to mean "converges on the source of truth", not "does nothing".
+#
+# The map owns TIER ONLY. Status is deliberately not managed here: issue Status
+# auto-syncs from open/closed, and draft Status (drafts have no issue to close)
+# is set by hand on the board — re-running must not stomp it.
 #
 # SCOPE: `gh project` needs the `project` token scope. If it's missing, run:
 #     gh auth refresh -s project
@@ -33,10 +45,24 @@ OWNER="PeopleWonder"
 REPO="PeopleWonder/wylde"
 export TITLE="Wylde Roadmap"   # exported so gh's --jq can read it as env.TITLE
 
-# --- Preflight: gh present + authenticated with the project scope ------------
+# --- Preflight: gh present + can actually reach the Projects API -------------
+# PROBE THE CAPABILITY, DON'T PARSE THE PROSE. This used to be
+# `gh auth status 2>&1 | grep -qi "project"`, which is a false-negative machine:
+# that string only appears when gh prints a "Token scopes:" line, and gh prints
+# no scope line at all in several perfectly working states (e.g. an invalid
+# keyring entry alongside a working credential from another source — the exact
+# state this machine was in on 2026-07-16, where `gh project` worked fine while
+# `gh auth status` reported only "The token in keyring is invalid").
+#
+# Net effect: the script refused to run on a machine where it would have worked,
+# which is a large part of why the board drifted — the reconcile could never run.
+# A capability probe answers the question the script actually has ("can I use the
+# Projects API?") instead of inferring it from status text.
 command -v gh >/dev/null || { echo "ERROR: the GitHub CLI (gh) is required."; exit 1; }
-gh auth status 2>&1 | grep -qi "project" || {
-  echo "ERROR: the gh token lacks the 'project' scope. Run:  gh auth refresh -s project"; exit 1; }
+gh project list --owner "$OWNER" --limit 1 >/dev/null 2>&1 || {
+  echo "ERROR: cannot reach the GitHub Projects API as '$OWNER'."
+  echo "  Most likely the gh token lacks the 'project' scope. Try:  gh auth refresh -s project"
+  echo "  (Verify with: gh project list --owner $OWNER --limit 1)"; exit 1; }
 
 # --- 1. Project: reuse if it exists, else create ----------------------------
 num=$(gh project list --owner "$OWNER" --limit 100 --format json \
@@ -93,25 +119,33 @@ set_tier() {  # $1 = item id, $2 = "Tier N"
 }
 
 # --- Snapshot what's already on the board (one call each; drives idempotency)-
-present_issue_nums=$(gh project item-list "$num" --owner "$OWNER" --limit 200 --format json \
-                       --jq '.items[] | select(.content.type=="Issue") | .content.number')
-present_draft_titles=$(gh project item-list "$num" --owner "$OWNER" --limit 200 --format json \
-                         --jq '.items[] | select(.content.type=="DraftIssue") | .title')
-
-issue_present() {  # $1 = issue number
-  local n
-  for n in $present_issue_nums; do [ "$n" = "$1" ] && return 0; done
-  return 1
-}
-draft_present() {  # $1 = exact draft title
-  local t
+# We capture each item's ID alongside its identity, not just its identity: a
+# re-run must be able to RECONCILE an item that's already present, not merely
+# recognise it. Snapshotting numbers alone is what let #44's Tier drift from the
+# map and stay drifted (see `issue_item_id` / the reconcile loop below).
+present_issues=$(gh project item-list "$num" --owner "$OWNER" --limit 200 --format json \
+                   --jq '.items[] | select(.content.type=="Issue") | "\(.content.number) \(.id)"')
+present_drafts=$(gh project item-list "$num" --owner "$OWNER" --limit 200 --format json \
+                   --jq '.items[] | select(.content.type=="DraftIssue") | "\(.id)\t\(.title)"')
+issue_item_id() {  # $1 = issue number -> prints item id, non-zero if absent
+  local n i
   # Heredoc (not a pipe) so the loop runs in this shell and `return` works.
-  while IFS= read -r t; do [ "$t" = "$1" ] && return 0; done <<EOF
-$present_draft_titles
+  while read -r n i; do
+    [ "$n" = "$1" ] && { echo "$i"; return 0; }
+  done <<EOF
+$present_issues
 EOF
   return 1
 }
-
+draft_item_id() {  # $1 = exact draft title -> prints item id, non-zero if absent
+  local i t
+  while IFS=$'\t' read -r i t; do
+    [ "$t" = "$1" ] && { echo "$i"; return 0; }
+  done <<EOF
+$present_drafts
+EOF
+  return 1
+}
 # --- 3. Tracked issues ------------------------------------------------------
 # The Project auto-populates its built-in Milestone field from each issue, so the
 # milestone structure shows up without extra work here — we only set Tier.
@@ -136,14 +170,28 @@ declare -A ISSUE_TIER=(
   [67]="Tier 3"   # install wizard (post 0.2)
   [68]="Tier 3"   # deps: Dependabot auto-merge policy (post 0.2)
   [69]="Tier 3"   # updater: what "auto-update" means beyond auto-check (post 0.2)
+  # Tier 1 = real defect / hygiene that does NOT gate 0.2 and carries no
+  # milestone — the same bucket as drafts T1.1/T1.2 ("Not a 0.2 gate"). Kept OFF
+  # milestone "0.2 - (1) gate & hygiene" deliberately: that milestone is complete
+  # (0 open), and release-gates.json refuses to ship v0.2.0 while a required
+  # milestone has any open issue — so filing a non-gating bug into it would block
+  # the release.
+  [75]="Tier 1"   # integration_graph_ipc binds the production pipe name (self-collision, #47 shape)
 )
 # Iterate the map itself (numerically sorted) rather than a hand-kept second
 # list — that duplication is what let #41–#49 get added by hand and never make
 # it into the script.
 echo "Ensuring tracked issues…"
 for n in $(printf '%s\n' "${!ISSUE_TIER[@]}" | sort -n); do
-  if issue_present "$n"; then
-    echo "  = #$n already on board (skip)"
+  # Already on the board: RECONCILE its Tier to the map rather than skipping.
+  # The map is the single source of truth, so a re-run must be able to correct
+  # drift — whether the board was edited by hand or the map was edited after
+  # seeding. Skipping here is what let #44 sit at Tier 0 for weeks while the map
+  # said Tier 3. `set_tier` is idempotent, so re-running still makes no visible
+  # change when nothing has drifted.
+  if iid=$(issue_item_id "$n"); then
+    set_tier "$iid" "${ISSUE_TIER[$n]}"
+    echo "  = #$n on board — Tier reconciled to ${ISSUE_TIER[$n]}"
     continue
   fi
   iid=$(gh project item-add "$num" --owner "$OWNER" \
@@ -158,11 +206,16 @@ done
 # design (no milestone on purpose) — so the board is complete without inventing
 # issues for trivia. DONE items are kept as visible markers, not work.
 draft() {  # $1 = "Tier N", $2 = title, $3 = body
-  if draft_present "$2"; then
-    echo "  = draft '$2' already on board (skip)"
+  local iid
+  # Same reconcile-don't-skip rule as the issue loop above. Note this owns Tier
+  # only — NOT Status. A draft has no issue to close, so its Status is set by
+  # hand on the board and the script must not stomp it (T1.6/T1.7 are marked
+  # Done that way).
+  if iid=$(draft_item_id "$2"); then
+    set_tier "$iid" "$1"
+    echo "  = draft '$2' on board — Tier reconciled to $1"
     return
   fi
-  local iid
   iid=$(gh project item-create "$num" --owner "$OWNER" --title "$2" --body "$3" \
           --format json --jq '.id')
   set_tier "$iid" "$1"
