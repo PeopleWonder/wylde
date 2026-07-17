@@ -219,6 +219,9 @@ flags the optional voice service). Run the whole gate with **`cargo panel-walk`*
 > correct in `rust/` and silently wrong here. It was hit during the KI-6
 > enumeration (2026-07-17) and nearly caused the GUI tree to be reported clean
 > without a single GUI test having run. **Always use `cargo panel-walk`.**
+>
+> Tracked on **#85** — making the no-op *loud* rather than silent is the open
+> question there; this note is the stopgap, and it only helps people who read it.
 
 **Covered (behavioural, panel-specific):** `tests/dock_scoping.rs` — the docked
 ChatPanel's enter→scoped list / leave→restore, docked turn carries

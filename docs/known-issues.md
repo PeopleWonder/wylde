@@ -151,8 +151,21 @@ most, because it is what makes the gate work in CI, the environment that is blin
 A companion test pins that the *production* arm still reads `WYLDE_ROOT`, so a refactor collapsing the
 two arms can't leave the gate green while the shipped daemon writes manifests to a temp dir.
 
-**KI-6 can close when #80 closes** — nothing else in this entry is outstanding. Everything else it
-claimed is now either fixed or was never true.
+**#80 is CLOSED (#82). KI-6's own question is fully discharged.**
+
+**The findings from this enumeration are now tracked as issues, not just prose here** — a finding that
+lives only in a doc is a finding that gets passed over, which is the disease this whole entry is about:
+
+- **#83** — the **self-collision class** as a tracking issue, with #47 / #75 / #80 as sub-issues so the
+  pattern reads as one thing instead of three unrelated numbers. Carries the two-halves table, the tell,
+  and the rules for a test author. **Open with no open instance, by design** — it is the home for the
+  fourth sighting, so the diagnosis isn't re-derived from scratch under a fresh number.
+- **#84** — the **vram-broker manifest-name defect** (a real product bug found while diagnosing #80).
+- **#85** — the **`cargo test --workspace` GUI trap** (a false green; docs here are the stopgap).
+
+**KI-6 itself can be closed** — it is a duplicate of tracked work now. Kept until the maintainer says,
+since this file's own migration to GitHub Issues is the standing plan (see the header) rather than a
+per-entry call.
 
 **A second one in this class is now FOUND AND FIXED (2026-07-16):**
 `wylde-extension-bridge`'s `mcp::client::tests` mutated the process-global `WYLDE_BIN` / `WYLDE_ROOT`
@@ -267,5 +280,7 @@ feed **#39/#40** (0.3). **Don't sweep them.**
 - KI-1 is **post-0.2** reasoning-v2 work (companion plan, Slice B).
 - KI-9 is a **dev-environment chore** — off every gate; needs one word from the maintainer, not work.
 - KI-3, KI-7 are **Tier-1 hygiene** (roadmap T1.2/T1.3 and §6).
-- KI-6 is **enumerated (2026-07-17) and hides no 0.2 blocker** — one real failure, #80, Tier 1. The
-  "do this early, it may hide a blocker" instruction has been discharged; it doesn't need repeating.
+- KI-6 is **enumerated (2026-07-17), fixed (#80/#82), and hid no 0.2 blocker.** The "do this early, it
+  may hide a blocker" instruction is discharged and doesn't need repeating. Its findings now live as
+  **#83** (self-collision class, tracking) · **#84** (vram-broker under-report) · **#85** (`--workspace`
+  GUI trap) — **none of them 0.2-gating, all Tier 1, none milestoned.**
