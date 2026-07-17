@@ -64,20 +64,64 @@ artifact, but breaks the demo.
 ## KI-6 — Carrying-over test failures (incl. a confirmed env-isolation bug)
 **Status:** OPEN (partial) · **Labels:** `bug`, `test` · **Area:** wylde-lifecycle + others
 
-A prior session reported ~6 test failures with no tracked home. Enumerate with `cargo test
---workspace` on trunk and file one issue per failure. **One is now root-caused** (found while
-building the min_core floor): two `wylde-lifecycle` tests are **not env-isolated** and flip on the
-ambient `WYLDE_SERVICES` variable in *opposite* directions —
+**ENUMERATED 2026-07-17 (trunk `0e111e3`). The "~6 failures" were never counted — there is exactly
+ONE, and it is filed as #80.** A prior session reported ~6 with no tracked home; this entry then
+carried "the remaining ~4 still need enumeration" for weeks. A full sweep on a configured box
+(`WYLDE_ROOT` + `WYLDE_SERVICES` both set — the condition that provokes this class):
 
-- `control::tests::service_start_accepts_discovered_sibling` **fails when `WYLDE_SERVICES` is set**
-  (it sets `WYLDE_ROOT` to a tempdir, but `WYLDE_SERVICES` takes precedence in discovery, so the
-  fixture sibling isn't found → `not_registered`).
-- `control::tests::shutdown_all_returns_structured_summary` **fails when `WYLDE_SERVICES` is unset**.
+| workspace | result |
+|---|---|
+| `rust/` `cargo test --workspace` | green except **one** test (`wylde-lifecycle --lib`: 122 passed, 1 failed) |
+| `Core/GUI` `cargo panel-walk` (44 binaries) | all green |
+| `tools/xtask` · `tools/wylde-release` · `Services/wylde-images` | all green |
 
-**Fix:** these tests must save/clear/restore `WYLDE_SERVICES` (and `WYLDE_ROOT`) around the body, the
-way other registry tests guard the env — a discovery test must pin *both* variables, not one. This is
-a real test-hygiene bug, not a code defect, and it's exactly why a green suite isn't a green *system*.
-The remaining ~4 failures still need enumeration; don't close until each is filed or resolved.
+**`cargo test --workspace` does NOT run the GUI tests** — `Core/GUI` needs the `panel-walk` alias
+(the L7 gate's own invocation, `ci.yml` job `gui-panel-walk`). A `--workspace` run there reports
+"0 passed" for every binary and looks green while testing nothing. Anyone re-checking this entry
+must run both.
+
+**The 0.2 question this entry existed to answer is answered: NO, KI-6 hides no 0.2 blocker.**
+
+**The `WYLDE_SERVICES` half is FIXED — #78 (`1dd51be`), landed 2026-07-16.**
+`control::tests::service_start_accepts_discovered_sibling` pinned `WYLDE_ROOT` but not
+`WYLDE_SERVICES`, which relocates the Services bucket outright — so an ambient value pointed the test
+at the developer's real estate instead of its tempdir (`not_registered`; failed 15/15 locally, green
+on CI only because CI sets neither). #78 unified **eleven** tests across four modules — which were
+using *three different disciplines* (two separate async mutexes and, in one case, nothing at all) —
+onto `#[serial]`. Two mutexes over one global is no mutual exclusion; same shape as the gateway
+egress bug below. Playbook shape #1: **a discovery test must pin every variable feeding the
+resolution**, via an RAII guard so a panicking assert can't leak the override into the next test.
+
+**This entry's diagnosis of the second test was WRONG, and #78 disproved it.** It claimed
+`shutdown_all_returns_structured_summary` "fails when `WYLDE_SERVICES` is unset", implying the same
+env-isolation cause in the opposite direction. It isn't: by isolation, unsetting **`WYLDE_ROOT`**
+alone makes it pass, and **it fails when run entirely alone** — so it is not the parallel race #78
+fixed, and it is not a flake. #78 correctly declined to lump it in and documented it in place.
+
+**The one real failure → #80** (Tier 1, not a blocker). `count == 0` asserts "nothing discovered to
+stop"; it returns 11. `count` is gated by `is_or_was_tracked()`, which is a bare `path.exists()` on
+each service's runtime manifest under the ambient `WYLDE_ROOT` — so the test **stats the developer's
+real manifests**. 10 of the 12 core teardown steps have one on this box, plus `wylde-organize`
+discovered via `WYLDE_SERVICES` = 11. It read **10 yesterday** (#78) and **11 today**: the number
+tracks Aaron's actual service estate as it grows, which is the tell that it is measuring the machine
+rather than the fixture. Pinning the env inside the body cannot fix it — the root is resolved before
+the body runs — so it needs the root *injected*
+(`registry::discovered_bucket_services_in(<tempdir>)` is the existing seam).
+
+**This is the #47/#75 self-collision class, third sighting** — a test asserting against production
+state, green in CI *precisely because* CI never runs the product. #47/#75 were **pipe names**; #80 is
+the **runtime-manifest directory**. #79's `fixture_pipes_are_private.rs` gate closes the pipe-name
+half; **nothing guards the data-dir half.** Expect a fourth sighting on whatever production resource
+is next; the durable countermeasure is a static gate, since the dynamic one is structurally blind.
+
+**#80 also turned up a probable product bug** while being diagnosed: `is_or_was_tracked` looks for
+`wylde-vram-broker.json`, but the broker self-registers as `vram-broker.json` (no prefix). The
+predicate is therefore unconditionally false for the broker, so a real `service.shutdown_all`
+under-reports it as not-stopped even when it was just stopped. `registry.rs:1056` documents this
+exact quirk and works around it; the teardown reporter doesn't. One quirk, two paths, one patched.
+
+**Don't close KI-6 until #80 closes** — but note that everything else this entry claimed is now
+either fixed or was never true.
 
 **A second one in this class is now FOUND AND FIXED (2026-07-16):**
 `wylde-extension-bridge`'s `mcp::client::tests` mutated the process-global `WYLDE_BIN` / `WYLDE_ROOT`
@@ -167,4 +211,5 @@ file isn't this issue's business.
 - KI-2, KI-4, KI-5 are **release-preflight verifications** folded into 0.2 gating (roadmap Tier 0).
 - KI-1 is **post-0.2** reasoning-v2 work (companion plan, Slice B).
 - KI-3, KI-7 are **Tier-1 hygiene** (roadmap T1.2/T1.3 and §6).
-- KI-6 is **unknown scope** until enumerated — do that early since it may hide a 0.2 blocker.
+- KI-6 is **enumerated (2026-07-17) and hides no 0.2 blocker** — one real failure, #80, Tier 1. The
+  "do this early, it may hide a blocker" instruction has been discharged; it doesn't need repeating.
