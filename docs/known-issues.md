@@ -208,9 +208,16 @@ about broken behaviour — one product bug, one genuinely unsafe test premise. "
 have shipped both.
 
 **Flaky ≠ ignorable.** An ~8% flake in a *required* check is a random tax on every PR and trains
-people to hit re-run instead of reading the failure. Enumerate the remaining ~4 with a repeat loop
+people to hit re-run instead of reading the failure. Enumerate with a repeat loop
 (`for i in $(seq 1 25); do cargo test …; done`), not a single run — a single green run proves nothing
 about a race.
+
+**Done, 2026-07-17 — the loop came back clean.** 15× over the crates that produced every real bug in
+this entry (`wylde-gateway`, `wylde-extension-bridge`, `wylde-workspaces`, `wylde-vram-broker`,
+`wylde-vpn`): **15/15 green, nothing intermittent.** Worth stating explicitly because a *clean* repeat
+loop is the only result that licenses the conclusion above — it is what makes "there is exactly one
+failure, and it is deterministic" a measurement rather than a hope. #80 never needed the loop: it
+failed 1/1, run alone.
 
 ## KI-8 — Enable clippy (G4) + fmt (G6) gates — needs a cleanup pass first
 **Status:** CHORE · **Labels:** `ci`, `chore` · **Area:** tooling
