@@ -681,7 +681,7 @@ fn is_or_was_tracked(name: &str) -> bool {
     // Cheap proxy: check the manifest file. Services that booted
     // wrote one; services that never spawned didn't.
     //
-    // ── KNOWN DEFECT: this is wrong for the vram-broker (#80) ─────────────
+    // ── KNOWN DEFECT: this is wrong for the vram-broker (#84) ─────────────
     //
     // The broker self-registers its manifest as `vram-broker.json` — no
     // `wylde-` prefix — but `service_name::VRAM_BROKER` is `"wylde-vram-broker"`
@@ -704,7 +704,7 @@ fn is_or_was_tracked(name: &str) -> bool {
     // broker starts writing the prefixed name (touches its self-registration and
     // any reader of the old name) or `manifest_path_for` learns the alias the way
     // the registry did. Both are behaviour changes to a shipped daemon and want
-    // their own slice. Tracked on #80.
+    // their own slice. **Tracked on #84** (found via #80).
     let path = manifest_path_for(name);
     path.exists()
 }
@@ -783,7 +783,7 @@ pub(crate) mod tests {
         LOCK.lock().await
     }
 
-    // ── The self-collision gate (#47 → #75 → #80) ──────────────────────────
+    // ── The self-collision gate (#47 → #75 → #80; class tracked on #83) ────
     //
     // Three sightings of one class: a test asserting against a resource the
     // *product* owns. #47 and #75 were pipe names; #80 was this crate's

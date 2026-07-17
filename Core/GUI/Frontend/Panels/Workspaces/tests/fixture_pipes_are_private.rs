@@ -1,6 +1,6 @@
 //! Guard: no GUI test may bind a **production** pipe name.
 //!
-//! ## Why this exists (#75, and #29 before it)
+//! ## Why this exists (#75, and #29 before it; the class is tracked on #83)
 //!
 //! A test that stands up a fixture server on `\\.\pipe\wylde-<service>` claims
 //! the endpoint the *live* service owns. On a developer's machine running Wylde

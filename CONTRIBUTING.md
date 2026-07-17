@@ -61,7 +61,7 @@ don't need a changelog entry.
   tests.** The windowed gpui tests sit behind a required feature, so `cargo test --workspace` in
   `Core/GUI/` reports `0 passed` for every binary and **looks green while testing nothing**. The
   `panel-walk` alias is what the required `gui panel-walk (L7)` CI job runs; see
-  [`Core/GUI/docs/gui-testing.md`](Core/GUI/docs/gui-testing.md).
+  [`Core/GUI/docs/gui-testing.md`](Core/GUI/docs/gui-testing.md) and **#85**.
 - If you changed the version, bump **both** workspace roots together and run
   `tools/check-versions.sh` (the CI `version-consistency` gate, G7).
 - Green tests are necessary but **not sufficient** — Wylde's own history is that a fully green suite
