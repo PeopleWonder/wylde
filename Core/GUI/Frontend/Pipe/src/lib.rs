@@ -191,8 +191,18 @@ pub const CALLER_NAME: &str = "fletch-gui";
 
 /// Resolve `\\.\pipe\wylde-<service>` from a bare or `wylde-`-prefixed
 /// service name.  Pure function — testable without a live pipe.
+///
+/// Under the dev-only `test-support` feature a test may re-point one service
+/// at a private fixture pipe (`test_backend::PipeNameOverride`).  The lookup
+/// is compiled out entirely without the feature, so the shipped Shell resolves
+/// the production name and nothing else — there is no runtime switch, and no
+/// env var, by which a real build could be redirected.
 pub fn pipe_name(service: &str) -> String {
     let bare = service.strip_prefix("wylde-").unwrap_or(service);
+    #[cfg(feature = "test-support")]
+    if let Some(overridden) = test_backend::pipe_name_override(bare) {
+        return overridden;
+    }
     format!(r"\\.\pipe\wylde-{}", bare)
 }
 

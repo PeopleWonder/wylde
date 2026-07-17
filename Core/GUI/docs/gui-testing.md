@@ -76,6 +76,40 @@ process-wide buses/singletons (`ChatPanel::docked()`, `publish_active_*`) —
 those are shared statics and would leak between tests. The direct methods are
 exactly what the bus drains call, so you still test the real logic.
 
+### The other seam: fixture pipes (`PipeNameOverride`)
+
+`ScriptedBackend` short-circuits *before* the transport, which is what you want
+for a panel test — but it means a test that exists to verify the **wire format
+itself** (msgpack framing, length prefix) can't use it. Those tests stand up a
+real named-pipe server and need a real pipe.
+
+They must bind a **private** one. Binding `\\.\pipe\wylde-<service>` claims the
+endpoint the live service owns, so the test fails with `ERROR_ACCESS_DENIED` /
+`ERROR_PIPE_BUSY` on any machine actually running Wylde — while passing in CI,
+which never runs the stack. That inverted flake is #75; `integration_graph_ipc`
+had it.
+
+```rust
+use wylde_gui_pipe::test_backend::{unique_pipe_name, PipeNameOverride};
+
+let pipe = unique_pipe_name(SERVICE);                    // per-process name
+let _route = PipeNameOverride::install(SERVICE, &pipe);  // reverts on drop
+```
+
+`pipe_name()` consults the override, so `wylde_gui_pipe::call` targets the
+fixture for the life of the guard. Unlike the fake backend this override is a
+**process-global**, not a thread-local — the real transport connects on a tokio
+worker, not the thread that installed it, and a thread-local would silently not
+apply there. The lookup is `#[cfg(feature = "test-support")]`, so the shipped
+Shell has no override path at all: no env var, no runtime switch.
+
+`Workspaces/tests/fixture_pipes_are_private.rs` enforces this by scanning the
+GUI tree for literal production binds — a *static* check because CI, having no
+live stack, structurally cannot observe the failure. The `rust/` workspace has
+followed the equivalent convention since #29 (`unique_service_name()` plus the
+`WYLDE_LIFECYCLE_PIPE_NAME` / `WYLDE_WORKSPACES_PIPE_NAME` / `WYLDE_LSP_PIPE_NAME`
+service-side overrides).
+
 ---
 
 ## Writing a test
