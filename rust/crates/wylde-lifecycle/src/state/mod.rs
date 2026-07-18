@@ -680,33 +680,46 @@ fn is_or_was_tracked(name: &str) -> bool {
     //
     // Cheap proxy: check the manifest file. Services that booted
     // wrote one; services that never spawned didn't.
+    if manifest_path_for(name).exists() {
+        return true;
+    }
+
+    // ── vram-broker manifest-name quirk (#84) ─────────────────────────────
     //
-    // ── KNOWN DEFECT: this is wrong for the vram-broker (#84) ─────────────
+    // The broker is the one daemon-managed service whose on-disk manifest
+    // basename diverges from its canonical name: it self-registers as
+    // `vram-broker.json` (its short, pipe-prefix-stripped name — see
+    // `wylde-vram-broker/src/main.rs`), never the `wylde-vram-broker.json`
+    // that `manifest_path_for` derives from the pipe-prefixed
+    // `service_name::VRAM_BROKER`. So the direct check above is
+    // unconditionally false for the broker, and `stop_all_daemon_managed`
+    // used to omit it from `stopped`/`count` even when it had just stopped
+    // it successfully.
     //
-    // The broker self-registers its manifest as `vram-broker.json` — no
-    // `wylde-` prefix — but `service_name::VRAM_BROKER` is `"wylde-vram-broker"`
-    // (its *pipe* name). So `manifest_path_for(VRAM_BROKER)` stats
-    // `wylde-vram-broker.json`, which nothing ever writes, and this predicate is
-    // **unconditionally false for the broker**. A real `service.shutdown_all`
-    // therefore omits the broker from `stopped`/`count` even when it was running
-    // and was just stopped successfully.
-    //
-    // Impact is reporting-only — `stop_vram_broker` keys off the process/pipe,
-    // not the manifest, so the broker *does* stop. The GUI's shutdown summary
-    // just under-counts it.
-    //
-    // `registry.rs` (~line 146 and its `vram_broker_style_short_name_filtered_by_pipe`
-    // test) documents this exact quirk and works around it by matching on EITHER
-    // the manifest's `service` field OR the short pipe name. This function never
-    // got the same treatment. One quirk, two consumers, one of them patched.
-    //
-    // Not fixed here: the right fix is a decision, not a patch — either the
-    // broker starts writing the prefixed name (touches its self-registration and
-    // any reader of the old name) or `manifest_path_for` learns the alias the way
-    // the registry did. Both are behaviour changes to a shipped daemon and want
-    // their own slice. **Tracked on #84** (found via #80).
-    let path = manifest_path_for(name);
-    path.exists()
+    // `registry.rs` (~line 146, pinned by its `short_pipe_name`-filtered
+    // test) already resolves this same quirk by matching the short name.
+    // This is the second consumer of that quirk finally getting the same
+    // treatment — the alias is checked here rather than baked into
+    // `manifest_path_for`, which the daemon's manifest *writers* also call
+    // and which must keep deriving the canonical path for every other
+    // service.
+    if let Some(alias) = vram_broker_manifest_alias(name) {
+        return manifest_path_for(alias).exists();
+    }
+    false
+}
+
+/// The vram-broker's on-disk manifest basename (without `.json`), or `None`
+/// for any other service.
+///
+/// The broker writes `vram-broker.json` — its short, pipe-prefix-stripped
+/// name — not the `wylde-vram-broker.json` its canonical
+/// [`service_name::VRAM_BROKER`] would imply. Every other daemon-managed
+/// service's manifest matches its canonical name, so this deliberately
+/// aliases the broker alone rather than blanket-stripping the `wylde-`
+/// prefix (which would be wrong for `wylde-gateway.json` et al.). See #84.
+fn vram_broker_manifest_alias(name: &str) -> Option<&'static str> {
+    (name == service_name::VRAM_BROKER).then_some("vram-broker")
 }
 
 /// Payload returned by [`stop_all_daemon_managed`] — matches the dict
