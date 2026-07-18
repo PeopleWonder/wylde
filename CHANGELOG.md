@@ -17,6 +17,35 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ## [Unreleased]
 
+### Added
+
+- **The auto-updater's Settings controls now gate every outbound step behind an informed choice.**
+  Wylde stays fully isolated by default (no update network call unless you turn updates on *and* opt
+  into automatic checks); this pass adds the consent and acknowledgement surfaces around that default.
+  Enabling **"Check automatically"** now opens a consent dialog that states plainly that Wylde will
+  contact GitHub about once a week to check for a new version, and that nothing is downloaded or
+  installed automatically — an available update always shows you its changelog and waits for you to
+  **Accept** before any bytes are pulled (download-on-Accept; turning the option back off needs no
+  dialog). When an update is found, the panel renders a **changelog card** with the release notes and
+  two choices: **Accept** (download, verify, install) or **Decline — "Skip this version"**, which
+  remembers that exact version so the weekly check stops re-offering it until a newer release appears
+  (a manual "Check now" still surfaces it, so you can change your mind). Selecting the **Experimental**
+  branch now raises a warning that it is for testing new features, may contain significant bugs, and
+  that posting found bugs on GitHub helps development — shown only when switching *to* Experimental;
+  switching back to Stable is immediate. The channel is now labelled **Stable / Experimental** in the
+  UI (previously "Beta"; the on-disk value is unchanged). All controls are native gpui.
+
+### Changed
+
+- **`wylde-release publish` now refuses to cut a release without a real changelog.** Previously, when
+  neither `--notes-file` nor `--notes` was supplied, publish fell back to a one-line auto-message
+  ("Automated release X (channel).") — so a stable or experimental release could ship with no real
+  release notes, and the updater's changelog card would then show that stub. The publish path now
+  gates on the notes being present and non-placeholder (fail-closed, alongside the existing
+  preflight-receipt gate); the auto-message is allowed only for a `--dry-run` rehearsal. A real
+  release must pass `--notes-file` pointing at the version's `CHANGELOG.md` section. This makes the
+  changelog a required, verifiable release gate rather than an optional courtesy.
+
 ### Fixed
 
 - **`service.shutdown_all` no longer under-counts the vram-broker.** Its summary

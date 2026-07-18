@@ -58,3 +58,5 @@ wylde-gui-test-support = { path = "../../test-support" }
 gpui = { workspace = true, features = ["test-support"] }
 wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
 serde_json.workspace = true
+# Construct an `UpdateInfo` in the changelog/skip-version windowed tests.
+wylde-updater.workspace = true
