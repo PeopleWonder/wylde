@@ -7,102 +7,43 @@ All notable changes to Wylde are recorded here. Format follows
 
 <!--
 Maintenance: this changelog is hand-curated (deliberately richer than an
-auto-generated bullet list). For any user-facing change, add an entry under
-[Unreleased] in the matching section. `tools/changelog-draft.sh` seeds a draft
-from Conventional Commits since the last tag — edit it into narrative form.
+auto-generated bullet list). For any user-facing change, add an entry in the
+matching section of the current unreleased version. `tools/changelog-draft.sh`
+seeds a draft from Conventional Commits since the last tag — edit it into
+narrative form.
 Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
-0.2.0 (Stable channel), cut only on the maintainer's say-so. On release, move the
-[Unreleased] entries under a new dated version heading.
+0.2.0 (Stable channel), cut only on the maintainer's say-so.
+State: the workspace version is now 0.2.0, but 0.2.0 is NOT yet tagged/released
+(that is #38, the maintainer's separate say-so). The section below is therefore
+headed "[0.2.0] — unreleased"; on release, replace "unreleased" with the tag date
+and start a fresh [Unreleased] section above it for post-0.2.0 work.
 -->
 
-## [Unreleased]
+## [0.2.0] — unreleased
 
-### Fixed
+**Wylde 0.2.0 is the first stable release of the modern, all-Rust stack.** The only
+earlier tag, `v0.1.0-alpha.1` (2026-06-04, a GitHub *pre-release* on the Beta channel),
+predates the full-Rust cutover entirely — it shipped the gpui desktop rebuild while the
+runtime beneath it was still Python. Everything between that tag and this one was built in
+the open on the `develop` line and is only now judged ready to carry a stable version, so
+this single release absorbs an unusually large body of work.
 
-- **The Workspaces graph-IPC test no longer claims the live service's pipe.** `integration_graph_ipc`
-  stood up its fixture server on the **production** endpoint (`\\.\pipe\wylde-workspaces`), which the
-  real service already owns — so it failed with `ERROR_ACCESS_DENIED` / `ERROR_PIPE_BUSY` on any machine
-  actually running Wylde, and blocked `cargo panel-walk` (the L7 gate's own invocation) on a live rig.
-  It passed in CI throughout, because CI never runs the stack — the inverse of a flake, and the reason
-  it survived review. The root cause was a missing seam rather than a bad constant: the GUI *client*
-  (`wylde_gui_pipe`) resolved the pipe name itself with no injection point, while the service side
-  (`WYLDE_WORKSPACES_PIPE_NAME`) and the whole `rust/` workspace already had one (#29). `pipe_name()`
-  now consults a `test-support`-gated override, so a fixture server owns a private per-process pipe and
-  the shipped Shell keeps **no** override path at all — deliberately not an env var, which would have
-  been a live pipe-hijacking surface. A new static check (`fixture_pipes_are_private.rs`) scans the GUI
-  tree for literal production binds inside the already-required `gui panel-walk (L7)` context; static
-  because CI, having no live stack, can never observe this class at runtime (#75).
-- **Three eval/bench targets no longer default to a folder that doesn't exist.** `lexical_eval.rs`,
-  `live_eval.rs` (`live_data_dir()`) and `index_bench.rs` each fell back to a hardcoded
-  `C:\Users\aaron\Documents\Obsidian Vault\Wylde-release` path when `WYLDE_ROOT` was unset. That vault
-  is gone, so the fallback silently read a dead directory and the evals reported an empty corpus rather
-  than a misconfiguration — the same flattering-green shape #28 was made of. They now **fail closed**
-  with a message naming the variable to set (`WYLDE_EVAL_DATA_DIR` / `WYLDE_ROOT`); `index_bench` exits
-  `2` with a usage line. The #31 scrub swept docs and missed these because they're Rust.
-- **The three private plan docs that had no backup now have one.** `privacy-plan.md`,
-  `wylde-android-app-plan.md` and `wylde-rust-migration-master-plan.md` (retired `legacy` — the
-  full-Rust cutover it plans already happened) moved into the `wylde-planning` repo, reachable at
-  `docs/plans/` through the junction, and their `.gitignore` entries are gone. That closes the
-  one-disk-no-backup durability gap for them; the remaining entries in that list are still one-disk.
-  Companion-doc links in `wylde-pairing-future-cd.md`, `wylde-passwords-self-healing-extension.md` and
-  `wylde-phase5-cutover.md` were repointed at `plans/` so they don't dangle.
-- **`docs/wylde-repo-organization.md` no longer tells you the repo isn't a repo.** The stale-vault-path
-  scrub (#31) turned up one reference that was worse than a dead path: a doc marked
-  `status: living reference` whose §1 stated the tree lived at `%USERPROFILE%\Documents\Obsidian
-  Vault\Wylde\`, had no `.git/`, would make `git status` "refuse", and that version history was
-  therefore implicit in progress-memory files with every file "authoritative current state". The tree
-  is under git with `develop` as trunk, so a living reference was actively instructing readers to
-  distrust git. §1 now describes the actual git layout, and §11's auto-memory path derives its slug
-  from wherever the repo lives instead of hardcoding the vault one. Paths are repo-relative on purpose
-  so they don't rot the same way twice. `WYLDE_ENDPOINTS.md:504` (`cwd=vault root` → `repo root`) also
-  scrubbed.
-  - **`docs/security/pre-alpha-release-2026-05-31.md` deliberately keeps its vault paths** — it's a
-    dated log of actions actually taken, and rewriting it would falsify the record. It gets a header
-    note (paths as-of that date, locations gone, don't navigate by it) instead of a scrub. Same call
-    for `docs/mypy_baseline.txt`, whose paths are captured tool *stdout*; it's a Python-era artifact
-    due for deletion with the Python scrub (T1.2), which is where that decision belongs.
+The headline changes: the **full-Rust cutover** (every Python runtime component ported to
+Rust and its source deleted); a local-first **memory system** (short-term, long-term, and
+reflection across the conversation, workspace, and long-term scopes); the **Thought Bubble
+System** with pre-turn structural retrieval; a workspace **knowledge graph** with a native
+gpui graph panel and an in-app IDE; **BM25 lexical retrieval + RRF fusion**; a definitional
+**concept hierarchy** and a **concept-routing** decision layer (both isolated, default-off,
+and byte-identical when disabled); and an **agentic reasoning tier** shipped `enabled:
+false` as an opt-in experiment. Wrapping all of it is the **enforcement layer** whose
+absence let the alpha ship broken — the GUI panel-walk (L7), the launch-and-verify preflight
+and its commit-bound receipt, the benchmark regression gate, version-consistency (G7), and
+the license/advisory gates — now wired so the class of defect that shipped before is blocked
+rather than merely documented.
 
-### Changed
-
-- **The GPLv3 license gate is now a REQUIRED check, and the ruleset JSONs match live
-  again.** #52 built the license gate but merged it reporting-only, so a PR introducing a
-  GPL-incompatible dependency went red and stayed mergeable — a linter, not a gate.
-  `cargo-deny (licenses) (rust/Cargo.toml)` and `cargo-deny (licenses) (Core/GUI/Cargo.toml)`
-  are now required on both `protect-develop` and `protect-main`. Safe to require because
-  `license-check.yml` is unfiltered and therefore always reports — the #49 lesson (**never
-  require a path-filtered context**, or GitHub hangs every PR that touches none of those
-  paths) held here rather than being relearned.
-  - **Fixed live/file drift that would have silently un-required the advisory gate.** #49
-    added its two `cargo-deny (advisories)` contexts to the *live* rulesets via `gh api` but
-    never updated `.github/rulesets/*.json`, leaving the files listing 9 contexts while live
-    carried 11. Since applying a ruleset is a **replace, not a merge**, the next apply from
-    those files would have quietly dropped the advisory requirements. Both JSONs now carry
-    the full **13** contexts, verified live after applying.
-  - `docs/enforcement-matrix.md` rows 12/12c and the required-checks note were stale (they
-    still described `cargo-deny` as path-filtered and deliberately not required); they now
-    match reality and record both traps.
-
-- **The GUI's required check now enforces 890 tests instead of 41.** The `gui panel-walk (L7)`
-  gate ran through the `panel-walk` cargo alias, which carried `--test panel_walk` — meaning it
-  ran `tests/panel_walk.rs` **and nothing else**. Roughly 130 behavioural windowed tests that
-  already existed and already passed — chat workspace-id scoping on send
-  (`Chat/tests/dock_scoping.rs`, `conversations.rs`), memory copy-in provenance
-  (`Memory/tests/copy_in.rs`), workspace registry nav (`Workspaces/tests/registry_nav.rs`),
-  settings prefs dispatch (`Settings/tests/prefs_dispatch.rs`), device pairing cancel
-  (`Devices/tests/cancel_pairing.rs`), and the rest — were enforced by **nothing**. They ran only
-  under a full local `cargo test`, which no required check performs, so a regression they would
-  have caught turned nothing red and the coverage could rot silently. Dropping the `--test` filter
-  collects coverage the project had already paid for. Verified green first: **890 passed / 0
-  failed** via the exact CI invocation, ~1 min warm. (issue #56; enforcement-matrix row 4b.)
-  - **The `-p` crate scoping is untouched and must stay** — NOT `--workspace`, so the gate still
-    never links the Shell's tray-icon/wry graph or the `rust/` audio stack (`wylde-voice`/cpal,
-    which segfaults headless). Widen test *targets*, never the crate set.
-  - **The status-check context name is deliberately unchanged** even though the job now runs more
-    than the panel-walk. Renaming a required context means the old one never reports again, and
-    GitHub blocks every PR forever waiting for it — including the PR doing the rename, which then
-    cannot merge to fix itself. Same family as the #49/#57 "never require a path-filtered context"
-    lesson. The rename recipe (add the new context live first, merge, then drop the old) is
-    recorded in `ci.yml` and the alias comment.
+The entries below are long because the release is, and they are written to be read: each
+says what changed and why it mattered. The release date is stamped when 0.2.0 is tagged and
+promoted to `main` on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
@@ -353,6 +294,46 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Changed
 
+- **The GPLv3 license gate is now a REQUIRED check, and the ruleset JSONs match live
+  again.** #52 built the license gate but merged it reporting-only, so a PR introducing a
+  GPL-incompatible dependency went red and stayed mergeable — a linter, not a gate.
+  `cargo-deny (licenses) (rust/Cargo.toml)` and `cargo-deny (licenses) (Core/GUI/Cargo.toml)`
+  are now required on both `protect-develop` and `protect-main`. Safe to require because
+  `license-check.yml` is unfiltered and therefore always reports — the #49 lesson (**never
+  require a path-filtered context**, or GitHub hangs every PR that touches none of those
+  paths) held here rather than being relearned.
+  - **Fixed live/file drift that would have silently un-required the advisory gate.** #49
+    added its two `cargo-deny (advisories)` contexts to the *live* rulesets via `gh api` but
+    never updated `.github/rulesets/*.json`, leaving the files listing 9 contexts while live
+    carried 11. Since applying a ruleset is a **replace, not a merge**, the next apply from
+    those files would have quietly dropped the advisory requirements. Both JSONs now carry
+    the full **13** contexts, verified live after applying.
+  - `docs/enforcement-matrix.md` rows 12/12c and the required-checks note were stale (they
+    still described `cargo-deny` as path-filtered and deliberately not required); they now
+    match reality and record both traps.
+
+- **The GUI's required check now enforces 890 tests instead of 41.** The `gui panel-walk (L7)`
+  gate ran through the `panel-walk` cargo alias, which carried `--test panel_walk` — meaning it
+  ran `tests/panel_walk.rs` **and nothing else**. Roughly 130 behavioural windowed tests that
+  already existed and already passed — chat workspace-id scoping on send
+  (`Chat/tests/dock_scoping.rs`, `conversations.rs`), memory copy-in provenance
+  (`Memory/tests/copy_in.rs`), workspace registry nav (`Workspaces/tests/registry_nav.rs`),
+  settings prefs dispatch (`Settings/tests/prefs_dispatch.rs`), device pairing cancel
+  (`Devices/tests/cancel_pairing.rs`), and the rest — were enforced by **nothing**. They ran only
+  under a full local `cargo test`, which no required check performs, so a regression they would
+  have caught turned nothing red and the coverage could rot silently. Dropping the `--test` filter
+  collects coverage the project had already paid for. Verified green first: **890 passed / 0
+  failed** via the exact CI invocation, ~1 min warm. (issue #56; enforcement-matrix row 4b.)
+  - **The `-p` crate scoping is untouched and must stay** — NOT `--workspace`, so the gate still
+    never links the Shell's tray-icon/wry graph or the `rust/` audio stack (`wylde-voice`/cpal,
+    which segfaults headless). Widen test *targets*, never the crate set.
+  - **The status-check context name is deliberately unchanged** even though the job now runs more
+    than the panel-walk. Renaming a required context means the old one never reports again, and
+    GitHub blocks every PR forever waiting for it — including the PR doing the rename, which then
+    cannot merge to fix itself. Same family as the #49/#57 "never require a path-filtered context"
+    lesson. The rename recipe (add the new context live first, merge, then drop the old) is
+    recorded in `ci.yml` and the alias comment.
+
 - **`tools/seed-github-project.sh` seeds the whole tracked backlog, not a frozen
   slice of it.** The script carried two hand-kept lists — an `ISSUE_TIER` map and a
   literal `for n in 25 … 40` loop — and every issue filed after the script was
@@ -429,87 +410,50 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
   shortcuts, and a dev-only hot-reload path (`dev.restart_service` verb +
   backend watcher).
 
-### Security
-
-- **`cargo-deny (advisories)` is now a blocking gate, not advisory-in-name-only
-  (G5; closes #49).** The security-audit workflow's `pull_request` path filter was
-  removed so both matrix legs — `cargo-deny (advisories) (rust/Cargo.toml)` and
-  `… (Core/GUI/Cargo.toml)` — run on *every* PR (like `ci.yml`), and both contexts
-  were added to the required-check list on the `protect-develop` and `protect-main`
-  rulesets. Previously the check ran only when `Cargo.*`/`deny.toml` changed and was
-  absent from the required set, so a PR that introduced a new advisory was still
-  mergeable. Making a path-filtered check *required* would have silently blocked every
-  Cargo-untouching PR forever (GitHub waits for a status the skipped workflow never
-  reports); running it unconditionally is what makes it safe to require.
-
-- **GPLv3 license compliance is now an enforced CI gate, not a norm.** Wylde Core
-  is `GPL-3.0-or-later`; copyleft *inherits*, so every dependency compiled or linked
-  into a Wylde binary must carry a GPLv3-**compatible** license — a single
-  incompatible dep (SSPL/BUSL/CDDL/EPL, GPL-2.0-only, the historical OpenSSL license,
-  or an unlicensed crate) is a real legal defect. Both `deny.toml` files already
-  *defined* `[licenses]`, but CI only ran `check advisories`, so nothing enforced it.
-  New `.github/workflows/license-check.yml` runs `cargo deny check licenses` on both
-  workspaces, **unfiltered on every PR** (same path-filter-free mechanism as the
-  advisory gate, so the `cargo-deny (licenses)` legs can be *required* without hanging
-  Cargo-untouching PRs). The allow-list was rewritten as a real, FSF-matrix-vetted
-  GPLv3-compatibility policy — including the fix that it previously allowed deprecated
-  `GPL-3.0` but **not** `GPL-3.0-or-later` (the project's own license), so the gate
-  would have rejected every first-party crate; `OpenSSL` was removed from the GUI list
-  as FSF-incompatible with GPL and absent from the tree. **No GPL-incompatible
-  dependency exists in either tree today** (`cargo deny check licenses` → `licenses ok`
-  on both). Making the legs *required* is a one-line ruleset addition, to land the same
-  way #49 added its advisory contexts to the `protect-develop`/`protect-main` rulesets.
-- **Formally accepted the two unbumpable, gpui-pinned advisories in `deny.toml`
-  with a documented review trigger (closes #30 / KI-3).** Both ride behind the
-  pinned `gpui` git rev (`b3d93d44`), which Dependabot cannot bump: `glib` 0.18.5
-  `VariantStrIter` unsoundness (RUSTSEC-2024-0429 / GHSA-wrw7-89jp-8q8g) — a
-  GTK3-only transitive, `cfg(linux)`-gated and absent from the shipped Windows
-  binary; and `async-tar` 0.5.1 PAX entry-smuggling (GHSA-35rm-7j9c-2f7m /
-  CVE-2026-53600) — compiled but dormant (no untrusted-tar path; the self-updater
-  is the separate, minisign-verified `wylde-updater`). The `glib` acceptance is
-  recorded as an ignore in `Core/GUI/deny.toml`; `async-tar` still has no RUSTSEC
-  id (re-verified 2026-07-15), so cargo-deny cannot ignore it and Dependabot
-  remains its gate — its disposition is documented there in a comment. The real
-  review trigger for both is the next deliberate `gpui`-rev bump (with a
-  2026-10-14 quarterly backstop, adjustable); policy in
-  `docs/security/dependency-hygiene-policy.md`. `cargo deny check advisories`
-  passes green on both the `rust/` and `Core/GUI/` workspaces.
-
-- **Dependency advisory sweep (RustSec / GitHub Dependabot).** Bumped two
-  transitive crates to their patched releases across the affected lockfiles:
-  `quinn-proto` 0.11.14 → 0.11.15 (RUSTSEC-2026-0185, HIGH — remote memory
-  exhaustion from unbounded out-of-order QUIC stream reassembly; pulled via
-  `reqwest`/`quinn` in the `rust/`, `Core/GUI/`, and `Services/wylde-images/`
-  workspaces) and `memmap2` 0.9.10 → 0.9.11 (RUSTSEC-2026-0186, unsound —
-  unchecked pointer offset; `Core/GUI/`). Lockfile-only patch bumps; no manifest
-  or API changes. Remaining advisories are RustSec *unmaintained* notices with no
-  patched release (`async-std`, the GTK3 `gtk`/`gdk`/`atk` binding family,
-  `glib` unsoundness, `paste`, `instant`, `backoff`, `bincode`, `fxhash`,
-  `proc-macro-error`/`proc-macro-error2`, `rustls-pemfile`); these are transitive
-  and deferred — clearing them needs upstream/major migrations, not a bump.
-
-- **GitHub Dependabot alert triage (5 open).** Reviewed and dispositioned the
-  five open Dependabot alerts on the default branch. The three HIGH `pip`
-  alerts — `transformers` remote code execution (CVE-2026-4372) and `soupsieve`
-  ReDoS + memory-exhaustion (CVE-2026-49477 / CVE-2026-49476) — are all against
-  `uv.lock`, the Python lockfile deleted in the R6 full-Rust cutover
-  (`2f5aa82`). Those packages have no importer left in-tree (`pyproject.toml`
-  now declares `dependencies = []`; the surviving Python is stdlib-only dev
-  tooling), so the vulnerable code is not present and the alerts are stale
-  against a removed manifest — dismissed as *vulnerable code not used*. The two
-  remaining Moderate Rust alerts are transitive and upstream-pinned, with no
-  clean bump: `glib` `VariantStrIter` unsoundness (GHSA-wrw7-89jp-8q8g) is
-  pulled only through the GTK3 binding family (`gtk`/`gdk`/`atk` ← `wry` /
-  `tray-icon`), which is `cfg(linux)`-gated and **not compiled into the shipped
-  Windows build** (confirmed absent from the `x86_64-pc-windows-msvc` dependency
-  graph); and `async-tar` PAX-header desync / entry-smuggling (CVE-2026-53600,
-  patched 0.6.1) is required at `^0.5.1` by Zed's `http_client` (pinned `gpui`
-  git rev `b3d93d44`) and Wylde exercises no untrusted-tarball extraction path
-  through it. `cargo update` rejects both across the 0.x major boundary; forcing
-  them needs a `gpui`-rev bump or a full gtk-rs major migration and is deferred.
-  Full reachability write-up in `docs/security/dependabot-triage-2026-07-11.md`.
-
 ### Fixed
+
+- **The Workspaces graph-IPC test no longer claims the live service's pipe.** `integration_graph_ipc`
+  stood up its fixture server on the **production** endpoint (`\\.\pipe\wylde-workspaces`), which the
+  real service already owns — so it failed with `ERROR_ACCESS_DENIED` / `ERROR_PIPE_BUSY` on any machine
+  actually running Wylde, and blocked `cargo panel-walk` (the L7 gate's own invocation) on a live rig.
+  It passed in CI throughout, because CI never runs the stack — the inverse of a flake, and the reason
+  it survived review. The root cause was a missing seam rather than a bad constant: the GUI *client*
+  (`wylde_gui_pipe`) resolved the pipe name itself with no injection point, while the service side
+  (`WYLDE_WORKSPACES_PIPE_NAME`) and the whole `rust/` workspace already had one (#29). `pipe_name()`
+  now consults a `test-support`-gated override, so a fixture server owns a private per-process pipe and
+  the shipped Shell keeps **no** override path at all — deliberately not an env var, which would have
+  been a live pipe-hijacking surface. A new static check (`fixture_pipes_are_private.rs`) scans the GUI
+  tree for literal production binds inside the already-required `gui panel-walk (L7)` context; static
+  because CI, having no live stack, can never observe this class at runtime (#75).
+- **Three eval/bench targets no longer default to a folder that doesn't exist.** `lexical_eval.rs`,
+  `live_eval.rs` (`live_data_dir()`) and `index_bench.rs` each fell back to a hardcoded
+  `C:\Users\aaron\Documents\Obsidian Vault\Wylde-release` path when `WYLDE_ROOT` was unset. That vault
+  is gone, so the fallback silently read a dead directory and the evals reported an empty corpus rather
+  than a misconfiguration — the same flattering-green shape #28 was made of. They now **fail closed**
+  with a message naming the variable to set (`WYLDE_EVAL_DATA_DIR` / `WYLDE_ROOT`); `index_bench` exits
+  `2` with a usage line. The #31 scrub swept docs and missed these because they're Rust.
+- **The three private plan docs that had no backup now have one.** `privacy-plan.md`,
+  `wylde-android-app-plan.md` and `wylde-rust-migration-master-plan.md` (retired `legacy` — the
+  full-Rust cutover it plans already happened) moved into the `wylde-planning` repo, reachable at
+  `docs/plans/` through the junction, and their `.gitignore` entries are gone. That closes the
+  one-disk-no-backup durability gap for them; the remaining entries in that list are still one-disk.
+  Companion-doc links in `wylde-pairing-future-cd.md`, `wylde-passwords-self-healing-extension.md` and
+  `wylde-phase5-cutover.md` were repointed at `plans/` so they don't dangle.
+- **`docs/wylde-repo-organization.md` no longer tells you the repo isn't a repo.** The stale-vault-path
+  scrub (#31) turned up one reference that was worse than a dead path: a doc marked
+  `status: living reference` whose §1 stated the tree lived at `%USERPROFILE%\Documents\Obsidian
+  Vault\Wylde\`, had no `.git/`, would make `git status` "refuse", and that version history was
+  therefore implicit in progress-memory files with every file "authoritative current state". The tree
+  is under git with `develop` as trunk, so a living reference was actively instructing readers to
+  distrust git. §1 now describes the actual git layout, and §11's auto-memory path derives its slug
+  from wherever the repo lives instead of hardcoding the vault one. Paths are repo-relative on purpose
+  so they don't rot the same way twice. `WYLDE_ENDPOINTS.md:504` (`cwd=vault root` → `repo root`) also
+  scrubbed.
+  - **`docs/security/pre-alpha-release-2026-05-31.md` deliberately keeps its vault paths** — it's a
+    dated log of actions actually taken, and rewriting it would falsify the record. It gets a header
+    note (paths as-of that date, locations gone, don't navigate by it) instead of a scrub. Same call
+    for `docs/mypy_baseline.txt`, whose paths are captured tool *stdout*; it's a Python-era artifact
+    due for deletion with the Python scrub (T1.2), which is where that decision belongs.
 
 - **The reasoning planner and the executor spoke different tool vocabularies, so no plan step
   ever realised.** The planner's catalog (`reasoning::inputs::render_tool_catalog`) filtered only
@@ -686,6 +630,86 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
   starts the upstream daemon; service-down is distinguished from out-of-date in
   `no_action`.
 
+### Security
+
+- **`cargo-deny (advisories)` is now a blocking gate, not advisory-in-name-only
+  (G5; closes #49).** The security-audit workflow's `pull_request` path filter was
+  removed so both matrix legs — `cargo-deny (advisories) (rust/Cargo.toml)` and
+  `… (Core/GUI/Cargo.toml)` — run on *every* PR (like `ci.yml`), and both contexts
+  were added to the required-check list on the `protect-develop` and `protect-main`
+  rulesets. Previously the check ran only when `Cargo.*`/`deny.toml` changed and was
+  absent from the required set, so a PR that introduced a new advisory was still
+  mergeable. Making a path-filtered check *required* would have silently blocked every
+  Cargo-untouching PR forever (GitHub waits for a status the skipped workflow never
+  reports); running it unconditionally is what makes it safe to require.
+
+- **GPLv3 license compliance is now an enforced CI gate, not a norm.** Wylde Core
+  is `GPL-3.0-or-later`; copyleft *inherits*, so every dependency compiled or linked
+  into a Wylde binary must carry a GPLv3-**compatible** license — a single
+  incompatible dep (SSPL/BUSL/CDDL/EPL, GPL-2.0-only, the historical OpenSSL license,
+  or an unlicensed crate) is a real legal defect. Both `deny.toml` files already
+  *defined* `[licenses]`, but CI only ran `check advisories`, so nothing enforced it.
+  New `.github/workflows/license-check.yml` runs `cargo deny check licenses` on both
+  workspaces, **unfiltered on every PR** (same path-filter-free mechanism as the
+  advisory gate, so the `cargo-deny (licenses)` legs can be *required* without hanging
+  Cargo-untouching PRs). The allow-list was rewritten as a real, FSF-matrix-vetted
+  GPLv3-compatibility policy — including the fix that it previously allowed deprecated
+  `GPL-3.0` but **not** `GPL-3.0-or-later` (the project's own license), so the gate
+  would have rejected every first-party crate; `OpenSSL` was removed from the GUI list
+  as FSF-incompatible with GPL and absent from the tree. **No GPL-incompatible
+  dependency exists in either tree today** (`cargo deny check licenses` → `licenses ok`
+  on both). Making the legs *required* is a one-line ruleset addition, to land the same
+  way #49 added its advisory contexts to the `protect-develop`/`protect-main` rulesets.
+- **Formally accepted the two unbumpable, gpui-pinned advisories in `deny.toml`
+  with a documented review trigger (closes #30 / KI-3).** Both ride behind the
+  pinned `gpui` git rev (`b3d93d44`), which Dependabot cannot bump: `glib` 0.18.5
+  `VariantStrIter` unsoundness (RUSTSEC-2024-0429 / GHSA-wrw7-89jp-8q8g) — a
+  GTK3-only transitive, `cfg(linux)`-gated and absent from the shipped Windows
+  binary; and `async-tar` 0.5.1 PAX entry-smuggling (GHSA-35rm-7j9c-2f7m /
+  CVE-2026-53600) — compiled but dormant (no untrusted-tar path; the self-updater
+  is the separate, minisign-verified `wylde-updater`). The `glib` acceptance is
+  recorded as an ignore in `Core/GUI/deny.toml`; `async-tar` still has no RUSTSEC
+  id (re-verified 2026-07-15), so cargo-deny cannot ignore it and Dependabot
+  remains its gate — its disposition is documented there in a comment. The real
+  review trigger for both is the next deliberate `gpui`-rev bump (with a
+  2026-10-14 quarterly backstop, adjustable); policy in
+  `docs/security/dependency-hygiene-policy.md`. `cargo deny check advisories`
+  passes green on both the `rust/` and `Core/GUI/` workspaces.
+
+- **Dependency advisory sweep (RustSec / GitHub Dependabot).** Bumped two
+  transitive crates to their patched releases across the affected lockfiles:
+  `quinn-proto` 0.11.14 → 0.11.15 (RUSTSEC-2026-0185, HIGH — remote memory
+  exhaustion from unbounded out-of-order QUIC stream reassembly; pulled via
+  `reqwest`/`quinn` in the `rust/`, `Core/GUI/`, and `Services/wylde-images/`
+  workspaces) and `memmap2` 0.9.10 → 0.9.11 (RUSTSEC-2026-0186, unsound —
+  unchecked pointer offset; `Core/GUI/`). Lockfile-only patch bumps; no manifest
+  or API changes. Remaining advisories are RustSec *unmaintained* notices with no
+  patched release (`async-std`, the GTK3 `gtk`/`gdk`/`atk` binding family,
+  `glib` unsoundness, `paste`, `instant`, `backoff`, `bincode`, `fxhash`,
+  `proc-macro-error`/`proc-macro-error2`, `rustls-pemfile`); these are transitive
+  and deferred — clearing them needs upstream/major migrations, not a bump.
+
+- **GitHub Dependabot alert triage (5 open).** Reviewed and dispositioned the
+  five open Dependabot alerts on the default branch. The three HIGH `pip`
+  alerts — `transformers` remote code execution (CVE-2026-4372) and `soupsieve`
+  ReDoS + memory-exhaustion (CVE-2026-49477 / CVE-2026-49476) — are all against
+  `uv.lock`, the Python lockfile deleted in the R6 full-Rust cutover
+  (`2f5aa82`). Those packages have no importer left in-tree (`pyproject.toml`
+  now declares `dependencies = []`; the surviving Python is stdlib-only dev
+  tooling), so the vulnerable code is not present and the alerts are stale
+  against a removed manifest — dismissed as *vulnerable code not used*. The two
+  remaining Moderate Rust alerts are transitive and upstream-pinned, with no
+  clean bump: `glib` `VariantStrIter` unsoundness (GHSA-wrw7-89jp-8q8g) is
+  pulled only through the GTK3 binding family (`gtk`/`gdk`/`atk` ← `wry` /
+  `tray-icon`), which is `cfg(linux)`-gated and **not compiled into the shipped
+  Windows build** (confirmed absent from the `x86_64-pc-windows-msvc` dependency
+  graph); and `async-tar` PAX-header desync / entry-smuggling (CVE-2026-53600,
+  patched 0.6.1) is required at `^0.5.1` by Zed's `http_client` (pinned `gpui`
+  git rev `b3d93d44`) and Wylde exercises no untrusted-tarball extraction path
+  through it. `cargo update` rejects both across the 0.x major boundary; forcing
+  them needs a `gpui`-rev bump or a full gtk-rs major migration and is deferred.
+  Full reachability write-up in `docs/security/dependabot-triage-2026-07-11.md`.
+
 ## [0.1.0-alpha.1] — 2026-06-04
 
 First tagged alpha. Published as a GitHub **pre-release** (beta channel).
@@ -722,4 +746,5 @@ First tagged alpha. Published as a GitHub **pre-release** (beta channel).
 
 Both signed with the production minisign key (ID `DA7E13F4E9F2ACB6`).
 
+[0.2.0]: https://github.com/PeopleWonder/wylde/releases/tag/v0.2.0
 [0.1.0-alpha.1]: https://github.com/PeopleWonder/wylde/releases/tag/v0.1.0-alpha.1

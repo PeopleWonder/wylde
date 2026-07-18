@@ -33,7 +33,7 @@
 
 .PARAMETER Version
     Version string baked into the installer + version.txt. Default
-    0.1.0-alpha.1 (matches the workspace version). May be a SemVer
+    0.2.0 (matches the workspace version). May be a SemVer
     pre-release (e.g. 0.1.0-alpha.1); the numeric core before any "-suffix"
     is passed to makensis as VI_VERSION for the numeric-only VIProductVersion
     field, while the full string is used everywhere a display version is shown.
@@ -62,7 +62,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string] $Version = "0.1.0-alpha.1",
+    [string] $Version = "0.2.0",
     [switch] $SkipBuild,
     [switch] $StageOnly,
     [string] $MakeNsis
