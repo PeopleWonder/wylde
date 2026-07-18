@@ -1953,6 +1953,75 @@ mod tests {
         cleanup();
     }
 
+    /// #84 regression: `service.shutdown_all` must count the vram-broker.
+    ///
+    /// The broker self-registers its manifest as `vram-broker.json` — its
+    /// short, pipe-prefix-stripped name — not the `wylde-vram-broker.json`
+    /// its canonical `service_name::VRAM_BROKER` implies. Before the fix,
+    /// `is_or_was_tracked` stat'd the prefixed path (never written), so the
+    /// real (non-nospawn) teardown dropped the broker from `stopped`/`count`
+    /// even when it had just stopped it successfully.
+    ///
+    /// This drives the FULL real teardown path — the same registered action
+    /// and `set_nospawn(false)` the sibling `..._returns_structured_summary`
+    /// uses — with only the broker's manifest staged, and asserts the broker
+    /// is now in the summary. Reverting the fix in `is_or_was_tracked` turns
+    /// this red (broker absent, count 0); it is not a vacuous unit assertion.
+    #[serial]
+    #[tokio::test]
+    async fn shutdown_all_counts_the_vram_broker_by_its_short_manifest_name() {
+        let _g = registry_guard().await;
+        let _sg = crate::state::tests::state_guard().await;
+        // Real (spawning) path — the branch that reads `is_or_was_tracked`.
+        crate::state::set_nospawn(false);
+        cleanup();
+        register_with_ipc();
+
+        // The scratch manifest dir is per-process (`State::resolve_root`).
+        // Start from a known-empty dir so the broker is the only tracked
+        // manifest, then stage it exactly as the broker itself writes it:
+        // the short `vram-broker.json`, NOT `wylde-vram-broker.json`.
+        let dir = crate::state::manifest_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("vram-broker.json"),
+            serde_json::to_vec(&json!({
+                "service": "vram-broker",
+                "pipe": r"\\.\pipe\wylde-vram-broker",
+                "status": {"state": "running", "pid": 4321},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let reply = dispatch_action(json!({
+            "action": "service.shutdown_all",
+            "payload": null,
+        }))
+        .await;
+        assert!(reply.ok, "expected ok, got {reply:?}");
+
+        let stopped = reply.data["daemon_managed_stopped"]
+            .as_array()
+            .expect("daemon_managed_stopped is an array");
+        assert!(
+            stopped.iter().any(|v| v == "wylde-vram-broker"),
+            "shutdown_all must count the broker it just stopped — got {stopped:?}. \
+             Before #84 `is_or_was_tracked` stat'd `wylde-vram-broker.json` (never \
+             written), so the broker was silently dropped from the summary."
+        );
+        assert_eq!(
+            reply.data["count"], 1,
+            "only the broker manifest was staged, so it is the one counted"
+        );
+
+        // Leave the scratch manifest dir empty so the sibling `count == 0`
+        // test isn't polluted by this fixture.
+        let _ = std::fs::remove_dir_all(&dir);
+        cleanup();
+    }
+
     #[tokio::test]
     async fn lifecycle_status_reports_would_have_spawned() {
         let _g = registry_guard().await;
