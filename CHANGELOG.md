@@ -48,6 +48,18 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Fixed
 
+- **`service.shutdown_all` no longer under-counts the vram-broker.** Its summary
+  (`stopped`/`count`) omitted the broker even when it had just been stopped, because the teardown
+  reporter `is_or_was_tracked` stat'd `wylde-vram-broker.json` — the broker's *pipe*-prefixed name —
+  while the broker self-registers its manifest under its short name, `vram-broker.json`. So the
+  predicate was unconditionally false for the broker and a real (non-nospawn) shutdown dropped it from
+  the summary; the broker itself *did* stop (its stop keys off the process/pipe), the count just lied.
+  The registry already worked around this exact quirk (`registry.rs` ~146) — one quirk, two consumers,
+  only one patched (found via #80). The reporter now resolves the broker's short manifest alias, scoped
+  to the broker alone and kept out of `manifest_path_for` so the daemon's manifest *writers* still
+  derive the canonical path for every other service. A test drives the full real teardown through the
+  `service.shutdown_all` action and is proven able to fail (reverting the fix → broker absent, count 0).
+  (#84)
 - **The Workspaces graph-IPC test no longer claims the live service's pipe.** `integration_graph_ipc`
   stood up its fixture server on the **production** endpoint (`\\.\pipe\wylde-workspaces`), which the
   real service already owns — so it failed with `ERROR_ACCESS_DENIED` / `ERROR_PIPE_BUSY` on any machine
