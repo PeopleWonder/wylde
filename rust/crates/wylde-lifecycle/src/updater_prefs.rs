@@ -36,6 +36,13 @@ pub struct UpdaterPrefs {
     /// Unix-seconds timestamp of the last completed check, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_checked: Option<u64>,
+    /// A specific version the user chose to skip ("Decline" on the
+    /// changelog card). The auto-check path suppresses this exact version
+    /// so it stops re-prompting; a *newer* release has a different version
+    /// string and so is offered normally (the skip self-expires). `None`
+    /// once a newer version supersedes it or the user never skipped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_version: Option<String>,
 }
 
 impl Default for UpdaterPrefs {
@@ -49,6 +56,7 @@ impl Default for UpdaterPrefs {
             frequency: "weekly".into(),
             channel: "stable".into(),
             last_checked: None,
+            skipped_version: None,
         }
     }
 }
@@ -83,6 +91,13 @@ impl UpdaterPrefs {
         match obj.get("last_checked") {
             Some(Value::Number(n)) => self.last_checked = n.as_u64(),
             Some(Value::Null) => self.last_checked = None,
+            _ => {}
+        }
+        // `skipped_version` is a version string (the "Decline" click) or an
+        // explicit JSON null to un-skip.
+        match obj.get("skipped_version") {
+            Some(Value::String(s)) => self.skipped_version = Some(s.clone()),
+            Some(Value::Null) => self.skipped_version = None,
             _ => {}
         }
     }
@@ -182,6 +197,28 @@ mod tests {
         // String for a bool key and number for a string key are both skipped.
         assert!(!p.enabled);
         assert_eq!(p.frequency, "weekly");
+    }
+
+    #[test]
+    fn skipped_version_set_and_cleared() {
+        let mut p = UpdaterPrefs::default();
+        assert_eq!(p.skipped_version, None);
+        // The "Decline" click records the exact version.
+        p.apply_patch(&json!({ "skipped_version": "0.3.1" }));
+        assert_eq!(p.skipped_version.as_deref(), Some("0.3.1"));
+        // A superseding write / un-skip clears it with null.
+        p.apply_patch(&json!({ "skipped_version": null }));
+        assert_eq!(p.skipped_version, None);
+    }
+
+    #[test]
+    fn skipped_version_round_trips_through_disk() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("updater_prefs.json");
+        let mut p = UpdaterPrefs::default();
+        p.apply_patch(&json!({ "skipped_version": "1.4.0" }));
+        save_at(&p, &path).unwrap();
+        assert_eq!(load_at(&path).skipped_version.as_deref(), Some("1.4.0"));
     }
 
     #[test]

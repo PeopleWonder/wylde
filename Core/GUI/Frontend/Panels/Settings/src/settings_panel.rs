@@ -37,9 +37,10 @@ use crate::ipc::{
     VoiceSettings, VoiceTest,
 };
 use crate::sections::{
-    consent_section, error_banner, hf_privacy_modal, ollama_field_string, ollama_loading_card,
-    ollama_section, pack, privacy_section, profile_rules_section, startup_section, updates_section,
-    voice_section, FieldKind, OLLAMA_FIELDS,
+    auto_check_consent_modal, channel_warning_modal, consent_section, error_banner,
+    hf_privacy_modal, ollama_field_string, ollama_loading_card, ollama_section, pack,
+    privacy_section, profile_rules_section, startup_section, updates_section, voice_section,
+    FieldKind, OLLAMA_FIELDS,
 };
 
 /// Debounce window before a typed Ollama-field edit is persisted, so a
@@ -139,6 +140,14 @@ pub fn decide_hf_toggle(prefs: PrivacyPrefs) -> HfToggleAction {
     }
 }
 
+/// Whether cycling the channel from `current` needs the Experimental-branch
+/// warning (req 6). The warning fires only on the way TO experimental
+/// (i.e. when currently on Stable / any non-beta value); switching back to
+/// Stable is un-gated. Pure so the gate is unit-tested without a click.
+pub fn channel_switch_needs_warning(current: &str) -> bool {
+    current != "beta"
+}
+
 /// Root Settings panel.  Owns the view-side state that the section
 /// helpers consume.  Public so the Shell + tests can construct one
 /// directly without going through the factory.
@@ -146,6 +155,12 @@ pub struct SettingsPanel {
     pub update_prefs: UpdatePrefs,
     /// State of the manual "Check now" / "Install" flow (Phase 12.5).
     pub update_check: UpdateCheck,
+    /// True while the auto-update consent modal is up (req 4). Enabling
+    /// "Check automatically" opens it; the actual enable waits on confirm.
+    pub auto_check_modal_open: bool,
+    /// True while the Experimental-branch warning modal is up (req 6).
+    /// Switching stable → experimental opens it; the switch waits on confirm.
+    pub channel_warning_open: bool,
     pub autostart_enabled: bool,
     pub autostart_error: Option<String>,
     /// Render state of the Ollama inference section.
@@ -231,6 +246,8 @@ impl SettingsPanel {
         Self {
             update_prefs: UpdatePrefs::default(),
             update_check: UpdateCheck::default(),
+            auto_check_modal_open: false,
+            channel_warning_open: false,
             autostart_enabled: false,
             autostart_error: None,
             ollama_section: OllamaSection::Loading,
@@ -898,13 +915,41 @@ impl SettingsPanel {
         self.persist_update_prefs(json!({ "enabled": target }), cx);
     }
 
-    /// Flip the "check automatically" sub-toggle and persist it.
+    /// Flip the "check automatically" sub-toggle (req 4). Turning it ON is
+    /// gated behind a consent modal (the weekly network call is disclosed
+    /// before it's armed); the actual enable waits on
+    /// [`Self::confirm_auto_check_modal`]. Turning it OFF is immediate —
+    /// no disclosure needed to become *more* isolated.
     pub fn toggle_auto_check(&mut self, cx: &mut Context<Self>) {
-        let target = !self.update_prefs.auto_check;
-        self.update_prefs.auto_check = target;
+        if self.update_prefs.auto_check {
+            // On → off: persist immediately.
+            self.update_prefs.auto_check = false;
+            self.error = None;
+            cx.notify();
+            self.persist_update_prefs(json!({ "auto_check": false }), cx);
+        } else {
+            // Off → on: disclose first, enable on confirm.
+            self.auto_check_modal_open = true;
+            self.error = None;
+            cx.notify();
+        }
+    }
+
+    /// "Enable" in the auto-update consent modal: arm automatic checks and
+    /// persist. Closes the modal.
+    pub fn confirm_auto_check_modal(&mut self, cx: &mut Context<Self>) {
+        self.auto_check_modal_open = false;
+        self.update_prefs.auto_check = true;
         self.error = None;
         cx.notify();
-        self.persist_update_prefs(json!({ "auto_check": target }), cx);
+        self.persist_update_prefs(json!({ "auto_check": true }), cx);
+    }
+
+    /// "Cancel" in the auto-update consent modal: close it and leave
+    /// automatic checks off. Nothing is persisted — the user never opted in.
+    pub fn cancel_auto_check_modal(&mut self, cx: &mut Context<Self>) {
+        self.auto_check_modal_open = false;
+        cx.notify();
     }
 
     /// Cycle the cadence weekly → daily → monthly → weekly and persist.
@@ -920,19 +965,63 @@ impl SettingsPanel {
         self.persist_update_prefs(json!({ "frequency": next }), cx);
     }
 
-    /// Cycle the release channel stable ⇄ beta and persist it. Switching
-    /// channel invalidates any prior check result (beta may surface a
-    /// newer pre-release, stable may hide one), so reset to `Idle`.
+    /// Cycle the release channel stable ⇄ beta (req 5/6). Switching TO the
+    /// Experimental branch (stable → beta) is gated behind a warning modal
+    /// acknowledging the bug risk; the switch waits on
+    /// [`Self::confirm_channel_warning`]. Switching back to Stable (beta →
+    /// stable) is immediate — no warning on the way to the safer channel.
     pub fn cycle_channel(&mut self, cx: &mut Context<Self>) {
-        let next = match self.update_prefs.channel.as_str() {
-            "beta" => "stable",
-            _ => "beta",
-        };
+        if channel_switch_needs_warning(&self.update_prefs.channel) {
+            // Stable → Experimental: warn first, switch on confirm.
+            self.channel_warning_open = true;
+            self.error = None;
+            cx.notify();
+        } else {
+            // Experimental → Stable: switch immediately.
+            self.apply_channel_switch("stable", cx);
+        }
+    }
+
+    /// "Switch to Experimental" in the branch warning modal: adopt the
+    /// experimental channel and persist. Closes the modal.
+    pub fn confirm_channel_warning(&mut self, cx: &mut Context<Self>) {
+        self.channel_warning_open = false;
+        self.apply_channel_switch("beta", cx);
+    }
+
+    /// "Cancel" in the branch warning modal: close it and stay on the
+    /// current channel. Nothing is persisted.
+    pub fn cancel_channel_warning(&mut self, cx: &mut Context<Self>) {
+        self.channel_warning_open = false;
+        cx.notify();
+    }
+
+    /// Adopt `next` channel: update local state, reset any prior check
+    /// result (the two channels can surface different newest versions), and
+    /// persist. Shared by the confirm path and the un-gated beta → stable.
+    fn apply_channel_switch(&mut self, next: &str, cx: &mut Context<Self>) {
         self.update_prefs.channel = next.to_owned();
         self.update_check = UpdateCheck::Idle;
         self.error = None;
         cx.notify();
         self.persist_update_prefs(json!({ "channel": next }), cx);
+    }
+
+    /// "Decline (Skip this version)" on the changelog card (req 7). Records
+    /// the pending version so the automatic path stops re-offering it (a
+    /// newer release, with a different version string, is offered normally),
+    /// and clears the card back to the up-to-date state. A no-op unless a
+    /// check has resolved an available update.
+    pub fn skip_version(&mut self, cx: &mut Context<Self>) {
+        let UpdateCheck::Available(info) = &self.update_check else {
+            return;
+        };
+        let version = info.version.clone();
+        self.update_prefs.skipped_version = Some(version.clone());
+        self.update_check = UpdateCheck::UpToDate;
+        self.error = None;
+        cx.notify();
+        self.persist_update_prefs(json!({ "skipped_version": version }), cx);
     }
 
     /// "Check now" — query GitHub Releases for the selected channel. Runs
@@ -1518,6 +1607,12 @@ impl Render for SettingsPanel {
             .when(self.hf_modal_open, |root| {
                 root.child(hf_privacy_modal(self.hf_dont_show_again, cx))
             })
+            .when(self.auto_check_modal_open, |root| {
+                root.child(auto_check_consent_modal(cx))
+            })
+            .when(self.channel_warning_open, |root| {
+                root.child(channel_warning_modal(cx))
+            })
     }
 }
 
@@ -1789,6 +1884,22 @@ mod tests {
         assert_eq!(next("stable"), "beta");
         assert_eq!(next("beta"), "stable");
         assert_eq!(next("nightly"), "beta");
+    }
+
+    /// The Experimental-branch warning gate: fires on the way TO
+    /// experimental (from Stable or any legacy value), never on the way
+    /// back to Stable.
+    #[test]
+    fn channel_warning_only_on_the_way_to_experimental() {
+        assert!(channel_switch_needs_warning("stable"), "stable → experimental warns");
+        assert!(
+            channel_switch_needs_warning("nightly"),
+            "a legacy value arms to beta, so it also warns"
+        );
+        assert!(
+            !channel_switch_needs_warning("beta"),
+            "beta → stable is un-gated"
+        );
     }
 
     /// The per-tool decision flip is approved ⇄ denied; an unset tool
