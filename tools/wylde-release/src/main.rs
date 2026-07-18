@@ -480,6 +480,12 @@ fn publish(
     }
 
     let notes = resolve_notes(notes, notes_file, version, channel)?;
+    // Changelog gate: a real release must carry real notes (fail-closed).
+    // Exempt only for a --dry-run rehearsal.
+    enforce_publishable_notes(&notes, dry_run).context("changelog gate")?;
+    if !dry_run {
+        println!("✓ changelog gate: release notes are present and non-placeholder.");
+    }
 
     // gh release create <tag> <asset>… --repo … --title … --notes … [--prerelease]
     let mut args: Vec<String> = vec!["release".into(), "create".into(), version.into()];
@@ -511,8 +517,17 @@ fn publish(
     Ok(())
 }
 
+/// Prefix of the one-line rehearsal placeholder that [`resolve_notes`]
+/// synthesises when no real notes are supplied. The publish gate
+/// ([`enforce_publishable_notes`]) refuses any release whose notes start
+/// with this — a real stable/experimental release must carry a real
+/// changelog, never the auto-message.
+const AUTO_NOTES_PREFIX: &str = "Automated release ";
+
 /// Resolve the release-notes body: `--notes-file` wins (read from disk),
-/// then `--notes`, then a one-line auto message.
+/// then `--notes`, then a one-line auto message. The auto message is only
+/// legitimate for a `--dry-run` rehearsal; a real publish is gated by
+/// [`enforce_publishable_notes`] so it can never ship.
 fn resolve_notes(
     notes: Option<&str>,
     notes_file: Option<&Path>,
@@ -525,10 +540,35 @@ fn resolve_notes(
     }
     Ok(notes.map(str::to_owned).unwrap_or_else(|| {
         format!(
-            "Automated release {version} ({} channel).",
+            "{AUTO_NOTES_PREFIX}{version} ({} channel).",
             channel_name(channel)
         )
     }))
+}
+
+/// Whether `notes` are a real changelog rather than empty or the rehearsal
+/// placeholder. Pure so the publish gate is unit-tested without `gh`.
+fn notes_are_publishable(notes: &str) -> bool {
+    let trimmed = notes.trim();
+    !trimmed.is_empty() && !trimmed.starts_with(AUTO_NOTES_PREFIX)
+}
+
+/// The changelog gate for `publish` (enforcement-matrix companion to the
+/// preflight-receipt gate): a real release must carry real release notes.
+/// Fails closed — an empty `--notes-file`, no notes at all (the synthesised
+/// auto-message), or the placeholder is refused. A `--dry-run` rehearsal is
+/// exempt (it never reaches GitHub), so the auto-message can still be
+/// previewed.
+fn enforce_publishable_notes(notes: &str, dry_run: bool) -> Result<()> {
+    if dry_run || notes_are_publishable(notes) {
+        return Ok(());
+    }
+    bail!(
+        "refusing to publish without a real changelog: the release notes are empty or the \
+         one-line auto-message. A stable or experimental release must ship real notes — pass \
+         `--notes-file <path>` pointing at this version's CHANGELOG.md section (or `--notes`). \
+         The auto-message is only for `--dry-run` rehearsals."
+    )
 }
 
 fn channel_name(channel: Channel) -> &'static str {
@@ -759,6 +799,36 @@ mod tests {
         let auto = resolve_notes(None, None, "v1.0.0", Channel::Stable).unwrap();
         assert!(auto.contains("v1.0.0"));
         assert!(auto.contains("stable"));
+    }
+
+    #[test]
+    fn changelog_gate_rejects_empty_and_placeholder_notes() {
+        // Real notes pass.
+        assert!(notes_are_publishable("## 0.2.0\n- a real, user-facing change"));
+        // Empty / whitespace-only is refused.
+        assert!(!notes_are_publishable(""));
+        assert!(!notes_are_publishable("   \n\t "));
+        // The synthesised rehearsal placeholder is refused — this is the
+        // silent-fallback hole being closed.
+        let auto = resolve_notes(None, None, "0.2.0", Channel::Stable).unwrap();
+        assert!(
+            !notes_are_publishable(&auto),
+            "the auto-message must never count as a real changelog"
+        );
+    }
+
+    #[test]
+    fn changelog_gate_fails_closed_for_a_real_publish_but_exempts_dry_run() {
+        let auto = resolve_notes(None, None, "0.2.0", Channel::Beta).unwrap();
+        // A real publish (dry_run = false) with no real notes is refused...
+        assert!(
+            enforce_publishable_notes(&auto, false).is_err(),
+            "a real release without real notes must fail closed"
+        );
+        // ...the same rehearsal (dry_run = true) is allowed to preview it...
+        assert!(enforce_publishable_notes(&auto, true).is_ok());
+        // ...and a real publish WITH real notes passes.
+        assert!(enforce_publishable_notes("## 0.2.0\n- real notes", false).is_ok());
     }
 
     #[test]
