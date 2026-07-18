@@ -101,7 +101,10 @@ fn switching_to_experimental_warns_before_persisting(cx: &mut TestAppContext) {
     window
         .update(cx, |p, _w, _cx| {
             assert!(p.channel_warning_open, "the experimental warning is up");
-            assert_eq!(p.update_prefs.channel, "stable", "channel is not yet switched");
+            assert_eq!(
+                p.update_prefs.channel, "stable",
+                "channel is not yet switched"
+            );
         })
         .unwrap();
     assert!(
@@ -232,7 +235,10 @@ fn enabling_auto_check_gates_on_the_consent_modal(cx: &mut TestAppContext) {
     let call = fake
         .last_call_for("updater.set_prefs")
         .expect("confirming persists auto_check");
-    assert_eq!(call.payload.get("auto_check").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        call.payload.get("auto_check").and_then(|v| v.as_bool()),
+        Some(true)
+    );
     window
         .update(cx, |p, _w, _cx| {
             assert!(!p.auto_check_modal_open);
@@ -264,7 +270,10 @@ fn disabling_auto_check_is_immediate(cx: &mut TestAppContext) {
     let call = fake
         .last_call_for("updater.set_prefs")
         .expect("disabling persists immediately");
-    assert_eq!(call.payload.get("auto_check").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(
+        call.payload.get("auto_check").and_then(|v| v.as_bool()),
+        Some(false)
+    );
 }
 
 #[gpui::test]
@@ -296,7 +305,10 @@ fn decline_skips_the_version_and_clears_the_card(cx: &mut TestAppContext) {
     let call = fake
         .last_call_for("updater.set_prefs")
         .expect("declining persists the skipped version");
-    assert_eq!(call.payload_str("skipped_version").as_deref(), Some("9.9.9"));
+    assert_eq!(
+        call.payload_str("skipped_version").as_deref(),
+        Some("9.9.9")
+    );
     window
         .update(cx, |p, _w, _cx| {
             assert!(

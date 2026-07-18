@@ -804,7 +804,9 @@ mod tests {
     #[test]
     fn changelog_gate_rejects_empty_and_placeholder_notes() {
         // Real notes pass.
-        assert!(notes_are_publishable("## 0.2.0\n- a real, user-facing change"));
+        assert!(notes_are_publishable(
+            "## 0.2.0\n- a real, user-facing change"
+        ));
         // Empty / whitespace-only is refused.
         assert!(!notes_are_publishable(""));
         assert!(!notes_are_publishable("   \n\t "));

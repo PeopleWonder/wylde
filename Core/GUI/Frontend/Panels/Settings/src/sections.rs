@@ -448,11 +448,15 @@ fn changelog_card(info: &wylde_updater::UpdateInfo, cx: &mut Cx) -> gpui::Div {
                 .justify_end()
                 .gap_2()
                 .child(
-                    modal_button("settings-updates-decline", "Decline (Skip this version)", false)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _ev, _window, cx| this.skip_version(cx)),
-                        ),
+                    modal_button(
+                        "settings-updates-decline",
+                        "Decline (Skip this version)",
+                        false,
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _ev, _window, cx| this.skip_version(cx)),
+                    ),
                 )
                 .child(
                     modal_button("settings-updates-accept", "Accept", true).on_mouse_down(

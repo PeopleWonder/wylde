@@ -1891,7 +1891,10 @@ mod tests {
     /// back to Stable.
     #[test]
     fn channel_warning_only_on_the_way_to_experimental() {
-        assert!(channel_switch_needs_warning("stable"), "stable → experimental warns");
+        assert!(
+            channel_switch_needs_warning("stable"),
+            "stable → experimental warns"
+        );
         assert!(
             channel_switch_needs_warning("nightly"),
             "a legacy value arms to beta, so it also warns"
