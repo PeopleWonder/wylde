@@ -16,33 +16,23 @@ from .conftest import _write
 # ── Shared fixture builders ──────────────────────────────────────────
 
 
-def _seed_harness_registry(
-    root: Any,
-    rust_verbs: list[str] | None = None,
-    python_verbs: list[str] | None = None,
-) -> None:
-    """Drop a Rust ``pipe.rs`` and Python ``__init__.py`` whose action
-    declarations parse to the supplied verb sets.  Either side may be
-    omitted; empty / missing → empty contribution to the union."""
-    if rust_verbs is not None:
-        body = ",\n".join(f'    "{v}"' for v in rust_verbs)
-        rust_src = (
-            "pub const ALL_PIPE_ACTIONS: &[&str] = &[\n"
-            + body
-            + ",\n];\n"
-        )
-        _write(
-            root / "rust" / "crates" / "wylde-harness" / "src" / "pipe.rs",
-            rust_src,
-        )
-    if python_verbs is not None:
-        body = "\n".join(f'    "{v}": _handler,' for v in python_verbs)
-        py_src = (
-            "_ACTIONS = {\n"
-            + body
-            + "\n}\n"
-        )
-        _write(root / "Core" / "harness" / "pipe" / "__init__.py", py_src)
+def _seed_harness_registry(root: Any, rust_verbs: list[str]) -> None:
+    """Drop the harness pipe registry: a Rust ``ALL_PIPE_ACTIONS`` array
+    at ``rust/crates/wylde-harness/src/pipe/mod.rs``.
+
+    Two things changed here for #116.  The path was ``src/pipe.rs``,
+    which the crate outgrew when ``pipe`` became a module directory; and
+    there was a second, Python ``_ACTIONS`` half at
+    ``Core/harness/pipe/__init__.py`` that the rule unioned in.  The Rust
+    cutover deleted the Python tree, so there is exactly one registry
+    now, and it is mandatory — every rule-38 test must seed it or the
+    rule correctly reports that it cannot run.
+    """
+    body = ",\n".join(f'    "{v}"' for v in rust_verbs)
+    _write(
+        root / "rust" / "crates" / "wylde-harness" / "src" / "pipe" / "mod.rs",
+        "pub const ALL_PIPE_ACTIONS: &[&str] = &[\n" + body + ",\n];\n",
+    )
 
 
 def _seed_panel(
@@ -126,8 +116,10 @@ def test_rule38_flags_typo_verb(isolated_tree: Any) -> None:
 
 
 def test_rule38_flags_unknown_stream_call_verb(isolated_tree: Any) -> None:
+    """The ``stream_call`` form carries its verb in arg-1 rather than in
+    a json! envelope; it must be checked against the registry too."""
     wc, root = isolated_tree
-    _seed_harness_registry(root, python_verbs=["chat.stream_turn"])
+    _seed_harness_registry(root, rust_verbs=["chat.stream_turn"])
     _seed_panel(
         root,
         "Foo",
@@ -143,9 +135,23 @@ def test_rule38_flags_unknown_stream_call_verb(isolated_tree: Any) -> None:
     assert "models.set_default" in findings[0].message
 
 
-def test_rule38_skips_non_harness_services(isolated_tree: Any) -> None:
-    """Non-harness services have no central registry — calls to them
-    are intentionally not flagged."""
+def test_rule38_flags_declared_service_whose_registry_loads_empty(
+    isolated_tree: Any,
+) -> None:
+    """A service listed in ``RUST_SERVICE_REGISTRIES`` whose registry
+    loads empty is a broken gate, not a clean service (#116).
+
+    This test previously asserted the opposite — that a call to
+    ``wylde-ollama`` with no ollama registry present was silently
+    skipped.  That skip was the bug in miniature: ``wylde-ollama`` IS
+    declared in ``RUST_SERVICE_REGISTRIES``, so the engine believes it
+    knows that service's verb surface.  Finding none means the crate was
+    restructured out from under the rule, and every panel call to it is
+    unchecked.  Reporting a pass there is reporting on work not done.
+
+    The genuine skip — a service with no declared registry at all — is
+    covered by ``test_rule38_skips_service_without_discoverable_registry``.
+    """
     wc, root = isolated_tree
     _seed_harness_registry(root, rust_verbs=["chat.start_turn"])
     _seed_panel(
@@ -158,7 +164,11 @@ def test_rule38_skips_non_harness_services(isolated_tree: Any) -> None:
             "}\n"
         ),
     )
-    assert wc.check_panel_verbs_exist_in_harness_registry() == []
+    findings = wc.check_panel_verbs_exist_in_harness_registry()
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+    assert "wylde-ollama" in findings[0].message
+    assert "loaded empty" in findings[0].message
 
 
 def test_rule38_skips_dynamic_action_arg(isolated_tree: Any) -> None:
@@ -182,11 +192,19 @@ def test_rule38_skips_dynamic_action_arg(isolated_tree: Any) -> None:
     assert wc.check_panel_verbs_exist_in_harness_registry() == []
 
 
-def test_rule38_accepts_python_only_verb(isolated_tree: Any) -> None:
-    """A verb present only on the Python side of the registry must
-    still satisfy the rule — Python is part of the live surface."""
+def test_rule38_python_registry_no_longer_accepted(isolated_tree: Any) -> None:
+    """A verb backed only by the old Python registry must now FIRE (#116).
+
+    This replaces ``test_rule38_accepts_python_only_verb``, whose
+    docstring read "Python is part of the live surface".  It was true
+    when written and is not any more: the Rust cutover deleted
+    ``Core/harness/pipe/`` entirely.  A panel calling a verb that only
+    ever existed there reaches a service that does not serve it, which
+    is a runtime ``no_action`` — precisely what this rule guards.
+    """
     wc, root = isolated_tree
-    _seed_harness_registry(root, python_verbs=["conversations.new"])
+    # Rust registry present but WITHOUT the verb: the post-cutover world.
+    _seed_harness_registry(root, rust_verbs=["chat.start_turn"])
     _seed_panel(
         root,
         "Foo",
@@ -202,7 +220,10 @@ def test_rule38_accepts_python_only_verb(isolated_tree: Any) -> None:
             "}\n"
         ),
     )
-    assert wc.check_panel_verbs_exist_in_harness_registry() == []
+    findings = wc.check_panel_verbs_exist_in_harness_registry()
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+    assert "conversations.new" in findings[0].message
 
 
 # ── Rule 38 tightening: non-harness service registries ───────────────
@@ -225,6 +246,9 @@ def _seed_service_registry(root: Any, crate_name: str, verbs: list[str]) -> None
 def test_rule38_clean_when_verb_in_extension_bridge(isolated_tree: Any) -> None:
     """Verbs from non-harness service registries are now indexed too."""
     wc, root = isolated_tree
+    # The harness registry is mandatory for the rule to run at all (#116),
+    # so seed it even though this test is about the bridge.
+    _seed_harness_registry(root, rust_verbs=["chat.start_turn"])
     _seed_service_registry(root, "wylde-extension-bridge", ["ext.list", "ext.tools.call"])
     _seed_panel(
         root,
@@ -245,7 +269,11 @@ def test_rule38_clean_when_verb_in_extension_bridge(isolated_tree: Any) -> None:
 
 
 def test_rule38_flags_unknown_ollama_verb(isolated_tree: Any) -> None:
+    """A verb absent from a *populated* service registry is a real
+    mismatch — distinct from the empty-registry case above, which is a
+    broken gate rather than a bad call."""
     wc, root = isolated_tree
+    _seed_harness_registry(root, rust_verbs=["chat.start_turn"])
     _seed_service_registry(root, "wylde-ollama", ["ollama.pull"])
     _seed_panel(
         root,
@@ -264,8 +292,14 @@ def test_rule38_flags_unknown_ollama_verb(isolated_tree: Any) -> None:
 
 
 def test_rule38_skips_service_without_discoverable_registry(isolated_tree: Any) -> None:
-    """``wylde-vpn`` has no ALL_ACTIONS / ALL_PIPE_ACTIONS array — calls
-    to it remain out of scope (no false flags)."""
+    """``wylde-vpn`` is absent from ``RUST_SERVICE_REGISTRIES`` entirely —
+    calls to it remain out of scope (no false flags).
+
+    The distinction that matters post-#116: *undeclared* is a genuine
+    skip, because the engine never claimed to know this service's verbs.
+    *Declared but empty* is a broken gate and errors — see
+    ``test_rule38_flags_declared_service_whose_registry_loads_empty``.
+    """
     wc, root = isolated_tree
     _seed_harness_registry(root, rust_verbs=["chat.start_turn"])
     _seed_panel(

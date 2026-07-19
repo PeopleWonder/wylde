@@ -488,6 +488,7 @@ from .rules._prompts import (  # noqa: E402
 from .rules._silent_skip_in_service_start import (  # noqa: E402
     check_silent_skip_in_service_start,
 )
+from .rules._selfcheck import check_rule_targets_exist  # noqa: E402
 from ._single_file import (  # noqa: E402
     _check_dead_refs_lines,
     _check_import_paths_lines,
@@ -579,6 +580,7 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # append-only `OpenOptions` outside the canonical rotation factory —
     # the ad-hoc uncapped sink that let `ipc.jsonl` grow to ~179 MB.
     "no_unbounded_log_sink_rust": check_no_unbounded_log_sink_rust,
+    "rule_targets_exist": check_rule_targets_exist,
 }
 
 # Asserting the count at import time so a future rule add/drop trips the
@@ -596,7 +598,10 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # no_hardcoded_prompts_rust) = 49 active.
 # 0.2 Stability audit finding C (#98, 2026-07-18): +1 (rule 54,
 # no_unbounded_log_sink_rust) = 50 active.
-assert len(_RULES) == 50, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 50)"
+# Enforcement audit (#116, 2026-07-19): +1 (rule 51, rule_targets_exist)
+# = 51 active.  Meta-rule: asserts every other rule's target path still
+# exists, so a refactor cannot silently disarm a gate again.
+assert len(_RULES) == 51, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 51)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -764,6 +769,7 @@ __all__ = [
     "check_no_python_gateway_imports",
     "check_no_bare_tokio_in_panel_src",
     "check_no_panic_in_panel_render",
+    "check_rule_targets_exist",
     "check_silent_skip_in_service_start",
     "check_no_hardcoded_prompts_rust",
 ]

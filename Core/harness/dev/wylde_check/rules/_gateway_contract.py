@@ -25,13 +25,17 @@ catches at edit time.
 * :func:`check_gateway_verbs_exist_in_harness_registry` — every
   statically-resolvable harness-pipe verb dispatched from the Gateway
   crate must appear in the harness pipe registry, defined (identically
-  to rule 38) as the **union of** the Rust ``ALL_PIPE_ACTIONS`` array
-  (``rust/crates/wylde-harness/src/pipe.rs``) **and** the Python
-  ``_ACTIONS`` dict (``Core/harness/pipe/__init__.py``).  The union is
-  what an over-the-wire dispatch actually reaches: the Rust harness
-  serves the ported verbs and surfaces the rest as ``no_action`` for
-  the Python strangler-fig's in-process fallback, so a verb registered
-  on *either* side is reachable.
+  to rule 38) as the Rust ``ALL_PIPE_ACTIONS`` array in
+  ``rust/crates/wylde-harness/src/pipe/mod.rs``.  That array is what an
+  over-the-wire dispatch actually reaches; a verb absent from it comes
+  back ``no_action`` at runtime.
+
+  The Python half of this registry (``Core/harness/pipe/__init__.py``,
+  the strangler-fig's in-process fallback) was deleted in the Rust
+  cutover, as was the old ``src/pipe.rs`` path.  Both constants
+  outlived their files, so the registry loaded empty and the rule
+  passed vacuously — see issue #116.  An unloadable registry is now an
+  ``error``, never a silent pass.
 
 Two dispatch shapes are recognised:
 
@@ -66,6 +70,8 @@ from typing import List, Optional
 from .. import Finding
 from .._walkers import _is_excluded, _read_text, _to_rel
 from ._gpui_contract import (
+    RUST_HARNESS_PIPE_FILE,
+    HarnessRegistryUnavailable,
     _find_matching_close,
     _line_no_at,
     _load_harness_action_registry,
@@ -218,11 +224,30 @@ def check_gateway_verbs_exist_in_harness_registry() -> List[Finding]:
     ``// wylde-check: optional-verb`` marker.
     """
     out: List[Finding] = []
-    registry = _load_harness_action_registry()
-    # If the registry couldn't be loaded at all (harness crate / Python
-    # pipe not checked in), skip the rule rather than flag every verb.
-    if not registry:
-        return out
+    try:
+        registry = _load_harness_action_registry()
+    except HarnessRegistryUnavailable as exc:
+        # This bail used to be ``if not registry: return out`` — an empty
+        # findings list, i.e. a clean pass, while 46 Gateway verbs across
+        # 8 route files went unchecked (issue #116).  A rule that cannot
+        # load its registry has not verified anything; it fails.
+        return [
+            Finding(
+                rule="gateway_verbs_exist_in_harness_registry",
+                severity="error",
+                file=RUST_HARNESS_PIPE_FILE,
+                line=0,
+                message=(
+                    f"Cannot verify Gateway harness dispatches: {exc}.  "
+                    f"Every ``harness_dispatch(...)`` callsite under "
+                    f"{GATEWAY_SRC_ROOT} is unchecked while this registry "
+                    f"is unloadable, so the rule reports an error instead "
+                    f"of passing vacuously.  Repoint "
+                    f"``RUST_HARNESS_PIPE_FILE`` at the harness pipe "
+                    f"registry."
+                ),
+            )
+        ]
     for rs_path in _walk_gateway_rs_files():
         rel = _to_rel(rs_path)
         text = _read_text(rs_path)
@@ -242,9 +267,8 @@ def check_gateway_verbs_exist_in_harness_registry() -> List[Finding]:
                     message=(
                         f"Gateway dispatches `{HARNESS_SERVICE}.{disp.verb}` "
                         f"but no such verb is registered on the harness pipe "
-                        f"(rust/crates/wylde-harness/src/pipe.rs::"
-                        f"ALL_PIPE_ACTIONS or "
-                        f"Core/harness/pipe/__init__.py::_ACTIONS).  Either "
+                        f"({RUST_HARNESS_PIPE_FILE}::"
+                        f"ALL_PIPE_ACTIONS).  Either "
                         f"add the verb to the harness, fix the typo, or — if "
                         f"the route deliberately probes an optional verb and "
                         f"tolerates `no_action` — annotate the call with "
