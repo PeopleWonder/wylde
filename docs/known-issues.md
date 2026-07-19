@@ -75,10 +75,14 @@ carried "the remaining ~4 still need enumeration" for weeks. A full sweep on a c
 | `Core/GUI` `cargo panel-walk` (44 binaries) | all green |
 | `tools/xtask` · `tools/wylde-release` · `Services/wylde-images` | all green |
 
-**`cargo test --workspace` does NOT run the GUI tests** — `Core/GUI` needs the `panel-walk` alias
-(the L7 gate's own invocation, `ci.yml` job `gui-panel-walk`). A `--workspace` run there reports
-"0 passed" for every binary and looks green while testing nothing. Anyone re-checking this entry
-must run both.
+**Re GUI tests:** both `cargo test --workspace --locked` and `cargo panel-walk` run them from
+`Core/GUI` — the `test-support` seam is wired via the panels' `[dev-dependencies]`, so it compiles
+into each crate's test targets under either. CI's required `gui panel-walk (L7)` job uses the alias,
+which scopes to the 9 panel crates so the headless gate never links the Shell. (An earlier version of
+this entry claimed `--workspace` "runs 0 GUI tests" — that was the #85 misread, now closed: a
+`--workspace` run is exit 0, **1151 passed**; the "0 passed" lines are the ~17 doc-test binaries plus
+a couple of empty/`#[ignore]`d targets. The genuine cousin — the alias's hardcoded `-p` list drifting
+from the panel members — is tracked as #95.)
 
 **The 0.2 question this entry existed to answer is answered: NO, KI-6 hides no 0.2 blocker.**
 
@@ -161,7 +165,9 @@ lives only in a doc is a finding that gets passed over, which is the disease thi
   and the rules for a test author. **Open with no open instance, by design** — it is the home for the
   fourth sighting, so the diagnosis isn't re-derived from scratch under a fresh number.
 - **#84** — the **vram-broker manifest-name defect** (a real product bug found while diagnosing #80).
-- **#85** — the **`cargo test --workspace` GUI trap** (a false green; docs here are the stopgap).
+- **#85** — CLOSED not-reproducing: the claimed "`--workspace` runs 0 GUI tests" was a misread of
+  cargo's doc-test `0 passed` lines; `--workspace` runs the full suite (1151). The genuine cousin —
+  the `panel-walk` alias's hardcoded `-p` list can silently under-cover a new panel — is **#95**.
 
 **KI-6 itself can be closed** — it is a duplicate of tracked work now. Kept until the maintainer says,
 since this file's own migration to GitHub Issues is the standing plan (see the header) rather than a
@@ -290,4 +296,5 @@ feed **#39/#40** (0.3). **Don't sweep them.**
 - KI-6 is **enumerated (2026-07-17), fixed (#80/#82), and hid no 0.2 blocker.** The "do this early, it
   may hide a blocker" instruction is discharged and doesn't need repeating. Its findings now live as
   **#83** (self-collision class, tracking) · **#84** (vram-broker under-report) · **#85** (`--workspace`
-  GUI trap) — **none of them 0.2-gating, all Tier 1, none milestoned.**
+  GUI trap — **CLOSED as a misread**; its real cousin, panel-walk `-p` drift, is **#95**) — none of
+  them 0.2-gating, all Tier 1, none milestoned.

@@ -120,6 +120,10 @@ pub struct UpdatePrefs {
     /// [`wylde_updater::Channel`] at the check call site.
     pub channel: String,
     pub last_checked: Option<u64>,
+    /// The version the user chose to skip via "Decline" on the changelog
+    /// card. `None` until a skip is recorded (or once a newer version
+    /// supersedes it). Mirrors the daemon's `skipped_version` key.
+    pub skipped_version: Option<String>,
 }
 
 impl Default for UpdatePrefs {
@@ -133,6 +137,7 @@ impl Default for UpdatePrefs {
             frequency: "weekly".into(),
             channel: "stable".into(),
             last_checked: None,
+            skipped_version: None,
         }
     }
 }
@@ -156,6 +161,10 @@ impl UpdatePrefs {
                 .unwrap_or("stable")
                 .to_owned(),
             last_checked: v.get("last_checked").and_then(|x| x.as_u64()),
+            skipped_version: v
+                .get("skipped_version")
+                .and_then(|x| x.as_str())
+                .map(str::to_owned),
         }
     }
 

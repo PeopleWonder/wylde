@@ -443,6 +443,7 @@ from .rules._rust import (  # noqa: E402
     check_logging_setup_only_rust,
     check_no_external_process_spawn_rust,
     check_no_silent_error_swallow_rust,
+    check_no_unbounded_log_sink_rust,
 )
 from .rules._gpui import (  # noqa: E402
     check_first_party_manifest_must_be_gpui_view,
@@ -573,6 +574,11 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # catalog so the shipped override surface can tune them. Grandfather
     # allowlist empties at B9.
     "no_hardcoded_prompts_rust": check_no_hardcoded_prompts_rust,
+    # Rule 54 — every persistent file log must inherit the shared
+    # rotation policy (0.2 Stability audit finding C, #98).  Flags a raw
+    # append-only `OpenOptions` outside the canonical rotation factory —
+    # the ad-hoc uncapped sink that let `ipc.jsonl` grow to ~179 MB.
+    "no_unbounded_log_sink_rust": check_no_unbounded_log_sink_rust,
 }
 
 # Asserting the count at import time so a future rule add/drop trips the
@@ -588,7 +594,9 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # Silent-skip-in-service-start slice (2026-05-31): +1 (rule 52) = 48 active.
 # Prompt-engineering B11 slice (2026-06-11): +1 (rule 53,
 # no_hardcoded_prompts_rust) = 49 active.
-assert len(_RULES) == 49, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 49)"
+# 0.2 Stability audit finding C (#98, 2026-07-18): +1 (rule 54,
+# no_unbounded_log_sink_rust) = 50 active.
+assert len(_RULES) == 50, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 50)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -735,6 +743,7 @@ __all__ = [
     "check_no_silent_error_swallow_rust",
     "check_logging_setup_only_rust",
     "check_no_external_process_spawn_rust",
+    "check_no_unbounded_log_sink_rust",
     "check_manifest_sandbox_required",
     "check_no_cross_panel_imports",
     "check_no_legacy_gui_imports_in_panels",
