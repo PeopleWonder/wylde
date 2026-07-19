@@ -36,6 +36,7 @@
 //!   IO + the MRU state machine.
 
 pub mod definition;
+pub mod pending;
 pub mod persistence;
 pub mod slug;
 pub mod state;
@@ -157,20 +158,37 @@ pub fn delete(workspace_id: &str) -> bool {
     let mut state = state::load();
     state.forget(workspace_id);
     let _ = state::save(&state);
-    let _ = persistence::delete_workspace_dir(workspace_id);
+    teardown_bundle(workspace_id);
     existed
 }
 
-/// Promote `id` to the active/MRU head, persist `index.json`, and delete
+/// Promote `id` to the active/MRU head, persist `index.json`, and tear down
 /// the bundles of any workspaces evicted past the static MRU-5 window.
 fn promote_and_persist(workspace_id: &str) -> Vec<String> {
     let mut state = state::load();
     let evicted = state.promote(workspace_id);
     let _ = state::save(&state);
     for victim in &evicted {
-        let _ = persistence::delete_workspace_dir(victim);
+        teardown_bundle(victim);
     }
     evicted
+}
+
+/// The single teardown primitive **every** removal path funnels through:
+/// drop the on-disk bundle AND enqueue the workspace for a durable graph
+/// cascade (Chunk + now-orphan Entity prune, [`crate::graph::cleanup`]).
+///
+/// Centralising it here is the structural guarantee #99 asks for: explicit
+/// `delete` AND MRU eviction — and any future removal path — cascade to the
+/// graph *by construction*, because they can only remove a bundle by calling
+/// this. The graph prune itself is durable, not fire-and-forget: the id stays
+/// on the [`pending`] queue until the async drain confirms the teardown
+/// landed, so a transient graph outage can't permanently orphan a workspace's
+/// nodes. (Cross-ref #28 — a workspace id derives from its folder and can
+/// never be repointed, so teardown must cascade rather than repoint.)
+fn teardown_bundle(workspace_id: &str) {
+    let _ = persistence::delete_workspace_dir(workspace_id);
+    pending::enqueue(workspace_id);
 }
 
 #[cfg(test)]
@@ -240,5 +258,35 @@ mod tests {
         assert!(get(&def.id).is_none());
         assert!(state::load().active_id.is_none());
         assert!(!delete("nope-000000"));
+    }
+
+    // ── #99: BOTH removal paths cascade to the graph via one primitive ───
+
+    #[test]
+    fn delete_enqueues_the_graph_teardown() {
+        let _env = TestEnv::new();
+        let def = create(&_env.ws_path("del-cascade"), None);
+        assert!(pending::list().is_empty(), "clean slate");
+        delete(&def.id);
+        assert!(
+            pending::list().contains(&def.id),
+            "explicit delete must enqueue the graph cascade"
+        );
+    }
+
+    #[test]
+    fn mru_eviction_enqueues_the_graph_teardown() {
+        let _env = TestEnv::new();
+        // Fill the MRU window, then push one more so the LRU is evicted.
+        let first = create(&_env.ws_path("w0"), None);
+        for i in 1..=MRU_WINDOW {
+            create(&_env.ws_path(&format!("w{i}")), None);
+        }
+        assert!(get(&first.id).is_none(), "w0 evicted past the MRU window");
+        // Eviction — not just explicit delete — must cascade to the graph.
+        assert!(
+            pending::list().contains(&first.id),
+            "the evicted workspace must enqueue the graph cascade"
+        );
     }
 }

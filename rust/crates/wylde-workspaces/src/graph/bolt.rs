@@ -371,8 +371,28 @@ impl BoltClient {
 
     /// `delete_workspace` — drop every Chunk in a workspace, then prune
     /// now-orphaned Entity nodes. Returns counts so callers can confirm the
-    /// cleanup landed.
+    /// cleanup landed. The full workspace-teardown cascade (delete + MRU
+    /// eviction, #99) uses this.
     pub async fn delete_workspace(&self, workspace: &str) -> Reply {
+        self.delete_workspace_chunks(workspace, true).await
+    }
+
+    /// DETACH DELETE every Chunk in a workspace, optionally pruning
+    /// now-orphaned Entity nodes. The `prune_orphans` switch is what lets one
+    /// primitive serve two callers:
+    ///   * **workspace teardown** (delete / MRU-evict) → `true`: the workspace
+    ///     is gone, so entities only its chunks mentioned should disappear too
+    ///     ([`delete_workspace`]).
+    ///   * **full-reindex replace** (#99) → `false`: the chunk id embeds mtime,
+    ///     so a re-index re-keys every chunk and a bare MERGE would orphan the
+    ///     superseded nodes; deleting the workspace's chunks first makes the
+    ///     upsert a true replace. Orphan pruning is SKIPPED so the Entity nodes
+    ///     — and the authored `Concept`→`Entity` / typed edges anchored on them
+    ///     — survive the recompute (they are about to be re-MERGE'd). Replace
+    ///     recomputes chunks WITHOUT nuking authored relations.
+    ///
+    /// Returns `{ok, workspace, chunks_deleted, orphan_entities_deleted}`.
+    pub async fn delete_workspace_chunks(&self, workspace: &str, prune_orphans: bool) -> Reply {
         let ws = workspace.trim().to_owned();
         if ws.is_empty() {
             return Reply::err_msg("bad_request", "'workspace' required");
@@ -386,7 +406,11 @@ impl BoltClient {
                 vec![("ws".to_owned(), BoltType::from(ws.clone()))],
             )
             .await?;
-            let orphans = run_single_count(graph, cypher::DELETE_ORPHAN_ENTITIES, vec![]).await?;
+            let orphans = if prune_orphans {
+                run_single_count(graph, cypher::DELETE_ORPHAN_ENTITIES, vec![]).await?
+            } else {
+                0
+            };
             Ok::<_, (String, String)>(json!({
                 "ok": true,
                 "workspace": ws,
@@ -399,7 +423,7 @@ impl BoltClient {
             Ok(Err((code, message))) => Reply::err_msg(code, message),
             Err(_) => Reply::err_msg(
                 error_codes::QUERY,
-                format!("delete_workspace timed out after {timeout:?}"),
+                format!("delete_workspace_chunks timed out after {timeout:?}"),
             ),
         }
     }

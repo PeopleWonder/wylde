@@ -107,6 +107,15 @@ async fn main() -> Result<()> {
     // on-demand build fallback if the index isn't ready).
     wylde_workspaces::graph::symbol_index::on_boot();
 
+    // #99 — drain any workspace graph-teardown deferred by a prior run (a
+    // delete/eviction whose Bolt prune failed, or a crash between the bundle
+    // removal and the prune). The durable pending queue survives restarts, so
+    // this catches up on boot. Background + best-effort: a still-down graph
+    // just re-defers to the next drain.
+    tokio::spawn(async {
+        wylde_workspaces::graph::cleanup::run_pending_cleanup().await;
+    });
+
     let pipe = wylde_workspaces::ipc::pipe_path(&cfg.service_name);
     tracing::info!("wylde-workspaces: actions registered; opening pipe at {pipe}");
 
