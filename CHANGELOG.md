@@ -91,6 +91,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **Re-indexing a workspace no longer leaks orphaned graph chunks, and removing one now cascades to the
+  graph.** A workspace's `Chunk` id embeds the file mtime, so any re-save re-keys every chunk — and two
+  Memgraph write paths leaked as a result. A forced full re-index (embed model/dim/version change) was
+  purely additive: it `MERGE`d a fresh chunk id for every mtime-drifted file while the superseded nodes
+  stayed behind forever, so rebuilding N times grew the graph N×. Separately, graph teardown lived only
+  in the explicit-delete handler, fire-and-forget — so every MRU-*evicted* workspace orphaned all its
+  chunk and entity nodes with nothing to clean them up, and a transient graph blip during a delete
+  orphaned silently. Full re-index now does a true replace (delete-then-write the workspace's chunks
+  before the upsert, preserving authored entities and their relations), and both removal paths — explicit
+  delete and MRU eviction — funnel through one durable teardown primitive that enqueues the workspace on
+  an encrypt-at-rest pending queue and drains it against the graph, dequeuing only on success (a blip
+  re-defers instead of orphaning) and skipping a re-created folder-derived id so fresh data is never
+  wiped. The delta/watcher paths were already correct and are unchanged. Fixes #99.
+
 - **A newly-added core service can no longer be silently skipped on shutdown.** The 12 in-tree
   daemon-managed services were enumerated by hand in five parallel places (boot, shutdown,
   `dispatch_start`, `dispatch_stop`, and the manageable-core set) with nothing keeping them in sync —

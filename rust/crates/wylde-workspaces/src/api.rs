@@ -60,6 +60,12 @@ pub async fn handle_set_active(payload: Value) -> Reply {
             // the background so `symbols.find` is warm. Same MRU model: one
             // workspace's index in memory at a time. No-op until armed.
             crate::graph::symbol_index::on_active_changed();
+            // #99 — activating a workspace bumps the MRU and can evict the LRU
+            // past the window; that eviction enqueued its graph teardown. Drain
+            // it (and any prior deferred teardown) in the background.
+            tokio::spawn(async {
+                crate::graph::cleanup::run_pending_cleanup().await;
+            });
             Reply::ok(json!({
                 "active_id": state.active_id,
                 "mru": state.mru,
@@ -89,6 +95,12 @@ pub async fn handle_create(payload: Value) -> Reply {
     // Index the folder in the background so create stays non-blocking;
     // first-time create has no index yet → a full pass.
     indexer::spawn_background_index(def.id.clone());
+    // #99 — a create can push a workspace past the MRU-5 window; the eviction
+    // enqueued its graph teardown through the shared primitive. Drain it (and
+    // any prior deferred teardown) in the background.
+    tokio::spawn(async {
+        crate::graph::cleanup::run_pending_cleanup().await;
+    });
     Reply::ok(def.to_value())
 }
 
@@ -147,21 +159,15 @@ pub async fn handle_delete(payload: Value) -> Reply {
                 );
             }
         });
-        // Slice I — also clean up the workspace's Neo4j footprint (the Slice A
-        // report flagged that `delete` left graph nodes behind). Fire-and-
-        // forget: a Bolt connect can take seconds when the graph is down, and
-        // `workspaces.delete` is a Fast/Medium verb — it must NOT block on the
-        // graph. The registry delete already succeeded; the graph prune is
-        // best-effort cleanup that can't fail the response.
-        let ws = id.clone();
-        tokio::spawn(async move {
-            let cleanup = crate::graph::BoltClient::new().delete_workspace(&ws).await;
-            if !cleanup.ok {
-                tracing::warn!(
-                    "workspaces.delete: graph cleanup degraded for {ws}: {:?}",
-                    cleanup.error
-                );
-            }
+        // #99 — cascade the workspace's Neo4j footprint (Chunk + now-orphan
+        // Entity nodes) via the DURABLE pending-cleanup drain. `registry::delete`
+        // already enqueued this id through the shared teardown primitive (and
+        // MRU eviction enqueues the same way), so we drain the whole queue —
+        // one drain retries anything a prior graph blip deferred. Spawned so a
+        // slow Bolt connect never blocks this Fast/Medium verb; the registry
+        // delete already succeeded and the prune can't fail the response.
+        tokio::spawn(async {
+            crate::graph::cleanup::run_pending_cleanup().await;
         });
     }
     Reply::ok(json!({ "ok": ok, "workspace_id": id }))
