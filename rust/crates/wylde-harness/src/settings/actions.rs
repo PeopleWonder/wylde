@@ -122,9 +122,12 @@ pub async fn handle_reasoning_set(payload: Value) -> Reply {
     if !payload.is_object() {
         return Reply::err_msg("bad_request", "payload must be an object");
     }
+    // Capture the pre-commit config so a slot change can compute which
+    // model tags it dereferenced (the superseded set fed to the GC seam).
+    let prev = crate::turn::reasoning::ReasoningConfig::current();
     // Merge the incoming patch over the current config, then re-parse
     // through the tolerant loader (garbage keys fall back, never fail open).
-    let mut merged = crate::turn::reasoning::ReasoningConfig::current().to_value();
+    let mut merged = prev.to_value();
     if let (Some(base), Some(patch)) = (merged.as_object_mut(), payload.as_object()) {
         for (k, v) in patch {
             base.insert(k.clone(), v.clone());
@@ -138,6 +141,11 @@ pub async fn handle_reasoning_set(payload: Value) -> Reply {
             // Preloading an already-resident model just refreshes its
             // keep_alive window; disabled commits spawn nothing.
             crate::turn::reasoning::residency::spawn_warm_slots("settings commit");
+            // Reclaim superseded slots (#100): if this commit switched a
+            // slot away from a model, the now-unreferenced predecessor is
+            // GC-eligible. Announce-only unless WYLDE_OLLAMA_RECLAIM_SUPERSEDED
+            // is set; referenced/pinned models are never touched.
+            crate::turn::reasoning::reclaim::spawn_reclaim(prev, next.clone());
             Reply::ok(next.to_value())
         }
         Err(e) => Reply::err_msg("io_error", format!("persist reasoning: {e}")),

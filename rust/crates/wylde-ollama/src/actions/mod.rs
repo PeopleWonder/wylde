@@ -13,6 +13,7 @@
 pub mod chat;
 pub mod embed;
 pub mod error;
+pub mod gc;
 pub mod models;
 pub mod pull;
 
