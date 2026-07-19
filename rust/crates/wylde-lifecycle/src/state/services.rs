@@ -111,37 +111,33 @@ pub fn impl_for_with_default(service: &str, default: ImplLang) -> ImplLang {
 ///
 /// Resolution order:
 ///   1. `WYLDE_<SERVICE>_BIN` override (must point at an existing file).
-///   2. Bundled install path `rust/bin/wylde-<stripped>.exe`.
-///   3. Cargo release target `rust/target/release/wylde-<stripped>.exe`.
-///   4. Cargo debug target `rust/target/debug/wylde-<stripped>.exe`.
+///   2. Whatever [`wylde_stack::current::resolve`] says — the `current`
+///      pointer's directory when an installed stack exists, otherwise the
+///      single build-tree profile directory the daemon itself was taken from.
 ///
-/// `<stripped>` is `service` with the `wylde-` prefix removed. On
-/// non-Windows hosts the `.exe` suffix is dropped (the daemon only
-/// runs on Windows in production but tests can exercise the resolver
-/// on any platform).
+/// **Why this delegates (#97/#92).** This used to run its own first-match
+/// walk over `rust/bin` → `rust/target/release` → `rust/target/debug`, per
+/// service. That meant the daemon could spawn services from a different
+/// build profile than the one it was itself launched from, and — once the
+/// updater started installing whole stacks under `%LOCALAPPDATA%` — a freshly
+/// updated daemon would still have spawned every service from the stale repo
+/// build tree, or from nothing at all on a machine with no repo. Sharing the
+/// resolver is what makes "the update reached the backend" actually true:
+/// the launcher, the updater, and the daemon's own spawn path all agree on
+/// which stack is current.
+///
+/// The `WYLDE_<SERVICE>_BIN` override stays first and stays absolute — it is
+/// the dev-staging escape hatch, and pointing it at a specific build is
+/// exactly the case where the shared resolution should be bypassed.
 pub fn rust_binary_path(service: &str) -> Option<PathBuf> {
-    let stripped = service.strip_prefix("wylde-").unwrap_or(service);
     let override_var = format!("WYLDE_{}_BIN", service.to_uppercase().replace('-', "_"));
     if let Ok(over) = std::env::var(&override_var) {
         let p = PathBuf::from(over);
         return p.exists().then_some(p);
     }
-
-    let suffix = if cfg!(windows) { ".exe" } else { "" };
-    let bin_name = format!("wylde-{stripped}{suffix}");
-    let root = wylde_root();
-    let candidates = [
-        root.join("rust").join("bin").join(&bin_name),
-        root.join("rust")
-            .join("target")
-            .join("release")
-            .join(&bin_name),
-        root.join("rust")
-            .join("target")
-            .join("debug")
-            .join(&bin_name),
-    ];
-    candidates.iter().find(|p| p.exists()).cloned()
+    wylde_stack::current::resolve_in(&wylde_root())
+        .path_of(service)
+        .map(Path::to_path_buf)
 }
 
 fn wylde_root() -> PathBuf {
@@ -1484,6 +1480,54 @@ mod tests {
         std::env::set_var("WYLDE_WYLDE_OVERRIDESVC_BIN", "/no/such/path/here");
         assert_eq!(rust_binary_path("wylde-overridesvc"), None);
         clear_env("WYLDE_WYLDE_OVERRIDESVC_BIN");
+    }
+
+    /// **The end-to-end half of #97.** Shipping a new backend binary is only
+    /// useful if the daemon then *spawns* it. This asserts the daemon's spawn
+    /// path follows the `current` pointer the updater repoints, rather than
+    /// its own walk of the repo build tree.
+    ///
+    /// Without this, a successful whole-stack update produces a new daemon
+    /// that goes on launching every service from the stale build tree — the
+    /// same backend-stale skew in a new place — and on a machine with no repo
+    /// it would find no services at all.
+    #[test]
+    #[serial_test::serial]
+    fn rust_binary_path_follows_the_current_pointer_not_the_build_tree() {
+        let root = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let installed = tempfile::TempDir::new().unwrap();
+        let exe = |n: &str| format!("{n}{}", wylde_stack::EXE_SUFFIX);
+
+        // A build tree with a daemon and a STALE gateway beside it.
+        let tree = root.path().join("rust").join("target").join("release");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join(exe("wylde-lifecycle")), b"old").unwrap();
+        let stale = tree.join(exe("wylde-gateway"));
+        std::fs::write(&stale, b"old gateway").unwrap();
+
+        // An installed stack carrying a NEW gateway.
+        std::fs::write(installed.path().join(exe("wylde-lifecycle")), b"new").unwrap();
+        let fresh = installed.path().join(exe("wylde-gateway"));
+        std::fs::write(&fresh, b"new gateway").unwrap();
+
+        std::env::set_var("WYLDE_ROOT", root.path());
+        std::env::set_var(wylde_stack::current::HOME_DIR_ENV, home.path());
+        clear_env(wylde_stack::current::CURRENT_DIR_ENV);
+        clear_env("WYLDE_WYLDE_GATEWAY_BIN");
+        wylde_stack::current::set_current(installed.path()).unwrap();
+
+        let resolved = rust_binary_path(service_name::GATEWAY);
+        assert_eq!(
+            resolved.as_deref(),
+            Some(fresh.as_path()),
+            "the daemon must spawn the gateway from the installed stack, not \
+             the build tree — otherwise an update never reaches the backend"
+        );
+        assert_ne!(resolved.as_deref(), Some(stale.as_path()));
+
+        clear_env("WYLDE_ROOT");
+        clear_env(wylde_stack::current::HOME_DIR_ENV);
     }
 
     #[test]

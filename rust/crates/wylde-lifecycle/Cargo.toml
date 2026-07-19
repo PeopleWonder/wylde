@@ -19,6 +19,10 @@ wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
 path = "src/lib.rs"
 
 [dependencies]
+# The shared stack roster + "current" resolver (#97/#92). The daemon, the
+# self-updater, and the launcher all read the service roster from here, so
+# none of them keeps a parallel hand-list that can silently under-cover.
+wylde-stack = { path = "../wylde-stack" }
 wylde-shared = { path = "../wylde-shared" }
 tokio.workspace = true
 serde.workspace = true

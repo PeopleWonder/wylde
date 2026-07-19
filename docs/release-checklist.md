@@ -36,6 +36,22 @@ For shipping a `0.1.x` build to Beta-channel users. Lighter bar than a stable pr
    git push origin develop --follow-tags
    wylde-release publish --version 0.1.x --channel beta --binary <path> …
    ```
+> **⚠️ Every release must carry the WHOLE stack, not just the GUI (#97).** Since the updater
+> became registry-driven it requires a signed asset for **every in-tree stack binary** — the GUI,
+> the lifecycle daemon, and each backend service — and **refuses a release that is missing one**
+> (`UpdateError::NoAsset`) rather than installing a partial stack. A GUI-only publish will not
+> install for anyone.
+>
+> Print the exact required set on the release machine:
+>
+> ```bash
+> wylde-stack roster   # every binary; asset name is <image-stem>-x86_64-pc-windows-msvc.exe
+> ```
+>
+> Pass the GUI via `--binary` and every other binary via a repeated `--extra-asset`;
+> `wylde-release` signs each one and the updater verifies each one individually. Out-of-tree
+> `Services/*` siblings are optional — carried when published, skipped otherwise.
+
 6. **Verify** the Beta channel picks it up on a second machine/profile.
 
 ## B. Stable release / the 0.2 gate (Stable channel, promoted to `main`)

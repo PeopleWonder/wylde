@@ -13,26 +13,42 @@ use serde_json::json;
 use wylde_gui_test_support::ScriptedBackend;
 use wylde_panel_settings::ipc::UpdateCheck;
 use wylde_panel_settings::SettingsPanel;
-use wylde_updater::{ReleaseAsset, UpdateInfo};
+use wylde_updater::{ReleaseAsset, StackAsset, UpdateInfo};
+
+/// One resolved stack member: the binary plus its own `.minisig` sibling,
+/// the pair `pick_assets` produces for every roster entry.
+fn stack_asset(name: &str, image: &str) -> StackAsset {
+    StackAsset {
+        name: name.into(),
+        image: image.into(),
+        binary: ReleaseAsset {
+            name: image.into(),
+            url: format!("https://example.test/{image}"),
+            size: 1,
+        },
+        signature: ReleaseAsset {
+            name: format!("{image}.minisig"),
+            url: format!("https://example.test/{image}.minisig"),
+            size: 1,
+        },
+    }
+}
 
 /// An `UpdateCheck::Available` seeded with the given version, for the
-/// skip-version windowed test.
+/// skip-version windowed test. Since #97 an update carries the whole stack,
+/// so the fixture carries more than the shell; the panel only reads the
+/// version and the notes, but the shape must match what a real check
+/// resolves.
 fn available(version: &str) -> UpdateCheck {
     UpdateCheck::Available(UpdateInfo {
         version: version.into(),
         tag: format!("v{version}"),
         notes: "- fixed a thing\n- added another".into(),
         html_url: "https://example.test/r".into(),
-        binary: ReleaseAsset {
-            name: "wylde-gui.exe".into(),
-            url: "https://example.test/bin".into(),
-            size: 1,
-        },
-        signature: ReleaseAsset {
-            name: "wylde-gui.exe.minisig".into(),
-            url: "https://example.test/sig".into(),
-            size: 1,
-        },
+        assets: vec![
+            stack_asset("wylde-gui", "wylde-gui.exe"),
+            stack_asset("wylde-lifecycle", "wylde-lifecycle.exe"),
+        ],
     })
 }
 

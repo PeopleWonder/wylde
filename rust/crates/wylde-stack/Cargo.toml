@@ -1,0 +1,31 @@
+[package]
+name = "wylde-stack"
+description = "The single source of truth for WHAT the Wylde stack is (every shippable binary, discovered) and WHERE the current one lives. Shared by the lifecycle daemon, the self-updater, and the launcher so none of them keeps a parallel hand-list."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# The launcher's resolver. `launch_wylde.ps1` shells out to this so the
+# shortcut path and the updater agree on "current" by construction rather
+# than by two implementations that drift.
+[[bin]]
+name = "wylde-stack"
+path = "src/main.rs"
+
+[dependencies]
+# The crate is deliberately DEPENDENCY-LEAN: it is pulled in by
+# `wylde-updater`, which is in turn pulled into the GUI workspace. Anything
+# heavy here (tokio, anyhow, the service start/stop hooks) would ripple into
+# the shipped GUI binary. Names + paths only.
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+serial_test = "3"

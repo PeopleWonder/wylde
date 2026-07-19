@@ -68,7 +68,8 @@ pub fn update_available() -> bool {
 
 /// The resolved [`UpdateInfo`] when the startup check found an update,
 /// else `None`. Lets the Settings panel seed its manual-check state with
-/// the already-resolved binary + signature assets.
+/// the already-resolved stack assets — every binary the update carries,
+/// each with its own signature — so accepting needs no second check.
 pub fn available_info() -> Option<UpdateInfo> {
     match snapshot().outcome {
         Some(Ok(UpdateStatus::Available(info))) => Some(info),
@@ -251,6 +252,26 @@ pub async fn run_startup_check(current_version: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// One resolved stack member for the cache round-trip fixture: the
+    /// binary plus its own `.minisig` sibling, the pair `pick_assets`
+    /// produces for every roster entry.
+    fn stack_asset(name: &str, image: &str) -> wylde_updater::StackAsset {
+        wylde_updater::StackAsset {
+            name: name.into(),
+            image: image.into(),
+            binary: wylde_updater::ReleaseAsset {
+                name: image.into(),
+                url: format!("https://example.test/{image}"),
+                size: 1,
+            },
+            signature: wylde_updater::ReleaseAsset {
+                name: format!("{image}.minisig"),
+                url: format!("https://example.test/{image}.minisig"),
+                size: 1,
+            },
+        }
+    }
+
     #[test]
     fn gate_blocks_when_updates_disabled() {
         // The privacy contract: master toggle off ⇒ no network call, even
@@ -346,21 +367,19 @@ mod tests {
     #[test]
     fn record_then_read_round_trips_available() {
         // Exercises the cache accessors over the process-wide cell.
+        // An update carries the whole stack since #97, so the fixture does
+        // too: one `StackAsset` per binary, each with its own detached
+        // signature. The cache is agnostic to how many members there are —
+        // it round-trips whatever the check resolved.
         let info = UpdateInfo {
             version: "9.9.9".into(),
             tag: "v9.9.9".into(),
             notes: "test".into(),
             html_url: "https://example.test/r".into(),
-            binary: wylde_updater::ReleaseAsset {
-                name: "wylde-gui.exe".into(),
-                url: "https://example.test/bin".into(),
-                size: 1,
-            },
-            signature: wylde_updater::ReleaseAsset {
-                name: "wylde-gui.exe.minisig".into(),
-                url: "https://example.test/sig".into(),
-                size: 1,
-            },
+            assets: vec![
+                stack_asset("wylde-gui", "wylde-gui.exe"),
+                stack_asset("wylde-lifecycle", "wylde-lifecycle.exe"),
+            ],
         };
         record(Ok(UpdateStatus::Available(info.clone())), 1_234);
         assert!(update_available());

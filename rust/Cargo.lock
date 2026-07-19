@@ -3569,17 +3569,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "self-replace"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03ec815b5eab420ab893f63393878d89c90fdd94c0bcc44c07abb8ad95552fb7"
-dependencies = [
- "fastrand",
- "tempfile",
- "windows-sys 0.52.0",
-]
-
-[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5871,6 +5860,7 @@ dependencies = [
  "windows 0.58.0",
  "wylde-prebuild-guard",
  "wylde-shared",
+ "wylde-stack",
 ]
 
 [[package]]
@@ -5969,6 +5959,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wylde-stack"
+version = "0.2.0-beta.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serial_test",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "wylde-treesitter"
 version = "0.2.0-beta.1"
 dependencies = [
@@ -6003,7 +6004,6 @@ version = "0.2.0-beta.1"
 dependencies = [
  "minisign",
  "minisign-verify",
- "self-replace",
  "semver",
  "serde",
  "serde_json",
@@ -6011,6 +6011,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "ureq",
+ "wylde-stack",
 ]
 
 [[package]]

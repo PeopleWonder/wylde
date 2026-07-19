@@ -35,6 +35,15 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+/// Normalise a declared/folder name to the canonical `wylde-`-prefixed service
+/// name. Shared with the stack roster rather than reimplemented: the name this
+/// produces is the manifest key, the pipe name, and the updater's asset stem,
+/// so two copies of the rule would be two chances to disagree about what a
+/// service is called. Quirks included — it lowercases and maps spaces to `-`
+/// but deliberately leaves underscores alone (see
+/// `underscore_quirk_keeps_two_entries`).
+use wylde_stack::roster::name_with_wylde_prefix;
+
 /// Top-level folders excluded from service discovery. Matches the
 /// `EXCLUDED_TOP_LEVEL` set in `_common.py`.
 const EXCLUDED_TOP_LEVEL: &[&str] = &["Core", "data", "logs", "docs"];
@@ -316,39 +325,50 @@ pub fn discovered_bucket_services() -> Vec<DiscoveredService> {
 /// [`discovered_bucket_services`] rooted at an explicit `root` — the
 /// tempdir-testable entry point (same split rationale as
 /// [`list_services_in`]).
+///
+/// The *walk* itself is not ours: it delegates to
+/// [`wylde_stack::roster::discovered_folders`], the one filesystem walk the
+/// self-updater's roster reads too. That shared seam is the point — the daemon
+/// deciding what to supervise and the updater deciding what to ship must never
+/// disagree about which folders are services, and two hand-maintained walks
+/// would drift the moment one of them grew a rule (a new excluded prefix, a
+/// different bucket, a changed `WYLDE_SERVICES` semantic). What stays here is
+/// only the *interpretation* of each folder's manifest into a spawn-side
+/// [`DiscoveredService`] row, which the updater has no use for.
 pub fn discovered_bucket_services_in(root: &Path) -> Vec<DiscoveredService> {
     let mut out: Vec<DiscoveredService> = Vec::new();
-    for bucket in SERVICE_BUCKETS {
-        for folder in list_bucket_folders(root, bucket) {
-            let Some(manifest) = load_folder_manifest(&folder) else {
-                continue;
-            };
-            let folder_name = folder
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default();
-            let declared = manifest
-                .get("name")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-                .unwrap_or(folder_name);
-            let enabled = manifest
-                .get("enabled")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let min_core = manifest
-                .get("min_core")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned);
-            out.push(DiscoveredService {
-                name: name_with_wylde_prefix(declared),
-                folder,
-                enabled,
-                min_core,
-            });
-        }
+    for folder in wylde_stack::roster::discovered_folders(root) {
+        // `discovered_folders` already proved a `manifest.json` file exists;
+        // this re-read is the parse, and still drops a folder whose manifest
+        // is unreadable or isn't a JSON object.
+        let Some(manifest) = load_folder_manifest(&folder) else {
+            continue;
+        };
+        let folder_name = folder
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let declared = manifest
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(folder_name);
+        let enabled = manifest
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let min_core = manifest
+            .get("min_core")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        out.push(DiscoveredService {
+            name: name_with_wylde_prefix(declared),
+            folder,
+            enabled,
+            min_core,
+        });
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out.dedup_by(|a, b| a.name == b.name);
@@ -535,6 +555,19 @@ fn resolve_bucket_dir(root: &Path, bucket: &str) -> PathBuf {
 /// at the repo root). **Clean no-op when the bucket is absent:** the `read_dir`
 /// guard returns an empty `Vec`, so a missing/empty `Services/` yields nothing
 /// and discovery is identical to a tree without the bucket. Sorted alphabetically.
+///
+/// **Why this is not [`wylde_stack::roster::discovered_folders`].** The two
+/// walks look alike and are deliberately not the same: the shared roster walk
+/// only yields folders that already carry a `manifest.json`, because a folder
+/// with no manifest has nothing to ship and nothing to supervise. This one is
+/// the *dashboard* feed via [`service_folders`], and it yields manifestless
+/// folders too — they are filtered a step later, by [`load_folder_manifest`],
+/// which is also where a present-but-unparseable manifest gets dropped.
+/// Collapsing this into the roster walk would move that decision earlier and
+/// quietly change which folders the dashboard can ever see, so the duplication
+/// is kept on purpose. The spawn-side walk —
+/// [`discovered_bucket_services_in`], where the manifest requirement genuinely
+/// does hold — is the one that delegates.
 fn list_bucket_folders(root: &Path, bucket: &str) -> Vec<PathBuf> {
     let dir = resolve_bucket_dir(root, bucket);
     let Ok(entries) = fs::read_dir(&dir) else {
@@ -595,19 +628,6 @@ fn list_service_folders(root: &Path) -> Vec<PathBuf> {
 }
 
 // ── Merge: declarative + runtime → ServiceInfo ────────────────────────
-
-fn name_with_wylde_prefix(name: &str) -> String {
-    let candidate: String = name
-        .to_lowercase()
-        .chars()
-        .map(|c| if c == ' ' { '-' } else { c })
-        .collect();
-    if candidate.starts_with("wylde-") {
-        candidate
-    } else {
-        format!("wylde-{candidate}")
-    }
-}
 
 fn build_info(
     folder_name: &str,

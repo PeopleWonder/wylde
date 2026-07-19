@@ -67,17 +67,59 @@ covers both channels and keeps the logic in one place.
 
 ### Asset naming convention
 
-Each release that the updater can consume must publish, at minimum:
+A release the updater can consume must publish **one signed binary per stack
+member**, not just the GUI:
 
 ```
-wylde-gui-<target>.exe            # the binary, e.g. wylde-gui-x86_64-pc-windows-msvc.exe
-wylde-gui-<target>.exe.minisig    # its detached minisign signature
+wylde-gui-<target>.exe              wylde-gui-<target>.exe.minisig
+wylde-lifecycle-<target>.exe        wylde-lifecycle-<target>.exe.minisig
+wylde-gateway-<target>.exe          wylde-gateway-<target>.exe.minisig
+wylde-harness-<target>.exe          wylde-harness-<target>.exe.minisig
+...                                 ...            (one pair per service)
 ```
 
-The updater picks the first asset whose name matches the running platform's
-binary pattern and is **not** itself a `.minisig`, then looks for a sibling
-asset named `<that-asset>.minisig`. A release missing the `.minisig` sibling is
-treated as *not updatable* (fail closed) rather than installed unsigned.
+`<target>` is `x86_64-pc-windows-msvc`.
+
+**The required set is derived, not listed here.** `wylde_stack::roster()`
+answers what the stack consists of — the in-tree core tier plus whatever the
+`Services/` bucket currently holds — and `pick_assets` requires an asset pair
+for each in-tree member. Adding a service therefore changes what a release
+must publish with no edit to the updater; run `wylde-stack roster` to print
+the current required set when preparing a release.
+
+Two rules:
+
+- **In-tree binaries are required.** A release missing one is rejected
+  wholesale (`UpdateError::NoAsset`) rather than installed partially. This is
+  what prevents the GUI-new / backend-stale skew: before #97 the updater
+  matched only `wylde-gui*` and `self_replace`d the running executable, so the
+  daemon and every service were never updated at all.
+- **Bucket siblings are optional.** A third-party service under
+  `Services/<name>/` is not something a Wylde release can be expected to
+  publish, so it is carried when present and skipped otherwise.
+
+Every binary needs its own `.minisig` sibling. Verification is **per binary** —
+there is no bundle signature, so nothing rides in unverified behind something
+else, and a release with one unsigned member is refused
+(`UpdateError::NoSignature`) rather than installed.
+
+### Installation and the `current` pointer
+
+Install is all-or-nothing:
+
+1. Every downloaded binary is re-verified against the embedded key.
+2. The full set is staged into `%LOCALAPPDATA%\Wylde\versions\<version>\`.
+   The live stack is untouched.
+3. `%LOCALAPPDATA%\Wylde\current` is repointed at that directory with a
+   single atomic rename.
+
+Because the launcher resolves through `current`, the switch takes effect for
+the whole stack at once on the next launch, and a shortcut can never go stale
+— it names the launcher, never a version or a build profile. Running processes
+are deliberately *not* `self_replace`d: that trick can only swap the one
+currently-executing binary, which is exactly what confined the updater to the
+GUI. See `wylde-stack` (`rust/crates/wylde-stack/`) for the resolver both the
+launcher and the updater share, and issues #97 / #92.
 
 ---
 

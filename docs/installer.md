@@ -124,6 +124,13 @@ The staging phase assembles the install tree from two sources:
   straight at the bare GUI leaves the backend down and every required-service
   panel shows a stub — the exact failure
   `Core/GUI/installer/fix_desktop_shortcut.ps1` exists to undo.
+> **Boundary (locked).** The installer *places files*. It does not own how the
+> stack is launched or which version runs. Resolving "current" and running it
+> belongs to the launcher/updater layer (`wylde-stack`, `launch_wylde.ps1`) —
+> which is why the shortcut targets the launcher rather than any binary, and why
+> the launcher works identically on a machine that has never seen an installer.
+> See issues #92 and #97.
+
 - **Autostart** is an *unchecked* optional component. When selected it writes
   the same daemon-first command to
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Wylde`.

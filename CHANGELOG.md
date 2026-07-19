@@ -48,6 +48,30 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Wylde's updater now carries the whole stack, and the launcher always runs the current one.** Two
+  halves of the same gap, fixed against one shared resolver. The self-updater was structurally
+  GUI-only: it selected release assets by matching the literal `wylde-gui`, then `self_replace`d the
+  running executable. The lifecycle daemon and every backend service were never fetched and never
+  swapped — so because most of Wylde's logic lives in the backend, **a backend fix could not reach an
+  installed user at all**, and a successful update left a new GUI sitting on top of a stale backend.
+  Separately, the launcher resolved each binary independently, taking the first hit across
+  `rust\bin` → `target\release` → `target\debug`; one stale artifact at an earlier candidate shadowed
+  a fresh build indefinitely (the running stack had drifted days behind the tree with nothing saying
+  so), and because the walk ran per binary, a single launch could mix binaries from profiles that
+  have no version relationship to each other. Both now go through the new `wylde-stack` crate, which
+  answers "what is the stack" by **discovery** — the in-tree core tier plus whatever the `Services/`
+  bucket currently holds — and "where does it run from" by resolving that roster against **one**
+  directory: the `current` pointer the updater maintains, or the build tree when no pointer exists.
+  The updater fetches, individually verifies, and stages every member into a version directory before
+  switching over with a single atomic pointer move, so "GUI new, daemon stale" is no longer a
+  reachable state and a release missing a required binary is refused rather than half-installed.
+  Desktop shortcuts now target the launcher rather than a build path, so they cannot go stale: they
+  never name a version or a profile. The point of the shared resolver is that **adding the Nth
+  service needs no edit to either the updater or the launcher** — a service dropped into `Services/`
+  is picked up by both — and a coverage gate fails red if a daemon-managed service ever lacks a
+  corresponding update/launch path, so the guarantee is checked rather than merely asserted.
+  (#97, #92)
+
 - **Wylde now reclaims disk when you switch the model behind a reasoning slot, instead of hoarding
   every model it ever pulled.** Until now the local model store had no bound and no cleanup: each
   time the default reasoner (or your chosen slot model) changed, the superseded model was left on
