@@ -11,6 +11,7 @@ piling up until a `git push` warning forces a scramble.
 | Piece | File | Trigger | What it does |
 |-------|------|---------|--------------|
 | **Dependabot** | `.github/dependabot.yml` | Weekly (Mon 06:00 UTC) + on new advisories | Opens grouped patch/minor bump PRs per Cargo directory; individual PRs for majors and security updates; keeps GitHub Actions pinned. |
+| **Auto-merge** | `.github/workflows/dependabot-automerge.yml` | Every Dependabot PR | Arms GitHub native auto-merge for the provably-safe class only — semver **patch** bumps clear of the gpui tree — so they land without a click once required checks pass. Everything else is held for manual review. |
 | **CI** | `.github/workflows/ci.yml` | Every PR + push to trunk/main | `cargo build` + `cargo test` the `rust/` workspace on Windows; `cargo build` the `Core/GUI` and `tools/*` workspaces. Makes a bump PR mergeable with confidence. |
 | **Security audit** | `.github/workflows/security-audit.yml` | Every relevant PR + weekly cron (Mon 07:00 UTC) | `cargo deny check advisories` against `rust/` and `Core/GUI`. A newly-published advisory against an already-pinned dep turns this red within days. |
 | **Policy (advisories)** | `rust/deny.toml`, `Core/GUI/deny.toml` | — | The allow-list of knowingly-accepted advisories, each with a reason + review date. |
@@ -117,6 +118,58 @@ hard consequence for dependency hygiene:
    with a review date and cleared opportunistically at the next rev bump — do not
    fork gpui to patch a single transitive advisory.
 
+## Auto-merge policy (issue #68)
+
+`.github/workflows/dependabot-automerge.yml` lets the trivial, provably-safe
+class of Dependabot bumps land without a human click, and holds every risky
+class for manual review. The design is **structural**: it works for any future
+patch bump automatically — there is no per-dependency allow-list to maintain,
+only the gpui-tree exclusion (a real build-stability boundary).
+
+**A Dependabot PR auto-merges only when ALL of these hold:**
+
+1. It is a semver **patch** bump (`update-type == version-update:semver-patch`).
+2. No dependency in the PR is in the gpui tree (`gpui`, `gpui_platform`,
+   `gpui-component`, `http_client`, or a dep pinned only through it such as
+   `async-tar`).
+3. Every required `protect-develop` check passes first. The workflow arms
+   GitHub's native auto-merge (`gh pr merge --auto --squash`), which only
+   completes the merge once branch protection is satisfied — it never merges
+   ahead of CI.
+
+Anything else is left for a human. The workflow runs on `pull_request` and
+never checks out or runs the PR's code (no untrusted-execution surface); it only
+reads Dependabot metadata and arms auto-merge.
+
+### Decision table
+
+| PR shape | `update-type` | gpui tree? | Outcome |
+|----------|---------------|------------|---------|
+| Single patch bump (e.g. `anyhow` 1.0.102 → 1.0.103) | `semver-patch` | no | **auto-merge** after checks |
+| Security patch bump (e.g. a RUSTSEC-fix patch) | `semver-patch` | no | **auto-merge** after checks (security fixes flow fast) |
+| Grouped `cargo-minor-patch` PR, all deps patch | `semver-patch` | no | **auto-merge** after checks |
+| Grouped `cargo-minor-patch` PR, any dep is minor | `semver-minor` | no | manual — group reads as the highest bump |
+| Minor bump (incl. security minor) | `semver-minor` | — | manual |
+| Major bump (incl. security major) | `semver-major` | — | manual |
+| Any bump touching the gpui tree | any | yes | manual — bumped deliberately, never here |
+| Any bump with a red required check | patch | no | never merges — auto-merge waits for green |
+
+Two safety properties make the gate fail-safe:
+
+- **Grouped PRs collapse to the highest bump.** `fetch-metadata` reports the
+  highest semver change across a grouped PR, so a group that mixes patch and
+  minor reads as `semver-minor` and is held — a minor can never ride in on a
+  patch gate.
+- **Unknown classification fails closed.** If `update-type` is anything other
+  than exactly `version-update:semver-patch`, the merge step is skipped. The
+  gate only ever errs toward manual review, never toward merging.
+
+**Repo prerequisites** (verified 2026-07-18): "Allow auto-merge" is enabled
+(Settings → General), and the `protect-develop` PR rule requires **0**
+approving reviews — so auto-merge is not blocked waiting on a reviewer a bot PR
+will never receive. Dependabot's strict-ruleset rebasing keeps its PRs current,
+so the up-to-date requirement resolves without manual "Update branch" clicks.
+
 ## Review cadence
 
 Quarterly (next **2026-10-14**). At each review:
@@ -132,6 +185,12 @@ Quarterly (next **2026-10-14**). At each review:
 
 ## Change log
 
+- **2026-07-18** — Added the auto-merge policy and
+  `.github/workflows/dependabot-automerge.yml` (issue #68, pulled into the
+  "0.2 - Stability & autonomy" milestone). Safe-by-construction: only semver
+  **patch** bumps clear of the gpui tree auto-merge, and only after every
+  required `protect-develop` check is green; everything else is held for manual
+  review. Enabled the repo's "Allow auto-merge" setting (was off).
 - **2026-07-14** — Policy established. Set up Dependabot, CI, and the cargo-deny
   security-audit gate (none existed before). Fixed the then-current fixable
   advisories in both workspaces via `cargo update` (lock-only, no code change):
