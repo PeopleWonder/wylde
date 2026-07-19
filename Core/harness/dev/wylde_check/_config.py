@@ -375,47 +375,52 @@ RUST_PROCESS_SPAWN_ALLOWED_CRATES: Tuple[str, ...] = (
 RUST_PROCESS_SPAWN_ALLOWED_CRATE: str = RUST_PROCESS_SPAWN_ALLOWED_CRATES[0]
 
 
-# ── Rules 44-47: launcher / shutdown / service-manifest correctness ──
+# ── Rules 44-47: boot / shutdown / service-manifest correctness ──
 #
-# Added at the slice-11 cutover (2026-05-29) so the launcher + shutdown
-# stay manifest-driven (no hardcoded service roster) and every backend
-# service carries a schema-valid manifest. the Wylde user's modularity directive:
-# "give special attention that launcher and shutdown rules cover all
-# services attached with modularity in mind … make them reference the
-# manifests."
+# Added at the slice-11 cutover (2026-05-29) so boot + shutdown stay
+# driven by a single source (no hardcoded, hand-kept service roster) and
+# every backend service carries a schema-valid manifest. the Wylde user's
+# modularity directive: "give special attention that launcher and shutdown
+# rules cover all services attached with modularity in mind."
+#
+# REPOINTED for issue #101 (0.2 stability audit, finding F): the original
+# rules 44/45 targeted `Core/Lifecycle/launcher.py` / `shutdown.py`, which
+# the full-Rust cutover DELETED. Guarded by `if <file>.exists()`, they ran
+# over a missing file, found nothing, and passed green — a dead gate. They
+# now target the LIVE Rust single source of truth: the `DAEMON_MANAGED`
+# table (`rust/crates/wylde-lifecycle/src/daemon_managed.rs`) that drives
+# boot, shutdown, dispatch, and the kill-image list from one row per
+# service. The SEMANTIC set-equality gate (boot-set == shutdown-set ==
+# dispatch-set, modulo the two typed exceptions) is the crate unit test
+# `daemon_managed::tests::boot_shutdown_dispatch_sets_agree`, run in CI by
+# `cargo test --workspace`; these static rules ensure that single source
+# stays STRUCTURALLY in place — the table exists, boot + shutdown are
+# derived from it, and no hand-kept `const SERVICES` roster returns.
 
-# Canonical launcher + shutdown sources. The launcher is Python
-# (WYLDE_LIFECYCLE_IMPL defaults to python); the Rust daemon is a parity
-# port held to the same no-hardcoded-roster contract by the negative
-# scan below + its own crate tests.
-LAUNCHER_PY: str = "Core/Lifecycle/launcher.py"
-SHUTDOWN_PY: str = "Core/Lifecycle/shutdown.py"
 RUST_LIFECYCLE_CRATE: str = "rust/crates/wylde-lifecycle"
 GPUI_SHUTDOWN_RS: str = "Core/GUI/Shell/src/shutdown.rs"
 
-# A reference to any of these proves the launcher/shutdown builds its
-# service set from the filesystem-as-registry (services.yaml + per-service
-# manifest.json) rather than a hardcoded list.
-LAUNCHER_MANIFEST_REFERENCES: Tuple[str, ...] = (
-    "load_services",
-    "load_manifest",
-    "list_service_folders",
-)
-SHUTDOWN_ENUMERATION_REFERENCES: Tuple[str, ...] = (
-    "get_running",
-    "load_manifest",
-    "shutdown_order",
-    "_shutdown_sequence",
-    "load_services",
-)
+# The single source of truth (issue #101). Rule 44 asserts this file
+# declares the table; rules 44/45 assert boot + shutdown are derived from
+# it (below). A missing token here means the single source was ripped out
+# or bypassed — the gate fires.
+RUST_DAEMON_MANAGED_FILE: str = "rust/crates/wylde-lifecycle/src/daemon_managed.rs"
+RUST_DAEMON_MANAGED_TABLE_TOKEN: str = "DAEMON_MANAGED"
 
-# The anti-pattern rules 44/45 forbid: a module-level UPPERCASE service
-# roster assigned a list/tuple literal (Python), or a `const`/`static`
-# SERVICES array (Rust). Case-sensitive so ordinary lowercase locals like
-# `services = load_services()` never match.
-PY_HARDCODED_SERVICE_LIST_RE = re.compile(
-    r"^\s*_?(?:ALL_)?SERVICES?(?:_LIST|_NAMES)?\s*(?::[^=]+)?=\s*[\[\(]"
-)
+# Boot must be derived from the table (`daemon.rs` iterates `boot_sequence()`),
+# not a hand-written run of `start_<name>()` calls.
+RUST_BOOT_FILE: str = "rust/crates/wylde-lifecycle/src/daemon.rs"
+RUST_BOOT_TABLE_TOKEN: str = "boot_sequence"
+
+# Shutdown must be derived from the table (`state/mod.rs` iterates
+# `shutdown_sequence()`), not a hand-kept `let steps: [_; N]` array.
+RUST_SHUTDOWN_FILE: str = "rust/crates/wylde-lifecycle/src/state/mod.rs"
+RUST_SHUTDOWN_TABLE_TOKEN: str = "shutdown_sequence"
+
+# The anti-pattern rule 44 still forbids: a `const`/`static` SERVICES array
+# (Rust) reintroducing a hand-kept roster. Case-sensitive so ordinary
+# lowercase locals never match. (The `DAEMON_MANAGED` table is not a
+# `SERVICES` array and is intentionally not matched.)
 RUST_HARDCODED_SERVICE_ARRAY_RE = re.compile(
     r"\b(?:const|static)\s+_?(?:ALL_)?SERVICES?(?:_LIST|_NAMES)?\s*:\s*\[",
 )
