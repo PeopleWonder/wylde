@@ -22,7 +22,7 @@
 [package]
 name = "xtask"
 description = "All-Rust multi-workspace build orchestrator (`cargo xtask build-all`): builds Core (rust/ + Core/GUI/) plus every populated out-of-tree bucket repo (Services/*, Extensions/*) and stages each bucket binary beside its manifest.json. Dev/release tool; not shipped."
-version = "0.2.0"
+version = "0.2.0-beta.1"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-or-later"

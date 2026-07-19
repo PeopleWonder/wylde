@@ -6,7 +6,7 @@ description = "DEV-ONLY gpui-test helpers for the Wylde GUI: a scripted fake IPC
 # can never feature-unify `wylde-gui-pipe/test-support` into the Shell.
 # Excluded crates can't inherit `[workspace.package]`, so the fields below
 # are spelled out to match it.
-version = "0.2.0"
+version = "0.2.0-beta.1"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-or-later"

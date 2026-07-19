@@ -27,7 +27,7 @@
 ; Build-time defines (overridable from build-installer.ps1 via /D...)
 ;--------------------------------------------------------------------
 !ifndef VERSION
-  !define VERSION "0.2.0"
+  !define VERSION "0.2.0-beta.1"
 !endif
 ; VIProductVersion (below) demands a strictly numeric X.X.X.X string, so a
 ; SemVer pre-release tag like "0.1.0-alpha.1" can't be fed to it directly.

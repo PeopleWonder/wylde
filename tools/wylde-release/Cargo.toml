@@ -23,7 +23,7 @@
 [package]
 name = "wylde-release"
 description = "Dev-machine CLI to sign and publish Wylde GUI builds to GitHub Releases for the Phase 12.5 self-updater. Wraps `rsign` (minisign signing) and `gh` (release upload); not shipped to users."
-version = "0.2.0"
+version = "0.2.0-beta.1"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-or-later"

@@ -13,15 +13,16 @@ seeds a draft from Conventional Commits since the last tag — edit it into
 narrative form.
 Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 0.2.0 (Stable channel), cut only on the maintainer's say-so.
-State: the workspace version is now 0.2.0, but 0.2.0 is NOT yet tagged/released
+State: the workspace version is now 0.2.0-beta.1, but it is NOT yet tagged/released
 (that is #38, the maintainer's separate say-so). The section below is therefore
-headed "[0.2.0] — unreleased"; on release, replace "unreleased" with the tag date
-and start a fresh [Unreleased] section above it for post-0.2.0 work.
+headed "[0.2.0-beta.1] — unreleased"; on release, replace "unreleased" with the tag
+date and start a fresh [Unreleased] section above it for later work.
 -->
 
-## [0.2.0] — unreleased
+## [0.2.0-beta.1] — unreleased
 
-**Wylde 0.2.0 is the first stable release of the modern, all-Rust stack.** The only
+**Wylde 0.2.0-beta.1 is the first pre-release of the modern, all-Rust stack** (the stable
+`0.2.0` cut remains gated on the maintainer's separate say-so, #38). The only
 earlier tag, `v0.1.0-alpha.1` (2026-06-04, a GitHub *pre-release* on the Beta channel),
 predates the full-Rust cutover entirely — it shipped the gpui desktop rebuild while the
 runtime beneath it was still Python. Everything between that tag and this one was built in
@@ -746,5 +747,5 @@ First tagged alpha. Published as a GitHub **pre-release** (beta channel).
 
 Both signed with the production minisign key (ID `DA7E13F4E9F2ACB6`).
 
-[0.2.0]: https://github.com/PeopleWonder/wylde/releases/tag/v0.2.0
+[0.2.0-beta.1]: https://github.com/PeopleWonder/wylde/releases/tag/v0.2.0-beta.1
 [0.1.0-alpha.1]: https://github.com/PeopleWonder/wylde/releases/tag/v0.1.0-alpha.1
