@@ -23,8 +23,9 @@
 //! Submodules:
 //! * [`manifest`] — Core's runtime manifest writer + heartbeat thread.
 //! * [`orphan_sweep`] — 60s tick that walks `data/manifests/*.json`.
-//! * [`services`] — seven `start_<service>` / `stop_<service>` pairs
-//!   and the env-var dispatch that picks Python vs Rust per service.
+//! * [`services`] — the `start_<service>` / `stop_<service>` pairs
+//!   (the hooks the [`crate::daemon_managed`] table points at) and the
+//!   env-var dispatch that picks Python vs Rust per service.
 
 pub mod manifest;
 pub mod orphan_sweep;
@@ -44,10 +45,10 @@ pub use crate::state::orphan_sweep::{
     boot_orphan_sweep, start_orphan_sweep, stop_orphan_sweep, sweep_orphans,
 };
 
-/// Canonical names for the seven daemon-managed services. Used both as
-/// the key into [`STATE`]'s process map and as the manifest filename
-/// (without the `.json` suffix) so the orphan sweep agrees with the
-/// services map on which manifests belong to which child.
+/// Canonical names for the daemon-managed services (the [`crate::daemon_managed`]
+/// table keys off these). Used both as the key into [`STATE`]'s process map
+/// and as the manifest filename (without the `.json` suffix) so the orphan
+/// sweep agrees with the services map on which manifests belong to which child.
 pub mod service_name {
     pub const MEMGRAPH: &str = "wylde-memgraph";
     pub const VOICE: &str = "wylde-voice";
@@ -469,10 +470,12 @@ pub(crate) fn orphan_sweep_running() -> bool {
 /// launcher's tracked-services set.
 ///
 /// Captures the running set first (so the response payload is honest
-/// about what was alive), runs each stop in the documented order —
-/// orphan sweep first, then scheduler → gateway → extension_bridge →
-/// voice → device_gate → vram_broker → memgraph — swallows individual
-/// stop failures (each gets logged), and returns a structured summary.
+/// about what was alive), runs each stop in the order derived from the
+/// single [`crate::daemon_managed::DAEMON_MANAGED`] table — orphan sweep
+/// first, then discovered `Services/*` siblings, then the core tier in
+/// ascending `shutdown_rank` (Gateway first … Memgraph last) — swallows
+/// individual stop failures (each gets logged), and returns a structured
+/// summary.
 ///
 /// Both the ctrl_c handler and the `service.shutdown_all` action go
 /// through here, so external invocation and Ctrl-C tear down the same
@@ -527,102 +530,33 @@ pub async fn stop_all_daemon_managed() -> ShutdownSummary {
         }
     }
 
-    // Each tuple captures `was_alive` BEFORE its stop runs — tuple elements
-    // evaluate left-to-right, so `is_service_alive` is read before the
-    // adjacent `stop_<service>` future is awaited. This mirrors the Python
-    // `stop_all_daemon_managed`'s `_try(name, alive, fn)` ordering.
-    // Shutdown order (per master plan Phase 1 §6a, extended for VPN +
-    // Harness + Workspaces + N8N):
-    //   Gateway → N8N → Workspaces → TreeSitter → ExtensionBridge →
-    //   Harness → Voice → DeviceGate → Ollama → VPN → VramBroker →
-    //   Memgraph
+    // The shutdown set + its order are derived from the single
+    // `DAEMON_MANAGED` table (issue #101): `shutdown_sequence()` yields the
+    // managed entries in ascending `shutdown_rank`, so boot, shutdown,
+    // dispatch, and the kill-image list all pick up a new service from one
+    // row. The teardown-order rationale (Gateway first, Workspaces early,
+    // Ollama before the broker, Memgraph last, …) lives as doc comments on
+    // the table.
     //
-    // Workspaces stops near the front: it consumes Ollama (embeddings),
-    // tree-sitter (chunk/extract over the pipe), and Memgraph (Bolt graph
-    // writes), so draining it before those releases the resources cleanly.
+    // Two typed asymmetries, self-documenting on each entry rather than a
+    // silent omission from one list:
+    //   * `wylde-memory-scheduler` is `Role::BootOnlyNoop` — it owns no
+    //     subprocess, so it is absent here (nothing to tear down).
+    //   * `wylde-vpn` is `Role::UserStarted` — absent from boot but present
+    //     here, so an on-demand VPN is still drained on shutdown.
     //
-    // Harness stops AFTER Gateway/ExtensionBridge (its callers are
-    // gone) but BEFORE Ollama (its primary downstream — Ollama drains
-    // any final lease cleanly after the turn driver releases its
-    // last in-flight call). Voice/DeviceGate are unrelated and stop
-    // independently. Ollama goes BEFORE the broker so in-flight VRAM
-    // leases are released cleanly; the broker then has nothing to reap.
-    // VPN sits between Ollama and the broker — independent of either,
-    // but ordering it after the VRAM consumers keeps the broker the
-    // last "infrastructure" service torn down before Memgraph. Memgraph
-    // last so anything still holding a Bolt driver releases first.
-    let steps: [(&str, bool, anyhow::Result<()>); 12] = [
-        (
-            service_name::GATEWAY,
-            is_service_alive(service_name::GATEWAY),
-            services::stop_gateway().await,
-        ),
-        // wylde-n8n is a leaf wrapper over the external n8n daemon (which
-        // we never stop — it's user-managed); nothing depends on the pipe
-        // once Gateway/Harness callers are draining, so it goes early.
-        (
-            service_name::N8N,
-            is_service_alive(service_name::N8N),
-            services::stop_n8n().await,
-        ),
-        // wylde-workspaces is a consumer of Ollama / tree-sitter / Memgraph,
-        // so it must drain BEFORE them — stop it up front alongside the other
-        // front-tier services so its in-flight ingest releases the sidecar
-        // pipe + Bolt driver before those services go down.
-        (
-            service_name::WORKSPACES,
-            is_service_alive(service_name::WORKSPACES),
-            services::stop_workspaces().await,
-        ),
-        // Tree-sitter is a leaf sidecar (nothing depends on it) — drain it
-        // early alongside the other front-tier services.
-        (
-            service_name::TREESITTER,
-            is_service_alive(service_name::TREESITTER),
-            services::stop_treesitter().await,
-        ),
-        (
-            service_name::EXTENSION_BRIDGE,
-            is_service_alive(service_name::EXTENSION_BRIDGE),
-            services::stop_extension_bridge().await,
-        ),
-        (
-            service_name::HARNESS,
-            is_service_alive(service_name::HARNESS),
-            services::stop_harness().await,
-        ),
-        (
-            service_name::VOICE,
-            is_service_alive(service_name::VOICE),
-            services::stop_voice().await,
-        ),
-        (
-            service_name::DEVICE_GATE,
-            is_service_alive(service_name::DEVICE_GATE),
-            services::stop_device_gate().await,
-        ),
-        (
-            service_name::OLLAMA,
-            is_service_alive(service_name::OLLAMA),
-            services::stop_ollama().await,
-        ),
-        (
-            service_name::VPN,
-            is_service_alive(service_name::VPN),
-            services::stop_vpn().await,
-        ),
-        (
-            service_name::VRAM_BROKER,
-            is_service_alive(service_name::VRAM_BROKER),
-            services::stop_vram_broker().await,
-        ),
-        (
-            service_name::MEMGRAPH,
-            is_service_alive(service_name::MEMGRAPH),
-            services::stop_memgraph().await,
-        ),
-    ];
-    for (name, was_alive, result) in steps {
+    // `was_alive` is captured BEFORE the stop future is awaited (mirrors
+    // the Python `stop_all_daemon_managed`'s `_try(name, alive, fn)`
+    // ordering, used only by the no-spawn "stopped" accounting).
+    for svc in crate::daemon_managed::shutdown_sequence() {
+        let name = svc.name;
+        let was_alive = is_service_alive(name);
+        // `shutdown_sequence()` only yields managed entries, which always
+        // carry a stop hook — but fall back defensively rather than panic.
+        let result = match svc.stop {
+            Some(stop) => stop().await,
+            None => Ok(()),
+        };
         match run_step(name, result).await {
             Ok(()) => {
                 // No-spawn: a service counts as "stopped" iff it was a
@@ -680,33 +614,46 @@ fn is_or_was_tracked(name: &str) -> bool {
     //
     // Cheap proxy: check the manifest file. Services that booted
     // wrote one; services that never spawned didn't.
+    if manifest_path_for(name).exists() {
+        return true;
+    }
+
+    // ── vram-broker manifest-name quirk (#84) ─────────────────────────────
     //
-    // ── KNOWN DEFECT: this is wrong for the vram-broker (#84) ─────────────
+    // The broker is the one daemon-managed service whose on-disk manifest
+    // basename diverges from its canonical name: it self-registers as
+    // `vram-broker.json` (its short, pipe-prefix-stripped name — see
+    // `wylde-vram-broker/src/main.rs`), never the `wylde-vram-broker.json`
+    // that `manifest_path_for` derives from the pipe-prefixed
+    // `service_name::VRAM_BROKER`. So the direct check above is
+    // unconditionally false for the broker, and `stop_all_daemon_managed`
+    // used to omit it from `stopped`/`count` even when it had just stopped
+    // it successfully.
     //
-    // The broker self-registers its manifest as `vram-broker.json` — no
-    // `wylde-` prefix — but `service_name::VRAM_BROKER` is `"wylde-vram-broker"`
-    // (its *pipe* name). So `manifest_path_for(VRAM_BROKER)` stats
-    // `wylde-vram-broker.json`, which nothing ever writes, and this predicate is
-    // **unconditionally false for the broker**. A real `service.shutdown_all`
-    // therefore omits the broker from `stopped`/`count` even when it was running
-    // and was just stopped successfully.
-    //
-    // Impact is reporting-only — `stop_vram_broker` keys off the process/pipe,
-    // not the manifest, so the broker *does* stop. The GUI's shutdown summary
-    // just under-counts it.
-    //
-    // `registry.rs` (~line 146 and its `vram_broker_style_short_name_filtered_by_pipe`
-    // test) documents this exact quirk and works around it by matching on EITHER
-    // the manifest's `service` field OR the short pipe name. This function never
-    // got the same treatment. One quirk, two consumers, one of them patched.
-    //
-    // Not fixed here: the right fix is a decision, not a patch — either the
-    // broker starts writing the prefixed name (touches its self-registration and
-    // any reader of the old name) or `manifest_path_for` learns the alias the way
-    // the registry did. Both are behaviour changes to a shipped daemon and want
-    // their own slice. **Tracked on #84** (found via #80).
-    let path = manifest_path_for(name);
-    path.exists()
+    // `registry.rs` (~line 146, pinned by its `short_pipe_name`-filtered
+    // test) already resolves this same quirk by matching the short name.
+    // This is the second consumer of that quirk finally getting the same
+    // treatment — the alias is checked here rather than baked into
+    // `manifest_path_for`, which the daemon's manifest *writers* also call
+    // and which must keep deriving the canonical path for every other
+    // service.
+    if let Some(alias) = vram_broker_manifest_alias(name) {
+        return manifest_path_for(alias).exists();
+    }
+    false
+}
+
+/// The vram-broker's on-disk manifest basename (without `.json`), or `None`
+/// for any other service.
+///
+/// The broker writes `vram-broker.json` — its short, pipe-prefix-stripped
+/// name — not the `wylde-vram-broker.json` its canonical
+/// [`service_name::VRAM_BROKER`] would imply. Every other daemon-managed
+/// service's manifest matches its canonical name, so this deliberately
+/// aliases the broker alone rather than blanket-stripping the `wylde-`
+/// prefix (which would be wrong for `wylde-gateway.json` et al.). See #84.
+fn vram_broker_manifest_alias(name: &str) -> Option<&'static str> {
+    (name == service_name::VRAM_BROKER).then_some("vram-broker")
 }
 
 /// Payload returned by [`stop_all_daemon_managed`] — matches the dict

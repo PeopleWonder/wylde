@@ -96,6 +96,7 @@ pub mod constrained;
 pub mod fit;
 pub mod inputs;
 pub mod plan_phase;
+pub mod reclaim;
 pub mod reflect_phase;
 pub mod residency;
 pub mod surprise;
