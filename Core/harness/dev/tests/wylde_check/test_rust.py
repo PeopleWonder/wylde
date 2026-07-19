@@ -178,3 +178,68 @@ def test_process_spawn_rust_clean(isolated_tree: Any) -> None:
         "fn x() { /* no spawn */ }\n",
     )
     assert wc.check_no_external_process_spawn_rust() == []
+
+
+# ── Rule 54: no_unbounded_log_sink_rust ──────────────────────────────
+
+
+def test_unbounded_log_sink_flags_raw_append(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write(
+        root / "rust" / "crates" / "wylde-foo" / "src" / "sink.rs",
+        "fn x() {\n"
+        "    let _f = OpenOptions::new().create(true).append(true).open(p);\n"
+        "}\n",
+    )
+    findings = wc.check_no_unbounded_log_sink_rust()
+    assert len(findings) == 1
+    assert findings[0].rule == "no_unbounded_log_sink_rust"
+    assert findings[0].severity == "error"
+
+
+def test_unbounded_log_sink_flags_tokio_append(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write(
+        root / "rust" / "crates" / "wylde-foo" / "src" / "sink.rs",
+        "async fn x() {\n"
+        "    let _f = tokio::fs::OpenOptions::new().append(true).open(p).await;\n"
+        "}\n",
+    )
+    findings = wc.check_no_unbounded_log_sink_rust()
+    assert len(findings) == 1
+
+
+def test_unbounded_log_sink_exempts_rotation_factory(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    # The canonical logging module IS the factory — its append is allowed.
+    _write(
+        root / "rust" / "crates" / "wylde-shared" / "src" / "logging.rs",
+        "fn open() {\n"
+        "    let _f = OpenOptions::new().create(true).append(true).open(p);\n"
+        "}\n",
+    )
+    assert wc.check_no_unbounded_log_sink_rust() == []
+
+
+def test_unbounded_log_sink_marker_suppresses(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write(
+        root / "rust" / "crates" / "wylde-foo" / "src" / "data.rs",
+        "fn x() {\n"
+        "    // not a log — a resumable download temp file\n"
+        "    let _f = OpenOptions::new().append(true).open(p); "
+        "// wylde-check: unbounded-append-ok\n"
+        "}\n",
+    )
+    assert wc.check_no_unbounded_log_sink_rust() == []
+
+
+def test_unbounded_log_sink_clean(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write(
+        root / "rust" / "crates" / "wylde-foo" / "src" / "sink.rs",
+        "fn x() {\n"
+        "    rotating_sink(&path).write_line(&line)?;\n"
+        "}\n",
+    )
+    assert wc.check_no_unbounded_log_sink_rust() == []

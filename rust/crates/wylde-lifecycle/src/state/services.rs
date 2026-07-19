@@ -701,11 +701,17 @@ pub async fn start_memgraph() -> Result<()> {
             .join("logs");
         std::fs::create_dir_all(&logs_dir)
             .with_context(|| format!("create {}", logs_dir.display()))?;
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(logs_dir.join("neo4j.log"))
-            .with_context(|| "open neo4j.log")?;
+        // Bounded via the shared logging policy: an over-cap file is
+        // rolled at open time so this console-capture redirect can't grow
+        // forever across restarts. (Neo4j's *own* neo4j.log — the log4j2
+        // RollingRandomAccessFile at `server.directories.logs`, 20 MB × 7
+        // in conf/user-logs.xml — rotates itself; this is the separate
+        // stdout/stderr capture our redirect owns, so we bound it here.)
+        let log = wylde_shared::logging::open_rotating_append(
+            &logs_dir.join("neo4j.log"),
+            wylde_shared::logging::RotationPolicy::from_env(),
+        )
+        .with_context(|| "open neo4j.log")?;
         let log_err = log.try_clone().with_context(|| "clone neo4j.log handle")?;
 
         let mut cmd = Command::new("cmd");

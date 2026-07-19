@@ -19,6 +19,20 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Added
 
+- **Wylde now reclaims disk when you switch the model behind a reasoning slot, instead of hoarding
+  every model it ever pulled.** Until now the local model store had no bound and no cleanup: each
+  time the default reasoner (or your chosen slot model) changed, the superseded model was left on
+  disk forever — quietly growing into tens of gigabytes. A slot change now runs a *keep-only-
+  referenced* pass wired directly to the change: the model the new configuration no longer
+  references becomes eligible for reclaim, automatically, with no hand-maintained cleanup list — a
+  future slot type inherits the same behaviour for free. Safety is deliberate and conservative: a
+  model that is still referenced by any slot (reasoner / fast / embedder) or pinned is **never**
+  touched, only the exact model a change *superseded* is ever considered (a model you pulled by hand
+  and never assigned to a slot is never a candidate), and the pass is **announce-only by default** —
+  it logs what could be reclaimed and its size but deletes nothing unless you opt in with
+  `WYLDE_OLLAMA_RECLAIM_SUPERSEDED` (pin models to protect with `WYLDE_OLLAMA_GC_PINS`). New
+  diagnostics surface the store's total and per-model on-disk size (`ollama.store_usage`) and the
+  reclaim itself (`ollama.gc`).
 - **The auto-updater's Settings controls now gate every outbound step behind an informed choice.**
   Wylde stays fully isolated by default (no update network call unless you turn updates on *and* opt
   into automatic checks); this pass adds the consent and acknowledgement surfaces around that default.
@@ -61,6 +75,19 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
   sets agree and is proven able to fail (desync one path → red); wylde_check rules 44/45 are repointed
   at the live table so the gate actually fires. No user-visible behaviour change — the same services
   boot and drain in the same order. (#101)
+- **Log files no longer grow without bound — every sink now inherits one rotation policy.** Wylde had
+  no log rotation anywhere: every persistent log was opened append-only with no size and no age cap, so
+  `ipc.jsonl` had quietly grown to ~179 MB (and climbing ~179 MB/month, per install), with the gateway
+  audit logs (`gateway.jsonl`/`egress.jsonl`), the GUI error sink (`gui_errors.jsonl`), and the Neo4j
+  console-capture log leaking the same way — a silent disk-filler with no crash to warn you. The central
+  logging module now owns a shared rotating file sink that every Wylde-owned log routes through by
+  construction: each file is capped (default 10 MiB) and a few rotated generations are kept (default 5),
+  bounding any one log to ~60 MB instead of forever. Both limits are overridable via `WYLDE_LOG_MAX_BYTES`
+  and `WYLDE_LOG_KEEP_FILES`, but the defaults bound growth out of the box. Because the policy lives at the
+  chokepoint, any log a future service opens is bounded automatically, and a new architecture check turns
+  an ad-hoc uncapped log-append red in CI. (The bundled Neo4j already rotates its own internal log via
+  log4j2, so that one is left to it — Wylde only bounds the separate console-output capture.) Fixes #98.
+
 - **`service.shutdown_all` no longer under-counts the vram-broker.** Its summary
   (`stopped`/`count`) omitted the broker even when it had just been stopped, because the teardown
   reporter `is_or_was_tracked` stat'd `wylde-vram-broker.json` — the broker's *pipe*-prefixed name —
