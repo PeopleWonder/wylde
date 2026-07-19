@@ -62,6 +62,19 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Fixed
 
+- **A newly-added core service can no longer be silently skipped on shutdown.** The 12 in-tree
+  daemon-managed services were enumerated by hand in five parallel places (boot, shutdown,
+  `dispatch_start`, `dispatch_stop`, and the manageable-core set) with nothing keeping them in sync —
+  so forgetting the shutdown line when adding a service orphaned it on quit with nothing red. And the
+  static gate meant to catch this (wylde_check rules 44/45) pointed at `launcher.py`/`shutdown.py`,
+  files the Rust cutover deleted, guarded by `if file.exists()`, so it ran over nothing and passed
+  green — a dead gate. Boot, shutdown, and dispatch now all derive from one `DAEMON_MANAGED` source of
+  truth (one row per service; the two deliberate asymmetries — the user-started VPN and the boot-only
+  no-op memory scheduler — are typed flags, not silent omissions), so adding the 13th core service is a
+  one-row change covered on every path by construction. A crate test asserts the boot/shutdown/dispatch
+  sets agree and is proven able to fail (desync one path → red); wylde_check rules 44/45 are repointed
+  at the live table so the gate actually fires. No user-visible behaviour change — the same services
+  boot and drain in the same order. (#101)
 - **Log files no longer grow without bound — every sink now inherits one rotation policy.** Wylde had
   no log rotation anywhere: every persistent log was opened append-only with no size and no age cap, so
   `ipc.jsonl` had quietly grown to ~179 MB (and climbing ~179 MB/month, per install), with the gateway

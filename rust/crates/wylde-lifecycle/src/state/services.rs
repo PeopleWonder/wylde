@@ -1,11 +1,14 @@
-//! Seven daemon-managed service start/stop pairs.
+//! The daemon-managed service start/stop pairs.
 //!
-//! Rust port of `Core/Lifecycle/daemon_state/_services.py`. Memgraph,
-//! Voice, device_gate, vram_broker, extension_bridge, gateway,
-//! memory_scheduler. Each `start_<service>` boots the service as a
-//! subprocess and records the spawn so orphan-detection knows about
-//! it. Each `stop_<service>` sends the OS-appropriate graceful signal,
-//! waits for exit, and force-kills on timeout.
+//! Rust port of `Core/Lifecycle/daemon_state/_services.py`. The set of
+//! services and their boot/shutdown/dispatch wiring is owned by the single
+//! [`crate::daemon_managed::DAEMON_MANAGED`] table (issue #101) — this
+//! module supplies the `start_<service>` / `stop_<service>` hooks each row
+//! points at. Each `start_<service>` boots the service as a subprocess
+//! (or, for `start_memory_scheduler`, is a log-only no-op) and records the
+//! spawn so orphan-detection knows about it. Each `stop_<service>` sends
+//! the OS-appropriate graceful signal, waits for exit, and force-kills on
+//! timeout.
 //!
 //! ## Rust-only (full-Rust cutover R6, 2026-06-10)
 //!

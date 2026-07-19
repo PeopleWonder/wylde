@@ -1,6 +1,9 @@
-"""Tests for the launcher/shutdown/service-manifest rules (44-47),
+"""Tests for the boot/shutdown/service-manifest rules (44-47),
 mirrors prod-side wylde_check/rules/_lifecycle.py. Added at the slice-11
-cutover.
+cutover; rules 44/45 repointed at the live Rust single source of truth
+(the ``DAEMON_MANAGED`` table) for issue #101 — the old rules targeted the
+deleted ``Core/Lifecycle/launcher.py`` / ``shutdown.py`` and passed green
+over the missing files (a dead gate).
 """
 
 from __future__ import annotations
@@ -10,96 +13,107 @@ from typing import Any
 
 from .conftest import _write
 
-_LAUNCHER = "Core/Lifecycle/launcher.py"
-_SHUTDOWN = "Core/Lifecycle/shutdown.py"
+_DAEMON_MANAGED = "rust/crates/wylde-lifecycle/src/daemon_managed.rs"
+_BOOT = "rust/crates/wylde-lifecycle/src/daemon.rs"
+_SHUTDOWN = "rust/crates/wylde-lifecycle/src/state/mod.rs"
 _GPUI_SHUTDOWN = "Core/GUI/Shell/src/shutdown.rs"
 
 
-# ── Rule 44: launcher enumerates services from manifests ──────────────
-
-
-def test_launcher_clean_when_manifest_driven(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
+def _write_single_source(root: Any) -> None:
+    """Write a minimal, structurally-clean single source: the
+    ``DAEMON_MANAGED`` table plus boot + shutdown derived from it."""
+    _write(root / _DAEMON_MANAGED, "pub const DAEMON_MANAGED: &[DaemonService] = &[];\n")
+    _write(root / _BOOT, "for svc in crate::daemon_managed::boot_sequence() {}\n")
     _write(
-        root / _LAUNCHER,
-        "def launch_all():\n"
-        "    services = load_services()\n"
-        "    mf = load_manifest(folder)\n",
+        root / _SHUTDOWN,
+        "for svc in crate::daemon_managed::shutdown_sequence() {}\n",
     )
+
+
+# ── Rule 44: boot is derived from the single DAEMON_MANAGED table ──────
+
+
+def test_boot_clean_when_table_driven(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write_single_source(root)
     assert wc.check_launcher_enumerates_services_from_manifests() == []
 
 
-def test_launcher_flags_missing_manifest_reference(isolated_tree: Any) -> None:
+def test_boot_flags_missing_daemon_managed_table(isolated_tree: Any) -> None:
+    """The single-source file is gone (or never declared the table): the
+    rule must FIRE, not silently pass — the exact rot issue #101 fixed."""
     wc, root = isolated_tree
-    _write(root / _LAUNCHER, "def launch_all():\n    return spawn_everything()\n")
+    _write(root / _BOOT, "for svc in crate::daemon_managed::boot_sequence() {}\n")
+    # No daemon_managed.rs at all.
     findings = wc.check_launcher_enumerates_services_from_manifests()
-    assert len(findings) == 1
-    assert findings[0].rule == "launcher_enumerates_services_from_manifests"
-    assert "filesystem registry" in findings[0].message
-
-
-def test_launcher_flags_hardcoded_service_roster(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / _LAUNCHER,
-        "services = load_services()\n"
-        'SERVICES = ["wylde-gateway", "wylde-voice", "wylde-vpn"]\n',
+    assert any(
+        f.rule == "launcher_enumerates_services_from_manifests"
+        and "DAEMON_MANAGED table is missing" in f.message
+        for f in findings
     )
+
+
+def test_boot_flags_boot_not_derived_from_table(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write(root / _DAEMON_MANAGED, "pub const DAEMON_MANAGED: &[DaemonService] = &[];\n")
+    # daemon.rs that spawns by hand instead of iterating boot_sequence().
+    _write(root / _BOOT, "services::start_gateway().await;\n")
     findings = wc.check_launcher_enumerates_services_from_manifests()
-    assert len(findings) == 1
-    assert "hardcoded service roster" in findings[0].message
+    assert any("boot is no longer derived" in f.message for f in findings)
 
 
-def test_launcher_ignores_lowercase_services_local(isolated_tree: Any) -> None:
-    """`services = load_services()` is the normal idiom — the rule only
-    flags UPPERCASE roster constants, not lowercase locals."""
+def test_boot_flags_rust_const_services_array(isolated_tree: Any) -> None:
     wc, root = isolated_tree
-    _write(root / _LAUNCHER, "services = load_services()\nfor s in services:\n    pass\n")
-    assert wc.check_launcher_enumerates_services_from_manifests() == []
-
-
-def test_launcher_flags_rust_const_services_array(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(root / _LAUNCHER, "load_services()\n")  # keep the python half clean
+    _write_single_source(root)
     _write(
-        root / "rust/crates/wylde-lifecycle/src/daemon.rs",
+        root / "rust/crates/wylde-lifecycle/src/roster.rs",
         'const SERVICES: [&str; 2] = ["wylde-gateway", "wylde-voice"];\n',
     )
     findings = wc.check_launcher_enumerates_services_from_manifests()
-    assert any("Rust launcher" in f.message for f in findings)
+    assert any("hardcoded service roster in the Rust boot path" in f.message for f in findings)
 
 
-# ── Rule 45: shutdown enumerates services from manifests ──────────────
+# ── Rule 45: shutdown is derived from the same DAEMON_MANAGED table ────
 
 
-def test_shutdown_clean_when_manifest_driven(isolated_tree: Any) -> None:
+def test_shutdown_clean_when_table_driven(isolated_tree: Any) -> None:
     wc, root = isolated_tree
-    _write(
-        root / _SHUTDOWN,
-        "def shutdown_all():\n"
-        "    running = launcher.get_running()\n"
-        "    order = _shutdown_sequence(list(running))\n",
-    )
+    _write_single_source(root)
     _write(root / _GPUI_SHUTDOWN, 'lifecycle_action("lifecycle.shutdown_all", Null)\n')
     assert wc.check_shutdown_enumerates_services_from_manifests() == []
 
 
-def test_shutdown_flags_missing_enumeration(isolated_tree: Any) -> None:
+def test_shutdown_flags_not_derived_from_table(isolated_tree: Any) -> None:
     wc, root = isolated_tree
-    _write(root / _SHUTDOWN, "def shutdown_all():\n    kill_them_all()\n")
+    # state/mod.rs that drains a hand-kept array instead of shutdown_sequence().
+    _write(root / _SHUTDOWN, "let steps: [(&str, bool); 12] = [];\n")
     _write(root / _GPUI_SHUTDOWN, 'lifecycle_action("lifecycle.shutdown_all", Null)\n')
     findings = wc.check_shutdown_enumerates_services_from_manifests()
-    assert any("no longer enumerates" in f.message for f in findings)
+    assert any("shutdown is no longer derived" in f.message for f in findings)
 
 
 def test_shutdown_flags_gpui_not_delegating(isolated_tree: Any) -> None:
     wc, root = isolated_tree
-    _write(root / _SHUTDOWN, "running = launcher.get_running()\n")
+    _write(
+        root / _SHUTDOWN,
+        "for svc in crate::daemon_managed::shutdown_sequence() {}\n",
+    )
     # gpui shutdown.rs that enumerates on its own instead of delegating.
     _write(root / _GPUI_SHUTDOWN, 'taskkill(["wylde-gateway.exe"]);\n')
     findings = wc.check_shutdown_enumerates_services_from_manifests()
-    assert any("does not delegate".lower() in f.message.lower() or
-               "delegate" in f.message.lower() for f in findings)
+    assert any("delegate" in f.message.lower() for f in findings)
+    assert any(f.file == _GPUI_SHUTDOWN for f in findings)
+
+
+def test_shutdown_flags_gpui_delegate_file_missing(isolated_tree: Any) -> None:
+    """Hardened: a deleted gpui delegate must FIRE, not silently pass."""
+    wc, root = isolated_tree
+    _write(
+        root / _SHUTDOWN,
+        "for svc in crate::daemon_managed::shutdown_sequence() {}\n",
+    )
+    # No gpui shutdown.rs at all.
+    findings = wc.check_shutdown_enumerates_services_from_manifests()
     assert any(f.file == _GPUI_SHUTDOWN for f in findings)
 
 
