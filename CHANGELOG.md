@@ -19,6 +19,20 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Added
 
+- **Wylde now reclaims disk when you switch the model behind a reasoning slot, instead of hoarding
+  every model it ever pulled.** Until now the local model store had no bound and no cleanup: each
+  time the default reasoner (or your chosen slot model) changed, the superseded model was left on
+  disk forever — quietly growing into tens of gigabytes. A slot change now runs a *keep-only-
+  referenced* pass wired directly to the change: the model the new configuration no longer
+  references becomes eligible for reclaim, automatically, with no hand-maintained cleanup list — a
+  future slot type inherits the same behaviour for free. Safety is deliberate and conservative: a
+  model that is still referenced by any slot (reasoner / fast / embedder) or pinned is **never**
+  touched, only the exact model a change *superseded* is ever considered (a model you pulled by hand
+  and never assigned to a slot is never a candidate), and the pass is **announce-only by default** —
+  it logs what could be reclaimed and its size but deletes nothing unless you opt in with
+  `WYLDE_OLLAMA_RECLAIM_SUPERSEDED` (pin models to protect with `WYLDE_OLLAMA_GC_PINS`). New
+  diagnostics surface the store's total and per-model on-disk size (`ollama.store_usage`) and the
+  reclaim itself (`ollama.gc`).
 - **The auto-updater's Settings controls now gate every outbound step behind an informed choice.**
   Wylde stays fully isolated by default (no update network call unless you turn updates on *and* opt
   into automatic checks); this pass adds the consent and acknowledgement surfaces around that default.
