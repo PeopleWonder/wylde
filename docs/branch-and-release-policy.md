@@ -129,19 +129,27 @@ are unchanged; only the *meaning* of an increment is.
 each gate opening drops the pre-release marker and ships `0.2.x` stable. Same mechanism as §3.1,
 repeated for as long as the maintainer keeps the 0.2 line open.
 
-### 3.3 The bump itself is gated on the maintainer's say-so
+### 3.3 The bump itself was gated on the maintainer's say-so — now given (#36 DONE)
 
-**Status: NOT bumped.** The workspace versions are still `0.1.0-alpha.1`. The *scheme* above is
-decided; **executing** the bump is not — it is gated on the maintainer's explicit go-ahead, in
-the same bucket as tagging + publishing (#38), for the same reason: he does not consider the
-codebase ready to carry the 0.2 name yet.
+**Status: BUMPED to `0.2.0` (2026-07-17, #36).** The workspace versions were held at
+`0.1.0-alpha.1` until the maintainer's explicit go-ahead, which he gave on 2026-07-17
+("okay, then carry out 36"), reversing the earlier hold:
 
 > "im not ready to switch to 0.2 yet, it's not ready" — 2026-07-16
 
-So **#36 stays open and is blocked on a decision, not on engineering.** Read this section as
-"the scheme we will use when we bump", not "we are at 0.2". When the go-ahead comes, the bump
-must be uniform across `rust/` and `Core/GUI/` — `version consistency (G7)` is a required check
-and will fail a split version.
+The bump was made uniform across both workspaces and every non-`version.workspace` crate:
+`rust/Cargo.toml` and `Core/GUI/Cargo.toml` (the two `[workspace.package]` versions G7
+compares), `Core/GUI/Frontend/test-support/Cargo.toml`, `tools/xtask`,
+`tools/wylde-release`, `rust/tests/parity`, and the installer's source defaults — with all
+five `Cargo.lock`s regenerated so the `--locked` CI gates don't red-wall on a stale lock.
+`version consistency (G7)` passes.
+
+**Still gated on a separate say-so: tagging + publishing (#38).** #36 is the *version
+string in the source tree*; it does not create the `v0.2.0` tag, promote `develop`→`main`,
+or run `wylde-release publish`. Until #38, the latest *release* remains the pre-release
+`v0.1.0-alpha.1`, the Stable channel correctly serves nothing (§4), and the CHANGELOG's
+0.2.0 section is headed "— unreleased". The existing `v0.1.0-alpha.1` tag is left untouched
+(§3.1).
 
 ### 3.2 Build metadata (traceability)
 

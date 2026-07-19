@@ -8978,11 +8978,11 @@ dependencies = [
 
 [[package]]
 name = "wylde-anchor-actions"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 
 [[package]]
 name = "wylde-concept-routing"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -8992,7 +8992,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-gpui-code-editor"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "gpui",
  "unicode-segmentation",
@@ -9001,7 +9001,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-gpui-input"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "gpui",
  "unicode-segmentation",
@@ -9010,7 +9010,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-gui"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9029,7 +9029,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-gui-pipe"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "async-trait",
  "rmp-serde",
@@ -9045,7 +9045,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-gui-test-support"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "serde_json",
  "wylde-gui-pipe",
@@ -9053,7 +9053,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-harness"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9083,7 +9083,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-chat"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -9103,7 +9103,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-dashboard"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -9117,7 +9117,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-devices"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -9132,7 +9132,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-memory"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -9147,7 +9147,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-models"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -9164,7 +9164,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-registry"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -9183,7 +9183,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-remote-access"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -9197,7 +9197,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-settings"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "auto-launch",
@@ -9214,7 +9214,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-tools"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -9227,7 +9227,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-panel-workspaces"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -9248,21 +9248,21 @@ dependencies = [
 
 [[package]]
 name = "wylde-plugin-api"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "wylde-prebuild-guard"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "wylde-shared",
 ]
 
 [[package]]
 name = "wylde-reasoning-plan"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -9270,7 +9270,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-shared"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -9288,14 +9288,14 @@ dependencies = [
 
 [[package]]
 name = "wylde-theme"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "gpui",
 ]
 
 [[package]]
 name = "wylde-updater"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "minisign-verify",
  "self-replace",
@@ -9309,7 +9309,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-webview"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "gpui",
@@ -9323,7 +9323,7 @@ dependencies = [
 
 [[package]]
 name = "wylde-workspaces-client"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "serde",
  "serde_json",
