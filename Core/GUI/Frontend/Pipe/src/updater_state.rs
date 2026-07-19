@@ -123,6 +123,13 @@ pub fn due_for_check(
     }
 }
 
+/// Whether an available `version` should be suppressed because the user
+/// skipped exactly it. Pure so the "Skip this version" gate is unit-tested
+/// without the pipe or the network.
+fn skip_suppresses(version: &str, skipped: Option<&str>) -> bool {
+    skipped == Some(version)
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -169,6 +176,10 @@ pub async fn run_startup_check(current_version: &str) -> bool {
         .unwrap_or("stable")
         .to_owned();
     let last_checked = prefs.get("last_checked").and_then(|v| v.as_u64());
+    let skipped_version = prefs
+        .get("skipped_version")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
 
     let now = now_secs();
     if !due_for_check(enabled, auto_check, &frequency, last_checked, now) {
@@ -189,6 +200,28 @@ pub async fn run_startup_check(current_version: &str) -> bool {
         wylde_updater::check_for_update(channel, &version).map_err(|e| e.to_string())
     })
     .await;
+
+    // Honour the "Skip this version" decision on the *automatic* path only:
+    // if the resolved update is the exact version the user declined, treat
+    // it as up-to-date so the sidebar badge and the Settings seed stay
+    // quiet. A newer release carries a different version string and so is
+    // never suppressed (the skip self-expires). The manual "Check now"
+    // button deliberately ignores this — an explicit query always shows the
+    // real answer, which is also the user's path to un-skip.
+    let outcome = match outcome {
+        Ok(UpdateStatus::Available(info))
+            if skip_suppresses(&info.version, skipped_version.as_deref()) =>
+        {
+            tracing::info!(
+                version = %info.version,
+                "updater startup check: update available but user skipped this version"
+            );
+            Ok(UpdateStatus::UpToDate {
+                current: current_version.to_owned(),
+            })
+        }
+        other => other,
+    };
 
     let available = matches!(&outcome, Ok(UpdateStatus::Available(_)));
     match &outcome {
@@ -278,6 +311,16 @@ mod tests {
         // last_checked expressed in millis, two days ago, weekly ⇒ not due.
         let ts_millis = (now - 2 * day) * 1000;
         assert!(!due_for_check(true, true, "weekly", Some(ts_millis), now));
+    }
+
+    #[test]
+    fn skip_suppresses_only_the_exact_version() {
+        // The skipped version is suppressed...
+        assert!(skip_suppresses("0.3.1", Some("0.3.1")));
+        // ...but a newer release (different string) is not — skip self-expires.
+        assert!(!skip_suppresses("0.3.2", Some("0.3.1")));
+        // No skip recorded ⇒ never suppress.
+        assert!(!skip_suppresses("0.3.1", None));
     }
 
     #[test]

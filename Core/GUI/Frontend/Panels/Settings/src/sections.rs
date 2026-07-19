@@ -196,28 +196,28 @@ pub fn updates_section(
         cx.listener(|this, _ev, _window, cx| this.cycle_channel(cx)),
     ));
 
-    // Manual check + result.
+    // Manual check + result. The "Check now" button always shows; the
+    // Install affordance now lives inside the changelog card (Accept), so
+    // it is no longer spliced into this row.
     let checking = matches!(check, UpdateCheck::Checking | UpdateCheck::Installing);
     c = c.child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_3()
-            .child(
-                action_button(
-                    "settings-updates-check",
-                    check_button_label(check),
-                    checking,
-                )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _ev, _window, cx| this.check_now(cx)),
-                ),
+        div().flex().flex_row().items_center().gap_3().child(
+            action_button(
+                "settings-updates-check",
+                check_button_label(check),
+                checking,
             )
-            .children(install_button(check, cx)),
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _ev, _window, cx| this.check_now(cx)),
+            ),
+        ),
     );
-    if let Some(line) = update_status_line(check) {
+    // An available update opens the changelog card (release notes + Accept /
+    // Decline); every other state renders the one-line status.
+    if let UpdateCheck::Available(info) = check {
+        c = c.child(changelog_card(info, cx));
+    } else if let Some(line) = update_status_line(check) {
         c = c.child(line);
     }
 
@@ -240,10 +240,13 @@ pub fn updates_section(
     )
 }
 
-/// Title-case the persisted channel string for display ("stable" → "Stable").
+/// Display label for the persisted channel string. The wire value stays
+/// `"beta"` end-to-end; only the user-facing word is "Experimental" (Aaron's
+/// wording). Keep this the single source of the label so the pill, the
+/// warning modal, and any status text never drift apart.
 fn channel_label(channel: &str) -> &'static str {
     match channel {
-        "beta" => "Beta",
+        "beta" => "Experimental",
         _ => "Stable",
     }
 }
@@ -402,20 +405,93 @@ fn action_button(id: impl Into<ElementId>, label: &str, dim: bool) -> Stateful<g
         .child(SharedString::from(label.to_owned()))
 }
 
-/// The "Install update" button — only present when a check resolved an
-/// available update. Returned as an `Option` so the caller can splice it
-/// in with `.children(...)`.
-fn install_button(check: &UpdateCheck, cx: &mut Cx) -> Option<Stateful<gpui::Div>> {
-    let installing = matches!(check, UpdateCheck::Installing);
-    match check {
-        UpdateCheck::Available(_) | UpdateCheck::Installing => Some(
-            action_button("settings-updates-install", "Install update", installing).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _ev, _window, cx| this.install_update(cx)),
-            ),
-        ),
-        _ => None,
+/// The changelog card, shown when a check resolves an available update
+/// (Phase 12.5, req 7). Presents the release notes for the pending version
+/// and the two decisions the user must make before anything is applied:
+///
+///   * **Accept** — download + verify + install (the existing manual path).
+///     Nothing is fetched from the network until this click, on either
+///     channel: the privacy-first "no bytes until you accept" contract.
+///   * **Decline** — "Skip this version"; persists the version so the
+///     automatic path stops re-offering it until a newer one appears.
+fn changelog_card(info: &wylde_updater::UpdateInfo, cx: &mut Cx) -> gpui::Div {
+    let title = format!("Update available: v{}", info.version);
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_DEFAULT)))
+        .bg(rgb(pack(SURFACE_900)))
+        .p_3()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::SM))
+                .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                .text_color(rgb(pack(TEXT_PRIMARY)))
+                .child(SharedString::from(title)),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from("What's new")),
+        )
+        .child(changelog_body(&info.notes))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_2()
+                .child(
+                    modal_button(
+                        "settings-updates-decline",
+                        "Decline (Skip this version)",
+                        false,
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _ev, _window, cx| this.skip_version(cx)),
+                    ),
+                )
+                .child(
+                    modal_button("settings-updates-accept", "Accept", true).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _ev, _window, cx| this.install_update(cx)),
+                    ),
+                ),
+        )
+}
+
+/// Render release notes as a scrollable, line-wrapped block. Splitting on
+/// newlines gives reliable hard line breaks (a single text node collapses
+/// them), and the fixed max height keeps a long changelog from pushing the
+/// buttons off-screen. The notes are shown as plain text — a stub one-liner
+/// (a release cut without `--notes-file`) still renders sensibly.
+fn changelog_body(notes: &str) -> Stateful<gpui::Div> {
+    let trimmed = notes.trim();
+    let mut body = div()
+        .id("settings-updates-changelog")
+        .max_h(px(180.0))
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(TEXT_SECONDARY)));
+    if trimmed.is_empty() {
+        return body.child(SharedString::from("No release notes were provided."));
     }
+    // Defensive cap: changelogs are small, but never build an unbounded tree.
+    for line in trimmed.lines().take(400) {
+        body = body.child(div().child(SharedString::from(line.to_owned())));
+    }
+    body
 }
 
 /// Render the one-line status under the buttons for the current check
@@ -1379,6 +1455,106 @@ fn modal_button(id: impl Into<ElementId>, label: &str, primary: bool) -> Statefu
     b
 }
 
+/// Consent modal shown when the user turns ON automatic update checks
+/// (req 4). Honest about both facts that matter to the "completely
+/// isolated" default: the weekly outbound contact, *and* that nothing is
+/// pulled or applied without an explicit Accept on the changelog card
+/// (the download-on-Accept model). Cloned from [`hf_privacy_modal`].
+pub fn auto_check_consent_modal(cx: &mut Cx) -> gpui::Div {
+    modal_shell(
+        "Turn on automatic update checks?",
+        "Wylde will contact GitHub about once a week to check whether a new version is \
+         available. Nothing is downloaded or installed automatically: if an update is found, \
+         Wylde shows you the changelog and asks you to Accept before it downloads or installs \
+         anything. You can turn this off anytime in Settings.",
+        ("settings-updates-auto-cancel", "Cancel"),
+        ("settings-updates-auto-enable", "Enable"),
+        cx.listener(|this, _ev, _window, cx| this.cancel_auto_check_modal(cx)),
+        cx.listener(|this, _ev, _window, cx| this.confirm_auto_check_modal(cx)),
+    )
+}
+
+/// Warning modal shown when switching TO the Experimental branch (req 6).
+/// The body is Aaron's copy, verbatim — do not paraphrase or fix casing.
+/// Fires only on stable → experimental; switching back to Stable is free.
+pub fn channel_warning_modal(cx: &mut Cx) -> gpui::Div {
+    modal_shell(
+        "Switch to the Experimental branch?",
+        "The experimental branch is for testing new features and may contain significant bugs. \
+         posting any found bugs on the GitHub page while using the branch helps the development \
+         of the software",
+        ("settings-updates-channel-cancel", "Cancel"),
+        ("settings-updates-channel-confirm", "Switch to Experimental"),
+        cx.listener(|this, _ev, _window, cx| this.cancel_channel_warning(cx)),
+        cx.listener(|this, _ev, _window, cx| this.confirm_channel_warning(cx)),
+    )
+}
+
+/// Shared two-button confirm-modal chrome (title + body + Cancel/primary),
+/// factored out of the HuggingFace modal so the updater consent + channel
+/// warning share one layout. The primary (right) button is the affirmative.
+#[allow(clippy::type_complexity)]
+fn modal_shell(
+    title: &str,
+    body: &str,
+    cancel: (&'static str, &str),
+    confirm: (&'static str, &str),
+    on_cancel: impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    on_confirm: impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+) -> gpui::Div {
+    div()
+        .absolute()
+        .inset_0()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(gpui::rgba(0x00_00_00_99))
+        .child(
+            div()
+                .w(px(440.0))
+                .bg(rgb(pack(SURFACE_800)))
+                .border_1()
+                .border_color(rgb(pack(BORDER_EMPHASIS)))
+                .rounded(px(8.0))
+                .shadow_lg()
+                .p_5()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::BASE))
+                        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                        .text_color(rgb(pack(TEXT_PRIMARY)))
+                        .child(SharedString::from(title.to_owned())),
+                )
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_SECONDARY)))
+                        .child(SharedString::from(body.to_owned())),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            modal_button(cancel.0, cancel.1, false)
+                                .on_mouse_down(MouseButton::Left, on_cancel),
+                        )
+                        .child(
+                            modal_button(confirm.0, confirm.1, true)
+                                .on_mouse_down(MouseButton::Left, on_confirm),
+                        ),
+                ),
+        )
+}
+
 // ── Profile / Rules section (Thought Bubble System Slice D) ──────────
 
 /// A small action button used by the proposal rows. `primary` styles it
@@ -1642,6 +1818,24 @@ mod tests {
     #[test]
     fn state_pill_renders_value() {
         let _ = state_pill("weekly");
+    }
+
+    #[test]
+    fn channel_label_relabels_beta_as_experimental() {
+        // The user-facing word is "Experimental"; the wire value stays "beta".
+        assert_eq!(channel_label("beta"), "Experimental");
+        assert_eq!(channel_label("stable"), "Stable");
+        // Unknown/legacy is conservative — never surface "Experimental".
+        assert_eq!(channel_label("nightly"), "Stable");
+    }
+
+    #[test]
+    fn changelog_body_renders_empty_and_populated() {
+        // A stub/empty changelog still renders (no panic, sensible fallback).
+        let _ = changelog_body("");
+        let _ = changelog_body("   \n  ");
+        // A multi-line changelog renders each line.
+        let _ = changelog_body("## v0.3.0\n- fixed a thing\n- added another");
     }
 
     #[test]

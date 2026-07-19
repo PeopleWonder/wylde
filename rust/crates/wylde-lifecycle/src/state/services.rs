@@ -1,11 +1,14 @@
-//! Seven daemon-managed service start/stop pairs.
+//! The daemon-managed service start/stop pairs.
 //!
-//! Rust port of `Core/Lifecycle/daemon_state/_services.py`. Memgraph,
-//! Voice, device_gate, vram_broker, extension_bridge, gateway,
-//! memory_scheduler. Each `start_<service>` boots the service as a
-//! subprocess and records the spawn so orphan-detection knows about
-//! it. Each `stop_<service>` sends the OS-appropriate graceful signal,
-//! waits for exit, and force-kills on timeout.
+//! Rust port of `Core/Lifecycle/daemon_state/_services.py`. The set of
+//! services and their boot/shutdown/dispatch wiring is owned by the single
+//! [`crate::daemon_managed::DAEMON_MANAGED`] table (issue #101) — this
+//! module supplies the `start_<service>` / `stop_<service>` hooks each row
+//! points at. Each `start_<service>` boots the service as a subprocess
+//! (or, for `start_memory_scheduler`, is a log-only no-op) and records the
+//! spawn so orphan-detection knows about it. Each `stop_<service>` sends
+//! the OS-appropriate graceful signal, waits for exit, and force-kills on
+//! timeout.
 //!
 //! ## Rust-only (full-Rust cutover R6, 2026-06-10)
 //!
@@ -698,11 +701,17 @@ pub async fn start_memgraph() -> Result<()> {
             .join("logs");
         std::fs::create_dir_all(&logs_dir)
             .with_context(|| format!("create {}", logs_dir.display()))?;
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(logs_dir.join("neo4j.log"))
-            .with_context(|| "open neo4j.log")?;
+        // Bounded via the shared logging policy: an over-cap file is
+        // rolled at open time so this console-capture redirect can't grow
+        // forever across restarts. (Neo4j's *own* neo4j.log — the log4j2
+        // RollingRandomAccessFile at `server.directories.logs`, 20 MB × 7
+        // in conf/user-logs.xml — rotates itself; this is the separate
+        // stdout/stderr capture our redirect owns, so we bound it here.)
+        let log = wylde_shared::logging::open_rotating_append(
+            &logs_dir.join("neo4j.log"),
+            wylde_shared::logging::RotationPolicy::from_env(),
+        )
+        .with_context(|| "open neo4j.log")?;
         let log_err = log.try_clone().with_context(|| "clone neo4j.log handle")?;
 
         let mut cmd = Command::new("cmd");
