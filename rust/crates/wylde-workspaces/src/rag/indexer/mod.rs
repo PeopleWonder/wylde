@@ -97,8 +97,13 @@ pub async fn reindex_full(def: &WorkspaceDefinition) -> IndexOutcome {
     // Graph-ingest alongside the vector embed: extract structural entities
     // and write Chunk/Entity nodes + typed edges. Fail-soft and fully
     // independent of the embed below (see `graph_writer`), so a sidecar or
-    // graph-backend outage never blocks RAG.
-    log_graph(&def.id, &graph_writer::write_graph(def, &raw).await);
+    // graph-backend outage never blocks RAG. Replace-by-construction (#99):
+    // the full path DELETEs the workspace's prior chunk nodes before writing,
+    // so a re-index (which re-keys mtime-bearing chunk ids) supersedes the old
+    // set instead of accumulating orphans — while preserving authored
+    // relations (no orphan-entity prune). The delta path clears per changed
+    // file (see `apply_graph_delta`); this is the whole-workspace analogue.
+    log_graph(&def.id, &graph_writer::write_graph_replace(def, &raw).await);
     // Counting done — flip to the determinate embed phase with known totals.
     let (chunk_file_idx, files_total) = chunk_file_ordinals(&raw);
     reporter.begin_embed(chunk_file_idx, files_total);
