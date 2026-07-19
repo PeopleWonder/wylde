@@ -375,6 +375,25 @@ RUST_PROCESS_SPAWN_ALLOWED_CRATES: Tuple[str, ...] = (
 RUST_PROCESS_SPAWN_ALLOWED_CRATE: str = RUST_PROCESS_SPAWN_ALLOWED_CRATES[0]
 
 
+# Rule 54: every persistent file log must inherit the shared rotation
+# policy.  The canonical logging module
+# (``rust/crates/wylde-shared/src/logging.rs``) owns the ONE append-only
+# ``OpenOptions`` behind ``RotatingLog`` / ``open_rotating_append``; the
+# rule skips that file and flags a raw ``.append(true)`` anywhere else —
+# the tell-tale of an ad-hoc uncapped log sink that bypasses rotation.
+# Matches both ``std::fs`` and ``tokio::fs`` OpenOptions builders.  A
+# same-line ``// wylde-check: unbounded-append-ok`` marker suppresses the
+# rule for a justified non-log append.
+RUST_UNBOUNDED_APPEND_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"\.append\(\s*true\s*\)"),
+)
+RUST_UNBOUNDED_APPEND_MARKER = "wylde-check: unbounded-append-ok"
+# The single sanctioned home of an append-only open — the rotation
+# factory itself.  Skipped wholesale (analogous to rule 28 skipping the
+# canonical logging file for subscriber init).
+RUST_LOG_ROTATION_FACTORY_FILE = "rust/crates/wylde-shared/src/logging.rs"
+
+
 # ── Rules 44-47: launcher / shutdown / service-manifest correctness ──
 #
 # Added at the slice-11 cutover (2026-05-29) so the launcher + shutdown
