@@ -168,6 +168,35 @@ impl DashboardPanel {
         })
         .detach();
     }
+
+    /// Stop a running service from the console — the deliberate operator action
+    /// (decision 7: start/restart/stop from anywhere in the GUI). Drives the
+    /// shared `service.stop` helper, then re-probes *just that service* so its
+    /// chip flips to the stopped (red) state without waiting for the next 5 s
+    /// refresh tick.
+    ///
+    /// There is deliberately **no error banner**: the Dashboard degrades
+    /// per-card by design (it has no panel-level `error` field), so the outcome
+    /// is read from the re-probe, not a wall of text. A stop that fails leaves
+    /// the service running and the re-probe shows it still green — the honest
+    /// signal, and the same "reflect reality" contract the auto-refresh loop
+    /// already keeps. `wylde-lifecycle` is never offered a Stop button (see
+    /// [`offers_stop`]), so this can't be asked to stop the daemon serving it.
+    pub fn spawn_stop_service(&mut self, name: String, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            // Fire the stop. The outcome surfaces through the re-probe below,
+            // not a banner — see the doc comment.
+            let _ = wylde_gui_pipe::stop_service(&name).await;
+            let health = probe_service(&name).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                if let Some(entry) = panel.service_health.iter_mut().find(|(n, _)| n == &name) {
+                    entry.1 = health;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 }
 
 impl Default for DashboardPanel {
@@ -319,6 +348,19 @@ fn service_health_strip(panel: &DashboardPanel, cx: &mut Context<DashboardPanel>
         .child(row)
 }
 
+/// Whether a service's chip offers a one-click Stop (decision 7, console side).
+///
+/// Two conditions, both about not painting a dead button:
+///   * the service must actually be *running* — `Healthy` or `Degraded`. A
+///     `Unhealthy`/`Unknown` service has nothing to stop.
+///   * it must not be `wylde-lifecycle` itself. That daemon serves the
+///     `service.stop` request and isn't in its own manageable set, so a stop
+///     is an idempotent no-op on the backend — offering the button would be a
+///     control that does nothing.
+fn offers_stop(name: &str, status: HealthStatus) -> bool {
+    name != "wylde-lifecycle" && matches!(status, HealthStatus::Healthy | HealthStatus::Degraded)
+}
+
 fn service_chip(
     name: &str,
     health: &ServiceHealth,
@@ -363,6 +405,33 @@ fn service_chip(
                 .text_color(rgb(pack(TEXT_PRIMARY)))
                 .child(label),
         );
+    // One-click Stop for a running service (decision 7). Nested inside the
+    // chip, so it needs `stop_propagation` in its handler — otherwise the
+    // chip's own click (navigate to Tools) would also fire. Only rendered
+    // where a stop is a live action (see `offers_stop`).
+    if offers_stop(name, health.status) {
+        let service = name.to_owned();
+        chip = chip.child(
+            div()
+                .id(ElementId::Name(format!("dashboard-stop::{name}").into()))
+                .px_1()
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(rgb(pack(BORDER_SUBTLE)))
+                .cursor_pointer()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from("Stop"))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this: &mut DashboardPanel, _ev, _w, cx| {
+                        cx.stop_propagation();
+                        this.spawn_stop_service(service.clone(), cx);
+                    }),
+                ),
+        );
+    }
     // Degraded (and any future detail-bearing) tile gets a hover tooltip
     // explaining the specific degradation — "Ollama daemon unreachable…"
     // or "Slow response (>2s)".
@@ -792,6 +861,19 @@ mod tests {
     fn short_service_name_drops_wylde_prefix() {
         assert_eq!(short_service_name("wylde-harness"), "harness");
         assert_eq!(short_service_name("standalone"), "standalone");
+    }
+
+    #[test]
+    fn offers_stop_only_for_running_non_daemon_services() {
+        // A running service the daemon manages: Stop is a live action.
+        assert!(offers_stop("wylde-gateway", HealthStatus::Healthy));
+        assert!(offers_stop("wylde-ollama", HealthStatus::Degraded));
+        // Nothing to stop when it isn't up.
+        assert!(!offers_stop("wylde-gateway", HealthStatus::Unhealthy));
+        assert!(!offers_stop("wylde-gateway", HealthStatus::Unknown));
+        // Never the daemon serving the request — a backend no-op, so the
+        // button would do nothing.
+        assert!(!offers_stop("wylde-lifecycle", HealthStatus::Healthy));
     }
 
     #[test]

@@ -805,13 +805,14 @@ pub async fn service_health(service: &str) -> Result<Value, String> {
 
 // ── Reusable service-control affordance (GUI-wide) ────────────────────
 //
-// Aaron's locked decision 7: start/restart backend services from ANYWHERE in
-// the GUI "for ease of use", not just one panel. These named wrappers over
+// Aaron's locked decision 7: start/restart/stop backend services from ANYWHERE
+// in the GUI "for ease of use", not just one panel. These named wrappers over
 // `lifecycle_action` are the shared core every surface drives — the Workspaces
 // error states (down → Start, out-of-date → Restart), the Graph view's
-// "Start graph database", and any future panel — so the lifecycle verb shape
-// lives in exactly one place. The Shell slot's "Start service" button predates
-// this and uses the same `service.start` verb (see `slot::start_service_action`).
+// "Start graph database", the Dashboard console's per-service Stop, and any
+// future panel — so the lifecycle verb shape lives in exactly one place. The
+// Shell slot's "Start service" button predates this and uses the same
+// `service.start` verb (see `slot::start_service_action`).
 
 /// The Lifecycle daemon's canonical name for the graph database (Memgraph,
 /// the Bolt `:7687` backend). Matches the Dashboard's `MONITORED_SERVICES`
@@ -831,6 +832,18 @@ pub async fn start_service(service: &str) -> Result<Value, String> {
 /// verb is owned by the backend lifecycle crate; this is only the GUI driver.)
 pub async fn restart_service(service: &str) -> Result<Value, String> {
     lifecycle_action("service.restart", serde_json::json!({ "name": service })).await
+}
+
+/// Stop a running service (`service.stop`). The deliberate operator action —
+/// unlike [`start_service`] / [`restart_service`] (recovery affordances for a
+/// service the user *wants* up), this takes a healthy service down at the
+/// user's choosing. Driven from the Dashboard's service console. The lifecycle
+/// `service.stop` verb is owned by the backend lifecycle crate; this is only
+/// the GUI driver. A name the daemon doesn't manage (e.g. `wylde-lifecycle`
+/// itself) is an idempotent no-op success on the backend, so the caller need
+/// not pre-filter — though the Dashboard does, to avoid offering a dead button.
+pub async fn stop_service(service: &str) -> Result<Value, String> {
+    lifecycle_action("service.stop", serde_json::json!({ "name": service })).await
 }
 
 /// Start the graph database ([`MEMGRAPH_SERVICE`]) — the one-click recovery

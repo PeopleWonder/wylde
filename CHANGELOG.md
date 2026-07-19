@@ -187,6 +187,16 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Added
 
+- **A one-click Stop control on the Dashboard service console.** The GUI could start and restart
+  backend services from anywhere (decision 7) but had no way to *stop* one — the lifecycle
+  `service.stop` verb existed and nothing drove it. Each running service chip now offers a Stop
+  button (rendered only where a stop is a live action: the service is up and isn't
+  `wylde-lifecycle` itself, which serves the request); clicking it dispatches `service.stop` and
+  re-probes just that service so its chip flips without waiting for the 5 s refresh. No error
+  banner by design — the console degrades per card, so a failed stop leaves the chip green, the
+  honest signal. Closes the last named Tier-C control from #35; the new `service_control.rs` test
+  drives it under the required `gui panel-walk (L7)` check and is proven able to fail (pointing the
+  control at `start_service` turns it red).
 - **Tier-C coverage for two critical-path controls: type-and-send, and happy-path device
   pairing.** Both are controls #35 names, and both were untested at the seam a user actually
   drives.
