@@ -139,3 +139,19 @@ Rules live under `Core/harness/dev/wylde_check/rules/` as `check_<rule_name>` fu
 **Fix:** add a `tracing::info!` / `tracing::warn!` in the early-return branch explaining the skip (the already-alive guard logs the manifest pid so the operator can see which dead process the daemon believed owned the slot).
 
 **Allowed (not flagged):** the successful-spawn tail of a function (a bare `Ok(())` *expression* after `record_spawn(...)` / a `match` arm — it has no `return` keyword, so it's never matched); `return Ok` in any non-`start_*` function (e.g. the shared `stop_service` helper); a `return Ok` whose block already carries a `tracing::` call before it; matches inside `//` / `///` / `/* … */` comments or string / raw-string literals; or a line carrying the explicit opt-out `// wylde-check: silent-skip-allowed` (same line or the line above — meant to be rare).
+
+### 54. `no_unbounded_log_sink_rust`
+
+**Severity:** error
+
+**Scope:** `rust/crates/*/src/**/*.rs`, skipping the canonical rotation factory `rust/crates/wylde-shared/src/logging.rs`.
+
+**What it catches:** a raw append-only file open — `OpenOptions::new()….append(true)` (both `std::fs` and `tokio::fs`) — anywhere outside the logging factory. That is the tell-tale of an ad-hoc log sink that reaches disk without inheriting the shared size + retention policy.
+
+**Why:** before the 0.2 Stability audit (finding C, #98) there was no log rotation anywhere in the product. Every persistent sink — `ipc.jsonl`, the gateway `gateway.jsonl` / `egress.jsonl` audit logs, `gui_errors.jsonl`, the `neo4j.log` console redirect — was opened `create(true).append(true)` with no size and no age cap. `ipc.jsonl` alone had grown to ~179 MB (+~179 MB/month, per user, forever). The failure is pure silent disk growth: no crash, hidden until a user's disk fills. The structural fix routes every Wylde-owned sink through `wylde_shared::logging::RotatingLog` (via `rotating_sink`) or `open_rotating_append`, which caps each file at `WYLDE_LOG_MAX_BYTES` (default 10 MiB) and keeps `WYLDE_LOG_KEEP_FILES` (default 5) rotated generations — bounding any sink at ~60 MB. This rule pins the guarantee: a future service that opens a log the ad-hoc way turns the gate red instead of leaking, so bounded-ness is inherited by construction rather than remembered file-by-file.
+
+**Fix:** route the log through `wylde_shared::logging::rotating_sink(path).write_line(line)` (buffered append + flush, rotation on size), or — for a subprocess stdout/stderr redirect that needs a raw file handle — `wylde_shared::logging::open_rotating_append(path, RotationPolicy::from_env())`.
+
+**Allowed (not flagged):** the canonical factory file itself (`wylde-shared/src/logging.rs`, which owns the one sanctioned append); matches inside `//` / `///` / `/* … */` comments; or a line carrying the explicit opt-out `// wylde-check: unbounded-append-ok` on the same line. The opt-out is for a genuine non-log append (e.g. a resumable-download temp file) and must carry a reason — an uncapped append is the justified exception, never the norm.
+
+**Note — externally-rotated logs:** the Neo4j JVM rotates its *own* `neo4j.log` via a log4j2 `RollingRandomAccessFile` (`Core/Memgraph/vendor/neo4j/conf/user-logs.xml`, 20 MB × 7) written to `server.directories.logs`. Wylde's redirect captures the separate console stdout/stderr into its own `neo4j.log`; that file (only) is bounded by `open_rotating_append` at open time. The two files are distinct — Wylde does not double-manage the JVM's rotated log.

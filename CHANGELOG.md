@@ -48,6 +48,19 @@ Release lines: experimental builds ship 0.1.x (Beta channel); the stable gate is
 
 ### Fixed
 
+- **Log files no longer grow without bound — every sink now inherits one rotation policy.** Wylde had
+  no log rotation anywhere: every persistent log was opened append-only with no size and no age cap, so
+  `ipc.jsonl` had quietly grown to ~179 MB (and climbing ~179 MB/month, per install), with the gateway
+  audit logs (`gateway.jsonl`/`egress.jsonl`), the GUI error sink (`gui_errors.jsonl`), and the Neo4j
+  console-capture log leaking the same way — a silent disk-filler with no crash to warn you. The central
+  logging module now owns a shared rotating file sink that every Wylde-owned log routes through by
+  construction: each file is capped (default 10 MiB) and a few rotated generations are kept (default 5),
+  bounding any one log to ~60 MB instead of forever. Both limits are overridable via `WYLDE_LOG_MAX_BYTES`
+  and `WYLDE_LOG_KEEP_FILES`, but the defaults bound growth out of the box. Because the policy lives at the
+  chokepoint, any log a future service opens is bounded automatically, and a new architecture check turns
+  an ad-hoc uncapped log-append red in CI. (The bundled Neo4j already rotates its own internal log via
+  log4j2, so that one is left to it — Wylde only bounds the separate console-output capture.) Fixes #98.
+
 - **`service.shutdown_all` no longer under-counts the vram-broker.** Its summary
   (`stopped`/`count`) omitted the broker even when it had just been stopped, because the teardown
   reporter `is_or_was_tracked` stat'd `wylde-vram-broker.json` — the broker's *pipe*-prefixed name —
