@@ -5,14 +5,10 @@
 //! the Python shape one-for-one so a single tail can mix Python and Rust
 //! service traffic.
 
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::Path;
-use std::sync::Mutex;
 
 use crate::ipc::wire::{EnvConfig, Reply};
-
-static LOG_LOCK: Mutex<()> = Mutex::new(());
+use crate::logging::rotating_sink;
 
 /// Append one audit-log line for a completed call.
 ///
@@ -43,7 +39,6 @@ pub fn log_call_to(
     bytes_in: usize,
     bytes_out: usize,
 ) {
-    let _guard = LOG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let _ = write_record(path, caller, service, method, reply, bytes_in, bytes_out);
 }
 
@@ -56,11 +51,6 @@ fn write_record(
     bytes_in: usize,
     bytes_out: usize,
 ) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
     let mut record = serde_json::Map::new();
     record.insert(
         "ts".into(),
@@ -100,9 +90,9 @@ fn write_record(
     }
 
     let line = serde_json::to_string(&record)?;
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(file, "{line}")?;
-    Ok(())
+    // Route through the shared rotating sink so `ipc.jsonl` inherits the
+    // size + retention policy by construction — no per-file cap here.
+    rotating_sink(path).write_line(&line)
 }
 
 /// Cheap size hint for a payload — matches Python's `_size`.

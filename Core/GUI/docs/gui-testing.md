@@ -208,20 +208,34 @@ error field and *degrades per card* (assert `initial_load_done` + per-service
 flags the optional voice service). Run the whole gate with **`cargo panel-walk`**
 (from `Core/GUI/`); it runs headless in CI as the `gui panel-walk (L7)` job.
 
-> ### ⚠ `cargo test --workspace` does not run these tests
+> ### `cargo panel-walk` vs `cargo test --workspace`
 >
-> The windowed gpui tests sit behind a required feature (`test-support`, enabled
-> by the `panel-walk` alias). A plain `cargo test --workspace` from `Core/GUI/`
-> compiles and reports **`0 passed` for all 8 binaries** — it does not skip
-> loudly, it does not error, it **looks green while testing nothing.**
+> **Both run these windowed gpui tests.** The `test-support` seam they need
+> (`gpui/test-support`, `wylde-gui-pipe/test-support`, `wylde-gui-test-support`)
+> is requested from the panels' `[dev-dependencies]`, and `resolver = "2"`
+> compiles those into each crate's *test* targets under **either** command —
+> there is no feature flag the alias toggles. The only difference is the crate
+> set: `panel-walk` scopes to the 9 panel crates (`-p …`) so CI's headless L7 job
+> never links the Shell (`wry` / tray-icon); `cargo test --workspace --locked`
+> from `Core/GUI/` additionally runs the Shell/Frontend crates' own tests. A
+> `--workspace` run: exit 0, **1151 passed, 0 failed**.
 >
-> That is a trap worth naming: the habit of "run `--workspace`, see green" is
-> correct in `rust/` and silently wrong here. It was hit during the KI-6
-> enumeration (2026-07-17) and nearly caused the GUI tree to be reported clean
-> without a single GUI test having run. **Always use `cargo panel-walk`.**
+> Prefer `cargo panel-walk` locally so you exercise exactly what the required
+> gate runs.
 >
-> Tracked on **#85** — making the no-op *loud* rather than silent is the open
-> question there; this note is the stopgap, and it only helps people who read it.
+> > **History (#85):** an earlier version of this note claimed `cargo test
+> > --workspace` "runs 0 GUI tests / looks green while testing nothing." That was
+> > a **misread**, closed as not-reproducing. Cargo prints one result line per
+> > test binary; the ~17 `Doc-tests` lines and a couple of empty / `#[ignore]`d
+> > targets each print `0 passed`, while the 44 real binaries carry the 1151
+> > passes. Reading only the `0 passed` lines is the trap — not the command. The
+> > tests were present and ran under `--workspace` both when #85 was filed
+> > (2026-07-17) and now; nothing in the panels or this config changed between.
+>
+> **The real coverage risk is the alias, not `--workspace`:** `panel-walk`'s
+> `-p` list is hardcoded to today's 9 panels. Add a 10th panel and forget to add
+> it, and the required L7 gate silently never tests it — while `--workspace`
+> would pick it up automatically. Tracked on **#95**.
 
 **Covered (behavioural, panel-specific):** `tests/dock_scoping.rs` — the docked
 ChatPanel's enter→scoped list / leave→restore, docked turn carries
