@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Audit every place a Wylde shortcut could live, remove duplicates, and create
-    a single fresh Desktop shortcut to the integrated wylde-gui.exe.
+    a single fresh Desktop shortcut to launch_wylde.ps1 (the whole stack).
 
 .DESCRIPTION
     Step 1  Audits Desktop / Public Desktop / Start Menu (user + all-users) /
@@ -58,34 +58,44 @@ if (-not $RepoRoot) {
 $RepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 Write-Host "Wylde repo root : $RepoRoot" -ForegroundColor Cyan
 
-# -- Locate the canonical wylde-gui.exe ---------------------------------------
-# The GPUI build lives in the standalone Core/GUI/ workspace (NOT rust/target),
-# which is why it is not under rust/target/release. We try the known-good path
-# first, then the historical guess, then a bounded recursive fallback.
-$binCandidates = @(
+# -- Target the LAUNCHER, not a build path (issue #92) ------------------------
+# This used to point the shortcut straight at
+# Core\GUI\target\release\wylde-gui.exe. Two things were wrong with that:
+#
+#   1. It named a BUILD PROFILE. The shortcut went stale the moment the
+#      binary moved, was rebuilt elsewhere, or was updated -- which is the
+#      "shortcut launches a stale stack" failure this fixes.
+#   2. It launched the GUI ALONE. Nothing started the lifecycle daemon, so
+#      the shell came up talking to a backend that wasn't running.
+#
+# The shortcut now targets launch_wylde.ps1 -- one fixed, version-independent
+# entry point that boots the daemon, waits for its pipe, and then starts the
+# GUI. The launcher asks `wylde-stack` where the current stack lives, so the
+# shortcut never needs to know: it cannot go stale because it never names a
+# version or a profile.
+$launcherPath = Join-Path $RepoRoot 'launch_wylde.ps1'
+if (-not $FindOnly -and -not (Test-Path -LiteralPath $launcherPath)) {
+    throw "Could not find launch_wylde.ps1 at $launcherPath."
+}
+
+# The .lnk runs powershell.exe against the launcher. -WindowStyle Hidden keeps
+# the console from flashing; the launcher logs to $env:TEMP\wylde-launch.log
+# instead, which is what makes a shortcut launch debuggable at all.
+$binPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$launcherArgs = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$launcherPath`""
+$binDir = $RepoRoot
+
+if ($launcherPath) {
+    Write-Host "Target launcher : $launcherPath" -ForegroundColor Cyan
+}
+
+# The GUI binary is still located -- only to borrow its embedded icon when no
+# standalone .ico is present. It is NOT the shortcut target any more.
+$guiCandidates = @(
     (Join-Path $RepoRoot 'Core\GUI\target\release\wylde-gui.exe'),
     (Join-Path $RepoRoot 'rust\target\release\wylde-gui.exe')
 )
-$binPath = $binCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-
-if (-not $binPath) {
-    Write-Host "wylde-gui.exe not at either known path; scanning target dirs..." -ForegroundColor Yellow
-    foreach ($base in @((Join-Path $RepoRoot 'Core\GUI\target'), (Join-Path $RepoRoot 'rust\target'))) {
-        if (Test-Path -LiteralPath $base) {
-            $hit = Get-ChildItem -LiteralPath $base -Recurse -Filter 'wylde-gui.exe' -File -ErrorAction SilentlyContinue |
-                   Select-Object -First 1
-            if ($hit) { $binPath = $hit.FullName; break }
-        }
-    }
-}
-
-if (-not $FindOnly -and -not $binPath) {
-    throw "Could not find wylde-gui.exe under $RepoRoot. Build it (Core/GUI/) before installing the shortcut."
-}
-if ($binPath) {
-    Write-Host "Target binary   : $binPath" -ForegroundColor Cyan
-    $binDir = Split-Path -Parent $binPath
-}
+$guiPath = $guiCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 
 # -- Locate the bundled icon --------------------------------------------------
 $iconCandidates = @(
@@ -261,10 +271,11 @@ if ($found.Count -gt 0) {
 # -- Step 4b/5/6: create the fresh shortcut -----------------------------------
 $lnk = $shell.CreateShortcut($freshLnk)
 $lnk.TargetPath       = $binPath
+$lnk.Arguments        = $launcherArgs
 $lnk.WorkingDirectory = $binDir
 $lnk.Description      = 'Wylde - local AI control panel'
-if ($iconPath) { $lnk.IconLocation = "$iconPath,0" }
-else           { $lnk.IconLocation = "$binPath,0" }
+if ($iconPath)      { $lnk.IconLocation = "$iconPath,0" }
+elseif ($guiPath)   { $lnk.IconLocation = "$guiPath,0" }
 $lnk.Save()
 
 # -- Step 7: report -----------------------------------------------------------
@@ -280,7 +291,7 @@ if ($skipped.Count -gt 0) {
     $skipped | ForEach-Object { Write-Host "            $_" -ForegroundColor DarkYellow }
 }
 Write-Host ("  Created : {0}" -f $freshLnk) -ForegroundColor Green
-Write-Host ("  Target  : {0}" -f $binPath)
+Write-Host ("  Target  : {0} {1}" -f $binPath, $launcherArgs)
 Write-Host ("  WorkDir : {0}" -f $binDir)
-$iconShown = if ($iconPath) { $iconPath } else { "$binPath (embedded)" }
+$iconShown = if ($iconPath) { $iconPath } elseif ($guiPath) { "$guiPath (embedded)" } else { "(none)" }
 Write-Host ("  Icon    : {0}" -f $iconShown)

@@ -214,13 +214,23 @@ pub async fn check_for_update(
 }
 
 /// Download, verify, and install a resolved update, off the gpui executor.
-/// `install_update` re-verifies the signature before touching the running
-/// binary, so this is fail-closed even though the check already resolved
-/// the assets.
+///
+/// Since #97 an update is the **whole stack**, not just this GUI: the
+/// download fetches every binary the release resolved to, and
+/// `install_stack` re-verifies *each* one against the embedded key before
+/// anything is written. That keeps the path fail-closed per binary even
+/// though the check already resolved the assets — nothing rides in
+/// unverified behind something else.
+///
+/// The switch-over is a single atomic pointer move once the whole stack is
+/// staged, so "GUI new, daemon stale" is not a reachable state. Nothing is
+/// swapped underneath the running processes: the new stack takes effect on
+/// the **next launch**, which is why the caller reports "restart to apply"
+/// rather than "installed and live".
 pub async fn download_and_install(info: wylde_updater::UpdateInfo) -> Result<(), String> {
     wylde_gui_pipe::bridged_spawn_blocking(move || {
         let dl = wylde_updater::download_release(&info).map_err(|e| e.to_string())?;
-        wylde_updater::install_update(&dl.bytes, &dl.minisig).map_err(|e| e.to_string())
+        wylde_updater::install_stack(&info.version, &dl).map_err(|e| e.to_string())
     })
     .await
 }

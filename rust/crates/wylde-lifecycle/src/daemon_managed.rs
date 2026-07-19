@@ -92,15 +92,31 @@ impl Role {
     }
 }
 
+impl DaemonService {
+    /// Windows image name for a `taskkill /IM` hard-kill fallback, or `None`
+    /// for a service with no standalone Wylde process (Memgraph is
+    /// JVM-supervised; the memory scheduler runs in-process inside the
+    /// harness).
+    ///
+    /// **Derived, not restated.** The image names live in
+    /// [`wylde_stack::CORE_STACK`] — the same table the self-updater builds
+    /// its release-asset set from and the launcher resolves against. Keeping
+    /// a second copy here is exactly how the updater came to ship only the
+    /// GUI (#97), so this looks the name up instead. A row here with no
+    /// counterpart there fails [`tests::daemon_managed_and_stack_roster_agree`].
+    pub fn image(&self) -> Option<&'static str> {
+        wylde_stack::CORE_STACK
+            .iter()
+            .find(|e| e.name == self.name)
+            .and_then(|e| e.image)
+    }
+}
+
 /// One row of the daemon-managed core tier.
 pub struct DaemonService {
     /// Canonical pipe/service name (a [`service_name`] constant, also the
     /// manifest filename stem).
     pub name: &'static str,
-    /// Windows image name handed to a `taskkill /IM` hard-kill fallback,
-    /// or `None` for a service with no standalone Wylde process to kill
-    /// (Memgraph is JVM-supervised; the memory scheduler is in-process).
-    pub image: Option<&'static str>,
     /// Start hook. Boot, `service.start`, and crash-restart all route here.
     pub start: ServiceFn,
     /// Stop hook. `None` iff [`Role::BootOnlyNoop`] (nothing to tear down).
@@ -136,7 +152,6 @@ pub struct DaemonService {
 pub const DAEMON_MANAGED: &[DaemonService] = &[
     DaemonService {
         name: service_name::MEMGRAPH,
-        image: None, // JVM-supervised — no `wylde-memgraph.exe` to taskkill.
         start: || Box::pin(services::start_memgraph()),
         stop: Some(|| Box::pin(services::stop_memgraph())),
         role: Role::Standard,
@@ -144,7 +159,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     },
     DaemonService {
         name: service_name::MEMORY_SCHEDULER,
-        image: None, // In-process inside wylde-harness (slice R2b) — nothing to kill.
         start: || Box::pin(services::start_memory_scheduler()),
         stop: None, // BootOnlyNoop: no subprocess, nothing to tear down.
         role: Role::BootOnlyNoop,
@@ -152,7 +166,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     },
     DaemonService {
         name: service_name::VRAM_BROKER,
-        image: Some("wylde-vram-broker.exe"),
         start: || Box::pin(services::start_vram_broker()),
         stop: Some(|| Box::pin(services::stop_vram_broker())),
         role: Role::Standard,
@@ -160,7 +173,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     },
     DaemonService {
         name: service_name::VOICE,
-        image: Some("wylde-voice.exe"),
         start: || Box::pin(services::start_voice()),
         stop: Some(|| Box::pin(services::stop_voice())),
         role: Role::Standard,
@@ -168,7 +180,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     },
     DaemonService {
         name: service_name::DEVICE_GATE,
-        image: Some("wylde-device-gate.exe"),
         start: || Box::pin(services::start_device_gate()),
         stop: Some(|| Box::pin(services::stop_device_gate())),
         role: Role::Standard,
@@ -176,7 +187,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     },
     DaemonService {
         name: service_name::EXTENSION_BRIDGE,
-        image: Some("wylde-extension-bridge.exe"),
         start: || Box::pin(services::start_extension_bridge()),
         stop: Some(|| Box::pin(services::stop_extension_bridge())),
         role: Role::Standard,
@@ -184,7 +194,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     },
     DaemonService {
         name: service_name::OLLAMA,
-        image: Some("wylde-ollama.exe"),
         start: || Box::pin(services::start_ollama()),
         stop: Some(|| Box::pin(services::stop_ollama())),
         role: Role::Standard,
@@ -192,7 +201,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     },
     DaemonService {
         name: service_name::GATEWAY,
-        image: Some("wylde-gateway.exe"),
         start: || Box::pin(services::start_gateway()),
         stop: Some(|| Box::pin(services::stop_gateway())),
         role: Role::Standard,
@@ -200,7 +208,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     },
     DaemonService {
         name: service_name::HARNESS,
-        image: Some("wylde-harness.exe"),
         start: || Box::pin(services::start_harness()),
         stop: Some(|| Box::pin(services::stop_harness())),
         role: Role::Standard,
@@ -208,7 +215,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     },
     DaemonService {
         name: service_name::TREESITTER,
-        image: Some("wylde-treesitter.exe"),
         start: || Box::pin(services::start_treesitter()),
         stop: Some(|| Box::pin(services::stop_treesitter())),
         role: Role::Standard,
@@ -216,7 +222,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     },
     DaemonService {
         name: service_name::WORKSPACES,
-        image: Some("wylde-workspaces.exe"),
         start: || Box::pin(services::start_workspaces()),
         stop: Some(|| Box::pin(services::stop_workspaces())),
         role: Role::Standard,
@@ -224,7 +229,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     },
     DaemonService {
         name: service_name::N8N,
-        image: Some("wylde-n8n.exe"),
         start: || Box::pin(services::start_n8n()),
         stop: Some(|| Box::pin(services::stop_n8n())),
         role: Role::Standard,
@@ -236,7 +240,6 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
     // cosmetic; shutdown position is `shutdown_rank`, dispatch is by name.
     DaemonService {
         name: service_name::VPN,
-        image: Some("wylde-vpn.exe"),
         start: || Box::pin(services::start_vpn()),
         stop: Some(|| Box::pin(services::stop_vpn())),
         role: Role::UserStarted,
@@ -291,7 +294,7 @@ pub fn core_service_names() -> Vec<&'static str> {
 /// lets a future consumer build its kill set from the table instead of a
 /// third hand-kept list.
 pub fn kill_target_images() -> Vec<&'static str> {
-    DAEMON_MANAGED.iter().filter_map(|s| s.image).collect()
+    DAEMON_MANAGED.iter().filter_map(|s| s.image()).collect()
 }
 
 #[cfg(test)]
@@ -391,6 +394,80 @@ mod tests {
             unique.len(),
             "duplicate service name in DAEMON_MANAGED"
         );
+    }
+
+    /// **The whole-stack coverage gate (issue #97).**
+    ///
+    /// Every daemon-managed service must have a row in
+    /// [`wylde_stack::CORE_STACK`], because that table is what the
+    /// self-updater turns into its release-asset set and what the launcher
+    /// resolves against. A service wired up here but absent there would boot
+    /// on a dev machine and be **silently uncarried by the updater** — the
+    /// exact shape of the bug that made a backend fix undeliverable.
+    ///
+    /// This fires in both directions, so neither table can grow a service the
+    /// other doesn't know about. It is the standing guard behind "adding the
+    /// Nth service needs zero updater and zero launcher edits": the edit you
+    /// *do* have to make is the one that turns this red if you skip it.
+    #[test]
+    fn daemon_managed_and_stack_roster_agree() {
+        let managed: BTreeSet<&str> = DAEMON_MANAGED.iter().map(|s| s.name).collect();
+        let shipped: BTreeSet<&str> = wylde_stack::CORE_STACK.iter().map(|e| e.name).collect();
+
+        let uncarried: Vec<_> = managed.difference(&shipped).collect();
+        assert!(
+            uncarried.is_empty(),
+            "these daemon-managed services have no wylde_stack::CORE_STACK row, so the updater cannot carry them and the launcher cannot resolve them: {uncarried:?}. Add a CoreEntry in wylde-stack/src/roster.rs."
+        );
+
+        let orphaned: Vec<_> = shipped.difference(&managed).collect();
+        assert!(
+            orphaned.is_empty(),
+            "these wylde_stack::CORE_STACK rows have no daemon-managed counterpart, so nothing ever starts them: {orphaned:?}"
+        );
+    }
+
+    /// Every managed service that ships a binary is actually *reachable*
+    /// through the roster the updater and launcher consume.
+    ///
+    /// Deliberately NOT a second name-set comparison: that would be a strict
+    /// subset of [`daemon_managed_and_stack_roster_agree`] above and could
+    /// only ever fail when that one already had — a check that cannot fail
+    /// independently is the "permanently green" trap #97 calls out. This
+    /// instead exercises the derivation path (`image()` → `CORE_STACK` →
+    /// `roster()`), so it fires if the lookup itself breaks while both tables
+    /// still agree.
+    #[test]
+    fn managed_services_with_a_binary_appear_in_the_shipped_roster() {
+        // Root at a path that cannot exist so no `Services/` bucket is walked
+        // and the roster is exactly the in-tree tier under test.
+        let shipped: BTreeSet<String> = wylde_stack::roster_in(std::path::Path::new(
+            "this-root-does-not-exist-so-only-in-tree-entries-appear",
+        ))
+        .into_iter()
+        .map(|b| b.name)
+        .collect();
+
+        for svc in DAEMON_MANAGED.iter().filter(|s| s.image().is_some()) {
+            assert!(
+                shipped.contains(svc.name),
+                "{} declares an image but does not reach the shipped roster — \
+                 the updater would not carry it and the launcher would not \
+                 resolve it",
+                svc.name
+            );
+        }
+        // ...and the reverse for the typed exclusions: a service with no
+        // standalone process must NOT appear, or the updater would demand a
+        // release asset that can never exist.
+        for svc in DAEMON_MANAGED.iter().filter(|s| s.image().is_none()) {
+            assert!(
+                !shipped.contains(svc.name),
+                "{} has no standalone binary but appears in the shipped \
+                 roster; the updater would require an asset for it",
+                svc.name
+            );
+        }
     }
 
     /// Kill-target images (when present) are unique and `.exe`-suffixed —

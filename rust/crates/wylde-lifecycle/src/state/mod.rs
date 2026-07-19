@@ -45,56 +45,17 @@ pub use crate::state::orphan_sweep::{
     boot_orphan_sweep, start_orphan_sweep, stop_orphan_sweep, sweep_orphans,
 };
 
-/// Canonical names for the daemon-managed services (the [`crate::daemon_managed`]
-/// table keys off these). Used both as the key into [`STATE`]'s process map
-/// and as the manifest filename (without the `.json` suffix) so the orphan
-/// sweep agrees with the services map on which manifests belong to which child.
-pub mod service_name {
-    pub const MEMGRAPH: &str = "wylde-memgraph";
-    pub const VOICE: &str = "wylde-voice";
-    pub const VRAM_BROKER: &str = "wylde-vram-broker";
-    pub const DEVICE_GATE: &str = "wylde-device-gate";
-    pub const EXTENSION_BRIDGE: &str = "wylde-extension-bridge";
-    pub const GATEWAY: &str = "wylde-gateway";
-    pub const OLLAMA: &str = "wylde-ollama";
-    /// WyldeLink VPN. Phase 2 of the Rust migration — `WYLDE_WYLDE_VPN_IMPL`
-    /// defaults to `python`; the Rust impl is a foundation slice (control
-    /// plane + 16 actions, with tunnel/NAT/discovery stubbed).
-    pub const VPN: &str = "wylde-vpn";
-    pub const MEMORY_SCHEDULER: &str = "wylde-memory-scheduler";
-    /// Wylde harness — chat-turn driver. Phase 5 of the Rust
-    /// migration. Slice 5.D (2026-05-25) flipped
-    /// `WYLDE_WYLDE_HARNESS_IMPL`'s default from `python` to `rust`:
-    /// the lifecycle daemon now spawns the consolidated
-    /// `wylde-harness.exe` fronting the chat.* action surface over
-    /// `\\.\pipe\wylde-harness`. Set
-    /// `WYLDE_WYLDE_HARNESS_IMPL=python` to revert to the in-tree
-    /// `Core/harness/turn/` driver during the rollback window.
-    pub const HARNESS: &str = "wylde-harness";
-    /// Tree-sitter sidecar — greenfield Rust structural-parsing service
-    /// (NOT a Python port). Default Rust, no Python fallback: a missing
-    /// binary leaves it down with a loud build hint (the `wylde-ollama`
-    /// precedent). See `docs/plans/treesitter-sidecar.md`.
-    pub const TREESITTER: &str = "wylde-treesitter";
-    /// Workspace-scoped service (Thought Bubble System Phase 0) — owns the
-    /// registry, persona, RAG indexer, notes, workspace conversations, and
-    /// the Neo4j code graph. Greenfield Rust, no Python fallback (the
-    /// `wylde-treesitter` precedent): a missing binary leaves it down with a
-    /// loud build hint. Started LAST in the boot sequence — it consumes
-    /// `wylde-ollama` (embedder), `wylde-treesitter` (chunk/extract), and
-    /// Memgraph (graph writes), so those must be up first. Consumers degrade
-    /// gracefully when it's down (Slice 0d), so a failed spawn is non-fatal.
-    pub const WORKSPACES: &str = "wylde-workspaces";
-    /// N8N workflow service (taxonomy reorg TX S3) — the Rust pipe
-    /// surface over the **external, user-managed** n8n daemon. The
-    /// daemon supervises only `wylde-n8n.exe`; it never launches n8n
-    /// itself. Optional/non-fatal: a missing binary (or a down n8n)
-    /// leaves the service dark and core boots fine — the harness verb
-    /// layer degrades to structured errors (the `wylde-workspaces`
-    /// precedent). The Python-era `N8N/manifest.json` registry entry
-    /// (enabled: false, no entry_point) was retired with this service.
-    pub const N8N: &str = "wylde-n8n";
-}
+/// Canonical service names — **re-exported** from `wylde-stack`.
+///
+/// These constants moved to `wylde_stack::service_name` (#97/#92) so the lean
+/// crates that must not depend on the daemon — the self-updater and the
+/// launcher's resolver — can name a service without pulling in tokio and the
+/// start/stop hooks. Each string is simultaneously the pipe name, the
+/// manifest filename stem, the key into this module's process map, and the
+/// `WYLDE_<NAME>_BIN` override stem, so exactly one copy may exist anywhere.
+/// This re-export keeps every existing `crate::state::service_name::X` call
+/// site working verbatim.
+pub use wylde_stack::service_name;
 
 /// Window after spawn within which the service is expected to publish
 /// its manifest. Past this with no manifest visible the daemon emits a

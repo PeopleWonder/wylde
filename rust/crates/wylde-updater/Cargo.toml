@@ -11,6 +11,11 @@ authors.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+# The shared stack roster (#97). What the updater carries is DERIVED from
+# this — the registry-discovered service set — rather than a `wylde-gui`
+# literal, so a new service is covered with no edit here. Deliberately lean:
+# this crate is linked into the shipped GUI.
+wylde-stack = { path = "../wylde-stack" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -25,8 +30,6 @@ semver = "1"
 # Zero-dependency minisign signature verifier — the entire trusted
 # verification surface we ship to end users.
 minisign-verify = "0.2"
-# In-place running-binary swap (Windows rename-aside trick / POSIX replace).
-self-replace = "1"
 
 [dev-dependencies]
 # Signing half of minisign — used only by tests to mint an ephemeral

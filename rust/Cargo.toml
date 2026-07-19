@@ -25,6 +25,10 @@ members = [
     # `enabled: false`, so the extension bridge doesn't advertise it. The
     # crate source is retained as the seed of the future Extension (see
     # the WyldeStudy rewire spec in outputs/wylde-memory-fixes-DONE.md).
+    # The shared stack roster + "current" resolver (#97/#92). Deliberately
+    # dependency-lean: `wylde-updater` depends on it and the GUI workspace
+    # depends on `wylde-updater`, so anything heavy here reaches the shell.
+    "crates/wylde-stack",
     "crates/wylde-updater",
     # Thought Bubble System (Phase 0, Slice 0a). The new workspace-scoped
     # service + the shared IPC client every consumer depends on. See the
