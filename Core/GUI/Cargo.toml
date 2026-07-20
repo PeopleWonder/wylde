@@ -156,7 +156,7 @@ raw-window-handle = "0.6"
 # the Chat panel's markdown link renderer; declared at workspace level
 # so future panels (Settings docs links, Workspaces "Reveal in
 # Explorer", ...) reach for the same version.
-opener = "0.7"
+opener = "0.8"
 
 # Pure-Rust QR encoder, no_std-friendly.  Used by the Devices panel to
 # render a scannable code next to the 6-digit pairing PIN, and by the
