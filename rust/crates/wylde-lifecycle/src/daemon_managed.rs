@@ -17,12 +17,31 @@
 //! brings the in-tree core tier up to that pattern:
 //!
 //! **Adding the 13th core service is one row here.** Boot, shutdown,
-//! both dispatch halves, the manageable-core set, and the hard-kill image
-//! list all derive from this table by construction, so a new service is
-//! covered on every path with no second list to keep in sync. The
+//! both dispatch halves, and the manageable-core set all derive from this
+//! table by construction, so a new service is covered on every path with
+//! no second list to keep in sync. The
 //! [`crate::daemon_managed::tests::boot_shutdown_dispatch_sets_agree`]
 //! gate fails red if the derived sets ever diverge (modulo the two typed
 //! exceptions below).
+//!
+//! ## The GUI's hard-kill image list is NOT derived from here
+//!
+//! This module used to claim the hard-kill image list derived from this
+//! table too. **That was false as shipped** (issue #124): the GUI carried
+//! its own hand-typed arrays naming four of the eleven killable services,
+//! and its drain wait polled the same four — so it reported a clean
+//! shutdown with eight services still alive. The claim was in this
+//! docstring and in #101's commit message; neither was ever true.
+//!
+//! The GUI's two sets now derive from
+//! [`wylde_stack::shutdown_targets`], not from here — `wylde-lifecycle`
+//! pulls in tokio + anyhow and must not ripple into the shipped GUI
+//! binary. [`wylde_stack::CORE_STACK`] is the name table both this module
+//! and the GUI's derivation reference, and
+//! [`crate::daemon_managed::tests::daemon_managed_and_stack_roster_agree`]
+//! keeps the two in agreement — so a service added here still reaches the
+//! GUI's shutdown paths, just via `wylde-stack` rather than via this
+//! module.
 //!
 //! ## The two deliberate asymmetries (typed, not silent)
 //!
@@ -287,12 +306,19 @@ pub fn core_service_names() -> Vec<&'static str> {
 
 /// The Windows image names of the daemon-managed services that have a
 /// standalone process (Memgraph and the memory scheduler have none).
-/// Derived source for a `taskkill /IM` hard-kill roster — the in-tree
-/// half of `Core/GUI/Shell`'s `WYLDE_KILL_TARGETS` (which additionally
-/// carries the non-daemon-managed lifecycle daemon + GUI binaries, and is
-/// intentionally a curated infra subset). Exposing the derivation here
-/// lets a future consumer build its kill set from the table instead of a
-/// third hand-kept list.
+///
+/// **The GUI does not call this** — and could not, since this crate pulls
+/// in tokio + anyhow, which must not ripple into the shipped GUI binary
+/// (the objection that deferred PR #109). The GUI's hard-kill roster and
+/// drain-wait poll set derive from [`wylde_stack::shutdown_targets`],
+/// which reads the same names out of the dependency-lean
+/// [`wylde_stack::CORE_STACK`].
+///
+/// This function is the in-tree equivalent for daemon-side callers. It is
+/// kept because it is the honest expression of "the images this crate
+/// manages"; if it acquires no caller it should be deleted rather than
+/// left as a decoy — an unused derivation next to a hand-kept list is
+/// what made issue #124 look fixed for two releases.
 pub fn kill_target_images() -> Vec<&'static str> {
     DAEMON_MANAGED.iter().filter_map(|s| s.image()).collect()
 }

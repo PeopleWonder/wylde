@@ -140,6 +140,25 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   engine rots. This happened to rules 44/45 (#101) and then to 38/48 (#116), both caught by hand months
   late. The new rule asserts every path the engine is configured to inspect still exists, and fails the
   PR that deletes one, naming the rule it just disarmed. (#116)
+- **Quit now actually stops the whole stack.** The GUI's shutdown carried two hand-typed arrays naming
+  four of the eleven killable services, so `voice`, `extension-bridge`, `ollama`, `harness`, `treesitter`,
+  `workspaces`, `n8n` and `vpn` survived Quit holding VRAM and named pipes. The failure was silent because
+  the drain wait polled *the same four names*: once those exited it concluded the stack had drained,
+  returned success, and the hard-kill fallback that would have caught the other eight was never reached —
+  a clean-looking shutdown that wasn't one. Both sets now derive from the stack roster
+  (`wylde_stack::shutdown_targets`), so a service is covered on both paths the moment it has a roster row,
+  and the lifecycle daemon rides the roster's daemon tier instead of being retained by hand. Fixing only
+  the kill list would have left the early exit in place, so both halves changed together. `wylde-stack` is
+  dependency-lean and was already in the GUI's lock graph via `wylde-updater`, so this cost no new
+  dependency — the tokio/anyhow objection that deferred the earlier attempt pointed at `wylde-lifecycle`,
+  the wrong crate. A new counting gate,
+  `rust/crates/wylde-stack/tests/shutdown_target_coverage.rs`, drops a synthetic service on disk and
+  requires the real derivation to carry it onto both paths; it also reads `Core/GUI/Shell/src/shutdown.rs`
+  across the workspace boundary and fails if a hand-typed image list reappears. It lives in the `rust/`
+  workspace because that is the only one whose `cargo test` runs in CI. Docs corrected alongside: the
+  `daemon_managed` module doc and #101's commit message both claimed the hard-kill list "derives from this
+  table by construction", which was never true as shipped, and `wylde_check` rule 45's exemption for those
+  constants is withdrawn. (#124)
 
 - **Re-indexing a workspace no longer leaks orphaned graph chunks, and removing one now cascades to the
   graph.** A workspace's `Chunk` id embeds the file mtime, so any re-save re-keys every chunk — and two

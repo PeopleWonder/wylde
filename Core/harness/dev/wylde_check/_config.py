@@ -444,12 +444,14 @@ RUST_HARDCODED_SERVICE_ARRAY_RE = re.compile(
     r"\b(?:const|static)\s+_?(?:ALL_)?SERVICES?(?:_LIST|_NAMES)?\s*:\s*\[",
 )
 
-# The gpui-side graceful shutdown must delegate to the manifest-driven
-# Python drain via this action (rule 45). The hard-kill image-name
-# fallback constants (WYLDE_SERVICE_PROCESSES / WYLDE_KILL_TARGETS) are a
-# recognised last resort — image names for `taskkill`, not the service
-# enumeration — so they are deliberately NOT treated as a hardcoded
-# roster.
+# The gpui-side graceful shutdown must delegate to the daemon drain via
+# this action (rule 45). Rule 45 checks only that this token is present;
+# it does NOT count service coverage of the GUI's hard-kill / drain-wait
+# sets. It used to exempt the WYLDE_SERVICE_PROCESSES / WYLDE_KILL_TARGETS
+# constants from any roster check — an exemption that hid issue #124.
+# Those constants are gone (both sets now derive from
+# wylde_stack::shutdown_targets) and the counting gate is a Rust test:
+# rust/crates/wylde-stack/tests/shutdown_target_coverage.rs.
 GPUI_SHUTDOWN_DELEGATE_TOKEN: str = "lifecycle.shutdown_all"
 
 # Top-level dirs that are NOT discoverable services. Source of truth is

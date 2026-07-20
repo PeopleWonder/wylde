@@ -213,12 +213,25 @@ def check_shutdown_enumerates_services_from_manifests() -> List[Finding]:
       the table (``shutdown_sequence()``); and
     * the gpui-side ``shutdown.rs`` must *delegate* to the daemon drain
       (it dispatches ``lifecycle.shutdown_all``) rather than enumerate
-      services itself. Its ``WYLDE_SERVICE_PROCESSES`` / ``WYLDE_KILL_TARGETS``
-      constants are the recognised hard-kill image-name fallback — a last
-      resort, not the enumeration — so they are not flagged.
+      services itself.
 
-    The SEMANTIC shutdown-set == boot-set gate is the crate unit test
-    ``daemon_managed::tests::boot_shutdown_dispatch_sets_agree``.
+    This rule does NOT check service coverage of the GUI's hard-kill and
+    drain-wait sets, and a pass here says nothing about it. It used to
+    exempt the ``WYLDE_SERVICE_PROCESSES`` / ``WYLDE_KILL_TARGETS``
+    constants explicitly as "a recognised last resort"; that exemption
+    was load-bearing for issue #124, where both were hand-typed arrays
+    naming four of eleven killable services and the drain wait polled the
+    same four — so it reported a clean shutdown with eight services still
+    alive. Those constants no longer exist; both sets derive from
+    ``wylde_stack::shutdown_targets``.
+
+    The SEMANTIC gates are Rust tests, not this rule:
+    * shutdown-set == boot-set —
+      ``daemon_managed::tests::boot_shutdown_dispatch_sets_agree``;
+    * GUI shutdown coverage (the counting gate, #124) —
+      ``rust/crates/wylde-stack/tests/shutdown_target_coverage.rs``,
+      which also fails if ``shutdown.rs`` regrows a hand-typed image
+      list.
     """
     rule = "shutdown_enumerates_services_from_manifests"
     out: List[Finding] = []

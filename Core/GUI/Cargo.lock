@@ -9012,6 +9012,7 @@ dependencies = [
  "tray-icon",
  "wylde-gui-pipe",
  "wylde-panel-registry",
+ "wylde-stack",
  "wylde-theme",
  "wylde-webview",
 ]
