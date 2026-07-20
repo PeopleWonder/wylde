@@ -106,10 +106,21 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 - **Dependency bumps.** Routine updates carrying no API change and no code edit on our side.
   Kept as one list so the narrative entries below stay readable; each line is the dependency and
-  the version span.
+  the version span, newest wins where a crate was bumped in more than one manifest.
+  CI actions first, then cargo crates.
   - `actions/checkout` v4 → v7 (#144)
   - `actions/setup-python` v5 → v7 (#144)
   - `dependabot/fetch-metadata` v2 → v3 (#144)
+  - `anyhow` 1.0.103 → 1.0.104 (#145)
+  - `async-trait` 0.1.89 → 0.1.91 (#145)
+  - `chrono` 0.4.44 → 0.4.45 (#145)
+  - `futures` 0.3.32 → 0.3.33 (#145)
+  - `hyper` 1.9.0 → 1.10.1 (#145)
+  - `serde` 1.0.228 → 1.0.229 (#145)
+  - `serde_json` 1.0.149 → 1.0.151 (#145)
+  - `tokio` 1.52.3 → 1.53.0 (#145)
+  - `unicode-segmentation` 1.13.2 → 1.13.3 (#145)
+  - `uuid` 1.23.1 → 1.24.0 (#145)
 - **`wylde-release publish` now refuses to cut a release without a real changelog.** Previously, when
   neither `--notes-file` nor `--notes` was supplied, publish fell back to a one-line auto-message
   ("Automated release X (channel).") — so a stable or experimental release could ship with no real
