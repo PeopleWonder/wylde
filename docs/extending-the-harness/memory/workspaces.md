@@ -97,6 +97,28 @@ workspace; the old one orphans until pruned.
 * `delete_workspace(id)` — full delete: registry + index dir +
   workspace-memory dir. The "I'll never use this folder again" path.
 
+  The last of those three crosses a service boundary. The **workspaces
+  service** owns the delete verb and the workspace bundle; the **harness**
+  owns `<data_dir>/workspace_memories/<id>/`. So the delete handler asks
+  the harness to sweep its own store, over the
+  `memory.workspace.delete_all` verb — the same fire-and-forget,
+  best-effort shape the flat-store conversation sweep
+  (`conversations.delete_by_workspace`) already uses, because a
+  Fast/Medium verb must not block on a peer service.
+
+  Until #135 that call did not exist. `delete_memory_dir` was written,
+  correct, unit-tested, and had **zero callers**, so this bullet described
+  an intent rather than a behaviour: a deleted workspace's durable
+  memories stayed on disk indefinitely. Because a workspace id is derived
+  from its folder path (#28), re-registering the same folder re-derived
+  the same id and silently re-attached memories the user believed they had
+  deleted — a privacy consequence as much as a disk one.
+
+  Being best-effort, the sweep is not durable: if the harness is down or
+  slow when a workspace is deleted, the sweep is logged as degraded and
+  lost. The graph cascade solved the equivalent problem with a durable
+  pending queue (#99); this tier has no such queue yet.
+
 ### MRU semantics (`mru.rs`)
 
 * `get_mru_limit() -> u32` — current cap. Default 20, min 5, max 100.
@@ -246,7 +268,14 @@ Adding a tool means adding an `entry_active` call there — see
   are cheap; workspace memories are expensive. Don't ever delete a
   workspace-memory folder without an explicit user-facing confirm.
   `delete_workspace` does this on purpose — it's the "I really mean it"
-  path.
+  path. Route any new removal path through the **delete verb**, never
+  through the shared `teardown_bundle` primitive: MRU eviction funnels
+  through that too, and eviction must preserve this tier.
+* **`delete_memory_dir` validates its id, and must.** It is a
+  `remove_dir_all`, and `Path::join` leaves the tier for an empty id (which
+  resolves to the tier ROOT — every workspace's memories), an absolute id
+  (which discards the base entirely), or a `..` traversal. The store
+  refuses all three. Keep that guard if you refactor the path helpers.
 * **Slugs are content-addressable, not random.** If a user moves a
   folder (`mv ~/Novel ~/Books/Novel`), the workspace registry will
   orphan the old slug and create a new one. The user loses their

@@ -153,6 +153,70 @@ mod tests {
         reset_for_tests();
     }
 
+    /// #135 — `memory.workspace.delete_all` must reach `delete_memory_dir`
+    /// through the real dispatch path.
+    ///
+    /// The point of this test is the *integration*, not the primitive.
+    /// `delete_memory_dir` already had a green unit test proving it removes a
+    /// folder — while having zero production callers, so a deleted workspace's
+    /// durable memories stayed on disk forever. A test that calls a function
+    /// directly cannot observe whether anything invokes it. This one goes in
+    /// through `dispatch_action`, so it fails if the verb is unregistered, the
+    /// trait method is unwired, or the handler stops calling the store.
+    #[tokio::test]
+    async fn delete_all_verb_removes_the_durable_memory_dir() {
+        use crate::memory::long_term::test_support::TestEnv;
+        use crate::memory::workspace::store;
+
+        let _g = registry_guard().await;
+        let _env = TestEnv::new();
+        reset_for_tests();
+        install();
+
+        // Two workspaces with durable memories; only one is torn down.
+        store::save_new("ws-doomed", "secret note", "", Some(5.0), vec![]).unwrap();
+        store::save_new("ws-keeper", "keep me", "", Some(5.0), vec![]).unwrap();
+        assert!(store::json_path("ws-doomed").exists());
+        assert!(store::json_path("ws-keeper").exists());
+
+        let reply = dispatch_action(serde_json::json!({
+            "action": "memory.workspace.delete_all",
+            "payload": { "workspace_id": "ws-doomed" },
+        }))
+        .await;
+        assert!(reply.ok, "dispatch failed: {:?}", reply.error);
+        assert_eq!(
+            reply.data.get("removed").and_then(|v| v.as_bool()),
+            Some(true),
+            "verb must report it removed a folder; got {:?}",
+            reply.data
+        );
+
+        assert!(
+            !store::memory_dir("ws-doomed").exists(),
+            "the durable memory dir must be gone after delete_all (#135)"
+        );
+        assert!(
+            store::json_path("ws-keeper").exists(),
+            "the sweep is workspace-scoped — a sibling must survive"
+        );
+
+        // A blank id must be refused, not treated as "the tier root".
+        let blank = dispatch_action(serde_json::json!({
+            "action": "memory.workspace.delete_all",
+            "payload": { "workspace_id": "   " },
+        }))
+        .await;
+        assert!(!blank.ok, "a blank workspace_id must be rejected");
+        assert_eq!(blank.error.unwrap().code, "bad_request");
+        assert!(
+            store::json_path("ws-keeper").exists(),
+            "a blank id must never wipe the tier"
+        );
+
+        reset_for_tests();
+    }
+
     #[tokio::test]
     async fn install_is_idempotent() {
         let _g = registry_guard().await;

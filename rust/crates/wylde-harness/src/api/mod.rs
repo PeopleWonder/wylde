@@ -174,6 +174,7 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_workspace_save(&self, payload: Value) -> Reply;
     async fn memory_workspace_update(&self, payload: Value) -> Reply;
     async fn memory_workspace_delete(&self, payload: Value) -> Reply;
+    async fn memory_workspace_delete_all(&self, payload: Value) -> Reply;
     async fn memory_workspace_curate(&self, payload: Value) -> Reply;
 
     // ── memory.reflect (1 verb; full-Rust cutover R2b) ───────────────
@@ -599,6 +600,10 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn memory_workspace_delete(&self, payload: Value) -> Reply {
         workspace_memory_actions::handle_delete(payload).await
+    }
+
+    async fn memory_workspace_delete_all(&self, payload: Value) -> Reply {
+        workspace_memory_actions::handle_delete_all(payload).await
     }
 
     async fn memory_workspace_curate(&self, payload: Value) -> Reply {

@@ -154,6 +154,34 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   `Concept`/`CHILD_OF`/`MEMBER` and panics on a cascade step it doesn't understand. Full proof against a
   live Memgraph is an `#[ignore]`d integration test pending the live-test work in #121.
 
+- **Deleting a workspace left its durable memories on disk forever.**
+  `<data_dir>/workspace_memories/<id>/` holds the curated, LLM-authored workspace memory tier. It lives
+  outside the workspace bundle deliberately, so MRU eviction of a file index can never take the
+  expensive-to-rebuild memories with it — but that also placed it outside the reach of *every* removal
+  path, including explicit delete. The cleanup function (`delete_memory_dir`) was written, correct, and
+  unit-tested, with **zero production callers**; its doc comment claimed it was "invoked on explicit
+  user delete of a workspace", and nothing invoked it. Because a workspace id is derived from its
+  folder path, re-registering the same folder re-derived the same id and silently re-attached memories
+  the user believed they had deleted — a privacy consequence as much as a disk one. Explicit workspace
+  delete now sweeps the tier via a new `memory.workspace.delete_all` verb. MRU eviction still does not,
+  and must not: the sweep hangs off the delete verb, not the shared teardown primitive that eviction
+  also funnels through (#135).
+
+  The tier is owned by the harness while the delete verb lives in the workspaces service, so the sweep
+  crosses a service boundary — best-effort and fire-and-forget, the same shape as the existing
+  flat-store conversation sweep, because a Fast/Medium verb must not block on a peer service. It is
+  therefore *not* durable: a harness that is down when a workspace is deleted logs a degraded sweep and
+  the memories survive. The graph cascade solved the equivalent problem with a durable pending queue;
+  this tier has no such queue yet.
+
+- **`delete_memory_dir` would have obeyed an id that escaped its own directory tree.** It is a
+  `remove_dir_all` over `workspace_memories_dir().join(workspace_id)`, and `Path::join` resolves an
+  empty id to the tier **root** — every workspace's memories — while an absolute id (`C:\Windows`,
+  `/etc`) discards the base entirely and a `../..` id walks out of the tier. Harmless while the
+  function had no callers; a live hazard the moment one was added, since the tier is reachable over the
+  pipe. The destructive path now validates the id and refuses all three, with the verb layer rejecting
+  a blank id separately (defence in depth) (#135).
+
 - **Four `wylde_check` rules could not fail, and one had been red and unnoticed for months.** The lint
   engine's rules 38 and 48 (`panel_verbs_exist_in_harness_registry`,
   `gateway_verbs_exist_in_harness_registry`) loaded their verb registry from two constants that both named
