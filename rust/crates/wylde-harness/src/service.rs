@@ -153,6 +153,133 @@ mod tests {
         reset_for_tests();
     }
 
+    /// #135 — `memory.workspace.delete_all` must reach `delete_memory_dir`
+    /// through the real dispatch path.
+    ///
+    /// The point of this test is the *integration*, not the primitive.
+    /// `delete_memory_dir` already had a green unit test proving it removes a
+    /// folder — while having zero production callers, so a deleted workspace's
+    /// durable memories stayed on disk forever. A test that calls a function
+    /// directly cannot observe whether anything invokes it. This one goes in
+    /// through `dispatch_action`, so it fails if the verb is unregistered, the
+    /// trait method is unwired, or the handler stops calling the store.
+    #[tokio::test]
+    async fn delete_all_verb_removes_the_durable_memory_dir() {
+        use crate::memory::long_term::test_support::TestEnv;
+        use crate::memory::workspace::store;
+
+        let _g = registry_guard().await;
+        let _env = TestEnv::new();
+        reset_for_tests();
+        install();
+
+        // Two workspaces with durable memories; only one is torn down.
+        store::save_new("ws-doomed", "secret note", "", Some(5.0), vec![]).unwrap();
+        store::save_new("ws-keeper", "keep me", "", Some(5.0), vec![]).unwrap();
+        assert!(store::json_path("ws-doomed").exists());
+        assert!(store::json_path("ws-keeper").exists());
+
+        let reply = dispatch_action(serde_json::json!({
+            "action": "memory.workspace.delete_all",
+            "payload": { "workspace_id": "ws-doomed" },
+        }))
+        .await;
+        assert!(reply.ok, "dispatch failed: {:?}", reply.error);
+        assert_eq!(
+            reply.data.get("removed").and_then(|v| v.as_bool()),
+            Some(true),
+            "verb must report it removed a folder; got {:?}",
+            reply.data
+        );
+
+        assert!(
+            !store::memory_dir("ws-doomed").exists(),
+            "the durable memory dir must be gone after delete_all (#135)"
+        );
+        assert!(
+            store::json_path("ws-keeper").exists(),
+            "the sweep is workspace-scoped — a sibling must survive"
+        );
+
+        // A blank id must be refused, not treated as "the tier root".
+        let blank = dispatch_action(serde_json::json!({
+            "action": "memory.workspace.delete_all",
+            "payload": { "workspace_id": "   " },
+        }))
+        .await;
+        assert!(!blank.ok, "a blank workspace_id must be rejected");
+        assert_eq!(blank.error.unwrap().code, "bad_request");
+        assert!(
+            store::json_path("ws-keeper").exists(),
+            "a blank id must never wipe the tier"
+        );
+
+        reset_for_tests();
+    }
+
+    /// #136 — `memory.workspace.reindex` must exist, be registered, and reach
+    /// the rebuild. For years three doc comments claimed a `reindex` existed;
+    /// `git grep 'fn reindex'` found nothing.
+    ///
+    /// With no embedder reachable in the test environment every embed fails,
+    /// which exercises the guard that matters most: the rebuild must report
+    /// `embedder_unavailable` and leave the existing mirror alone, rather than
+    /// persisting an empty store over it and calling that a successful
+    /// "rebuild". A recovery path that destroys data on a bad day is worse
+    /// than no recovery path.
+    #[tokio::test]
+    async fn workspace_reindex_verb_is_wired_and_refuses_to_empty_the_mirror() {
+        use crate::memory::long_term::test_support::TestEnv;
+        use crate::memory::vector::VectorStore;
+        use crate::memory::workspace::store;
+
+        let _g = registry_guard().await;
+        let _env = TestEnv::new();
+        std::env::set_var("WYLDE_EMBED_WRITE_BUDGET_MS", "1");
+        reset_for_tests();
+        install();
+
+        // A record in the authoritative JSON...
+        store::save_new("ws1", "a body", "", Some(5.0), vec![]).unwrap();
+        // ...and a populated mirror that must survive a failed rebuild.
+        let mut mirror = VectorStore::new(crate::memory::common::embed_dim());
+        mirror
+            .insert("seed", vec![1.0; crate::memory::common::embed_dim()])
+            .unwrap();
+        let vpath = store::vector_path("ws1");
+        std::fs::create_dir_all(vpath.parent().unwrap()).unwrap();
+        mirror.persist(&vpath).unwrap();
+        let before = std::fs::read(&vpath).unwrap();
+
+        let reply = dispatch_action(serde_json::json!({
+            "action": "memory.workspace.reindex",
+            "payload": { "workspace_id": "ws1" },
+        }))
+        .await;
+
+        // The verb resolved — not `no_action`, which is what an unregistered
+        // or never-written reindex would have returned.
+        let code = reply.error.as_ref().map(|e| e.code.clone());
+        assert_ne!(
+            code.as_deref(),
+            Some("no_action"),
+            "memory.workspace.reindex must be a real, registered verb (#136)"
+        );
+        assert_eq!(
+            code.as_deref(),
+            Some("embedder_unavailable"),
+            "with no embedder the rebuild must say so; got {reply:?}"
+        );
+        assert_eq!(
+            std::fs::read(&vpath).unwrap(),
+            before,
+            "a failed rebuild must not touch the existing mirror"
+        );
+
+        std::env::remove_var("WYLDE_EMBED_WRITE_BUDGET_MS");
+        reset_for_tests();
+    }
+
     #[tokio::test]
     async fn install_is_idempotent() {
         let _g = registry_guard().await;

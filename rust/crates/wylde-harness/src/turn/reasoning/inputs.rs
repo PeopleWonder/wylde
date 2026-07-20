@@ -28,7 +28,7 @@
 //! suppressed this turn (with the before→after activation), and the
 //! authored `X IS NOT Y` boundary edges touching the live set.
 //!
-//! ## D2 relaxation (Aaron, 2026-07-13 — decision 3, do not "fix" back)
+//! ## D2 relaxation (the maintainer, 2026-07-13 — decision 3, do not "fix" back)
 //!
 //! [`select_lessons`] reads the long-term reflection store directly,
 //! INCLUDING on workspace-bound Deep turns, without the D2 workspace
@@ -71,8 +71,24 @@ pub struct PlanInputs {
     pub boundaries: Vec<String>,
     /// Lessons from past sessions (reflection insights).
     pub lessons: Vec<String>,
-    /// "verb — description" lines from the live registry.
+    /// "verb — description" lines from the live registry — EXACTLY the set
+    /// the executor advertises (see `render_tool_catalog`; issue #25).
     pub tool_catalog: Vec<String>,
+    /// "resource_type — display_name (ops: …)" lines: the legal
+    /// `resource_type` values for the eight `wylde_*` verbs.
+    ///
+    /// Empty in legacy (non-verb) mode, where tools are named directly and
+    /// there is no `resource_type` to supply.
+    ///
+    /// The executor learns these at runtime by calling `wylde_describe` with no
+    /// argument — the verb guidance says outright that "the legal
+    /// `resource_type` values are NOT in this prompt". **The planner cannot do
+    /// that**: PLAN is a single call that must emit a complete DAG. Without
+    /// this block, grounding the planner in the verb catalog (#25) would only
+    /// trade one failure for another — it would name `wylde_get` correctly and
+    /// then invent the `resource_type`. Same no-arg `wylde_describe` payload
+    /// (`summary_rows`), rendered one line each.
+    pub resource_catalog: Vec<String>,
     /// The turn's rendered context slots — the same grounding the
     /// executor sees.
     pub context_digest: String,
@@ -121,6 +137,7 @@ pub(crate) async fn gather(
         boundaries,
         lessons: select_lessons(MAX_LESSONS),
         tool_catalog: render_tool_catalog(),
+        resource_catalog: render_resource_catalog(),
         context_digest: gathered.system_slots.clone(),
         failures: Vec::new(),
     }
@@ -319,10 +336,85 @@ pub fn select_lessons(k: usize) -> Vec<String> {
 /// entries only) — the same catalog the executor's system prompt carries,
 /// so the planner only ever names real verbs. The registry lookup + tier
 /// gate in the executor remain the dispatch authority.
-fn render_tool_catalog() -> Vec<String> {
-    crate::tooling::runner::catalog_payload(crate::tooling::registry::global())
+/// The legal `resource_type` values for the `wylde_*` verbs — one line each,
+/// from the same `summary_rows` payload a no-arg `wylde_describe` returns.
+///
+/// Empty in legacy (non-verb) mode: there are no verbs to feed, so the block is
+/// omitted from the prompt entirely rather than rendered empty.
+///
+/// Deliberately the compact summary (type, name, ops), not full field schemas —
+/// R3's "one line each, not full schemas". The planner needs to know a resource
+/// EXISTS and which ops it supports to pick a verb; the executor still calls
+/// `wylde_describe <type>` for fields at execute time. Full schemas here would
+/// blow the PLAN prompt for no planning benefit.
+fn render_resource_catalog() -> Vec<String> {
+    if !crate::tooling::resource::verb_mode_active() {
+        return Vec::new();
+    }
+    let filter = crate::tooling::resource::ToolsetFilter::all();
+    crate::tooling::resource::resources()
+        .summary_rows(&filter)
         .into_iter()
+        .filter_map(|row| {
+            let rt = row.get("resource_type").and_then(Value::as_str)?;
+            let name = row
+                .get("display_name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let ops: Vec<&str> = row
+                .get("ops")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            let mut line = rt.to_owned();
+            if !name.is_empty() {
+                line.push_str(" — ");
+                line.push_str(name);
+            }
+            if !ops.is_empty() {
+                line.push_str(&format!(" (ops: {})", ops.join(", ")));
+            }
+            Some(line)
+        })
+        .collect()
+}
+
+/// The tool names the planner may put in a step's `tool` field.
+///
+/// **Must be exactly what the executor advertises** — same `status == "active"`
+/// filter, same [`crate::turn::prompt::advertise`] predicate against the live
+/// `verb_mode`, same [`crate::turn::prompt::MAX_CATALOG_TOOLS`] cap, off the
+/// same `catalog_payload`. That is the whole of issue #25:
+///
+/// This used to filter on `status` alone, so it rendered every active tool's
+/// raw `id` (`read_file`, `write_file`, …). But the verb-tool cutover
+/// (`WYLDE_HARNESS_VERB_TOOLS`, default **ON** since 2026-06-03) means the
+/// executor's turn only advertises the eight `wylde_*` verbs plus a small
+/// surviving tail. So the planner proposed `read_file`, the executor dispatched
+/// `wylde_get`, and `PlanState::finish_round` — which binds a step's result
+/// only to a dispatch of that step's OWN tool, by exact name — never matched.
+/// Steps never realised, `expected`/`on_surprise` never evaluated, and the tier
+/// was decorative on exactly the multi-step tasks it exists for.
+///
+/// Note this function's own doc on [`PlanInputs::tool_catalog`] already said
+/// "verb — description" lines: the *intent* was always the advertised surface;
+/// the code had drifted from it.
+fn render_tool_catalog() -> Vec<String> {
+    render_tool_catalog_from(
+        &crate::tooling::runner::catalog_payload(crate::tooling::registry::global()),
+        crate::tooling::resource::verb_mode_active(),
+    )
+}
+
+/// The pure half of [`render_tool_catalog`], split out so the #25 invariant is
+/// testable against a real registry (the global one isn't injectable in a unit
+/// test — see `tools::verbs`' catalog tests, which build a local `Registry`).
+fn render_tool_catalog_from(catalog: &[Value], verb_mode: bool) -> Vec<String> {
+    catalog
+        .iter()
         .filter(|t| t.get("status").and_then(Value::as_str) == Some("active"))
+        .filter(|t| crate::turn::prompt::advertise(t, verb_mode))
+        .take(crate::turn::prompt::MAX_CATALOG_TOOLS)
         .filter_map(|t| {
             let id = t.get("id").and_then(Value::as_str)?.to_owned();
             let desc = t
@@ -418,12 +510,126 @@ pub fn render_user_prompt(inputs: &PlanInputs) -> String {
         &mut s,
     );
     section("Available tools", &inputs.tool_catalog, &mut s);
+    // Empty in legacy mode ⇒ `section` omits the block entirely.
+    section(
+        "Resource types for the wylde_* verbs (use one as `resource_type`)",
+        &inputs.resource_catalog,
+        &mut s,
+    );
 
     if !inputs.context_digest.trim().is_empty() {
         s.push_str("\n\n### Context digest (what the executor will see)\n");
         s.push_str(inputs.context_digest.trim_end());
     }
     s
+}
+
+#[cfg(test)]
+mod plan_catalog_matches_executor {
+    //! Issue #25 — the planner and the executor must share ONE tool
+    //! vocabulary. These run against a real `Registry` (the global one isn't
+    //! injectable; same approach as `tools::verbs`' catalog tests).
+
+    use super::render_tool_catalog_from;
+    use crate::tooling::registry::Registry;
+
+    fn real_registry() -> Registry {
+        let mut reg = Registry::empty();
+        crate::tooling::tools::register_all(&mut reg);
+        reg
+    }
+
+    fn real_catalog() -> Vec<serde_json::Value> {
+        crate::tooling::runner::catalog_payload(&real_registry())
+    }
+
+    /// The canonical tool ids a dispatched call can actually resolve to, given
+    /// what the executor advertises in `verb_mode`.
+    ///
+    /// This mirrors the executor's real path and is the identifier space the
+    /// plan lives in: the executor advertises `name` (often dotted/aliased,
+    /// e.g. `ollama.auto_evict_lru`), the model emits that, and `actions.rs`
+    /// resolves it through `alias_map` to the CANONICAL id before pushing to
+    /// `round_results` — "the plan stores canonical ids; the model emits
+    /// dotted/aliased names". So a plan step's `tool` must be a canonical id
+    /// that some advertised name resolves to.
+    fn advertised_canonical_ids(reg: &Registry, verb_mode: bool) -> Vec<String> {
+        let catalog = crate::tooling::runner::catalog_payload(reg);
+        let aliases = reg.alias_map();
+        crate::turn::prompt::build_tools_field(&catalog, verb_mode)
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str().map(str::to_owned))
+            .map(|name| aliases.get(&name).cloned().unwrap_or(name))
+            .collect()
+    }
+
+    /// Just the `id` half of each "`id` — description" line.
+    fn ids(lines: &[String]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.split(" — ").next().unwrap_or(l).to_owned())
+            .collect()
+    }
+
+    /// **The #25 invariant.** Every tool the planner may name must be one the
+    /// executor actually advertises — otherwise `PlanState::finish_round`
+    /// (which binds a step's result only to a dispatch of that step's OWN
+    /// tool, matched by exact name) can never realise the step, and
+    /// `expected`/`on_surprise` never fire.
+    ///
+    /// Asserted in BOTH modes: the bug was mode-dependent, and the default
+    /// flipped to verb mode in the Slice-6 cutover.
+    #[test]
+    fn planner_never_names_a_tool_the_executor_wont_advertise() {
+        let reg = real_registry();
+        let catalog = crate::tooling::runner::catalog_payload(&reg);
+        for verb_mode in [false, true] {
+            let planner = ids(&render_tool_catalog_from(&catalog, verb_mode));
+            let reachable = advertised_canonical_ids(&reg, verb_mode);
+            assert!(
+                !planner.is_empty(),
+                "planner catalog empty (verb_mode={verb_mode})"
+            );
+            for name in &planner {
+                assert!(
+                    reachable.contains(name),
+                    "planner may name `{name}`, but no tool the executor advertises \
+                     resolves to it (verb_mode={verb_mode}) — that is issue #25: the \
+                     model can never dispatch it, so `finish_round` never binds the \
+                     step and `expected`/`on_surprise` never fire. reachable={reachable:?}"
+                );
+            }
+        }
+    }
+
+    /// The concrete shape of the regression: in verb mode the planner offers
+    /// the `wylde_*` verbs, not the retired named tools it used to emit.
+    #[test]
+    fn verb_mode_planner_catalog_is_the_verb_surface() {
+        let planner = ids(&render_tool_catalog_from(&real_catalog(), true));
+        for verb in ["wylde_describe", "wylde_get", "wylde_list", "wylde_search"] {
+            assert!(
+                planner.iter().any(|p| p == verb),
+                "verb-mode planner catalog must offer {verb}; got {planner:?}"
+            );
+        }
+    }
+
+    /// Legacy mode must be untouched — it advertises every active tool, and
+    /// the planner should still see all of them there.
+    #[test]
+    fn legacy_mode_planner_catalog_is_wider_than_verb_mode() {
+        let catalog = real_catalog();
+        let legacy = ids(&render_tool_catalog_from(&catalog, false));
+        let verbs = ids(&render_tool_catalog_from(&catalog, true));
+        assert!(
+            legacy.len() >= verbs.len(),
+            "legacy mode should advertise at least as much as verb mode: \
+             legacy={} verb={}",
+            legacy.len(),
+            verbs.len()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -529,6 +735,7 @@ mod tests {
         let inputs = PlanInputs {
             goal: "why is the build red?".into(),
             tool_catalog: vec!["fs.read — read a file".into()],
+            resource_catalog: Vec::new(),
             ..PlanInputs::default()
         };
         let p = render_user_prompt(&inputs);
@@ -550,6 +757,7 @@ mod tests {
         let inputs = PlanInputs {
             goal: "list the entries".into(),
             tool_catalog: vec!["fs.read — read a file".into()],
+            resource_catalog: Vec::new(),
             failures: vec![
                 "voice_mic_chunks {} → [error] phase_11_deferred: not yet ported".into(),
             ],
@@ -590,6 +798,10 @@ mod tests {
                 "workspaces.symbols.find — find code symbols by token".into(),
                 "workspaces.rag_query — semantic search over the workspace".into(),
             ],
+            resource_catalog: vec![
+                "fs.file — File (ops: get, list, search)".into(),
+                "workspace.note — Workspace note (ops: get, list, create)".into(),
+            ],
             context_digest: "### Concepts\nauth-flow: the login path".into(),
             failures: Vec::new(),
         };
@@ -613,6 +825,10 @@ trace the auth token flow\n\
 ### Available tools\n\
 - workspaces.symbols.find — find code symbols by token\n\
 - workspaces.rag_query — semantic search over the workspace\n\
+\n\
+### Resource types for the wylde_* verbs (use one as `resource_type`)\n\
+- fs.file — File (ops: get, list, search)\n\
+- workspace.note — Workspace note (ops: get, list, create)\n\
 \n\
 ### Context digest (what the executor will see)\n\
 ### Concepts\n\

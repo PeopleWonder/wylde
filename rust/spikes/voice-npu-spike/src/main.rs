@@ -49,8 +49,10 @@ fn main() -> ort::Result<()> {
     println!("cpu_only   : {}", args.cpu_only);
     println!();
 
-    println!("OpenVINO EP supported_by_platform = {}",
-             OpenVINO::default().supported_by_platform());
+    println!(
+        "OpenVINO EP supported_by_platform = {}",
+        OpenVINO::default().supported_by_platform()
+    );
     let is_avail = OpenVINO::default().is_available();
     println!("OpenVINO EP is_available           = {:?}", is_avail);
     println!();
@@ -119,7 +121,12 @@ fn main() -> ort::Result<()> {
         let shape_vec: Vec<i64> = out_shape.to_vec();
         let elapsed = t.elapsed().as_secs_f64() * 1000.0;
         samples.push(elapsed);
-        println!("Run {}: {:.1} ms  out_shape={:?}", i + 1, elapsed, shape_vec);
+        println!(
+            "Run {}: {:.1} ms  out_shape={:?}",
+            i + 1,
+            elapsed,
+            shape_vec
+        );
     }
 
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap());

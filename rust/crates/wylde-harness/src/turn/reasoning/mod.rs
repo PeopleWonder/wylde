@@ -54,7 +54,7 @@
 //!   visible notice; a planner-declared `abort` action ends the turn
 //!   cleanly (`AbortReason::PlanPrecondition`). Everything else is
 //!   fail-soft: detector/L2/replan failures all continue the turn.
-//! * `auto_escalate` (OQ-5) is **LIVE since S4b** under Aaron's
+//! * `auto_escalate` (OQ-5) is **LIVE since S4b** under the maintainer's
 //!   2026-07-14 NARROWED identity contract: reasoning enabled + Fast is
 //!   byte-identical to trunk EXCEPT after
 //!   [`ESCALATE_AFTER_HARD_FAILURES`] (2) hard tool failures (L0's exact
@@ -81,7 +81,7 @@
 //!   `PlanInputs.lessons` grounding. The memory-consolidation scheduler
 //!   is untouched — machinery reused, pass not.
 //!
-//! **Identity guarantee (narrowed 2026-07-14, Aaron):** with
+//! **Identity guarantee (narrowed 2026-07-14, the maintainer):** with
 //! `ReasoningConfig.enabled == false` (the default), nothing in this
 //! module touches the turn — byte-identical, unconditionally. With
 //! reasoning ENABLED and `depth == Fast`, the turn is byte-identical
@@ -96,6 +96,7 @@ pub mod constrained;
 pub mod fit;
 pub mod inputs;
 pub mod plan_phase;
+pub mod reclaim;
 pub mod reflect_phase;
 pub mod residency;
 pub mod surprise;
@@ -422,7 +423,7 @@ impl ReasoningState {
     /// the round's calls were all duplicate-suppressed (`completed:
     /// false` — the L3 no-progress signal; the step stays open).
     pub(crate) fn finish_round(&mut self, round_results: &[(String, String)]) -> RoundCompletion {
-        let Some(id) = self.in_flight.take() else {
+        let Some(id) = self.in_flight.clone() else {
             return RoundCompletion {
                 step_id: None,
                 completed: false,
@@ -433,6 +434,7 @@ impl ReasoningState {
             // with NO calls never reaches this seam — the driver
             // finalizes instead). Leave the step open and let the
             // outcome check decide (replan-or-degrade).
+            self.in_flight = None;
             return RoundCompletion {
                 step_id: Some(id),
                 completed: false,
@@ -444,20 +446,45 @@ impl ReasoningState {
             .iter()
             .find(|s| s.id == id)
             .and_then(|s| s.tool.clone());
-        let chosen = step_tool
-            .and_then(|t| round_results.iter().find(|(name, _)| *name == t))
-            .or_else(|| round_results.first())
-            .map(|(_, content)| content.clone())
-            .unwrap_or_default();
+        // Bind the step's result ONLY to a dispatch of the step's OWN tool.
+        // A step's declared `expected` outcome will be evaluated against
+        // this result (and a failing `on_surprise: abort` can end the turn),
+        // so it MUST be that step's tool's result — never an unrelated call.
+        //
+        // The executor legitimately dispatches calls the plan did not name:
+        // the verb catalog REQUIRES a `wylde_describe` discovery call before
+        // any resource op, and the model may reach a step's intent through a
+        // different verb than the planner suggested (guidance is advisory —
+        // OQ-3 / `guidance_text`). When this round did not dispatch the
+        // in-flight step's tool, the step is NOT realised: keep it in flight,
+        // evaluate nothing, and do NOT trip the no-progress signal (real work
+        // happened — just not this step's declared call). This prevents a
+        // discovery / auxiliary call's result from failing a step's
+        // expectation and, worse, tripping a spurious `on_surprise: abort`
+        // that empties the turn (the S6 eval's headline regression). The loop
+        // cap remains the safety net if the step's tool is never dispatched.
+        let chosen = match &step_tool {
+            Some(tool) => match round_results.iter().find(|(name, _)| name == tool) {
+                Some((_, content)) => content.clone(),
+                None => {
+                    return RoundCompletion {
+                        step_id: None,
+                        completed: false,
+                    }
+                }
+            },
+            // A synthesis (`tool: null`) step in flight has no tool to match;
+            // bind the round's first result (unchanged behaviour).
+            None => round_results
+                .first()
+                .map(|(_, content)| content.clone())
+                .unwrap_or_default(),
+        };
+        self.in_flight = None;
         let parsed = serde_json::from_str::<Value>(&chosen).unwrap_or(Value::String(chosen));
         self.executed_log.push(ExecutedStep {
             id: id.clone(),
-            tool: self
-                .dag
-                .steps
-                .iter()
-                .find(|s| s.id == id)
-                .and_then(|s| s.tool.clone()),
+            tool: step_tool,
             digest: surprise::digest_value(&parsed, surprise::REPLAN_DIGEST_MAX_CHARS),
         });
         self.results.insert(id.clone(), parsed);
@@ -585,12 +612,12 @@ pub(crate) async fn maybe_reflect(
     reflect_phase::run(cfg, handle, turn_id, state, draft_answer, can_gap_round).await
 }
 
-// ── S4b: Fast→planning auto-escalation (Aaron's narrowed contract) ──────
+// ── S4b: Fast→planning auto-escalation (the maintainer's narrowed contract) ──────
 
 /// How many hard tool failures a watched Fast turn absorbs before it
-/// escalates to planning. Aaron's 2026-07-14 contract: "reasoning enabled
+/// escalates to planning. The maintainer's 2026-07-14 contract: "reasoning enabled
 /// + Fast tier is byte-identical to today EXCEPT after ≥2 hard tool
-/// failures".
+///   failures".
 pub const ESCALATE_AFTER_HARD_FAILURES: usize = 2;
 
 /// Char cap on each failure digest carried into the escalated plan

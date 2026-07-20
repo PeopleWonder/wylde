@@ -106,7 +106,7 @@ pub async fn handle_concept_routing_set(payload: Value) -> Reply {
 /// serialized [`ReasoningConfig`](crate::turn::reasoning::ReasoningConfig)
 /// (`{enabled, slots{embedder,fast,reasoner}, mode, default_depth,
 /// auto_escalate, replan_budget, tier_budgets, reflect_gate}`).
-/// Default-off on a fresh install; the default slots implement Aaron's
+/// Default-off on a fresh install; the default slots implement the maintainer's
 /// 2026-07-13 same-model decision (fast == reasoner ⇒ mode single).
 pub async fn handle_reasoning_get(_payload: Value) -> Reply {
     let cfg = crate::turn::reasoning::ReasoningConfig::current();
@@ -122,9 +122,12 @@ pub async fn handle_reasoning_set(payload: Value) -> Reply {
     if !payload.is_object() {
         return Reply::err_msg("bad_request", "payload must be an object");
     }
+    // Capture the pre-commit config so a slot change can compute which
+    // model tags it dereferenced (the superseded set fed to the GC seam).
+    let prev = crate::turn::reasoning::ReasoningConfig::current();
     // Merge the incoming patch over the current config, then re-parse
     // through the tolerant loader (garbage keys fall back, never fail open).
-    let mut merged = crate::turn::reasoning::ReasoningConfig::current().to_value();
+    let mut merged = prev.to_value();
     if let (Some(base), Some(patch)) = (merged.as_object_mut(), payload.as_object()) {
         for (k, v) in patch {
             base.insert(k.clone(), v.clone());
@@ -138,6 +141,11 @@ pub async fn handle_reasoning_set(payload: Value) -> Reply {
             // Preloading an already-resident model just refreshes its
             // keep_alive window; disabled commits spawn nothing.
             crate::turn::reasoning::residency::spawn_warm_slots("settings commit");
+            // Reclaim superseded slots (#100): if this commit switched a
+            // slot away from a model, the now-unreferenced predecessor is
+            // GC-eligible. Announce-only unless WYLDE_OLLAMA_RECLAIM_SUPERSEDED
+            // is set; referenced/pinned models are never touched.
+            crate::turn::reasoning::reclaim::spawn_reclaim(prev, next.clone());
             Reply::ok(next.to_value())
         }
         Err(e) => Reply::err_msg("io_error", format!("persist reasoning: {e}")),
@@ -384,7 +392,7 @@ mod tests {
         assert_eq!(got.data["default_depth"], json!("fast"));
         assert_eq!(
             got.data["slots"]["fast"], got.data["slots"]["reasoner"],
-            "Aaron 2026-07-13: plan+execute on the same model"
+            "maintainer 2026-07-13: plan+execute on the same model"
         );
 
         // Partial patch: flip only `enabled`; slots + knobs keep values.

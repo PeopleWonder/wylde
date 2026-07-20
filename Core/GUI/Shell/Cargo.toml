@@ -22,6 +22,10 @@ wylde-webview      = { path = "../Frontend/Extension_handlers/WebView" }
 # startup and reads it during render to drive the sidebar + slot.
 wylde-panel-registry = { path = "../Manifest/Extension_handlers" }
 
+# The stack roster drives the shutdown kill list + drain-wait poll set,
+# so neither is a hand-kept parallel list (#124).
+wylde-stack.workspace   = true
+
 gpui.workspace          = true
 gpui_platform.workspace = true
 tray-icon.workspace     = true

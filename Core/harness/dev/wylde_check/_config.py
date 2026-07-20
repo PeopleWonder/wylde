@@ -375,57 +375,83 @@ RUST_PROCESS_SPAWN_ALLOWED_CRATES: Tuple[str, ...] = (
 RUST_PROCESS_SPAWN_ALLOWED_CRATE: str = RUST_PROCESS_SPAWN_ALLOWED_CRATES[0]
 
 
-# ── Rules 44-47: launcher / shutdown / service-manifest correctness ──
-#
-# Added at the slice-11 cutover (2026-05-29) so the launcher + shutdown
-# stay manifest-driven (no hardcoded service roster) and every backend
-# service carries a schema-valid manifest. the Wylde user's modularity directive:
-# "give special attention that launcher and shutdown rules cover all
-# services attached with modularity in mind … make them reference the
-# manifests."
+# Rule 54: every persistent file log must inherit the shared rotation
+# policy.  The canonical logging module
+# (``rust/crates/wylde-shared/src/logging.rs``) owns the ONE append-only
+# ``OpenOptions`` behind ``RotatingLog`` / ``open_rotating_append``; the
+# rule skips that file and flags a raw ``.append(true)`` anywhere else —
+# the tell-tale of an ad-hoc uncapped log sink that bypasses rotation.
+# Matches both ``std::fs`` and ``tokio::fs`` OpenOptions builders.  A
+# same-line ``// wylde-check: unbounded-append-ok`` marker suppresses the
+# rule for a justified non-log append.
+RUST_UNBOUNDED_APPEND_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"\.append\(\s*true\s*\)"),
+)
+RUST_UNBOUNDED_APPEND_MARKER = "wylde-check: unbounded-append-ok"
+# The single sanctioned home of an append-only open — the rotation
+# factory itself.  Skipped wholesale (analogous to rule 28 skipping the
+# canonical logging file for subscriber init).
+RUST_LOG_ROTATION_FACTORY_FILE = "rust/crates/wylde-shared/src/logging.rs"
 
-# Canonical launcher + shutdown sources. The launcher is Python
-# (WYLDE_LIFECYCLE_IMPL defaults to python); the Rust daemon is a parity
-# port held to the same no-hardcoded-roster contract by the negative
-# scan below + its own crate tests.
-LAUNCHER_PY: str = "Core/Lifecycle/launcher.py"
-SHUTDOWN_PY: str = "Core/Lifecycle/shutdown.py"
+
+# ── Rules 44-47: boot / shutdown / service-manifest correctness ──
+#
+# Added at the slice-11 cutover (2026-05-29) so boot + shutdown stay
+# driven by a single source (no hardcoded, hand-kept service roster) and
+# every backend service carries a schema-valid manifest. the Wylde user's
+# modularity directive: "give special attention that launcher and shutdown
+# rules cover all services attached with modularity in mind."
+#
+# REPOINTED for issue #101 (0.2 stability audit, finding F): the original
+# rules 44/45 targeted `Core/Lifecycle/launcher.py` / `shutdown.py`, which
+# the full-Rust cutover DELETED. Guarded by `if <file>.exists()`, they ran
+# over a missing file, found nothing, and passed green — a dead gate. They
+# now target the LIVE Rust single source of truth: the `DAEMON_MANAGED`
+# table (`rust/crates/wylde-lifecycle/src/daemon_managed.rs`) that drives
+# boot, shutdown, dispatch, and the kill-image list from one row per
+# service. The SEMANTIC set-equality gate (boot-set == shutdown-set ==
+# dispatch-set, modulo the two typed exceptions) is the crate unit test
+# `daemon_managed::tests::boot_shutdown_dispatch_sets_agree`, run in CI by
+# `cargo test --workspace`; these static rules ensure that single source
+# stays STRUCTURALLY in place — the table exists, boot + shutdown are
+# derived from it, and no hand-kept `const SERVICES` roster returns.
+
 RUST_LIFECYCLE_CRATE: str = "rust/crates/wylde-lifecycle"
 GPUI_SHUTDOWN_RS: str = "Core/GUI/Shell/src/shutdown.rs"
 
-# A reference to any of these proves the launcher/shutdown builds its
-# service set from the filesystem-as-registry (services.yaml + per-service
-# manifest.json) rather than a hardcoded list.
-LAUNCHER_MANIFEST_REFERENCES: Tuple[str, ...] = (
-    "load_services",
-    "load_manifest",
-    "list_service_folders",
-)
-SHUTDOWN_ENUMERATION_REFERENCES: Tuple[str, ...] = (
-    "get_running",
-    "load_manifest",
-    "shutdown_order",
-    "_shutdown_sequence",
-    "load_services",
-)
+# The single source of truth (issue #101). Rule 44 asserts this file
+# declares the table; rules 44/45 assert boot + shutdown are derived from
+# it (below). A missing token here means the single source was ripped out
+# or bypassed — the gate fires.
+RUST_DAEMON_MANAGED_FILE: str = "rust/crates/wylde-lifecycle/src/daemon_managed.rs"
+RUST_DAEMON_MANAGED_TABLE_TOKEN: str = "DAEMON_MANAGED"
 
-# The anti-pattern rules 44/45 forbid: a module-level UPPERCASE service
-# roster assigned a list/tuple literal (Python), or a `const`/`static`
-# SERVICES array (Rust). Case-sensitive so ordinary lowercase locals like
-# `services = load_services()` never match.
-PY_HARDCODED_SERVICE_LIST_RE = re.compile(
-    r"^\s*_?(?:ALL_)?SERVICES?(?:_LIST|_NAMES)?\s*(?::[^=]+)?=\s*[\[\(]"
-)
+# Boot must be derived from the table (`daemon.rs` iterates `boot_sequence()`),
+# not a hand-written run of `start_<name>()` calls.
+RUST_BOOT_FILE: str = "rust/crates/wylde-lifecycle/src/daemon.rs"
+RUST_BOOT_TABLE_TOKEN: str = "boot_sequence"
+
+# Shutdown must be derived from the table (`state/mod.rs` iterates
+# `shutdown_sequence()`), not a hand-kept `let steps: [_; N]` array.
+RUST_SHUTDOWN_FILE: str = "rust/crates/wylde-lifecycle/src/state/mod.rs"
+RUST_SHUTDOWN_TABLE_TOKEN: str = "shutdown_sequence"
+
+# The anti-pattern rule 44 still forbids: a `const`/`static` SERVICES array
+# (Rust) reintroducing a hand-kept roster. Case-sensitive so ordinary
+# lowercase locals never match. (The `DAEMON_MANAGED` table is not a
+# `SERVICES` array and is intentionally not matched.)
 RUST_HARDCODED_SERVICE_ARRAY_RE = re.compile(
     r"\b(?:const|static)\s+_?(?:ALL_)?SERVICES?(?:_LIST|_NAMES)?\s*:\s*\[",
 )
 
-# The gpui-side graceful shutdown must delegate to the manifest-driven
-# Python drain via this action (rule 45). The hard-kill image-name
-# fallback constants (WYLDE_SERVICE_PROCESSES / WYLDE_KILL_TARGETS) are a
-# recognised last resort — image names for `taskkill`, not the service
-# enumeration — so they are deliberately NOT treated as a hardcoded
-# roster.
+# The gpui-side graceful shutdown must delegate to the daemon drain via
+# this action (rule 45). Rule 45 checks only that this token is present;
+# it does NOT count service coverage of the GUI's hard-kill / drain-wait
+# sets. It used to exempt the WYLDE_SERVICE_PROCESSES / WYLDE_KILL_TARGETS
+# constants from any roster check — an exemption that hid issue #124.
+# Those constants are gone (both sets now derive from
+# wylde_stack::shutdown_targets) and the counting gate is a Rust test:
+# rust/crates/wylde-stack/tests/shutdown_target_coverage.rs.
 GPUI_SHUTDOWN_DELEGATE_TOKEN: str = "lifecycle.shutdown_all"
 
 # Top-level dirs that are NOT discoverable services. Source of truth is

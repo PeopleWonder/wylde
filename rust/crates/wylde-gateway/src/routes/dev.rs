@@ -35,8 +35,7 @@ use axum::response::Response;
 use axum::routing::post;
 use axum::Router;
 use serde_json::{json, Value};
-use tokio::fs::OpenOptions;
-use tokio::io::AsyncWriteExt;
+use wylde_shared::logging::rotating_sink;
 
 use crate::auth::require_local;
 use crate::envelopes::{failure, success};
@@ -141,21 +140,26 @@ fn normalize(payload: &Value) -> Value {
     })
 }
 
-/// Append one JSON line to `logs/gui_errors.jsonl`, creating the `logs/`
-/// directory if it does not exist yet.
+/// Append one JSON line to `logs/gui_errors.jsonl` via the shared
+/// rotating sink, so this error log inherits the size + retention policy
+/// like every other Wylde-owned sink (no per-file cap here).
+///
+/// **The write still flushes before returning — do not regress that.**
+/// [`RotatingLog::write_line`](wylde_shared::logging::RotatingLog::write_line)
+/// flushes synchronously, so a returned `Ok(())` means the record reached
+/// disk. The earlier `tokio::fs` version could report success while the
+/// buffered write was silently dropped at handle-drop — a ~3% flake in
+/// `records_a_well_formed_event` (file created but empty). A
+/// silently-dropped error report is the worst failure mode for an error
+/// sink: the one thing it exists to do, failing in the one way nobody
+/// would notice. The sink is synchronous, so run it on a blocking task to
+/// keep it off the async runtime.
 async fn append_line(record: &Value) -> std::io::Result<()> {
     let path = log_path();
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let mut line = serde_json::to_string(record).unwrap_or_default();
-    line.push('\n');
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .await?;
-    file.write_all(line.as_bytes()).await
+    let line = serde_json::to_string(record).unwrap_or_default();
+    tokio::task::spawn_blocking(move || rotating_sink(&path).write_line(&line))
+        .await
+        .map_err(std::io::Error::other)?
 }
 
 /// Build the `/api/dev` sub-router.

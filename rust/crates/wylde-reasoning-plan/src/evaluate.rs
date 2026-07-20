@@ -56,9 +56,7 @@ fn predicate_holds(predicate: &OutcomePredicate, result: &Value) -> bool {
     match predicate {
         OutcomePredicate::NonEmpty => !is_empty_value(result),
         OutcomePredicate::JsonPathExists { path } => result.pointer(path).is_some(),
-        OutcomePredicate::JsonPathEquals { path, value } => {
-            result.pointer(path) == Some(value)
-        }
+        OutcomePredicate::JsonPathEquals { path, value } => result.pointer(path) == Some(value),
         OutcomePredicate::Contains { needle, ci } => {
             let haystack = serialise(result);
             if *ci {

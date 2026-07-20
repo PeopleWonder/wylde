@@ -31,9 +31,14 @@
 //! * manifest entries can be stale (the writer crashed and the
 //!   launcher hasn't GC'd yet) — those shouldn't block either.
 //!
-//! Policy: tasklist match → block; manifest entry with fresh
-//! heartbeat → block; manifest entry with stale heartbeat → advisory
-//! warning only. Heartbeat freshness uses the same
+//! Both signals are first narrowed to *this crate's own exe*
+//! (`<current_crate>.exe`) — the only image the current compile's
+//! linker can overwrite. A running but unrelated `wylde-*` process
+//! (e.g. the `wylde-release.exe` preflight tool, a standalone crate
+//! this build never links) is therefore not a lock and never blocks.
+//! Policy on the narrowed signals: tasklist match → block; manifest
+//! entry with fresh heartbeat → block; manifest entry with stale
+//! heartbeat → advisory warning only. Heartbeat freshness uses the same
 //! [`wylde_shared::manifest_status::heartbeat_age_secs`] the lifecycle
 //! daemon's status classifier uses, so "what the guard sees" and
 //! "what production sees" never diverge.
@@ -79,6 +84,13 @@ pub fn run_prebuild_guard(current_crate: &str) {
 
     let live = tasklist_alive_wylde_exes().unwrap_or_default();
     let manifests = read_runtime_manifests();
+    // Sharp scope: building crate `X` only ever relinks `X.exe`. So the only
+    // process that can lock *this* compile's output is `<current_crate>.exe` —
+    // never some other `wylde-*` image. Narrow both signals to this crate's own
+    // exe before classifying, so a live but unrelated tool (e.g. the
+    // `wylde-release.exe` preflight binary, a standalone workspace that this
+    // build never overwrites) can't false-positive.
+    let (live, manifests) = narrow_to_crate(current_crate, live, manifests);
     let (blocking, advisory) = classify(&live, &manifests);
 
     if blocking.is_empty() && advisory.is_empty() {
@@ -123,6 +135,33 @@ pub struct GuardEntry {
     /// `true` iff this entry came from the live process table — that's
     /// the authoritative lock signal.
     pub live: bool,
+}
+
+/// Keep only the signals that describe **this crate's own exe**
+/// (`<current_crate>.exe`) — the single image the current compile's linker will
+/// try to overwrite. Every other running `wylde-*` process is irrelevant to
+/// *this* build: building `wylde-harness` never touches `wylde-gateway.exe`, and
+/// certainly never touches `wylde-release.exe` (a standalone tool that isn't even
+/// a member of the `rust/` workspace). Pure so the narrowing is unit-testable
+/// without spawning `tasklist` or reading manifests.
+pub fn narrow_to_crate(
+    current_crate: &str,
+    live: Vec<String>,
+    manifests: Vec<ManifestStatus>,
+) -> (Vec<String>, Vec<ManifestStatus>) {
+    let target_exe = format!("{current_crate}.exe");
+    let live = live
+        .into_iter()
+        .filter(|e| e.eq_ignore_ascii_case(&target_exe))
+        .collect();
+    let manifests = manifests
+        .into_iter()
+        .filter(|m| {
+            m.name.eq_ignore_ascii_case(current_crate)
+                || prefixed(&m.name).eq_ignore_ascii_case(current_crate)
+        })
+        .collect();
+    (live, manifests)
 }
 
 /// Classify the union of (live tasklist) ∪ (runtime manifest) into
@@ -346,6 +385,64 @@ mod tests {
         );
     }
 
+    // ── narrowing to the crate's own exe ────────────────────────────
+
+    /// A foreign live exe (here the `wylde-release.exe` preflight tool) must
+    /// NOT block building an unrelated crate: the linker for `wylde-harness`
+    /// never overwrites `wylde-release.exe`. This is the #47 false positive.
+    #[test]
+    fn foreign_live_exe_is_narrowed_away() {
+        let live = vec![
+            "wylde-release.exe".to_string(),
+            "wylde-gateway.exe".to_string(),
+        ];
+        let (live, manifests) = narrow_to_crate("wylde-harness", live, vec![]);
+        assert!(live.is_empty(), "no live exe matches wylde-harness.exe");
+        let (blocking, advisory) = classify(&live, &manifests);
+        assert!(blocking.is_empty() && advisory.is_empty());
+    }
+
+    /// The crate's OWN live exe still blocks — the real lock case is preserved.
+    #[test]
+    fn own_live_exe_still_blocks() {
+        let live = vec![
+            "wylde-harness.exe".to_string(),
+            "wylde-release.exe".to_string(),
+        ];
+        let (live, manifests) = narrow_to_crate("wylde-harness", live, vec![]);
+        assert_eq!(live, vec!["wylde-harness.exe".to_string()]);
+        let (blocking, _) = classify(&live, &manifests);
+        assert_eq!(blocking.len(), 1);
+        assert_eq!(blocking[0].label, "wylde-harness.exe");
+    }
+
+    /// Manifest signals narrow the same way, across the `wylde-` prefix quirk:
+    /// a fresh `vram-broker` manifest blocks its own build but not a sibling's.
+    #[test]
+    fn manifest_signals_narrow_to_crate() {
+        let manifests = vec![
+            ManifestStatus {
+                name: "vram-broker".to_string(),
+                pid: Some(13488),
+                heartbeat: Some(fresh_heartbeat()),
+                state: Some("alive".to_string()),
+            },
+            ManifestStatus {
+                name: "wylde-gateway".to_string(),
+                pid: Some(1),
+                heartbeat: Some(fresh_heartbeat()),
+                state: Some("alive".to_string()),
+            },
+        ];
+        // Building wylde-harness: neither manifest is ours → nothing blocks.
+        let (_, kept) = narrow_to_crate("wylde-harness", vec![], manifests.clone());
+        assert!(kept.is_empty());
+        // Building wylde-vram-broker: the prefix-stripped manifest is ours.
+        let (_, kept) = narrow_to_crate("wylde-vram-broker", vec![], manifests);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].name, "vram-broker");
+    }
+
     // ── classification ──────────────────────────────────────────────
 
     fn fresh_heartbeat() -> String {
@@ -517,13 +614,17 @@ mod tests {
             ),
         )
         .unwrap();
-        let manifests = wylde_shared::manifest_status::list_runtime_statuses(tmp.path())
-            .expect("Some(vec)");
+        let manifests =
+            wylde_shared::manifest_status::list_runtime_statuses(tmp.path()).expect("Some(vec)");
         let live = vec!["wylde-gateway.exe".to_string()];
         let (blocking, advisory) = classify(&live, &manifests);
         assert_eq!(blocking.len(), 1, "gateway is live → blocking");
         assert_eq!(blocking[0].pid, Some(32240));
-        assert_eq!(advisory.len(), 1, "vram-broker stale manifest only → advisory");
+        assert_eq!(
+            advisory.len(),
+            1,
+            "vram-broker stale manifest only → advisory"
+        );
         assert!(advisory[0].label.contains("wylde-vram-broker"));
     }
 }

@@ -1,12 +1,13 @@
 //! `memory.workspace.*` IPC action handlers.
 //!
-//! The six workspace-memory verbs the gateway / GUI consume:
+//! The workspace-memory verbs the gateway / GUI consume:
 //!
 //! * `memory.workspace.list`   → `{ memories, count, workspace_id }`
 //! * `memory.workspace.search` → `{ hits: [...] }`
 //! * `memory.workspace.save`   → the record object
 //! * `memory.workspace.update` → the replacement record (revision)
 //! * `memory.workspace.delete` → `{ ok, workspace_id, id }`
+//! * `memory.workspace.delete_all` → `{ ok, workspace_id, removed }`
 //! * `memory.workspace.curate` → the skipped `CurationResult` shape
 //!
 //! Reply shapes + error codes/messages match the Python `_memory.py`
@@ -159,6 +160,67 @@ pub async fn handle_delete(payload: Value) -> Reply {
     };
     let ok = store::delete(&wsid, &rid);
     Reply::ok(json!({ "ok": ok, "workspace_id": wsid, "id": rid }))
+}
+
+/// `memory.workspace.delete_all` — remove a workspace's ENTIRE durable
+/// memory directory: every record, the vector mirror, and the folder itself.
+/// Payload `{ workspace_id }`. Returns `{ ok: true, workspace_id, removed }`
+/// where `removed` is whether a folder was actually there to delete.
+///
+/// The teardown complement to the workspaces service's bundle removal (#135).
+/// `workspace_memories/<id>/` lives OUTSIDE the workspace bundle on purpose —
+/// so MRU eviction of a file index never takes the curated memories with it —
+/// but that also put it outside the reach of every removal path, so an
+/// explicitly deleted workspace left its memories on disk forever. Since a
+/// workspace id is derived from its folder (#28), re-registering the same
+/// folder re-derived the same id and silently re-attached memories the user
+/// believed they had deleted: a privacy consequence, not just a disk one.
+///
+/// **Only the explicit-delete path may call this.** MRU eviction must not —
+/// surviving eviction is the whole point of the durable tier. That asymmetry
+/// is enforced at the caller: the workspaces service invokes this from
+/// `handle_delete`, never from the shared `teardown_bundle` primitive that
+/// eviction also funnels through.
+///
+/// A blank id is rejected rather than treated as "no workspace": the store
+/// path for an empty id is the tier ROOT, so obeying it would wipe every
+/// workspace's memories (the store guards this too — defence in depth).
+pub async fn handle_delete_all(payload: Value) -> Reply {
+    let Some(wsid) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    if wsid.trim().is_empty() {
+        return Reply::err_msg("bad_request", "workspace_id must not be blank");
+    }
+    let removed = store::delete_memory_dir(&wsid);
+    Reply::ok(json!({ "ok": true, "workspace_id": wsid, "removed": removed }))
+}
+
+/// `memory.workspace.reindex` — rebuild this workspace's vector mirror from
+/// its authoritative JSON records (#136). Payload `{ workspace_id }`. Returns
+/// `{ ok, workspace_id, total, embedded, failed }`.
+///
+/// The recovery path the memory tiers documented for years without having.
+/// Use after an embedding-model or width change (which moves the old mirror
+/// aside rather than destroying it), or to close the drift that accumulates
+/// whenever a save's embed fails and leaves a record JSON-only forever.
+///
+/// Answers `embedder_unavailable` — rather than reporting a hollow success —
+/// when nothing could be embedded, leaving the existing mirror untouched.
+pub async fn handle_reindex(payload: Value) -> Reply {
+    let Some(wsid) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    match store::reindex_vectors(&wsid).await {
+        Ok(r) => Reply::ok(json!({
+            "ok": true,
+            "workspace_id": wsid,
+            "total": r.total,
+            "embedded": r.embedded,
+            "failed": r.failed,
+        })),
+        Err(e) => Reply::err_msg("embedder_unavailable", e.to_string()),
+    }
 }
 
 /// `memory.workspace.curate` — trigger LLM-driven curation. Payload

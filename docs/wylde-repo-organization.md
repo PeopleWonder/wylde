@@ -44,7 +44,13 @@ A point-in-time reference for "where does X live, why, what are the conventions,
 
 ## 1. Top-level repo layout
 
-The vault root (`%USERPROFILE%\Documents\Obsidian Vault\Wylde\`) contains everything; it is **not a git repository** as currently configured — there is no `.git/` directory, `git status` will refuse — so all version history is implicit in the daily progress memory files and the `docs/` lineage. Treat every file as authoritative current state.
+The repo root contains everything, and it **is** a git repository: trunk is `develop` (the default branch), `main` is stable-only, and both are protected by rulesets (PR-only, required checks). Version history lives in git — use `git log`, not the `docs/` lineage, as the record of what changed when.
+
+> **Stale-path note (scrubbed for #31).** This section used to state that the root was
+> `%USERPROFILE%\Documents\Obsidian Vault\Wylde\`, that there was no `.git/`, and that
+> "`git status` will refuse" — so version history was implicit in progress-memory files. All of
+> that is now false: the tree moved out of the Obsidian vault and is under git. Paths in this doc
+> are deliberately **repo-relative** rather than absolute, so they don't rot the same way again.
 
 | Folder | Purpose |
 | --- | --- |
@@ -302,7 +308,14 @@ The planning + handoff dir. Important entries:
 
 ## 11. Auto-memory system
 
-the Wylde user's Claude sessions persist memory between conversations at `%USERPROFILE%\.claude\projects\C--Users-<user>-Documents-Obsidian-Vault-Wylde\memory\`. The directory is **outside the repo** — it's part of the Claude config, not version-controlled with Wylde. Convention:
+the Wylde user's Claude sessions persist memory between conversations at
+`%USERPROFILE%\.claude\projects\<repo-path-slug>\memory\`, where `<repo-path-slug>` is the repo's
+absolute path with drive/separator characters replaced by `-` (for a checkout at
+`C:\Users\<you>\Wylde\Core`, that is `C--Users-<you>-Wylde-Core`). The slug is **derived from wherever
+the repo lives**, so it changes if the tree moves — it previously read
+`C--Users-<user>-Documents-Obsidian-Vault-Wylde`, from the retired Obsidian-vault location (#31). The
+directory is **outside the repo** — it's part of the Claude config, not version-controlled with Wylde.
+Convention:
 
 * Each memory is its own MD file with frontmatter (`name`, `description`, `metadata.type`).
 * Types: `user` (who the Wylde user is + preferences), `feedback` (corrections + validated approaches), `project` (in-progress work + decisions), `reference` (pointers to external systems).
@@ -349,7 +362,6 @@ The most-loaded rules right now: **rule 31** (`shutdown_reaps_manifest_orphans`)
 * `Shell/` — the only binary crate (package `wylde-gui`, `bin` at `src/main.rs`); this is the shipped GUI binary.
 * `Frontend/` — the library crates the Shell links (theme, pipe, input widget, WebView host, and the panels).
 * `Manifest/Extension_handlers/` — `wylde-panel-registry` (panel manifest schema v2 aggregator + runtime overlay + `gui.list_tabs`; ships a `wylde-panel-aggregator` bin).
-* `installer/` — WiX/NSIS installer scaffolding (currently just `README.md`).
 * `assets/` — bundled assets (e.g. `icons/`).
 * `docs/` — GUI-local docs (the historical inference-bar audit + migration plan; see below).
 * `target/` — gpui build output (`.gitignore`'d).
@@ -406,11 +418,11 @@ The 10 first-party panel crates: `Settings` (`wylde-panel-settings`), `Workspace
 
 **Rust** — `cargo build --release` from `rust/`. Outputs to `rust/target/release/wylde-<service>.exe`. The pre-build guard (`build-support/wylde-prebuild-guard/`) lives outside `crates/` because the spawn-restriction linter (`no_external_process_spawn_rust`) only walks `rust/crates/<crate>/src/`. The guard refuses to start if a wylde-* service holds a fresh manifest — locked .exe files would otherwise fail the build. Stop the stack from the tray before building.
 
-**GUI (gpui)** — `cargo run -p wylde-gui` (run from `Core/GUI/`) for the dev cycle; `cargo build --release` from `Core/GUI/` produces the shipped binary at `Core/GUI/target/release/wylde-gui.exe` (the `entry_point` in `Core/GUI/manifest.json`). This is a **separate** workspace from `rust/` — building the backend does not build the GUI and vice-versa. No npm/Vite/Tauri CLI; there is no dev server. Installer scaffolding (WiX/NSIS) lives under `Core/GUI/installer/` (currently a stub).
+**GUI (gpui)** — `cargo run -p wylde-gui` (run from `Core/GUI/`) for the dev cycle; `cargo build --release` from `Core/GUI/` produces the shipped binary at `Core/GUI/target/release/wylde-gui.exe` (the `entry_point` in `Core/GUI/manifest.json`). This is a **separate** workspace from `rust/` — building the backend does not build the GUI and vice-versa. No npm/Vite/Tauri CLI; there is no dev server. Installer work has left this repo — see https://github.com/PeopleWonder/wylde-installer (non-functional, planned future work).
 
 **Python** — uv-managed. `.venv\Scripts\python.exe` is the canonical interpreter; `py -3` resolves to the system Python 3.14 and breaks on missing extras (the `passlib missing` symptom is almost always wrong interpreter, not torn venv). Run `verification/check_venv.py` to diagnose. Use `uv run` or `.venv\Scripts\python.exe` for Wylde commands.
 
-**Distribution (Phase 12)** — planned but not in flight. The strangler-fig deletions reduce Python tree size first; Phase 12 will produce a packaged installer (WiX/NSIS, scaffolded at `Core/GUI/installer/`) that ships the gpui `wylde-gui.exe` + the Rust services + bundled Memgraph + Ollama dependency. The gpui binary carries no webview runtime, so the old "missing WebView2" first-run failure mode is gone.
+**Distribution (Phase 12)** — planned but not in flight. The strangler-fig deletions reduce Python tree size first; Phase 12 will produce a packaged installer (extracted to https://github.com/PeopleWonder/wylde-installer, currently non-functional) that ships the gpui `wylde-gui.exe` + the Rust services + bundled Memgraph + Ollama dependency. The gpui binary carries no webview runtime, so the old "missing WebView2" first-run failure mode is gone.
 
 ---
 

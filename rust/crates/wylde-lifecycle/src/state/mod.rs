@@ -23,8 +23,9 @@
 //! Submodules:
 //! * [`manifest`] — Core's runtime manifest writer + heartbeat thread.
 //! * [`orphan_sweep`] — 60s tick that walks `data/manifests/*.json`.
-//! * [`services`] — seven `start_<service>` / `stop_<service>` pairs
-//!   and the env-var dispatch that picks Python vs Rust per service.
+//! * [`services`] — the `start_<service>` / `stop_<service>` pairs
+//!   (the hooks the [`crate::daemon_managed`] table points at) and the
+//!   env-var dispatch that picks Python vs Rust per service.
 
 pub mod manifest;
 pub mod orphan_sweep;
@@ -44,56 +45,17 @@ pub use crate::state::orphan_sweep::{
     boot_orphan_sweep, start_orphan_sweep, stop_orphan_sweep, sweep_orphans,
 };
 
-/// Canonical names for the seven daemon-managed services. Used both as
-/// the key into [`STATE`]'s process map and as the manifest filename
-/// (without the `.json` suffix) so the orphan sweep agrees with the
-/// services map on which manifests belong to which child.
-pub mod service_name {
-    pub const MEMGRAPH: &str = "wylde-memgraph";
-    pub const VOICE: &str = "wylde-voice";
-    pub const VRAM_BROKER: &str = "wylde-vram-broker";
-    pub const DEVICE_GATE: &str = "wylde-device-gate";
-    pub const EXTENSION_BRIDGE: &str = "wylde-extension-bridge";
-    pub const GATEWAY: &str = "wylde-gateway";
-    pub const OLLAMA: &str = "wylde-ollama";
-    /// WyldeLink VPN. Phase 2 of the Rust migration — `WYLDE_WYLDE_VPN_IMPL`
-    /// defaults to `python`; the Rust impl is a foundation slice (control
-    /// plane + 16 actions, with tunnel/NAT/discovery stubbed).
-    pub const VPN: &str = "wylde-vpn";
-    pub const MEMORY_SCHEDULER: &str = "wylde-memory-scheduler";
-    /// Wylde harness — chat-turn driver. Phase 5 of the Rust
-    /// migration. Slice 5.D (2026-05-25) flipped
-    /// `WYLDE_WYLDE_HARNESS_IMPL`'s default from `python` to `rust`:
-    /// the lifecycle daemon now spawns the consolidated
-    /// `wylde-harness.exe` fronting the chat.* action surface over
-    /// `\\.\pipe\wylde-harness`. Set
-    /// `WYLDE_WYLDE_HARNESS_IMPL=python` to revert to the in-tree
-    /// `Core/harness/turn/` driver during the rollback window.
-    pub const HARNESS: &str = "wylde-harness";
-    /// Tree-sitter sidecar — greenfield Rust structural-parsing service
-    /// (NOT a Python port). Default Rust, no Python fallback: a missing
-    /// binary leaves it down with a loud build hint (the `wylde-ollama`
-    /// precedent). See `docs/plans/treesitter-sidecar.md`.
-    pub const TREESITTER: &str = "wylde-treesitter";
-    /// Workspace-scoped service (Thought Bubble System Phase 0) — owns the
-    /// registry, persona, RAG indexer, notes, workspace conversations, and
-    /// the Neo4j code graph. Greenfield Rust, no Python fallback (the
-    /// `wylde-treesitter` precedent): a missing binary leaves it down with a
-    /// loud build hint. Started LAST in the boot sequence — it consumes
-    /// `wylde-ollama` (embedder), `wylde-treesitter` (chunk/extract), and
-    /// Memgraph (graph writes), so those must be up first. Consumers degrade
-    /// gracefully when it's down (Slice 0d), so a failed spawn is non-fatal.
-    pub const WORKSPACES: &str = "wylde-workspaces";
-    /// N8N workflow service (taxonomy reorg TX S3) — the Rust pipe
-    /// surface over the **external, user-managed** n8n daemon. The
-    /// daemon supervises only `wylde-n8n.exe`; it never launches n8n
-    /// itself. Optional/non-fatal: a missing binary (or a down n8n)
-    /// leaves the service dark and core boots fine — the harness verb
-    /// layer degrades to structured errors (the `wylde-workspaces`
-    /// precedent). The Python-era `N8N/manifest.json` registry entry
-    /// (enabled: false, no entry_point) was retired with this service.
-    pub const N8N: &str = "wylde-n8n";
-}
+/// Canonical service names — **re-exported** from `wylde-stack`.
+///
+/// These constants moved to `wylde_stack::service_name` (#97/#92) so the lean
+/// crates that must not depend on the daemon — the self-updater and the
+/// launcher's resolver — can name a service without pulling in tokio and the
+/// start/stop hooks. Each string is simultaneously the pipe name, the
+/// manifest filename stem, the key into this module's process map, and the
+/// `WYLDE_<NAME>_BIN` override stem, so exactly one copy may exist anywhere.
+/// This re-export keeps every existing `crate::state::service_name::X` call
+/// site working verbatim.
+pub use wylde_stack::service_name;
 
 /// Window after spawn within which the service is expected to publish
 /// its manifest. Past this with no manifest visible the daemon emits a
@@ -124,9 +86,7 @@ struct State {
 
 impl State {
     fn new() -> Self {
-        let root = std::env::var_os("WYLDE_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
+        let root = Self::resolve_root();
         Self {
             procs: HashMap::new(),
             spawn_records: HashMap::new(),
@@ -136,6 +96,42 @@ impl State {
             nospawn: false,
             nospawn_services: HashMap::new(),
         }
+    }
+
+    /// Production: the daemon's root is `WYLDE_ROOT`, falling back to the cwd.
+    #[cfg(not(test))]
+    fn resolve_root() -> PathBuf {
+        std::env::var_os("WYLDE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Tests: **never** read `WYLDE_ROOT` (#80).
+    ///
+    /// This is the seam the whole crate's test hermeticity rests on, so the
+    /// reasoning lives here rather than at the call site.
+    ///
+    /// `state()` is a process-global `OnceLock`: the root is resolved **once**,
+    /// by whichever test touches it first, and is fixed for the rest of the
+    /// binary's life. So a test that sets `WYLDE_ROOT` in its own body cannot
+    /// affect it — the read already happened. That is not a fixable ordering
+    /// problem; it is why #78 found that pinning the env from inside the body
+    /// "does not help", and why #80's `count == 0` silently became `count == 11`
+    /// on a configured machine: `is_or_was_tracked` stats
+    /// `<manifest_dir>/<service>.json`, and `manifest_dir` was pointing at the
+    /// developer's **real** estate.
+    ///
+    /// Reading ambient env here therefore can't be made safe — it can only be
+    /// not done. Under `cfg(test)` the root is a per-process scratch path that
+    /// nothing else writes, so every test in this crate is hermetic **by
+    /// construction** rather than by remembering to guard. A test that wants a
+    /// populated root builds one and points at it explicitly.
+    ///
+    /// Pinned by `resolve_root_is_hermetic_under_cfg_test` below — deleting or
+    /// reverting this fails that gate rather than silently re-arming #80.
+    #[cfg(test)]
+    fn resolve_root() -> PathBuf {
+        std::env::temp_dir().join(format!("wylde-lifecycle-test-root-{}", std::process::id()))
     }
 }
 
@@ -435,10 +431,12 @@ pub(crate) fn orphan_sweep_running() -> bool {
 /// launcher's tracked-services set.
 ///
 /// Captures the running set first (so the response payload is honest
-/// about what was alive), runs each stop in the documented order —
-/// orphan sweep first, then scheduler → gateway → extension_bridge →
-/// voice → device_gate → vram_broker → memgraph — swallows individual
-/// stop failures (each gets logged), and returns a structured summary.
+/// about what was alive), runs each stop in the order derived from the
+/// single [`crate::daemon_managed::DAEMON_MANAGED`] table — orphan sweep
+/// first, then discovered `Services/*` siblings, then the core tier in
+/// ascending `shutdown_rank` (Gateway first … Memgraph last) — swallows
+/// individual stop failures (each gets logged), and returns a structured
+/// summary.
 ///
 /// Both the ctrl_c handler and the `service.shutdown_all` action go
 /// through here, so external invocation and Ctrl-C tear down the same
@@ -493,102 +491,33 @@ pub async fn stop_all_daemon_managed() -> ShutdownSummary {
         }
     }
 
-    // Each tuple captures `was_alive` BEFORE its stop runs — tuple elements
-    // evaluate left-to-right, so `is_service_alive` is read before the
-    // adjacent `stop_<service>` future is awaited. This mirrors the Python
-    // `stop_all_daemon_managed`'s `_try(name, alive, fn)` ordering.
-    // Shutdown order (per master plan Phase 1 §6a, extended for VPN +
-    // Harness + Workspaces + N8N):
-    //   Gateway → N8N → Workspaces → TreeSitter → ExtensionBridge →
-    //   Harness → Voice → DeviceGate → Ollama → VPN → VramBroker →
-    //   Memgraph
+    // The shutdown set + its order are derived from the single
+    // `DAEMON_MANAGED` table (issue #101): `shutdown_sequence()` yields the
+    // managed entries in ascending `shutdown_rank`, so boot, shutdown,
+    // dispatch, and the kill-image list all pick up a new service from one
+    // row. The teardown-order rationale (Gateway first, Workspaces early,
+    // Ollama before the broker, Memgraph last, …) lives as doc comments on
+    // the table.
     //
-    // Workspaces stops near the front: it consumes Ollama (embeddings),
-    // tree-sitter (chunk/extract over the pipe), and Memgraph (Bolt graph
-    // writes), so draining it before those releases the resources cleanly.
+    // Two typed asymmetries, self-documenting on each entry rather than a
+    // silent omission from one list:
+    //   * `wylde-memory-scheduler` is `Role::BootOnlyNoop` — it owns no
+    //     subprocess, so it is absent here (nothing to tear down).
+    //   * `wylde-vpn` is `Role::UserStarted` — absent from boot but present
+    //     here, so an on-demand VPN is still drained on shutdown.
     //
-    // Harness stops AFTER Gateway/ExtensionBridge (its callers are
-    // gone) but BEFORE Ollama (its primary downstream — Ollama drains
-    // any final lease cleanly after the turn driver releases its
-    // last in-flight call). Voice/DeviceGate are unrelated and stop
-    // independently. Ollama goes BEFORE the broker so in-flight VRAM
-    // leases are released cleanly; the broker then has nothing to reap.
-    // VPN sits between Ollama and the broker — independent of either,
-    // but ordering it after the VRAM consumers keeps the broker the
-    // last "infrastructure" service torn down before Memgraph. Memgraph
-    // last so anything still holding a Bolt driver releases first.
-    let steps: [(&str, bool, anyhow::Result<()>); 12] = [
-        (
-            service_name::GATEWAY,
-            is_service_alive(service_name::GATEWAY),
-            services::stop_gateway().await,
-        ),
-        // wylde-n8n is a leaf wrapper over the external n8n daemon (which
-        // we never stop — it's user-managed); nothing depends on the pipe
-        // once Gateway/Harness callers are draining, so it goes early.
-        (
-            service_name::N8N,
-            is_service_alive(service_name::N8N),
-            services::stop_n8n().await,
-        ),
-        // wylde-workspaces is a consumer of Ollama / tree-sitter / Memgraph,
-        // so it must drain BEFORE them — stop it up front alongside the other
-        // front-tier services so its in-flight ingest releases the sidecar
-        // pipe + Bolt driver before those services go down.
-        (
-            service_name::WORKSPACES,
-            is_service_alive(service_name::WORKSPACES),
-            services::stop_workspaces().await,
-        ),
-        // Tree-sitter is a leaf sidecar (nothing depends on it) — drain it
-        // early alongside the other front-tier services.
-        (
-            service_name::TREESITTER,
-            is_service_alive(service_name::TREESITTER),
-            services::stop_treesitter().await,
-        ),
-        (
-            service_name::EXTENSION_BRIDGE,
-            is_service_alive(service_name::EXTENSION_BRIDGE),
-            services::stop_extension_bridge().await,
-        ),
-        (
-            service_name::HARNESS,
-            is_service_alive(service_name::HARNESS),
-            services::stop_harness().await,
-        ),
-        (
-            service_name::VOICE,
-            is_service_alive(service_name::VOICE),
-            services::stop_voice().await,
-        ),
-        (
-            service_name::DEVICE_GATE,
-            is_service_alive(service_name::DEVICE_GATE),
-            services::stop_device_gate().await,
-        ),
-        (
-            service_name::OLLAMA,
-            is_service_alive(service_name::OLLAMA),
-            services::stop_ollama().await,
-        ),
-        (
-            service_name::VPN,
-            is_service_alive(service_name::VPN),
-            services::stop_vpn().await,
-        ),
-        (
-            service_name::VRAM_BROKER,
-            is_service_alive(service_name::VRAM_BROKER),
-            services::stop_vram_broker().await,
-        ),
-        (
-            service_name::MEMGRAPH,
-            is_service_alive(service_name::MEMGRAPH),
-            services::stop_memgraph().await,
-        ),
-    ];
-    for (name, was_alive, result) in steps {
+    // `was_alive` is captured BEFORE the stop future is awaited (mirrors
+    // the Python `stop_all_daemon_managed`'s `_try(name, alive, fn)`
+    // ordering, used only by the no-spawn "stopped" accounting).
+    for svc in crate::daemon_managed::shutdown_sequence() {
+        let name = svc.name;
+        let was_alive = is_service_alive(name);
+        // `shutdown_sequence()` only yields managed entries, which always
+        // carry a stop hook — but fall back defensively rather than panic.
+        let result = match svc.stop {
+            Some(stop) => stop().await,
+            None => Ok(()),
+        };
         match run_step(name, result).await {
             Ok(()) => {
                 // No-spawn: a service counts as "stopped" iff it was a
@@ -646,8 +575,46 @@ fn is_or_was_tracked(name: &str) -> bool {
     //
     // Cheap proxy: check the manifest file. Services that booted
     // wrote one; services that never spawned didn't.
-    let path = manifest_path_for(name);
-    path.exists()
+    if manifest_path_for(name).exists() {
+        return true;
+    }
+
+    // ── vram-broker manifest-name quirk (#84) ─────────────────────────────
+    //
+    // The broker is the one daemon-managed service whose on-disk manifest
+    // basename diverges from its canonical name: it self-registers as
+    // `vram-broker.json` (its short, pipe-prefix-stripped name — see
+    // `wylde-vram-broker/src/main.rs`), never the `wylde-vram-broker.json`
+    // that `manifest_path_for` derives from the pipe-prefixed
+    // `service_name::VRAM_BROKER`. So the direct check above is
+    // unconditionally false for the broker, and `stop_all_daemon_managed`
+    // used to omit it from `stopped`/`count` even when it had just stopped
+    // it successfully.
+    //
+    // `registry.rs` (~line 146, pinned by its `short_pipe_name`-filtered
+    // test) already resolves this same quirk by matching the short name.
+    // This is the second consumer of that quirk finally getting the same
+    // treatment — the alias is checked here rather than baked into
+    // `manifest_path_for`, which the daemon's manifest *writers* also call
+    // and which must keep deriving the canonical path for every other
+    // service.
+    if let Some(alias) = vram_broker_manifest_alias(name) {
+        return manifest_path_for(alias).exists();
+    }
+    false
+}
+
+/// The vram-broker's on-disk manifest basename (without `.json`), or `None`
+/// for any other service.
+///
+/// The broker writes `vram-broker.json` — its short, pipe-prefix-stripped
+/// name — not the `wylde-vram-broker.json` its canonical
+/// [`service_name::VRAM_BROKER`] would imply. Every other daemon-managed
+/// service's manifest matches its canonical name, so this deliberately
+/// aliases the broker alone rather than blanket-stripping the `wylde-`
+/// prefix (which would be wrong for `wylde-gateway.json` et al.). See #84.
+fn vram_broker_manifest_alias(name: &str) -> Option<&'static str> {
+    (name == service_name::VRAM_BROKER).then_some("vram-broker")
 }
 
 /// Payload returned by [`stop_all_daemon_managed`] — matches the dict
@@ -710,6 +677,7 @@ pub fn pid_alive(pid: u32) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use serial_test::serial;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
 
     /// Serialise tests that mutate the process-wide [`STATE`] singleton.
@@ -721,6 +689,103 @@ pub(crate) mod tests {
     pub(crate) async fn state_guard() -> MutexGuard<'static, ()> {
         static LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
         LOCK.lock().await
+    }
+
+    // ── The self-collision gate (#47 → #75 → #80; class tracked on #83) ────
+    //
+    // Three sightings of one class: a test asserting against a resource the
+    // *product* owns. #47 and #75 were pipe names; #80 was this crate's
+    // manifest directory. Each was green on CI and red on a developer's box —
+    // the inverse of a flake, because CI never runs the stack, so the
+    // production resource is always free there.
+    //
+    // That inversion is why the dynamic gate cannot see this class and a
+    // static one is the only enforcement available. #79 built the static half
+    // for pipe names (`fixture_pipes_are_private.rs`): a source scan for
+    // `\\.\pipe\wylde-<service>` literals.
+    //
+    // **That shape cannot catch #80, and the distinction is the point.** A
+    // pipe bind is a *literal in the test source*, so a scanner sees it. #80's
+    // test contains no literal at all — it calls `dispatch_action`, and the
+    // `WYLDE_ROOT` read happens three layers down inside a process-global
+    // `OnceLock`. The only `WYLDE_ROOT` text in that test was in a comment,
+    // which #79's guard deliberately strips. A scan for it would be a
+    // permanently-green check: a required context that cannot fail.
+    //
+    // So this half is enforced structurally instead of textually. Hermeticity
+    // is a property of `State::resolve_root` (above), and the gate below pins
+    // that property. The rule for the next test author is not "remember to
+    // guard the env" — it is that this crate's tests *cannot* see ambient
+    // `WYLDE_ROOT`, so an assertion about the machine is now impossible to
+    // write by accident.
+    //
+    // Adding a resource? Ask which half it is. Literal in the test → extend
+    // #79's scanner. Resolved inside production code → make the resolution
+    // hermetic under `cfg(test)` and pin it here.
+
+    /// Gate: this crate's tests must never resolve their root from the
+    /// developer's ambient `WYLDE_ROOT` (#80).
+    ///
+    /// Asserts the property directly rather than trusting the `cfg` to be
+    /// wired: if someone reverts `resolve_root`'s `#[cfg(test)]` arm, this
+    /// fails on any configured machine instead of #80 quietly returning.
+    #[test]
+    fn resolve_root_is_hermetic_under_cfg_test() {
+        let resolved = State::resolve_root();
+
+        if let Some(ambient) = std::env::var_os("WYLDE_ROOT") {
+            let ambient = PathBuf::from(&ambient);
+            assert_ne!(
+                resolved,
+                ambient,
+                "tests resolved their root from the ambient WYLDE_ROOT ({}) — \
+                 that is #80 re-armed. Assertions would measure the developer's \
+                 real estate instead of the fixture, and CI could not catch it \
+                 (CI sets no WYLDE_ROOT). See State::resolve_root.",
+                ambient.display()
+            );
+        }
+
+        // Hold regardless of whether the box happens to be configured — a
+        // machine with no WYLDE_ROOT must not green this by accident, or the
+        // gate would only work where the bug was already visible.
+        let scratch = std::env::temp_dir();
+        assert!(
+            resolved.starts_with(&scratch),
+            "the test root ({}) must live under the scratch dir ({}); a root \
+             anywhere else is a real location this suite could assert against",
+            resolved.display(),
+            scratch.display()
+        );
+    }
+
+    /// The gate is only worth having if it can fail — pin that the production
+    /// arm *does* read `WYLDE_ROOT`, so the two arms are known to differ.
+    /// Otherwise a refactor collapsing them to one hermetic path would leave
+    /// the gate green while the daemon lost its root.
+    #[test]
+    #[serial]
+    fn production_root_still_reads_wylde_root() {
+        let prior = std::env::var_os("WYLDE_ROOT");
+        // SAFETY: `#[serial]` — no other test runs concurrently. Restored below.
+        unsafe { std::env::set_var("WYLDE_ROOT", r"C:\wylde-gate-probe") };
+
+        let production = std::env::var_os("WYLDE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        match prior {
+            Some(v) => unsafe { std::env::set_var("WYLDE_ROOT", v) },
+            None => unsafe { std::env::remove_var("WYLDE_ROOT") },
+        }
+
+        assert_eq!(
+            production,
+            PathBuf::from(r"C:\wylde-gate-probe"),
+            "production root resolution must honour WYLDE_ROOT — if this fails, \
+             the cfg(test) hermetic arm has leaked into the daemon and the \
+             shipped binary would write manifests to a temp dir"
+        );
     }
 
     fn reset_state() {

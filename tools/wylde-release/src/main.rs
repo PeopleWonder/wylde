@@ -1,7 +1,7 @@
 //! `wylde-release` — sign + publish Wylde GUI builds for the Phase 12.5
 //! self-updater (slice 3b).
 //!
-//! A small developer tool that runs on Aaron's release machine only. It
+//! A small developer tool that runs on the maintainer's release machine only. It
 //! wraps two external CLIs:
 //!
 //!   * **`rsign`** (rsign2) — minisign keypair generation + detached
@@ -30,6 +30,12 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+
+mod bench;
+mod host;
+mod preflight;
+mod receipt;
+mod smoke;
 
 /// Default location of the release **private** signing key, relative to
 /// the repo root. Never committed (`keys/.gitignore`); the public half is
@@ -139,6 +145,17 @@ enum Cmd {
         /// executing them. Use this to rehearse a release safely.
         #[arg(long)]
         dry_run: bool,
+        /// **Deliberate escape hatch.** Skip the preflight-receipt gate. The
+        /// gate exists to stop a build shipping unverified (the exact "shipped
+        /// broken" failure), so this prints a loud warning and should be used
+        /// only when you know precisely why. `--dry-run` never checks the
+        /// receipt (it's a rehearsal).
+        #[arg(long)]
+        no_preflight_receipt: bool,
+        /// Repo root to look for `preflight-receipt.json` in. Defaults to the
+        /// git top-level of the current directory.
+        #[arg(long)]
+        repo_root: Option<PathBuf>,
     },
 
     /// Compare a candidate public key against the one embedded in
@@ -148,6 +165,30 @@ enum Cmd {
         /// The base64 public-key line, or a path to a `.pub` file.
         pubkey: String,
     },
+
+    /// Run the benchmark suite, compare against the committed baseline, and
+    /// **fail on a regression past the per-metric threshold**. This is the
+    /// standalone regression gate; `preflight` runs it as one of its steps.
+    ///
+    /// The suite drives live Ollama (reasoning arms) and reads the live index
+    /// (lexical eval), so it runs on the release machine, not CI.
+    Bench(preflight::BenchArgs),
+
+    /// Run the full local preflight (version-consistency G7 + the benchmark
+    /// gate, plus an optional artifact build) and write a **receipt** bound to
+    /// the current commit. `publish` refuses without a green, current receipt.
+    Preflight(preflight::PreflightArgs),
+
+    /// Run the **L2 cold-start smoke + L3 service-health + L5 shipped-config**
+    /// launch-and-verify gate on its own (without the benchmark/receipt
+    /// machinery). Launches the shipped daemon + GUI from a neutral cwd, then
+    /// asserts the assembled system is actually functional — services
+    /// discovered, VRAM broker up, Ollama has the models, **Memgraph has real
+    /// data**, the **reasoning tier is shipped OFF**, RAG answers, a chat turn
+    /// completes, a memory round-trips. Prints each check's verdict and exits
+    /// non-zero on any failure. `preflight --launch` runs the same checks and
+    /// folds them into the receipt.
+    Smoke(preflight::SmokeArgs),
 }
 
 /// Release channel mirror of `wylde_updater::Channel`. Local copy so the
@@ -193,6 +234,8 @@ fn main() -> Result<()> {
             notes,
             notes_file,
             dry_run,
+            no_preflight_receipt,
+            repo_root,
         } => publish(
             &version,
             channel,
@@ -204,8 +247,13 @@ fn main() -> Result<()> {
             notes.as_deref(),
             notes_file.as_deref(),
             dry_run,
+            no_preflight_receipt,
+            repo_root,
         ),
         Cmd::VerifyPublicKey { pubkey } => verify_public_key(&pubkey),
+        Cmd::Bench(args) => preflight::run_bench(args),
+        Cmd::Preflight(args) => preflight::run_preflight(args),
+        Cmd::Smoke(args) => preflight::run_smoke(args),
     }
 }
 
@@ -265,20 +313,14 @@ fn generate_key(key: Option<PathBuf>, comment: &str) -> Result<()> {
         // Don't regenerate — a fresh keypair would orphan every already
         // shipped, already-signed build. Report the existing public key
         // for embedding instead.
-        println!(
-            "A signing key already exists at {}.",
-            key_path.display()
-        );
+        println!("A signing key already exists at {}.", key_path.display());
         match std::fs::read_to_string(&pub_path) {
             Ok(contents) => match extract_pubkey(&contents) {
                 Some(line) => {
                     println!("\nPublic key (embed this in wylde-updater::PUBLIC_KEY):");
                     println!("{line}");
                 }
-                None => println!(
-                    "(could not parse a key line out of {})",
-                    pub_path.display()
-                ),
+                None => println!("(could not parse a key line out of {})", pub_path.display()),
             },
             Err(_) => println!(
                 "(no matching public key at {} — pass the right --key, or \
@@ -383,10 +425,30 @@ fn publish(
     notes: Option<&str>,
     notes_file: Option<&Path>,
     dry_run: bool,
+    no_preflight_receipt: bool,
+    repo_root: Option<PathBuf>,
 ) -> Result<()> {
     if !binary.exists() {
         bail!("binary to publish does not exist: {}", binary.display());
     }
+
+    // ── The preflight-receipt gate (enforcement-matrix row 14). Refuse to
+    // publish a build whose running system was never verified. Skipped for a
+    // dry-run rehearsal, or via the deliberate, loud `--no-preflight-receipt`.
+    if dry_run {
+        println!("[dry-run] (skipping preflight-receipt gate — rehearsal only)");
+    } else if no_preflight_receipt {
+        eprintln!(
+            "⚠️  --no-preflight-receipt: shipping WITHOUT a verified preflight receipt.\n\
+             ⚠️  This is the exact gate that stops a broken build from shipping. Proceed only if\n\
+             ⚠️  you know why the normal `wylde-release preflight` path was bypassed."
+        );
+    } else {
+        preflight::enforce_receipt_for_publish(repo_root.as_deref(), version)
+            .context("preflight-receipt gate")?;
+        println!("✓ preflight receipt validates for {version} at HEAD.");
+    }
+
     let key = resolve_key_path(key);
 
     // Every uploadable asset is the file itself plus its `.minisig`. The
@@ -418,6 +480,12 @@ fn publish(
     }
 
     let notes = resolve_notes(notes, notes_file, version, channel)?;
+    // Changelog gate: a real release must carry real notes (fail-closed).
+    // Exempt only for a --dry-run rehearsal.
+    enforce_publishable_notes(&notes, dry_run).context("changelog gate")?;
+    if !dry_run {
+        println!("✓ changelog gate: release notes are present and non-placeholder.");
+    }
 
     // gh release create <tag> <asset>… --repo … --title … --notes … [--prerelease]
     let mut args: Vec<String> = vec!["release".into(), "create".into(), version.into()];
@@ -449,8 +517,17 @@ fn publish(
     Ok(())
 }
 
+/// Prefix of the one-line rehearsal placeholder that [`resolve_notes`]
+/// synthesises when no real notes are supplied. The publish gate
+/// ([`enforce_publishable_notes`]) refuses any release whose notes start
+/// with this — a real stable/experimental release must carry a real
+/// changelog, never the auto-message.
+const AUTO_NOTES_PREFIX: &str = "Automated release ";
+
 /// Resolve the release-notes body: `--notes-file` wins (read from disk),
-/// then `--notes`, then a one-line auto message.
+/// then `--notes`, then a one-line auto message. The auto message is only
+/// legitimate for a `--dry-run` rehearsal; a real publish is gated by
+/// [`enforce_publishable_notes`] so it can never ship.
 fn resolve_notes(
     notes: Option<&str>,
     notes_file: Option<&Path>,
@@ -462,8 +539,36 @@ fn resolve_notes(
             .with_context(|| format!("reading notes file {}", path.display()));
     }
     Ok(notes.map(str::to_owned).unwrap_or_else(|| {
-        format!("Automated release {version} ({} channel).", channel_name(channel))
+        format!(
+            "{AUTO_NOTES_PREFIX}{version} ({} channel).",
+            channel_name(channel)
+        )
     }))
+}
+
+/// Whether `notes` are a real changelog rather than empty or the rehearsal
+/// placeholder. Pure so the publish gate is unit-tested without `gh`.
+fn notes_are_publishable(notes: &str) -> bool {
+    let trimmed = notes.trim();
+    !trimmed.is_empty() && !trimmed.starts_with(AUTO_NOTES_PREFIX)
+}
+
+/// The changelog gate for `publish` (enforcement-matrix companion to the
+/// preflight-receipt gate): a real release must carry real release notes.
+/// Fails closed — an empty `--notes-file`, no notes at all (the synthesised
+/// auto-message), or the placeholder is refused. A `--dry-run` rehearsal is
+/// exempt (it never reaches GitHub), so the auto-message can still be
+/// previewed.
+fn enforce_publishable_notes(notes: &str, dry_run: bool) -> Result<()> {
+    if dry_run || notes_are_publishable(notes) {
+        return Ok(());
+    }
+    bail!(
+        "refusing to publish without a real changelog: the release notes are empty or the \
+         one-line auto-message. A stable or experimental release must ship real notes — pass \
+         `--notes-file <path>` pointing at this version's CHANGELOG.md section (or `--notes`). \
+         The auto-message is only for `--dry-run` rehearsals."
+    )
 }
 
 fn channel_name(channel: Channel) -> &'static str {
@@ -481,8 +586,8 @@ fn verify_public_key(input: &str) -> Result<()> {
     } else {
         input.to_owned()
     };
-    let candidate = extract_pubkey(&raw)
-        .context("could not parse a base64 public-key line from the input")?;
+    let candidate =
+        extract_pubkey(&raw).context("could not parse a base64 public-key line from the input")?;
 
     if !wylde_updater::has_signing_key() {
         // The shipped build still carries the placeholder, so there is
@@ -655,8 +760,14 @@ mod tests {
                 notes_file,
                 ..
             } => {
-                assert_eq!(binary, PathBuf::from("wylde-gui-x86_64-pc-windows-msvc.exe"));
-                assert_eq!(extra_asset, vec![PathBuf::from("WyldeSetup-0.1.0-alpha.1.exe")]);
+                assert_eq!(
+                    binary,
+                    PathBuf::from("wylde-gui-x86_64-pc-windows-msvc.exe")
+                );
+                assert_eq!(
+                    extra_asset,
+                    vec![PathBuf::from("WyldeSetup-0.1.0-alpha.1.exe")]
+                );
                 assert_eq!(notes_file, Some(PathBuf::from("RELEASE_NOTES.md")));
             }
             other => panic!("expected Publish, got {other:?}"),
@@ -691,13 +802,47 @@ mod tests {
     }
 
     #[test]
+    fn changelog_gate_rejects_empty_and_placeholder_notes() {
+        // Real notes pass.
+        assert!(notes_are_publishable(
+            "## 0.2.0\n- a real, user-facing change"
+        ));
+        // Empty / whitespace-only is refused.
+        assert!(!notes_are_publishable(""));
+        assert!(!notes_are_publishable("   \n\t "));
+        // The synthesised rehearsal placeholder is refused — this is the
+        // silent-fallback hole being closed.
+        let auto = resolve_notes(None, None, "0.2.0", Channel::Stable).unwrap();
+        assert!(
+            !notes_are_publishable(&auto),
+            "the auto-message must never count as a real changelog"
+        );
+    }
+
+    #[test]
+    fn changelog_gate_fails_closed_for_a_real_publish_but_exempts_dry_run() {
+        let auto = resolve_notes(None, None, "0.2.0", Channel::Beta).unwrap();
+        // A real publish (dry_run = false) with no real notes is refused...
+        assert!(
+            enforce_publishable_notes(&auto, false).is_err(),
+            "a real release without real notes must fail closed"
+        );
+        // ...the same rehearsal (dry_run = true) is allowed to preview it...
+        assert!(enforce_publishable_notes(&auto, true).is_ok());
+        // ...and a real publish WITH real notes passes.
+        assert!(enforce_publishable_notes("## 0.2.0\n- real notes", false).is_ok());
+    }
+
+    #[test]
     fn resolve_notes_reads_file_over_string() {
         // No tempfile dep on this standalone crate — use the OS temp dir
         // with a pid-unique name so parallel test runs don't collide.
-        let path = std::env::temp_dir().join(format!("wylde-release-notes-{}.md", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("wylde-release-notes-{}.md", std::process::id()));
         std::fs::write(&path, "# From file\n").unwrap();
         // notes-file wins over an also-present --notes string.
-        let resolved = resolve_notes(Some("ignored"), Some(&path), "v1.0.0", Channel::Beta).unwrap();
+        let resolved =
+            resolve_notes(Some("ignored"), Some(&path), "v1.0.0", Channel::Beta).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(resolved, "# From file\n");
     }

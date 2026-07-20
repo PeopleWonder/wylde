@@ -33,9 +33,12 @@ from .._config import (
     RUST_DEEP_SUPER_RE,
     RUST_DISCARD_RESULT_MARKER,
     RUST_LET_UNDERSCORE_RE,
+    RUST_LOG_ROTATION_FACTORY_FILE,
     RUST_LOGGING_INIT_PATTERNS,
     RUST_PROCESS_SPAWN_ALLOWED_CRATES,
     RUST_PROCESS_SPAWN_PATTERNS,
+    RUST_UNBOUNDED_APPEND_MARKER,
+    RUST_UNBOUNDED_APPEND_PATTERNS,
     RUST_USE_CRATE_RE,
 )
 from .._walkers import _is_excluded, _read_text, _to_rel
@@ -413,6 +416,66 @@ def check_no_external_process_spawn_rust() -> List[Finding]:
                                 f"or add `{crate}` to "
                                 f"RUST_PROCESS_SPAWN_ALLOWED_CRATES with a "
                                 f"documented architectural reason."
+                            ),
+                            context=line.strip()[:200],
+                        )
+                    )
+                    break
+    return out
+
+
+# ── Rule 54: no_unbounded_log_sink_rust ──────────────────────────────
+
+
+def check_no_unbounded_log_sink_rust() -> List[Finding]:
+    """Every persistent file log must inherit the shared rotation policy.
+
+    The canonical logging module owns the ONE sanctioned append-only
+    open (behind ``RotatingLog`` / ``open_rotating_append``) and is
+    skipped.  A raw ``OpenOptions::…append(true)`` anywhere else is the
+    tell-tale of an ad-hoc, uncapped log sink that bypasses rotation —
+    exactly the ``ipc.jsonl`` failure mode (unbounded append → disk
+    fills silently).  Route persistent logs through
+    ``wylde_shared::logging::rotating_sink`` (or ``open_rotating_append``
+    for a subprocess redirect) so they are bounded by construction.
+
+    A same-line ``// wylde-check: unbounded-append-ok`` marker suppresses
+    the rule when an append genuinely is not a growing log and a bound is
+    inappropriate — the exception must be justified in-line, not the norm.
+    """
+    out: List[Finding] = []
+    for path in _walk_rust_sources():
+        rel = _to_rel(path)
+        if rel == RUST_LOG_ROTATION_FACTORY_FILE:
+            continue
+        text = _read_text(path)
+        if not text:
+            continue
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if RUST_UNBOUNDED_APPEND_MARKER in line:
+                continue
+            stripped = line.lstrip()
+            if _is_doc_or_comment(stripped):
+                continue
+            for pat in RUST_UNBOUNDED_APPEND_PATTERNS:
+                if pat.search(line):
+                    out.append(
+                        Finding(
+                            rule="no_unbounded_log_sink_rust",
+                            severity="error",
+                            file=rel,
+                            line=lineno,
+                            message=(
+                                "Raw append-only file open bypasses the "
+                                "shared log-rotation policy. Route persistent "
+                                "logs through "
+                                "`wylde_shared::logging::rotating_sink` (or "
+                                "`open_rotating_append` for a subprocess "
+                                "stdout/stderr redirect) so they inherit the "
+                                "size + retention cap by construction. If this "
+                                "append is genuinely not a growing log, add "
+                                "`// wylde-check: unbounded-append-ok` on the "
+                                "same line with a reason."
                             ),
                             context=line.strip()[:200],
                         )

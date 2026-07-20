@@ -10,16 +10,21 @@
 #![cfg(windows)]
 
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use wylde_workspaces_client::WorkspacesClient;
 
+/// A collision-proof service/pipe name. A `pid + timestamp` name can tie
+/// between this file's concurrently-running tests (same pid, same clock tick);
+/// the IPC server sets no `first_pipe_instance`, so two services on one name
+/// share the pipe and cross-talk. The random `uuid` removes the tie (same
+/// convention as `integration_rag_indexer.rs`; see #29).
 fn unique_service_name() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("wylde-workspaces-fs-{}-{}", std::process::id(), nanos)
+    format!(
+        "wylde-workspaces-fs-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    )
 }
 
 fn spawn_service(
@@ -101,7 +106,10 @@ async fn fs_verbs_round_trip_over_the_pipe() {
     // ── list_dir root: one level, dirs first, ignored flags ──────────────
     let listed = client.fs_list_dir(&id, None).await.expect("list_dir");
     let entries = listed["entries"].as_array().expect("entries");
-    let names: Vec<&str> = entries.iter().map(|e| e["name"].as_str().unwrap()).collect();
+    let names: Vec<&str> = entries
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
     assert!(names.contains(&"main.rs"), "root lists main.rs: {names:?}");
     assert!(names.contains(&"src"));
     assert!(names.contains(&"target"));
@@ -118,7 +126,12 @@ async fn fs_verbs_round_trip_over_the_pipe() {
 
     // ── write (round-trips), then read back ──────────────────────────────
     let written = client
-        .fs_write(&id, "main.rs", "fn main() { println!(\"hi\"); }\n", Some(mtime))
+        .fs_write(
+            &id,
+            "main.rs",
+            "fn main() { println!(\"hi\"); }\n",
+            Some(mtime),
+        )
         .await
         .expect("write");
     assert!(written["size_bytes"].as_u64().unwrap() > 0);
@@ -132,10 +145,7 @@ async fn fs_verbs_round_trip_over_the_pipe() {
     }
 
     // ── conflict: a stale expected_mtime is refused ──────────────────────
-    match client
-        .fs_write(&id, "main.rs", "stale", Some(0.0))
-        .await
-    {
+    match client.fs_write(&id, "main.rs", "stale", Some(0.0)).await {
         Err(e) => assert_eq!(e.code, "conflict", "expected conflict, got {e:?}"),
         Ok(v) => panic!("stale write should conflict, got ok: {v}"),
     }

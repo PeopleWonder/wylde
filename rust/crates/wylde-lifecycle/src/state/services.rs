@@ -1,11 +1,14 @@
-//! Seven daemon-managed service start/stop pairs.
+//! The daemon-managed service start/stop pairs.
 //!
-//! Rust port of `Core/Lifecycle/daemon_state/_services.py`. Memgraph,
-//! Voice, device_gate, vram_broker, extension_bridge, gateway,
-//! memory_scheduler. Each `start_<service>` boots the service as a
-//! subprocess and records the spawn so orphan-detection knows about
-//! it. Each `stop_<service>` sends the OS-appropriate graceful signal,
-//! waits for exit, and force-kills on timeout.
+//! Rust port of `Core/Lifecycle/daemon_state/_services.py`. The set of
+//! services and their boot/shutdown/dispatch wiring is owned by the single
+//! [`crate::daemon_managed::DAEMON_MANAGED`] table (issue #101) — this
+//! module supplies the `start_<service>` / `stop_<service>` hooks each row
+//! points at. Each `start_<service>` boots the service as a subprocess
+//! (or, for `start_memory_scheduler`, is a log-only no-op) and records the
+//! spawn so orphan-detection knows about it. Each `stop_<service>` sends
+//! the OS-appropriate graceful signal, waits for exit, and force-kills on
+//! timeout.
 //!
 //! ## Rust-only (full-Rust cutover R6, 2026-06-10)
 //!
@@ -108,37 +111,33 @@ pub fn impl_for_with_default(service: &str, default: ImplLang) -> ImplLang {
 ///
 /// Resolution order:
 ///   1. `WYLDE_<SERVICE>_BIN` override (must point at an existing file).
-///   2. Bundled install path `rust/bin/wylde-<stripped>.exe`.
-///   3. Cargo release target `rust/target/release/wylde-<stripped>.exe`.
-///   4. Cargo debug target `rust/target/debug/wylde-<stripped>.exe`.
+///   2. Whatever [`wylde_stack::current::resolve`] says — the `current`
+///      pointer's directory when an installed stack exists, otherwise the
+///      single build-tree profile directory the daemon itself was taken from.
 ///
-/// `<stripped>` is `service` with the `wylde-` prefix removed. On
-/// non-Windows hosts the `.exe` suffix is dropped (the daemon only
-/// runs on Windows in production but tests can exercise the resolver
-/// on any platform).
+/// **Why this delegates (#97/#92).** This used to run its own first-match
+/// walk over `rust/bin` → `rust/target/release` → `rust/target/debug`, per
+/// service. That meant the daemon could spawn services from a different
+/// build profile than the one it was itself launched from, and — once the
+/// updater started installing whole stacks under `%LOCALAPPDATA%` — a freshly
+/// updated daemon would still have spawned every service from the stale repo
+/// build tree, or from nothing at all on a machine with no repo. Sharing the
+/// resolver is what makes "the update reached the backend" actually true:
+/// the launcher, the updater, and the daemon's own spawn path all agree on
+/// which stack is current.
+///
+/// The `WYLDE_<SERVICE>_BIN` override stays first and stays absolute — it is
+/// the dev-staging escape hatch, and pointing it at a specific build is
+/// exactly the case where the shared resolution should be bypassed.
 pub fn rust_binary_path(service: &str) -> Option<PathBuf> {
-    let stripped = service.strip_prefix("wylde-").unwrap_or(service);
     let override_var = format!("WYLDE_{}_BIN", service.to_uppercase().replace('-', "_"));
     if let Ok(over) = std::env::var(&override_var) {
         let p = PathBuf::from(over);
         return p.exists().then_some(p);
     }
-
-    let suffix = if cfg!(windows) { ".exe" } else { "" };
-    let bin_name = format!("wylde-{stripped}{suffix}");
-    let root = wylde_root();
-    let candidates = [
-        root.join("rust").join("bin").join(&bin_name),
-        root.join("rust")
-            .join("target")
-            .join("release")
-            .join(&bin_name),
-        root.join("rust")
-            .join("target")
-            .join("debug")
-            .join(&bin_name),
-    ];
-    candidates.iter().find(|p| p.exists()).cloned()
+    wylde_stack::current::resolve_in(&wylde_root())
+        .path_of(service)
+        .map(Path::to_path_buf)
 }
 
 fn wylde_root() -> PathBuf {
@@ -205,13 +204,32 @@ pub fn sibling_binary_path(folder: &Path, service: &str) -> Option<PathBuf> {
 pub async fn start_discovered(svc: &crate::registry::DiscoveredService) -> Result<()> {
     let name = svc.name.as_str();
     if is_service_alive(name) {
-        let pid = manifest_pid(name).or_else(|| service_pid(name)).unwrap_or(0);
+        let pid = manifest_pid(name)
+            .or_else(|| service_pid(name))
+            .unwrap_or(0);
         tracing::info!("{name}: already alive (manifest pid={pid}); skipping spawn");
         return Ok(());
     }
     if nospawn_enabled() {
         nospawn_record(name, ImplLang::Rust.as_str());
         tracing::info!("{name}: NO-SPAWN — would-have-spawned recorded; no child forked");
+        return Ok(());
+    }
+    // min_core compatibility floor — refuse to spawn a sibling that needs a
+    // newer Core than is running, LOUDLY (never a silent skip; a silently-absent
+    // service is the "panel present but dead" failure class). The reason is also
+    // surfaced to the GUI via registry::build_info (service.list) and
+    // service.health, so the panel shows *why* rather than just "unavailable".
+    let compat =
+        crate::registry::check_core_floor(crate::registry::core_version(), svc.min_core.as_deref());
+    if let Some(reason) = compat.reason() {
+        tracing::error!(
+            service = name,
+            min_core = svc.min_core.as_deref().unwrap_or(""),
+            core = crate::registry::core_version(),
+            "refusing to start {name}: {reason}. The service will NOT spawn; its \
+             panel will show why. Update Wylde Core, or correct the service's min_core."
+        );
         return Ok(());
     }
     let Some(bin) = sibling_binary_path(&svc.folder, name) else {
@@ -431,7 +449,7 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
         // SAME `extensions.dispatch` shape (the Rust impl additionally
         // exposes the nine `ext.*` actions + the `ext.events` stream),
         // so Gateway routing is unchanged. The master-plan §11 Q-E1
-        // dogfood gate was waived by Aaron with the full-Rust call.
+        // dogfood gate was waived by the maintainer with the full-Rust call.
         // `WYLDE_WYLDE_EXTENSION_BRIDGE_IMPL` no longer has a `python`
         // target.
         name: service_name::EXTENSION_BRIDGE,
@@ -673,14 +691,23 @@ pub async fn start_memgraph() -> Result<()> {
         // Append-mode JVM log, same location the Python wrapper used.
         // Absolute root (see `memgraph_root_abs`) so the log path is stable
         // even if the daemon CWD differs from the repo root.
-        let logs_dir = memgraph_root_abs().join("Core").join("Memgraph").join("logs");
+        let logs_dir = memgraph_root_abs()
+            .join("Core")
+            .join("Memgraph")
+            .join("logs");
         std::fs::create_dir_all(&logs_dir)
             .with_context(|| format!("create {}", logs_dir.display()))?;
-        let log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(logs_dir.join("neo4j.log"))
-            .with_context(|| "open neo4j.log")?;
+        // Bounded via the shared logging policy: an over-cap file is
+        // rolled at open time so this console-capture redirect can't grow
+        // forever across restarts. (Neo4j's *own* neo4j.log — the log4j2
+        // RollingRandomAccessFile at `server.directories.logs`, 20 MB × 7
+        // in conf/user-logs.xml — rotates itself; this is the separate
+        // stdout/stderr capture our redirect owns, so we bound it here.)
+        let log = wylde_shared::logging::open_rotating_append(
+            &logs_dir.join("neo4j.log"),
+            wylde_shared::logging::RotationPolicy::from_env(),
+        )
+        .with_context(|| "open neo4j.log")?;
         let log_err = log.try_clone().with_context(|| "clone neo4j.log handle")?;
 
         let mut cmd = Command::new("cmd");
@@ -1455,6 +1482,54 @@ mod tests {
         clear_env("WYLDE_WYLDE_OVERRIDESVC_BIN");
     }
 
+    /// **The end-to-end half of #97.** Shipping a new backend binary is only
+    /// useful if the daemon then *spawns* it. This asserts the daemon's spawn
+    /// path follows the `current` pointer the updater repoints, rather than
+    /// its own walk of the repo build tree.
+    ///
+    /// Without this, a successful whole-stack update produces a new daemon
+    /// that goes on launching every service from the stale build tree — the
+    /// same backend-stale skew in a new place — and on a machine with no repo
+    /// it would find no services at all.
+    #[test]
+    #[serial_test::serial]
+    fn rust_binary_path_follows_the_current_pointer_not_the_build_tree() {
+        let root = tempfile::TempDir::new().unwrap();
+        let home = tempfile::TempDir::new().unwrap();
+        let installed = tempfile::TempDir::new().unwrap();
+        let exe = |n: &str| format!("{n}{}", wylde_stack::EXE_SUFFIX);
+
+        // A build tree with a daemon and a STALE gateway beside it.
+        let tree = root.path().join("rust").join("target").join("release");
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::write(tree.join(exe("wylde-lifecycle")), b"old").unwrap();
+        let stale = tree.join(exe("wylde-gateway"));
+        std::fs::write(&stale, b"old gateway").unwrap();
+
+        // An installed stack carrying a NEW gateway.
+        std::fs::write(installed.path().join(exe("wylde-lifecycle")), b"new").unwrap();
+        let fresh = installed.path().join(exe("wylde-gateway"));
+        std::fs::write(&fresh, b"new gateway").unwrap();
+
+        std::env::set_var("WYLDE_ROOT", root.path());
+        std::env::set_var(wylde_stack::current::HOME_DIR_ENV, home.path());
+        clear_env(wylde_stack::current::CURRENT_DIR_ENV);
+        clear_env("WYLDE_WYLDE_GATEWAY_BIN");
+        wylde_stack::current::set_current(installed.path()).unwrap();
+
+        let resolved = rust_binary_path(service_name::GATEWAY);
+        assert_eq!(
+            resolved.as_deref(),
+            Some(fresh.as_path()),
+            "the daemon must spawn the gateway from the installed stack, not \
+             the build tree — otherwise an update never reaches the backend"
+        );
+        assert_ne!(resolved.as_deref(), Some(stale.as_path()));
+
+        clear_env("WYLDE_ROOT");
+        clear_env(wylde_stack::current::HOME_DIR_ENV);
+    }
+
     #[test]
     fn rust_binary_path_strips_wylde_prefix() {
         // Without env override and without a matching file, we get None.
@@ -1592,7 +1667,7 @@ mod tests {
         // Default impl per row. ALL five are rust-only — device_gate,
         // vram_broker, gateway on 2026-06-02, voice in the Phase 11.E
         // cutover, and extension_bridge in the full-Rust cutover
-        // (2026-06-09, dogfood gate waived by Aaron). The
+        // (2026-06-09, dogfood gate waived by the maintainer). The
         // `python_module` field itself went with the Python runtime
         // tree in slice R6.
         let cases = [
@@ -1644,10 +1719,7 @@ mod tests {
         let bin_name = format!("wylde-gallery{}", if cfg!(windows) { ".exe" } else { "" });
         let bin = dir.path().join(&bin_name);
         std::fs::write(&bin, b"#!stub").unwrap();
-        assert_eq!(
-            sibling_binary_path(dir.path(), "wylde-gallery"),
-            Some(bin)
-        );
+        assert_eq!(sibling_binary_path(dir.path(), "wylde-gallery"), Some(bin));
     }
 
     #[tokio::test]
@@ -1661,12 +1733,40 @@ mod tests {
             name: "wylde-phantom".to_string(),
             folder: std::path::PathBuf::from("Services/wylde-phantom"),
             enabled: true,
+            min_core: None,
         };
         let result = start_discovered(&svc).await;
         std::env::remove_var("WYLDE_WYLDE_PHANTOM_BIN");
         assert!(
             result.is_ok(),
             "start_discovered with no binary must be a non-fatal no-op, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_discovered_refuses_incompatible_min_core() {
+        // A sibling that needs a newer Core than is running is REFUSED before any
+        // spawn — non-fatal (Ok), no child forked. The BIN override points at a
+        // real-but-unexecutable file: had the floor check NOT fired first,
+        // start_discovered would reach the spawn and return Err trying to exec it.
+        // So `Ok` proves the floor short-circuited ahead of the spawn. (The
+        // comparison logic itself is proven in
+        // registry::tests::check_core_floor_semantics.)
+        let dir = tempfile::tempdir().unwrap();
+        let fake_bin = dir.path().join("not-an-exe.txt");
+        std::fs::write(&fake_bin, b"not executable").unwrap();
+        std::env::set_var("WYLDE_WYLDE_INCOMPAT_BIN", &fake_bin);
+        let svc = crate::registry::DiscoveredService {
+            name: "wylde-incompat".to_string(),
+            folder: dir.path().to_path_buf(),
+            enabled: true,
+            min_core: Some("99.0.0".to_string()), // far above any real Core
+        };
+        let result = start_discovered(&svc).await;
+        std::env::remove_var("WYLDE_WYLDE_INCOMPAT_BIN");
+        assert!(
+            result.is_ok(),
+            "an incompatible sibling must be refused non-fatally BEFORE spawn, got {result:?}"
         );
     }
 }

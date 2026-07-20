@@ -72,8 +72,26 @@ pub struct Release {
     pub assets: Vec<ReleaseAsset>,
 }
 
-/// A concrete, installable update: the selected release plus the resolved
-/// binary + signature assets.
+/// One roster binary matched to its release assets. Every member of the
+/// stack carries its own detached signature — there is no bundle signature,
+/// so no binary can ride in unverified behind another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StackAsset {
+    /// Canonical service name, e.g. `wylde-gateway`.
+    pub name: String,
+    /// File name to write into the staged stack directory, e.g.
+    /// `wylde-gateway.exe`.
+    pub image: String,
+    pub binary: ReleaseAsset,
+    pub signature: ReleaseAsset,
+}
+
+/// A concrete, installable update: the selected release plus every resolved
+/// binary in the stack.
+///
+/// This used to hold a single `binary`/`signature` pair, which is precisely
+/// why the updater could only ever ship `wylde-gui` — the lifecycle daemon
+/// and every backend service had nowhere to live in this type (#97).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateInfo {
     /// Selected release version, normalised (no leading `v`).
@@ -84,8 +102,20 @@ pub struct UpdateInfo {
     pub notes: String,
     /// `html_url` of the release page.
     pub html_url: String,
-    pub binary: ReleaseAsset,
-    pub signature: ReleaseAsset,
+    /// Every binary this update carries, in roster order.
+    pub assets: Vec<StackAsset>,
+}
+
+impl UpdateInfo {
+    /// Total download size across the whole stack, for progress display.
+    pub fn total_size(&self) -> u64 {
+        self.assets.iter().map(|a| a.binary.size).sum()
+    }
+
+    /// Look up one member by canonical service name.
+    pub fn asset(&self, name: &str) -> Option<&StackAsset> {
+        self.assets.iter().find(|a| a.name == name)
+    }
 }
 
 /// Outcome of an update check.
@@ -136,25 +166,57 @@ pub fn select_release(releases: &[Release], channel: Channel) -> Option<&Release
         .map(|(r, _)| r)
 }
 
-/// Resolve the binary asset and its `.minisig` sibling from a release.
+/// Resolve every roster binary to its release assets.
 ///
-/// The binary is the asset whose name starts with `wylde-gui` and is not
-/// itself a `.minisig`; the signature is the asset named
-/// `<binary-name>.minisig`. A release missing either is rejected
-/// (fail-closed) rather than installed unsigned.
-pub fn pick_asset(release: &Release) -> Result<(ReleaseAsset, ReleaseAsset), UpdateError> {
-    let binary = release
-        .assets
-        .iter()
-        .find(|a| a.name.starts_with("wylde-gui") && !a.name.ends_with(".minisig"))
-        .ok_or(UpdateError::NoAsset)?;
-    let sig_name = format!("{}.minisig", binary.name);
-    let signature = release
-        .assets
-        .iter()
-        .find(|a| a.name == sig_name)
-        .ok_or(UpdateError::NoSignature)?;
-    Ok((binary.clone(), signature.clone()))
+/// **Registry-driven, not literal.** The set of binaries looked for comes
+/// from [`wylde_stack::roster`] — the in-tree core tier plus whatever the
+/// `Services/` bucket currently holds — so a service added to the tree is
+/// carried by the updater with no edit to this function. The old
+/// implementation matched `a.name.starts_with("wylde-gui")`, which is why
+/// the entire backend was invisible to the update path.
+///
+/// Two tiers of strictness, and the difference is deliberate:
+///
+/// * **In-tree binaries are REQUIRED.** A release that is missing one is
+///   rejected wholesale ([`UpdateError::NoAsset`]) rather than installed
+///   partially. "GUI new, daemon stale" must not be a reachable state, so a
+///   half-populated release fails the check instead of half-applying.
+/// * **Bucket siblings are OPTIONAL.** A third-party service under
+///   `Services/<name>/` is not something a Wylde release can be expected to
+///   publish; it is carried when the release happens to contain it and
+///   skipped otherwise.
+///
+/// Every resolved binary must have its `.minisig` sibling — a signed-but-one
+/// release is rejected ([`UpdateError::NoSignature`]), preserving the
+/// fail-closed guarantee per binary rather than per release.
+pub fn pick_assets(
+    release: &Release,
+    roster: &[wylde_stack::StackBinary],
+) -> Result<Vec<StackAsset>, UpdateError> {
+    let mut out = Vec::with_capacity(roster.len());
+    for entry in roster {
+        let asset_name = entry.asset_name();
+        let Some(binary) = release.assets.iter().find(|a| a.name == asset_name) else {
+            if entry.is_sibling() {
+                // Optional: an out-of-tree sibling this release doesn't ship.
+                continue;
+            }
+            return Err(UpdateError::NoAsset);
+        };
+        let sig_name = entry.signature_name();
+        let signature = release
+            .assets
+            .iter()
+            .find(|a| a.name == sig_name)
+            .ok_or(UpdateError::NoSignature)?;
+        out.push(StackAsset {
+            name: entry.name.clone(),
+            image: entry.image.clone(),
+            binary: binary.clone(),
+            signature: signature.clone(),
+        });
+    }
+    Ok(out)
 }
 
 /// The pure core of [`crate::check_for_update`]: given the release list,
@@ -169,7 +231,9 @@ pub fn evaluate(
     current_version: &str,
 ) -> Result<UpdateStatus, UpdateError> {
     let current = parse_tag(current_version).ok_or_else(|| {
-        UpdateError::Version(format!("current version `{current_version}` is not valid semver"))
+        UpdateError::Version(format!(
+            "current version `{current_version}` is not valid semver"
+        ))
     })?;
 
     let Some(release) = select_release(releases, channel) else {
@@ -188,14 +252,13 @@ pub fn evaluate(
         });
     }
 
-    let (binary, signature) = pick_asset(release)?;
+    let assets = pick_assets(release, &wylde_stack::roster())?;
     Ok(UpdateStatus::Available(UpdateInfo {
         version: latest.to_string(),
         tag: release.tag_name.clone(),
         notes: release.body.clone(),
         html_url: release.html_url.clone(),
-        binary,
-        signature,
+        assets,
     }))
 }
 
@@ -211,14 +274,34 @@ mod tests {
         }
     }
 
-    /// A release with the standard binary + sig asset pair.
+    /// A release carrying the WHOLE stack — every roster binary plus its
+    /// signature. Built from the live roster so the fixture cannot drift out
+    /// of step with what the updater requires.
     fn rel(tag: &str, prerelease: bool, draft: bool) -> Release {
+        let mut assets = Vec::new();
+        for entry in wylde_stack::roster() {
+            assets.push(asset(&entry.asset_name()));
+            assets.push(asset(&entry.signature_name()));
+        }
         Release {
             tag_name: tag.into(),
             draft,
             prerelease,
             body: format!("notes for {tag}"),
             html_url: format!("https://example.test/releases/{tag}"),
+            assets,
+        }
+    }
+
+    /// A release that carries ONLY the GUI — exactly what the updater used to
+    /// accept, and what it must now refuse.
+    fn gui_only_rel(tag: &str) -> Release {
+        Release {
+            tag_name: tag.into(),
+            draft: false,
+            prerelease: false,
+            body: String::new(),
+            html_url: String::new(),
             assets: vec![
                 asset("wylde-gui-x86_64-pc-windows-msvc.exe"),
                 asset("wylde-gui-x86_64-pc-windows-msvc.exe.minisig"),
@@ -315,9 +398,12 @@ mod tests {
             UpdateStatus::Available(info) => {
                 assert_eq!(info.version, "1.2.0");
                 assert_eq!(info.tag, "v1.2.0");
-                assert!(info.binary.name.ends_with(".exe"));
-                assert!(info.signature.name.ends_with(".minisig"));
                 assert!(info.notes.contains("v1.2.0"));
+                assert!(info.assets.iter().all(|a| a.binary.name.ends_with(".exe")));
+                assert!(info
+                    .assets
+                    .iter()
+                    .all(|a| a.signature.name.ends_with(".minisig")));
             }
             other => panic!("expected Available, got {other:?}"),
         }
@@ -355,18 +441,21 @@ mod tests {
     }
 
     #[test]
-    fn pick_asset_requires_a_signature_sibling() {
+    fn pick_assets_requires_a_signature_sibling_for_every_binary() {
         let mut release = rel("v1.2.0", false, false);
-        // Drop the .minisig — an unsigned release must be rejected, not installed.
-        release.assets.retain(|a| !a.name.ends_with(".minisig"));
+        // Drop ONE .minisig — the gateway's. Fail-closed is per binary, so
+        // the whole release must be refused even though everything else is
+        // properly signed.
+        let victim = format!("wylde-gateway-{}.exe.minisig", wylde_stack::RELEASE_TARGET);
+        release.assets.retain(|a| a.name != victim);
         assert!(matches!(
-            pick_asset(&release),
+            pick_assets(&release, &wylde_stack::roster()),
             Err(UpdateError::NoSignature)
         ));
     }
 
     #[test]
-    fn pick_asset_requires_a_binary() {
+    fn pick_assets_requires_a_binary() {
         let release = Release {
             tag_name: "v1.2.0".into(),
             draft: false,
@@ -375,7 +464,69 @@ mod tests {
             html_url: String::new(),
             assets: vec![asset("README.txt"), asset("checksums.sha256")],
         };
-        assert!(matches!(pick_asset(&release), Err(UpdateError::NoAsset)));
+        assert!(matches!(
+            pick_assets(&release, &wylde_stack::roster()),
+            Err(UpdateError::NoAsset)
+        ));
+    }
+
+    /// **The #97 regression test.** A release carrying only `wylde-gui` is
+    /// exactly what the old `pick_asset` happily installed, leaving the
+    /// daemon and every backend service stale underneath a new GUI. It must
+    /// now be rejected outright rather than applied partially.
+    #[test]
+    fn a_gui_only_release_is_refused_rather_than_half_installed() {
+        let release = gui_only_rel("v1.2.0");
+        assert!(
+            matches!(
+                pick_assets(&release, &wylde_stack::roster()),
+                Err(UpdateError::NoAsset)
+            ),
+            "a release with no daemon and no backend services must not install; that is the GUI-new/backend-stale skew #92 cause #2 and #97 exist to eliminate"
+        );
+    }
+
+    /// The positive half: a whole-stack release resolves the daemon and the
+    /// backend services, not just the shell.
+    #[test]
+    fn pick_assets_carries_the_daemon_and_the_backend() {
+        let release = rel("v1.2.0", false, false);
+        let picked = pick_assets(&release, &wylde_stack::roster()).unwrap();
+        let names: Vec<&str> = picked.iter().map(|a| a.name.as_str()).collect();
+
+        for required in [
+            wylde_stack::service_name::GUI,
+            wylde_stack::service_name::LIFECYCLE,
+            wylde_stack::service_name::GATEWAY,
+            wylde_stack::service_name::HARNESS,
+            wylde_stack::service_name::WORKSPACES,
+        ] {
+            assert!(
+                names.contains(&required),
+                "{required} is not carried by the update: {names:?}"
+            );
+        }
+        for a in &picked {
+            assert_eq!(a.signature.name, format!("{}.minisig", a.binary.name));
+        }
+    }
+
+    /// An out-of-tree sibling the release doesn't publish is skipped, not
+    /// fatal — Wylde's release cannot be expected to carry a third party's
+    /// service. (In-tree binaries stay required; that is the asymmetry.)
+    #[test]
+    fn an_unpublished_bucket_sibling_is_skipped_not_fatal() {
+        let release = rel("v1.2.0", false, false);
+        let mut roster = wylde_stack::roster();
+        roster.push(wylde_stack::StackBinary {
+            name: "wylde-acme".into(),
+            image: "wylde-acme.exe".into(),
+            tier: wylde_stack::Tier::Service,
+            folder: Some(std::path::PathBuf::from("Services/acme")),
+        });
+
+        let picked = pick_assets(&release, &roster).unwrap();
+        assert!(!picked.iter().any(|a| a.name == "wylde-acme"));
     }
 
     #[test]

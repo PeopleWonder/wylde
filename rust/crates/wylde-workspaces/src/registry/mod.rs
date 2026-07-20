@@ -2,7 +2,7 @@
 //!
 //! **Conceptual path:** `Core/Harness/Workspaces/Registry/`.
 //!
-//! This is Aaron's "workspaces memory of some sort that stores each
+//! This is the maintainer's "workspaces memory of some sort that stores each
 //! workspace configuration" — the *config* tier, distinct from the
 //! per-workspace memory-entries layer in [`super::memory`].
 //!
@@ -36,6 +36,7 @@
 //!   IO + the MRU state machine.
 
 pub mod definition;
+pub mod pending;
 pub mod persistence;
 pub mod slug;
 pub mod state;
@@ -68,6 +69,13 @@ pub enum RegistryError {
     /// No workspace with that id is registered.
     #[error("workspace not found: {0}")]
     NotFound(String),
+
+    /// `index.json` exists but is unreadable or corrupt, so the set of
+    /// registered workspaces is UNKNOWN (#140). Distinct from "no workspaces":
+    /// callers must surface this rather than render an empty list, because the
+    /// real list is still on disk and a write-back would destroy it.
+    #[error("workspace index damaged: {0}")]
+    IndexDamaged(#[from] state::StateError),
 }
 
 // ── Registry facade ────────────────────────────────────────────────────
@@ -85,22 +93,33 @@ pub fn get(workspace_id: &str) -> Option<WorkspaceDefinition> {
 
 /// Up to [`MRU_WINDOW`] workspace definitions in MRU order plus the
 /// active id — exactly what the InferenceBar dropdown renders.
-pub fn list_mru() -> (Vec<WorkspaceDefinition>, Option<String>) {
-    let state = state::load();
+///
+/// `Err(IndexDamaged)` when `index.json` exists but can't be read or parsed.
+/// This deliberately does NOT degrade to an empty list (#140): "your
+/// workspaces are gone" and "I can't read the file that lists them" look
+/// identical to a user but are opposite situations, and only one of them is
+/// recoverable by leaving the disk alone.
+pub fn list_mru() -> Result<(Vec<WorkspaceDefinition>, Option<String>), RegistryError> {
+    let state = state::load()?;
     let defs = state
         .mru
         .iter()
         .take(MRU_WINDOW)
         .filter_map(|id| persistence::load_definition(id))
         .collect();
-    (defs, state.active_id)
+    Ok((defs, state.active_id))
 }
 
 /// Register a folder as a workspace (idempotent on the derived id) and
 /// promote it to the active/MRU head. Re-registering an existing folder
 /// preserves its `created_at` and feature toggles; an explicit `name`
 /// overrides the stored display name.
-pub fn create(folder: &str, name: Option<&str>) -> WorkspaceDefinition {
+/// `Err(IndexDamaged)` when `index.json` can't be read (#140). The check runs
+/// BEFORE `definition.json` is written: registering a workspace we then can't
+/// add to the index would leave an orphaned bundle that nothing lists.
+pub fn create(folder: &str, name: Option<&str>) -> Result<WorkspaceDefinition, RegistryError> {
+    // Fail before writing anything if the index is unusable.
+    let _ = state::load()?;
     let mut def = WorkspaceDefinition::new(folder);
     if let Some(existing) = persistence::load_definition(&def.id) {
         def.created_at = existing.created_at;
@@ -113,8 +132,8 @@ pub fn create(folder: &str, name: Option<&str>) -> WorkspaceDefinition {
     }
     def.updated_at = epoch_now();
     let _ = persistence::save_definition(&def);
-    promote_and_persist(&def.id);
-    def
+    promote_and_persist(&def.id)?;
+    Ok(def)
 }
 
 /// Mark an existing workspace active (and bump MRU). `Err(NotFound)`
@@ -123,8 +142,8 @@ pub fn set_active(workspace_id: &str) -> Result<WorkspaceState, RegistryError> {
     if persistence::load_definition(workspace_id).is_none() {
         return Err(RegistryError::NotFound(workspace_id.to_owned()));
     }
-    promote_and_persist(workspace_id);
-    Ok(state::load())
+    promote_and_persist(workspace_id)?;
+    Ok(state::load()?)
 }
 
 /// Rename / toggle features. Returns the updated definition, or `None`
@@ -151,26 +170,65 @@ pub fn update(
 }
 
 /// Remove a workspace from the index and delete its on-disk bundle.
-/// Returns `false` if it wasn't registered.
-pub fn delete(workspace_id: &str) -> bool {
+/// Returns `Ok(false)` if it wasn't registered.
+///
+/// `Err(IndexDamaged)` when the index can't be read (#140) — and note that
+/// this returns BEFORE the teardown. Tearing a bundle down on the strength of
+/// an index we couldn't read is precisely the destructive move: the teardown
+/// is irreversible, so it must not proceed on unknown state.
+pub fn delete(workspace_id: &str) -> Result<bool, RegistryError> {
     let existed = persistence::load_definition(workspace_id).is_some();
-    let mut state = state::load();
+    let mut state = state::load()?;
     state.forget(workspace_id);
-    let _ = state::save(&state);
-    let _ = persistence::delete_workspace_dir(workspace_id);
-    existed
+    if let Err(e) = state::save(&state) {
+        tracing::error!("workspaces.registry: delete could not persist index: {e}");
+        return Err(RegistryError::IndexDamaged(state::StateError::Unreadable {
+            path: state::index_path(),
+            source: e,
+        }));
+    }
+    teardown_bundle(workspace_id);
+    Ok(existed)
 }
 
-/// Promote `id` to the active/MRU head, persist `index.json`, and delete
+/// Promote `id` to the active/MRU head, persist `index.json`, and tear down
 /// the bundles of any workspaces evicted past the static MRU-5 window.
-fn promote_and_persist(workspace_id: &str) -> Vec<String> {
-    let mut state = state::load();
+///
+/// `Err(IndexDamaged)` when the index can't be read or persisted (#140).
+/// Eviction teardown only runs once the new index has actually landed —
+/// otherwise a failed save would delete bundles the on-disk index still
+/// references, which is unrecoverable.
+fn promote_and_persist(workspace_id: &str) -> Result<Vec<String>, RegistryError> {
+    let mut state = state::load()?;
     let evicted = state.promote(workspace_id);
-    let _ = state::save(&state);
-    for victim in &evicted {
-        let _ = persistence::delete_workspace_dir(victim);
+    if let Err(e) = state::save(&state) {
+        tracing::error!("workspaces.registry: promote could not persist index: {e}");
+        return Err(RegistryError::IndexDamaged(state::StateError::Unreadable {
+            path: state::index_path(),
+            source: e,
+        }));
     }
-    evicted
+    for victim in &evicted {
+        teardown_bundle(victim);
+    }
+    Ok(evicted)
+}
+
+/// The single teardown primitive **every** removal path funnels through:
+/// drop the on-disk bundle AND enqueue the workspace for a durable graph
+/// cascade (Chunk + now-orphan Entity prune, [`crate::graph::cleanup`]).
+///
+/// Centralising it here is the structural guarantee #99 asks for: explicit
+/// `delete` AND MRU eviction — and any future removal path — cascade to the
+/// graph *by construction*, because they can only remove a bundle by calling
+/// this. The graph prune itself is durable, not fire-and-forget: the id stays
+/// on the [`pending`] queue until the async drain confirms the teardown
+/// landed, so a transient graph outage can't permanently orphan a workspace's
+/// nodes. (Cross-ref #28 — a workspace id derives from its folder and can
+/// never be repointed, so teardown must cascade rather than repoint.)
+fn teardown_bundle(workspace_id: &str) {
+    let _ = persistence::delete_workspace_dir(workspace_id);
+    pending::enqueue(workspace_id);
 }
 
 #[cfg(test)]
@@ -182,15 +240,18 @@ mod tests {
     fn create_registers_activates_and_is_idempotent() {
         let _env = TestEnv::new();
         let folder = _env.ws_path("proj-a");
-        let a = create(&folder, None);
-        assert_eq!(state::load().active_id.as_deref(), Some(a.id.as_str()));
+        let a = create(&folder, None).unwrap();
+        assert_eq!(
+            state::load().unwrap().active_id.as_deref(),
+            Some(a.id.as_str())
+        );
 
         // Re-create the same folder: same id, created_at preserved.
-        let a2 = create(&folder, Some("Renamed"));
+        let a2 = create(&folder, Some("Renamed")).unwrap();
         assert_eq!(a2.id, a.id);
         assert_eq!(a2.created_at, a.created_at);
         assert_eq!(a2.name, "Renamed");
-        let (defs, _) = list_mru();
+        let (defs, _) = list_mru().unwrap();
         assert_eq!(defs.len(), 1, "idempotent create must not duplicate");
     }
 
@@ -199,13 +260,13 @@ mod tests {
         let _env = TestEnv::new();
         let mut first_id = String::new();
         for i in 0..=MRU_WINDOW {
-            let def = create(&_env.ws_path(&format!("w{i}")), None);
+            let def = create(&_env.ws_path(&format!("w{i}")), None).unwrap();
             if i == 0 {
                 first_id = def.id.clone();
             }
         }
         // The first (least-recently-used) workspace is evicted.
-        let (defs, _) = list_mru();
+        let (defs, _) = list_mru().unwrap();
         assert_eq!(defs.len(), MRU_WINDOW);
         assert!(get(&first_id).is_none(), "evicted bundle must be gone");
         assert!(!persistence::workspace_dir(&first_id).exists());
@@ -223,7 +284,7 @@ mod tests {
     #[test]
     fn update_toggles_and_renames() {
         let _env = TestEnv::new();
-        let def = create(&_env.ws_path("upd"), None);
+        let def = create(&_env.ws_path("upd"), None).unwrap();
         let updated = update(&def.id, Some("New Name"), Some(true), Some(false)).unwrap();
         assert_eq!(updated.name, "New Name");
         assert!(updated.persona_enabled);
@@ -235,10 +296,40 @@ mod tests {
     #[test]
     fn delete_forgets_and_returns_existed() {
         let _env = TestEnv::new();
-        let def = create(&_env.ws_path("del-me"), None);
-        assert!(delete(&def.id));
+        let def = create(&_env.ws_path("del-me"), None).unwrap();
+        assert!(delete(&def.id).unwrap());
         assert!(get(&def.id).is_none());
-        assert!(state::load().active_id.is_none());
-        assert!(!delete("nope-000000"));
+        assert!(state::load().unwrap().active_id.is_none());
+        assert!(!delete("nope-000000").unwrap());
+    }
+
+    // ── #99: BOTH removal paths cascade to the graph via one primitive ───
+
+    #[test]
+    fn delete_enqueues_the_graph_teardown() {
+        let _env = TestEnv::new();
+        let def = create(&_env.ws_path("del-cascade"), None).unwrap();
+        assert!(pending::list().is_empty(), "clean slate");
+        delete(&def.id).unwrap();
+        assert!(
+            pending::list().contains(&def.id),
+            "explicit delete must enqueue the graph cascade"
+        );
+    }
+
+    #[test]
+    fn mru_eviction_enqueues_the_graph_teardown() {
+        let _env = TestEnv::new();
+        // Fill the MRU window, then push one more so the LRU is evicted.
+        let first = create(&_env.ws_path("w0"), None).unwrap();
+        for i in 1..=MRU_WINDOW {
+            create(&_env.ws_path(&format!("w{i}")), None).unwrap();
+        }
+        assert!(get(&first.id).is_none(), "w0 evicted past the MRU window");
+        // Eviction — not just explicit delete — must cascade to the graph.
+        assert!(
+            pending::list().contains(&first.id),
+            "the evicted workspace must enqueue the graph cascade"
+        );
     }
 }

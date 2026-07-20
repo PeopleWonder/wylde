@@ -13,9 +13,8 @@
 pub mod chat;
 pub mod embed;
 pub mod error;
+pub mod gc;
 pub mod models;
 pub mod pull;
 
-pub use error::{
-    invalid_request, ollama_http_err, ollama_unreachable_err,
-};
+pub use error::{invalid_request, ollama_http_err, ollama_unreachable_err};

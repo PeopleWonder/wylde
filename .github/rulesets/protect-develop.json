@@ -1,0 +1,46 @@
+{
+  "name": "protect-develop",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": { "include": ["refs/heads/develop"], "exclude": [] }
+  },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "allowed_merge_methods": ["merge", "squash"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": true,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          { "context": "backend (rust/) build + test" },
+          { "context": "gui (Core/GUI/) build" },
+          { "context": "gui panel-walk (L7)" },
+          { "context": "clippy (G4) + fmt (G6)" },
+          { "context": "tools build" },
+          { "context": "version consistency (G7)" },
+          { "context": "branch target + name" },
+          { "context": "conventional commits" },
+          { "context": "changelog updated" },
+          { "context": "cargo-deny (advisories) (rust/Cargo.toml)" },
+          { "context": "cargo-deny (advisories) (Core/GUI/Cargo.toml)" },
+          { "context": "cargo-deny (licenses) (rust/Cargo.toml)" },
+          { "context": "cargo-deny (licenses) (Core/GUI/Cargo.toml)" }
+        ]
+      }
+    }
+  ],
+  "bypass_actors": []
+}

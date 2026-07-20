@@ -400,7 +400,15 @@ mod tests {
         ];
         // Query co-linear with Auth.
         let q = vec![1.0, 0.0, 0.0];
-        let set = route("how does auth work", &q, &concepts, vec![], &[], &RelationGraph::empty(), &cfg());
+        let set = route(
+            "how does auth work",
+            &q,
+            &concepts,
+            vec![],
+            &[],
+            &RelationGraph::empty(),
+            &cfg(),
+        );
         assert_eq!(set.concepts[0].id, "a", "nearest concept ranks first");
         assert!(set.concepts[0].activated);
         assert!((set.concepts[0].score - 1.0).abs() < 1e-6);
@@ -416,7 +424,15 @@ mod tests {
             cc("b", "Graph", vec![0.0, 0.0, 1.0]),
         ];
         let q = vec![1.0, 0.0, 0.0];
-        let set = route("weather forecast", &q, &concepts, vec![], &[], &RelationGraph::empty(), &cfg());
+        let set = route(
+            "weather forecast",
+            &q,
+            &concepts,
+            vec![],
+            &[],
+            &RelationGraph::empty(),
+            &cfg(),
+        );
         assert!(set.routed_nothing(), "nothing clears the absolute floor");
         assert_eq!(set.activated_count, 0);
         assert_eq!(set.chosen_cutoff, cfg().abs_threshold);
@@ -445,7 +461,15 @@ mod tests {
 
     #[test]
     fn empty_concepts_routes_nothing() {
-        let set = route("q", &[1.0, 0.0], &[], vec![], &[], &RelationGraph::empty(), &cfg());
+        let set = route(
+            "q",
+            &[1.0, 0.0],
+            &[],
+            vec![],
+            &[],
+            &RelationGraph::empty(),
+            &cfg(),
+        );
         assert!(set.routed_nothing());
         assert!(set.concepts.is_empty());
     }
@@ -455,8 +479,19 @@ mod tests {
         let concepts = vec![cc("a", "Auth", vec![0.0, 1.0])]; // orthogonal → off-topic
         let q = vec![1.0, 0.0];
         let vocab = match_vocabulary("how does the_pipe work", &["the_pipe".into()], 8);
-        let set = route("how does the_pipe work", &q, &concepts, vocab, &[], &RelationGraph::empty(), &cfg());
-        assert!(set.routed_nothing(), "vocab match alone does not activate a concept");
+        let set = route(
+            "how does the_pipe work",
+            &q,
+            &concepts,
+            vocab,
+            &[],
+            &RelationGraph::empty(),
+            &cfg(),
+        );
+        assert!(
+            set.routed_nothing(),
+            "vocab match alone does not activate a concept"
+        );
         assert_eq!(set.vocabulary.len(), 1);
         assert_eq!(set.vocabulary[0].identifier, "the_pipe");
     }
@@ -498,8 +533,19 @@ mod tests {
 
     #[test]
     fn log_line_marks_activation_and_cutoff() {
-        let concepts = vec![cc("a", "Auth", vec![1.0, 0.0]), cc("b", "Graph", vec![0.0, 1.0])];
-        let set = route("auth flow", &[1.0, 0.0], &concepts, vec![], &[], &RelationGraph::empty(), &cfg());
+        let concepts = vec![
+            cc("a", "Auth", vec![1.0, 0.0]),
+            cc("b", "Graph", vec![0.0, 1.0]),
+        ];
+        let set = route(
+            "auth flow",
+            &[1.0, 0.0],
+            &concepts,
+            vec![],
+            &[],
+            &RelationGraph::empty(),
+            &cfg(),
+        );
         let line = set.log_line();
         assert!(line.contains("★Auth"), "activated concept starred: {line}");
         assert!(line.contains("·Graph"), "suppressed concept dotted: {line}");

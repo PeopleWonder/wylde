@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a capability or improvement for Wylde.
+title: "feat: <short summary>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Wylde is local-first and privacy-first by design — proposals that keep
+        everything on-device and out of third-party clouds fit best. Wylde also
+        has an opinionated roadmap; a feature may be a great idea and still be
+        deferred if it's off the current line.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that Wylde makes hard or impossible today?
+      placeholder: "When I switch workspaces I lose my place in the previous conversation…"
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Wylde do? Rough is fine.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways you've thought about solving this, and why they fall short.
+    validations:
+      required: false
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Fit check
+      options:
+        - label: This keeps user data local / on-device (no new third-party cloud in the request path).
+          required: false
+        - label: I've checked this isn't already on the roadmap or an existing issue.
+          required: false

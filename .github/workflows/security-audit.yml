@@ -1,0 +1,59 @@
+# Security audit — cargo-deny advisory gate.
+#
+# Runs on every PR (so a bump that pulls a vulnerable crate is caught before
+# merge) AND on a weekly schedule (so a newly-PUBLISHED advisory against an
+# already-pinned dependency turns this red within days — instead of surfacing
+# months later as a `git push` warning, which is the backlog this repo is
+# escaping).
+#
+# Policy lives in the per-workspace deny.toml files and
+# docs/security/dependency-hygiene-policy.md. Accepting an advisory = adding it
+# to the relevant deny.toml `ignore` list WITH a reason and a review date.
+name: Security audit
+
+on:
+  # Runs on EVERY PR — deliberately NOT path-filtered. The two
+  # `cargo-deny (advisories)` matrix legs are required status checks
+  # (protect-develop / protect-main); a required check on a path-filtered
+  # workflow never runs on a PR that touches no Cargo/deny files, and GitHub
+  # then blocks that PR forever waiting for a status that never arrives. ci.yml
+  # is unfiltered for exactly this reason. Bonus: the advisory DB shifts over
+  # time, so a newly-published advisory against an already-pinned crate can turn
+  # an otherwise-unrelated PR red — which is the posture we want. Cost is ~1
+  # min per matrix leg on the cheapest (ubuntu) runners.
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+      # Transitional — see docs/migration-to-branch-model.md; drop after the rename.
+      - "feat/thought-bubble-system"
+  schedule:
+    # Mondays 07:00 UTC — an hour after Dependabot opens its weekly PRs.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: security-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (advisories)
+    runs-on: ubuntu-latest
+    # cargo-deny resolves the dependency graph from the lockfile and its
+    # deny.toml pins the targets (windows + linux) explicitly, so the runner OS
+    # does not affect the result — ubuntu is just the cheapest runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        manifest:
+          - rust/Cargo.toml
+          - Core/GUI/Cargo.toml
+    steps:
+      - uses: actions/checkout@v7
+      - name: cargo-deny check advisories
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: ${{ matrix.manifest }}
+          command: check advisories

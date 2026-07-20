@@ -68,7 +68,8 @@ pub fn update_available() -> bool {
 
 /// The resolved [`UpdateInfo`] when the startup check found an update,
 /// else `None`. Lets the Settings panel seed its manual-check state with
-/// the already-resolved binary + signature assets.
+/// the already-resolved stack assets — every binary the update carries,
+/// each with its own signature — so accepting needs no second check.
 pub fn available_info() -> Option<UpdateInfo> {
     match snapshot().outcome {
         Some(Ok(UpdateStatus::Available(info))) => Some(info),
@@ -123,6 +124,13 @@ pub fn due_for_check(
     }
 }
 
+/// Whether an available `version` should be suppressed because the user
+/// skipped exactly it. Pure so the "Skip this version" gate is unit-tested
+/// without the pipe or the network.
+fn skip_suppresses(version: &str, skipped: Option<&str>) -> bool {
+    skipped == Some(version)
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -169,6 +177,10 @@ pub async fn run_startup_check(current_version: &str) -> bool {
         .unwrap_or("stable")
         .to_owned();
     let last_checked = prefs.get("last_checked").and_then(|v| v.as_u64());
+    let skipped_version = prefs
+        .get("skipped_version")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
 
     let now = now_secs();
     if !due_for_check(enabled, auto_check, &frequency, last_checked, now) {
@@ -189,6 +201,28 @@ pub async fn run_startup_check(current_version: &str) -> bool {
         wylde_updater::check_for_update(channel, &version).map_err(|e| e.to_string())
     })
     .await;
+
+    // Honour the "Skip this version" decision on the *automatic* path only:
+    // if the resolved update is the exact version the user declined, treat
+    // it as up-to-date so the sidebar badge and the Settings seed stay
+    // quiet. A newer release carries a different version string and so is
+    // never suppressed (the skip self-expires). The manual "Check now"
+    // button deliberately ignores this — an explicit query always shows the
+    // real answer, which is also the user's path to un-skip.
+    let outcome = match outcome {
+        Ok(UpdateStatus::Available(info))
+            if skip_suppresses(&info.version, skipped_version.as_deref()) =>
+        {
+            tracing::info!(
+                version = %info.version,
+                "updater startup check: update available but user skipped this version"
+            );
+            Ok(UpdateStatus::UpToDate {
+                current: current_version.to_owned(),
+            })
+        }
+        other => other,
+    };
 
     let available = matches!(&outcome, Ok(UpdateStatus::Available(_)));
     match &outcome {
@@ -217,6 +251,26 @@ pub async fn run_startup_check(current_version: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One resolved stack member for the cache round-trip fixture: the
+    /// binary plus its own `.minisig` sibling, the pair `pick_assets`
+    /// produces for every roster entry.
+    fn stack_asset(name: &str, image: &str) -> wylde_updater::StackAsset {
+        wylde_updater::StackAsset {
+            name: name.into(),
+            image: image.into(),
+            binary: wylde_updater::ReleaseAsset {
+                name: image.into(),
+                url: format!("https://example.test/{image}"),
+                size: 1,
+            },
+            signature: wylde_updater::ReleaseAsset {
+                name: format!("{image}.minisig"),
+                url: format!("https://example.test/{image}.minisig"),
+                size: 1,
+            },
+        }
+    }
 
     #[test]
     fn gate_blocks_when_updates_disabled() {
@@ -281,6 +335,16 @@ mod tests {
     }
 
     #[test]
+    fn skip_suppresses_only_the_exact_version() {
+        // The skipped version is suppressed...
+        assert!(skip_suppresses("0.3.1", Some("0.3.1")));
+        // ...but a newer release (different string) is not — skip self-expires.
+        assert!(!skip_suppresses("0.3.2", Some("0.3.1")));
+        // No skip recorded ⇒ never suppress.
+        assert!(!skip_suppresses("0.3.1", None));
+    }
+
+    #[test]
     fn cadence_maps_each_frequency() {
         let day = 24 * 60 * 60;
         assert_eq!(cadence_secs("daily"), day);
@@ -303,21 +367,19 @@ mod tests {
     #[test]
     fn record_then_read_round_trips_available() {
         // Exercises the cache accessors over the process-wide cell.
+        // An update carries the whole stack since #97, so the fixture does
+        // too: one `StackAsset` per binary, each with its own detached
+        // signature. The cache is agnostic to how many members there are —
+        // it round-trips whatever the check resolved.
         let info = UpdateInfo {
             version: "9.9.9".into(),
             tag: "v9.9.9".into(),
             notes: "test".into(),
             html_url: "https://example.test/r".into(),
-            binary: wylde_updater::ReleaseAsset {
-                name: "wylde-gui.exe".into(),
-                url: "https://example.test/bin".into(),
-                size: 1,
-            },
-            signature: wylde_updater::ReleaseAsset {
-                name: "wylde-gui.exe.minisig".into(),
-                url: "https://example.test/sig".into(),
-                size: 1,
-            },
+            assets: vec![
+                stack_asset("wylde-gui", "wylde-gui.exe"),
+                stack_asset("wylde-lifecycle", "wylde-lifecycle.exe"),
+            ],
         };
         record(Ok(UpdateStatus::Available(info.clone())), 1_234);
         assert!(update_available());

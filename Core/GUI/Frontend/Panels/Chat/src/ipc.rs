@@ -704,7 +704,7 @@ pub fn stream_consent_pending() -> Result<wylde_gui_pipe::PipeStream, String> {
 /// One streaming chunk on the tool-activity channel
 /// (`chat.stream_tools`).  Mirror of `wylde_harness::events::ToolEvent`.
 /// As of the chat-processing-indicator full-visibility pass we carry the
-/// tool's `args` / `output` / `duration_ms` too (Aaron reversed the old
+/// tool's `args` / `output` / `duration_ms` too (the maintainer reversed the old
 /// "tool calls invisible to the chat UI" decision) so the activity dropdown
 /// can show the honest tool log; the GUI truncates them for display.
 #[derive(Debug, Clone, PartialEq)]

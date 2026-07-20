@@ -1,0 +1,138 @@
+# PR hygiene — converts "checklist norms" into checks that BLOCK the merge.
+#
+# The PR template is a set of checkboxes a human can tick without doing the
+# thing. Everything here that CAN be automated is, so the discipline is enforced
+# by CI (a required status check) rather than remembered. Each job maps to a PR
+# template item.
+#
+# Escape hatches are label-based (add the label to the PR) so a deliberate
+# exception is explicit and visible, not silent.
+name: PR checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+# These need no secrets and only read git + the PR context — safe on fork PRs.
+permissions:
+  contents: read
+
+jobs:
+  # --- Branch-target + branch-name guard (PR template: "Targets develop",
+  # "Branch is named feat|fix|chore|…/<slug>"). Context-only, no checkout.
+  guard:
+    name: branch target + name
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR must target develop (main only takes promotions / hotfixes)
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          if [ "$BASE" = "main" ]; then
+            # main only receives: the develop->main promotion, or a hotfix/*.
+            if [ "$HEAD" = "develop" ] || case "$HEAD" in hotfix/*|fix/*) true;; *) false;; esac; then
+              echo "OK: '$HEAD' -> main is an allowed promotion/hotfix."
+            else
+              echo "::error::PRs target 'develop', not 'main'. 'main' only receives the develop->main promotion or a hotfix/* PR (see docs/branch-and-release-policy.md). Retarget this PR to develop."
+              exit 1
+            fi
+          else
+            echo "OK: base is '$BASE'."
+          fi
+      - name: branch name must follow the convention
+        env:
+          HEAD: ${{ github.head_ref }}
+        run: |
+          case "$HEAD" in
+            feat/*|fix/*|chore/*|docs/*|test/*|refactor/*|perf/*|hotfix/*|develop|dependabot/*)
+              echo "OK: '$HEAD' matches the naming convention." ;;
+            *)
+              echo "::error::Branch '$HEAD' does not follow the naming convention feat|fix|chore|docs|test|refactor|perf/<slug> (see CONTRIBUTING.md)."
+              exit 1 ;;
+          esac
+
+  # --- Conventional Commits (PR template: "Commits follow Conventional
+  # Commits"). Enforces the format the CHANGELOG generator + branch scheme rely
+  # on. Escape: add the label `skip-commit-lint`.
+  commits:
+    name: conventional commits
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-commit-lint') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: every non-merge commit subject is Conventional
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          pattern='^(feat|fix|chore|docs|test|refactor|perf|ci|build|revert)(\([a-z0-9,._/-]+\))?!?: .+'
+          fail=0
+          # Lint only the commits this PR actually *introduces* to the trunk:
+          # reachable from HEAD, but not from origin/${BASE} and not already on
+          # origin/develop. This scopes a `develop -> main` promotion (and any
+          # merge-up) to lint *nothing* pre-existing — those commits were already
+          # vetted when they first landed on develop, so re-linting the whole
+          # base..head range would fail the promotion on old, immutable history.
+          # A feature PR into develop still lints its new commits, and a
+          # hotfix/* -> main (which never went through develop) still lints its
+          # new commits too, so a genuinely malformed *new* subject is still caught.
+          git fetch --no-tags --quiet origin \
+            "+refs/heads/develop:refs/remotes/origin/develop" 2>/dev/null || true
+          # --no-merges: merge commits ("Merge …") are exempt by design.
+          while IFS= read -r sha; do
+            [ -z "$sha" ] && continue
+            subject="$(git log -1 --format=%s "$sha")"
+            case "$subject" in
+              # Dependabot/tooling bumps arrive already-conventional, but be lenient.
+              "Merge "*) continue ;;
+            esac
+            if ! printf '%s' "$subject" | grep -Eq "$pattern"; then
+              echo "::error::Non-conventional commit subject: $sha \"$subject\""
+              fail=1
+            fi
+          done < <(git rev-list --no-merges "origin/${BASE}..HEAD" --not "origin/develop")
+          if [ "$fail" -ne 0 ]; then
+            echo "Commit subjects must be 'type(scope): subject' (see CONTRIBUTING.md). Fix with an interactive rebase, or add the 'skip-commit-lint' label for a deliberate exception."
+            exit 1
+          fi
+          echo "OK: all commit subjects are Conventional."
+
+  # --- CHANGELOG entry required for user-facing code changes (PR template:
+  # "CHANGELOG [Unreleased] updated"). A PR that touches product source but not
+  # CHANGELOG.md fails. Escape: label `skip-changelog` (docs/test/chore-only, or
+  # a deliberate no-user-facing-change PR).
+  changelog:
+    name: changelog updated
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-changelog') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: a product-source change must add a CHANGELOG entry
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          files="$(git diff --name-only "origin/${BASE}...HEAD")"
+          # Product source whose change users can notice. Tests + docs excluded.
+          touches_src=0
+          changed_changelog=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              CHANGELOG.md) changed_changelog=1 ;;
+              */tests/*|*/test/*|*_test.rs|*/docs/*|docs/*) : ;;   # not user-facing
+              rust/*|Core/*) touches_src=1 ;;
+            esac
+          done <<EOF
+          $files
+          EOF
+          if [ "$touches_src" -eq 1 ] && [ "$changed_changelog" -eq 0 ]; then
+            echo "::error::This PR changes product source (rust/ or Core/) but adds no CHANGELOG.md entry. Add one under [Unreleased] (seed with tools/changelog-draft.sh), or add the 'skip-changelog' label if there is genuinely no user-facing change."
+            exit 1
+          fi
+          echo "OK: changelog requirement satisfied (src-touched=$touches_src, changelog-changed=$changed_changelog)."

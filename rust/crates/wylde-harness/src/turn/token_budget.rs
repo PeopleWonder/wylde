@@ -398,7 +398,7 @@ mod tests {
     #[test]
     fn under_budget_keeps_everything() {
         let mut ctx = ChatContext {
-            user_profile: "Name: Aaron".into(),
+            user_profile: "Name: Sam".into(),
             symbol_contexts: vec![block("foo", "fn foo() {}", &[1, 2])],
             ..ChatContext::default()
         };
@@ -430,7 +430,7 @@ mod tests {
         // A big profile we must never drop, plus a symbol context with a deep
         // (hop-2) neighbour and a shallow (hop-1) one.
         let mut ctx = ChatContext {
-            user_profile: "Name: Aaron\nStyle: terse".into(),
+            user_profile: "Name: Sam\nStyle: terse".into(),
             symbol_contexts: vec![block("foo", "fn foo() {}", &[1, 2])],
             ..ChatContext::default()
         };
@@ -445,7 +445,7 @@ mod tests {
             "hop-2 neighbour must be evicted first"
         );
         // The user profile is always retained.
-        assert!(ctx.user_profile.contains("Aaron"));
+        assert!(ctx.user_profile.contains("Sam"));
     }
 
     #[test]
@@ -607,7 +607,7 @@ mod tests {
         // The M3 floor: profile lines WITHOUT a rules section, ≤5 WM
         // entries, and no anchors left to shed — nothing degradable.
         let mut ctx = ChatContext {
-            user_profile: "Name: Aaron\nStyle: terse".into(),
+            user_profile: "Name: Sam\nStyle: terse".into(),
             conversation_short_term: vec!["- working memory line".into()],
             vocabulary_anchors: vec![AnchorBlock {
                 identifier: "x".into(),
@@ -620,7 +620,7 @@ mod tests {
         // the floor.
         let degraded = evict(&mut ctx, 1);
         assert!(degraded, "the anchor shed counts as degradation");
-        assert_eq!(ctx.user_profile, "Name: Aaron\nStyle: terse");
+        assert_eq!(ctx.user_profile, "Name: Sam\nStyle: terse");
         assert_eq!(ctx.conversation_short_term.len(), 1);
         assert!(ctx.vocabulary_anchors.is_empty(), "anchors degrade last");
     }
@@ -669,7 +669,7 @@ mod tests {
     fn tier7_heavy_ctx() -> ChatContext {
         ChatContext {
             user_profile: format!(
-                "Name: Aaron\nStyle: terse\nUser rules (follow verbatim):\n{}",
+                "Name: Sam\nStyle: terse\nUser rules (follow verbatim):\n{}",
                 "always run the linter before committing anything anywhere. ".repeat(100)
             ),
             conversation_short_term: (0..20)
@@ -703,7 +703,7 @@ mod tests {
         let rendered = prompt_assembly::render(&ctx);
         assert!(rendered.contains("older working-memory entries omitted"));
         // The hard floor held: name/style + the newest 5 WM entries.
-        assert!(rendered.contains("Name: Aaron"));
+        assert!(rendered.contains("Name: Sam"));
         assert!(rendered.contains("- working memory entry 19"));
         assert!(rendered.contains("- working memory entry 15"));
     }
@@ -740,7 +740,7 @@ mod tests {
             "rules section dropped at the last step: {}",
             ctx.user_profile
         );
-        assert!(ctx.user_profile.contains("Name: Aaron"), "hard floor");
+        assert!(ctx.user_profile.contains("Name: Sam"), "hard floor");
 
         // Anchors are the last degradable unit.
         assert!(super::degrade_one_tier7(&mut ctx));

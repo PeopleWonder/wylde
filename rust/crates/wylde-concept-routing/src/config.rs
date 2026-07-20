@@ -154,7 +154,7 @@ pub struct RoutingConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Never inject silently (Aaron's lock): show the candidate menu before
+    /// Never inject silently (the maintainer's lock): show the candidate menu before
     /// any injection. Default `true`. **Inert until R2** (no injection yet).
     #[serde(default = "default_true")]
     pub curate_before_inject: bool,
@@ -348,7 +348,10 @@ mod tests {
         assert!(c.curate_before_inject, "never silent by default");
         assert_eq!(c.mode, InjectionMode::Augment);
         assert_eq!(c.max_concepts, 3);
-        assert!((c.abs_threshold - 0.62).abs() < 1e-6, "R4-calibrated abs floor");
+        assert!(
+            (c.abs_threshold - 0.62).abs() < 1e-6,
+            "R4-calibrated abs floor"
+        );
         assert!((c.relative_floor - 0.6).abs() < 1e-6);
         assert!(c.scope_to_active_region);
         assert_eq!(c.inject_token_budget, 1500);

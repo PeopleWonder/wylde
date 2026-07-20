@@ -1291,6 +1291,88 @@ async fn no_progress_duplicate_round_triggers_replan() {
     );
 }
 
+/// Regression (S6): the executor legitimately dispatches a tool the plan
+/// step did NOT name — the verb catalog REQUIRES a `wylde_describe`
+/// discovery call before any resource op, and the model may reach a step's
+/// intent through a different verb than the planner suggested (guidance is
+/// advisory). Such an unplanned call must NOT be bound to the in-flight
+/// step and checked against its expectation: a spurious surprise there,
+/// with `on_surprise: abort`, would EMPTY the turn — worse than plain
+/// ReAct. This is the exact live regression the S6 eval caught while every
+/// prior e2e (all of which have the model call the step's declared tool)
+/// stayed green. The step's outcome is evaluated only once its OWN tool
+/// runs (round 2), by which point the check passes.
+#[tokio::test]
+async fn unplanned_discovery_call_does_not_false_abort_the_step() {
+    let (_g, h) = test_guard().await;
+    set_reasoning(ReasoningConfig {
+        enabled: true,
+        reflect_gate: ReflectGate::Off,
+        ..ReasoningConfig::default()
+    });
+    // s1 names `wylde_describe`; its predicate PASSES on that tool's result
+    // (`/count` exists) but would FAIL on the unrelated `time.now` result —
+    // so the OLD first-result binding would abort on round 1.
+    let plan = json!({
+        "goal": "describe the resources",
+        "steps": [{
+            "id": "s1",
+            "intent": "list the resource catalog",
+            "tool": "wylde_describe",
+            "args_template": {},
+            "depends_on": [],
+            "expected": {
+                "predicates": [{"kind": "json_path_exists", "path": "/count"}],
+                "assertion": "",
+                "on_surprise": "abort",
+                "confidence": 0.9
+            }
+        }],
+        "reasoning_trace": "discover first",
+        "plan_version": 1
+    });
+    *h.unary_script.lock().unwrap() = vec![unary_reply(&plan.to_string(), 100, 40)];
+    set_stream_script(
+        h,
+        &[
+            // Round 1: an unplanned discovery call — NOT the step's tool.
+            "{\"name\": \"time.now\", \"arguments\": {}}",
+            // Round 2: the step's actual tool — matches, predicate passes.
+            "{\"name\": \"wylde_describe\", \"arguments\": {}}",
+            // Round 3: answer.
+            "done",
+        ],
+    );
+
+    let events = run_streaming_turn(json!({
+        "user_message": "list the resources",
+        "conversation_id": "rsn-s6-noabort",
+        "model": "stub",
+        "depth": "think",
+    }))
+    .await;
+
+    // Exactly one reasoner call (PLAN); no replan, and crucially no abort.
+    assert_eq!(
+        h.unary_count.load(Ordering::SeqCst),
+        1,
+        "plan only — the discovery call must not trigger a replan"
+    );
+    assert!(
+        events_of_type(&events, "turn_aborted").is_empty(),
+        "an unplanned discovery call must NOT abort the turn: {events:?}"
+    );
+    let steps = reasoning_step_summaries(&events);
+    assert!(
+        !steps.iter().any(|s| s.contains("surprised")),
+        "the discovery call's result must not be checked against s1: {steps:?}"
+    );
+    assert_eq!(
+        events_of_type(&events, "turn_complete")[0]["final_message"],
+        "done"
+    );
+}
+
 // ── S4b: Fast→planning auto-escalation (the narrowed identity contract) ──
 
 /// Persist a full reasoning config (the S4b tests need `auto_escalate`
@@ -1305,7 +1387,7 @@ fn set_reasoning(cfg: ReasoningConfig) {
 const FAIL_CALL_A: &str = "{\"name\": \"voice.mic.chunks\", \"arguments\": {}}";
 const FAIL_CALL_B: &str = "{\"name\": \"voice.wakeword.events\", \"arguments\": {}}";
 
-/// Aaron's narrowed contract, the identity half: reasoning enabled + Fast
+/// The maintainer's narrowed contract, the identity half: reasoning enabled + Fast
 /// with ZERO or ONE hard tool failure stays byte-identical to trunk —
 /// same event transcript, same request bodies, zero reasoner calls.
 #[tokio::test]

@@ -48,7 +48,7 @@ mod tests {
         assert!(in_region("services/vpn/tunnel.rs", "services/vpn/"));
         assert!(in_region("services\\vpn\\tunnel.rs", "services/vpn"));
         assert!(in_region("services/vpn", "services/vpn")); // exact
-        // prefix-but-not-a-boundary must not match.
+                                                            // prefix-but-not-a-boundary must not match.
         assert!(!in_region("services/vpnx/a.rs", "services/vpn"));
         assert!(!in_region("services/auth/a.rs", "services/vpn"));
         assert!(!in_region("any.rs", ""));

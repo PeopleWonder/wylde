@@ -227,7 +227,9 @@ impl CodeEditor {
     /// Move the caret to the start of 1-based `line` and scroll it into view
     /// (a few lines of context above when possible). Used by `open_in_editor`.
     pub fn scroll_to_line(&mut self, line_1based: usize, cx: &mut Context<Self>) {
-        let line = line_1based.saturating_sub(1).min(self.buffer.line_count().saturating_sub(1));
+        let line = line_1based
+            .saturating_sub(1)
+            .min(self.buffer.line_count().saturating_sub(1));
         let offset = self.buffer.offset_of_line(line);
         self.buffer.set_cursor(offset, false);
         // Place the target line ~3 rows down from the top when there's room.
@@ -246,7 +248,9 @@ impl CodeEditor {
             .unwrap_or_default()
     }
     pub fn index_at_point(&self, point: Point<Pixels>) -> Option<usize> {
-        self.last_layout.as_ref().and_then(|l| l.index_at_point(point))
+        self.last_layout
+            .as_ref()
+            .and_then(|l| l.index_at_point(point))
     }
     pub fn caret_screen_rect(&self) -> Option<Bounds<Pixels>> {
         self.last_layout

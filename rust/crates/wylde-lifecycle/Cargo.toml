@@ -19,6 +19,10 @@ wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
 path = "src/lib.rs"
 
 [dependencies]
+# The shared stack roster + "current" resolver (#97/#92). The daemon, the
+# self-updater, and the launcher all read the service roster from here, so
+# none of them keeps a parallel hand-list that can silently under-cover.
+wylde-stack = { path = "../wylde-stack" }
 wylde-shared = { path = "../wylde-shared" }
 tokio.workspace = true
 serde.workspace = true
@@ -27,6 +31,10 @@ tracing.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
+# min_core compatibility floor: parse + compare a service manifest's declared
+# minimum-Core version against the running Core. Already a vetted workspace
+# transitive dep (wylde-updater uses it for release-tag comparison).
+semver = "1"
 
 # OpenProcess / GetExitCodeProcess / GenerateConsoleCtrlEvent for the
 # orphan sweep's pid-liveness probe and graceful Windows shutdown. We
@@ -40,3 +48,10 @@ windows = { workspace = true, features = [
 [dev-dependencies]
 tempfile = "3"
 tokio-test = "0.4"
+# Serialises every test that mutates the process-global WYLDE_ROOT /
+# WYLDE_SERVICES. This crate previously guarded them with TWO different async
+# mutexes (`registry_guard` in control, `state_guard` in state) plus one test
+# with no guard at all — three disciplines over one global, which is no mutual
+# exclusion at all. `#[serial]` is one lock for all of them, and is the pattern
+# already used by wylde-shared / wylde-harness / wylde-concept-{routing,hierarchy}.
+serial_test.workspace = true

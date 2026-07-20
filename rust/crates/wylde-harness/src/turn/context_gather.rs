@@ -529,7 +529,7 @@ pub(crate) struct TokenOverrides {
     /// Concept-routing **R2** (plan §4): the user-curated concept ids carried by
     /// `chat.run_turn` after the curate-before-inject menu. `Some` (even empty)
     /// ⇒ the menu ran and these are the concepts to Augment-inject (empty ⇒
-    /// inject nothing — Aaron's lock); `None` ⇒ no curation this turn ⇒ no
+    /// inject nothing — the maintainer's lock); `None` ⇒ no curation this turn ⇒ no
     /// injection (R1 behaviour). Only honoured when the master toggle is ON, so
     /// a stale list can never inject while routing is OFF.
     pub curated_concepts: Option<Vec<String>>,
@@ -748,7 +748,7 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         // when the master toggle is ON** — so with routing OFF a stale curated
         // list can never inject, keeping OFF byte-identical to today. `Some([])`
         // (curated to nothing) injects nothing; `None` (no menu this turn) keeps
-        // R1 behaviour. Aaron's lock: never inject silently — injection requires
+        // R1 behaviour. The maintainer's lock: never inject silently — injection requires
         // an explicit curated set from the menu.
         let curated = if route {
             overrides.curated_concepts.as_deref()
@@ -1181,7 +1181,7 @@ fn workspace_memory_slot_enabled() -> bool {
 }
 
 /// Select this turn's workspace memory record lines (memory plan M2,
-/// option B — Aaron's call: the harness workspace store, with its
+/// option B — the maintainer's call: the harness workspace store, with its
 /// importance + supersession semantics, is the canonical middle tier
 /// and must reach prompts).
 ///
@@ -2315,7 +2315,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn r2_empty_curated_set_injects_nothing() {
-        // Aaron's lock: a curated-empty menu injects nothing. The empty set is
+        // The maintainer's lock: a curated-empty menu injects nothing. The empty set is
         // still forwarded (Some([]) — explicit "curated to nothing"), but the
         // server injects nothing for it, so no slot renders.
         let _env = crate::user_profile::test_support::TestEnv::new();
@@ -3100,7 +3100,7 @@ mod tests {
         let _env = crate::user_profile::test_support::TestEnv::new();
         // Seed a profile so the in-process slot is non-empty.
         crate::user_profile::store::with_store(|s| {
-            s.profile.name = Some("Aaron".into());
+            s.profile.name = Some("Sam".into());
         })
         .unwrap();
 
@@ -3121,7 +3121,7 @@ mod tests {
         .await;
         assert!(out.degraded, "an unreachable workspace prompt must degrade");
         assert!(
-            out.system_slots.contains("Aaron"),
+            out.system_slots.contains("Sam"),
             "the in-process profile survives a full workspace outage: {}",
             out.system_slots
         );

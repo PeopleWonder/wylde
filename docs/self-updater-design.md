@@ -67,17 +67,74 @@ covers both channels and keeps the logic in one place.
 
 ### Asset naming convention
 
-Each release that the updater can consume must publish, at minimum:
+A release the updater can consume must publish **one signed binary per stack
+member**, not just the GUI:
 
 ```
-wylde-gui-<target>.exe            # the binary, e.g. wylde-gui-x86_64-pc-windows-msvc.exe
-wylde-gui-<target>.exe.minisig    # its detached minisign signature
+wylde-gui-<target>.exe              wylde-gui-<target>.exe.minisig
+wylde-lifecycle-<target>.exe        wylde-lifecycle-<target>.exe.minisig
+wylde-gateway-<target>.exe          wylde-gateway-<target>.exe.minisig
+wylde-harness-<target>.exe          wylde-harness-<target>.exe.minisig
+...                                 ...            (one pair per service)
 ```
 
-The updater picks the first asset whose name matches the running platform's
-binary pattern and is **not** itself a `.minisig`, then looks for a sibling
-asset named `<that-asset>.minisig`. A release missing the `.minisig` sibling is
-treated as *not updatable* (fail closed) rather than installed unsigned.
+`<target>` is `x86_64-pc-windows-msvc`.
+
+**The required set is derived, not listed here.** `wylde_stack::roster()`
+answers what the stack consists of — the in-tree core tier plus whatever the
+`Services/` bucket currently holds — and `pick_assets` requires an asset pair
+for each in-tree member. Adding a service therefore changes what a release
+must publish with no edit to the updater; run `wylde-stack roster` to print
+the current required set when preparing a release.
+
+Two rules:
+
+- **In-tree binaries are required.** A release missing one is rejected
+  wholesale (`UpdateError::NoAsset`) rather than installed partially. This is
+  what prevents the GUI-new / backend-stale skew: before #97 the updater
+  matched only `wylde-gui*` and `self_replace`d the running executable, so the
+  daemon and every service were never updated at all.
+- **Bucket siblings are optional.** A third-party service under
+  `Services/<name>/` is not something a Wylde release can be expected to
+  publish, so it is carried when present and skipped otherwise.
+
+Every binary needs its own `.minisig` sibling. Verification is **per binary** —
+there is no bundle signature, so nothing rides in unverified behind something
+else, and a release with one unsigned member is refused
+(`UpdateError::NoSignature`) rather than installed.
+
+### Installation and the `current` pointer
+
+Install is all-or-nothing:
+
+1. Every downloaded binary is re-verified against the embedded key.
+2. The full set is staged into `%LOCALAPPDATA%\Wylde\versions\<version>\`.
+   The live stack is untouched.
+3. `%LOCALAPPDATA%\Wylde\current` is repointed at that directory with a
+   single atomic rename.
+4. Old version directories are pruned (#139). Without this, step 2 left a full
+   copy of the whole stack on disk for every update ever applied — unbounded
+   growth that worsened as the stack itself grew. `versions/` is now kept to a
+   fixed window: the just-installed **current** stack plus one previous, kept
+   as a rollback fallback (`VERSIONS_RETAINED`). The prune runs **after** the
+   pointer flip, so the new stack is live and its predecessor is present the
+   whole time — the rollback fallback is never deleted before the new version
+   is committed — and it never removes the current stack or the retained
+   previous. It enumerates `versions/` from disk and deletes whole directories
+   (so a new service's extra binaries are covered with no edit, and a directory
+   an earlier run couldn't remove is retried next install), and a delete that
+   fails on a locked binary is logged and skipped rather than failing an update
+   that already succeeded. There is no rollback *consumer* yet — only the
+   pointer that makes one possible — so keeping exactly one previous is a
+   deliberate safety floor, not a tuned depth.
+
+Because the launcher resolves through `current`, the switch takes effect for
+the whole stack at once on the next launch, and a shortcut can never go stale
+— it names the launcher, never a version or a build profile. Running processes
+are deliberately *not* `self_replace`d: that trick can only swap the one
+currently-executing binary, which is exactly what confined the updater to the
+GUI. See `wylde-stack` (`rust/crates/wylde-stack/`) for the resolver both the
+launcher and the updater share, and issues #97 / #92.
 
 ---
 
@@ -114,7 +171,7 @@ older ⇒ "you're up to date".
 Every binary is signed with **minisign** (Frank Denis' Ed25519 signature
 format). We chose minisign over hand-rolled `ed25519-dalek` framing because:
 
-- The `.minisig` container is a well-specified, widely-tooled format. Aaron can
+- The `.minisig` container is a well-specified, widely-tooled format. The maintainer can
   sign with the standard `rsign2` CLI (pure Rust) on any machine without our
   code present.
 - `minisign-verify` is a **zero-dependency** verifier crate — the smallest
@@ -161,9 +218,9 @@ repo therefore:
 - ships `keys/pubkey.pub.example` documenting the on-disk `.pub` format,
 - gitignores the private key material (`rust/crates/wylde-updater/keys/*.key`,
   `*.sec`, and any `.wylde-release/` dir) so a real signing key can sit beside
-  the source on Aaron's machine without ever being staged.
+  the source on the maintainer's machine without ever being staged.
 
-See [Key management](#key-management--release-runbook) for how Aaron generates
+See [Key management](#key-management--release-runbook) for how the maintainer generates
 the real key and swaps the placeholder.
 
 ---
@@ -234,12 +291,12 @@ blocking pool — the same bridge the named-pipe IO already uses.
 > **Status: the production key has been generated and baked in (2026-06-04).**
 > Key ID `DA7E13F4E9F2ACB6`, base64
 > `RWS2rPLp9BN+2obJk6h80IJAlurEyac8bz7REt0ea7v6uLG2AoppP0kb`. The private key
-> lives **only** on Aaron's dev host at
+> lives **only** on the maintainer's dev host at
 > `rust/crates/wylde-updater/keys/wylde-signing.key` (gitignored, never
 > committed). The one-time procedure below is retained for **key rotation**;
 > for a normal cut skip to [per release](#per-release-build--sign--publish).
 
-Aaron generated the key once, on his dev machine, and it never enters the repo.
+The maintainer generated the key once, on their dev machine, and it never enters the repo.
 We standardise on `rsign2`, the pure-Rust minisign CLI (honours the
 everything-Rust rule).
 

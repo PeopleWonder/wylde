@@ -1,5 +1,5 @@
 //! End-to-end proof that the **embedded** public key in `pubkey.rs` matches
-//! the production private key on Aaron's dev host.
+//! the production private key on the maintainer's dev host.
 //!
 //! The fixture under `tests/fixtures/` was signed once, out of band, with
 //! `rsign sign` using `keys/wylde-signing.key` (key ID `DA7E13F4E9F2ACB6`,

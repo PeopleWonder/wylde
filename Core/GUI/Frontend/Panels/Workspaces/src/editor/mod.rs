@@ -24,8 +24,8 @@ pub mod lsp_decor;
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, rgb, Context, Entity, FontWeight, IntoElement, MouseButton, MouseDownEvent,
-    Render, SharedString, Subscription, Window,
+    div, prelude::*, px, rgb, Context, Entity, FontWeight, IntoElement, MouseButton,
+    MouseDownEvent, Render, SharedString, Subscription, Window,
 };
 use wylde_gpui_code_editor::{CodeEditor, EditorEvent};
 use wylde_theme::colors::{
@@ -107,13 +107,12 @@ pub struct EditorTab {
 
 impl EditorTab {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let editor = cx.new(|ecx| {
-            CodeEditor::new(ecx).with_element_key("workspaces-code-editor")
-        });
+        let editor = cx.new(|ecx| CodeEditor::new(ecx).with_element_key("workspaces-code-editor"));
         // React to the editor's own events: track dirty + re-highlight on
         // change; perform the save on the save chord.
-        let sub = cx.subscribe(&editor, |this: &mut Self, _ed, event: &EditorEvent, cx| {
-            match event {
+        let sub = cx.subscribe(
+            &editor,
+            |this: &mut Self, _ed, event: &EditorEvent, cx| match event {
                 EditorEvent::Changed(_) => {
                     if !matches!(this.status, Status::Binary | Status::Oversized) {
                         this.dirty = true;
@@ -132,8 +131,8 @@ impl EditorTab {
                 EditorEvent::HoverRequested { line, character } => {
                     this.request_hover(*line, *character, cx);
                 }
-            }
-        });
+            },
+        );
         Self {
             editor: Some(editor),
             _sub: Some(sub),
@@ -200,7 +199,10 @@ impl EditorTab {
 
     fn apply_loaded(&mut self, v: serde_json::Value, line: Option<u32>, cx: &mut Context<Self>) {
         let binary = v.get("binary").and_then(|x| x.as_bool()).unwrap_or(false);
-        let truncated = v.get("truncated").and_then(|x| x.as_bool()).unwrap_or(false);
+        let truncated = v
+            .get("truncated")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
         let content = v
             .get("content")
             .and_then(|x| x.as_str())
@@ -232,7 +234,11 @@ impl EditorTab {
             });
         }
         self.dirty = false;
-        self.status = if truncated { Status::Oversized } else { Status::Ready };
+        self.status = if truncated {
+            Status::Oversized
+        } else {
+            Status::Ready
+        };
         cx.notify();
         self.spawn_highlight(cx);
         // Open the document in the LSP (best-effort; rust files only). The
@@ -303,9 +309,7 @@ impl EditorTab {
                 .timer(Duration::from_millis(HIGHLIGHT_DEBOUNCE_MS))
                 .await;
             // Bail if a newer edit superseded this one.
-            let stale = this
-                .update(app, |t, _| t.lsp_gen != gen)
-                .unwrap_or(true);
+            let stale = this.update(app, |t, _| t.lsp_gen != gen).unwrap_or(true);
             if stale {
                 return;
             }
@@ -365,10 +369,8 @@ impl EditorTab {
                     arr.iter()
                         .filter_map(|it| {
                             let label = it.get("label").and_then(|v| v.as_str())?.to_owned();
-                            let detail = it
-                                .get("detail")
-                                .and_then(|v| v.as_str())
-                                .map(str::to_owned);
+                            let detail =
+                                it.get("detail").and_then(|v| v.as_str()).map(str::to_owned);
                             Some((label, detail))
                         })
                         .take(20)
@@ -578,7 +580,11 @@ impl Render for EditorTab {
         // The editor element fills the rest. Empty / binary → a placeholder.
         let show_editor = !matches!(self.status, Status::Empty | Status::Binary);
         let body = match (&self.editor, show_editor) {
-            (Some(ed), true) => div().flex_1().min_h(px(0.0)).child(ed.clone()).into_any_element(),
+            (Some(ed), true) => div()
+                .flex_1()
+                .min_h(px(0.0))
+                .child(ed.clone())
+                .into_any_element(),
             _ => div()
                 .flex_1()
                 .min_h(px(0.0))
@@ -748,35 +754,61 @@ mod tests {
         // Use a non-Rust file so the load path doesn't fan out into the LSP.
         window
             .update(cx, |t, _w, cx| {
-                t.open("ws-a".into(), "C:/code/a".into(), "config.toml".into(), None, cx);
+                t.open(
+                    "ws-a".into(),
+                    "C:/code/a".into(),
+                    "config.toml".into(),
+                    None,
+                    cx,
+                );
             })
             .unwrap();
         cx.run_until_parked();
 
         window
             .update(cx, |t, _w, _cx| {
-                assert_eq!(t.status, Status::Ready, "a clean read lands the editor in Ready");
-                assert_eq!(t.mtime, Some(100.0), "the read's mtime is retained for save concurrency");
+                assert_eq!(
+                    t.status,
+                    Status::Ready,
+                    "a clean read lands the editor in Ready"
+                );
+                assert_eq!(
+                    t.mtime,
+                    Some(100.0),
+                    "the read's mtime is retained for save concurrency"
+                );
                 assert!(!t.dirty, "a silent load must not look dirty");
             })
             .unwrap();
-        assert_eq!(buffer_text(&window, cx), "hello = 1\n", "the file content reaches the buffer");
+        assert_eq!(
+            buffer_text(&window, cx),
+            "hello = 1\n",
+            "the file content reaches the buffer"
+        );
 
-        let read = fake.last_call_for("workspaces.fs.read").expect("open must fs.read");
+        let read = fake
+            .last_call_for("workspaces.fs.read")
+            .expect("open must fs.read");
         assert_eq!(read.payload_str("workspace_id").as_deref(), Some("ws-a"));
         assert_eq!(read.payload_str("path").as_deref(), Some("config.toml"));
     }
 
     #[gpui::test]
     fn open_binary_file_is_refused(cx: &mut TestAppContext) {
-        let fake = ScriptedBackend::new()
-            .on("workspaces.fs.read", serde_json::json!({ "binary": true }));
+        let fake =
+            ScriptedBackend::new().on("workspaces.fs.read", serde_json::json!({ "binary": true }));
         let _guard = fake.install();
         let window = mount(cx);
         cx.run_until_parked();
         window
             .update(cx, |t, _w, cx| {
-                t.open("ws-a".into(), "C:/code/a".into(), "logo.png".into(), None, cx);
+                t.open(
+                    "ws-a".into(),
+                    "C:/code/a".into(),
+                    "logo.png".into(),
+                    None,
+                    cx,
+                );
             })
             .unwrap();
         cx.run_until_parked();
@@ -798,13 +830,23 @@ mod tests {
         cx.run_until_parked();
         window
             .update(cx, |t, _w, cx| {
-                t.open("ws-a".into(), "C:/code/a".into(), "huge.txt".into(), None, cx);
+                t.open(
+                    "ws-a".into(),
+                    "C:/code/a".into(),
+                    "huge.txt".into(),
+                    None,
+                    cx,
+                );
             })
             .unwrap();
         cx.run_until_parked();
         window
             .update(cx, |t, _w, cx| {
-                assert_eq!(t.status, Status::Oversized, "an oversized file opens read-only");
+                assert_eq!(
+                    t.status,
+                    Status::Oversized,
+                    "an oversized file opens read-only"
+                );
                 assert!(
                     t.editor.as_ref().unwrap().read(cx).is_read_only(),
                     "the editor is read-only for a truncated open"
@@ -826,7 +868,13 @@ mod tests {
         cx.run_until_parked();
         window
             .update(cx, |t, _w, cx| {
-                t.open("ws-a".into(), "C:/code/a".into(), "notes.txt".into(), None, cx);
+                t.open(
+                    "ws-a".into(),
+                    "C:/code/a".into(),
+                    "notes.txt".into(),
+                    None,
+                    cx,
+                );
             })
             .unwrap();
         cx.run_until_parked();
@@ -838,15 +886,25 @@ mod tests {
         window
             .update(cx, |t, _w, _cx| {
                 assert_eq!(t.status, Status::Saved, "a clean write lands in Saved");
-                assert_eq!(t.mtime, Some(200.0), "the fresh mtime from the write is adopted");
+                assert_eq!(
+                    t.mtime,
+                    Some(200.0),
+                    "the fresh mtime from the write is adopted"
+                );
                 assert!(!t.dirty, "a successful save clears dirty");
             })
             .unwrap();
 
-        let write = fake.last_call_for("workspaces.fs.write").expect("save must fs.write");
+        let write = fake
+            .last_call_for("workspaces.fs.write")
+            .expect("save must fs.write");
         assert_eq!(write.payload_str("workspace_id").as_deref(), Some("ws-a"));
         assert_eq!(write.payload_str("path").as_deref(), Some("notes.txt"));
-        assert_eq!(write.payload_str("content").as_deref(), Some("v1"), "the live buffer is written");
+        assert_eq!(
+            write.payload_str("content").as_deref(),
+            Some("v1"),
+            "the live buffer is written"
+        );
         assert_eq!(
             write.payload.get("expected_mtime").and_then(|v| v.as_f64()),
             Some(100.0),
@@ -867,7 +925,13 @@ mod tests {
         cx.run_until_parked();
         window
             .update(cx, |t, _w, cx| {
-                t.open("ws-a".into(), "C:/code/a".into(), "notes.txt".into(), None, cx);
+                t.open(
+                    "ws-a".into(),
+                    "C:/code/a".into(),
+                    "notes.txt".into(),
+                    None,
+                    cx,
+                );
             })
             .unwrap();
         cx.run_until_parked();

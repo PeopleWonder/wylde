@@ -21,9 +21,13 @@
 //!     heartbeat helpers.
 //!   * [`state::orphan_sweep`] — the 60s sweep that walks
 //!     `data/manifests/*.json` and marks dead pids.
-//!   * [`state::services`] — six `start_<service>` / `stop_<service>`
+//!   * [`state::services`] — the `start_<service>` / `stop_<service>`
 //!     pairs plus the env-var dispatch that picks Python vs Rust
 //!     implementations during the strangler-fig migration.
+//! * [`daemon_managed`] — the single [`daemon_managed::DAEMON_MANAGED`]
+//!   table (one row per core service) that drives boot, shutdown, both
+//!   dispatch halves, the manageable-core set, and the hard-kill image
+//!   list. Adding a core service is one row here.
 //!
 //! Strangler-fig (launch-time): the launcher script picks Python or
 //! Rust via `WYLDE_LIFECYCLE_IMPL`. Both daemons read the same
@@ -33,6 +37,7 @@
 
 pub mod control;
 pub mod daemon;
+pub mod daemon_managed;
 pub mod paths;
 pub mod registry;
 pub mod state;

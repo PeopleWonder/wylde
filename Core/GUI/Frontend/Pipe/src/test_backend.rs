@@ -21,7 +21,9 @@
 //! default parallelism.  Production code (feature off) reads none of this.
 
 use std::cell::RefCell;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 
@@ -60,6 +62,96 @@ pub trait FakeBackend: Send + Sync {
 
 thread_local! {
     static BACKEND: RefCell<Option<Arc<dyn FakeBackend>>> = const { RefCell::new(None) };
+}
+
+/// Per-service pipe-name overrides, consulted by [`crate::pipe_name`].
+///
+/// Unlike [`BACKEND`] this is a process-global, not a thread-local, and the
+/// difference is deliberate. `BACKEND` short-circuits before any transport, so
+/// it is only ever read on the gpui test thread. An override here has to be
+/// visible to the *real* transport, whose connect runs inside `call_inner` on
+/// whatever tokio worker polls it — not necessarily the thread that set it. A
+/// thread-local would silently fail to apply there. Each test binary is its own
+/// process, so a global cannot leak across binaries; within one binary, use a
+/// name unique per test (see `PipeNameOverride`).
+static PIPE_NAME_OVERRIDES: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
+
+/// Route `service` at `pipe` for the rest of the process, and restore the real
+/// name on drop.
+///
+/// This is the seam that lets a test stand up a fixture server on a **private**
+/// pipe while still exercising the real msgpack transport. Binding the
+/// production name instead (`\\.\pipe\wylde-workspaces`) is what made
+/// `integration_graph_ipc` fail with `ERROR_ACCESS_DENIED` on any machine
+/// running the product — the live service already owns that name, and
+/// `first_pipe_instance(true)` is refused. CI never runs the stack, so the name
+/// was always free there and the gate could not see the failure (#75; same
+/// shape as #47's prebuild guard).
+///
+/// Prefer a name unique to the test (`unique_pipe_name`) so two tests in one
+/// binary can never collide with each other either.
+#[must_use = "the override is reverted when the guard drops"]
+pub struct PipeNameOverride {
+    service: String,
+    previous: Option<String>,
+}
+
+impl PipeNameOverride {
+    /// Install an override routing `service` to the full pipe path `pipe`.
+    pub fn install(service: &str, pipe: &str) -> Self {
+        let service = bare_service(service);
+        let previous = PIPE_NAME_OVERRIDES
+            .write()
+            .expect("pipe-name override lock poisoned")
+            .get_or_insert_with(HashMap::new)
+            .insert(service.clone(), pipe.to_owned());
+        Self { service, previous }
+    }
+}
+
+impl Drop for PipeNameOverride {
+    fn drop(&mut self) {
+        let mut guard = PIPE_NAME_OVERRIDES
+            .write()
+            .expect("pipe-name override lock poisoned");
+        let map = guard.get_or_insert_with(HashMap::new);
+        match self.previous.take() {
+            Some(prev) => map.insert(self.service.clone(), prev),
+            None => map.remove(&self.service),
+        };
+    }
+}
+
+/// A process-unique fixture pipe path for `service`, e.g.
+/// `\\.\pipe\wylde-workspaces-test-31415`. Keyed on the pid so a crashed prior
+/// run can never leave a bound name that fails the next one — the same
+/// isolated-pipe precedent `rust/tests/parity/tests/lifecycle.rs` follows.
+pub fn unique_pipe_name(service: &str) -> String {
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!(
+        r"\\.\pipe\wylde-{}-test-{}-{}",
+        bare_service(service),
+        std::process::id(),
+        n
+    )
+}
+
+/// Normalise `wylde-workspaces` / `workspaces` to the bare key both
+/// [`crate::pipe_name`] and the override map agree on.
+fn bare_service(service: &str) -> String {
+    service.strip_prefix("wylde-").unwrap_or(service).to_owned()
+}
+
+/// The override for `bare_service`, if a test installed one. Read by
+/// [`crate::pipe_name`].
+pub(crate) fn pipe_name_override(bare: &str) -> Option<String> {
+    PIPE_NAME_OVERRIDES
+        .read()
+        .expect("pipe-name override lock poisoned")
+        .as_ref()?
+        .get(bare)
+        .cloned()
 }
 
 /// Install `backend` as the current thread's fake transport.  Prefer the

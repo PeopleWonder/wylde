@@ -643,7 +643,7 @@ mod tests {
             let wire = serde_json::to_value(kind).unwrap();
             assert_eq!(wire, json!(kind.as_str()), "as_str matches serde");
             assert!(
-                allowed.iter().any(|v| *v == wire),
+                allowed.contains(&wire),
                 "{wire} missing from the schema enum"
             );
         }

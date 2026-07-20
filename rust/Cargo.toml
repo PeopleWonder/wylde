@@ -25,6 +25,10 @@ members = [
     # `enabled: false`, so the extension bridge doesn't advertise it. The
     # crate source is retained as the seed of the future Extension (see
     # the WyldeStudy rewire spec in outputs/wylde-memory-fixes-DONE.md).
+    # The shared stack roster + "current" resolver (#97/#92). Deliberately
+    # dependency-lean: `wylde-updater` depends on it and the GUI workspace
+    # depends on `wylde-updater`, so anything heavy here reaches the shell.
+    "crates/wylde-stack",
     "crates/wylde-updater",
     # Thought Bubble System (Phase 0, Slice 0a). The new workspace-scoped
     # service + the shared IPC client every consumer depends on. See the
@@ -98,7 +102,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Wylde User"]
@@ -112,9 +116,9 @@ rmp-serde = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
-windows = { version = "0.58", features = ["Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_Security", "Win32_Security_Cryptography", "Win32_Foundation"] }
+windows = { version = "0.62", features = ["Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_Security", "Win32_Security_Cryptography", "Win32_Foundation"] }
 # Test-only: serialises tests that mutate process-global state (env vars, the
 # manifest writer-registry) under named locks so cargo's parallel runner can't
 # interleave them. Dev-dependency in the crates that need it.

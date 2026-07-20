@@ -63,59 +63,41 @@ use serde_json::{json, Value};
 use wylde_shared::ipc::{register_action, send_with_verb, IpcError, Reply, ACTION_DISPATCH_PATH};
 
 use crate::registry::{self, ServiceInfo};
-use crate::state::services::{
-    impl_for, rust_binary_path, start_device_gate, start_discovered, start_extension_bridge,
-    start_gateway, start_harness, start_memgraph, start_n8n, start_ollama, start_treesitter,
-    start_voice, start_vpn, start_vram_broker, start_workspaces, stop_device_gate, stop_discovered,
-    stop_extension_bridge, stop_gateway, stop_harness, stop_memgraph, stop_n8n, stop_ollama,
-    stop_treesitter, stop_voice, stop_vpn, stop_vram_broker, stop_workspaces,
-};
+// The per-service `start_<name>` / `stop_<name>` fns are no longer named
+// here individually: `dispatch_start` / `dispatch_stop` route through the
+// single `crate::daemon_managed::DAEMON_MANAGED` table (issue #101), which
+// owns the name→hook mapping. Only the generic discovered-sibling path and
+// the two impl helpers are used directly by this module.
+use crate::state::services::{impl_for, rust_binary_path, start_discovered, stop_discovered};
 use crate::state::{
     is_service_alive, nospawn_enabled, nospawn_record, nospawn_snapshot, request_daemon_exit,
     service_name, service_pid, stop_all_daemon_managed, ShutdownSummary,
 };
 
-/// The **core, in-tree** daemon-managed services — the bespoke,
-/// dependency-ordered set the daemon compiles in and supervises with
-/// hand-written `start_<service>` / `stop_<service>` fns. `memory_scheduler`
-/// is excluded: it is an in-process subsystem, never a would-have-spawned
-/// subprocess, on either daemon. `wylde-vpn` (Phase 2) is included even
-/// though it's an `optional` tier service — daemon-managed lifecycle is
-/// still authoritative for spawn/stop. `wylde-workspaces` (Thought Bubble
-/// System Phase 0, Slice A) consumes ollama/treesitter/memgraph and is
-/// spawned after them. `wylde-n8n` (taxonomy reorg TX S3) is the optional
-/// pipe surface over the external, user-managed n8n daemon.
+/// Is `name` a core, in-tree daemon-managed service — one with a row in
+/// the single [`crate::daemon_managed::DAEMON_MANAGED`] table that is
+/// routable via dispatch (i.e. not the boot-only-no-op memory scheduler)?
 ///
-/// This is **no longer the authority** on what `service.start` / `.stop` /
-/// `.wake` accept — that gate is now discovery-driven ([`is_manageable`]),
-/// so an out-of-tree sibling dropped into the `Services/*` bucket is
-/// accepted and supervised without editing any hardcoded list. This const
-/// remains only as the core subset: the names with a `dispatch_start`
-/// match arm and the no-spawn parity surface
-/// (`lifecycle.start_service`, byte-identical to the Python daemon).
-const CORE_SERVICES: [&str; 12] = [
-    service_name::MEMGRAPH,
-    service_name::VOICE,
-    service_name::DEVICE_GATE,
-    service_name::VRAM_BROKER,
-    service_name::EXTENSION_BRIDGE,
-    service_name::GATEWAY,
-    service_name::OLLAMA,
-    service_name::VPN,
-    service_name::HARNESS,
-    service_name::TREESITTER,
-    service_name::WORKSPACES,
-    service_name::N8N,
-];
+/// `memory_scheduler` is excluded: it is an in-process subsystem
+/// (`Role::BootOnlyNoop`), never a would-have-spawned subprocess. `wylde-vpn`
+/// is included even though it is user-started (`Role::UserStarted`) —
+/// daemon-managed lifecycle is still authoritative for its spawn/stop.
+///
+/// This is the core subset only; it is **not** the authority on what
+/// `service.start` / `.stop` / `.wake` accept — that gate is discovery-driven
+/// ([`is_manageable`]), so an out-of-tree sibling under `Services/*` is
+/// accepted and supervised without editing any list.
+fn is_core_service(name: &str) -> bool {
+    crate::daemon_managed::dispatchable(name).is_some()
+}
 
 /// Is `name` a service this daemon can start/stop/wake? True for a **core**
-/// in-tree service ([`CORE_SERVICES`]) OR a **discovered out-of-tree
-/// sibling** under the `Services/*` bucket. This replaces the old fixed
-/// accept-list array: the manageable set is now discovery-driven, so
-/// nothing is hardcoded for buckets — a sibling appears the moment it is
+/// in-tree service ([`is_core_service`]) OR a **discovered out-of-tree
+/// sibling** under the `Services/*` bucket. The manageable set is
+/// discovery-driven for buckets — a sibling appears the moment it is
 /// dropped in, and disappears (cleanly, `not_registered`) when removed.
 fn is_manageable(name: &str) -> bool {
-    CORE_SERVICES.contains(&name) || is_discovered_sibling(name)
+    is_core_service(name) || is_discovered_sibling(name)
 }
 
 /// Does the live `Services/*` discovery currently include `name`?
@@ -663,9 +645,7 @@ fn annotate_staleness(infos: &mut [ServiceInfo]) {
             None => siblings
                 .iter()
                 .find(|d| d.name == info.name)
-                .and_then(|d| {
-                    crate::state::services::sibling_binary_path(&d.folder, &info.name)
-                }),
+                .and_then(|d| crate::state::services::sibling_binary_path(&d.folder, &info.name)),
         };
         let Some(path) = path else {
             continue;
@@ -714,6 +694,15 @@ fn shape_service_list(infos: Vec<ServiceInfo>) -> Value {
             // (`dead-orphan`) from one the crash-restart breaker gave up on
             // (`failed`). Null for declarative-only entries (no runtime file).
             "lifecycle_state": info.state.clone().map(Value::String).unwrap_or(Value::Null),
+            // min_core floor unmet: the service is present but needs a newer
+            // Core than is running. Carries the human-readable reason so the GUI
+            // shows *why* the feature is unavailable rather than a silent
+            // absence. Null when compatible / no floor declared.
+            "incompatible_reason": info
+                .incompatible_reason
+                .clone()
+                .map(Value::String)
+                .unwrap_or(Value::Null),
             // F1: the live process is running an out-of-date binary (rebuilt
             // after it started). Distinct from down/inactive — the service is
             // up but predates code it may be asked to serve.
@@ -741,31 +730,26 @@ fn shape_service_list(infos: Vec<ServiceInfo>) -> Value {
     })
 }
 
-/// Route a daemon-managed `name` to its `start_<service>` future.
+/// Route a daemon-managed `name` to its start hook.
+///
+/// The core name→hook mapping is owned by the single
+/// [`crate::daemon_managed::DAEMON_MANAGED`] table (issue #101), so a new
+/// core service is dispatchable the moment its row lands — no match arm to
+/// add here. A name outside the core set falls through to the discovered
+/// out-of-tree sibling path (`Services/*`).
 async fn dispatch_start(name: &str) -> anyhow::Result<()> {
-    match name {
-        service_name::MEMGRAPH => start_memgraph().await,
-        service_name::VOICE => start_voice().await,
-        service_name::DEVICE_GATE => start_device_gate().await,
-        service_name::VRAM_BROKER => start_vram_broker().await,
-        service_name::EXTENSION_BRIDGE => start_extension_bridge().await,
-        service_name::GATEWAY => start_gateway().await,
-        service_name::OLLAMA => start_ollama().await,
-        service_name::VPN => start_vpn().await,
-        service_name::HARNESS => start_harness().await,
-        service_name::TREESITTER => start_treesitter().await,
-        service_name::WORKSPACES => start_workspaces().await,
-        service_name::N8N => start_n8n().await,
-        // Generic arm — an out-of-tree sibling discovered under Services/*.
-        // Route to the generic supervision path instead of erroring, so the
-        // accept-list is no longer the fixed core array.
-        other => match registry::discovered_bucket_services()
-            .into_iter()
-            .find(|d| d.name == other)
-        {
-            Some(svc) => start_discovered(&svc).await,
-            None => anyhow::bail!("not a daemon-managed service: {name}"),
-        },
+    if let Some(svc) = crate::daemon_managed::dispatchable(name) {
+        return (svc.start)().await;
+    }
+    // Generic arm — an out-of-tree sibling discovered under Services/*.
+    // Route to the generic supervision path instead of erroring, so the
+    // accept-list is no longer the fixed core array.
+    match registry::discovered_bucket_services()
+        .into_iter()
+        .find(|d| d.name == name)
+    {
+        Some(svc) => start_discovered(&svc).await,
+        None => anyhow::bail!("not a daemon-managed service: {name}"),
     }
 }
 
@@ -780,26 +764,20 @@ pub(crate) async fn restart_service(name: &str) -> anyhow::Result<()> {
     dispatch_start(name).await
 }
 
-/// Route a daemon-managed `name` to its `stop_<service>` future.
+/// Route a daemon-managed `name` to its stop hook.
+///
+/// Like [`dispatch_start`], the core name→hook mapping comes from the
+/// single [`crate::daemon_managed::DAEMON_MANAGED`] table. A name outside
+/// the core set falls through to `stop_discovered`, the generic graceful
+/// teardown — an idempotent no-op for a name that was never started, so it
+/// is safe for any manageable name.
 async fn dispatch_stop(name: &str) -> anyhow::Result<()> {
-    match name {
-        service_name::MEMGRAPH => stop_memgraph().await,
-        service_name::VOICE => stop_voice().await,
-        service_name::DEVICE_GATE => stop_device_gate().await,
-        service_name::VRAM_BROKER => stop_vram_broker().await,
-        service_name::EXTENSION_BRIDGE => stop_extension_bridge().await,
-        service_name::GATEWAY => stop_gateway().await,
-        service_name::OLLAMA => stop_ollama().await,
-        service_name::VPN => stop_vpn().await,
-        service_name::HARNESS => stop_harness().await,
-        service_name::TREESITTER => stop_treesitter().await,
-        service_name::WORKSPACES => stop_workspaces().await,
-        service_name::N8N => stop_n8n().await,
-        // Generic arm — a discovered sibling. `stop_discovered` is the
-        // generic graceful teardown and is an idempotent no-op for a name
-        // that was never started, so this is safe for any manageable name.
-        other => stop_discovered(other).await,
+    if let Some(svc) = crate::daemon_managed::dispatchable(name) {
+        if let Some(stop) = svc.stop {
+            return stop().await;
+        }
     }
+    stop_discovered(name).await
 }
 
 /// Walk the service registry and return the dashboard's expected
@@ -820,6 +798,20 @@ async fn service_list_action(_payload: Value) -> Reply {
 /// forced the switch). On success returns `{name, reply: <ping data>}`;
 /// on transport failure `probe_failed`; on a service-level not-ok
 /// `service_unhealthy`.
+/// If `name` is a discovered sibling whose declared `min_core` floor the
+/// running Core does not meet, return the human-readable incompatibility reason
+/// (`None` when the service is unknown, has no floor, or is compatible). Used by
+/// [`service_health_action`] to surface "needs a newer Core" instead of a bare
+/// "down", so the panel gate shows the real cause.
+fn incompatible_sibling_reason(name: &str) -> Option<String> {
+    registry::discovered_bucket_services()
+        .into_iter()
+        .find(|s| s.name == name)
+        .and_then(|s| {
+            registry::check_core_floor(registry::core_version(), s.min_core.as_deref()).reason()
+        })
+}
+
 async fn service_health_action(payload: Value) -> Reply {
     let name = match require_name(&payload) {
         Ok(n) => n,
@@ -845,6 +837,21 @@ async fn service_health_action(payload: Value) -> Reply {
     // Dashboard can render a degraded/yellow tile.
     if name == service_name::OLLAMA {
         return ollama_health().await;
+    }
+    // min_core special-case: a discovered sibling whose declared floor exceeds
+    // the running Core never spawned (see state::services::start_discovered), so
+    // a plain pipe probe would just report it "down" with no reason. Surface the
+    // real cause — "present but needs a newer Core" — so the panel shows *why*,
+    // not a misleading "not running / Start" affordance.
+    if let Some(reason) = incompatible_sibling_reason(&name) {
+        return Reply::ok(json!({
+            "name": name,
+            "reply": {
+                "ok": false,
+                "incompatible": true,
+                "reason": reason,
+            },
+        }));
     }
     let reply = send_with_verb(
         &name,
@@ -1226,7 +1233,7 @@ async fn lifecycle_start_service_action(payload: Value) -> Reply {
             return Reply::err(IpcError::new("bad_request", "payload.name is required"));
         }
     };
-    if !CORE_SERVICES.contains(&name.as_str()) {
+    if !is_core_service(&name) {
         return Reply::err(IpcError::new(
             "unknown_service",
             format!("unknown daemon-managed service {name:?}"),
@@ -1246,15 +1253,56 @@ async fn lifecycle_start_service_action(payload: Value) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
     use wylde_shared::ipc::{dispatch_action, list_actions, unregister_action};
 
     // The action registry is a process-global. Without a guard,
     // parallel tests race each other's register/cleanup pairs and
     // some lookups land between a sibling's cleanup and re-register.
+    //
+    // NOTE: this guard covers the ACTION REGISTRY only. Tests that also mutate
+    // the process-global WYLDE_ROOT / WYLDE_SERVICES need `#[serial]` on top —
+    // `state_guard` guards the same env vars from the `state` module with a
+    // *different* mutex, and two locks over one resource is no mutual exclusion.
     async fn registry_guard() -> MutexGuard<'static, ()> {
         static LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
         LOCK.lock().await
+    }
+
+    /// Pins BOTH variables that feed service discovery at a known estate, and
+    /// restores them on drop — including on a panicking assert, which a manual
+    /// save/restore around the assertion would leak.
+    ///
+    /// Both, not one: `WYLDE_ROOT` selects the estate and `WYLDE_SERVICES`
+    /// independently relocates the Services bucket within it. A test that pins
+    /// only one still reads the other from the developer's real environment.
+    struct RestoreEnv {
+        root: Option<std::ffi::OsString>,
+        services: Option<std::ffi::OsString>,
+    }
+    impl RestoreEnv {
+        fn pin(root: &std::path::Path) -> Self {
+            let saved = Self {
+                root: std::env::var_os("WYLDE_ROOT"),
+                services: std::env::var_os("WYLDE_SERVICES"),
+            };
+            std::env::set_var("WYLDE_ROOT", root);
+            std::env::remove_var("WYLDE_SERVICES");
+            saved
+        }
+    }
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            match self.root.take() {
+                Some(v) => std::env::set_var("WYLDE_ROOT", v),
+                None => std::env::remove_var("WYLDE_ROOT"),
+            }
+            match self.services.take() {
+                Some(v) => std::env::set_var("WYLDE_SERVICES", v),
+                None => std::env::remove_var("WYLDE_SERVICES"),
+            }
+        }
     }
 
     /// Every action `register_with_ipc` binds — kept in one place so the
@@ -1371,20 +1419,27 @@ mod tests {
         // (rather than `not_registered`) and the no-spawn parity surface
         // reports it. The count is the dashboard's expected-running-services
         // tally — TX S3 added wylde-n8n, bumping it from 11 → 12 (N+1).
-        // (Out-of-tree siblings are accepted via is_manageable, not this
-        // const — see service.start's discovery-driven gate.)
+        // The core-managed set is now derived from the single
+        // `DAEMON_MANAGED` table (issue #101): Standard + UserStarted =
+        // 12 (excludes the BootOnlyNoop memory scheduler). Out-of-tree
+        // siblings are accepted via is_manageable, not this set.
+        let core = crate::daemon_managed::core_service_names();
         assert_eq!(
-            CORE_SERVICES.len(),
+            core.len(),
             12,
             "expected 12 core daemon-managed services after registering wylde-n8n"
         );
         assert!(
-            CORE_SERVICES.contains(&service_name::WORKSPACES),
+            core.contains(&service_name::WORKSPACES),
             "wylde-workspaces must be daemon-managed (Slice A)"
         );
         assert!(
-            CORE_SERVICES.contains(&service_name::N8N),
+            core.contains(&service_name::N8N),
             "wylde-n8n must be daemon-managed (TX S3)"
+        );
+        assert!(
+            is_core_service(service_name::WORKSPACES),
+            "is_core_service must accept wylde-workspaces"
         );
     }
 
@@ -1454,6 +1509,7 @@ mod tests {
         cleanup();
     }
 
+    #[serial]
     #[tokio::test]
     async fn service_start_accepts_discovered_sibling() {
         // The accept-list is discovery-driven, not a fixed array: a sibling
@@ -1486,17 +1542,18 @@ mod tests {
         )
         .unwrap();
 
-        let saved_root = std::env::var_os("WYLDE_ROOT");
-        std::env::set_var("WYLDE_ROOT", tmp.path());
+        // Pin BOTH variables that feed discovery, not just one. This test used
+        // to set only WYLDE_ROOT, so an ambient WYLDE_SERVICES relocated the
+        // bucket to the developer's REAL Services/ estate instead of `tmp` —
+        // `wylde-foo` isn't there, so it failed `not_registered` on every
+        // machine with Wylde configured. Green on CI only because CI has
+        // neither set.
+        let _restore = RestoreEnv::pin(tmp.path());
         let reply = dispatch_action(json!({
             "action": "service.start",
             "payload": {"name": "wylde-foo"},
         }))
         .await;
-        match saved_root {
-            Some(v) => std::env::set_var("WYLDE_ROOT", v),
-            None => std::env::remove_var("WYLDE_ROOT"),
-        }
 
         if let Some(err) = reply.error {
             assert_ne!(
@@ -1532,9 +1589,15 @@ mod tests {
         // Binary older than the process (normal: built, then started) ⇒ fresh.
         assert!(!binary_predates_process(3600.0, 60.0));
         // Within the grace window ⇒ not flagged (rebuild-then-start jitter).
-        assert!(!binary_predates_process(100.0, 100.0 + STALE_BINARY_GRACE_S - 1.0));
+        assert!(!binary_predates_process(
+            100.0,
+            100.0 + STALE_BINARY_GRACE_S - 1.0
+        ));
         // Just past grace ⇒ flagged.
-        assert!(binary_predates_process(100.0, 100.0 + STALE_BINARY_GRACE_S + 1.0));
+        assert!(binary_predates_process(
+            100.0,
+            100.0 + STALE_BINARY_GRACE_S + 1.0
+        ));
         // Missing started_at (infinite process age) is never stale, and an
         // unreadable binary (infinite age) likewise.
         assert!(!binary_predates_process(60.0, f64::INFINITY));
@@ -1830,6 +1893,7 @@ mod tests {
         format!("{nanos:x}")
     }
 
+    #[serial]
     #[tokio::test]
     async fn shutdown_all_returns_structured_summary() {
         let _g = registry_guard().await;
@@ -1840,6 +1904,12 @@ mod tests {
         // This test exercises the real (spawning) path; pin the flag off so a
         // prior test's leftover can't flip us into the no-spawn branch.
         crate::state::set_nospawn(false);
+        // `count == 0` means "nothing was discovered to stop", which holds
+        // because this crate's tests resolve their root to a per-process
+        // scratch path that has no manifests in it — see `State::resolve_root`.
+        // Until #80 this read the ambient `WYLDE_ROOT` and returned 11: the
+        // developer's real manifests, counted as if the fixture had stopped
+        // them.
         cleanup();
         register_with_ipc();
         // No services are spawned in this unit test; the action
@@ -1858,6 +1928,75 @@ mod tests {
         assert!(reply.data["launcher_stopped"].is_array());
         assert!(reply.data["daemon_managed_stopped"].is_array());
         assert!(reply.data["daemon_will_exit"].is_boolean());
+        cleanup();
+    }
+
+    /// #84 regression: `service.shutdown_all` must count the vram-broker.
+    ///
+    /// The broker self-registers its manifest as `vram-broker.json` — its
+    /// short, pipe-prefix-stripped name — not the `wylde-vram-broker.json`
+    /// its canonical `service_name::VRAM_BROKER` implies. Before the fix,
+    /// `is_or_was_tracked` stat'd the prefixed path (never written), so the
+    /// real (non-nospawn) teardown dropped the broker from `stopped`/`count`
+    /// even when it had just stopped it successfully.
+    ///
+    /// This drives the FULL real teardown path — the same registered action
+    /// and `set_nospawn(false)` the sibling `..._returns_structured_summary`
+    /// uses — with only the broker's manifest staged, and asserts the broker
+    /// is now in the summary. Reverting the fix in `is_or_was_tracked` turns
+    /// this red (broker absent, count 0); it is not a vacuous unit assertion.
+    #[serial]
+    #[tokio::test]
+    async fn shutdown_all_counts_the_vram_broker_by_its_short_manifest_name() {
+        let _g = registry_guard().await;
+        let _sg = crate::state::tests::state_guard().await;
+        // Real (spawning) path — the branch that reads `is_or_was_tracked`.
+        crate::state::set_nospawn(false);
+        cleanup();
+        register_with_ipc();
+
+        // The scratch manifest dir is per-process (`State::resolve_root`).
+        // Start from a known-empty dir so the broker is the only tracked
+        // manifest, then stage it exactly as the broker itself writes it:
+        // the short `vram-broker.json`, NOT `wylde-vram-broker.json`.
+        let dir = crate::state::manifest_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("vram-broker.json"),
+            serde_json::to_vec(&json!({
+                "service": "vram-broker",
+                "pipe": r"\\.\pipe\wylde-vram-broker",
+                "status": {"state": "running", "pid": 4321},
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let reply = dispatch_action(json!({
+            "action": "service.shutdown_all",
+            "payload": null,
+        }))
+        .await;
+        assert!(reply.ok, "expected ok, got {reply:?}");
+
+        let stopped = reply.data["daemon_managed_stopped"]
+            .as_array()
+            .expect("daemon_managed_stopped is an array");
+        assert!(
+            stopped.iter().any(|v| v == "wylde-vram-broker"),
+            "shutdown_all must count the broker it just stopped — got {stopped:?}. \
+             Before #84 `is_or_was_tracked` stat'd `wylde-vram-broker.json` (never \
+             written), so the broker was silently dropped from the summary."
+        );
+        assert_eq!(
+            reply.data["count"], 1,
+            "only the broker manifest was staged, so it is the one counted"
+        );
+
+        // Leave the scratch manifest dir empty so the sibling `count == 0`
+        // test isn't polluted by this fixture.
+        let _ = std::fs::remove_dir_all(&dir);
         cleanup();
     }
 

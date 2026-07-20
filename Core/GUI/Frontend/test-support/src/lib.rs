@@ -87,6 +87,8 @@ impl RecordedCall {
 pub struct ScriptedBackend {
     unary: Mutex<HashMap<String, Value>>,
     errors: Mutex<HashMap<String, String>>,
+    path_unary: Mutex<HashMap<String, Value>>,
+    path_errors: Mutex<HashMap<String, String>>,
     streams: Mutex<HashMap<String, Vec<Value>>>,
     calls: Mutex<Vec<RecordedCall>>,
 }
@@ -107,7 +109,36 @@ impl ScriptedBackend {
 
     /// Script a unary `action` to fail with `code: message`-style `err`.
     pub fn on_err(self: Arc<Self>, action: impl Into<String>, err: impl Into<String>) -> Arc<Self> {
-        self.errors.lock().unwrap().insert(action.into(), err.into());
+        self.errors
+            .lock()
+            .unwrap()
+            .insert(action.into(), err.into());
+        self
+    }
+
+    /// Script a call routed by request **path** to return `data`. Chainable.
+    ///
+    /// Some panels (e.g. RemoteAccess over `wylde-vpn`) don't use the
+    /// `/__action__` + `"action"` envelope — they issue HTTP-style
+    /// `call(service, "GET", "/api/link/status", None)`. Those calls carry no
+    /// `action`, so [`on`](Self::on) can't reach them; key on the path instead.
+    pub fn on_path(self: Arc<Self>, path: impl Into<String>, data: Value) -> Arc<Self> {
+        self.path_unary.lock().unwrap().insert(path.into(), data);
+        self
+    }
+
+    /// Script a path-routed call to fail with `code: message`-style `err` —
+    /// the path counterpart of [`on_err`](Self::on_err), for the
+    /// no-action-envelope panels (see [`on_path`](Self::on_path)).
+    pub fn on_path_err(
+        self: Arc<Self>,
+        path: impl Into<String>,
+        err: impl Into<String>,
+    ) -> Arc<Self> {
+        self.path_errors
+            .lock()
+            .unwrap()
+            .insert(path.into(), err.into());
         self
     }
 
@@ -120,7 +151,10 @@ impl ScriptedBackend {
 
     /// Convenience: set the `conversations.list` response from a row list.
     pub fn conversations(self: Arc<Self>, rows: Vec<Value>) -> Arc<Self> {
-        self.on("conversations.list", serde_json::json!({ "conversations": rows }))
+        self.on(
+            "conversations.list",
+            serde_json::json!({ "conversations": rows }),
+        )
     }
 
     /// Install this backend on the current thread for the life of the
@@ -161,6 +195,17 @@ impl ScriptedBackend {
     pub fn count_for(&self, action: &str) -> usize {
         self.calls_for(action).len()
     }
+
+    /// How many times a call was made to `path` (for the action-less,
+    /// path-routed panels — see [`on_path`](Self::on_path)).
+    pub fn count_for_path(&self, path: &str) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.path == path)
+            .count()
+    }
 }
 
 impl FakeBackend for ScriptedBackend {
@@ -195,6 +240,13 @@ impl FakeBackend for ScriptedBackend {
             if let Some(data) = self.unary.lock().unwrap().get(action) {
                 return Ok(data.clone());
             }
+        }
+        // No action match (or an action-less HTTP-style call): route by path.
+        if let Some(err) = self.path_errors.lock().unwrap().get(path) {
+            return Err(err.clone());
+        }
+        if let Some(data) = self.path_unary.lock().unwrap().get(path) {
+            return Ok(data.clone());
         }
         // Unscripted: soft default. `{}` parses to "empty"/default for the
         // permissive `from_value` projections the panels use.

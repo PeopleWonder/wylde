@@ -359,7 +359,10 @@ mod tests {
         assert!(r > 0.0, "still derives a rate after eviction");
         // Window kept only recent samples, so the rate reflects ~10/s, not the
         // long-run average.
-        assert!((r - 10.0).abs() < 2.0, "rate ~10/s from the recent window, got {r}");
+        assert!(
+            (r - 10.0).abs() < 2.0,
+            "rate ~10/s from the recent window, got {r}"
+        );
     }
 
     #[test]
@@ -383,7 +386,11 @@ mod tests {
         assert_eq!(eta_from_rate(50, 100, 10.0), Some(5.0));
         // Done ⇒ 0s, never negative.
         assert_eq!(eta_from_rate(100, 100, 10.0), Some(0.0));
-        assert_eq!(eta_from_rate(150, 100, 10.0), Some(0.0), "overshoot saturates");
+        assert_eq!(
+            eta_from_rate(150, 100, 10.0),
+            Some(0.0),
+            "overshoot saturates"
+        );
     }
 
     #[test]
@@ -398,11 +405,17 @@ mod tests {
             tracker.observe(t, done);
             if let Some(eta) = tracker.eta_secs(done, total) {
                 if let Some(p) = prev {
-                    assert!(eta <= p + 1e-9, "ETA must be monotonically non-increasing: {eta} > {p}");
+                    assert!(
+                        eta <= p + 1e-9,
+                        "ETA must be monotonically non-increasing: {eta} > {p}"
+                    );
                 }
                 prev = Some(eta);
             }
         }
-        assert!(prev.is_some(), "an ETA was produced once the rate was known");
+        assert!(
+            prev.is_some(),
+            "an ETA was produced once the rate was known"
+        );
     }
 }

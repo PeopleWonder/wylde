@@ -190,8 +190,8 @@ fn write_to_path(path: &std::path::Path, cfg: &LexicalConfig) -> Result<(), Stri
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("lexical: mkdir: {e}"))?;
     }
-    let body = serde_json::to_vec_pretty(&cfg.to_value())
-        .map_err(|e| format!("lexical: encode: {e}"))?;
+    let body =
+        serde_json::to_vec_pretty(&cfg.to_value()).map_err(|e| format!("lexical: encode: {e}"))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &body).map_err(|e| format!("lexical: write: {e}"))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("lexical: rename: {e}"))?;
@@ -244,7 +244,10 @@ mod tests {
         assert!((c.w_dense - 1.0).abs() < 1e-9, "symmetric default weights");
         assert!((c.w_lex - 1.0).abs() < 1e-9);
         assert!((c.min_bm25 - 1.0).abs() < 1e-9);
-        assert!((c.fused_relative_floor - 0.5).abs() < 1e-9, "L8 live-calibrated floor");
+        assert!(
+            (c.fused_relative_floor - 0.5).abs() < 1e-9,
+            "L8 live-calibrated floor"
+        );
         assert!(c.active_file_focus_boost > c.active_file_dir_focus_boost);
     }
 
@@ -257,7 +260,10 @@ mod tests {
         // A partial object only flips the key it carries; knobs keep defaults.
         let c = LexicalConfig::from_value(&json!({ "enabled": true }));
         assert!(c.enabled);
-        assert!((c.rrf_k - 60.0).abs() < 1e-9, "unset knob keeps its default");
+        assert!(
+            (c.rrf_k - 60.0).abs() < 1e-9,
+            "unset knob keeps its default"
+        );
     }
 
     #[test]

@@ -1,0 +1,236 @@
+# CI — build + test on every PR and on pushes to the trunk / main.
+#
+# This is the gate that makes dependency-bump PRs mergeable with confidence:
+# a Dependabot PR that breaks the build or the test suite turns this red, so
+# bumps stop being scary and stop accumulating.
+#
+# Runner is Windows: Wylde ships Windows-only (`wylde-gui.exe`), the GUI stack
+# (gpui + wry + tray-icon) binds Win32 APIs, and the harness IPC layer uses
+# named pipes — the e2e tests are `#![cfg(windows)]`. Building/testing anywhere
+# else would not reflect what ships.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+      # Transitional: the experimental trunk is being renamed
+      # feat/thought-bubble-system -> develop (see docs/migration-to-branch-model.md).
+      # Keep the old name here until the rename lands, then drop this line.
+      - "feat/thought-bubble-system"
+  workflow_dispatch:
+
+# One in-flight run per ref; a new push cancels the previous.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # The pre-build guard inspects live daemon status, which does not exist on a
+  # clean CI runner. Skip it so builds don't false-fail. See
+  # rust/build-support/wylde-prebuild-guard.
+  WYLDE_PREBUILD_GUARD_SKIP: "1"
+
+jobs:
+  # --- Backend workspace (rust/) — build AND test. This is the suite with the
+  # 1167-test lib baseline + the reasoning_plan e2e (mock-pipe, offline). Live
+  # tests that need Ollama/Memgraph are `#[ignore]`-marked and skip here.
+  backend:
+    name: backend (rust/) build + test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust (stable, honoring rust-toolchain.toml)
+        run: rustup show
+        working-directory: rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "rust -> target"
+      - name: cargo build
+        working-directory: rust
+        run: cargo build --workspace --locked
+      - name: cargo test
+        working-directory: rust
+        run: cargo test --workspace --locked
+
+  # --- GUI workspace (Core/GUI/) — build only. It compiles the gpui + wry +
+  # tray-icon graph, which is what dependency bumps here would break. (The
+  # windowed gpui tests DO run headless — see the `gui-panel-walk` job below;
+  # the earlier "needs a desktop session" claim was caution, not a real
+  # platform dependency. gpui's test platform is a mock `TestPlatform` with no
+  # GPU/display.)
+  gui:
+    name: gui (Core/GUI/) build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust (stable)
+        run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "Core/GUI -> target"
+      - name: cargo build
+        working-directory: Core/GUI
+        run: cargo build --workspace --locked
+
+  # --- GUI panel tests (L7) — the "does every page load, and does it still
+  # behave?" gate. Runs every test target in the 9 panel crates as headless
+  # windowed `#[gpui::test]`s:
+  #   * the panel-walk — all 9 panels + the Workspaces subtabs mount, load, and
+  #     detect their error state under four backend conditions (healthy / down /
+  #     error envelope / empty); and
+  #   * the behavioural tests — chat workspace-scoping on send, memory copy-in
+  #     provenance, workspace registry nav, settings prefs dispatch, device
+  #     pairing cancel (issue #56).
+  # Runs on the CI runner because gpui's test platform is a mock `TestPlatform`
+  # — no desktop session, GPU, or display needed. Scoped to the panel crates
+  # (the `panel-walk` cargo alias), NOT `--workspace`, so it never links the
+  # Shell's tray-icon/wry graph or the rust/ audio stack (`wylde-voice`/cpal,
+  # which segfaults headless). See docs/enforcement-matrix.md row 4b + #35/#56.
+  #
+  # The job `name:` is the REQUIRED status-check context and is deliberately
+  # unchanged even though the job now runs more than the panel-walk: renaming it
+  # would stop the required context from ever reporting, and GitHub would block
+  # every PR forever waiting on it — including the PR doing the rename. To
+  # rename: add the new context to both rulesets live FIRST, merge, then drop
+  # the old one.
+  gui-panel-walk:
+    name: gui panel-walk (L7)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust (stable)
+        run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "Core/GUI -> target"
+      - name: cargo panel-walk (panel-walk + behavioural, headless windowed gpui tests)
+        working-directory: Core/GUI
+        run: cargo panel-walk --locked
+
+  # --- Version consistency (G7) — the two workspace roots (rust/ + Core/GUI/)
+  # must carry the same version, and on a tag build the tag must match it. A
+  # split version is the silent inconsistency release-gating exists to catch.
+  # Cheap and OS-independent; runs on the default (git-bash) shell.
+  version-consistency:
+    name: version consistency (G7)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: check workspace versions agree (and match the tag on a tag build)
+        shell: bash
+        run: bash tools/check-versions.sh
+
+  # --- Personal-info scrub (G8) — this repo is public.
+  #
+  # Narrow on purpose: it runs ONE wylde_check rule (55,
+  # `no_personal_identifiers`) plus that rule's own tests, not the whole
+  # suite. The full `run_all()` sweep still reports pre-existing findings in
+  # other rules and is being wired into CI separately (#114); gating on it
+  # today would just be red. This job gates only the guarantee it owns, so it
+  # is green from the first commit and fails the moment personal data returns.
+  #
+  # Why it exists at all: the 2026-05-31 scrub drove the maintainer's name and
+  # home-directory paths to zero BY HAND and recorded "0 remaining". Seven
+  # weeks later the tree held ~175 name occurrences and 11 personal paths
+  # again. Nothing failed in between, so nothing stopped it — a hand-audited
+  # number is a snapshot, not a guarantee. When #114 lands its broader
+  # wylde_check job, this one can fold into it; until then it is the gate.
+  personal-info:
+    name: personal-info scrub (G8)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # setup-python ships a bare interpreter; pytest is not included. The rule
+      # itself has no third-party dependency (stdlib re/hashlib only), so this
+      # is the only install the job needs.
+      - name: install pytest
+        shell: bash
+        run: python -m pip install --disable-pip-version-check --quiet pytest
+      - name: rule 55 self-tests (the gate must fail when the guarantee breaks)
+        shell: bash
+        run: python -m pytest Core/harness/dev/tests/wylde_check/test_personal_identifiers.py -q
+      - name: rule 55 against the tree (must report zero findings)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, ".")
+          from Core.harness.dev import wylde_check as wc
+
+          findings = wc.check_no_personal_identifiers()
+          for f in findings:
+              # `context` is intentionally empty for name findings so the
+              # name itself never lands in a public CI log.
+              print(f"{f.file}:{f.line}: {f.message}")
+          if findings:
+              print(f"\n{len(findings)} personal-identifier finding(s).")
+              sys.exit(1)
+          print("clean: no personal identifiers in the tree")
+          PY
+
+  # --- G4 (clippy, warnings-as-errors) + G6 (fmt --check) — ARMED (was staged).
+  # The tree is now clippy- and fmt-clean across every CI-built workspace
+  # (issue #32), so these steps FAIL the build on the first warning or
+  # unformatted file — a staged gate that can't be turned on protects nothing.
+  # Scope: the four workspaces CI actually builds — rust/, Core/GUI/, and the
+  # two tools/ crates. The rust/spikes/voice-npu-spike workspace is NOT CI-built
+  # (no build/test job), so it is fmt'd for hygiene but deliberately not gated
+  # here. See docs/enforcement-matrix.md rows 10 (G4) + 11 (G6).
+  lint:
+    name: clippy (G4) + fmt (G6)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install clippy + rustfmt (stable)
+        run: rustup component add clippy rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust -> target
+            Core/GUI -> target
+            tools/xtask -> target
+            tools/wylde-release -> target
+      - name: cargo fmt --check (G6)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ws in rust Core/GUI tools/xtask tools/wylde-release; do
+            echo "== fmt --check $ws =="
+            cargo fmt --all --manifest-path "$ws/Cargo.toml" -- --check
+          done
+      - name: cargo clippy -D warnings (G4)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ws in rust Core/GUI tools/xtask tools/wylde-release; do
+            echo "== clippy $ws =="
+            cargo clippy --manifest-path "$ws/Cargo.toml" --workspace --all-targets --locked -- -D warnings
+          done
+
+  # --- Dev tooling workspaces (xtask, wylde-release) — cheap compile check so a
+  # bump that breaks the build orchestrator or the release tool is caught too.
+  tools:
+    name: tools build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust (stable)
+        run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tools/xtask -> target
+            tools/wylde-release -> target
+      - name: build xtask
+        working-directory: tools/xtask
+        run: cargo build --locked
+      - name: build wylde-release
+        working-directory: tools/wylde-release
+        run: cargo build --locked

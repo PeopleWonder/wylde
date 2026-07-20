@@ -292,13 +292,15 @@ mod tests {
 
     #[test]
     fn round_trips_through_json() {
-        let mut p = UserProfile::default();
-        p.name = Some("Aaron".into());
+        let mut p = UserProfile {
+            name: Some("Sam".into()),
+            style: Some("direct, no hedging".into()),
+            free_text_rules: "Always show me the diff.".into(),
+            ..Default::default()
+        };
         p.preferences
             .insert("communication_style".into(), "terse".into());
         p.recurring_topics.push("rust".into());
-        p.style = Some("direct, no hedging".into());
-        p.free_text_rules = "Always show me the diff.".into();
 
         let s = serde_json::to_string(&p).unwrap();
         let back: UserProfile = serde_json::from_str(&s).unwrap();
@@ -314,8 +316,8 @@ mod tests {
     #[test]
     fn apply_patch_sets_and_clears_scalar_fields() {
         let mut p = UserProfile::default();
-        p.apply_patch(&patch(json!({"name": "Aaron", "style": "terse"})));
-        assert_eq!(p.name.as_deref(), Some("Aaron"));
+        p.apply_patch(&patch(json!({"name": "Sam", "style": "terse"})));
+        assert_eq!(p.name.as_deref(), Some("Sam"));
         assert_eq!(p.style.as_deref(), Some("terse"));
 
         // null clears; "" clears.
@@ -351,8 +353,10 @@ mod tests {
 
     #[test]
     fn apply_patch_ignores_unknown_keys_and_wrong_types() {
-        let mut p = UserProfile::default();
-        p.name = Some("keep".into());
+        let mut p = UserProfile {
+            name: Some("keep".into()),
+            ..Default::default()
+        };
         p.apply_patch(&patch(json!({"unknown": "x", "name": 42})));
         // wrong-typed name → `as_str()` None → cleared; unknown ignored.
         assert_eq!(p.name, None);
@@ -371,7 +375,7 @@ mod tests {
             conversation_id: None,
             created_at: 0,
         };
-        apply_proposal(&mut p, &mk("name", "Aaron"));
+        apply_proposal(&mut p, &mk("name", "Sam"));
         apply_proposal(&mut p, &mk("style", "terse"));
         apply_proposal(&mut p, &mk("free_text_rules", "Show diffs."));
         apply_proposal(&mut p, &mk("recurring_topic", "rust"));
@@ -379,7 +383,7 @@ mod tests {
         apply_proposal(&mut p, &mk("preference:tone", "dry"));
         apply_proposal(&mut p, &mk("bogus_field", "ignored"));
 
-        assert_eq!(p.name.as_deref(), Some("Aaron"));
+        assert_eq!(p.name.as_deref(), Some("Sam"));
         assert_eq!(p.style.as_deref(), Some("terse"));
         assert_eq!(p.free_text_rules, "Show diffs.");
         assert_eq!(p.recurring_topics, vec!["rust"]);
@@ -389,18 +393,22 @@ mod tests {
     #[test]
     fn prompt_block_is_empty_when_unset_and_populated_otherwise() {
         assert!(UserProfile::default().to_prompt_block().is_empty());
-        let mut p = UserProfile::default();
-        p.name = Some("Aaron".into());
-        p.free_text_rules = "Be terse.".into();
+        let p = UserProfile {
+            name: Some("Sam".into()),
+            free_text_rules: "Be terse.".into(),
+            ..Default::default()
+        };
         let block = p.to_prompt_block();
-        assert!(block.contains("Name: Aaron"));
+        assert!(block.contains("Name: Sam"));
         assert!(block.contains("Be terse."));
     }
 
     #[test]
     fn prompt_block_caps_oversized_rules_with_marker() {
-        let mut p = UserProfile::default();
-        p.free_text_rules = "r".repeat(FREE_TEXT_RULES_MAX_CHARS + 1000);
+        let mut p = UserProfile {
+            free_text_rules: "r".repeat(FREE_TEXT_RULES_MAX_CHARS + 1000),
+            ..Default::default()
+        };
         let block = p.to_prompt_block();
         assert!(block.contains("[user rules truncated at"), "marker present");
         assert!(

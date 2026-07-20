@@ -79,11 +79,45 @@ pub fn vector_path(workspace_id: &str) -> PathBuf {
     memory_dir(workspace_id).join("memory.vec.bin")
 }
 
+/// Whether `workspace_id` is safe to interpolate into a durable-tier path.
+///
+/// [`memory_dir`] is `workspace_memories_dir().join(workspace_id)`, and
+/// `Path::join` has two behaviours that turn a hostile id into a path outside
+/// the tier:
+///
+///   * an **empty** id joins to the tier ROOT — so `delete_memory_dir("")`
+///     would `remove_dir_all` *every* workspace's memories, not one;
+///   * an **absolute** id (`C:\Windows`, `/etc`) DISCARDS the base entirely,
+///     aiming the removal at that path;
+///   * a **relative traversal** (`../../x`) walks up out of the tier.
+///
+/// Ids are derived slugs in practice, but the tier is reachable over the pipe
+/// (`memory.workspace.*`), so the destructive path validates rather than
+/// trusts. Accepts the slug alphabet only: no separators, no `..`, non-empty.
+fn is_safe_workspace_id(workspace_id: &str) -> bool {
+    !workspace_id.is_empty()
+        && workspace_id == workspace_id.trim()
+        && workspace_id != ".."
+        && workspace_id != "."
+        && !workspace_id.contains("..")
+        && !workspace_id.contains(['/', '\\', ':'])
+}
+
 /// Recursively remove the durable workspace memory folder. Invoked on
 /// explicit user delete of a workspace — MRU eviction must NOT call
 /// this. Returns `true` if a folder was removed. Mirrors Python's
 /// `delete_memory_dir`.
+///
+/// Refuses an id that would escape the tier (see [`is_safe_workspace_id`]);
+/// this is a `remove_dir_all`, so a bad id is a wipe, not a mistake.
 pub fn delete_memory_dir(workspace_id: &str) -> bool {
+    if !is_safe_workspace_id(workspace_id) {
+        tracing::warn!(
+            "workspace_memory: refusing to delete memory dir for unsafe \
+             workspace id {workspace_id:?}"
+        );
+        return false;
+    }
     let target = memory_dir(workspace_id);
     if !target.exists() {
         return false;
@@ -395,6 +429,27 @@ pub fn delete(workspace_id: &str, record_id: &str) -> bool {
 
 fn vector_store(workspace_id: &str) -> VectorStore {
     VectorStore::load_or_empty(&vector_path(workspace_id), embed_dim())
+}
+
+/// Rebuild one workspace's vector mirror from its authoritative JSON records
+/// (#136). See [`crate::memory::long_term::entries`]'s equivalent for the full
+/// rationale — the short version is that the mirror drifts permanently partial
+/// whenever the embedder is unavailable at write time, and until now nothing
+/// ever went back for the records it skipped.
+pub async fn reindex_vectors(
+    workspace_id: &str,
+) -> Result<crate::memory::vector::RebuildReport, crate::memory::vector::RebuildError> {
+    let items: Vec<(String, String)> = list_records(workspace_id, false)
+        .into_iter()
+        .map(|r| (r.id, r.body))
+        .collect();
+    crate::memory::vector::rebuild(
+        &vector_path(workspace_id),
+        embed_dim(),
+        items,
+        |text| async move { crate::memory::embed_write::embed_for_write(&text).await },
+    )
+    .await
 }
 
 fn persist_vector_store(workspace_id: &str, store: &VectorStore) {
@@ -819,6 +874,58 @@ mod tests {
         assert!(delete_memory_dir("ws1"));
         assert!(!memory_dir("ws1").exists());
         assert!(!delete_memory_dir("ws1"));
+    }
+
+    /// `delete_memory_dir` is a `remove_dir_all`, and `Path::join` will
+    /// happily leave the tier for an empty, absolute, or traversing id — an
+    /// empty id resolves to the tier ROOT (every workspace's memories), and an
+    /// absolute one discards the base and aims the removal wherever it points.
+    /// Now that the pipe can reach this path (#135), a hostile id must be
+    /// refused rather than obeyed.
+    #[test]
+    fn delete_memory_dir_refuses_ids_that_escape_the_tier() {
+        let _env = TestEnv::new();
+        // Two real workspaces' memories, which must survive every attempt.
+        save_new("ws1", "keep me", "", Some(5.0), vec![]).unwrap();
+        save_new("ws2", "keep me too", "", Some(5.0), vec![]).unwrap();
+        assert!(json_path("ws1").exists());
+        assert!(json_path("ws2").exists());
+
+        // An empty id resolves to the tier root — the whole-store wipe.
+        assert!(!delete_memory_dir(""), "empty id must be refused");
+        assert!(!delete_memory_dir("   "), "blank id must be refused");
+        // Traversal out of the tier.
+        assert!(!delete_memory_dir(".."), "'..' must be refused");
+        assert!(
+            !delete_memory_dir("../../somewhere"),
+            "traversal must be refused"
+        );
+        // An absolute id discards the base entirely.
+        assert!(
+            !delete_memory_dir(r"C:\Windows\Temp"),
+            "absolute id must be refused"
+        );
+        assert!(
+            !delete_memory_dir("/etc"),
+            "absolute posix id must be refused"
+        );
+        // A separator anywhere is out.
+        assert!(
+            !delete_memory_dir("ws1/nested"),
+            "separator must be refused"
+        );
+
+        // Nothing was touched — including the tier root itself.
+        assert!(workspace_memories_dir().exists(), "tier root survives");
+        assert!(json_path("ws1").exists(), "ws1 memories survive");
+        assert!(json_path("ws2").exists(), "ws2 memories survive");
+
+        // ...and a legitimate id still works.
+        assert!(delete_memory_dir("ws1"));
+        assert!(
+            json_path("ws2").exists(),
+            "sibling untouched by a real delete"
+        );
     }
 
     #[test]

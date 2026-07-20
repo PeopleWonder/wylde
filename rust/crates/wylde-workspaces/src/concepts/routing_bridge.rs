@@ -57,12 +57,14 @@ pub fn route_with_vec(
         .into_iter()
         .filter_map(|c| {
             let described_by = c.described_by.clone();
-            c.centroid.filter(|v| !v.is_empty()).map(|centroid| ConceptCentroid {
-                id: c.id,
-                label: c.label,
-                centroid,
-                described_by,
-            })
+            c.centroid
+                .filter(|v| !v.is_empty())
+                .map(|centroid| ConceptCentroid {
+                    id: c.id,
+                    label: c.label,
+                    centroid,
+                    described_by,
+                })
         })
         .collect();
     if concepts.is_empty() {
@@ -204,7 +206,10 @@ mod tests {
             "dependency pulled DDNS above its cosine"
         );
         // …and the RANK FLIPPED — DDNS now outranks the excluded Wylde.
-        assert!(ddns.score > wylde.score, "the gap the raw cosine couldn't make");
+        assert!(
+            ddns.score > wylde.score,
+            "the gap the raw cosine couldn't make"
+        );
 
         // Provenance proves WHY (the explainable payload).
         assert!(matches!(
@@ -223,7 +228,10 @@ mod tests {
         // And it's all visible in the before→after proof log.
         let line = set.relation_log_line();
         assert!(line.contains("⊘Wylde"), "log marks Wylde inhibited: {line}");
-        assert!(line.contains("↳DDNS"), "log marks DDNS dependency-pulled: {line}");
+        assert!(
+            line.contains("↳DDNS"),
+            "log marks DDNS dependency-pulled: {line}"
+        );
     }
 
     /// **H6 end-to-end wiring proof** (through the REAL `route_with_vec` path):
@@ -266,7 +274,10 @@ mod tests {
             t_off.provenance,
             wylde_concept_routing::Provenance::Seed
         ));
-        assert!(!off.reshaped_by_relations(), "OFF ⇒ routing identical to today");
+        assert!(
+            !off.reshaped_by_relations(),
+            "OFF ⇒ routing identical to today"
+        );
 
         // Toggle ON: Auth (≈0.9) flows DOWN the containment edge (weak) to Token,
         // lifting its settled score above its flat cosine, with Containment prov.
@@ -305,7 +316,12 @@ mod tests {
         // A directory stand-in (no centroid) must not make routing engage.
         store::save(
             ws,
-            &[Concept::new("dir:x", "X", "d", ConceptSource::DirectoryCluster)],
+            &[Concept::new(
+                "dir:x",
+                "X",
+                "d",
+                ConceptSource::DirectoryCluster,
+            )],
         )
         .unwrap();
         assert!(route_with_vec(ws, &[1.0, 0.0], "q").is_none());

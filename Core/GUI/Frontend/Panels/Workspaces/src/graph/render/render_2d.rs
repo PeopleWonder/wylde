@@ -539,7 +539,14 @@ mod tests {
             clusters: vec![],
         };
         let mut pos = HashMap::new();
-        pos.insert("near".to_owned(), Position { x: 0.0, y: 0.0, z: 0.0 });
+        pos.insert(
+            "near".to_owned(),
+            Position {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            },
+        );
         pos.insert(
             "far".to_owned(),
             Position {
@@ -582,11 +589,19 @@ mod tests {
         // Both endpoints far off to the same side → segment never crosses view.
         pos.insert(
             "a".to_owned(),
-            Position { x: 50_000.0, y: 0.0, z: 0.0 },
+            Position {
+                x: 50_000.0,
+                y: 0.0,
+                z: 0.0,
+            },
         );
         pos.insert(
             "b".to_owned(),
-            Position { x: 60_000.0, y: 0.0, z: 0.0 },
+            Position {
+                x: 60_000.0,
+                y: 0.0,
+                z: 0.0,
+            },
         );
         let layout = Layout::from_positions(pos);
         let theme = Theme::load_v1().unwrap();
@@ -619,7 +634,11 @@ mod tests {
         let mut vp = viewport();
         vp.camera.zoom = 0.1;
         let out = Renderer2d::new().frame(&scene, &vp);
-        assert_eq!(out.spheres.len(), 4, "all nodes still on-screen at low zoom");
+        assert_eq!(
+            out.spheres.len(),
+            4,
+            "all nodes still on-screen at low zoom"
+        );
         for s in &out.spheres {
             assert_eq!(s.layers.len(), 1, "flat-disc LOD = single layer");
         }

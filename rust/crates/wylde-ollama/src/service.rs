@@ -8,10 +8,10 @@ use wylde_shared::ipc::{
     register_action_with_meta, register_streaming_action_with_meta, unregister_action,
 };
 
-use crate::actions::{chat, embed, models, pull};
+use crate::actions::{chat, embed, gc, models, pull};
 use crate::upstream;
 
-const ALL_ACTIONS: [&str; 12] = [
+const ALL_ACTIONS: [&str; 14] = [
     "ollama.health",
     "ollama.list_models",
     "ollama.list_loaded",
@@ -24,6 +24,8 @@ const ALL_ACTIONS: [&str; 12] = [
     "ollama.chat",
     "ollama.chat_stream",
     "ollama.embed",
+    "ollama.gc",
+    "ollama.store_usage",
 ];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -45,17 +47,13 @@ pub fn install() {
     );
     register_action_with_meta(
         "ollama.list_models",
-        |payload: Value| async move {
-            models::handle_list_models(payload, upstream::client()).await
-        },
+        |payload: Value| async move { models::handle_list_models(payload, upstream::client()).await },
         "GET /api/tags — full installed-model list (passthrough envelope).",
         "wylde_ollama::actions::models",
     );
     register_action_with_meta(
         "ollama.list_loaded",
-        |payload: Value| async move {
-            models::handle_list_loaded(payload, upstream::client()).await
-        },
+        |payload: Value| async move { models::handle_list_loaded(payload, upstream::client()).await },
         "GET /api/ps — currently-loaded models with VRAM/expires_at.",
         "wylde_ollama::actions::models",
     );
@@ -99,6 +97,24 @@ pub fn install() {
         |payload: Value| async move { embed::handle_embed(payload, upstream::client()).await },
         "POST /api/embed — embed text. Acquires a VRAM lease unless WYLDE_OLLAMA_EMBED_SKIP_BROKER=1.",
         "wylde_ollama::actions::embed",
+    );
+    register_action_with_meta(
+        "ollama.gc",
+        |payload: Value| async move { gc::handle_gc(payload, upstream::client()).await },
+        "Keep-only-referenced model-store reclaim (#100). Payload: \
+         {keep:[tags] (required, protected), pins?:[tags], superseded?:[tags] \
+         (present ⇒ only these eligible; absent ⇒ sweep all unreferenced), \
+         dry_run?:bool (default true)}. Referenced/pinned models are NEVER \
+         reclaimed. Reply: {dry_run, mode, total_bytes, keep, reclaim, \
+         reclaimable_bytes, deleted, freed_bytes, errors}.",
+        "wylde_ollama::actions::gc",
+    );
+    register_action_with_meta(
+        "ollama.store_usage",
+        |payload: Value| async move { gc::handle_store_usage(payload, upstream::client()).await },
+        "GET /api/tags → model-store total size + per-model sizes \
+         (largest-first). Reply: {total_bytes, model_count, models:[{name,size}]}.",
+        "wylde_ollama::actions::gc",
     );
     register_action_with_meta(
         "ollama.chat",
@@ -174,6 +190,8 @@ mod tests {
             "ollama.preload",
             "ollama.chat",
             "ollama.embed",
+            "ollama.gc",
+            "ollama.store_usage",
         ] {
             assert!(actions.contains(&n.to_string()), "missing {n}");
         }

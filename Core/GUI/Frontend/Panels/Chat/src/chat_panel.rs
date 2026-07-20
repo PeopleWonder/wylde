@@ -253,7 +253,7 @@ impl ChatScope {
 
 /// Per-turn reasoning depth — the thinking TIERS (modelled on Claude's
 /// think / think-harder / ultrathink levels). Surfaced as a cycling pill
-/// in the InferenceBar per Aaron's confirmed placement.
+/// in the InferenceBar per the maintainer's confirmed placement.
 ///
 /// **`Fast` is the default** — never planning-by-default (the reasoning
 /// tax). Each click cycles one tier up: fast → think → think harder →
@@ -306,11 +306,11 @@ impl ReasoningDepth {
     }
 }
 
-/// Split vs Single reasoning mode (agentic reasoning S1 — Aaron's confirmed
+/// Split vs Single reasoning mode (agentic reasoning S1 — the maintainer's confirmed
 /// InferenceBar placement, scope DECISION #11). Mirrors the harness's
 /// `ReasonMode`; the pill is a facade over `settings.reasoning.{get,set}` so
 /// the harness-owned store stays the single source of truth. Defaults to
-/// `Single` (Aaron 2026-07-13: PLAN and EXECUTE run on the same model).
+/// `Single` (the maintainer 2026-07-13: PLAN and EXECUTE run on the same model).
 /// Inert while the reasoning master toggle is off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ReasonMode {
@@ -3749,7 +3749,7 @@ fn pill_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
         .child(working_memory_pill(panel, cx))
 }
 
-/// Thinking-tier pill (Aaron's confirmed InferenceBar placement). Each
+/// Thinking-tier pill (the maintainer's confirmed InferenceBar placement). Each
 /// click cycles one tier up: fast → think → think harder → ultrathink →
 /// fast. Defaults to `fast` (never planning-by-default); the tier rides
 /// the send payload as `depth`.
@@ -3764,7 +3764,7 @@ fn reasoning_depth_pill(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> State
     )
 }
 
-/// Split/Single selector pill (agentic reasoning S1 — Aaron's confirmed
+/// Split/Single selector pill (agentic reasoning S1 — the maintainer's confirmed
 /// InferenceBar placement, beside the fast/deep toggle). One click flips
 /// the mode and persists it through `settings.reasoning.set`. Inert while
 /// the reasoning master toggle is off — the harness never consults the
@@ -5264,7 +5264,7 @@ mod tests {
 
     #[test]
     fn reason_mode_defaults_to_single() {
-        // Aaron 2026-07-13: PLAN and EXECUTE on the same model ⇒ Single.
+        // The maintainer 2026-07-13: PLAN and EXECUTE on the same model ⇒ Single.
         assert_eq!(ReasonMode::default(), ReasonMode::Single);
         assert_eq!(ReasonMode::Single.as_str(), "single");
         assert_eq!(ReasonMode::Split.as_str(), "split");

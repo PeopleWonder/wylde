@@ -122,9 +122,18 @@ mod tests {
 
     #[test]
     fn from_focus_key_maps_scoped_tabs_only() {
-        assert_eq!(WorkspacesTab::from_focus_key("graph"), Some(WorkspacesTab::Graph));
-        assert_eq!(WorkspacesTab::from_focus_key("editor"), Some(WorkspacesTab::Editor));
-        assert_eq!(WorkspacesTab::from_focus_key("files"), Some(WorkspacesTab::Files));
+        assert_eq!(
+            WorkspacesTab::from_focus_key("graph"),
+            Some(WorkspacesTab::Graph)
+        );
+        assert_eq!(
+            WorkspacesTab::from_focus_key("editor"),
+            Some(WorkspacesTab::Editor)
+        );
+        assert_eq!(
+            WorkspacesTab::from_focus_key("files"),
+            Some(WorkspacesTab::Files)
+        );
         // Registry is the home, not a scoped tab — the back arrow handles it.
         assert_eq!(WorkspacesTab::from_focus_key("registry"), None);
         assert_eq!(WorkspacesTab::from_focus_key("bogus"), None);

@@ -49,7 +49,7 @@ members = [
 exclude = ["Frontend/test-support"]
 
 [workspace.package]
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Wylde User <user@example.com>"]
@@ -68,6 +68,12 @@ wylde-shared  = { path = "../../rust/crates/wylde-shared" }
 # logic behind the `self_update`/`self-replace` placeholders noted below —
 # wylde-updater owns the self-replace dep internally.
 wylde-updater = { path = "../../rust/crates/wylde-updater" }
+# The stack roster — WHAT the stack is, as data. Already in this
+# workspace'"'"'s lock graph via wylde-updater, so naming it directly costs
+# no new dependency. Deliberately the lean crate: wylde-lifecycle owns the
+# same table'"'"'s start/stop hooks but drags in tokio + anyhow, which must not
+# ripple into the shipped GUI binary (see #109).
+wylde-stack = { path = "../../rust/crates/wylde-stack" }
 
 # Async runtime + IPC primitives.  Feature set matches src-tauri so a
 # verb that worked there works here.
@@ -133,7 +139,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "b3d93d44
 #
 # Both gpui and wry use raw-window-handle 0.6; wry's `build_as_child`
 # accepts gpui's `Window` directly (`impl HasWindowHandle`).
-wry = "0.54"
+wry = "0.55"
 
 # HTTP client for iframe health probes.  Picked over `ureq` because
 # reqwest is already a transitive dep of every wylde-* crate that

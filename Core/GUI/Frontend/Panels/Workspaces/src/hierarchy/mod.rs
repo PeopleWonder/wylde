@@ -80,9 +80,19 @@ async fn fetch(ws: &str) -> Loaded {
             } else {
                 (Vec::new(), Vec::new())
             };
-            Loaded { tree: Some(tree), edges, merges, error: None }
+            Loaded {
+                tree: Some(tree),
+                edges,
+                merges,
+                error: None,
+            }
         }
-        Err(e) => Loaded { tree: None, edges: Vec::new(), merges: Vec::new(), error: Some(e) },
+        Err(e) => Loaded {
+            tree: None,
+            edges: Vec::new(),
+            merges: Vec::new(),
+            error: Some(e),
+        },
     }
 }
 
@@ -213,7 +223,10 @@ impl HierarchyView {
     /// Resolve the active workspace, then load the whole tree + raw overlay.
     fn spawn_load(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
-            let ws_id = crate::vocabulary::ipc::active_workspace().await.ok().flatten();
+            let ws_id = crate::vocabulary::ipc::active_workspace()
+                .await
+                .ok()
+                .flatten();
             let loaded = match &ws_id {
                 Some(id) => Some(fetch(id).await),
                 None => None,
@@ -232,7 +245,10 @@ impl HierarchyView {
         cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
             let ws_id = match known {
                 Some(id) => Some(id),
-                None => crate::vocabulary::ipc::active_workspace().await.ok().flatten(),
+                None => crate::vocabulary::ipc::active_workspace()
+                    .await
+                    .ok()
+                    .flatten(),
             };
             let loaded = match &ws_id {
                 Some(id) => Some(fetch(id).await),
@@ -331,7 +347,8 @@ impl HierarchyView {
             .filter(|n| !n.needs_definition())
             .map(|n| n.definition.text.clone())
             .unwrap_or_default();
-        self.def_input.update(cx, |i, cx| i.set_text_silent(text, cx));
+        self.def_input
+            .update(cx, |i, cx| i.set_text_silent(text, cx));
         cx.notify();
     }
 
@@ -340,11 +357,17 @@ impl HierarchyView {
     /// `authored`. Empty text is a no-op here (use [`Self::clear_definition`] to
     /// revert to the inherited description explicitly).
     pub fn save_definition(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.selected.clone() else { return };
-        let Some(ws) = self.workspace_id.clone() else { return };
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        let Some(ws) = self.workspace_id.clone() else {
+            return;
+        };
         let text = self.def_input.read(cx).text().trim().to_owned();
         if text.is_empty() {
-            self.status = Some(Err("Definition is empty — use Clear to revert to inherited".to_owned()));
+            self.status = Some(Err(
+                "Definition is empty — use Clear to revert to inherited".to_owned(),
+            ));
             cx.notify();
             return;
         }
@@ -369,8 +392,12 @@ impl HierarchyView {
     /// description (or `needs definition` if there is none). Writes an empty
     /// definition, which the bridge prunes back to the projection ground state.
     pub fn clear_definition(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.selected.clone() else { return };
-        let Some(ws) = self.workspace_id.clone() else { return };
+        let Some(id) = self.selected.clone() else {
+            return;
+        };
+        let Some(ws) = self.workspace_id.clone() else {
+            return;
+        };
         self.saving = true;
         cx.notify();
         cx.spawn(async move |this, app_cx: &mut gpui::AsyncApp| {
@@ -381,7 +408,8 @@ impl HierarchyView {
                     Ok(_) => Ok("Authored definition cleared".to_owned()),
                     Err(e) => Err(format!("Clear failed: {e}")),
                 });
-                v.def_input.update(cx, |i, cx| i.set_text_silent(String::new(), cx));
+                v.def_input
+                    .update(cx, |i, cx| i.set_text_silent(String::new(), cx));
                 v.reload(cx);
                 cx.notify();
             });
@@ -391,7 +419,8 @@ impl HierarchyView {
 
     /// Set the definition-editor draft text (test/driver helper).
     pub fn set_draft(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.def_input.update(cx, |i, cx| i.set_text_silent(text.to_owned(), cx));
+        self.def_input
+            .update(cx, |i, cx| i.set_text_silent(text.to_owned(), cx));
         cx.notify();
     }
 
@@ -406,7 +435,9 @@ impl HierarchyView {
     /// Mint a brand-new authored node from the create form (label + definition).
     /// A non-empty definition is required (the verb enforces it too).
     pub fn create_node(&mut self, cx: &mut Context<Self>) {
-        let Some(ws) = self.workspace_id.clone() else { return };
+        let Some(ws) = self.workspace_id.clone() else {
+            return;
+        };
         let label = self.create_label.read(cx).text().trim().to_owned();
         let def = self.create_def.read(cx).text().trim().to_owned();
         if def.is_empty() {
@@ -425,8 +456,10 @@ impl HierarchyView {
                     Ok(id) => {
                         v.status = Some(Ok(format!("Created node {id}")));
                         v.show_create = false;
-                        v.create_label.update(cx, |i, cx| i.set_text_silent(String::new(), cx));
-                        v.create_def.update(cx, |i, cx| i.set_text_silent(String::new(), cx));
+                        v.create_label
+                            .update(cx, |i, cx| i.set_text_silent(String::new(), cx));
+                        v.create_def
+                            .update(cx, |i, cx| i.set_text_silent(String::new(), cx));
                         v.reload(cx);
                     }
                     Err(e) => v.status = Some(Err(format!("Create failed: {e}"))),
@@ -440,7 +473,8 @@ impl HierarchyView {
     /// Open the target picker for an authoring action on the selected node.
     fn begin_picker(&mut self, mode: PickerMode, cx: &mut Context<Self>) {
         self.picker = Some(mode);
-        self.picker_search.update(cx, |i, cx| i.set_text_silent(String::new(), cx));
+        self.picker_search
+            .update(cx, |i, cx| i.set_text_silent(String::new(), cx));
         cx.notify();
     }
 
@@ -491,8 +525,12 @@ impl HierarchyView {
     /// Run an authoring action against `target` for the selected node, then
     /// reload. No-op without a selection / workspace.
     fn dispatch_pick(&mut self, mode: PickerMode, target: &str, cx: &mut Context<Self>) {
-        let Some(sel) = self.selected.clone() else { return };
-        let Some(ws) = self.workspace_id.clone() else { return };
+        let Some(sel) = self.selected.clone() else {
+            return;
+        };
+        let Some(ws) = self.workspace_id.clone() else {
+            return;
+        };
         let target = target.to_owned();
         self.picker = None;
         self.authoring = true;
@@ -523,7 +561,9 @@ impl HierarchyView {
     /// Remove one authored containment edge (the ✕ on an authored / dangling
     /// edge). Re-point = remove here, then Add child/parent afresh.
     pub fn remove_edge(&mut self, parent: &str, child: &str, cx: &mut Context<Self>) {
-        let Some(ws) = self.workspace_id.clone() else { return };
+        let Some(ws) = self.workspace_id.clone() else {
+            return;
+        };
         let (parent, child) = (parent.to_owned(), child.to_owned());
         self.authoring = true;
         cx.notify();
@@ -544,7 +584,9 @@ impl HierarchyView {
 
     /// Undo a merge (the alias re-appears as its own node).
     pub fn remove_merge(&mut self, primary: &str, alias: &str, cx: &mut Context<Self>) {
-        let Some(ws) = self.workspace_id.clone() else { return };
+        let Some(ws) = self.workspace_id.clone() else {
+            return;
+        };
         let (primary, alias) = (primary.to_owned(), alias.to_owned());
         self.authoring = true;
         cx.notify();
@@ -565,8 +607,10 @@ impl HierarchyView {
 
     /// Populate the create form (test/driver helper).
     pub fn set_create_draft(&mut self, label: &str, def: &str, cx: &mut Context<Self>) {
-        self.create_label.update(cx, |i, cx| i.set_text_silent(label.to_owned(), cx));
-        self.create_def.update(cx, |i, cx| i.set_text_silent(def.to_owned(), cx));
+        self.create_label
+            .update(cx, |i, cx| i.set_text_silent(label.to_owned(), cx));
+        self.create_def
+            .update(cx, |i, cx| i.set_text_silent(def.to_owned(), cx));
         cx.notify();
     }
 
@@ -637,7 +681,11 @@ impl HierarchyView {
         }
         let Some(node) = idx.get(id) else { return };
         let expandable = !node.children.is_empty();
-        rows.push(Row { id: id.to_owned(), depth, expandable });
+        rows.push(Row {
+            id: id.to_owned(),
+            depth,
+            expandable,
+        });
         if expandable && self.expanded.contains(id) {
             path.push(id.to_owned());
             let mut kids = node.children.clone();
@@ -650,7 +698,9 @@ impl HierarchyView {
     }
 
     fn label_of(&self, idx: &HashMap<&str, &HierNodeView>, id: &str) -> String {
-        idx.get(id).map(|n| n.label.clone()).unwrap_or_else(|| id.to_owned())
+        idx.get(id)
+            .map(|n| n.label.clone())
+            .unwrap_or_else(|| id.to_owned())
     }
 
     /// The definitional ancestor chain of a node (nearest-first, start first),
@@ -753,9 +803,18 @@ impl HierarchyView {
     }
 
     /// Render one drill-down row.
-    fn render_row(&self, ri: usize, row: &Row, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+    fn render_row(
+        &self,
+        ri: usize,
+        row: &Row,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
         let idx = self.index();
-        let node = idx.get(row.id.as_str()).copied().cloned().unwrap_or_default();
+        let node = idx
+            .get(row.id.as_str())
+            .copied()
+            .cloned()
+            .unwrap_or_default();
         let is_selected = self.selected.as_deref() == Some(row.id.as_str());
         let is_expanded = self.expanded.contains(&row.id);
         let chevron = if !row.expandable {
@@ -805,7 +864,10 @@ impl HierarchyView {
             div()
                 .text_size(px(size::MICRO))
                 .text_color(rgb(pack(TEXT_MUTED)))
-                .child(SharedString::from(Self::truncate(&node.definition.text, 100)))
+                .child(SharedString::from(Self::truncate(
+                    &node.definition.text,
+                    100,
+                )))
         };
 
         let id_for_click = row.id.clone();
@@ -818,7 +880,11 @@ impl HierarchyView {
             .px_2()
             .py_0p5()
             .rounded(px(4.0))
-            .bg(rgb(pack(if is_selected { SURFACE_700 } else { SURFACE_800 })))
+            .bg(rgb(pack(if is_selected {
+                SURFACE_700
+            } else {
+                SURFACE_800
+            })))
             .cursor_pointer()
             .child(header)
             .child(def_line)
@@ -895,7 +961,9 @@ impl HierarchyView {
 
         // ── H3: definition editor ────────────────────────────────────────
         detail = detail
-            .child(Self::hint("Edit definition (authored overrides the inherited one):".to_owned()))
+            .child(Self::hint(
+                "Edit definition (authored overrides the inherited one):".to_owned(),
+            ))
             .child(div().child(self.def_input.clone()))
             .child(
                 div()
@@ -904,7 +972,11 @@ impl HierarchyView {
                     .gap_2()
                     .child(Self::button(
                         ("hier-save-def", 0),
-                        if self.saving { "Saving…" } else { "Save definition" },
+                        if self.saving {
+                            "Saving…"
+                        } else {
+                            "Save definition"
+                        },
                         true,
                         cx,
                         |this, cx| this.save_definition(cx),
@@ -925,15 +997,27 @@ impl HierarchyView {
                 .flex_row()
                 .gap_2()
                 .pt_1()
-                .child(Self::button(("hier-add-child", 0), "Add child", false, cx, |this, cx| {
-                    this.begin_picker(PickerMode::AddChild, cx)
-                }))
-                .child(Self::button(("hier-add-parent", 0), "Add parent", false, cx, |this, cx| {
-                    this.begin_picker(PickerMode::AddParent, cx)
-                }))
-                .child(Self::button(("hier-merge", 0), "Merge into…", false, cx, |this, cx| {
-                    this.begin_picker(PickerMode::Merge, cx)
-                })),
+                .child(Self::button(
+                    ("hier-add-child", 0),
+                    "Add child",
+                    false,
+                    cx,
+                    |this, cx| this.begin_picker(PickerMode::AddChild, cx),
+                ))
+                .child(Self::button(
+                    ("hier-add-parent", 0),
+                    "Add parent",
+                    false,
+                    cx,
+                    |this, cx| this.begin_picker(PickerMode::AddParent, cx),
+                ))
+                .child(Self::button(
+                    ("hier-merge", 0),
+                    "Merge into…",
+                    false,
+                    cx,
+                    |this, cx| this.begin_picker(PickerMode::Merge, cx),
+                )),
         );
 
         // The open target picker (search + candidate buttons + cancel).
@@ -953,9 +1037,13 @@ impl HierarchyView {
                         .gap_2()
                         .child(Self::hint(mode.title().to_owned()))
                         .child(div().flex_1())
-                        .child(Self::button(("hier-picker-cancel", 0), "Cancel", false, cx, |this, cx| {
-                            this.cancel_picker(cx)
-                        })),
+                        .child(Self::button(
+                            ("hier-picker-cancel", 0),
+                            "Cancel",
+                            false,
+                            cx,
+                            |this, cx| this.cancel_picker(cx),
+                        )),
                 )
                 .child(div().child(self.picker_search.clone()));
             for (ci, (id, label)) in self.picker_candidates(cx).into_iter().enumerate() {
@@ -989,7 +1077,11 @@ impl HierarchyView {
     fn render_create(&self, cx: &mut Context<Self>) -> gpui::Div {
         let mut col = div().flex().flex_col().gap_1().child(Self::button(
             ("hier-new-node", 0),
-            if self.show_create { "× New node" } else { "+ New node" },
+            if self.show_create {
+                "× New node"
+            } else {
+                "+ New node"
+            },
             false,
             cx,
             |this, cx| this.toggle_create(cx),
@@ -1007,7 +1099,11 @@ impl HierarchyView {
                     .child(div().child(self.create_def.clone()))
                     .child(Self::button(
                         ("hier-create", 0),
-                        if self.authoring { "Creating…" } else { "Create node" },
+                        if self.authoring {
+                            "Creating…"
+                        } else {
+                            "Create node"
+                        },
                         true,
                         cx,
                         |this, cx| this.create_node(cx),
@@ -1024,7 +1120,11 @@ impl HierarchyView {
             return None;
         }
         let idx = self.index();
-        let label = |id: &str| idx.get(id).map(|n| n.label.clone()).unwrap_or_else(|| id.to_owned());
+        let label = |id: &str| {
+            idx.get(id)
+                .map(|n| n.label.clone())
+                .unwrap_or_else(|| id.to_owned())
+        };
 
         let mut section = div()
             .flex()
@@ -1035,17 +1135,12 @@ impl HierarchyView {
 
         for (ei, e) in self.overlay_edges.iter().enumerate() {
             let line = format!("{}  →  {}", label(&e.parent), label(&e.child));
-            let mut row = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .text_size(px(size::XS))
-                        .text_color(rgb(pack(TEXT_PRIMARY)))
-                        .child(SharedString::from(line)),
-                );
+            let mut row = div().flex().flex_row().items_center().gap_2().child(
+                div()
+                    .text_size(px(size::XS))
+                    .text_color(rgb(pack(TEXT_PRIMARY)))
+                    .child(SharedString::from(line)),
+            );
             if e.dangling {
                 row = row.child(Self::badge("dangling — re-point", DANGER));
             }
@@ -1062,17 +1157,12 @@ impl HierarchyView {
 
         for (mi, m) in self.overlay_merges.iter().enumerate() {
             let line = format!("merge: {}  ⇐  {}", label(&m.primary), label(&m.alias));
-            let mut row = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_2()
-                .child(
-                    div()
-                        .text_size(px(size::XS))
-                        .text_color(rgb(pack(TEXT_PRIMARY)))
-                        .child(SharedString::from(line)),
-                );
+            let mut row = div().flex().flex_row().items_center().gap_2().child(
+                div()
+                    .text_size(px(size::XS))
+                    .text_color(rgb(pack(TEXT_PRIMARY)))
+                    .child(SharedString::from(line)),
+            );
             if m.dangling {
                 row = row.child(Self::badge("dangling", DANGER));
             }
@@ -1124,9 +1214,13 @@ impl Render for HierarchyView {
                     }
                 )))
                 .child(div().flex_1())
-                .child(Self::button(("hier-refresh", 0), "Refresh", false, cx, |this, cx| {
-                    this.reload(cx)
-                }))
+                .child(Self::button(
+                    ("hier-refresh", 0),
+                    "Refresh",
+                    false,
+                    cx,
+                    |this, cx| this.reload(cx),
+                ))
                 .child(Self::button(
                     ("hier-toggle", 0),
                     if self.toggling { "…" } else { "Disable" },
@@ -1152,7 +1246,11 @@ impl Render for HierarchyView {
                 ))
                 .child(div().child(Self::button(
                     ("hier-enable", 0),
-                    if self.toggling { "Enabling…" } else { "Enable hierarchy" },
+                    if self.toggling {
+                        "Enabling…"
+                    } else {
+                        "Enable hierarchy"
+                    },
                     true,
                     cx,
                     |this, cx| this.set_enabled(true, cx),

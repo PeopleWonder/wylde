@@ -97,8 +97,13 @@ pub async fn reindex_full(def: &WorkspaceDefinition) -> IndexOutcome {
     // Graph-ingest alongside the vector embed: extract structural entities
     // and write Chunk/Entity nodes + typed edges. Fail-soft and fully
     // independent of the embed below (see `graph_writer`), so a sidecar or
-    // graph-backend outage never blocks RAG.
-    log_graph(&def.id, &graph_writer::write_graph(def, &raw).await);
+    // graph-backend outage never blocks RAG. Replace-by-construction (#99):
+    // the full path DELETEs the workspace's prior chunk nodes before writing,
+    // so a re-index (which re-keys mtime-bearing chunk ids) supersedes the old
+    // set instead of accumulating orphans — while preserving authored
+    // relations (no orphan-entity prune). The delta path clears per changed
+    // file (see `apply_graph_delta`); this is the whole-workspace analogue.
+    log_graph(&def.id, &graph_writer::write_graph_replace(def, &raw).await);
     // Counting done — flip to the determinate embed phase with known totals.
     let (chunk_file_idx, files_total) = chunk_file_ordinals(&raw);
     reporter.begin_embed(chunk_file_idx, files_total);
@@ -655,7 +660,7 @@ mod tests {
     #[tokio::test]
     async fn reporter_drives_indeterminate_then_determinate_then_clears() {
         let env = crate::test_support::TestEnv::new();
-        let def = registry::create(&env.ws_path("prog"), None);
+        let def = registry::create(&env.ws_path("prog"), None).unwrap();
 
         let mut reporter = Reporter::new(&def.id);
         // Walk phase: indexing flips true, progress is indeterminate (no total).
@@ -694,10 +699,20 @@ mod tests {
         assert!(p.files_done >= 1, "at least the first file is in flight");
 
         // finish() clears both the flag and the snapshot.
-        finish(&def.id, &IndexOutcome { file_count: 3, chunk_count: 4, error: None });
+        finish(
+            &def.id,
+            &IndexOutcome {
+                file_count: 3,
+                chunk_count: 4,
+                error: None,
+            },
+        );
         let st = status(&def.id);
         assert!(!st.indexing, "flag cleared");
-        assert!(st.progress.is_none(), "progress snapshot cleared after the pass");
+        assert!(
+            st.progress.is_none(),
+            "progress snapshot cleared after the pass"
+        );
     }
 
     fn idx(path: &str, idx: u32, mtime: f64) -> IndexedChunk {
@@ -716,8 +731,12 @@ mod tests {
     #[tokio::test]
     async fn persist_delta_writes_chunks_then_a_matching_manifest() {
         let env = crate::test_support::TestEnv::new();
-        let def = registry::create(&env.ws_path("p3"), None);
-        let chunks = vec![idx("/a.rs", 0, 100.0), idx("/a.rs", 1, 100.0), idx("/b.rs", 0, 200.0)];
+        let def = registry::create(&env.ws_path("p3"), None).unwrap();
+        let chunks = vec![
+            idx("/a.rs", 0, 100.0),
+            idx("/a.rs", 1, 100.0),
+            idx("/b.rs", 0, 200.0),
+        ];
         let mut meta: std::collections::BTreeMap<String, (String, u64, f64)> =
             std::collections::BTreeMap::new();
         meta.insert("/a.rs".into(), ("hA".into(), 10, 100.0));
@@ -731,7 +750,11 @@ mod tests {
         assert!(store::has_index(&def.id), "chunks.jsonl written");
         let m = manifest::load(&def.id).expect("manifest written second");
         assert!(m.is_compatible());
-        assert_eq!(m.files["/a.rs"].chunk_ids.len(), 2, "two chunk ids for a.rs");
+        assert_eq!(
+            m.files["/a.rs"].chunk_ids.len(),
+            2,
+            "two chunk ids for a.rs"
+        );
         assert_eq!(m.files["/a.rs"].hash, "hA");
         assert_eq!(m.files["/b.rs"].chunk_count, 1);
     }
@@ -742,10 +765,13 @@ mod tests {
         // chunks are present, the manifest is stale/absent. The next diff must
         // converge — re-embed the lagging files, never skip them (§3.3).
         let env = crate::test_support::TestEnv::new();
-        let def = registry::create(&env.ws_path("crash"), None);
+        let def = registry::create(&env.ws_path("crash"), None).unwrap();
         // Chunks landed for a.rs, but the manifest never advanced (absent).
         store::save_chunks(&def.id, &[idx("/a.rs", 0, 100.0)]).unwrap();
-        assert!(manifest::load(&def.id).is_none(), "no manifest yet (crash sim)");
+        assert!(
+            manifest::load(&def.id).is_none(),
+            "no manifest yet (crash sim)"
+        );
 
         // A diff with the (absent ⇒ env) manifest + the chunk's legacy mtime:
         // the unchanged file is *kept* (legacy fallback), never silently
@@ -753,9 +779,16 @@ mod tests {
         let prior = manifest::load(&def.id).unwrap_or_else(manifest::Manifest::current_env);
         let existing = store::load_chunks(&def.id);
         let legacy = manifest::legacy_mtimes(&existing);
-        let stats = vec![walk::FileStat { path: "/a.rs".into(), mtime: 100.0, size: 10 }];
+        let stats = vec![walk::FileStat {
+            path: "/a.rs".into(),
+            mtime: 100.0,
+            size: 10,
+        }];
         let plan = manifest::diff(&prior, &stats, &legacy, |_| Some("h".into()));
-        assert!(plan.keep_paths.contains("/a.rs"), "lagging chunk kept, not lost");
+        assert!(
+            plan.keep_paths.contains("/a.rs"),
+            "lagging chunk kept, not lost"
+        );
         assert!(plan.to_embed.is_empty());
     }
 
@@ -801,14 +834,21 @@ mod tests {
     async fn persist_full_builds_lexical_when_enabled() {
         let env = crate::test_support::TestEnv::new();
         let _on = LexicalOn::enable();
-        let def = registry::create(&env.ws_path("lx-full"), None);
+        let def = registry::create(&env.ws_path("lx-full"), None).unwrap();
         let chunks = vec![
-            lex_chunk("c0", "/src/search.rs", "const ANCHOR_BOOST_CAP: f64 = 0.30;"),
+            lex_chunk(
+                "c0",
+                "/src/search.rs",
+                "const ANCHOR_BOOST_CAP: f64 = 0.30;",
+            ),
             lex_chunk("c1", "/src/notes.md", "prose about boosting things"),
         ];
         persist_full(&def.id, &chunks).await;
         // The lexical index was built alongside the vectors and is queryable.
-        assert!(lexical::has_lexical_index(&def.id), "lexical/ built when ON");
+        assert!(
+            lexical::has_lexical_index(&def.id),
+            "lexical/ built when ON"
+        );
         let hits = lexical::search(&def.id, "ANCHOR_BOOST_CAP", 5);
         assert_eq!(hits[0].0, "c0", "BM25 finds the exact token");
     }
@@ -818,7 +858,7 @@ mod tests {
         let env = crate::test_support::TestEnv::new();
         // Toggle OFF (the default) — ensure the cache is OFF for this test.
         LexicalConfig::persist(LexicalConfig::default()).unwrap();
-        let def = registry::create(&env.ws_path("lx-off"), None);
+        let def = registry::create(&env.ws_path("lx-off"), None).unwrap();
         persist_full(&def.id, &[lex_chunk("c0", "/a.rs", "hello world")]).await;
         // No lexical dir is created when OFF — identity with today.
         assert!(
@@ -830,11 +870,15 @@ mod tests {
     #[tokio::test]
     async fn ensure_backfill_builds_from_existing_chunks_without_reembed() {
         let env = crate::test_support::TestEnv::new();
-        let def = registry::create(&env.ws_path("lx-backfill"), None);
+        let def = registry::create(&env.ws_path("lx-backfill"), None).unwrap();
         // A pre-lexical index: chunks on disk, no lexical/ yet.
         store::save_chunks(
             &def.id,
-            &[lex_chunk("c0", "/src/run_it_handler.rs", "fn run_it_handler() {}")],
+            &[lex_chunk(
+                "c0",
+                "/src/run_it_handler.rs",
+                "fn run_it_handler() {}",
+            )],
         )
         .unwrap();
         assert!(!lexical::has_lexical_index(&def.id));

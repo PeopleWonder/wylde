@@ -45,3 +45,15 @@ gpui.workspace = true
 serde.workspace      = true
 serde_json.workspace = true
 anyhow.workspace     = true
+
+# ── DEV-ONLY (windowed gpui tests) ───────────────────────────────────
+# Same seam the Chat/Workspaces/Memory/Devices panels adopt (see
+# docs/gui-testing.md). dev-dependencies only, so resolver = "2" never
+# unifies `test-support` into the shipped Shell's normal lib (verified via
+# cargo tree). These four panels were the zero-coverage gap the L7
+# panel-walk (issue #35) closes.
+[dev-dependencies]
+wylde-gui-test-support = { path = "../../test-support" }
+gpui = { workspace = true, features = ["test-support"] }
+wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
+serde_json.workspace = true

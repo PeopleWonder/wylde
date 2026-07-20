@@ -37,7 +37,12 @@ pub struct Cutoff {
 /// clearing `max(abs_threshold, relative_floor · top)`, capped at
 /// `max_concepts`. `threshold` is always reported (for the calibration log)
 /// even when nothing activates.
-pub fn select(scores: &[f32], abs_threshold: f32, relative_floor: f32, max_concepts: usize) -> Cutoff {
+pub fn select(
+    scores: &[f32],
+    abs_threshold: f32,
+    relative_floor: f32,
+    max_concepts: usize,
+) -> Cutoff {
     let Some(&top) = scores.first() else {
         return Cutoff {
             threshold: abs_threshold,
@@ -89,7 +94,10 @@ mod tests {
     #[test]
     fn best_below_absolute_floor_activates_nothing() {
         let c = select(&[ABS - 0.05, ABS - 0.10], ABS, REL, 3);
-        assert_eq!(c.activated, 0, "off-topic ⇒ route nothing ⇒ fall back to RAG");
+        assert_eq!(
+            c.activated, 0,
+            "off-topic ⇒ route nothing ⇒ fall back to RAG"
+        );
         assert_eq!(c.threshold, ABS);
     }
 

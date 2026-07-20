@@ -21,11 +21,11 @@
 //! by an explicit, persisted opt-in **and** a per-turn planning-tier
 //! `depth` flag (`think` / `think_harder` / `ultrathink`).
 //!
-//! ## Aaron's locked slot decisions (2026-07-13)
+//! ## The maintainer's locked slot decisions (2026-07-13)
 //!
 //! 1. **Default reasoner = the strongest OFFICIAL-WEIGHTS Qwen that FITS
 //!    16 GB VRAM** ([`DEFAULT_REASONER_MODEL`], `qwen3.6:35b-a3b` at
-//!    unsloth's UD-IQ3_XXS quant, ~13.1 GiB on disk). Aaron's rulings, in
+//!    unsloth's UD-IQ3_XXS quant, ~13.1 GiB on disk). The maintainer's rulings, in
 //!    order (all 2026-07-13): official *weights* only — the abliterated
 //!    finetune S1 initially wired is out, but a community GGUF
 //!    **quantization of unmodified official weights** is the same model
@@ -42,13 +42,13 @@
 //!    intermittently (73.3%) — IQ3_XXS is the quant floor for this job.
 //! 2. **PLAN and EXECUTE run on the SAME model.** The `fast` slot defaults
 //!    to the same tag as `reasoner`, and `fast == reasoner ⇒ Single` is
-//!    Aaron's confirmed derivation rule (scope DECISION #11), so
+//!    The maintainer's confirmed derivation rule (scope DECISION #11), so
 //!    [`ReasoningConfig::default`] carries `mode: Single`. The
 //!    [`ModelSlots`] *structure* keeps all three user-swappable slots —
 //!    a user can re-split later — but the default is deliberately NOT a
 //!    fast/reasoner split; do not "restore" one.
 //! 3. **PLAN may read long-term memory / lessons on bound conversations.**
-//!    A deliberate, Aaron-authorized (2026-07-13) relaxation of the D2
+//!    A deliberate, maintainer-authorized (2026-07-13) relaxation of the D2
 //!    privacy rule (which confines long-term memory to *unbound*
 //!    conversations in the normal gather). The S3 `PlanInputs.lessons`
 //!    selector reads the long-term reflection store directly, without the
@@ -61,7 +61,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-/// The default reasoner tag (Aaron's decision 1, 2026-07-13, thrice
+/// The default reasoner tag (the maintainer's decision 1, 2026-07-13, thrice
 /// revised the same day — see the module doc for the eval that locked
 /// this): official Qwen3.6-35B-A3B weights, unsloth UD-IQ3_XXS dynamic
 /// quant pulled via Ollama's hf.co bridge. ~13.1 GiB on disk, fully
@@ -77,7 +77,7 @@ pub const DEFAULT_REASONER_MODEL: &str = "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-
 pub const DEFAULT_EMBED_MODEL: &str = "nomic-embed-text";
 
 /// Per-turn reasoning depth — the thinking TIERS (modelled on Claude's
-/// think / think-harder / ultrathink levels, Aaron 2026-07-14). `Fast` =
+/// think / think-harder / ultrathink levels, the maintainer 2026-07-14). `Fast` =
 /// today's ReAct loop, byte-identical, no planning. Every other tier runs
 /// the gated PLAN pipeline with an escalating deliberation budget:
 ///
@@ -189,40 +189,30 @@ impl Default for TierBudgets {
     }
 }
 
-/// Split vs Single mode (scope §3.5, DECISION #11 — confirmed by Aaron).
+/// Split vs Single mode (scope §3.5, DECISION #11 — confirmed by the maintainer).
 /// Derived-but-overridable: `fast == reasoner ⇒ Single`. Default `Single`
-/// per Aaron's 2026-07-13 same-model decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// per the maintainer's 2026-07-13 same-model decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasonMode {
     /// fast slot ≠ reasoner slot — reason ONCE on the reasoner, execute on
     /// fast.
     Split,
     /// fast slot == reasoner slot — one brain plans AND executes. The
-    /// default (Aaron: plan+execute on the same model).
+    /// default (the maintainer: plan+execute on the same model).
+    #[default]
     Single,
-}
-
-impl Default for ReasonMode {
-    fn default() -> Self {
-        ReasonMode::Single
-    }
 }
 
 /// When the in-loop REFLECT critique fires (scope §5, OQ-6 recommended
 /// default). Inert until S5.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ReflectGate {
     Off,
+    #[default]
     MultiToolOnly,
     Always,
-}
-
-impl Default for ReflectGate {
-    fn default() -> Self {
-        ReflectGate::MultiToolOnly
-    }
 }
 
 /// The three co-resident, user-swappable model slots (scope §3.1). The
@@ -262,7 +252,7 @@ impl Default for ModelSlots {
 }
 
 impl ModelSlots {
-    /// Aaron's confirmed derivation rule (DECISION #11): identical fast and
+    /// The maintainer's confirmed derivation rule (DECISION #11): identical fast and
     /// reasoner slots mean one brain plans and executes.
     pub fn derived_mode(&self) -> ReasonMode {
         if self.fast == self.reasoner {
@@ -284,7 +274,7 @@ pub struct ReasoningConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// The three model slots. Defaults per Aaron's 2026-07-13 decisions.
+    /// The three model slots. Defaults per the maintainer's 2026-07-13 decisions.
     #[serde(default)]
     pub slots: ModelSlots,
 
@@ -299,7 +289,7 @@ pub struct ReasoningConfig {
     pub default_depth: Depth,
 
     /// Fast→planning self-escalation (scope OQ-5) — **LIVE since S4b,
-    /// under Aaron's 2026-07-14 NARROWED identity contract**: reasoning
+    /// under the maintainer's 2026-07-14 NARROWED identity contract**: reasoning
     /// enabled + Fast tier is byte-identical to today EXCEPT after
     /// [`ESCALATE_AFTER_HARD_FAILURES`](super::ESCALATE_AFTER_HARD_FAILURES)
     /// (2) hard tool failures — L0's exact definition (`[error]` /
@@ -339,7 +329,7 @@ pub struct ReasoningConfig {
     #[serde(default)]
     pub reflect_gate: ReflectGate,
 
-    /// Grammar-constrained PLAN decoding (Aaron, 2026-07-13): pass the
+    /// Grammar-constrained PLAN decoding (the maintainer, 2026-07-13): pass the
     /// canonical `PlanDag` JSON Schema (`wylde_reasoning_plan::plan_dag_format`)
     /// as Ollama's `format` on PLAN/REPLAN calls. Eval-backed: takes the
     /// default reasoner 93.3% → 100% schema-valid at unchanged speed and
@@ -497,7 +487,7 @@ mod tests {
         assert_eq!(
             c.mode,
             ReasonMode::Single,
-            "Aaron 2026-07-13: plan+execute on the same model"
+            "maintainer 2026-07-13: plan+execute on the same model"
         );
         assert_eq!(c.slots.fast, c.slots.reasoner, "same-model default");
         assert_eq!(c.slots.reasoner, DEFAULT_REASONER_MODEL);

@@ -26,11 +26,11 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use wylde_concept_routing::config::{RelationParams, RoutingConfig};
+use wylde_concept_routing::eval::corpus::normalize_path;
 use wylde_concept_routing::eval::{
     render_report_markdown, render_sweep_markdown, run_eval, sweep_abs_threshold, Arm, CaseKind,
     EvalChunk, EvalConcept, EvalCorpus, GoldSet, RelationMode,
 };
-use wylde_concept_routing::eval::corpus::normalize_path;
 use wylde_concept_routing::relations::{NodeRef, Relation, RelationGraph, RelationKind};
 
 const OLLAMA_URL: &str = "http://localhost:11434/api/embed";
@@ -41,7 +41,13 @@ fn live_data_dir() -> PathBuf {
     if let Some(v) = std::env::var_os("WYLDE_EVAL_DATA_DIR") {
         return PathBuf::from(v);
     }
-    PathBuf::from(r"C:\Users\aaron\Documents\Obsidian Vault\Wylde-release\.wylde\data")
+    if let Some(root) = std::env::var_os("WYLDE_ROOT") {
+        return PathBuf::from(root).join(".wylde").join("data");
+    }
+    panic!(
+        "no live data dir: set WYLDE_EVAL_DATA_DIR to a <data>/ holding workspaces/, \
+         or WYLDE_ROOT to an estate root (its .wylde/data is used)"
+    )
 }
 
 /// The single workspace dir holding a concepts.json + an index.
@@ -137,7 +143,10 @@ fn embed_query(client: &reqwest::blocking::Client, text: &str) -> Option<Vec<f32
     let v: serde_json::Value = resp.json().ok()?;
     let arr = v.get("embeddings")?.as_array()?;
     let first = arr.first()?.as_array()?;
-    let vec: Vec<f32> = first.iter().filter_map(|x| x.as_f64().map(|f| f as f32)).collect();
+    let vec: Vec<f32> = first
+        .iter()
+        .filter_map(|x| x.as_f64().map(|f| f as f32))
+        .collect();
     (!vec.is_empty()).then_some(vec)
 }
 
@@ -174,7 +183,12 @@ fn author_relations(corpus: &EvalCorpus, gold: &GoldSet) -> (RelationGraph, usiz
     for case in &gold.cases {
         match case.kind {
             CaseKind::Conflation => {
-                if add(&case.relevant_files, &case.avoid_files, RelationKind::Negative, &mut rels) {
+                if add(
+                    &case.relevant_files,
+                    &case.avoid_files,
+                    RelationKind::Negative,
+                    &mut rels,
+                ) {
                     authored += 1;
                 } else {
                     skipped_self += 1;
@@ -282,8 +296,15 @@ fn run_full_eval() {
     let arms = [Arm::Baseline, Arm::Augment, Arm::Replace];
     let modes = [RelationMode::SeedOnly, RelationMode::RelationsOn];
 
-    let report_provisional =
-        run_eval(&corpus, &gold, &query_vecs, &provisional_cfg, K, &arms, &modes);
+    let report_provisional = run_eval(
+        &corpus,
+        &gold,
+        &query_vecs,
+        &provisional_cfg,
+        K,
+        &arms,
+        &modes,
+    );
 
     // Tuned config = the SHIPPED R4 default (abs raised to 0.62; relation
     // params left at the addendum defaults — on flat live cosines the absolute
@@ -305,7 +326,15 @@ fn run_full_eval() {
         },
         ..RoutingConfig::default()
     };
-    let report_rel_aware = run_eval(&corpus, &gold, &query_vecs, &rel_aware_cfg, K, &arms, &modes);
+    let report_rel_aware = run_eval(
+        &corpus,
+        &gold,
+        &query_vecs,
+        &rel_aware_cfg,
+        K,
+        &arms,
+        &modes,
+    );
 
     // Threshold sweep for Replace (the calibration curve).
     let thresholds = [0.50f32, 0.55, 0.58, 0.60, 0.62, 0.64, 0.66, 0.70];
@@ -374,11 +403,20 @@ fn run_full_eval() {
 
     // Console summary.
     println!("\n========== R4 EVAL SUMMARY (k={K}) ==========");
-    println!("{}", render_report_markdown(&report_provisional, "PROVISIONAL (abs=0.50)"));
-    println!("{}", render_report_markdown(&report_tuned, "SHIPPED DEFAULT (abs=0.62)"));
     println!(
         "{}",
-        render_report_markdown(&report_rel_aware, "RELATIONS-AWARE (abs=0.62, dep_decay=0.7)")
+        render_report_markdown(&report_provisional, "PROVISIONAL (abs=0.50)")
+    );
+    println!(
+        "{}",
+        render_report_markdown(&report_tuned, "SHIPPED DEFAULT (abs=0.62)")
+    );
+    println!(
+        "{}",
+        render_report_markdown(
+            &report_rel_aware,
+            "RELATIONS-AWARE (abs=0.62, dep_decay=0.7)"
+        )
     );
     println!("{}", render_sweep_markdown(&sweep, "SWEEP"));
 }

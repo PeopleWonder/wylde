@@ -86,8 +86,17 @@ MATCH (p:Concept {workspace: row.workspace, id: parent_id})
 MERGE (k)-[:CHILD_OF]->(p)
 ";
 
-/// Concept projection cleanup — DETACH DELETE every `Concept` in a workspace
-/// (the build pass replaces the whole set; clear before re-projecting).
+/// Concept projection cleanup — DETACH DELETE every `Concept` in a workspace.
+///
+/// Two callers:
+///   * **re-projection** — the build pass replaces the whole set, so this
+///     clears the prior projection before re-upserting (`project_concepts`).
+///   * **workspace teardown** (#117) — step 0 of the delete/MRU-evict cascade
+///     ([`super::bolt::WORKSPACE_TEARDOWN_STEPS`]). Until that step was added,
+///     teardown pruned only Chunks and orphan Entities, so a deleted
+///     workspace's concepts and their `CHILD_OF` edges survived in the graph
+///     indefinitely — with the `MEMBER` targets torn out from under them by
+///     the orphan-entity `DETACH DELETE`.
 pub const DELETE_WORKSPACE_CONCEPTS: &str = "
 MATCH (k:Concept {workspace: $ws})
 WITH count(k) AS n, collect(k) AS ks

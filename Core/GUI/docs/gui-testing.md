@@ -76,6 +76,40 @@ process-wide buses/singletons (`ChatPanel::docked()`, `publish_active_*`) —
 those are shared statics and would leak between tests. The direct methods are
 exactly what the bus drains call, so you still test the real logic.
 
+### The other seam: fixture pipes (`PipeNameOverride`)
+
+`ScriptedBackend` short-circuits *before* the transport, which is what you want
+for a panel test — but it means a test that exists to verify the **wire format
+itself** (msgpack framing, length prefix) can't use it. Those tests stand up a
+real named-pipe server and need a real pipe.
+
+They must bind a **private** one. Binding `\\.\pipe\wylde-<service>` claims the
+endpoint the live service owns, so the test fails with `ERROR_ACCESS_DENIED` /
+`ERROR_PIPE_BUSY` on any machine actually running Wylde — while passing in CI,
+which never runs the stack. That inverted flake is #75; `integration_graph_ipc`
+had it.
+
+```rust
+use wylde_gui_pipe::test_backend::{unique_pipe_name, PipeNameOverride};
+
+let pipe = unique_pipe_name(SERVICE);                    // per-process name
+let _route = PipeNameOverride::install(SERVICE, &pipe);  // reverts on drop
+```
+
+`pipe_name()` consults the override, so `wylde_gui_pipe::call` targets the
+fixture for the life of the guard. Unlike the fake backend this override is a
+**process-global**, not a thread-local — the real transport connects on a tokio
+worker, not the thread that installed it, and a thread-local would silently not
+apply there. The lookup is `#[cfg(feature = "test-support")]`, so the shipped
+Shell has no override path at all: no env var, no runtime switch.
+
+`Workspaces/tests/fixture_pipes_are_private.rs` enforces this by scanning the
+GUI tree for literal production binds — a *static* check because CI, having no
+live stack, structurally cannot observe the failure. The `rust/` workspace has
+followed the equivalent convention since #29 (`unique_service_name()` plus the
+`WYLDE_LIFECYCLE_PIPE_NAME` / `WYLDE_WORKSPACES_PIPE_NAME` / `WYLDE_LSP_PIPE_NAME`
+service-side overrides).
+
 ---
 
 ## Writing a test
@@ -127,10 +161,16 @@ fn my_panel_does_x(cx: &mut TestAppContext) {
 |---|---|
 | `.on(action, json)` | unary `action` → `Ok(json)` |
 | `.on_err(action, "code: msg")` | unary `action` → `Err` |
+| `.on_path(path, json)` | path-routed call → `Ok(json)` — for the **action-less** panels (RemoteAccess issues `GET /api/link/*` with no `"action"` envelope) |
+| `.on_path_err(path, "code: msg")` | path-routed call → `Err` |
 | `.on_stream(action, vec![chunk, …])` | streaming `action` replays chunks then ends |
 | `.conversations(rows)` | shortcut for `conversations.list` |
-| `.calls()` / `.calls_for(a)` / `.last_call_for(a)` / `.count_for(a)` | inspect recorded calls |
+| `.calls()` / `.calls_for(a)` / `.last_call_for(a)` / `.count_for(a)` / `.count_for_path(p)` | inspect recorded calls |
 | `RecordedCall::payload_str(k)` / `.workspace_id()` | read a payload field |
+
+Routing order: action-error → action-ok → path-error → path-ok → soft default
+(`Ok({})`). Action maps only match when the call carries a `body["action"]`;
+the action-less HTTP-style calls (RemoteAccess) fall through to the path maps.
 
 Harness action strings live in each panel's `ipc.rs` (`grep '"action":'`).
 
@@ -152,9 +192,57 @@ Harness action strings live in each panel's `ipc.rs` (`grep '"action":'`).
 
 ## What's covered, and what to add next
 
-**Covered** (`tests/dock_scoping.rs`): the docked ChatPanel's enter→scoped
-list / leave→restore, docked turn carries `workspace_id`, Global stays
-workspace-free (D1), and the three C6 empty-state enter cases.
+**The L7 panel-walk (`tests/panel_walk.rs` in every panel crate — issue #35).**
+The Tier-B answer to "does *every* page load?" Each of the 9 panels (and the
+Workspaces subtabs) has a `panel_walk.rs` that mounts the real view the way the
+Shell does (`new` + the panel's `spawn_*` loader) and asserts it loads without
+panic and isn't in a wrong/stuck error state — under **four backend
+conditions**: healthy, backend **down** (every call `on_err` — the daemon-in-
+no-spawn-mode case), backend **error envelope**, and **empty** (the default
+fake's `Ok({})` — degraded services answer ok/empty, not errors). "Error state"
+is per-panel and read from the code, not a uniform notion: Models/Tools/Devices/
+Memory/Workspaces expose `error: Option<String>` + a `loading` flag;
+RemoteAccess uses `last_error` (only status failures surface); Dashboard has no
+error field and *degrades per card* (assert `initial_load_done` + per-service
+`HealthStatus`); Settings degrades every section to defaults (`voice_offline`
+flags the optional voice service). Run the whole gate with **`cargo panel-walk`**
+(from `Core/GUI/`); it runs headless in CI as the `gui panel-walk (L7)` job.
+
+> ### `cargo panel-walk` vs `cargo test --workspace`
+>
+> **Both run these windowed gpui tests.** The `test-support` seam they need
+> (`gpui/test-support`, `wylde-gui-pipe/test-support`, `wylde-gui-test-support`)
+> is requested from the panels' `[dev-dependencies]`, and `resolver = "2"`
+> compiles those into each crate's *test* targets under **either** command —
+> there is no feature flag the alias toggles. The only difference is the crate
+> set: `panel-walk` scopes to the 9 panel crates (`-p …`) so CI's headless L7 job
+> never links the Shell (`wry` / tray-icon); `cargo test --workspace --locked`
+> from `Core/GUI/` additionally runs the Shell/Frontend crates' own tests. A
+> `--workspace` run: exit 0, **1151 passed, 0 failed**.
+>
+> Prefer `cargo panel-walk` locally so you exercise exactly what the required
+> gate runs.
+>
+> > **History (#85):** an earlier version of this note claimed `cargo test
+> > --workspace` "runs 0 GUI tests / looks green while testing nothing." That was
+> > a **misread**, closed as not-reproducing. Cargo prints one result line per
+> > test binary; the ~17 `Doc-tests` lines and a couple of empty / `#[ignore]`d
+> > targets each print `0 passed`, while the 44 real binaries carry the 1151
+> > passes. Reading only the `0 passed` lines is the trap — not the command. The
+> > tests were present and ran under `--workspace` both when #85 was filed
+> > (2026-07-17) and now; nothing in the panels or this config changed between.
+>
+> **The real coverage risk is the alias, not `--workspace`:** `panel-walk`'s
+> `-p` list is hardcoded to today's 9 panels. Add a 10th panel and forget to add
+> it, and the required L7 gate silently never tests it — while `--workspace`
+> would pick it up automatically. Tracked on **#95**.
+
+**Covered (behavioural, panel-specific):** `tests/dock_scoping.rs` — the docked
+ChatPanel's enter→scoped list / leave→restore, docked turn carries
+`workspace_id`, Global stays workspace-free (D1), the three C6 empty-state enter
+cases; plus `conversations.rs`, `virtualization.rs`, `processing_indicator.rs`
+(Chat), `copy_in.rs` (Memory), `cancel_pairing.rs` (Devices), `prefs_dispatch.rs`
+(Settings), and the Workspaces subtab suites.
 
 **Good next windowed tests** (retire more owed feel-tests with the same
 recipe):

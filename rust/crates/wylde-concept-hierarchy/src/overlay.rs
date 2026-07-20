@@ -100,7 +100,11 @@ impl OverlayNode {
     /// the overlay stays minimal (and the removal test sees an empty file once
     /// the last authored datum is cleared).
     pub fn is_empty(&self) -> bool {
-        self.definition.as_deref().map(str::trim).unwrap_or("").is_empty()
+        self.definition
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
             && self
                 .label_override
                 .as_deref()
@@ -400,9 +404,7 @@ fn apply_merge(graph: &mut HierGraph, primary: &NodeId, alias: &NodeId) {
             x.to = primary.clone();
         }
     }
-    graph
-        .xrefs
-        .retain(|x| x.from != x.to);
+    graph.xrefs.retain(|x| x.from != x.to);
     dedup_xrefs(&mut graph.xrefs);
 
     // Re-point containment in every node's parent/child lists.
@@ -496,7 +498,10 @@ mod tests {
     }
 
     fn graph(nodes: Vec<HierNode>) -> HierGraph {
-        HierGraph { nodes, xrefs: Vec::new() }
+        HierGraph {
+            nodes,
+            xrefs: Vec::new(),
+        }
     }
 
     #[test]
@@ -586,7 +591,11 @@ mod tests {
             ..Default::default()
         };
         let out = apply_overlay(g, &overlay);
-        let n = out.nodes.iter().find(|n| n.id == NodeId("node:0000".into())).unwrap();
+        let n = out
+            .nodes
+            .iter()
+            .find(|n| n.id == NodeId("node:0000".into()))
+            .unwrap();
         assert_eq!(n.kind, NodeKind::Authored);
         assert_eq!(n.label, "Theme");
         assert_eq!(n.definition.text, "a net-new theme");
@@ -611,7 +620,10 @@ mod tests {
 
     #[test]
     fn authored_edge_adds_containment_both_ways() {
-        let g = graph(vec![concept_node("parent", "p"), concept_node("child", "c")]);
+        let g = graph(vec![
+            concept_node("parent", "p"),
+            concept_node("child", "c"),
+        ]);
         let overlay = HierarchyOverlay {
             edges: vec![OverlayEdge {
                 parent: NodeId::concept("parent"),
@@ -622,8 +634,16 @@ mod tests {
             ..Default::default()
         };
         let out = apply_overlay(g, &overlay);
-        let child = out.nodes.iter().find(|n| n.id == NodeId::concept("child")).unwrap();
-        let parent = out.nodes.iter().find(|n| n.id == NodeId::concept("parent")).unwrap();
+        let child = out
+            .nodes
+            .iter()
+            .find(|n| n.id == NodeId::concept("child"))
+            .unwrap();
+        let parent = out
+            .nodes
+            .iter()
+            .find(|n| n.id == NodeId::concept("parent"))
+            .unwrap();
         assert_eq!(child.parents, vec![NodeId::concept("parent")]);
         assert_eq!(parent.children, vec![NodeId::concept("child")]);
         assert!(!parent.is_leaf, "parent now has a child");
@@ -679,7 +699,10 @@ mod tests {
                 HierNode {
                     id: NodeId::vocab("leaf"),
                     label: "leaf".into(),
-                    definition: Definition { text: "x".into(), source: DefSource::InheritedAnchor },
+                    definition: Definition {
+                        text: "x".into(),
+                        source: DefSource::InheritedAnchor,
+                    },
                     kind: NodeKind::Vocab,
                     parents: vec![NodeId::vocab("v")],
                     children: Vec::new(),
@@ -710,12 +733,18 @@ mod tests {
         // The alias is gone; the primary absorbed v's child.
         assert!(g.node(&NodeId::vocab("v")).is_none(), "alias removed");
         let c = g.node(&NodeId::concept("c")).unwrap();
-        assert!(c.children.contains(&NodeId::vocab("leaf")), "primary absorbed the child");
+        assert!(
+            c.children.contains(&NodeId::vocab("leaf")),
+            "primary absorbed the child"
+        );
         // The leaf's parent re-pointed to the primary.
         let leaf = g.node(&NodeId::vocab("leaf")).unwrap();
         assert_eq!(leaf.parents, vec![NodeId::concept("c")]);
         // The self-referential names xref (c ~names~> c) is dropped.
-        assert!(g.xrefs.is_empty(), "the names xref collapsed to a self-edge and was dropped");
+        assert!(
+            g.xrefs.is_empty(),
+            "the names xref collapsed to a self-edge and was dropped"
+        );
     }
 
     #[test]
@@ -735,7 +764,10 @@ mod tests {
         };
         let out = apply_overlay(g, &overlay);
         let p = out.node(&NodeId::concept("p")).unwrap();
-        assert_eq!(p.definition.text, "alias def", "missing primary took the alias definition");
+        assert_eq!(
+            p.definition.text, "alias def",
+            "missing primary took the alias definition"
+        );
     }
 
     #[test]
@@ -751,7 +783,11 @@ mod tests {
             ..Default::default()
         };
         let out = apply_overlay(g, &overlay);
-        assert_eq!(out.nodes.len(), 1, "dangling merge left the graph untouched");
+        assert_eq!(
+            out.nodes.len(),
+            1,
+            "dangling merge left the graph untouched"
+        );
     }
 
     #[test]

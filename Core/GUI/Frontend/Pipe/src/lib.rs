@@ -46,22 +46,22 @@ pub mod tools;
 pub mod updater_state;
 pub mod workspace_scope_bus;
 
+pub use active_file_bus::{current_active_file, publish_active_file, ActiveFile};
 pub use conversation_bus::{
     current_active_conversation, publish_active_conversation, publish_conversation_list_changed,
     subscribe as subscribe_conversation_bus, ConversationEvent,
 };
+pub use focus_bus::{request_workspace_focus, take_workspace_focus_receiver, WorkspaceFocus};
 pub use model_bus::{
     current_active_model, publish_active_model, publish_starred_default,
     subscribe as subscribe_model_bus, ModelEvent,
 };
-pub use active_file_bus::{current_active_file, publish_active_file, ActiveFile};
-pub use focus_bus::{request_workspace_focus, take_workspace_focus_receiver, WorkspaceFocus};
+pub use model_pull::{parse_pullable_model, pull_model, PullAggregate, PullProgress};
+pub use nav_bus::{install_nav_sender, is_nav_installed, request_nav};
 pub use workspace_scope_bus::{
     current_active_workspace, publish_active_workspace, take_workspace_scope_receiver,
     WorkspaceScope,
 };
-pub use model_pull::{parse_pullable_model, pull_model, PullAggregate, PullProgress};
-pub use nav_bus::{install_nav_sender, is_nav_installed, request_nav};
 
 use serde_json::{Map, Value};
 use std::sync::OnceLock;
@@ -191,8 +191,18 @@ pub const CALLER_NAME: &str = "fletch-gui";
 
 /// Resolve `\\.\pipe\wylde-<service>` from a bare or `wylde-`-prefixed
 /// service name.  Pure function — testable without a live pipe.
+///
+/// Under the dev-only `test-support` feature a test may re-point one service
+/// at a private fixture pipe (`test_backend::PipeNameOverride`).  The lookup
+/// is compiled out entirely without the feature, so the shipped Shell resolves
+/// the production name and nothing else — there is no runtime switch, and no
+/// env var, by which a real build could be redirected.
 pub fn pipe_name(service: &str) -> String {
     let bare = service.strip_prefix("wylde-").unwrap_or(service);
+    #[cfg(feature = "test-support")]
+    if let Some(overridden) = test_backend::pipe_name_override(bare) {
+        return overridden;
+    }
     format!(r"\\.\pipe\wylde-{}", bare)
 }
 
@@ -733,10 +743,8 @@ pub async fn try_dispatch_harness<A: HarnessApi + ?Sized>(
         r
     } else if let Some(r) = tools::dispatch(api, verb, payload.clone()).await {
         r
-    } else if let Some(r) = memory_long_term::dispatch(api, verb, payload).await {
-        r
     } else {
-        return None;
+        memory_long_term::dispatch(api, verb, payload).await?
     };
 
     Some(reply_to_result(reply))
@@ -797,13 +805,14 @@ pub async fn service_health(service: &str) -> Result<Value, String> {
 
 // ── Reusable service-control affordance (GUI-wide) ────────────────────
 //
-// Aaron's locked decision 7: start/restart backend services from ANYWHERE in
-// the GUI "for ease of use", not just one panel. These named wrappers over
+// The maintainer's locked decision 7: start/restart/stop backend services from ANYWHERE
+// in the GUI "for ease of use", not just one panel. These named wrappers over
 // `lifecycle_action` are the shared core every surface drives — the Workspaces
 // error states (down → Start, out-of-date → Restart), the Graph view's
-// "Start graph database", and any future panel — so the lifecycle verb shape
-// lives in exactly one place. The Shell slot's "Start service" button predates
-// this and uses the same `service.start` verb (see `slot::start_service_action`).
+// "Start graph database", the Dashboard console's per-service Stop, and any
+// future panel — so the lifecycle verb shape lives in exactly one place. The
+// Shell slot's "Start service" button predates this and uses the same
+// `service.start` verb (see `slot::start_service_action`).
 
 /// The Lifecycle daemon's canonical name for the graph database (Memgraph,
 /// the Bolt `:7687` backend). Matches the Dashboard's `MONITORED_SERVICES`
@@ -823,6 +832,18 @@ pub async fn start_service(service: &str) -> Result<Value, String> {
 /// verb is owned by the backend lifecycle crate; this is only the GUI driver.)
 pub async fn restart_service(service: &str) -> Result<Value, String> {
     lifecycle_action("service.restart", serde_json::json!({ "name": service })).await
+}
+
+/// Stop a running service (`service.stop`). The deliberate operator action —
+/// unlike [`start_service`] / [`restart_service`] (recovery affordances for a
+/// service the user *wants* up), this takes a healthy service down at the
+/// user's choosing. Driven from the Dashboard's service console. The lifecycle
+/// `service.stop` verb is owned by the backend lifecycle crate; this is only
+/// the GUI driver. A name the daemon doesn't manage (e.g. `wylde-lifecycle`
+/// itself) is an idempotent no-op success on the backend, so the caller need
+/// not pre-filter — though the Dashboard does, to avoid offering a dead button.
+pub async fn stop_service(service: &str) -> Result<Value, String> {
+    lifecycle_action("service.stop", serde_json::json!({ "name": service })).await
 }
 
 /// Start the graph database ([`MEMGRAPH_SERVICE`]) — the one-click recovery

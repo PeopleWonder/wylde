@@ -106,7 +106,10 @@ pub async fn purge_excluded(def: &WorkspaceDefinition) -> PurgeOutcome {
         let lk = lock::for_workspace(&def.id);
         let _g = lk.lock().await;
         if let Err(e) = store::save_chunks(&def.id, &kept) {
-            tracing::warn!("workspaces.rag.purge: write chunks failed for {}: {e}", def.id);
+            tracing::warn!(
+                "workspaces.rag.purge: write chunks failed for {}: {e}",
+                def.id
+            );
             // Couldn't persist — report the would-be result without touching
             // state, so the caller sees the failure rather than a false win.
             return outcome;
@@ -230,7 +233,7 @@ mod tests {
         // A real registered workspace whose folder is a tempdir root.
         let folder = env.ws_path("proj");
         std::fs::create_dir_all(&folder).unwrap();
-        let def = registry::create(&folder, None);
+        let def = registry::create(&folder, None).unwrap();
         let root = folder.replace('/', std::path::MAIN_SEPARATOR_STR);
 
         // Mix real source with target-dev rustdoc + node_modules artifacts.
@@ -272,10 +275,14 @@ mod tests {
         let env = TestEnv::new();
         let folder = env.ws_path("clean");
         std::fs::create_dir_all(&folder).unwrap();
-        let def = registry::create(&folder, None);
+        let def = registry::create(&folder, None).unwrap();
         let root = folder.replace('/', std::path::MAIN_SEPARATOR_STR);
         let join = |rel: &str| format!("{root}{}{rel}", std::path::MAIN_SEPARATOR);
-        store::save_chunks(&def.id, &[chunk(&join("src/a.rs")), chunk(&join("src/b.rs"))]).unwrap();
+        store::save_chunks(
+            &def.id,
+            &[chunk(&join("src/a.rs")), chunk(&join("src/b.rs"))],
+        )
+        .unwrap();
 
         let out = purge_excluded(&def).await;
         assert_eq!(out.dropped, 0);

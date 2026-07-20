@@ -248,7 +248,10 @@ impl DependencyTreeView {
         let fitted = self.fitted;
 
         canvas(
-            move |bounds: Bounds<Pixels>, _window, app: &mut App| -> Option<crate::graph::render::RenderOutput> {
+            move |bounds: Bounds<Pixels>,
+                  _window,
+                  app: &mut App|
+                  -> Option<crate::graph::render::RenderOutput> {
                 let rect = CanvasRect {
                     ox: f32::from(bounds.origin.x),
                     oy: f32::from(bounds.origin.y),
@@ -340,7 +343,9 @@ impl Render for DependencyTreeView {
             .h(px(420.0))
             .overflow_hidden()
             .bg(bg)
-            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, _w, cx| this.on_scroll(ev, cx)))
+            .on_scroll_wheel(
+                cx.listener(|this, ev: &ScrollWheelEvent, _w, cx| this.on_scroll(ev, cx)),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseDownEvent, _w, cx| this.on_down(ev, cx)),

@@ -230,7 +230,10 @@ pub fn build_tree(rows: &[OverviewRow], universe: &[NodeItem]) -> TreeModel {
     for n in &order {
         let token = token_of[n].clone();
         let label = reducer::label_for(n, universe);
-        let path = path_cache.get(&token).cloned().unwrap_or_else(|| token.clone());
+        let path = path_cache
+            .get(&token)
+            .cloned()
+            .unwrap_or_else(|| token.clone());
         graph_nodes.push(Node {
             id: token.clone(),
             kind: match n {
@@ -374,7 +377,10 @@ pub fn render_tree(model: &TreeModel, layout: &Layout, vp: &Viewport, dark: bool
         if style.directional {
             // Arrowhead at the `to` end, pulled back by the target's radius so
             // it sits on the node edge, pointing toward the dependency (down).
-            let r = radius_of.get(e.to.as_str()).copied().unwrap_or(VOCAB_RADIUS)
+            let r = radius_of
+                .get(e.to.as_str())
+                .copied()
+                .unwrap_or(VOCAB_RADIUS)
                 * vp.camera.zoom;
             push_arrowhead(&mut edges, (x0, y0), (x1, y1), r, style.color, th);
         }
@@ -392,7 +398,10 @@ pub fn render_tree(model: &TreeModel, layout: &Layout, vp: &Viewport, dark: bool
         } else {
             to_color(BRAND_DIM)
         };
-        let r = (radius_of.get(n.token.as_str()).copied().unwrap_or(VOCAB_RADIUS)
+        let r = (radius_of
+            .get(n.token.as_str())
+            .copied()
+            .unwrap_or(VOCAB_RADIUS)
             * vp.camera.zoom)
             .max(2.0);
         spheres.push(SphereDraw {
@@ -424,9 +433,15 @@ pub fn render_tree(model: &TreeModel, layout: &Layout, vp: &Viewport, dark: bool
     // Background: a neutral dark void (the tree has no Theme dependency — it
     // borrows the panel palette, not the graph Visual Style YAML).
     let (bg_inner, bg_outer) = if dark {
-        (Color::rgba(0.05, 0.06, 0.09, 1.0), Color::rgba(0.02, 0.03, 0.05, 1.0))
+        (
+            Color::rgba(0.05, 0.06, 0.09, 1.0),
+            Color::rgba(0.02, 0.03, 0.05, 1.0),
+        )
     } else {
-        (Color::rgba(0.96, 0.97, 0.99, 1.0), Color::rgba(0.90, 0.92, 0.95, 1.0))
+        (
+            Color::rgba(0.96, 0.97, 0.99, 1.0),
+            Color::rgba(0.90, 0.92, 0.95, 1.0),
+        )
     };
     RenderOutput {
         bg_inner,
@@ -589,7 +604,11 @@ mod tests {
         assert_eq!(model.nodes.len(), 3);
         assert_eq!(model.edges.len(), 2);
         // Labels resolved from the universe.
-        let nc = model.nodes.iter().find(|n| n.node == nref_c("nextcloud")).unwrap();
+        let nc = model
+            .nodes
+            .iter()
+            .find(|n| n.node == nref_c("nextcloud"))
+            .unwrap();
         assert_eq!(nc.label, "Nextcloud");
         // Token round-trips back to the relation node (hit-test → deep-link).
         assert_eq!(model.node_for_token(&nc.token), Some(&nref_c("nextcloud")));
@@ -634,7 +653,10 @@ mod tests {
         let layout = model.layout();
         let out = render_tree(&model, &layout, &vp(), true);
         assert_eq!(out.spheres.len(), 2, "one sphere per node");
-        assert!(!out.edges.is_empty(), "the dependency edge + arrowhead drawn");
+        assert!(
+            !out.edges.is_empty(),
+            "the dependency edge + arrowhead drawn"
+        );
     }
 
     #[test]

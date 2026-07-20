@@ -1,12 +1,24 @@
-"""Launcher / shutdown / service-manifest rules (44-47).
+"""Boot / shutdown / service-manifest rules (44-47).
 
-Added at the slice-11 cutover. These enforce the filesystem-as-registry
-contract end to end: the launcher and shutdown both build their service
-set from manifests (never a hardcoded roster), every top-level backend
-service carries a manifest, and those manifests are schema-valid. The
-modular-service architecture is the principle they protect — adding a
-service folder with a conforming manifest is all it takes for the
-launcher to discover it and shutdown to drain it in the right order.
+Added at the slice-11 cutover. These enforce the single-source contract:
+boot and shutdown are both derived from ONE source of truth (never a
+hand-kept roster), every top-level backend service carries a manifest, and
+those manifests are schema-valid. The modular-service architecture is the
+principle they protect — adding a core service is a one-row addition to the
+`DAEMON_MANAGED` table (or, for an out-of-tree sibling, dropping a folder
+with a conforming manifest); boot, shutdown, and dispatch all pick it up.
+
+REPOINTED for issue #101 (0.2 stability audit, finding F): rules 44/45
+formerly targeted `Core/Lifecycle/launcher.py` / `shutdown.py`, which the
+full-Rust cutover DELETED — and, guarded by `if <file>.exists()`, they
+skipped their body over the missing file and passed green. A dead gate.
+They now target the LIVE Rust single source: the `DAEMON_MANAGED` table in
+`rust/crates/wylde-lifecycle/src/daemon_managed.rs`, which drives boot,
+shutdown, dispatch, and the kill-image list from one row per service. The
+SEMANTIC set-equality gate (boot-set == shutdown-set == dispatch-set,
+modulo the two typed exceptions) is the crate unit test
+`daemon_managed::tests::boot_shutdown_dispatch_sets_agree`; these static
+rules ensure that single source stays STRUCTURALLY in place.
 """
 
 from __future__ import annotations
@@ -20,16 +32,17 @@ from .. import Finding
 from .._config import (
     GPUI_SHUTDOWN_DELEGATE_TOKEN,
     GPUI_SHUTDOWN_RS,
-    LAUNCHER_MANIFEST_REFERENCES,
-    LAUNCHER_PY,
-    PY_HARDCODED_SERVICE_LIST_RE,
+    RUST_BOOT_FILE,
+    RUST_BOOT_TABLE_TOKEN,
+    RUST_DAEMON_MANAGED_FILE,
+    RUST_DAEMON_MANAGED_TABLE_TOKEN,
     RUST_HARDCODED_SERVICE_ARRAY_RE,
     RUST_LIFECYCLE_CRATE,
+    RUST_SHUTDOWN_FILE,
+    RUST_SHUTDOWN_TABLE_TOKEN,
     SERVICE_MANIFEST_EXCLUDED_TOP_LEVEL,
     SERVICE_MANIFEST_NONSERVICE_DIRS,
     SERVICE_MANIFEST_REQUIRED_KEYS,
-    SHUTDOWN_ENUMERATION_REFERENCES,
-    SHUTDOWN_PY,
 )
 from .._walkers import _is_excluded, _read_text, _to_rel
 
@@ -47,72 +60,114 @@ def _noncomment_lines(text: str, comment_prefixes: tuple[str, ...]) -> list[tupl
     return out
 
 
-# ── Rule 44: launcher enumerates services from manifests ──────────────
+# ── Rule 44: boot is derived from the single DAEMON_MANAGED table ──────
+
+
+def _strip_rust_comments(text: str) -> str:
+    """``text`` with ``//``, ``//!`` and ``///`` comments removed.
+
+    Block comments (``/* … */``) are left alone: the lifecycle targets
+    don't use them, and a naive strip would corrupt string literals
+    containing ``/*``.  Line comments are the ones that matter here —
+    every token these rules test for is also *named* in a doc comment
+    beside the real call.
+
+    Without this, rules 44/45 were satisfiable by prose: deleting the
+    real ``boot_sequence()`` call at ``daemon.rs:187`` while leaving the
+    doc comment at ``:180`` that merely mentions it kept the rule green
+    (issue #116).  A gate that a comment can satisfy is not a gate.
+    """
+    out: List[str] = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("//"):
+            continue
+        out.append(line.split("//", 1)[0])
+    return "\n".join(out)
+
+
+def _require_token(file_rel: str, token: str, rule: str, message: str) -> List[Finding]:
+    """Fire unless ``file_rel`` exists AND contains ``token`` **in code**.
+
+    A **missing file** and a **missing token** both fire — this is the
+    fix at the heart of issue #101: the old rules guarded their body with
+    ``if <file>.exists()``, so a deleted target file skipped the check and
+    the rule passed green (a dead gate). Here, the single source going
+    missing is itself the failure.
+
+    Comments are stripped before the test (issue #116) so a doc comment
+    mentioning the token cannot stand in for the call itself.
+    """
+    path = _pkg.WYLDE_ROOT / file_rel
+    text = _read_text(path) if path.exists() else ""
+    text = _strip_rust_comments(text)
+    if token not in text:
+        return [
+            Finding(
+                rule=rule,
+                severity="error",
+                file=file_rel,
+                line=0,
+                message=message,
+            )
+        ]
+    return []
 
 
 def check_launcher_enumerates_services_from_manifests() -> List[Finding]:
-    """The launcher must build its service set from the filesystem
-    registry (``services.yaml`` + per-service ``manifest.json``), not a
-    hardcoded roster.
+    """Boot must be derived from the single ``DAEMON_MANAGED`` table
+    (`rust/crates/wylde-lifecycle/src/daemon_managed.rs`), not a
+    hand-written run of ``start_<name>()`` calls or a hardcoded roster.
 
-    Two-pronged on the Python launcher: it must *reference* a manifest /
-    registry loader (positive), and it must not assign a module-level
-    UPPERCASE ``SERVICES`` list literal (negative). The Rust lifecycle
-    crate is held to the negative half only — it spawns tier=core
-    services via an explicit, documented ``start_<name>`` sequence (bespoke
-    per-service bring-up), which is intentionally NOT a data-driven list;
-    a hardcoded ``const SERVICES: [&str; N]`` roster *would* be flagged.
+    (Rule key retained for registry/baseline stability; repointed for
+    issue #101 from the deleted ``Core/Lifecycle/launcher.py`` to the live
+    Rust boot path — the old rule ran over a missing file and passed green.)
+
+    Fires when: the ``DAEMON_MANAGED`` table file is missing / no longer
+    declares the table (the single source was removed), or ``daemon.rs`` no
+    longer derives boot from it (``boot_sequence()`` gone), or a
+    ``const``/``static SERVICES`` array roster reappears in the crate. The
+    SEMANTIC boot-set == shutdown-set gate is the crate unit test
+    ``daemon_managed::tests::boot_shutdown_dispatch_sets_agree``.
     """
+    rule = "launcher_enumerates_services_from_manifests"
     out: List[Finding] = []
-
-    launcher = _pkg.WYLDE_ROOT / LAUNCHER_PY
-    if launcher.exists():
-        text = _read_text(launcher)
-        if text:
-            if not any(ref in text for ref in LAUNCHER_MANIFEST_REFERENCES):
-                out.append(
-                    Finding(
-                        rule="launcher_enumerates_services_from_manifests",
-                        severity="error",
-                        file=LAUNCHER_PY,
-                        line=0,
-                        message=(
-                            "launcher no longer enumerates services from the "
-                            "filesystem registry — expected a call to one of "
-                            f"{', '.join(LAUNCHER_MANIFEST_REFERENCES)}."
-                        ),
-                    )
-                )
-            for lineno, line in _noncomment_lines(text, ("#",)):
-                if PY_HARDCODED_SERVICE_LIST_RE.match(line):
-                    out.append(
-                        Finding(
-                            rule="launcher_enumerates_services_from_manifests",
-                            severity="error",
-                            file=LAUNCHER_PY,
-                            line=lineno,
-                            message=(
-                                "hardcoded service roster in the launcher — "
-                                "build the service list from manifests "
-                                "(load_services / load_manifest), not a literal."
-                            ),
-                            context=line.strip()[:200],
-                        )
-                    )
-
-    out.extend(_scan_rust_for_hardcoded_roster(RUST_LIFECYCLE_CRATE, "launcher"))
+    out.extend(
+        _require_token(
+            RUST_DAEMON_MANAGED_FILE,
+            RUST_DAEMON_MANAGED_TABLE_TOKEN,
+            rule,
+            "the single DAEMON_MANAGED table is missing — boot, shutdown, and "
+            "dispatch must all derive from one source of truth in "
+            f"{RUST_DAEMON_MANAGED_FILE} (issue #101). Restore the table.",
+        )
+    )
+    out.extend(
+        _require_token(
+            RUST_BOOT_FILE,
+            RUST_BOOT_TABLE_TOKEN,
+            rule,
+            "boot is no longer derived from the DAEMON_MANAGED table "
+            "(`boot_sequence()` call missing in daemon.rs) — boot must iterate "
+            "the single source, not a hand-written start_<name>() sequence.",
+        )
+    )
+    out.extend(_scan_rust_for_hardcoded_roster(RUST_LIFECYCLE_CRATE, "boot"))
     return out
 
 
 def _scan_rust_for_hardcoded_roster(crate_rel: str, surface: str) -> List[Finding]:
-    """Flag a ``const``/``static`` SERVICES array in a Rust crate's src."""
+    """Flag a ``const``/``static`` SERVICES array in a Rust crate's src —
+    a hand-kept roster reintroduced alongside the ``DAEMON_MANAGED`` table
+    (the ``DAEMON_MANAGED`` table itself is not a ``SERVICES`` array and is
+    intentionally not matched)."""
     out: List[Finding] = []
     rust_src = _pkg.WYLDE_ROOT / crate_rel / "src"
     if not rust_src.exists():
         return out
     rule = (
         "launcher_enumerates_services_from_manifests"
-        if surface == "launcher"
+        if surface == "boot"
         else "shutdown_enumerates_services_from_manifests"
     )
     for path in sorted(rust_src.rglob("*.rs")):
@@ -130,10 +185,10 @@ def _scan_rust_for_hardcoded_roster(crate_rel: str, surface: str) -> List[Findin
                         file=_to_rel(path),
                         line=lineno,
                         message=(
-                            f"hardcoded service roster in the Rust {surface} — "
-                            "tier=core bring-up is an explicit start_<name> "
-                            "sequence by design, but a SERVICES array is the "
-                            "anti-pattern; enumerate from manifests instead."
+                            f"hardcoded service roster in the Rust {surface} path "
+                            "— the core tier is driven by the single DAEMON_MANAGED "
+                            "table (one row per service); a SERVICES array is the "
+                            "hand-kept-roster anti-pattern issue #101 removed."
                         ),
                         context=line.strip()[:200],
                     )
@@ -141,80 +196,69 @@ def _scan_rust_for_hardcoded_roster(crate_rel: str, surface: str) -> List[Findin
     return out
 
 
-# ── Rule 45: shutdown enumerates services from manifests ──────────────
+# ── Rule 45: shutdown is derived from the same DAEMON_MANAGED table ────
 
 
 def check_shutdown_enumerates_services_from_manifests() -> List[Finding]:
-    """``shutdown_all`` must drain the running set in a manifest-driven
-    order (reverse-launch by default, ``shutdown_order`` override), not a
-    hardcoded service list.
+    """``shutdown_all`` must drain the core tier in the order derived from
+    the single ``DAEMON_MANAGED`` table (``state/mod.rs`` iterates
+    ``shutdown_sequence()`` in ascending ``shutdown_rank``), not a
+    hand-kept ``let steps: [_; N]`` array.
 
-    The Python ``shutdown.py`` is the canonical drain the GUI reaches via
-    ``lifecycle.shutdown_all``; it must reference the running-set / manifest
-    enumeration and carry no hardcoded roster. The gpui-side
-    ``shutdown.rs`` must *delegate* to that drain (it dispatches
-    ``lifecycle.shutdown_all``); its ``WYLDE_SERVICE_PROCESSES`` /
-    ``WYLDE_KILL_TARGETS`` constants are the recognised hard-kill image-name
-    fallback — a last resort, not the enumeration — so they are not flagged.
+    (Rule key retained for registry/baseline stability; repointed for
+    issue #101 from the deleted ``Core/Lifecycle/shutdown.py``.)
+
+    Two-pronged:
+    * the Rust drain (``state/mod.rs``) must derive its set + order from
+      the table (``shutdown_sequence()``); and
+    * the gpui-side ``shutdown.rs`` must *delegate* to the daemon drain
+      (it dispatches ``lifecycle.shutdown_all``) rather than enumerate
+      services itself.
+
+    This rule does NOT check service coverage of the GUI's hard-kill and
+    drain-wait sets, and a pass here says nothing about it. It used to
+    exempt the ``WYLDE_SERVICE_PROCESSES`` / ``WYLDE_KILL_TARGETS``
+    constants explicitly as "a recognised last resort"; that exemption
+    was load-bearing for issue #124, where both were hand-typed arrays
+    naming four of eleven killable services and the drain wait polled the
+    same four — so it reported a clean shutdown with eight services still
+    alive. Those constants no longer exist; both sets derive from
+    ``wylde_stack::shutdown_targets``.
+
+    The SEMANTIC gates are Rust tests, not this rule:
+    * shutdown-set == boot-set —
+      ``daemon_managed::tests::boot_shutdown_dispatch_sets_agree``;
+    * GUI shutdown coverage (the counting gate, #124) —
+      ``rust/crates/wylde-stack/tests/shutdown_target_coverage.rs``,
+      which also fails if ``shutdown.rs`` regrows a hand-typed image
+      list.
     """
+    rule = "shutdown_enumerates_services_from_manifests"
     out: List[Finding] = []
-
-    shutdown = _pkg.WYLDE_ROOT / SHUTDOWN_PY
-    if shutdown.exists():
-        text = _read_text(shutdown)
-        if text:
-            if not any(ref in text for ref in SHUTDOWN_ENUMERATION_REFERENCES):
-                out.append(
-                    Finding(
-                        rule="shutdown_enumerates_services_from_manifests",
-                        severity="error",
-                        file=SHUTDOWN_PY,
-                        line=0,
-                        message=(
-                            "shutdown no longer enumerates the running service "
-                            "set — expected a reference to one of "
-                            f"{', '.join(SHUTDOWN_ENUMERATION_REFERENCES)}."
-                        ),
-                    )
-                )
-            for lineno, line in _noncomment_lines(text, ("#",)):
-                if PY_HARDCODED_SERVICE_LIST_RE.match(line):
-                    out.append(
-                        Finding(
-                            rule="shutdown_enumerates_services_from_manifests",
-                            severity="error",
-                            file=SHUTDOWN_PY,
-                            line=lineno,
-                            message=(
-                                "hardcoded service roster in shutdown — order "
-                                "the drain from the running set + manifest "
-                                "shutdown_order, not a literal list."
-                            ),
-                            context=line.strip()[:200],
-                        )
-                    )
-
-    # gpui-side graceful shutdown must delegate to the manifest-driven
-    # Python drain rather than enumerate services itself.
-    gpui_shutdown = _pkg.WYLDE_ROOT / GPUI_SHUTDOWN_RS
-    if gpui_shutdown.exists():
-        text = _read_text(gpui_shutdown)
-        if text and GPUI_SHUTDOWN_DELEGATE_TOKEN not in text:
-            out.append(
-                Finding(
-                    rule="shutdown_enumerates_services_from_manifests",
-                    severity="error",
-                    file=GPUI_SHUTDOWN_RS,
-                    line=0,
-                    message=(
-                        "gpui graceful shutdown no longer delegates to the "
-                        f"manifest-driven drain ({GPUI_SHUTDOWN_DELEGATE_TOKEN!r} "
-                        "dispatch missing) — it must not enumerate services on "
-                        "its own; route through lifecycle.shutdown_all."
-                    ),
-                )
-            )
-
+    out.extend(
+        _require_token(
+            RUST_SHUTDOWN_FILE,
+            RUST_SHUTDOWN_TABLE_TOKEN,
+            rule,
+            "shutdown is no longer derived from the DAEMON_MANAGED table "
+            "(`shutdown_sequence()` call missing in state/mod.rs) — the drain "
+            "must iterate the single source, not a hand-kept `let steps: [_; N]` "
+            "array.",
+        )
+    )
+    # gpui-side graceful shutdown must delegate to the daemon drain rather
+    # than enumerate services itself. Hardened to fire if the file is
+    # missing too (no silent pass over a deleted delegate — issue #101).
+    out.extend(
+        _require_token(
+            GPUI_SHUTDOWN_RS,
+            GPUI_SHUTDOWN_DELEGATE_TOKEN,
+            rule,
+            "gpui graceful shutdown no longer delegates to the daemon drain "
+            f"({GPUI_SHUTDOWN_DELEGATE_TOKEN!r} dispatch missing) — it must not "
+            "enumerate services on its own; route through lifecycle.shutdown_all.",
+        )
+    )
     return out
 
 

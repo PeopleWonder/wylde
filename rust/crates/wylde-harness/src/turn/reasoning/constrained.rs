@@ -1,4 +1,4 @@
-//! Grammar-constrained decoding plumbing (Aaron's 2026-07-13 decision:
+//! Grammar-constrained decoding plumbing (the maintainer's 2026-07-13 decision:
 //! "add constrained decoding where logical").
 //!
 //! ## Where "logical" is (the policy this module encodes)

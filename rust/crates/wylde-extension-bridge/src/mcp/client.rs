@@ -456,17 +456,39 @@ fn child_env(
 #[cfg(test)]
 mod tests {
     use super::resolve_placeholders;
+    use serial_test::serial;
+
+    // ── Env-mutating tests MUST be `#[serial]` ───────────────────────────
+    // `WYLDE_BIN` / `WYLDE_ROOT` are process-global, and `cargo test` runs
+    // these in parallel threads by default — so without a guard they clobber
+    // each other's setup. That was a real, reproducing flake (~8%: 2 failures
+    // in 25 local runs), and it red-walled CI on PRs that touched no Rust at
+    // all: `cwd_wylde_root_token_resolves_to_real_root` would set
+    // `WYLDE_ROOT=/the/real/root` while `wylde_bin_token_falls_back_to_release_dir`
+    // was mid-assert against `/repo`. The comments that used to sit here
+    // claiming "SAFETY: single-threaded test" were simply wrong, and the wrong
+    // premise is what let the race in.
+    //
+    // `#[serial]` (serial_test) is the guard the rest of the tree already uses
+    // for env-touching tests. Any NEW test in this module that calls
+    // `set_var`/`remove_var` must be `#[serial]` too — see docs/known-issues.md
+    // KI-6, which tracks this exact class of bug.
 
     #[test]
+    #[serial]
     fn wylde_bin_token_resolves_to_env_when_set() {
-        // SAFETY: single-threaded test; restore after.
         std::env::set_var("WYLDE_BIN", "/opt/wylde/bin");
         let out = resolve_placeholders("${WYLDE_BIN}/wylde-ext-webcrawler");
         assert_eq!(out, "/opt/wylde/bin/wylde-ext-webcrawler");
         std::env::remove_var("WYLDE_BIN");
     }
 
+    /// Pins BOTH vars it depends on: the fallback only means anything with
+    /// `WYLDE_BIN` unset, and the expected value is derived from `WYLDE_ROOT`.
+    /// A discovery test must pin every variable that feeds the resolution, not
+    /// just the one it is nominally about (KI-6's lesson).
     #[test]
+    #[serial]
     fn wylde_bin_token_falls_back_to_release_dir() {
         std::env::remove_var("WYLDE_BIN");
         std::env::set_var("WYLDE_ROOT", "/repo");
@@ -489,6 +511,7 @@ mod tests {
     use super::resolve_cwd_placeholders;
 
     #[test]
+    #[serial]
     fn cwd_wylde_root_token_resolves_to_real_root() {
         // The bug: a `cwd` of "${WYLDE_ROOT}" used to be passed through
         // verbatim, so the spawn cd'd into a literal "…/${WYLDE_ROOT}".
@@ -502,7 +525,10 @@ mod tests {
     fn cwd_unknown_placeholder_is_an_error() {
         let err = resolve_cwd_placeholders("${WYLDE_BOGUS}/sub")
             .expect_err("an unknown placeholder must not silently pass through");
-        assert!(err.contains("${WYLDE_BOGUS}"), "error names the bad token: {err}");
+        assert!(
+            err.contains("${WYLDE_BOGUS}"),
+            "error names the bad token: {err}"
+        );
     }
 
     #[test]
@@ -604,11 +630,13 @@ mod tests {
     #[cfg(windows)]
     #[test]
     #[ignore = "spawns a real child; run explicitly during live verification"]
+    #[serial]
     fn live_spawn_scrubs_secret_keeps_systemroot() {
         use std::process::Command;
         // Plant a non-allowlisted secret in THIS process's environment, the
-        // way a bridge daemon would hold one.
-        // SAFETY: single-threaded test scope.
+        // way a bridge daemon would hold one. `#[serial]` because this both
+        // mutates process env AND enumerates all of it (`env::vars_os`), so it
+        // races the WYLDE_BIN/WYLDE_ROOT tests above when run with `--ignored`.
         std::env::set_var("WYLDE_BRIDGE_LIVE_SECRET", "should-not-leak");
 
         let mut cmd = Command::new("cmd");

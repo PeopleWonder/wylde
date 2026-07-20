@@ -16,7 +16,9 @@ use gpui::{
     div, prelude::*, px, rgb, svg, Context, EventEmitter, FontWeight, IntoElement, MouseButton,
     MouseDownEvent, Render, SharedString, Window,
 };
-use wylde_theme::colors::{BORDER_SUBTLE, BRAND, SURFACE_800, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY};
+use wylde_theme::colors::{
+    BORDER_SUBTLE, BRAND, SURFACE_800, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+};
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::workspaces_panel::pack;
@@ -240,9 +242,7 @@ impl Render for FilesTab {
                         div()
                             .text_size(px(size::XS))
                             .text_color(rgb(0xE5_73_73))
-                            .child(SharedString::from(format!(
-                                "Couldn't list files — {err}"
-                            ))),
+                            .child(SharedString::from(format!("Couldn't list files — {err}"))),
                     )
                     .child(
                         div()
@@ -342,7 +342,10 @@ fn file_row(i: usize, row: Row, cx: &mut Context<FilesTab>) -> impl IntoElement 
     // An explicit config tint wins; otherwise the icon inherits the row's
     // colour so it tracks the white-font hierarchy + the W2 ignored dimming.
     let spec = icon_map::config().resolve(&row.entry, row.expanded);
-    let icon_color = spec.tint.map(|t| rgb(pack(t))).unwrap_or_else(|| rgb(pack(color)));
+    let icon_color = spec
+        .tint
+        .map(|t| rgb(pack(t)))
+        .unwrap_or_else(|| rgb(pack(color)));
     let icon_path = SharedString::from(spec.asset_path());
 
     let rel = row.entry.rel_path.clone();
@@ -429,7 +432,10 @@ mod tests {
     #[gpui::test]
     fn reload_loads_root_then_expand_lazily_fetches_and_caches(cx: &mut TestAppContext) {
         let fake = ScriptedBackend::new()
-            .on("workspaces.list_mru", serde_json::json!({ "active_id": "ws-a" }))
+            .on(
+                "workspaces.list_mru",
+                serde_json::json!({ "active_id": "ws-a" }),
+            )
             .on(
                 "workspaces.fs.list_dir",
                 serde_json::json!({ "entries": [
@@ -445,10 +451,20 @@ mod tests {
 
         window
             .update(cx, |t, _w, _cx| {
-                assert_eq!(t.workspace_id.as_deref(), Some("ws-a"), "re-roots on the active workspace");
+                assert_eq!(
+                    t.workspace_id.as_deref(),
+                    Some("ws-a"),
+                    "re-roots on the active workspace"
+                );
                 assert!(t.loaded_root, "the root listing came back");
-                assert!(t.children.contains_key(""), "root children are cached under the empty key");
-                assert!(!t.expanded.contains("src"), "nothing is expanded on first load");
+                assert!(
+                    t.children.contains_key(""),
+                    "root children are cached under the empty key"
+                );
+                assert!(
+                    !t.expanded.contains("src"),
+                    "nothing is expanded on first load"
+                );
             })
             .unwrap();
         assert_eq!(
@@ -458,12 +474,17 @@ mod tests {
         );
 
         // Expand "src": ONE lazy fetch, carrying path="src".
-        window.update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx)).unwrap();
+        window
+            .update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx))
+            .unwrap();
         cx.run_until_parked();
         window
             .update(cx, |t, _w, _cx| {
                 assert!(t.expanded.contains("src"));
-                assert!(t.children.contains_key("src"), "expand fetched the dir's children");
+                assert!(
+                    t.children.contains_key("src"),
+                    "expand fetched the dir's children"
+                );
             })
             .unwrap();
         assert_eq!(
@@ -473,15 +494,23 @@ mod tests {
         );
 
         // Collapse: no fetch.
-        window.update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx)).unwrap();
+        window
+            .update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx))
+            .unwrap();
         cx.run_until_parked();
         window
             .update(cx, |t, _w, _cx| assert!(!t.expanded.contains("src")))
             .unwrap();
-        assert_eq!(fake.count_for("workspaces.fs.list_dir"), 2, "collapse fetches nothing");
+        assert_eq!(
+            fake.count_for("workspaces.fs.list_dir"),
+            2,
+            "collapse fetches nothing"
+        );
 
         // Re-expand: served from cache, still no new fetch.
-        window.update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx)).unwrap();
+        window
+            .update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx))
+            .unwrap();
         cx.run_until_parked();
         window
             .update(cx, |t, _w, _cx| assert!(t.expanded.contains("src")))
@@ -497,8 +526,10 @@ mod tests {
     fn no_active_workspace_shows_no_tree_and_lists_nothing(cx: &mut TestAppContext) {
         // Blank active_id → no active workspace → the tree stays empty and no
         // directory listing is ever issued.
-        let fake = ScriptedBackend::new()
-            .on("workspaces.list_mru", serde_json::json!({ "active_id": "" }));
+        let fake = ScriptedBackend::new().on(
+            "workspaces.list_mru",
+            serde_json::json!({ "active_id": "" }),
+        );
         let _guard = fake.clone().install();
 
         let window = cx.add_window(|_w, cx| FilesTab::new(cx));
@@ -506,7 +537,10 @@ mod tests {
         window
             .update(cx, |t, _w, _cx| {
                 assert!(t.workspace_id.is_none(), "no active workspace");
-                assert!(t.loaded_root, "the empty state is settled (not stuck Loading)");
+                assert!(
+                    t.loaded_root,
+                    "the empty state is settled (not stuck Loading)"
+                );
                 assert!(t.children.is_empty());
             })
             .unwrap();
@@ -529,7 +563,10 @@ mod tests {
     #[gpui::test]
     fn rows_with_ignored_and_typed_entries_render(cx: &mut TestAppContext) {
         let fake = ScriptedBackend::new()
-            .on("workspaces.list_mru", serde_json::json!({ "active_id": "ws-a" }))
+            .on(
+                "workspaces.list_mru",
+                serde_json::json!({ "active_id": "ws-a" }),
+            )
             .on(
                 "workspaces.fs.list_dir",
                 serde_json::json!({ "entries": [

@@ -39,7 +39,13 @@ fn non_empty_matrix() {
         );
     }
     // Values (incl. 0 / false) pass NonEmpty.
-    for value in [json!(0), json!(false), json!("x"), json!([1]), json!({"a":1})] {
+    for value in [
+        json!(0),
+        json!(false),
+        json!("x"),
+        json!([1]),
+        json!({"a":1}),
+    ] {
         assert!(
             holds(OutcomePredicate::NonEmpty, &value),
             "expected non-empty: {value}"
@@ -61,15 +67,21 @@ fn is_empty_value_helper() {
 fn json_path_exists_matrix() {
     let result = json!({ "entries": [ { "name": "Cargo.toml" } ] });
     assert!(holds(
-        OutcomePredicate::JsonPathExists { path: "/entries/0/name".into() },
+        OutcomePredicate::JsonPathExists {
+            path: "/entries/0/name".into()
+        },
         &result
     ));
     assert!(!holds(
-        OutcomePredicate::JsonPathExists { path: "/entries/1/name".into() },
+        OutcomePredicate::JsonPathExists {
+            path: "/entries/1/name".into()
+        },
         &result
     ));
     assert!(!holds(
-        OutcomePredicate::JsonPathExists { path: "/missing".into() },
+        OutcomePredicate::JsonPathExists {
+            path: "/missing".into()
+        },
         &result
     ));
     // Empty pointer = whole document, which exists.
@@ -83,16 +95,25 @@ fn json_path_exists_matrix() {
 fn json_path_equals_matrix() {
     let result = json!({ "ok": true, "count": 3 });
     assert!(holds(
-        OutcomePredicate::JsonPathEquals { path: "/count".into(), value: json!(3) },
+        OutcomePredicate::JsonPathEquals {
+            path: "/count".into(),
+            value: json!(3)
+        },
         &result
     ));
     assert!(!holds(
-        OutcomePredicate::JsonPathEquals { path: "/count".into(), value: json!(4) },
+        OutcomePredicate::JsonPathEquals {
+            path: "/count".into(),
+            value: json!(4)
+        },
         &result
     ));
     // Missing path never equals.
     assert!(!holds(
-        OutcomePredicate::JsonPathEquals { path: "/nope".into(), value: json!(null) },
+        OutcomePredicate::JsonPathEquals {
+            path: "/nope".into(),
+            value: json!(null)
+        },
         &result
     ));
 }
@@ -102,21 +123,33 @@ fn contains_matrix() {
     let result = json!({ "path": "/repo/Cargo.toml" });
     // Case-sensitive hit + miss.
     assert!(holds(
-        OutcomePredicate::Contains { needle: "Cargo.toml".into(), ci: false },
+        OutcomePredicate::Contains {
+            needle: "Cargo.toml".into(),
+            ci: false
+        },
         &result
     ));
     assert!(!holds(
-        OutcomePredicate::Contains { needle: "cargo.toml".into(), ci: false },
+        OutcomePredicate::Contains {
+            needle: "cargo.toml".into(),
+            ci: false
+        },
         &result
     ));
     // Case-insensitive recovers the miss.
     assert!(holds(
-        OutcomePredicate::Contains { needle: "cargo.toml".into(), ci: true },
+        OutcomePredicate::Contains {
+            needle: "cargo.toml".into(),
+            ci: true
+        },
         &result
     ));
     // A bare string result matches its inner text (no surrounding quotes).
     assert!(holds(
-        OutcomePredicate::Contains { needle: "hello".into(), ci: false },
+        OutcomePredicate::Contains {
+            needle: "hello".into(),
+            ci: false
+        },
         &json!("a hello world")
     ));
 }
@@ -125,25 +158,40 @@ fn contains_matrix() {
 fn count_at_least_matrix() {
     let result = json!({ "items": [1, 2, 3] });
     assert!(holds(
-        OutcomePredicate::CountAtLeast { path: "/items".into(), n: 3 },
+        OutcomePredicate::CountAtLeast {
+            path: "/items".into(),
+            n: 3
+        },
         &result
     ));
     assert!(!holds(
-        OutcomePredicate::CountAtLeast { path: "/items".into(), n: 4 },
+        OutcomePredicate::CountAtLeast {
+            path: "/items".into(),
+            n: 4
+        },
         &result
     ));
     // n == 0 always holds for a present array.
     assert!(holds(
-        OutcomePredicate::CountAtLeast { path: "/items".into(), n: 0 },
+        OutcomePredicate::CountAtLeast {
+            path: "/items".into(),
+            n: 0
+        },
         &result
     ));
     // Non-array / absent path fails.
     assert!(!holds(
-        OutcomePredicate::CountAtLeast { path: "/items/0".into(), n: 1 },
+        OutcomePredicate::CountAtLeast {
+            path: "/items/0".into(),
+            n: 1
+        },
         &result
     ));
     assert!(!holds(
-        OutcomePredicate::CountAtLeast { path: "/missing".into(), n: 1 },
+        OutcomePredicate::CountAtLeast {
+            path: "/missing".into(),
+            n: 1
+        },
         &result
     ));
 }
@@ -155,7 +203,7 @@ fn no_error_matrix() {
     assert!(is_error_envelope(&json!({ "ok": false })));
     assert!(is_error_envelope(&json!({ "status": "error" })));
     assert!(is_error_envelope(&json!({ "status": "ERROR" }))); // ci
-    // Not errors.
+                                                               // Not errors.
     assert!(!is_error_envelope(&json!({ "ok": true })));
     assert!(!is_error_envelope(&json!({ "error": null }))); // empty error field
     assert!(!is_error_envelope(&json!({ "error": "" })));
@@ -185,14 +233,20 @@ fn clean_pass_is_not_surprising_and_needs_no_l2() {
 fn failed_predicate_surprises_and_is_reported() {
     let expected = with_predicates(vec![
         OutcomePredicate::NonEmpty,
-        OutcomePredicate::CountAtLeast { path: "/items".into(), n: 2 },
+        OutcomePredicate::CountAtLeast {
+            path: "/items".into(),
+            n: 2,
+        },
     ]);
     let verdict = evaluate(&expected, &json!({ "items": [1] }));
     assert!(verdict.surprised);
     assert_eq!(verdict.failed_predicates.len(), 1);
     assert_eq!(
         verdict.failed_predicates[0],
-        OutcomePredicate::CountAtLeast { path: "/items".into(), n: 2 }
+        OutcomePredicate::CountAtLeast {
+            path: "/items".into(),
+            n: 2
+        }
     );
     // A definitive L1 surprise never escalates to L2.
     assert!(!verdict.needs_l2);
@@ -324,7 +378,10 @@ fn plan_dag_round_trips_through_json() {
             expected: ExpectedOutcome {
                 predicates: vec![
                     OutcomePredicate::NonEmpty,
-                    OutcomePredicate::Contains { needle: "Cargo.toml".into(), ci: false },
+                    OutcomePredicate::Contains {
+                        needle: "Cargo.toml".into(),
+                        ci: false,
+                    },
                 ],
                 assertion: "the listing should include the workspace manifest".into(),
                 on_surprise: SurpriseAction::Replan,

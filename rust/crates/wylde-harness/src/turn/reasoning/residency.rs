@@ -123,6 +123,11 @@ pub fn spawn_warm_slots(reason: &'static str) -> bool {
 }
 
 #[cfg(test)]
+// These async tests hold the sync `TEST_ENV_LOCK` across the `warm_slots_via`
+// `.await` to serialise `WYLDE_EMBED_MODEL` mutation against the sibling
+// env-mutating suites. The awaited closures never acquire `TEST_ENV_LOCK`, so
+// there's no deadlock risk and the lint is a false positive here.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use crate::memory::common::TEST_ENV_LOCK;
@@ -147,7 +152,7 @@ mod tests {
     fn single_mode_dedupes_the_shared_brain() {
         let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("WYLDE_EMBED_MODEL");
-        // Default slots: fast == reasoner (Aaron's same-model decision) —
+        // Default slots: fast == reasoner (the maintainer's same-model decision) —
         // the shared brain loads once, the embedder separately.
         let models = warm_models(&enabled_cfg());
         assert_eq!(

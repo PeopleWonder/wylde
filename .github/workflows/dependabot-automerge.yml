@@ -1,0 +1,140 @@
+# Dependabot auto-merge — SAFE by construction.
+#
+# Purpose (issue #68, milestone "0.2 - Stability & autonomy"): let the trivial,
+# provably-safe class of dependency bumps flow in without a human click, while
+# every risky class still stops for manual review. This removes the "strict
+# ruleset tax" babysitting (serialized re-runs, one merge per CI cycle) for the
+# bumps that never needed a human, and ONLY those.
+#
+# ── What auto-merges (ALL must hold) ────────────────────────────────────────
+#   1. The PR is a Dependabot PR (github.actor == dependabot[bot]).
+#   2. The update is a semver *PATCH* bump — steps.meta.outputs.update-type ==
+#      'version-update:semver-patch'. NOT minor, NOT major. For a GROUPED PR
+#      (our cargo-minor-patch group), fetch-metadata reports the HIGHEST semver
+#      change across the group, so a group containing any minor reads as
+#      semver-minor and is held. A patch that can't be classified fails CLOSED
+#      (no auto-merge) — the gate only ever errs toward manual review.
+#   3. No dependency in the PR is in the gpui-tree exclusion (see below).
+#   4. All required `protect-develop` checks pass FIRST. We call
+#      `gh pr merge --auto`, which asks GitHub to complete the merge only once
+#      branch protection is satisfied. This workflow never merges anything
+#      itself; it just arms GitHub's native auto-merge, which respects the
+#      strict required-status-checks policy (build/test --locked, clippy+fmt,
+#      G7, the four cargo-deny legs — advisories × 2 and licenses × 2, etc.).
+#
+# Security bumps: a Dependabot *security* update that is patch-level reads as
+# 'version-update:semver-patch' and auto-merges too (security fixes should flow
+# fast, and they still pass every gate incl. cargo-deny). A security *minor* or
+# *major* does NOT — it's a semver-minor/major and stops for review. This is
+# The maintainer's call, recorded here so the boundary is explicit.
+#
+# ── What NEVER auto-merges (held for manual review) ─────────────────────────
+#   • minor and major bumps (breaking-change surface — a human looks)
+#   • anything in the gpui git-rev tree: gpui / gpui_platform / gpui-component /
+#     http_client and the transitive deps pinned only through it (e.g.
+#     async-tar). Dependabot can't bump a git rev, so these normally can't even
+#     appear — but a crates.io dep that transits that tree is guarded by name
+#     here so it can never slip through. See
+#     docs/security/dependency-hygiene-policy.md § "The structural blocker".
+#   • anything that fails a required check (CI red → auto-merge simply never
+#     fires; the PR waits).
+#
+# ── Why this trigger/permission shape ───────────────────────────────────────
+# Runs on `pull_request` (NOT pull_request_target) and never checks out or
+# executes the PR's code — it only reads Dependabot metadata and arms
+# auto-merge, so there is no untrusted-code-execution surface. Dependabot PRs
+# get a read-only GITHUB_TOKEN by default; the explicit `permissions:` block
+# below elevates THIS job to contents:write + pull-requests:write (honored for
+# Dependabot events), which is the minimum `gh pr merge --auto` needs. This is
+# GitHub's documented recipe ("Automating Dependabot with GitHub Actions").
+#
+# Repo prerequisites (verified 2026-07-18): "Allow auto-merge" is ON, and the
+# protect-develop PR rule requires 0 approvals — so auto-merge is not blocked
+# waiting on a reviewer that a bot PR will never get. The ruleset allows the
+# `squash` merge method, which is what we request.
+#
+# The policy is STRUCTURAL: it works for any future patch bump automatically,
+# with no per-dependency allow-list to maintain. The only enumerated list is the
+# gpui-tree exclusion, which is a real build-stability boundary, not a curated
+# allowlist.
+name: Dependabot auto-merge
+
+on: pull_request
+
+# Least privilege by default; the one job that needs write elevates itself.
+permissions: {}
+
+jobs:
+  auto-merge:
+    name: auto-merge safe patch bumps
+    runs-on: ubuntu-latest
+    # Only ever act on Dependabot's own PRs. Any human/other-bot PR is ignored.
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Guard the gpui git-rev tree by dependency NAME. Dependabot reports every
+      # dependency touched (comma-separated, and for a grouped PR that is the
+      # whole group). If any is in the tree, we refuse to auto-merge and leave
+      # the PR for a human — the gpui rev is bumped deliberately, never here.
+      - name: Check for gpui-tree dependencies
+        id: gpui_guard
+        env:
+          DEP_NAMES: ${{ steps.meta.outputs.dependency-names }}
+        run: |
+          set -euo pipefail
+          # Exclusion list — the git-rev-pinned GUI stack and its transitive
+          # crates.io deps that must never move via Dependabot auto-merge.
+          blocked_list="gpui gpui_platform gpui-component http_client async-tar"
+          hit=""
+          IFS=',' read -ra deps <<< "${DEP_NAMES}"
+          for raw in "${deps[@]}"; do
+            dep="$(echo "${raw}" | tr -d '[:space:]')"
+            if [ -n "${dep}" ]; then
+              for b in ${blocked_list}; do
+                if [ "${dep}" = "${b}" ]; then
+                  hit="${hit} ${dep}"
+                fi
+              done
+            fi
+          done
+          if [ -n "${hit}" ]; then
+            echo "blocked=true" >> "${GITHUB_OUTPUT}"
+            echo "::notice::Holding for manual review — gpui-tree dependency present:${hit}"
+          else
+            echo "blocked=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # Arm GitHub's native auto-merge ONLY for a patch bump clear of the gpui
+      # tree. `--auto` queues the merge behind the strict required checks, so
+      # nothing merges until CI is green. `--squash` matches the allowed merge
+      # method and keeps one conventional commit per bump on develop.
+      - name: Enable auto-merge (safe patch bumps)
+        if: ${{ steps.meta.outputs.update-type == 'version-update:semver-patch' && steps.gpui_guard.outputs.blocked == 'false' }}
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Patch bump clear of the gpui tree — arming auto-merge (waits for required checks)."
+          gh pr merge --auto --squash "${PR_URL}"
+
+      # Legibility: when we deliberately do NOT auto-merge, say why in the run
+      # log. No PR comment (avoids re-commenting on every push); the decision
+      # table lives in the doc and the header above.
+      - name: Explain held PRs
+        if: ${{ !(steps.meta.outputs.update-type == 'version-update:semver-patch' && steps.gpui_guard.outputs.blocked == 'false') }}
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          GPUI_BLOCKED: ${{ steps.gpui_guard.outputs.blocked }}
+        run: |
+          echo "Held for manual review."
+          echo "  update-type = ${UPDATE_TYPE:-<none>} (auto-merge requires version-update:semver-patch)"
+          echo "  gpui-tree   = ${GPUI_BLOCKED} (auto-merge requires false)"
+          echo "This is expected for minor/major bumps and gpui-tree deps. A human reviews and merges."

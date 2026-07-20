@@ -43,7 +43,9 @@ pub fn tokenize(phonemes: &str) -> TokenizeResult {
     let mut tokens: Vec<i64> = Vec::with_capacity(phonemes.len().min(vocab::MAX_PHONEME_LENGTH));
     let mut overflowed = false;
     for ch in phonemes.chars() {
-        let Some(id) = vocab::lookup(ch) else { continue };
+        let Some(id) = vocab::lookup(ch) else {
+            continue;
+        };
         if tokens.len() == vocab::MAX_PHONEME_LENGTH {
             overflowed = true;
             break;
