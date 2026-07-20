@@ -24,7 +24,9 @@ For shipping a `0.1.x` build to Beta-channel users. Lighter bar than a stable pr
    - ⏳ G4 clippy `-D warnings`, ⏳ G6 `cargo fmt --check` (enable once the tree is clean).
 3. **Local preflight L1–L3** (mechanical smoke) on the release machine — **`wylde-release preflight
    --launch`** now scripts L2 + L3 (below) into the receipt; run it (add `--build` for L1-lite):
-   - L1 build ALL shipped artifacts (`wylde-gui.exe`, every service binary, the NSIS installer).
+   - L1 build ALL shipped artifacts (`wylde-gui.exe`, every service binary). There is
+     no installer artifact: the NSIS installer is non-functional and lives at
+     https://github.com/PeopleWonder/wylde-installer as future work.
    - L2 cold-start smoke (clean install/launch → daemon up → services discovered + spawned).
    - L3 service health (vram-broker inventories HW → Ollama up w/ `nomic-embed-text` → harness
      answers → **Memgraph has real data** → RAG answers → GUI renders → a chat turn completes).
