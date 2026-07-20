@@ -731,7 +731,12 @@ mod tests {
         let wylde = NodeRef::concept("wylde");
         let g = RelationGraph {
             relations: vec![
-                Relation::normalized(ph.clone(), thumbnailer.clone(), RelationKind::Dependency, None),
+                Relation::normalized(
+                    ph.clone(),
+                    thumbnailer.clone(),
+                    RelationKind::Dependency,
+                    None,
+                ),
                 Relation::normalized(ph.clone(), wylde.clone(), RelationKind::Negative, None),
             ],
         };

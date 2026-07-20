@@ -234,10 +234,7 @@ mod tests {
             NodeId::concept("dir:src/graph").split(),
             Some(("concept", "dir:src/graph"))
         );
-        assert_eq!(
-            NodeId::vocab("photos").split(),
-            Some(("vocab", "photos"))
-        );
+        assert_eq!(NodeId::vocab("photos").split(), Some(("vocab", "photos")));
     }
 
     #[test]

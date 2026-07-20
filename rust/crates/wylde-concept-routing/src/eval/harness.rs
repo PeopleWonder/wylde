@@ -307,7 +307,12 @@ mod tests {
                 "src/rag/search.rs",
                 [0.0, 1.0, 0.0, 0.0],
             ),
-            ("thumbnailer", "Thumbnailer", "src/media/thumbnailer.rs", [0.0, 0.0, 1.0, 0.0]),
+            (
+                "thumbnailer",
+                "Thumbnailer",
+                "src/media/thumbnailer.rs",
+                [0.0, 0.0, 1.0, 0.0],
+            ),
             (
                 "photos",
                 "Photos",

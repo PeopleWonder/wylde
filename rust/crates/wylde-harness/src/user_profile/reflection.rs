@@ -411,12 +411,7 @@ mod tests {
             proposed: "x".into(),
             rejected_at: 0,
         });
-        record_rejection(
-            "name",
-            "Sam",
-            REJECTION_SUPPRESSION_SECS + 100,
-            &mut store,
-        );
+        record_rejection("name", "Sam", REJECTION_SUPPRESSION_SECS + 100, &mut store);
         // The ancient one (age > 30d at `now`) is gone; the fresh one stays.
         assert_eq!(store.rejected.len(), 1);
         assert_eq!(store.rejected[0].field, "name");
