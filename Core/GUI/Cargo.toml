@@ -94,7 +94,7 @@ anyhow      = "1"
 
 # Tray icon — cross-platform Shell_NotifyIcon / NSStatusItem / AppIndicator.
 # Replaces tauri::tray.
-tray-icon = "0.19"
+tray-icon = "0.24"
 
 # Autostart toggle (HKCU\…\Run on Windows, LaunchAgent on macOS, .desktop
 # on Linux).  Not wired in this slice; declared here so the path is
