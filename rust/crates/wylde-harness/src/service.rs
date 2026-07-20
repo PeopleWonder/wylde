@@ -217,6 +217,69 @@ mod tests {
         reset_for_tests();
     }
 
+    /// #136 — `memory.workspace.reindex` must exist, be registered, and reach
+    /// the rebuild. For years three doc comments claimed a `reindex` existed;
+    /// `git grep 'fn reindex'` found nothing.
+    ///
+    /// With no embedder reachable in the test environment every embed fails,
+    /// which exercises the guard that matters most: the rebuild must report
+    /// `embedder_unavailable` and leave the existing mirror alone, rather than
+    /// persisting an empty store over it and calling that a successful
+    /// "rebuild". A recovery path that destroys data on a bad day is worse
+    /// than no recovery path.
+    #[tokio::test]
+    async fn workspace_reindex_verb_is_wired_and_refuses_to_empty_the_mirror() {
+        use crate::memory::long_term::test_support::TestEnv;
+        use crate::memory::vector::VectorStore;
+        use crate::memory::workspace::store;
+
+        let _g = registry_guard().await;
+        let _env = TestEnv::new();
+        std::env::set_var("WYLDE_EMBED_WRITE_BUDGET_MS", "1");
+        reset_for_tests();
+        install();
+
+        // A record in the authoritative JSON...
+        store::save_new("ws1", "a body", "", Some(5.0), vec![]).unwrap();
+        // ...and a populated mirror that must survive a failed rebuild.
+        let mut mirror = VectorStore::new(crate::memory::common::embed_dim());
+        mirror
+            .insert("seed", vec![1.0; crate::memory::common::embed_dim()])
+            .unwrap();
+        let vpath = store::vector_path("ws1");
+        std::fs::create_dir_all(vpath.parent().unwrap()).unwrap();
+        mirror.persist(&vpath).unwrap();
+        let before = std::fs::read(&vpath).unwrap();
+
+        let reply = dispatch_action(serde_json::json!({
+            "action": "memory.workspace.reindex",
+            "payload": { "workspace_id": "ws1" },
+        }))
+        .await;
+
+        // The verb resolved — not `no_action`, which is what an unregistered
+        // or never-written reindex would have returned.
+        let code = reply.error.as_ref().map(|e| e.code.clone());
+        assert_ne!(
+            code.as_deref(),
+            Some("no_action"),
+            "memory.workspace.reindex must be a real, registered verb (#136)"
+        );
+        assert_eq!(
+            code.as_deref(),
+            Some("embedder_unavailable"),
+            "with no embedder the rebuild must say so; got {reply:?}"
+        );
+        assert_eq!(
+            std::fs::read(&vpath).unwrap(),
+            before,
+            "a failed rebuild must not touch the existing mirror"
+        );
+
+        std::env::remove_var("WYLDE_EMBED_WRITE_BUDGET_MS");
+        reset_for_tests();
+    }
+
     #[tokio::test]
     async fn install_is_idempotent() {
         let _g = registry_guard().await;

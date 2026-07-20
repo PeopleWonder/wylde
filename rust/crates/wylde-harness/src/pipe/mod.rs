@@ -165,14 +165,16 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.long_term.delete",
     "memory.long_term.history",
     "memory.long_term.search",
+    "memory.long_term.reindex",
     // memory.workspace.* — workspace-scoped durable memory tier
-    // (6 verbs; full-Rust cutover slice R2a)
+    // (8 verbs; R2a base + delete_all (#135) + reindex (#136))
     "memory.workspace.list",
     "memory.workspace.search",
     "memory.workspace.save",
     "memory.workspace.update",
     "memory.workspace.delete",
     "memory.workspace.delete_all",
+    "memory.workspace.reindex",
     "memory.workspace.curate",
     // memory.reflect — consolidation cycles, all scopes (full-Rust
     // cutover slice R2b)

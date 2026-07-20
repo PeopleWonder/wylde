@@ -161,6 +161,29 @@ fn vector_upsert(record_id: &str, vector: Option<Vec<f32>>) {
     persist_vector_store(&store);
 }
 
+/// Rebuild the long-term vector mirror from the authoritative JSON records
+/// (#136) — the `reindex` this module's docs promised for years and never had.
+///
+/// Re-embeds every live record and writes a fresh mirror stamped with the
+/// current embedder. Use after an embedding-model or dimension change (which
+/// moves the old mirror aside as `.incompatible`), or to close the drift that
+/// accumulates whenever `embed_for_write` gives up — a record saved while the
+/// embedder was down was previously never revisited.
+///
+/// Refuses to persist if every embed fails, leaving the existing mirror alone
+/// rather than replacing it with an empty one.
+pub async fn reindex_vectors(
+) -> Result<crate::memory::vector::RebuildReport, crate::memory::vector::RebuildError> {
+    let items: Vec<(String, String)> = list_records(false)
+        .into_iter()
+        .map(|r| (r.id, r.body))
+        .collect();
+    crate::memory::vector::rebuild(&vector_path(), embed_dim(), items, |text| async move {
+        crate::memory::embed_write::embed_for_write(&text).await
+    })
+    .await
+}
+
 fn vector_delete(record_id: &str) {
     let mut store = vector_store();
     if store.delete(record_id) {

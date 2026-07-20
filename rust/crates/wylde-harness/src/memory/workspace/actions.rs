@@ -196,6 +196,33 @@ pub async fn handle_delete_all(payload: Value) -> Reply {
     Reply::ok(json!({ "ok": true, "workspace_id": wsid, "removed": removed }))
 }
 
+/// `memory.workspace.reindex` — rebuild this workspace's vector mirror from
+/// its authoritative JSON records (#136). Payload `{ workspace_id }`. Returns
+/// `{ ok, workspace_id, total, embedded, failed }`.
+///
+/// The recovery path the memory tiers documented for years without having.
+/// Use after an embedding-model or width change (which moves the old mirror
+/// aside rather than destroying it), or to close the drift that accumulates
+/// whenever a save's embed fails and leaves a record JSON-only forever.
+///
+/// Answers `embedder_unavailable` — rather than reporting a hollow success —
+/// when nothing could be embedded, leaving the existing mirror untouched.
+pub async fn handle_reindex(payload: Value) -> Reply {
+    let Some(wsid) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    match store::reindex_vectors(&wsid).await {
+        Ok(r) => Reply::ok(json!({
+            "ok": true,
+            "workspace_id": wsid,
+            "total": r.total,
+            "embedded": r.embedded,
+            "failed": r.failed,
+        })),
+        Err(e) => Reply::err_msg("embedder_unavailable", e.to_string()),
+    }
+}
+
 /// `memory.workspace.curate` — trigger LLM-driven curation. Payload
 /// `{ workspace_id }`. Always returns the skipped `CurationResult`
 /// shape (`skipped: true, skip_reason: "no chat_fn supplied"`) because

@@ -431,6 +431,27 @@ fn vector_store(workspace_id: &str) -> VectorStore {
     VectorStore::load_or_empty(&vector_path(workspace_id), embed_dim())
 }
 
+/// Rebuild one workspace's vector mirror from its authoritative JSON records
+/// (#136). See [`crate::memory::long_term::entries`]'s equivalent for the full
+/// rationale — the short version is that the mirror drifts permanently partial
+/// whenever the embedder is unavailable at write time, and until now nothing
+/// ever went back for the records it skipped.
+pub async fn reindex_vectors(
+    workspace_id: &str,
+) -> Result<crate::memory::vector::RebuildReport, crate::memory::vector::RebuildError> {
+    let items: Vec<(String, String)> = list_records(workspace_id, false)
+        .into_iter()
+        .map(|r| (r.id, r.body))
+        .collect();
+    crate::memory::vector::rebuild(
+        &vector_path(workspace_id),
+        embed_dim(),
+        items,
+        |text| async move { crate::memory::embed_write::embed_for_write(&text).await },
+    )
+    .await
+}
+
 fn persist_vector_store(workspace_id: &str, store: &VectorStore) {
     let path = vector_path(workspace_id);
     if let Some(parent) = path.parent() {
