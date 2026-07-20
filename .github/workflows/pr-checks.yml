@@ -70,6 +70,17 @@ jobs:
           set -euo pipefail
           pattern='^(feat|fix|chore|docs|test|refactor|perf|ci|build|revert)(\([a-z0-9,._/-]+\))?!?: .+'
           fail=0
+          # Lint only the commits this PR actually *introduces* to the trunk:
+          # reachable from HEAD, but not from origin/${BASE} and not already on
+          # origin/develop. This scopes a `develop -> main` promotion (and any
+          # merge-up) to lint *nothing* pre-existing — those commits were already
+          # vetted when they first landed on develop, so re-linting the whole
+          # base..head range would fail the promotion on old, immutable history.
+          # A feature PR into develop still lints its new commits, and a
+          # hotfix/* -> main (which never went through develop) still lints its
+          # new commits too, so a genuinely malformed *new* subject is still caught.
+          git fetch --no-tags --quiet origin \
+            "+refs/heads/develop:refs/remotes/origin/develop" 2>/dev/null || true
           # --no-merges: merge commits ("Merge …") are exempt by design.
           while IFS= read -r sha; do
             [ -z "$sha" ] && continue
@@ -82,7 +93,7 @@ jobs:
               echo "::error::Non-conventional commit subject: $sha \"$subject\""
               fail=1
             fi
-          done < <(git rev-list --no-merges "origin/${BASE}..HEAD")
+          done < <(git rev-list --no-merges "origin/${BASE}..HEAD" --not "origin/develop")
           if [ "$fail" -ne 0 ]; then
             echo "Commit subjects must be 'type(scope): subject' (see CONTRIBUTING.md). Fix with an interactive rebase, or add the 'skip-commit-lint' label for a deliberate exception."
             exit 1

@@ -171,6 +171,16 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **The `develop → main` promotion PR failed commit-lint on already-merged history.** The
+  `conventional commits` check (`.github/workflows/pr-checks.yml`) linted the entire
+  `origin/${BASE}..HEAD` range, so a merge-up PR re-linted every commit already vetted on
+  `develop` and failed on one old Dependabot subject (`chore(deps)(deps): …`) that predates the
+  rule and cannot be corrected without rewriting public history. The check now excludes commits
+  already reachable from `origin/develop` (`git rev-list … "origin/${BASE}..HEAD" --not
+  "origin/develop"`), so a promotion lints *nothing* pre-existing, while a feature PR into
+  `develop` — and a `hotfix/* → main` that never went through `develop` — still lint their
+  genuinely new commits, so a malformed *new* subject is still caught.
+
 - **Deleting a workspace left its concepts in the graph forever.** The workspace-teardown cascade
   (`delete`, and MRU eviction) pruned a workspace's `Chunk` nodes and the `Entity` nodes left with no
   surviving mention — but never its `Concept` nodes. The `DELETE_WORKSPACE_CONCEPTS` statement existed
