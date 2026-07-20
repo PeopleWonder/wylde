@@ -3,15 +3,20 @@
 //! The executor half of the teardown cascade. [`crate::registry::teardown_bundle`]
 //! (the one primitive every removal path funnels through) enqueues a torn-down
 //! workspace id on the durable [`crate::registry::pending`] queue; this module
-//! drains that queue, pruning each workspace's Chunk + now-orphan Entity nodes
-//! from Memgraph and dequeuing an id only once its teardown has actually
-//! landed. A graph outage therefore defers — never drops — the cleanup: the id
-//! stays queued for the next drain (fired on the next create/activate/delete,
-//! or at service boot).
+//! drains that queue, pruning each workspace's `Concept` projection, Chunk
+//! nodes, and now-orphan Entity nodes from Memgraph and dequeuing an id only
+//! once its teardown has actually landed. A graph outage therefore defers —
+//! never drops — the cleanup: the id stays queued for the next drain (fired on
+//! the next create/activate/delete, or at service boot).
 //!
 //! This replaces the old fire-and-forget prune bolted onto the `delete`
 //! handler alone (which (a) missed MRU eviction entirely and (b) silently
 //! orphaned on a transient `warn!`).
+//!
+//! The cascade's exact statement sequence is
+//! [`crate::graph::bolt::WORKSPACE_TEARDOWN_STEPS`]. Concepts were added to it
+//! in #117; before that a deleted workspace's `Concept` nodes and `CHILD_OF`
+//! edges were left in the graph permanently.
 
 use std::future::Future;
 
@@ -21,8 +26,9 @@ use crate::graph::BoltClient;
 use crate::registry;
 
 /// The narrow graph-teardown surface the drain needs: prune one workspace's
-/// Chunk nodes + now-orphan Entity nodes. Implemented by [`BoltClient`] and a
-/// test mock, so the drain logic is unit-testable without a live Neo4j.
+/// whole graph footprint — its `Concept` projection, its Chunk nodes, and the
+/// now-orphan Entity nodes. Implemented by [`BoltClient`] and a test mock, so
+/// the drain logic is unit-testable without a live Neo4j.
 pub trait WorkspaceGraphTeardown {
     fn delete_workspace(&self, workspace: &str) -> impl Future<Output = Reply> + Send;
 }
@@ -93,6 +99,7 @@ pub(crate) async fn drain<T: WorkspaceGraphTeardown>(sink: &T) -> DrainReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::{bolt, cypher};
     use crate::test_support::TestEnv;
     use serde_json::json;
     use std::collections::HashSet;
@@ -100,13 +107,33 @@ mod tests {
 
     /// A stateful fake graph modelling the workspace-teardown Cypher: Chunk
     /// nodes keyed by `(workspace, id)`, Entity nodes reachable via per-chunk
-    /// mentions, and `delete_workspace` = drop the workspace's chunks + prune
-    /// entities left with no mention (the `DELETE_ORPHAN_ENTITIES` shape).
+    /// mentions, and `Concept` nodes with their `CHILD_OF` (concept→concept)
+    /// and `MEMBER` (concept→entity) edges.
+    ///
+    /// Concepts are modelled deliberately (#117): the previous version of this
+    /// fake knew only about chunks and mentions, so a teardown that never swept
+    /// `Concept` nodes looked perfectly correct here — the universe simply had
+    /// no concepts in it to leave behind. A mock can only catch a bug it can
+    /// represent.
+    ///
+    /// `delete_workspace` does not restate the cascade: it REPLAYS
+    /// [`crate::graph::bolt::WORKSPACE_TEARDOWN_STEPS`], the same ordered table
+    /// the real Bolt client executes, dispatching each step onto this store. A
+    /// step dropped from that table therefore stops running here too, and the
+    /// regression test below fails. An unrecognised step panics rather than
+    /// silently doing nothing, so extending the cascade forces a matching
+    /// extension of this model.
     #[derive(Default)]
     struct FakeGraph {
         chunks: Mutex<HashSet<(String, String)>>,
         // (entity, workspace, chunk_id) — a chunk mentioning an entity.
         mentions: Mutex<HashSet<(String, String, String)>>,
+        // (workspace, concept_id)
+        concepts: Mutex<HashSet<(String, String)>>,
+        // (workspace, child_concept_id, parent_concept_id)
+        child_of: Mutex<HashSet<(String, String, String)>>,
+        // (workspace, concept_id, entity_name)
+        members: Mutex<HashSet<(String, String, String)>>,
         fail: bool,
     }
     impl FakeGraph {
@@ -120,12 +147,45 @@ mod tests {
                 m.insert(((*e).to_owned(), ws.to_owned(), id.to_owned()));
             }
         }
+        /// Seed a Concept with its MEMBER targets and optional parent concept.
+        fn seed_concept(&self, ws: &str, id: &str, members: &[&str], parent: Option<&str>) {
+            self.concepts
+                .lock()
+                .unwrap()
+                .insert((ws.to_owned(), id.to_owned()));
+            let mut m = self.members.lock().unwrap();
+            for e in members {
+                m.insert((ws.to_owned(), id.to_owned(), (*e).to_owned()));
+            }
+            if let Some(p) = parent {
+                self.child_of
+                    .lock()
+                    .unwrap()
+                    .insert((ws.to_owned(), id.to_owned(), p.to_owned()));
+            }
+        }
         fn chunk_count(&self, ws: &str) -> usize {
             self.chunks
                 .lock()
                 .unwrap()
                 .iter()
                 .filter(|(w, _)| w == ws)
+                .count()
+        }
+        fn concept_count(&self, ws: &str) -> usize {
+            self.concepts
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(w, _)| w == ws)
+                .count()
+        }
+        fn child_of_count(&self, ws: &str) -> usize {
+            self.child_of
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(w, _, _)| w == ws)
                 .count()
         }
         fn entity_alive(&self, name: &str) -> bool {
@@ -135,17 +195,65 @@ mod tests {
                 .iter()
                 .any(|(e, _, _)| e == name)
         }
+        /// MEMBER edges whose Entity target no longer exists — the corruption
+        /// #117 leaves behind. The orphan-entity prune `DETACH DELETE`s the
+        /// entity, taking the edge with it, so a surviving Concept ends up
+        /// pointing at nothing. Any non-empty result is a leak.
+        fn dangling_members(&self) -> Vec<(String, String, String)> {
+            let members = self.members.lock().unwrap().clone();
+            members
+                .into_iter()
+                .filter(|(_, _, entity)| !self.entity_alive(entity))
+                .collect()
+        }
+
+        /// Apply one declared teardown step to this store.
+        fn apply_step(&self, step: &bolt::TeardownStep, ws: &str) {
+            match step.cypher {
+                c if c == cypher::DELETE_WORKSPACE_CONCEPTS => {
+                    // DETACH DELETE: the concepts and every edge on them.
+                    self.concepts.lock().unwrap().retain(|(w, _)| w != ws);
+                    self.child_of.lock().unwrap().retain(|(w, _, _)| w != ws);
+                    self.members.lock().unwrap().retain(|(w, _, _)| w != ws);
+                }
+                c if c == cypher::DELETE_WORKSPACE_CHUNKS => {
+                    self.chunks.lock().unwrap().retain(|(w, _)| w != ws);
+                    self.mentions.lock().unwrap().retain(|(_, w, _)| w != ws);
+                }
+                c if c == cypher::DELETE_ORPHAN_ENTITIES => {
+                    // Global prune of entities with no surviving mention.
+                    // DETACH DELETE, so any MEMBER edge into a pruned entity
+                    // dies with it — including edges from OTHER workspaces'
+                    // concepts, which is why the prune is not ws-scoped.
+                    let dead: HashSet<String> = self
+                        .members
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .map(|(_, _, e)| e.clone())
+                        .filter(|e| !self.entity_alive(e))
+                        .collect();
+                    self.members
+                        .lock()
+                        .unwrap()
+                        .retain(|(_, _, e)| !dead.contains(e));
+                }
+                other => panic!(
+                    "FakeGraph does not model this teardown step — extend the \
+                     mock to match the cascade:\n{other}"
+                ),
+            }
+        }
     }
     impl WorkspaceGraphTeardown for FakeGraph {
         fn delete_workspace(&self, workspace: &str) -> impl Future<Output = Reply> + Send {
             let ws = workspace.to_owned();
             let fail = self.fail;
             if !fail {
-                // DETACH DELETE the workspace's chunks + their mentions, then
-                // orphan-prune is implicit (an entity with zero mentions left
-                // simply stops being "alive").
-                self.chunks.lock().unwrap().retain(|(w, _)| w != &ws);
-                self.mentions.lock().unwrap().retain(|(_, w, _)| w != &ws);
+                // Replay the real cascade, in order.
+                for step in bolt::WORKSPACE_TEARDOWN_STEPS {
+                    self.apply_step(step, &ws);
+                }
             }
             async move {
                 if fail {
@@ -182,6 +290,84 @@ mod tests {
         assert!(graph.entity_alive("bar"));
         // Dequeued.
         assert!(registry::pending::list().is_empty());
+    }
+
+    /// #117 — a torn-down workspace must leave NO `Concept` nodes behind.
+    ///
+    /// Before the fix the cascade was chunks + orphan entities only, so a
+    /// deleted workspace's concepts and their `CHILD_OF` edges stayed in
+    /// Memgraph forever. Worse, the orphan-entity prune `DETACH DELETE`d the
+    /// entities those concepts pointed at, so the survivors were left holding
+    /// `MEMBER` edges into nothing — unreachable from the panel, never
+    /// re-created by a rebuild, and invisible to every other cleanup path.
+    #[tokio::test]
+    async fn drain_removes_concepts_and_their_edges_leaving_no_dangling_members() {
+        let _env = TestEnv::new();
+        let graph = FakeGraph::default();
+
+        // ws-A: chunks mention "auth"/"token"; both are A-exclusive, so the
+        // orphan prune will take them once A's chunks go.
+        graph.seed_chunk("ws-A", "a0", &["auth", "token"]);
+        graph.seed_chunk("ws-A", "a1", &["auth"]);
+        // ...and a two-level concept hierarchy over those entities.
+        graph.seed_concept("ws-A", "sem:security", &["auth", "token"], None);
+        graph.seed_concept("ws-A", "sem:login", &["auth"], Some("sem:security"));
+
+        // ws-B is untouched by the teardown and must survive intact.
+        graph.seed_chunk("ws-B", "b0", &["parser"]);
+        graph.seed_concept("ws-B", "sem:syntax", &["parser"], None);
+
+        registry::pending::enqueue("ws-A");
+        let report = drain(&graph).await;
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.failed, 0);
+
+        // The whole ws-A footprint is gone — including the concept layer.
+        assert_eq!(graph.chunk_count("ws-A"), 0, "no orphan chunks survive");
+        assert_eq!(
+            graph.concept_count("ws-A"),
+            0,
+            "a torn-down workspace must not leave Concept nodes behind (#117)"
+        );
+        assert_eq!(
+            graph.child_of_count("ws-A"),
+            0,
+            "CHILD_OF edges between the workspace's concepts must go with them"
+        );
+
+        // The corruption invariant: no surviving concept anywhere may point at
+        // an entity the prune deleted.
+        assert!(
+            graph.dangling_members().is_empty(),
+            "MEMBER edges left pointing at pruned entities: {:?}",
+            graph.dangling_members()
+        );
+
+        // ws-B is fully intact — teardown is workspace-scoped.
+        assert_eq!(graph.chunk_count("ws-B"), 1);
+        assert_eq!(graph.concept_count("ws-B"), 1, "ws-B concepts untouched");
+        assert!(graph.entity_alive("parser"));
+        assert!(!graph.entity_alive("auth"), "A-only entity pruned");
+    }
+
+    /// The cascade must sweep concepts BEFORE the entity prune. Ordering is
+    /// load-bearing, not cosmetic: the prune `DETACH DELETE`s entities, so any
+    /// concept still standing at that point loses its `MEMBER` edges silently.
+    #[test]
+    fn teardown_sweeps_concepts_before_pruning_entities() {
+        let keys: Vec<&str> = bolt::WORKSPACE_TEARDOWN_STEPS
+            .iter()
+            .map(|s| s.key)
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "concepts_deleted",
+                "chunks_deleted",
+                "orphan_entities_deleted"
+            ],
+            "teardown cascade order changed — see #117"
+        );
     }
 
     #[tokio::test]
