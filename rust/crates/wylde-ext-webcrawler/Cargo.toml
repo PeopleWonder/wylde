@@ -37,7 +37,7 @@ thiserror.workspace = true
 # HTML parse + CSS selection — the `scraper` crate (html5ever + selectors),
 # the pure-Rust replacement for the Python `beautifulsoup4` (`soup.select`).
 # New workspace dep (plan risk #7); well-trodden, no C deps.
-scraper = "0.20"
+scraper = "0.27"
 
 # URL parsing for the SSRF guard (host-extraction logic). A direct dep.
 url = "2"

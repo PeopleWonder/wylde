@@ -133,6 +133,7 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   - `futures` 0.3.32 → 0.3.33 (#145)
   - `hyper` 1.9.0 → 1.10.1 (#145)
   - `rfd` 0.15.4 → 0.17.2 (#147)
+  - `scraper` 0.20.0 → 0.27.0 (#153)
   - `serde` 1.0.228 → 1.0.229 (#145)
   - `serde_json` 1.0.149 → 1.0.151 (#145)
   - `tokio` 1.52.3 → 1.53.0 (#145)
@@ -157,6 +158,13 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   (`nvml-wrapper` in `wylde-vram-broker`, `neo4rs` in the release tool), so `thiserror` 1.0.69 and
   2.0.19 coexist in the graph — expected, not a conflict. Consolidates and supersedes Dependabot
   #149, #154, #157, #158. (#172)
+
+- **`auto-launch` 0.5 → 0.6 (required a code edit).** The 0.6 release deprecated the boolean
+  `AutoLaunchBuilder::set_use_launch_agent` in favour of an explicit `set_macos_launch_mode(MacOSLaunchMode)`
+  enum, and under `-D warnings` the deprecation is a hard clippy error. Repointed the one call site
+  (`Core/GUI/Frontend/Panels/Settings/src/ipc.rs`) to `MacOSLaunchMode::AppleScript` — the exact mode the old
+  `false` mapped to. This is a macOS-only launch knob, inert on the Windows target the GUI ships to, so
+  behaviour is byte-for-byte unchanged. (#148)
 
 - **The NSIS installer has been removed from this repository.** It never produced a
   working install — the "Quick install" route documented in the README, and the
