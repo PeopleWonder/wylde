@@ -698,144 +698,203 @@ def check_shutdown_handler_marks_stopped() -> List[Finding]:
     return out
 
 
-# ── Rule 31: daemon shutdown reaps manifest orphans ──────────────────
+# ── Rule 31: daemon reaps manifest orphans ───────────────────────────
 
 
-# Canonical Python lifecycle daemon entry point that owns the
-# unified-teardown function. If this file ever moves the rule needs
-# updating — the path is asserted explicitly so a structural rename
-# can't make the rule silently skip its target.
-_SHUTDOWN_TARGET_FILE = "Core/Lifecycle/daemon_state/__init__.py"
-_SHUTDOWN_TARGET_FUNC = "stop_all_daemon_managed"
+# The Rust lifecycle daemon's boot path, which owns the manifest
+# orphan sweep, and the module that defines the sweep itself.
+#
+# (Rule key retained for registry/baseline stability; repointed for
+# issue #116 from the deleted ``Core/Lifecycle/daemon_state/__init__.py``
+# to the live Rust lifecycle crate.  The guarantee did not disappear in
+# the Rust cutover — it *moved*: teardown no longer reaps, boot sweeps.
+# See the rule docstring for why that relocation is the same safety net.)
+_ORPHAN_DAEMON_FILE = "rust/crates/wylde-lifecycle/src/daemon.rs"
+_ORPHAN_SWEEP_FILE = "rust/crates/wylde-lifecycle/src/state/orphan_sweep.rs"
 
-# A call inside ``stop_all_daemon_managed`` whose name matches this
-# pattern satisfies the rule.  Any "reap*orphan*"-shaped identifier
-# counts so the implementation can evolve (rename to
-# ``reap_live_orphans`` etc.) without churn here.
-_REAP_NAME_RE = re.compile(r"^_?reap[_a-z]*orphan[_a-z]*$")
+# The sweep entry point the daemon must invoke on the boot path, and
+# the definition that must back it.  Both are pattern-bound rather than
+# literal so the implementation can be renamed (``boot_manifest_sweep``,
+# ``sweep_boot_orphans``, …) without churn here, but cannot be silently
+# replaced by an unrelated call.
+_ORPHAN_SWEEP_CALL_RE = re.compile(r"\b([a-z_]*orphan[a-z_]*sweep[a-z_]*|[a-z_]*sweep[a-z_]*orphan[a-z_]*)\s*\(")
+_ORPHAN_SWEEP_DEF_RE = re.compile(
+    r"^\s*pub\s+fn\s+([a-z_]*orphan[a-z_]*sweep[a-z_]*|[a-z_]*sweep[a-z_]*orphan[a-z_]*)\s*\(",
+    re.MULTILINE,
+)
+
+# The boot path's first service launch.  The sweep must precede it.
+_SERVICE_START_RE = re.compile(r"\bstart_[a-z_]+\s*\(")
+
+# Calls that halt the recurring sweep rather than perform one.  These
+# satisfy the *name* pattern but not the guarantee, so they are excluded
+# before the ordering check — otherwise ``stop_orphan_sweep()`` inside
+# teardown would count as a boot-time reap.
+_ORPHAN_SWEEP_NEGATIVE_RE = re.compile(r"\b(stop|halt|cancel|abort)_[a-z_]*orphan[a-z_]*sweep[a-z_]*\s*\(")
+
+
+def _rust_code_lines(text: str) -> List[tuple]:
+    """1-based ``(lineno, line)`` pairs with ``//`` / ``//!`` comment
+    lines and trailing line comments stripped.
+
+    A doc comment that merely *mentions* the sweep must not satisfy the
+    rule — that is the rules-44/45 residue this rule refuses to repeat.
+    """
+    out: List[tuple] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        stripped = line.lstrip()
+        if stripped.startswith("//"):
+            continue
+        code = line.split("//", 1)[0]
+        if not code.strip():
+            continue
+        out.append((lineno, code))
+    return out
 
 
 def check_shutdown_reaps_manifest_orphans() -> List[Finding]:
-    """The daemon's unified-teardown function must invoke a
-    manifest-walking orphan reaper.
+    """The lifecycle daemon must reap manifest orphans before it starts
+    any service.
 
-    Why: ``stop_all_daemon_managed`` walks the in-memory Popen handles
-    (``_gateway_proc`` etc.) the daemon populated this session.  Services
-    that survived a prior daemon crash live in ``data/manifests/*.json``
-    with a pid still in the process table — the matching ``_<svc>_proc``
-    is ``None`` on a fresh daemon, the periodic orphan sweep only acts
-    when the pid is *dead*, and the orphan outlives every shutdown until
-    something hard-kills it.  A manifest-walking reap is the only
-    safety net that closes the loop.
+    Why: a manifest left behind by an ungraceful prior exit (Ctrl-C,
+    ``taskkill``, SIGKILL) still marks its service "alive" with a pid
+    that is now dead.  Nothing in the new daemon's in-memory state knows
+    about it, and the recurring 60s sweep only fires *after* the boot
+    spawns — so without a one-shot sweep on the boot path the stale
+    manifest survives a lifecycle restart and the affected service stays
+    dark.  That is the harness / extension_bridge / ollama outage of
+    2026-05-31, recorded in ``daemon.rs`` Phase 2b-sweep.
 
-    The rule checks that ``stop_all_daemon_managed`` in
-    ``Core/Lifecycle/daemon_state/__init__.py`` contains a call to a
-    function whose name matches ``reap*orphan*``.  Structural rather
-    than name-specific so the reaper can be renamed without churn here,
-    but pattern-bound so it can't be silently replaced with an
-    unrelated function call.
+    Where the guarantee lives now: under the Python daemon this was a
+    reap step inside ``stop_all_daemon_managed`` (teardown).  The Rust
+    cutover moved it to the *boot* path — ``stop_all_daemon_managed`` in
+    ``state/mod.rs`` now only calls ``stop_orphan_sweep()``, which halts
+    the recurring sweep so an in-flight tick cannot rewrite a manifest
+    mid-teardown.  It performs no reap.  Checking teardown for a reaper
+    would therefore be checking for something the system deliberately no
+    longer does; the rule follows the guarantee to its new home.
+
+    Fires when: either target file is missing (the #101 inversion — a
+    deleted target is the failure, never a pass), the sweep has no
+    ``pub fn`` definition, the daemon never calls it, or it is called
+    only *after* the first ``start_<service>()`` on the boot path.
     """
     out: List[Finding] = []
-    target = _pkg.WYLDE_ROOT / _SHUTDOWN_TARGET_FILE
-    if not target.exists():
+
+    sweep_rel = _ORPHAN_SWEEP_FILE
+    daemon_rel = _ORPHAN_DAEMON_FILE
+    sweep_path = _pkg.WYLDE_ROOT / sweep_rel
+    daemon_path = _pkg.WYLDE_ROOT / daemon_rel
+
+    # ── Inverted guard (#101): a missing target fires, never passes ──
+    sweep_text = _read_text(sweep_path) if sweep_path.exists() else ""
+    daemon_text = _read_text(daemon_path) if daemon_path.exists() else ""
+
+    if not sweep_text:
         out.append(
             Finding(
                 rule="shutdown_reaps_manifest_orphans",
                 severity="error",
-                file=_SHUTDOWN_TARGET_FILE,
+                file=sweep_rel,
                 line=0,
                 message=(
-                    f"Expected the unified-teardown owner at "
-                    f"{_SHUTDOWN_TARGET_FILE!r}; file not found.  If the "
-                    f"daemon refactored, update the rule's target path."
+                    f"Expected the manifest orphan sweep at {sweep_rel!r}; "
+                    f"file missing or empty.  The rule cannot verify that "
+                    f"orphaned services are reaped, which is a failure, not "
+                    f"a pass.  If the sweep moved, repoint the rule."
+                ),
+            )
+        )
+
+    if not daemon_text:
+        out.append(
+            Finding(
+                rule="shutdown_reaps_manifest_orphans",
+                severity="error",
+                file=daemon_rel,
+                line=0,
+                message=(
+                    f"Expected the lifecycle daemon boot path at "
+                    f"{daemon_rel!r}; file missing or empty.  If the daemon "
+                    f"moved, repoint the rule."
+                ),
+            )
+        )
+
+    if out:
+        return out
+
+    # ── The sweep must actually be defined ──────────────────────────
+    def_match = _ORPHAN_SWEEP_DEF_RE.search(sweep_text)
+    if def_match is None:
+        out.append(
+            Finding(
+                rule="shutdown_reaps_manifest_orphans",
+                severity="error",
+                file=sweep_rel,
+                line=0,
+                message=(
+                    f"{sweep_rel!r} declares no public orphan-sweep function "
+                    f"(expected a ``pub fn`` whose name matches "
+                    f"``*orphan*sweep*``, e.g. ``boot_orphan_sweep``).  "
+                    f"Without it the daemon has no manifest-walking reap."
                 ),
             )
         )
         return out
 
-    text = _read_text(target)
-    if not text:
-        return out
+    # ── The daemon must call it, on real code, before any start_ ────
+    sweep_lineno = None
+    first_start_lineno = None
+    for lineno, code in _rust_code_lines(daemon_text):
+        if (
+            sweep_lineno is None
+            and _ORPHAN_SWEEP_CALL_RE.search(code)
+            and not _ORPHAN_SWEEP_NEGATIVE_RE.search(code)
+        ):
+            sweep_lineno = lineno
+        if first_start_lineno is None and _SERVICE_START_RE.search(code):
+            first_start_lineno = lineno
 
-    import ast
-
-    try:
-        tree = ast.parse(text, filename=str(target))
-    except SyntaxError as exc:
+    if sweep_lineno is None:
         out.append(
             Finding(
                 rule="shutdown_reaps_manifest_orphans",
                 severity="error",
-                file=_SHUTDOWN_TARGET_FILE,
-                line=getattr(exc, "lineno", 0) or 0,
-                message=f"Cannot parse {_SHUTDOWN_TARGET_FILE!r}: {exc}",
-            )
-        )
-        return out
-
-    target_func: Optional[ast.FunctionDef] = None
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name == _SHUTDOWN_TARGET_FUNC:
-                target_func = node  # type: ignore[assignment]
-                break
-
-    if target_func is None:
-        out.append(
-            Finding(
-                rule="shutdown_reaps_manifest_orphans",
-                severity="error",
-                file=_SHUTDOWN_TARGET_FILE,
+                file=daemon_rel,
                 line=0,
                 message=(
-                    f"Expected function {_SHUTDOWN_TARGET_FUNC!r} in "
-                    f"{_SHUTDOWN_TARGET_FILE!r} — the unified teardown the "
-                    f"signal handler + service.shutdown_all action both "
-                    f"go through.  If renamed, update the rule's target."
+                    f"{daemon_rel!r} never calls a manifest orphan sweep.  "
+                    f"Without it, a service orphaned by an ungraceful prior "
+                    f"exit keeps an alive-marked manifest with a dead pid and "
+                    f"stays dark across every restart.  Call the "
+                    f"``*orphan*sweep*`` entry point on the boot path, before "
+                    f"the first ``start_<service>()``.  (A doc comment "
+                    f"mentioning it does not count.)"
                 ),
             )
         )
         return out
 
-    reaper_call_lineno: Optional[int] = None
-    for sub in ast.walk(target_func):
-        if not isinstance(sub, ast.Call):
-            continue
-        func = sub.func
-        # Match bare-name calls (``reap_manifest_orphans()``) AND
-        # attribute calls (``self.reap_manifest_orphans()``,
-        # ``mod._reap_orphans()``) — the rightmost identifier carries
-        # the semantic name.
-        if isinstance(func, ast.Name):
-            name = func.id
-        elif isinstance(func, ast.Attribute):
-            name = func.attr
-        else:
-            continue
-        if _REAP_NAME_RE.match(name):
-            reaper_call_lineno = sub.lineno
-            break
-
-    if reaper_call_lineno is None:
+    if first_start_lineno is not None and sweep_lineno > first_start_lineno:
         out.append(
             Finding(
                 rule="shutdown_reaps_manifest_orphans",
                 severity="error",
-                file=_SHUTDOWN_TARGET_FILE,
-                line=target_func.lineno,
+                file=daemon_rel,
+                line=sweep_lineno,
                 message=(
-                    f"{_SHUTDOWN_TARGET_FUNC!r} does not call a "
-                    f"manifest-orphan reaper.  Without a reap step the "
-                    f"shutdown only kills the daemon's in-memory Popen "
-                    f"handles — services orphaned by a prior daemon "
-                    f"crash survive every restart.  Call a function "
-                    f"whose name matches ``reap*orphan*`` (e.g. "
-                    f"``reap_manifest_orphans``) as the final step."
+                    f"The manifest orphan sweep runs at line {sweep_lineno}, "
+                    f"after the first service launch at line "
+                    f"{first_start_lineno}.  A stale manifest must be reaped "
+                    f"BEFORE any ``start_<service>()`` — otherwise the launch "
+                    f"sees an alive-marked manifest with a dead pid and skips "
+                    f"the service, which is the failure mode the sweep exists "
+                    f"to prevent."
                 ),
             )
         )
     return out
-
 
 # Rules 20 (file_size_limit), 21 (test_init_present), and 24
 # (no_bare_except) live in the sibling ``_quality.py`` submodule.

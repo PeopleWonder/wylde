@@ -115,6 +115,32 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **Four `wylde_check` rules could not fail, and one had been red and unnoticed for months.** The lint
+  engine's rules 38 and 48 (`panel_verbs_exist_in_harness_registry`,
+  `gateway_verbs_exist_in_harness_registry`) loaded their verb registry from two constants that both named
+  files deleted or renamed by the Rust cutover — `rust/crates/wylde-harness/src/pipe.rs` (now
+  `pipe/mod.rs`) and `Core/harness/pipe/__init__.py` (gone entirely). The registry came back empty, both
+  rules hit an `if not registry: return out` bail, and an empty findings list is indistinguishable from a
+  clean pass. They reported success for having checked nothing, leaving 46 Gateway `harness_dispatch`
+  callsites across 8 route files and the whole panel→harness edge unguarded. Repointing them surfaced
+  **8 real latent defects on live REST routes** — the Gateway still dispatches `workspaces.*` verbs the
+  harness explicitly retired and now answers with `no_action`, plus two Chat-panel conversation verbs.
+  Rule 31 (`shutdown_reaps_manifest_orphans`) was a different failure of the same family: correctly
+  hardened to error on a missing target, but pointed at `Core/Lifecycle/daemon_state/__init__.py` in a
+  tree where `Core/Lifecycle/` has zero files — so it was genuinely failing, and nothing was running the
+  engine to notice (#114). It is repointed at the Rust lifecycle crate, following the guarantee to where
+  it actually moved: teardown no longer reaps (Rust `stop_all_daemon_managed` only *halts* the sweep so an
+  in-flight tick can't rewrite a manifest mid-teardown), and the boot path sweeps instead, before the
+  first `start_<service>()`. Rules 44/45 gained comment-stripping — `_require_token` was a bare substring
+  test, so deleting the real `boot_sequence()` call and leaving the doc comment that merely mentions it
+  kept the rule green. An unloadable registry is now a hard `error` everywhere: a rule that cannot load
+  its input has not passed, it has failed to run. (#116)
+- **New meta-rule 51 `rule_targets_exist` stops a rule from silently going dead a third time.** A rule
+  pointed at a deleted file does not go red, it goes *quiet* — the tree looks greener the more of the
+  engine rots. This happened to rules 44/45 (#101) and then to 38/48 (#116), both caught by hand months
+  late. The new rule asserts every path the engine is configured to inspect still exists, and fails the
+  PR that deletes one, naming the rule it just disarmed. (#116)
+
 - **Re-indexing a workspace no longer leaks orphaned graph chunks, and removing one now cascades to the
   graph.** A workspace's `Chunk` id embeds the file mtime, so any re-save re-keys every chunk — and two
   Memgraph write paths leaked as a result. A forced full re-index (embed model/dim/version change) was

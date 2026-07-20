@@ -24,10 +24,18 @@ def test_run_all_envelope_shape(isolated_tree: Any) -> None:
     assert s["total"] == len(data["findings"])
 
 
-def test_run_all_covers_forty_five_rules(isolated_tree: Any) -> None:
+def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
+    """Every rule in ``_RULES`` runs, and the roster is exactly the set
+    named below.
+
+    The literal-set assertion is the point: it catches a rule being
+    added without a name, silently renamed, or — the #116 failure mode —
+    quietly dropped from the dispatcher.  A rule that never runs reports
+    no findings, which is indistinguishable from a clean pass.
+    """
     wc, _ = isolated_tree
     result = wc.run_all()
-    assert result["data"]["rules_checked"] == 50
+    assert result["data"]["rules_checked"] == len(wc._RULES)
     expected = {
         "no_internal_http",
         "manifest_paths",
@@ -88,6 +96,11 @@ def test_run_all_covers_forty_five_rules(isolated_tree: Any) -> None:
         # Rule 54 — unbounded log sinks (0.2 Stability audit finding C,
         # #98, 2026-07-18).
         "no_unbounded_log_sink_rust",
+        # Rule 51 — every rule's configured target path must exist.  The
+        # generalization of #101 and #116: a rule pointed at a deleted
+        # file goes quiet, not red, so the next such deletion has to be
+        # caught by the engine checking itself (#116).
+        "rule_targets_exist",
     }
     assert set(result["data"]["summary"]["by_rule"].keys()) == expected
 
@@ -101,9 +114,16 @@ def test_run_all_selects_only_named_rules(isolated_tree: Any) -> None:
     assert all(f["rule"] == "import_paths" for f in result["data"]["findings"])
 
 
-def test_run_all_executes_forty_five_rules(isolated_tree: Any) -> None:
+def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
+    """The rule count is pinned to an explicit literal on purpose.
+
+    ``len(_RULES)`` alone would happily follow a rule being deleted.
+    Pinning the number means removing a rule is a deliberate edit here
+    too — the same "drift must be noticed, not absorbed" principle that
+    #116 was about.  Bump this when a rule is genuinely added or retired.
+    """
     wc, _root = isolated_tree
-    assert len(wc._RULES) == 50
+    assert len(wc._RULES) == 51
     result = wc.run_all()
     assert result["ok"] is True
-    assert result["data"]["rules_checked"] == 50
+    assert result["data"]["rules_checked"] == len(wc._RULES)

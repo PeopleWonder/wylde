@@ -16,9 +16,11 @@ for the unrelated nav-bus machinery.
   whose resolved service has a discoverable action registry
   (``wylde-harness`` ∪ ``wylde-extension-bridge`` ∪ ``wylde-ollama`` ∪
   ``wylde-voice``) must name a verb that appears
-  in that service's ``ALL_PIPE_ACTIONS`` / ``ALL_ACTIONS`` array (and,
-  for the harness, the Python ``_ACTIONS`` dict).  Services without a
-  discoverable registry are intentionally skipped.
+  in that service's ``ALL_PIPE_ACTIONS`` / ``ALL_ACTIONS`` array.
+  Services with no declared registry are intentionally skipped; a
+  service that *is* declared but whose registry fails to load is an
+  ``error``, not a skip (issue #116).  The registries themselves live
+  in :mod:`_harness_registry`.
 
 * :func:`check_required_services_includes_called_services` — every
   panel ``manifest.json`` must declare in ``required_services`` every
@@ -42,6 +44,15 @@ from typing import Dict, List, Optional, Set
 
 from .. import Finding
 from .._walkers import _is_excluded, _read_text, _to_rel
+from ._harness_registry import (  # re-exported: rule 48 and the tests import these from here
+    RUST_HARNESS_PIPE_FILE,
+    RUST_SERVICE_REGISTRIES,
+    HarnessRegistryUnavailable,
+    _load_all_service_registries,
+    _load_harness_action_registry,
+    _load_service_registry_verbs,
+    _scan_action_array,
+)
 
 _pkg = _sys.modules[__name__.rsplit(".", 2)[0]]
 
@@ -52,23 +63,6 @@ _pkg = _sys.modules[__name__.rsplit(".", 2)[0]]
 GPUI_WORKSPACE_ROOT: str = "Core/GUI"
 GPUI_PANELS_ROOT: str = "Core/GUI/Frontend/Panels"
 
-# Canonical sources for the harness pipe-action registry.
-RUST_HARNESS_PIPE_FILE: str = "rust/crates/wylde-harness/src/pipe.rs"
-PYTHON_HARNESS_PIPE_FILE: str = "Core/harness/pipe/__init__.py"
-
-# Every Rust crate that exposes an in-process action registry.  Each
-# value is the crate's ``src/`` root — the rule scans every ``.rs``
-# file there for ``ALL_PIPE_ACTIONS`` (harness shape, ``&[&str]``) and
-# ``ALL_ACTIONS`` (service shape, ``[&str; N]``) literal-array
-# declarations.  Adding a new entry registers its action surface for
-# rule 38; the lookup then knows what verbs that service legitimately
-# serves.
-RUST_SERVICE_REGISTRIES: Dict[str, str] = {
-    "wylde-harness": "rust/crates/wylde-harness/src",
-    "wylde-extension-bridge": "rust/crates/wylde-extension-bridge/src",
-    "wylde-ollama": "rust/crates/wylde-ollama/src",
-    "wylde-voice": "rust/crates/wylde-voice/src",
-}
 
 
 # ── Walk helpers ─────────────────────────────────────────────────────
@@ -318,96 +312,6 @@ def _resolve_service_token(
     return constants.get(ident)
 
 
-# ── Harness action registry (Rust + Python) ──────────────────────────
-
-
-_RUST_PIPE_ACTIONS_RE = re.compile(
-    r"pub\s+const\s+ALL_PIPE_ACTIONS\s*:\s*&\[&str\]\s*=\s*&\[([^\]]*)\]",
-    re.DOTALL,
-)
-# The non-harness service crates declare ``const ALL_ACTIONS: [&str; N] = [...]``
-# (no ``pub``, fixed-size array).  Match both that shape and the
-# ``pub const ALL_ACTIONS`` variant some services use.
-_RUST_ALL_ACTIONS_RE = re.compile(
-    r"(?:pub\s+)?const\s+ALL_ACTIONS\s*:\s*\[&str\s*;\s*\d+\s*\]\s*=\s*\[([^\]]*)\]",
-    re.DOTALL,
-)
-_RUST_STRING_LITERAL_RE = re.compile(r'"([^"\\]+)"')
-
-_PY_ACTIONS_DICT_RE = re.compile(
-    r"_ACTIONS\s*=\s*\{(.*?)\n\s*\}",
-    re.DOTALL,
-)
-_PY_ACTION_KEY_RE = re.compile(r'"([A-Za-z][A-Za-z0-9_.]*)"\s*:')
-
-
-def _scan_action_array(text: str, regex: re.Pattern[str]) -> Set[str]:
-    """Pull every literal string out of an action-array declaration."""
-    verbs: Set[str] = set()
-    for m in regex.finditer(text):
-        for lit in _RUST_STRING_LITERAL_RE.findall(m.group(1)):
-            verbs.add(lit)
-    return verbs
-
-
-def _load_service_registry_verbs(src_root: str) -> Set[str]:
-    """Union of every verb declared in any ``ALL_PIPE_ACTIONS`` /
-    ``ALL_ACTIONS`` array under ``src_root``."""
-    verbs: Set[str] = set()
-    base = _pkg.WYLDE_ROOT / src_root
-    if not base.exists():
-        return verbs
-    for path in base.rglob("*.rs"):
-        if _is_excluded(path):
-            continue
-        text = _read_text(path)
-        if not text:
-            continue
-        verbs |= _scan_action_array(text, _RUST_PIPE_ACTIONS_RE)
-        verbs |= _scan_action_array(text, _RUST_ALL_ACTIONS_RE)
-    return verbs
-
-
-def _load_harness_action_registry() -> Set[str]:
-    """Union of every harness verb registered on Rust + Python sides.
-
-    Reads ``ALL_PIPE_ACTIONS`` from ``rust/crates/wylde-harness/src/pipe.rs``
-    and ``_ACTIONS = {...}`` from ``Core/harness/pipe/__init__.py``; the
-    union is what an over-the-wire panel call would actually reach.
-    """
-    verbs: Set[str] = set()
-    rust_path = _pkg.WYLDE_ROOT / RUST_HARNESS_PIPE_FILE
-    if rust_path.exists():
-        text = _read_text(rust_path) or ""
-        verbs |= _scan_action_array(text, _RUST_PIPE_ACTIONS_RE)
-    py_path = _pkg.WYLDE_ROOT / PYTHON_HARNESS_PIPE_FILE
-    if py_path.exists():
-        text = _read_text(py_path) or ""
-        m = _PY_ACTIONS_DICT_RE.search(text)
-        if m:
-            for lit in _PY_ACTION_KEY_RE.findall(m.group(1)):
-                verbs.add(lit)
-    return verbs
-
-
-def _load_all_service_registries() -> Dict[str, Set[str]]:
-    """``service_name`` → set of verbs that service serves.
-
-    Combines the harness's Rust + Python registries (under
-    ``wylde-harness``) with every other service in
-    ``RUST_SERVICE_REGISTRIES``.  Services without a discoverable
-    registry contribute the empty set — rule 38 then skips them
-    rather than false-flagging every call.
-    """
-    out: Dict[str, Set[str]] = {}
-    out["wylde-harness"] = _load_harness_action_registry()
-    for service, src_root in RUST_SERVICE_REGISTRIES.items():
-        if service == "wylde-harness":
-            continue
-        out[service] = _load_service_registry_verbs(src_root)
-    return out
-
-
 # ── Panel registry (manifests) ───────────────────────────────────────
 
 
@@ -455,8 +359,9 @@ def check_panel_verbs_exist_in_harness_registry() -> List[Finding]:
 
     Today the rule indexes:
 
-      * ``wylde-harness`` — union of Rust ``ALL_PIPE_ACTIONS`` and
-        Python ``_ACTIONS``.
+      * ``wylde-harness`` — Rust ``ALL_PIPE_ACTIONS``.  Mandatory: if
+        this registry cannot be loaded the rule reports an ``error``
+        rather than skipping (issue #116).
       * ``wylde-extension-bridge`` / ``wylde-ollama`` /
         ``wylde-voice`` — each service's
         ``ALL_ACTIONS: [&str; N] = [...]`` array.
@@ -468,11 +373,31 @@ def check_panel_verbs_exist_in_harness_registry() -> List[Finding]:
     (parameter-passed service, dynamic action) are also skipped.
     """
     out: List[Finding] = []
-    registries = _load_all_service_registries()
-    # If nothing at all could be loaded, we're in a tree without any
-    # service crates checked in — skip the rule rather than fire empty.
-    if not any(registries.values()):
-        return out
+    try:
+        registries = _load_all_service_registries()
+    except HarnessRegistryUnavailable as exc:
+        # A rule that cannot load its input has not passed — it has
+        # failed to run.  Reporting an error here is what stops this
+        # rule from silently going dead the next time the harness crate
+        # is restructured (issue #116).
+        return [
+            Finding(
+                rule="panel_verbs_exist_in_harness_registry",
+                severity="error",
+                file=RUST_HARNESS_PIPE_FILE,
+                line=0,
+                message=(
+                    f"Cannot verify panel pipe verbs: {exc}.  This rule "
+                    f"guards every panel→service call in "
+                    f"{GPUI_PANELS_ROOT}; with no registry it can check "
+                    f"nothing, so it fails rather than passing vacuously.  "
+                    f"Repoint ``RUST_HARNESS_PIPE_FILE`` at the harness "
+                    f"pipe registry."
+                ),
+            )
+        ]
+    # One finding per broken service registry, not one per callsite.
+    _empty_registry_reported: Set[str] = set()
     for ipc_path in _walk_panel_ipc_files():
         rel = _to_rel(ipc_path)
         text = _read_text(ipc_path)
@@ -484,8 +409,36 @@ def check_panel_verbs_exist_in_harness_registry() -> List[Finding]:
             if service is None:
                 continue
             registry = registries.get(service)
-            # Empty registry → service not indexed; intentionally skip.
+            if registry is None:
+                # Service carries no declared registry at all
+                # (``wylde-vpn``, the Gateway's REST surface).  Genuinely
+                # out of scope — rule 41 covers the Gateway instead.
+                continue
             if not registry:
+                # Declared in RUST_SERVICE_REGISTRIES but loaded empty:
+                # the crate was restructured out from under the rule.
+                # That is a broken gate, not a clean service (#116).
+                if service not in _empty_registry_reported:
+                    _empty_registry_reported.add(service)
+                    out.append(
+                        Finding(
+                            rule="panel_verbs_exist_in_harness_registry",
+                            severity="error",
+                            file=RUST_SERVICE_REGISTRIES[service],
+                            line=0,
+                            message=(
+                                f"Service {service!r} is registered in "
+                                f"RUST_SERVICE_REGISTRIES but its action "
+                                f"registry loaded empty — no "
+                                f"``ALL_ACTIONS``/``ALL_PIPE_ACTIONS`` array "
+                                f"found under "
+                                f"{RUST_SERVICE_REGISTRIES[service]!r}.  Every "
+                                f"panel call to {service!r} is therefore "
+                                f"unchecked.  Repoint the entry or remove it "
+                                f"if the service no longer exposes verbs."
+                            ),
+                        )
+                    )
                 continue
             if call.action is None:
                 # Dynamic action body — out of scope for this rule.
@@ -493,10 +446,7 @@ def check_panel_verbs_exist_in_harness_registry() -> List[Finding]:
             if call.action in registry:
                 continue
             if service == "wylde-harness":
-                hint = (
-                    f"({RUST_HARNESS_PIPE_FILE}::ALL_PIPE_ACTIONS or "
-                    f"{PYTHON_HARNESS_PIPE_FILE}::_ACTIONS)"
-                )
+                hint = f"({RUST_HARNESS_PIPE_FILE}::ALL_PIPE_ACTIONS)"
             else:
                 hint = f"({RUST_SERVICE_REGISTRIES.get(service, service)}::ALL_ACTIONS)"
             out.append(

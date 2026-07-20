@@ -63,17 +63,44 @@ def _noncomment_lines(text: str, comment_prefixes: tuple[str, ...]) -> list[tupl
 # ── Rule 44: boot is derived from the single DAEMON_MANAGED table ──────
 
 
+def _strip_rust_comments(text: str) -> str:
+    """``text`` with ``//``, ``//!`` and ``///`` comments removed.
+
+    Block comments (``/* … */``) are left alone: the lifecycle targets
+    don't use them, and a naive strip would corrupt string literals
+    containing ``/*``.  Line comments are the ones that matter here —
+    every token these rules test for is also *named* in a doc comment
+    beside the real call.
+
+    Without this, rules 44/45 were satisfiable by prose: deleting the
+    real ``boot_sequence()`` call at ``daemon.rs:187`` while leaving the
+    doc comment at ``:180`` that merely mentions it kept the rule green
+    (issue #116).  A gate that a comment can satisfy is not a gate.
+    """
+    out: List[str] = []
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("//"):
+            continue
+        out.append(line.split("//", 1)[0])
+    return "\n".join(out)
+
+
 def _require_token(file_rel: str, token: str, rule: str, message: str) -> List[Finding]:
-    """Fire unless ``file_rel`` exists AND contains ``token``.
+    """Fire unless ``file_rel`` exists AND contains ``token`` **in code**.
 
     A **missing file** and a **missing token** both fire — this is the
     fix at the heart of issue #101: the old rules guarded their body with
     ``if <file>.exists()``, so a deleted target file skipped the check and
     the rule passed green (a dead gate). Here, the single source going
     missing is itself the failure.
+
+    Comments are stripped before the test (issue #116) so a doc comment
+    mentioning the token cannot stand in for the call itself.
     """
     path = _pkg.WYLDE_ROOT / file_rel
     text = _read_text(path) if path.exists() else ""
+    text = _strip_rust_comments(text)
     if token not in text:
         return [
             Finding(
