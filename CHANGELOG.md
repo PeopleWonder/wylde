@@ -139,6 +139,15 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   - `uuid` 1.23.1 → 1.24.0 (#145)
   - `wry` 0.54.4 → 0.55.1 (#146)
 
+- **`thiserror` 1 → 2 (major).** Bumped the single workspace pin (`rust/Cargo.toml`); all 34
+  `#[derive(thiserror::Error)]` error enums across the backend crates compile unchanged — 2.0 is
+  source-compatible with our derives (no `#[from]`, `#[error(transparent)]`, or display-attribute
+  edits were required). Refreshed the `rust/`, `Core/GUI/`, `rust/tests/parity/`, and
+  `tools/wylde-release/` lockfiles. Two transitive dependencies still pin `thiserror ^1`
+  (`nvml-wrapper` in `wylde-vram-broker`, `neo4rs` in the release tool), so `thiserror` 1.0.69 and
+  2.0.19 coexist in the graph — expected, not a conflict. Consolidates and supersedes Dependabot
+  #149, #154, #157, #158. (#172)
+
 - **The NSIS installer has been removed from this repository.** It never produced a
   working install — the "Quick install" route documented in the README, and the
   `WyldeSetup-<version>.exe` asset attached to `v0.1.0-alpha.1`, do not work and
