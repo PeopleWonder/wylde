@@ -125,7 +125,7 @@ async fn watcher_create_modify_delete_round_trip_within_budget() {
     let folder_path = folder.path().to_string_lossy().into_owned();
 
     // Register + activate the workspace (folder is empty, so no initial index).
-    let def = registry::create(&folder_path, Some("watcher-it"));
+    let def = registry::create(&folder_path, Some("watcher-it")).unwrap();
     let ws = def.id.clone();
     eprintln!("[watcher-it] workspace {ws} @ {folder_path}");
 

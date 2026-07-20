@@ -660,7 +660,7 @@ mod tests {
     #[tokio::test]
     async fn reporter_drives_indeterminate_then_determinate_then_clears() {
         let env = crate::test_support::TestEnv::new();
-        let def = registry::create(&env.ws_path("prog"), None);
+        let def = registry::create(&env.ws_path("prog"), None).unwrap();
 
         let mut reporter = Reporter::new(&def.id);
         // Walk phase: indexing flips true, progress is indeterminate (no total).
@@ -731,7 +731,7 @@ mod tests {
     #[tokio::test]
     async fn persist_delta_writes_chunks_then_a_matching_manifest() {
         let env = crate::test_support::TestEnv::new();
-        let def = registry::create(&env.ws_path("p3"), None);
+        let def = registry::create(&env.ws_path("p3"), None).unwrap();
         let chunks = vec![
             idx("/a.rs", 0, 100.0),
             idx("/a.rs", 1, 100.0),
@@ -765,7 +765,7 @@ mod tests {
         // chunks are present, the manifest is stale/absent. The next diff must
         // converge — re-embed the lagging files, never skip them (§3.3).
         let env = crate::test_support::TestEnv::new();
-        let def = registry::create(&env.ws_path("crash"), None);
+        let def = registry::create(&env.ws_path("crash"), None).unwrap();
         // Chunks landed for a.rs, but the manifest never advanced (absent).
         store::save_chunks(&def.id, &[idx("/a.rs", 0, 100.0)]).unwrap();
         assert!(
@@ -834,7 +834,7 @@ mod tests {
     async fn persist_full_builds_lexical_when_enabled() {
         let env = crate::test_support::TestEnv::new();
         let _on = LexicalOn::enable();
-        let def = registry::create(&env.ws_path("lx-full"), None);
+        let def = registry::create(&env.ws_path("lx-full"), None).unwrap();
         let chunks = vec![
             lex_chunk(
                 "c0",
@@ -858,7 +858,7 @@ mod tests {
         let env = crate::test_support::TestEnv::new();
         // Toggle OFF (the default) — ensure the cache is OFF for this test.
         LexicalConfig::persist(LexicalConfig::default()).unwrap();
-        let def = registry::create(&env.ws_path("lx-off"), None);
+        let def = registry::create(&env.ws_path("lx-off"), None).unwrap();
         persist_full(&def.id, &[lex_chunk("c0", "/a.rs", "hello world")]).await;
         // No lexical dir is created when OFF — identity with today.
         assert!(
@@ -870,7 +870,7 @@ mod tests {
     #[tokio::test]
     async fn ensure_backfill_builds_from_existing_chunks_without_reembed() {
         let env = crate::test_support::TestEnv::new();
-        let def = registry::create(&env.ws_path("lx-backfill"), None);
+        let def = registry::create(&env.ws_path("lx-backfill"), None).unwrap();
         // A pre-lexical index: chunks on disk, no lexical/ yet.
         store::save_chunks(
             &def.id,
