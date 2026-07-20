@@ -12,10 +12,11 @@ flat 700-LOC cap.
   a coupling graph that breaks the "one panel per crate" boundary.
 
 * :func:`check_no_legacy_gui_imports_in_panels` — no ``tauri::*`` use
-  paths and no Svelte-flavored references anywhere under
-  ``Core/GUI/Frontend/Panels/**``.  Panel crates are gpui-native; the
-  legacy Tauri+Svelte tree lives in ``Core/GUI/src/`` /
-  ``Core/GUI/src-tauri/`` and stays out of the gpui workspace.
+  paths anywhere under ``Core/GUI/Frontend/Panels/**``.  Panel crates
+  are gpui-native; the legacy Tauri tree lives in
+  ``Core/GUI/src-tauri/`` and stays out of the gpui workspace.  (The
+  Svelte matcher was retired 2026-07-20 — that tree was deleted at the
+  slice-11 cutover.)
 
 * :func:`check_webview_only_in_extension_handlers` — ``wry::*`` imports
   are reserved for the ``wylde-webview`` crate at
@@ -25,8 +26,8 @@ flat 700-LOC cap.
 * :func:`check_first_party_manifest_must_be_gpui_view` — every
   ``manifest.json`` under ``Core/GUI/Frontend/Panels/**`` declares
   ``source.kind == "gpui_view"`` for every entry in its ``panels`` array.
-  ``iframe`` is the iframe-extension shape — only valid for manifests
-  under ``Extensions/**``.
+  (The symmetric ``Extensions/**`` half was retired 2026-07-20 — that
+  tree no longer exists.)
 
 * :func:`check_panel_crate_must_be_workspace_member` — every
   ``Cargo.toml`` found under ``Core/GUI/Frontend/Panels/*/Cargo.toml``
@@ -64,7 +65,6 @@ GPUI_PANELS_ROOT: str = "Core/GUI/Frontend/Panels"
 GPUI_EXTENSION_HANDLERS_ROOT: str = "Core/GUI/Frontend/Extension_handlers"
 GPUI_WEBVIEW_ROOT: str = "Core/GUI/Frontend/Extension_handlers/WebView"
 GPUI_WORKSPACE_CARGO: str = "Core/GUI/Cargo.toml"
-EXTENSIONS_ROOT: str = "Extensions"
 
 # Panel crates may depend on these and only these wylde-* internal
 # crates.  Anything outside this allowlist that starts with ``wylde-``
@@ -279,21 +279,24 @@ def check_no_cross_panel_imports() -> List[Finding]:
 
 
 _TAURI_USE_RE = re.compile(r"\btauri\s*::")
-# A "Svelte-adjacent" reference: anywhere a panel source mentions a
-# .svelte file path or imports the Svelte runtime.  Comments are
-# stripped before this fires, so the doc references the panels already
-# carry (``Cutover deletes src-tauri/ + src/ together``) don't match.
-_SVELTE_REF_RE = re.compile(r"\.svelte\b|\bsvelte::|['\"]svelte['\"]")
 
 
 def check_no_legacy_gui_imports_in_panels() -> List[Finding]:
-    """No ``tauri::*`` use paths or Svelte references anywhere under
+    """No ``tauri::*`` use paths anywhere under
     ``Core/GUI/Frontend/Panels/**``.
 
-    Panel crates are gpui-native — the legacy Tauri+Svelte tree at
-    ``Core/GUI/src/`` + ``Core/GUI/src-tauri/`` is built by its own
-    workspace and deleted at cutover.  References from a panel crate
-    would re-couple the two worlds.
+    Panel crates are gpui-native — the legacy Tauri tree at
+    ``Core/GUI/src-tauri/`` is built by its own workspace and deleted at
+    cutover.  References from a panel crate would re-couple the two
+    worlds.
+
+    The Svelte half of this rule was RETIRED on 2026-07-20.  It matched
+    ``.svelte`` / ``svelte::`` / ``"svelte"`` in panel sources, but the
+    Svelte tree (``Core/GUI/src/``) was deleted at the slice-11 cutover
+    and zero ``.svelte``/``.js``/``.ts`` files remain.  Its only surviving
+    finding was a false positive on
+    ``Core/GUI/Frontend/Panels/Workspaces/src/files/icon_map.rs``, where
+    ``("svelte", &["svelte"])`` is a file-icon table row, not an import.
     """
     out: List[Finding] = []
     for path in _walk_gpui_rs((GPUI_PANELS_ROOT,)):
@@ -323,23 +326,6 @@ def check_no_legacy_gui_imports_in_panels() -> List[Finding]:
                     )
                 )
                 continue
-            if _SVELTE_REF_RE.search(line):
-                out.append(
-                    Finding(
-                        rule="no_legacy_gui_imports_in_panels",
-                        severity="error",
-                        file=rel,
-                        line=lineno,
-                        message=(
-                            "Panel crate references Svelte (.svelte / "
-                            "svelte::).  Panels are gpui-native; the "
-                            "legacy Svelte tree at Core/GUI/src/ is "
-                            "excluded from the gpui workspace and "
-                            "removed at cutover."
-                        ),
-                        context=raw_line.strip()[:200],
-                    )
-                )
     return out
 
 
@@ -400,48 +386,19 @@ def check_webview_only_in_extension_handlers() -> List[Finding]:
 # ── Rule 36: first_party_manifest_must_be_gpui_view ──────────────────
 
 
-def _walk_extension_manifests() -> List[Path]:
-    """Every ``manifest.json`` directly under ``Extensions/<X>/`` —
-    one per extension.  Nested manifests (``Extensions/<X>/tools/*/``,
-    ``Extensions/<X>/browser_extension/``) are tool/manifest shapes
-    that don't carry ``ui_panels`` and are intentionally skipped.
-    Also accepts ``mcp-server.json`` / ``mcp-client.json`` siblings
-    since those are where MCP extensions declare ``ui_panels`` today.
-    """
-    base = _pkg.WYLDE_ROOT / EXTENSIONS_ROOT
-    if not base.exists():
-        return []
-    out: List[Path] = []
-    for child in sorted(base.iterdir()):
-        if not child.is_dir():
-            continue
-        for name in ("manifest.json", "mcp-server.json", "mcp-client.json"):
-            candidate = child / name
-            if candidate.exists() and not _is_excluded(candidate):
-                out.append(candidate)
-    return out
-
-
 def check_first_party_manifest_must_be_gpui_view() -> List[Finding]:
-    """Two symmetric kind-must-match-origin checks against panel manifests:
+    """Every ``manifest.json`` under ``Core/GUI/Frontend/Panels/**`` must
+    declare ``source.kind == "gpui_view"`` for every entry in its
+    ``panels`` array.  ``iframe`` was the iframe-extension shape.
 
-    * **First-party** manifests under ``Core/GUI/Frontend/Panels/**``
-      must declare ``source.kind == "gpui_view"`` for every entry in
-      their ``panels`` array.  ``iframe`` is the iframe-extension
-      shape — only valid for manifests under ``Extensions/**``.
-    * **Extension** manifests under ``Extensions/<X>/`` that carry
-      a ``ui_panels`` array must declare ``source.kind == "iframe"``
-      for every entry.  Extensions can't ship a native gpui ``View``
-      (no shared gpui dependency, no factory-registration path), so
-      a ``gpui_view`` declaration there is statically impossible.
-
-    Both checks live in the same rule because they enforce the same
-    invariant from two sides — kind matches origin.
+    NARROWED 2026-07-20: the rule used to carry a symmetric second half
+    asserting that every ``Extensions/<X>/`` manifest's ``ui_panels``
+    entry declared ``source.kind == "iframe"``.  ``Extensions/`` no
+    longer exists, so that half walked nothing and could only ever
+    report a pass — the dead-gate shape issue #101 called out.  It was
+    removed along with its ``EXTENSIONS_ROOT`` walk.
     """
-    out: List[Finding] = []
-    out.extend(_check_first_party_panel_manifests())
-    out.extend(_check_extension_ui_panels())
-    return out
+    return _check_first_party_panel_manifests()
 
 
 def _check_first_party_panel_manifests() -> List[Finding]:
@@ -534,77 +491,6 @@ def _check_first_party_panel_manifests() -> List[Finding]:
                         ),
                     )
                 )
-    return out
-
-
-def _check_extension_ui_panels() -> List[Finding]:
-    """Extension manifests declaring ``ui_panels`` must use ``iframe``
-    kind — gpui_view is architecturally impossible for an extension."""
-    out: List[Finding] = []
-    for path in _walk_extension_manifests():
-        rel = _to_rel(path)
-        text = _read_text(path)
-        if not text:
-            continue
-        try:
-            data = json.loads(text)
-        except (ValueError, TypeError):
-            # Malformed extension manifests are picked up by the
-            # extension-bridge's own loader; we don't double-flag here.
-            continue
-        if not isinstance(data, dict):
-            continue
-        panels = data.get("ui_panels")
-        # Extensions without UI panels (most have only tools/transport)
-        # contribute nothing — skip silently.
-        if not isinstance(panels, list) or not panels:
-            continue
-        for idx, panel in enumerate(panels):
-            if not isinstance(panel, dict):
-                out.append(
-                    Finding(
-                        rule="first_party_manifest_must_be_gpui_view",
-                        severity="error",
-                        file=rel,
-                        line=0,
-                        message=f"ui_panels[{idx}] is not an object",
-                    )
-                )
-                continue
-            source = panel.get("source")
-            if not isinstance(source, dict):
-                pid = panel.get("id", f"#{idx}")
-                out.append(
-                    Finding(
-                        rule="first_party_manifest_must_be_gpui_view",
-                        severity="error",
-                        file=rel,
-                        line=0,
-                        message=(
-                            f"extension ui_panel {pid!r} has no `source` "
-                            f"object; extension panels must declare "
-                            f'`source.kind: "iframe"`.'
-                        ),
-                    )
-                )
-                continue
-            kind = source.get("kind")
-            if kind == "iframe":
-                continue
-            pid = panel.get("id", f"#{idx}")
-            out.append(
-                Finding(
-                    rule="first_party_manifest_must_be_gpui_view",
-                    severity="error",
-                    file=rel,
-                    line=0,
-                    message=(
-                        f"extension ui_panel {pid!r} has source.kind = "
-                        f"{kind!r}; extension panels must be \"iframe\" "
-                        f"(extensions can't register a native gpui factory)."
-                    ),
-                )
-            )
     return out
 
 

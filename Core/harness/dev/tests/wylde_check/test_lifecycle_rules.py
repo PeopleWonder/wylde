@@ -1,14 +1,16 @@
-"""Tests for the boot/shutdown/service-manifest rules (44-47),
-mirrors prod-side wylde_check/rules/_lifecycle.py. Added at the slice-11
-cutover; rules 44/45 repointed at the live Rust single source of truth
-(the ``DAEMON_MANAGED`` table) for issue #101 — the old rules targeted the
+"""Tests for the boot/shutdown rules (44-45), mirrors prod-side
+wylde_check/rules/_lifecycle.py. Added at the slice-11 cutover; rules
+44/45 repointed at the live Rust single source of truth (the
+``DAEMON_MANAGED`` table) for issue #101 — the old rules targeted the
 deleted ``Core/Lifecycle/launcher.py`` / ``shutdown.py`` and passed green
 over the missing files (a dead gate).
+
+Rules 46 (every_service_has_manifest) and 47 (service_manifest_schema)
+were retired 2026-07-20; their tests were removed with them.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from .conftest import _write
@@ -115,104 +117,3 @@ def test_shutdown_flags_gpui_delegate_file_missing(isolated_tree: Any) -> None:
     # No gpui shutdown.rs at all.
     findings = wc.check_shutdown_enumerates_services_from_manifests()
     assert any(f.file == _GPUI_SHUTDOWN for f in findings)
-
-
-# ── Rule 46: every backend service has a manifest ─────────────────────
-
-
-def test_every_service_forward_flags_runpy_without_manifest(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(root / "MyService" / "run.py", "# entry point\n")
-    findings = wc.check_every_service_has_manifest()
-    assert len(findings) == 1
-    assert findings[0].rule == "every_service_has_manifest"
-    assert "MyService" in findings[0].message
-
-
-def test_every_service_forward_clean_with_manifest(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(root / "MyService" / "run.py", "# entry point\n")
-    _write(root / "MyService" / "manifest.json", json.dumps({"name": "MyService"}))
-    assert wc.check_every_service_has_manifest() == []
-
-
-def test_every_service_reverse_flags_manifest_in_runtime_dir(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(root / "logs" / "manifest.json", json.dumps({"name": "logs"}))
-    findings = wc.check_every_service_has_manifest()
-    assert len(findings) == 1
-    assert "runtime/archive" in findings[0].message
-
-
-def test_every_service_reverse_exempts_core(isolated_tree: Any) -> None:
-    """Core holds a legitimate infra rollup manifest — never flagged."""
-    wc, root = isolated_tree
-    _write(root / "Core" / "manifest.json", json.dumps({"name": "Core"}))
-    assert wc.check_every_service_has_manifest() == []
-
-
-# ── Rule 47: service manifest schema ──────────────────────────────────
-
-
-def _svc_manifest(root: Any, name: str, body: dict) -> None:
-    _write(root / name / "manifest.json", json.dumps(body))
-
-
-def test_schema_clean_with_required_keys(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _svc_manifest(
-        root,
-        "Gateway",
-        {"name": "Gateway", "entry_point": "py -3 -m Gateway.run", "shutdown_order": 20},
-    )
-    assert wc.check_service_manifest_schema() == []
-
-
-def test_schema_allows_null_entry_point(isolated_tree: Any) -> None:
-    """entry_point may be null — a library / in-process / pipe-only service."""
-    wc, root = isolated_tree
-    _svc_manifest(
-        root, "N8N", {"name": "N8N", "entry_point": None, "shutdown_order": 40}
-    )
-    assert wc.check_service_manifest_schema() == []
-
-
-def test_schema_flags_missing_shutdown_order(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _svc_manifest(root, "Voice", {"name": "Voice", "entry_point": "py -3 -m Voice.run"})
-    findings = wc.check_service_manifest_schema()
-    assert any("shutdown_order" in f.message and "missing" in f.message for f in findings)
-
-
-def test_schema_flags_wrong_shutdown_order_type(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _svc_manifest(
-        root,
-        "Voice",
-        {"name": "Voice", "entry_point": "x", "shutdown_order": "soon"},
-    )
-    findings = wc.check_service_manifest_schema()
-    assert any("shutdown_order" in f.message and "integer" in f.message for f in findings)
-
-
-def test_schema_flags_empty_name(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _svc_manifest(root, "VPN", {"name": "", "entry_point": "x", "shutdown_order": 70})
-    findings = wc.check_service_manifest_schema()
-    assert any("name" in f.message for f in findings)
-
-
-def test_schema_flags_bad_health_check_type(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _svc_manifest(
-        root,
-        "Gateway",
-        {
-            "name": "Gateway",
-            "entry_point": "x",
-            "shutdown_order": 20,
-            "health_check": 123,
-        },
-    )
-    findings = wc.check_service_manifest_schema()
-    assert any("health_check" in f.message for f in findings)

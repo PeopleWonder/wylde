@@ -1,6 +1,6 @@
 """Wylde architectural checker.
 
-Encodes Wylde-specific contracts as forty-nine active rules.  Each rule
+Encodes Wylde-specific contracts as thirty active rules.  Each rule
 walks the active tree (skipping `_legacy/`, `__pycache__/`, build
 output, etc.) and emits structured findings.  Pure-Python, no
 subprocesses, no network — runs purely off the filesystem.
@@ -15,34 +15,35 @@ and git history stay stable; the dispatcher holds 47 active rules
 (39 surviving + 4 new at slice-11 + rules 48-51 added across the
 2026-05-30/31 audit, egress, bare-tokio and cold-start-crash slices).
 
+Dead-rule retirement (2026-07-20): 22 further rules were retired, taking
+the dispatcher from 52 to 30.  Fifteen were structurally dead — their
+target tree (the Python service folders, ``Core/Lifecycle/daemon_state``,
+``Gateway/routes``, ``Extensions/``, the tool/action manifests) was
+deleted in the Rust cutover, so they walked nothing and could only ever
+report a pass.  Seven were Python-only rules with no production Python
+left to walk.  As with the slice-11 retirements the original numbers are
+kept in the catalog below, marked RETIRED in place.  In the same pass
+rule 20 (``file_size_limit``) was REPOINTED from Python to Rust, and
+rules 34 / 36 were NARROWED to drop their Svelte / ``Extensions/`` halves.
+
 The rules:
 
-1. ``no_internal_http``   — Python/Svelte/JS files calling out to
-                            Wylde-internal ports (8005, 7687, 8013,
-                            5678, 8014, 8020, 11434) via HTTP libs.
-                            Exemptions: ``Wylde/Gateway/**`` (Gateway IS
-                            the legitimate HTTP boundary), Ollama client
-                            (external), Memgraph Bolt driver (database
-                            wire protocol).
-2. ``manifest_paths``     — services that both have a daemon-managed
-                            ``_start_X`` AND call ``write_manifest()``
-                            in their own ``run.py`` (double-write).
-3. ``tool_id_regex``      — ``tools/<group>/<id>/manifest.json`` must
-                            have ``id`` / ``name`` matching the snake-
-                            or-dotted regex.
-4. ``action_registry``    — ``register_action()`` callsites: bare sanity
-                            check that the registered names are
-                            stringy + unique within a pipe module.
-5. ``import_paths``       — bare ``Core.*`` is canonical; ``Wylde.Core.*``
-                            in active code is flagged.  Tests are
-                            exempt because they have try-fallback for
-                            both forms.
+1. ``no_internal_http`` — RETIRED (2026-07-20): Python-only rule, no production
+                            Python remains.
+2. ``manifest_paths`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
+3. ``tool_id_regex`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
+4. ``action_registry`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
+5. ``import_paths`` — RETIRED (2026-07-20): Python-only rule, no production
+                            Python remains.
 6. ``dead_service_refs``  — known-dead service names appearing in
                             active code.
 7. ``inferencebar_purity`` — RETIRED (slice-11 cutover): keyed on
                             ``InferenceBar.svelte``; the Svelte tree is gone.
-8. ``gateway_scope``      — every Gateway route should fall into one of
-                            the documented categories.
+8. ``gateway_scope`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
 9. ``gui_action_contract`` — RETIRED (slice-11 cutover): keyed on Svelte
                             ``pipeAction(SVC_X, …)`` callsites; subsumed by
                             rule 38 (``panel_verbs_exist_in_harness_registry``).
@@ -56,46 +57,41 @@ The rules:
 11. ``gui_pipe_constants`` — RETIRED (slice-11 cutover): keyed on
                             ``src/lib/api.js`` ``SVC_*`` JS constants;
                             subsumed by the gpui contract rules (38/41).
-12. ``tool_docstring_required`` — every Python tool file under
-                            ``Core/harness/tooling/tools/**/*.py`` must
-                            have a non-empty top-level module docstring.
-13. ``logging_setup_only`` — only ``Core/shared/logging_setup.configure_logging()``
-                            should configure logging in active code.
-14. ``no_external_subprocess`` — ``subprocess.Popen`` / ``.run`` /
-                            ``.call`` / ``os.spawn*`` are restricted to
-                            the Lifecycle daemon plus narrow exemptions.
-15. ``spawn_paths_exist`` — every ``python -m <module>`` / script-path
-                            spawn-command in
-                            ``Core/Lifecycle/daemon_state.py`` resolves
-                            to a real importable module or existing file.
-16. ``run_py_entry_point`` — every top-level service folder uses
-                            exactly ``run.py`` as its entry point.
+12. ``tool_docstring_required`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
+13. ``logging_setup_only`` — RETIRED (2026-07-20): Python-only rule, no production
+                            Python remains.
+14. ``no_external_subprocess`` — RETIRED (2026-07-20): Python-only rule, no production
+                            Python remains.
+15. ``spawn_paths_exist`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
+16. ``run_py_entry_point`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
 17. ``pipe_name_convention`` — every Windows named-pipe ``wylde-<name>``
                             literal in active code matches the regex
                             ``^wylde-[a-z][a-z0-9-]*$``.
-18. ``run_py_startup_sequence`` — every ``<Service>/run.py`` should call
-                            ``configure_logging``, write a manifest,
-                            start a heartbeat, then enter a serve loop.
-19. ``shutdown_handler_marks_stopped`` — every ``<Service>/run.py``
-                            should register a SIGTERM/SIGINT handler
-                            whose body (or an ``atexit`` callback)
-                            updates the manifest with a stopped state.
-20. ``file_size_limit``   — flat 700-LOC cap on active Python files.
-                            Files past the cap are split along their
-                            natural seams.
-21. ``test_init_present`` — every ``tests/`` folder under an active
-                            root contains an ``__init__.py`` so pytest
-                            rootdir discovery loads the right conftest.
-22. ``memory_layer_boundaries`` — literal ``memory/<layer>/`` storage
-                            paths only appear in code inside
-                            ``Core/harness/memory/``; other callers
-                            route through ``memory.*`` pipe actions.
-23. ``action_docstring_required`` — every registered pipe-action
-                            handler function carries a non-empty
-                            docstring (≥15 chars).
-24. ``no_bare_except``    — bare ``except:`` and silent-swallow
-                            ``except Exception:`` blocks are flagged
-                            in active code (tests exempt).
+18. ``run_py_startup_sequence`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
+19. ``shutdown_handler_marks_stopped`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
+20. ``file_size_limit``   — flat 700-LOC cap on active Rust files
+                            (``rust/crates/*/src/**`` + ``Core/GUI/**``,
+                            excluding ``target/``).  REPOINTED from
+                            Python on 2026-07-20; the 91 files that were
+                            already over-cap at that moment are recorded
+                            as queued debt in
+                            ``rules/_quality._FILE_SIZE_QUEUED_SPLITS``
+                            so the cap engages on every new or newly
+                            grown file.  Files past the cap are split
+                            along their natural seams.
+21. ``test_init_present`` — RETIRED (2026-07-20): Python-only rule, no production
+                            Python remains.
+22. ``memory_layer_boundaries`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
+23. ``action_docstring_required`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
+24. ``no_bare_except`` — RETIRED (2026-07-20): Python-only rule, no production
+                            Python remains.
 25. ``service_owns_its_state`` — a service only reads/writes paths
                             inside its own data directory; cross-
                             service state access goes via pipe action,
@@ -141,16 +137,8 @@ The rules:
                             but the daemon's in-memory Popen slots are
                             None, and the periodic sweep only acts on
                             dead PIDs.
-32. ``manifest_sandbox_required`` — tests under
-                            ``Core/Lifecycle/tests/`` and
-                            ``Core/harness/tests/`` that touch the
-                            manifest layer must sandbox ``_MANIFEST_DIR``
-                            (either via ``monkeypatch.setattr`` in the
-                            test itself or via an autouse fixture in a
-                            sibling ``conftest.py``).  An unsandboxed
-                            test can trip the reaper into killing real
-                            wylde services — caught + fixed 2026-05-25
-                            during Phase 11.B.
+32. ``manifest_sandbox_required`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
 33. ``no_cross_panel_imports`` — a ``wylde-panel-*`` crate's
                             ``Cargo.toml`` may only depend on the
                             shared-infra crates (``wylde-theme`` /
@@ -160,28 +148,29 @@ The rules:
                             that breaks the "one panel per crate"
                             boundary the gpui workspace is built around.
 34. ``no_legacy_gui_imports_in_panels`` — no ``tauri::*`` use paths
-                            and no Svelte references anywhere under
+                            anywhere under
                             ``Core/GUI/Frontend/Panels/**``.  Panel
-                            crates are gpui-native; the legacy
-                            Tauri+Svelte tree stays in its own
-                            standalone crate until cutover.
+                            crates are gpui-native.  NARROWED
+                            2026-07-20: the Svelte matcher was retired
+                            (tree deleted at the slice-11 cutover; its
+                            only surviving finding was a false positive
+                            on a file-icon table row).
 35. ``webview_only_in_extension_handlers`` — ``wry::*`` imports are
                             reserved for the ``wylde-webview`` crate at
                             ``Core/GUI/Frontend/Extension_handlers/WebView/``.
                             WebView exists to host iframe-extension
                             panels; first-party panels must be native
                             gpui.
-36. ``first_party_manifest_must_be_gpui_view`` — two symmetric
-                            kind-must-match-origin checks: every
+36. ``first_party_manifest_must_be_gpui_view`` — every
                             ``manifest.json`` under
                             ``Core/GUI/Frontend/Panels/**`` declares
                             ``source.kind == "gpui_view"`` for every
-                            entry in its ``panels`` array, AND every
-                            ``Extensions/<X>/`` manifest's
-                            ``ui_panels`` entry declares
-                            ``source.kind == "iframe"``.  Extensions
-                            can't ship a native gpui View; first-party
-                            panels can't ship an iframe.
+                            entry in its ``panels`` array.  NARROWED
+                            2026-07-20: the symmetric
+                            ``Extensions/<X>/`` ``ui_panels`` half was
+                            retired — ``Extensions/`` no longer exists,
+                            so that walk found nothing and could only
+                            report a pass.
 37. ``panel_crate_must_be_workspace_member`` — every
                             ``Core/GUI/Frontend/Panels/*/Cargo.toml``
                             on disk must appear in the ``members = [...]``
@@ -217,18 +206,8 @@ The rules:
                             declared one grays the panel out
                             unnecessarily when a service it doesn't
                             actually call is down.
-41. ``rest_routes_exist_in_service`` — every literal-shape
-                            ``wylde_gui_pipe::call(SVC, "METHOD",
-                            "/api/...", ...)`` from a panel must
-                            match a route in the destination service's
-                            axum router (today: ``wylde-gateway``).
-                            Path parameters (``:id``) match panel-side
-                            wildcards (``{id}``).  Calls whose path or
-                            method aren't literals are skipped — the
-                            rule trades narrow scope for low false-
-                            positive rate.  Action-envelope calls
-                            (``POST /__action__``) are covered by rule
-                            38 instead.
+41. ``rest_routes_exist_in_service`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
 42. ``manifest_factory_resolves`` — every first-party panel
                             ``manifest.json``'s ``source.factory``
                             string (``<crate>::<...>::<fn>``) must
@@ -271,20 +250,10 @@ The rules:
                             ``lifecycle.shutdown_all`` (its image-name
                             hard-kill fallback is a recognised last resort,
                             not the enumeration).
-46. ``every_service_has_manifest`` — bidirectional at the launcher's
-                            top-level discovery domain: a folder with a
-                            ``run.py`` entry point must carry a
-                            ``manifest.json``; and a runtime/archive dir
-                            (``data``/``logs``/``docs``) must NOT carry a
-                            service manifest (``Core`` is exempt — infra
-                            rollup).
-47. ``service_manifest_schema`` — every top-level service
-                            ``manifest.json`` declares the required keys
-                            (``name`` non-empty str, ``entry_point`` present
-                            (str|null — the canonical launch command /
-                            binary), ``shutdown_order`` int) with correct
-                            types; ``depends_on`` / ``health_check`` / ``tier``
-                            are type-checked when present.
+46. ``every_service_has_manifest`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
+47. ``service_manifest_schema`` — RETIRED (2026-07-20 dead-rule retirement): target tree
+                            deleted in the Rust cutover.
 48. ``gateway_verbs_exist_in_harness_registry`` — the outbound
                             companion to rule 38.  Every harness-pipe
                             verb the Gateway crate dispatches
@@ -301,18 +270,8 @@ The rules:
                             dispatches are skipped; a deliberate
                             optional-verb probe opts out with an inline
                             ``// wylde-check: optional-verb`` marker.
-49. ``no_python_gateway_imports`` — no active ``.py`` file may import
-                            the deleted top-level ``Gateway`` package
-                            (``from [Wylde.]Gateway … import`` or
-                            ``import [Wylde.]Gateway``).  The Python
-                            FastAPI Gateway was deleted on 2026-05-30 and
-                            its client libraries moved to ``Core/shared/``
-                            (``egress_client`` / ``gateway_auth`` /
-                            ``extension_routes``); any surviving import is
-                            a latent ``ImportError``.  The matchers require
-                            real import syntax so docstring prose can't
-                            false-fire; the ``wylde_check`` package + tests
-                            are skipped (they carry the pattern as data).
+49. ``no_python_gateway_imports`` — RETIRED (2026-07-20): Python-only rule, no production
+                            Python remains.
 50. ``no_bare_tokio_in_panel_src`` — bare tokio primitives
                             (spawn / timer / runtime ctor) in a gpui
                             panel ``src`` panic at startup (no reactor;
@@ -417,39 +376,17 @@ from ._walkers import (  # noqa: E402, F401
 # are defined above so the submodules can resolve them on load.
 from .rules._arch import (  # noqa: E402
     check_dead_service_refs,
-    check_import_paths,
-    check_manifest_paths,
-    check_memory_layer_boundaries,
-    check_no_internal_http,
     check_service_owns_its_state,
 )
-from .rules._tools import (  # noqa: E402
-    check_tool_docstring_required,
-    check_tool_id_regex,
-)
-from .rules._actions import (  # noqa: E402
-    check_action_docstring_required,
-    check_action_registry,
-)
 from .rules._gui import (  # noqa: E402
-    check_gateway_scope,
     check_gui_no_backend_bypass,
 )
 from .rules._runtime import (  # noqa: E402
-    check_logging_setup_only,
-    check_no_external_subprocess,
     check_pipe_name_convention,
-    check_run_py_entry_point,
-    check_run_py_startup_sequence,
-    check_shutdown_handler_marks_stopped,
     check_shutdown_reaps_manifest_orphans,
-    check_spawn_paths_exist,
 )
 from .rules._quality import (  # noqa: E402
     check_file_size_limit,
-    check_manifest_sandbox_required,
-    check_no_bare_except,
-    check_test_init_present,
 )
 from .rules._rust import (  # noqa: E402
     check_import_paths_rust,
@@ -476,20 +413,14 @@ from .rules._gpui_nav import (  # noqa: E402
 )
 from .rules._gpui_polish import (  # noqa: E402
     check_manifest_factory_resolves,
-    check_rest_routes_exist_in_service,
     check_stream_call_must_handle_cancel,
 )
 from .rules._lifecycle import (  # noqa: E402
-    check_every_service_has_manifest,
     check_launcher_enumerates_services_from_manifests,
-    check_service_manifest_schema,
     check_shutdown_enumerates_services_from_manifests,
 )
 from .rules._gateway_contract import (  # noqa: E402
     check_gateway_verbs_exist_in_harness_registry,
-)
-from .rules._no_gateway_import import (  # noqa: E402
-    check_no_python_gateway_imports,
 )
 from .rules._no_bare_tokio import (  # noqa: E402
     check_no_bare_tokio_in_panel_src,
@@ -507,13 +438,7 @@ from .rules._personal_identifiers import (  # noqa: E402
 from .rules._selfcheck import check_rule_targets_exist  # noqa: E402
 from ._single_file import (  # noqa: E402
     _check_dead_refs_lines,
-    _check_import_paths_lines,
-    _check_logging_setup_lines,
-    _check_no_external_subprocess_lines,
-    _check_no_http_lines,
     _check_pipe_name_convention_lines,
-    _check_tool_docstring_lines,
-    _check_tool_id_lines,
 )
 
 
@@ -521,31 +446,14 @@ from ._single_file import (  # noqa: E402
 
 
 _RULES: Dict[str, Callable[[], List[Finding]]] = {
-    "no_internal_http": check_no_internal_http,
-    "manifest_paths": check_manifest_paths,
-    "tool_id_regex": check_tool_id_regex,
-    "action_registry": check_action_registry,
-    "import_paths": check_import_paths,
     "dead_service_refs": check_dead_service_refs,
     # rule 7 (inferencebar_purity) retired at the slice-11 cutover — Svelte gone.
-    "gateway_scope": check_gateway_scope,
     # rule 9 (gui_action_contract) retired — subsumed by panel_verbs_exist_in_harness_registry.
     "gui_no_backend_bypass": check_gui_no_backend_bypass,
     # rule 11 (gui_pipe_constants) retired — subsumed by the gpui contract rules.
-    "tool_docstring_required": check_tool_docstring_required,
-    "logging_setup_only": check_logging_setup_only,
-    "no_external_subprocess": check_no_external_subprocess,
-    "spawn_paths_exist": check_spawn_paths_exist,
-    "run_py_entry_point": check_run_py_entry_point,
     "pipe_name_convention": check_pipe_name_convention,
-    "run_py_startup_sequence": check_run_py_startup_sequence,
-    "shutdown_handler_marks_stopped": check_shutdown_handler_marks_stopped,
     "shutdown_reaps_manifest_orphans": check_shutdown_reaps_manifest_orphans,
     "file_size_limit": check_file_size_limit,
-    "test_init_present": check_test_init_present,
-    "memory_layer_boundaries": check_memory_layer_boundaries,
-    "action_docstring_required": check_action_docstring_required,
-    "no_bare_except": check_no_bare_except,
     "service_owns_its_state": check_service_owns_its_state,
     "import_paths_rust": check_import_paths_rust,
     "no_silent_error_swallow_rust": check_no_silent_error_swallow_rust,
@@ -553,7 +461,6 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     "no_external_process_spawn_rust": check_no_external_process_spawn_rust,
     # rule 30 (gui_error_reporting) retired at the slice-11 cutover — keyed on
     # Svelte console.error/toast; gpui panels surface errors as Result state.
-    "manifest_sandbox_required": check_manifest_sandbox_required,
     "no_cross_panel_imports": check_no_cross_panel_imports,
     "no_legacy_gui_imports_in_panels": check_no_legacy_gui_imports_in_panels,
     "webview_only_in_extension_handlers": check_webview_only_in_extension_handlers,
@@ -562,23 +469,18 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     "panel_verbs_exist_in_harness_registry": check_panel_verbs_exist_in_harness_registry,
     "nav_targets_exist": check_nav_targets_exist,
     "required_services_includes_called_services": check_required_services_includes_called_services,
-    "rest_routes_exist_in_service": check_rest_routes_exist_in_service,
     "manifest_factory_resolves": check_manifest_factory_resolves,
     "stream_call_must_handle_cancel": check_stream_call_must_handle_cancel,
-    # Rules 44-47 — launcher / shutdown / service-manifest correctness
-    # (slice-11 cutover).  Enforce the filesystem-as-registry contract.
+    # Rules 44-45 — launcher / shutdown correctness (slice-11 cutover).
+    # Enforce the filesystem-as-registry contract.  (Rules 46/47 retired
+    # 2026-07-20 — the top-level Python service folders they discovered
+    # were deleted in the Rust cutover.)
     "launcher_enumerates_services_from_manifests": check_launcher_enumerates_services_from_manifests,
     "shutdown_enumerates_services_from_manifests": check_shutdown_enumerates_services_from_manifests,
-    "every_service_has_manifest": check_every_service_has_manifest,
-    "service_manifest_schema": check_service_manifest_schema,
     # Rule 48 — Gateway→harness dispatch contract (codebase-audit slice,
     # 2026-05-30).  The outbound companion to rule 38's inbound (panel→
     # harness) check.
     "gateway_verbs_exist_in_harness_registry": check_gateway_verbs_exist_in_harness_registry,
-    # Rule 49 — no import of the deleted Python Gateway package
-    # (egress-client relocation slice, 2026-05-30).  Bars `from Gateway`
-    # / `import Gateway` from ever returning after the folder was deleted.
-    "no_python_gateway_imports": check_no_python_gateway_imports,
     "no_bare_tokio_in_panel_src": check_no_bare_tokio_in_panel_src,
     # Rule 51 — panic primitives in a gpui panel render path (Dashboard
     # cold-start crash slice, 2026-05-31); panels share the event loop.
@@ -626,7 +528,11 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # Scrub-drift slice (2026-07-19): +1 (rule 55, no_personal_identifiers)
 # = 52 active.  The public-repo personal-info guarantee, which had been
 # a hand-audited number and drifted back to non-zero once already.
-assert len(_RULES) == 52, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 52)"
+# Dead-rule retirement (2026-07-20): -22 = 30 active.  Fifteen rules were
+# structurally dead (target tree deleted in the Rust cutover — they
+# walked nothing and could only report a pass) and seven were Python-only
+# rules with no production Python left.  52 - 22 = 30.
+assert len(_RULES) == 30, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 30)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -686,9 +592,9 @@ def check_one_file(rel_path: str, content: str) -> Dict[str, Any]:
 
     Used by pre-write hooks — the architectural rules that don't need
     the full tree all reduce cleanly to a per-file check.  Rules that
-    DO need cross-file state (manifest_paths, action_registry,
-    gateway_scope, gui_*, spawn_paths_exist, run_py_*) are skipped here
-    — the full ``run_all()`` catches those.
+    DO need cross-file state (gui_*, the gpui contract rules, the
+    lifecycle rules) are skipped here — the full ``run_all()`` catches
+    those.
 
     Returns the canonical envelope shape.
     """
@@ -711,13 +617,7 @@ def check_one_file(rel_path: str, content: str) -> Dict[str, Any]:
     rel_path = rel_path.replace("\\", "/")
 
     findings: List[Finding] = []
-    findings.extend(_check_no_http_lines(rel_path, content))
-    findings.extend(_check_import_paths_lines(rel_path, content))
     findings.extend(_check_dead_refs_lines(rel_path, content))
-    findings.extend(_check_tool_id_lines(rel_path, content))
-    findings.extend(_check_tool_docstring_lines(rel_path, content))
-    findings.extend(_check_logging_setup_lines(rel_path, content))
-    findings.extend(_check_no_external_subprocess_lines(rel_path, content))
     findings.extend(_check_pipe_name_convention_lines(rel_path, content))
 
     by_rule: Dict[str, int] = {}
@@ -746,35 +646,17 @@ __all__ = [
     "WYLDE_ROOT",
     "run_all",
     "check_one_file",
-    "check_no_internal_http",
-    "check_manifest_paths",
-    "check_tool_id_regex",
-    "check_action_registry",
-    "check_import_paths",
     "check_dead_service_refs",
-    "check_gateway_scope",
     "check_gui_no_backend_bypass",
-    "check_tool_docstring_required",
-    "check_logging_setup_only",
-    "check_no_external_subprocess",
-    "check_spawn_paths_exist",
-    "check_run_py_entry_point",
     "check_pipe_name_convention",
-    "check_run_py_startup_sequence",
-    "check_shutdown_handler_marks_stopped",
     "check_shutdown_reaps_manifest_orphans",
     "check_file_size_limit",
-    "check_test_init_present",
-    "check_memory_layer_boundaries",
-    "check_action_docstring_required",
-    "check_no_bare_except",
     "check_service_owns_its_state",
     "check_import_paths_rust",
     "check_no_silent_error_swallow_rust",
     "check_logging_setup_only_rust",
     "check_no_external_process_spawn_rust",
     "check_no_unbounded_log_sink_rust",
-    "check_manifest_sandbox_required",
     "check_no_cross_panel_imports",
     "check_no_legacy_gui_imports_in_panels",
     "check_webview_only_in_extension_handlers",
@@ -783,15 +665,11 @@ __all__ = [
     "check_panel_verbs_exist_in_harness_registry",
     "check_nav_targets_exist",
     "check_required_services_includes_called_services",
-    "check_rest_routes_exist_in_service",
     "check_manifest_factory_resolves",
     "check_stream_call_must_handle_cancel",
     "check_launcher_enumerates_services_from_manifests",
     "check_shutdown_enumerates_services_from_manifests",
-    "check_every_service_has_manifest",
-    "check_service_manifest_schema",
     "check_gateway_verbs_exist_in_harness_registry",
-    "check_no_python_gateway_imports",
     "check_no_bare_tokio_in_panel_src",
     "check_no_panic_in_panel_render",
     "check_rule_targets_exist",
