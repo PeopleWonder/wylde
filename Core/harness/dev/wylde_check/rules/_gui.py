@@ -1,4 +1,4 @@
-"""GUI surface rules: Gateway route scope + GUI-no-backend-bypass.
+"""GUI surface rule: GUI-no-backend-bypass.
 
 Slice-11 cutover (2026-05-29) retired the Svelte/Tauri-shaped rules that
 lived here once `Core/GUI/src/` (Svelte) and `Core/GUI/src-tauri/`
@@ -12,6 +12,12 @@ lived here once `Core/GUI/src/` (Svelte) and `Core/GUI/src-tauri/`
   / ``toast.error``; the gpui panels surface errors as ``Result`` state,
   a different shape — a gpui-era error rule is a possible post-alpha add.
 
+The 2026-07-20 dead-rule retirement removed one more:
+
+* ``gateway_scope`` (rule 8) — walked ``Gateway/routes/**/*.py`` for
+  FastAPI route decorators; the Python Gateway tree was deleted in the
+  Rust cutover.
+
 ``gui_no_backend_bypass`` (rule 10) survives — the "GUI must not touch
 backend storage directly" principle is architecture-level, not
 Svelte-specific — but is repointed at the gpui panel + shell Rust source.
@@ -24,68 +30,9 @@ import sys as _sys
 from typing import List
 
 from .. import Finding
-from .._config import GATEWAY_ROUTE_PREFIXES
-from .._walkers import _is_excluded, _read_text, _to_rel, _walk
+from .._walkers import _read_text, _to_rel, _walk
 
 _pkg = _sys.modules[__name__.rsplit(".", 2)[0]]
-
-
-# ── Rule 8: Gateway route scope ───────────────────────────────────────
-
-
-_FASTAPI_ROUTE_RE = re.compile(
-    r'@\w+\.(?:get|post|put|delete|patch|head|options)\(\s*["\']([^"\']+)["\']'
-)
-
-# Picks up ``APIRouter(prefix="/api/foo", ...)`` so the prefix-match
-# below sees the full effective URL instead of only the decorator path.
-# Matches the first ``APIRouter(prefix="...")`` in a module — multiple
-# routers per file would each need their own scan, but the codebase
-# uses one-router-per-file by convention.
-_APIROUTER_PREFIX_RE = re.compile(r'APIRouter\(\s*prefix\s*=\s*["\']([^"\']+)["\']')
-
-
-def check_gateway_scope() -> List[Finding]:
-    routes_dir = _pkg.WYLDE_ROOT / "Gateway" / "routes"
-    out: List[Finding] = []
-    if not routes_dir.exists():
-        return out
-    for path in routes_dir.rglob("*.py"):
-        if _is_excluded(path):
-            continue
-        rel = _to_rel(path)
-        text = _read_text(path)
-        if not text:
-            continue
-        # Resolve the router prefix once per file — empty when the
-        # module uses ``APIRouter()`` with no prefix (e.g. health.py).
-        pm = _APIROUTER_PREFIX_RE.search(text)
-        router_prefix = pm.group(1).rstrip("/") if pm else ""
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            m = _FASTAPI_ROUTE_RE.search(line)
-            if not m:
-                continue
-            decorator_path = m.group(1)
-            full_path = router_prefix + decorator_path
-            # Strip trailing path-params like /{id} so we match prefixes.
-            head = full_path.split("{", 1)[0].rstrip("/")
-            if any(head.startswith(p) for p in GATEWAY_ROUTE_PREFIXES):
-                continue
-            out.append(
-                Finding(
-                    rule="gateway_scope",
-                    severity="warning",
-                    file=rel,
-                    line=lineno,
-                    message=(
-                        f"Route {full_path!r} doesn't fit the documented "
-                        f"Gateway scope (egress / inbound mobile-future / MCP / "
-                        f"extensions).  Confirm or relocate."
-                    ),
-                    context=line.strip()[:200],
-                )
-            )
-    return out
 
 
 # ── Rule 10: GUI does not bypass the backend ─────────────────────────

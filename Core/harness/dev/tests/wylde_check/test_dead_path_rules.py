@@ -230,24 +230,49 @@ def test_boot_rule_not_satisfied_by_doc_comment_alone(isolated_tree: Any) -> Non
 
 
 def test_selfcheck_fires_for_each_missing_target(isolated_tree: Any) -> None:
-    """An empty tree means every rule target is missing — the self-check
-    must name each one and the rule it just disarmed."""
+    """An empty tree means every rule's input corpus is collapsed — the
+    self-check must name each one and the rule it just disarmed."""
     wc, _root = isolated_tree
     errs = _errors(wc.check_rule_targets_exist())
-    from Core.harness.dev.wylde_check.rules._selfcheck import RULE_TARGET_PATHS
+    from Core.harness.dev.wylde_check.rules._selfcheck import RULE_TARGET_SPECS
 
-    assert len(errs) == len(RULE_TARGET_PATHS)
+    assert len(errs) == len(RULE_TARGET_SPECS)
     assert all("can no longer do its job" in e.message for e in errs)
 
 
-def test_selfcheck_clean_when_all_targets_present(isolated_tree: Any) -> None:
+def test_selfcheck_clean_when_all_corpora_present(isolated_tree: Any) -> None:
+    """Each spec is satisfied: wholesale targets by the file existing,
+    walk roots by ≥1 file of the right suffix living beneath them."""
     wc, root = isolated_tree
-    from Core.harness.dev.wylde_check.rules._selfcheck import RULE_TARGET_PATHS
+    from Core.harness.dev.wylde_check.rules._selfcheck import RULE_TARGET_SPECS
 
-    for rel in RULE_TARGET_PATHS:
-        p = root / rel
-        if p.suffix:
-            _write(p, "// present\n")
+    for i, (root_rel, exts, _owner) in enumerate(RULE_TARGET_SPECS):
+        if exts is None:
+            _write(root / root_rel, "// present\n")
         else:
-            p.mkdir(parents=True, exist_ok=True)
+            # A single matching file under the walk root satisfies the
+            # cardinality check; unique name so shared roots don't collide.
+            _write(root / root_rel / f"seed_{i}{exts[0]}", "// present\n")
     assert wc.check_rule_targets_exist() == []
+
+
+def test_selfcheck_fires_when_walk_root_exists_but_has_no_matching_files(
+    isolated_tree: Any,
+) -> None:
+    """The cardinality regression guard: a walk root that *exists* but
+    holds no file of the rule's class must still fire.  The old
+    existence-only check passed here — this is the exact hole that let the
+    Python-linter rules rot green through the Rust cutover (dir present,
+    zero ``.py`` beneath it)."""
+    wc, root = isolated_tree
+    # Populate the Gateway walk root with a wrong-suffix file only: the
+    # directory now exists (existence check would pass), but its ``.rs``
+    # corpus is empty (cardinality check must fail).
+    gateway_src = "rust/crates/wylde-gateway/src"
+    _write(root / gateway_src / "notrust.txt", "not a rust file\n")
+
+    errs = _errors(wc.check_rule_targets_exist())
+    gateway_errs = [e for e in errs if e.file == gateway_src]
+    assert len(gateway_errs) == 1
+    assert "contains no .rs files" in gateway_errs[0].message
+    assert "gateway_verbs_exist_in_harness_registry" in gateway_errs[0].message

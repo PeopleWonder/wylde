@@ -37,37 +37,22 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
     result = wc.run_all()
     assert result["data"]["rules_checked"] == len(wc._RULES)
     expected = {
-        "no_internal_http",
-        "manifest_paths",
-        "tool_id_regex",
-        "action_registry",
-        "import_paths",
+        # rules 1/2/3/4/5 retired 2026-07-20; rules 7/9/11 retired at the
+        # slice-11 cutover.
         "dead_service_refs",
-        # rules 7, 9, 11 (inferencebar_purity / gui_action_contract /
-        # gui_pipe_constants) retired at the slice-11 cutover.
-        "gateway_scope",
+        # rule 8 (gateway_scope) retired 2026-07-20 (Python Gateway gone).
         "gui_no_backend_bypass",
-        "tool_docstring_required",
-        "logging_setup_only",
-        "no_external_subprocess",
-        "spawn_paths_exist",
-        "run_py_entry_point",
+        # rules 12/13/14/15/16/18/19 retired 2026-07-20.
         "pipe_name_convention",
-        "run_py_startup_sequence",
-        "shutdown_handler_marks_stopped",
         "shutdown_reaps_manifest_orphans",
         "file_size_limit",
-        "test_init_present",
-        "memory_layer_boundaries",
-        "action_docstring_required",
-        "no_bare_except",
+        # rules 21/22/23/24 retired 2026-07-20; rule 30 at slice-11.
         "service_owns_its_state",
         "import_paths_rust",
         "no_silent_error_swallow_rust",
         "logging_setup_only_rust",
         "no_external_process_spawn_rust",
-        # rule 30 (gui_error_reporting) retired at the slice-11 cutover.
-        "manifest_sandbox_required",
+        # rule 32 (manifest_sandbox_required) retired 2026-07-20.
         "no_cross_panel_imports",
         "no_legacy_gui_imports_in_panels",
         "webview_only_in_extension_handlers",
@@ -76,17 +61,15 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
         "panel_verbs_exist_in_harness_registry",
         "nav_targets_exist",
         "required_services_includes_called_services",
-        "rest_routes_exist_in_service",
+        # rule 41 (rest_routes_exist_in_service) retired 2026-07-20.
         "manifest_factory_resolves",
         "stream_call_must_handle_cancel",
-        # Rules 44-47 — slice-11 cutover.
+        # Rules 44-45 — slice-11 cutover (rules 46/47 retired 2026-07-20).
         "launcher_enumerates_services_from_manifests",
         "shutdown_enumerates_services_from_manifests",
-        "every_service_has_manifest",
-        "service_manifest_schema",
-        # Rule 48 — codebase-audit slice (2026-05-30).
+        # Rule 48 — codebase-audit slice (2026-05-30).  Rule 49
+        # (no_python_gateway_imports) retired 2026-07-20.
         "gateway_verbs_exist_in_harness_registry",
-        "no_python_gateway_imports",
         "no_bare_tokio_in_panel_src",
         "no_panic_in_panel_render",
         "silent_skip_in_service_start",
@@ -111,11 +94,14 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
 
 def test_run_all_selects_only_named_rules(isolated_tree: Any) -> None:
     wc, root = isolated_tree
-    _write(root / "Core" / "harness" / "mod.py", "from Wylde.Core.shared import ipc\n")
-    result = wc.run_all(only=["import_paths"])
+    _write(
+        root / "Core" / "harness" / "mod.py",
+        "SVC = 'wylde-orchestrator'  # dead reference\n",  # wylde-check: dead-ref-ok
+    )
+    result = wc.run_all(only=["dead_service_refs"])
     assert result["data"]["rules_checked"] == 1
     # All findings should be from the one selected rule.
-    assert all(f["rule"] == "import_paths" for f in result["data"]["findings"])
+    assert all(f["rule"] == "dead_service_refs" for f in result["data"]["findings"])
 
 
 def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
@@ -127,7 +113,7 @@ def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
     #116 was about.  Bump this when a rule is genuinely added or retired.
     """
     wc, _root = isolated_tree
-    assert len(wc._RULES) == 52
+    assert len(wc._RULES) == 30
     result = wc.run_all()
     assert result["ok"] is True
     assert result["data"]["rules_checked"] == len(wc._RULES)
