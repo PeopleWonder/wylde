@@ -7,7 +7,7 @@
       1. BUILD   cargo build --release for the gpui GUI (Core/GUI workspace)
                  and the backend service binaries (rust/ workspace).
                  Skipped with -SkipBuild (use when the binaries are already
-                 built -- the recommended path on Aaron's box, see the cargo
+                 built -- the recommended path on the maintainer's box, see the cargo
                  file-lock caveat below).
       2. STAGE   Assemble a clean install tree under release-artifacts/stage:
                    * the committed repo tree via `git archive HEAD`
@@ -190,7 +190,7 @@ if (-not $MakeNsis) {
     if ($cmd) { $MakeNsis = $cmd.Source }
 }
 if (-not $MakeNsis) {
-    # Portable NSIS (no-UAC install) -- the recommended path on Aaron's box.
+    # Portable NSIS (no-UAC install) -- the recommended path on the maintainer's box.
     # Extracted under %USERPROFILE%\Tools\NSIS\nsis-<ver>\; see docs/installer.md.
     # Newest version wins if several are unpacked side by side.
     $MakeNsis = Get-ChildItem "$env:USERPROFILE\Tools\NSIS\*\makensis.exe" -ErrorAction SilentlyContinue |

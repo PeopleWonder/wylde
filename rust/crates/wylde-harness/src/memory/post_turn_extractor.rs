@@ -539,7 +539,7 @@ mod tests {
 {
   "memory_entries": [
     {"kind": "decision", "text": "The project pins gpui at rev b3d93d44."},
-    {"kind": "weird", "text": "Aaron prefers terse replies."}
+    {"kind": "weird", "text": "Sam prefers terse replies."}
   ],
   "profile_proposals": [
     {"field": "style", "proposed": "terse", "rationale": "asked twice", "confidence": 0.9}
@@ -575,7 +575,7 @@ mod tests {
                 {"field": "preference:", "proposed": "x"},        // empty key
                 {"field": "preference:editor", "proposed": "vim"},
                 {"field": "name", "proposed": ""},                // empty value
-                {"field": "name", "proposed": "Aaron"},
+                {"field": "name", "proposed": "Sam"},
                 {"field": "style", "proposed": "terse"},          // over cap
             ],
             "anchor_proposals": [
@@ -800,7 +800,7 @@ mod tests {
                 // Below the OI-7 confidence floor → the gate refuses it.
                 ProposalCandidate {
                     field: "name".into(),
-                    proposed: "Aaron".into(),
+                    proposed: "Sam".into(),
                     current: None,
                     rationale: "weak".into(),
                     confidence: 0.3,

@@ -70,7 +70,7 @@ fn ollama_version() -> String {
 }
 
 /// Capture the host environment. The rig specifics (CPU/GPU/RAM) default to
-/// Aaron's known release machine — the numbers only mean something against a
+/// The maintainer's known release machine — the numbers only mean something against a
 /// named rig, and this tool only ever runs there — but every field is
 /// overridable so a second machine records itself honestly.
 ///

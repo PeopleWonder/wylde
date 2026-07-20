@@ -152,7 +152,7 @@ mod tests {
     fn single_mode_dedupes_the_shared_brain() {
         let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("WYLDE_EMBED_MODEL");
-        // Default slots: fast == reasoner (Aaron's same-model decision) —
+        // Default slots: fast == reasoner (the maintainer's same-model decision) —
         // the shared brain loads once, the embedder separately.
         let models = warm_models(&enabled_cfg());
         assert_eq!(

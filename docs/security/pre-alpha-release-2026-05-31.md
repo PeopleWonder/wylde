@@ -2,6 +2,13 @@
 
 > **Historical record — paths below are as-of 2026-05-31 and are deliberately NOT updated (#31).**
 > This is a dated log of actions actually taken, so rewriting its paths would falsify the record.
+>
+> **Redaction note (2026-07-19).** The original version of this document quoted the removed
+> identifiers verbatim in its "Before" column — including the maintainer's real WAN IP, real
+> LAN subnet, personal email, and home directory paths. A scrub report that republishes what
+> it scrubbed defeats itself, so those literal values are now redacted to descriptions.
+> The *record* (what was found, how much, and what it became) is intact; only the raw
+> personal values are gone. This is the one exception to the "not updated" rule above.
 > The tree has since moved **out of the Obsidian vault** and is now a git repository; the
 > `Obsidian Vault\Wylde` / `Obsidian Vault\Wylde-release` locations referenced below no longer
 > exist. For current layout see [`../wylde-repo-organization.md`](../wylde-repo-organization.md).
@@ -12,8 +19,8 @@ public-alpha copy at `Wylde-release/`. Three parts: **(1) copy**, **(2) scrub** 
 personal info / dev artifacts), **(3) documentation audit**. All work happened in the copy;
 the working repo was not modified.
 
-- **Source (working copy, untouched):** `C:\Users\aaron\Documents\Obsidian Vault\Wylde`
-- **Destination (this copy):** `C:\Users\aaron\Documents\Obsidian Vault\Wylde-release`
+- **Source (working copy, untouched):** `%USERPROFILE%\Documents\Obsidian Vault\Wylde`
+- **Destination (this copy):** `%USERPROFILE%\Documents\Obsidian Vault\Wylde-release`
 - **Date:** 2026-05-31
 
 ---
@@ -30,7 +37,7 @@ the working repo was not modified.
   `os.walk`) and by spot-checking key files (`launch_wylde.ps1`, `Core/GUI/Cargo.toml`,
   `rust/Cargo.toml`, `pyproject.toml`, `uv.lock`, `docs/`).
 - **Working copy untouched** — confirmed at finish: source still contains the original
-  `Aaron Roberts` (in `Core/GUI/Cargo.toml`) and `192.168.200.*` (in `VPN/`) values.
+  maintainer-name (in `Core/GUI/Cargo.toml`) and real-LAN-subnet (in `VPN/`) values.
 
 Note on layout: there is no Cargo workspace at the repo root. The two Rust workspaces are
 `Core/GUI/` (the gpui desktop GUI, crate `wylde-gui`) and `rust/` (backend services).
@@ -56,26 +63,38 @@ Note on layout: there is no Cargo workspace at the repo root. The two Rust works
 
 ### HIGH — personal info sanitized (verified 0 remaining, ripgrep + Python `os.walk`)
 
+> **⚠️ This section's "0 remaining" was true on 2026-05-31 and DRIFTED.** By 2026-07-19 the
+> tree had re-accumulated ~175 occurrences of the maintainer's first name across ~70 files
+> (code comments, test fixtures, a benchmark rig label) and 11 home-directory paths across
+> 8 files — reintroduced by ordinary day-to-day commits, because nothing enforced the
+> guarantee after the one-time pass. A hand-audited number is not a gate.
+>
+> Both classes were re-scrubbed on 2026-07-19, and this time the guarantee is **enforced in
+> CI** by `wylde_check` rule 55 (`no_personal_identifiers`), which fails the build if either
+> pattern reappears. See [`../wylde_check_rules.md`](../wylde_check_rules.md). Treat the
+> table below as a record of the original pass, not as a current-state assertion — the rule
+> is the current-state assertion.
+
 | Category | Before | After | Replacement |
 |---|---|---|---|
-| `WONDERMACHINE` | 0 (never in repo) | 0 | → `WYLDE_HOST` (rule applied; no occurrences) |
-| `Aaron` / `aaron` (all forms) | ~334 occ / ~118 files | **0** | "Aaron Roberts"→"Wylde User"; "Aaron's"→"the Wylde user's"; "Aaron"→"the Wylde user"; test usernames→`wylde` |
-| `aaronroberts348@gmail.com` | 1 | **0** | → `user@example.com` (`Core/GUI/Cargo.toml`) |
-| `192.168.200.x` | 68 occ / 13 files | **0** | → `192.0.2.x` (RFC 5737, last octet preserved) |
-| `50.106.115.58` | 183 occ / 1 file | **0** | → `203.0.113.1` (`VPN/data/wylde-link/endpoint-history.json`) |
+| Maintainer's host name *(redacted)* | 0 (never in repo) | 0 | → `WYLDE_HOST` (rule applied; no occurrences) |
+| Maintainer name (all forms) | ~334 occ / ~118 files | **0** | full name→"Wylde User"; possessive→"the Wylde user's"; bare→"the Wylde user"; test usernames→`wylde` |
+| Maintainer personal email | 1 | **0** | → `user@example.com` (`Core/GUI/Cargo.toml`) |
+| Real LAN subnet *(redacted)* | 68 occ / 13 files | **0** | → `192.0.2.x` (RFC 5737, last octet preserved) |
+| Real WAN IP *(redacted)* | 183 occ / 1 file | **0** | → `203.0.113.1` (`VPN/data/wylde-link/endpoint-history.json`) |
 | `10.x.x.x` | — | left as-is | RFC 1918 CIDR ranges / test & doc example values (per spec: leave test/example 10.x) |
-| `C:\Users\aaron\…` | ~13 occ / 8 files | **0** | → `%USERPROFILE%\…` (or `C:\Users\<user>\…` in code comments) |
+| Maintainer home-directory paths | ~13 occ / 8 files | **0** | → `%USERPROFILE%\…` (or `C:\Users\<user>\…` in code comments) |
 | `cloud.wylde.local:8443` | 0 in docs | 0 | overwritehost bug was config/code, not docs |
 | mkcert CA subject | 0 | 0 | none present |
 
 ~120 files edited across `VPN/`, `rust/crates/wylde-*`, `Core/GUI/Frontend/Panels/*`,
 `Core/harness/**`, `Core/Lifecycle/**`, `Voice/*`, `Extensions/**`, and ~35 docs.
 
-**Test fixtures updated to stay green:** device-gate username `aaron`→`wylde` across 5 files
-(htpasswd seed line + every lookup/assert; the hash verifies on the password, not the
-username); memgraph `actions.rs` and rag `search.rs` seed/query fixtures `Aaron`→`the Wylde
-user`; the `extending-wylde-services.md` tutorial sample; and markdown anchor slugs paired
-with their headings.
+**Test fixtures updated to stay green:** device-gate username (maintainer's)→`wylde` across 5
+files (htpasswd seed line + every lookup/assert; the hash verifies on the password, not the
+username); memgraph `actions.rs` and rag `search.rs` seed/query fixtures (maintainer's first
+name)→`the Wylde user`; the `extending-wylde-services.md` tutorial sample; and markdown anchor
+slugs paired with their headings.
 
 ### MEDIUM — dev artifacts: confirmed absent
 
@@ -89,7 +108,7 @@ with their headings.
   node_modules, runtime data/state/logs, secrets/keys/env, editor/IDE, OS junk).
 - The `Core/GUI/target/` produced by the build smoke-test (Part-3 verification) was removed
   afterward so the shipped copy carries no build artifacts (those also embedded the
-  `C:\Users\aaron\…` build path).
+  `C:\Users\<user>\…` build path).
 
 ---
 
@@ -136,7 +155,7 @@ nothing removed (removing would misrepresent genuinely-unbuilt state).
 
 - ✅ `Wylde-release/` exists, structurally complete (1,927 files), source modulo excluded artifacts.
 - ✅ **Zero CRITICAL secrets** (dual-engine grep; only public vendored `neo4j.cer` kept).
-- ✅ **HIGH personal info sanitized** — re-confirmed `aaron`=0, `192.168.200`=0, `50.106.115.58`=0 across the whole copy.
+- ✅ **HIGH personal info sanitized** — re-confirmed maintainer-name=0, real-LAN-subnet=0, real-WAN-IP=0 across the whole copy.
 - ✅ **MEDIUM dev artifacts gone**; `.gitignore` hardened; 0 `target/` dirs remain.
 - ✅ Every `*.md` doc link resolves or is non-doc/historical (no genuine broken links).
 - ✅ No deleted-concept prose describing current behavior; README current & ships-ready.
@@ -144,7 +163,7 @@ nothing removed (removing would misrepresent genuinely-unbuilt state).
 - ✅ `wylde_check.run_all()` against the release root → **48/48 rules, 0 errors / 0 warnings / 0 info**.
 - ✅ Working copy untouched (source still holds the original identifiers).
 
-**Ready-to-upload path:** `C:\Users\aaron\Documents\Obsidian Vault\Wylde-release`
+**Ready-to-upload path:** `%USERPROFILE%\Documents\Obsidian Vault\Wylde-release`
 
 *Note: the build smoke-test `target/` was removed after verification, so a fresh `cargo build`
 is required before running the GUI from the copy.*

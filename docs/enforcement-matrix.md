@@ -33,16 +33,17 @@ milestones, Dependabot) > **CI job that fails the build** > **runtime enforcemen
 | 13 | **Only maintainer-blessed `v*` tags; release tags immutable** | GitHub **tag ruleset** (`protect-version-tags`) — blocks deletion + moving a `v*` tag | deleting/re-pointing a published version tag (which would corrupt the updater's version history) | `.github/rulesets/protect-tags.json` | ✅ **LIVE** (ruleset id **19015193**) |
 | 14 | **Release actually RAN the live preflight (L1–L7)** | **`wylde-release` refuses to `publish` without a green, launch-verified preflight receipt** for the exact commit (§Preflight receipt) + `release.yml` re-runs the CI-verifiable gates on the tag | shipping a build whose running system was never verified — *the actual "shipped broken" failure* | `release.yml` (CI subset) + `wylde-release preflight/publish` | ✅ **receipt + L2/L3 launch gate built** — `preflight` writes a commit-bound receipt; `publish` refuses without a green, current one (rejects stale-commit / dirty-tree / wrong-version / **not-launch-verified**). Binds **G7 + benchmark gate (L5)** (+ optional L1-lite build) and, via **`preflight --launch`**, the **L2 cold-start + L3 service-health + L5 shipped-config** launch-and-verify checks (each folded into the receipt's `gates` map, fail-closed; `launch_verified` gates publish). The **L5 shipped-config assertion** (`l5.reasoning_disabled`, #27) asks the running harness for its effective reasoning config and fails closed unless `enabled:false` — the experimental tier cannot ship switched on. **L4 left the 0.2 gate entirely (2026-07-16)** — first-run bootstrap is post-0.2 (**#66**), so **#55** is deferred rather than scripted; the clean-install requirement it was conflated with stays 0.2 under **#37**. **L6** stays manual by design; L7 has its own CI job (row 4b). |
 | 15 | **Service `min_core` compatibility floor** | **Runtime**: Core's loader refuses to spawn an incompatible sibling + the GUI shows why. **CI (service repos)**: a manifest-lint job in each service repo | an incompatible service booting into a silent dead panel | `wylde-lifecycle` (shipped); service-repo CI (spec) | ✅ runtime / ⏳ service-repo CI |
-| 16 | **Issue reports are structured** | GitHub **issue forms** (`blank_issues_enabled: false`) — GitHub enforces the form | free-text issues with no repro/version | `.github/ISSUE_TEMPLATE/` | ✅ live once on the **default branch** (see Aaron-action A) |
-| 17 | **Security disclosures are private** | GitHub **private vulnerability reporting** + `SECURITY.md` + issue-template `config.yml` contact link | a public 0-day issue | `SECURITY.md`, `.github/ISSUE_TEMPLATE/config.yml` + repo Security setting | ✅ files / ⏳ enable "Private vulnerability reporting" (Aaron-action) |
+| 16 | **Issue reports are structured** | GitHub **issue forms** (`blank_issues_enabled: false`) — GitHub enforces the form | free-text issues with no repro/version | `.github/ISSUE_TEMPLATE/` | ✅ live once on the **default branch** (see maintainer-action A) |
+| 17 | **Security disclosures are private** | GitHub **private vulnerability reporting** + `SECURITY.md` + issue-template `config.yml` contact link | a public 0-day issue | `SECURITY.md`, `.github/ISSUE_TEMPLATE/config.yml` + repo Security setting | ✅ files / ⏳ enable "Private vulnerability reporting" (maintainer-action) |
 | 18 | **Dependencies stay current** | **Dependabot** (grouped weekly PRs) — native | dependency rot piling into a scary backlog | `.github/dependabot.yml` | ✅ live |
 | 19 | **PR-checklist items generally** | Converted to jobs 6–9 where automatable; the rest is the template | — | `.github/PULL_REQUEST_TEMPLATE.md` | ✅ (automatable items are now checks, not checkboxes) |
 | 20 | **0.2 can't ship with open prerequisite milestones** | `tools/check_release_milestones.py` — reads `tools/release-gates.json` (declared prerequisites) + an anti-drift cross-check (any `0.2`-prefixed milestone not listed fails); **fail-closed**; `--force "reason"` override recorded. Runs in `release.yml` (CI-visible) and is **called by `wylde-release publish`** (binding — spec) | tagging/publishing 0.2 while milestone `(1) gate & hygiene` or `(2) verified build` has open issues | `release.yml` + `tools/release-gates.json` | ✅ CI / ⏳ wylde-release wiring |
 | 21 | **No performance/quality regression past a threshold (L5 benchmark guardrail)** | **`wylde-release bench`** runs the eval harnesses against live Ollama, medians over reps, and compares each metric to the committed baseline (`benchmarks/baselines/wylde-benchmarks.json`) with a **noise-calibrated per-metric band** — **fails** on a real regression, **warns** on a small one, **flags** an improvement to re-record. Run inside `preflight`, so it rides the receipt gate (row 14). | a silent latency/success/token regression shipping — "planning got 2× slower and nothing noticed" | `tools/wylde-release` (`bench`) + `benchmarks/` | ✅ **built + baselined** (reasoning fast/think arms recorded); retrieval invariants wired, baseline pending the T0.5 re-index |
 | 22 | **Baselines can't drift upward silently** | The baseline moves **only** on an explicit `wylde-release bench --accept-baseline`; a compare run never rewrites it, and re-recording **preserves tuned bands** (values move, policy doesn't). A regression can become the new normal only on purpose. | a bad number quietly becoming the accepted baseline | `tools/wylde-release` | ✅ built |
 | 23 | **Benchmark trend is retained, not just last-compare** | Every `bench`/`preflight` run appends a JSON line (timestamp, commit, green?, all values) to `outputs/benchmarks/history.jsonl` in the **private planning repo** (junctioned in) — drift over time, not just pass/fail. Silent no-op when the junction isn't mounted. | losing the "benchmarks to work from" record | `tools/wylde-release` + planning repo | ✅ built |
+| 24 | **No personal identifiers in the public repo (G8)** | CI job `personal-info scrub (G8)` — runs `wylde_check` rule 55 (`no_personal_identifiers`) over the tree plus that rule's own self-tests; **fails**, not warns. Name tokens are matched as salted SHA-256 digests, and findings print `file:line` only, so neither the rule source nor its CI log carries the name. | the maintainer's real name, or any contributor's home-directory path, landing in a public repo — **and silently regrowing**: the 2026-05-31 scrub drove both to zero by hand and recorded "0 remaining", yet seven weeks later the tree held ~175 name occurrences across ~70 files and 11 personal paths across 8 files, because nothing failed in between | `Core/harness/dev/wylde_check/rules/_personal_identifiers.py` + `ci.yml` (`personal-info` job) | ✅ live (CI) — added 2026-07-19. Deliberately scoped to this one rule rather than the full `run_all()` sweep, which still has pre-existing findings in other rules and is being wired into CI separately (#114); gating on the whole suite today would just be red. Fold into #114's job when that lands. **Not** a required status check yet — see maintainer-action E. |
 
-**Legend:** ✅ live = active now on the trunk. ⏳ apply/build/required = needs a one-time Aaron action
+**Legend:** ✅ live = active now on the trunk. ⏳ apply/build/required = needs a one-time maintainer action
 (below) or a tracked T0.1 build item.
 
 ---
@@ -63,7 +64,7 @@ lifecycle tracking is CI-enforced too: `.github/workflows/plans-check.yml` → `
 | P5 | Surface stale `active` plans | `check_plans.py` — **warn** when an `active` doc is >90d unreviewed | — (warn only; a machine can't force a re-read) | ✅ |
 
 Negative-tested: a bogus status, a dangling `superseded_by`, and a hand-edited index each fail the
-check. **Optional Aaron-action:** add a branch ruleset requiring the "Planning check" status on the
+check. **Optional maintainer-action:** add a branch ruleset requiring the "Planning check" status on the
 planning repo's `main` (same pattern as Core's rulesets) if you want it to *block* direct pushes
 rather than just go red.
 
@@ -171,7 +172,7 @@ CI-visible backstop. Tracked in the ship issues (#33 preflight tool, #38 publish
 
 ---
 
-## Aaron-actions — exact commands (one-time; needs your GitHub auth)
+## maintainer-actions — exact commands (one-time; needs your GitHub auth)
 
 `gh` is authenticated (`repo`, `workflow` scopes) and the repo is public, so rulesets are available.
 **Do these in order** — rulesets require the checks to already exist as *observed* runs, and community
@@ -246,7 +247,24 @@ gh api -X POST repos/PeopleWonder/wylde/rulesets --input .github/rulesets/protec
 > (protect-main) and expect **13** contexts each. (#49 applied its two contexts live but never updated
 > these JSONs; the drift sat undetected until #57 reconciled them.)
 
-**E. (Optional, when a second contributor appears)** flip `required_approving_review_count` to 1 in the
+**E. Make the personal-info scrub a required check (G8).** The `personal-info scrub (G8)` job runs on
+every PR from the commit that added it, but a job that merely *reports* red is advisory — it does not
+block a merge until its context is in both rulesets. This is the one gate whose whole point is that
+nobody has to remember it, so leaving it advisory reproduces the failure it exists to prevent.
+
+Apply **after** at least one run has been observed (rulesets only accept contexts GitHub has seen), and
+remember the replace-not-merge warning above — edit the JSONs so they carry the **full 14**-context
+list, then:
+
+```bash
+# Add "personal-info scrub (G8)" to required_status_checks in BOTH ruleset JSONs first, then:
+gh api -X PUT repos/PeopleWonder/wylde/rulesets/19015304 --input .github/rulesets/protect-develop.json
+gh api -X PUT repos/PeopleWonder/wylde/rulesets/19015305 --input .github/rulesets/protect-main.json
+# Verify both report 14 contexts:
+gh api repos/PeopleWonder/wylde/rulesets/19015304 --jq '.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks | length'
+```
+
+**F. (Optional, when a second contributor appears)** flip `required_approving_review_count` to 1 in the
 ruleset JSONs and add a `CODEOWNERS`. Not before — see §6.1.
 
 **What stays yours to run, not automatable:** the `wylde-release preflight`/`publish` receipt gate

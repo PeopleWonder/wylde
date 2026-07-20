@@ -1,7 +1,7 @@
 //! `wylde-release` — sign + publish Wylde GUI builds for the Phase 12.5
 //! self-updater (slice 3b).
 //!
-//! A small developer tool that runs on Aaron's release machine only. It
+//! A small developer tool that runs on the maintainer's release machine only. It
 //! wraps two external CLIs:
 //!
 //!   * **`rsign`** (rsign2) — minisign keypair generation + detached

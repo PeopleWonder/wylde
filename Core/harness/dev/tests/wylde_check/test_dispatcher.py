@@ -101,6 +101,10 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
         # file goes quiet, not red, so the next such deletion has to be
         # caught by the engine checking itself (#116).
         "rule_targets_exist",
+        # Rule 55 — personal identifiers in a public repo (scrub-drift
+        # slice, 2026-07-19): real home-directory paths, and the
+        # maintainer's name matched as salted digests.
+        "no_personal_identifiers",
     }
     assert set(result["data"]["summary"]["by_rule"].keys()) == expected
 
@@ -123,7 +127,7 @@ def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
     #116 was about.  Bump this when a rule is genuinely added or retired.
     """
     wc, _root = isolated_tree
-    assert len(wc._RULES) == 51
+    assert len(wc._RULES) == 52
     result = wc.run_all()
     assert result["ok"] is True
     assert result["data"]["rules_checked"] == len(wc._RULES)

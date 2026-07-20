@@ -310,8 +310,8 @@ The planning + handoff dir. Important entries:
 
 the Wylde user's Claude sessions persist memory between conversations at
 `%USERPROFILE%\.claude\projects\<repo-path-slug>\memory\`, where `<repo-path-slug>` is the repo's
-absolute path with drive/separator characters replaced by `-` (for the current checkout at
-`C:\Users\aaron\Wylde\Core`, that is `C--Users-aaron-Wylde-Core`). The slug is **derived from wherever
+absolute path with drive/separator characters replaced by `-` (for a checkout at
+`C:\Users\<you>\Wylde\Core`, that is `C--Users-<you>-Wylde-Core`). The slug is **derived from wherever
 the repo lives**, so it changes if the tree moves — it previously read
 `C--Users-<user>-Documents-Obsidian-Vault-Wylde`, from the retired Obsidian-vault location (#31). The
 directory is **outside the repo** — it's part of the Claude config, not version-controlled with Wylde.

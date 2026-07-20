@@ -241,7 +241,7 @@ pub fn updates_section(
 }
 
 /// Display label for the persisted channel string. The wire value stays
-/// `"beta"` end-to-end; only the user-facing word is "Experimental" (Aaron's
+/// `"beta"` end-to-end; only the user-facing word is "Experimental" (the maintainer's
 /// wording). Keep this the single source of the label so the pill, the
 /// warning modal, and any status text never drift apart.
 fn channel_label(channel: &str) -> &'static str {
@@ -729,7 +729,7 @@ pub fn ollama_loading_card() -> gpui::Div {
     )
 }
 
-/// State 1 — no model selected. A small muted header (Aaron's exact
+/// State 1 — no model selected. A small muted header (the maintainer's exact
 /// wording) plus a "Go to Models panel" link; deliberately *not* a full
 /// card with subtext.
 fn ollama_empty_state(cx: &mut Cx) -> gpui::Div {
@@ -1475,7 +1475,7 @@ pub fn auto_check_consent_modal(cx: &mut Cx) -> gpui::Div {
 }
 
 /// Warning modal shown when switching TO the Experimental branch (req 6).
-/// The body is Aaron's copy, verbatim — do not paraphrase or fix casing.
+/// The body is the maintainer's copy, verbatim — do not paraphrase or fix casing.
 /// Fires only on stable → experimental; switching back to Stable is free.
 pub fn channel_warning_modal(cx: &mut Cx) -> gpui::Div {
     modal_shell(

@@ -569,7 +569,7 @@ fn active_file_focus_boost(
 /// **not** applied to a fused score (RRF scores are scale-free); its *purpose* —
 /// "off-topic injects nothing" — is preserved by the on-topic gate, which a
 /// strong exact-token BM25 hit at low cosine **passes** (the approved bypass,
-/// confirmed by Aaron). That bypass is the recall win.
+/// confirmed by the maintainer). That bypass is the recall win.
 fn dynamic_k_fused(
     scored: &[(f64, f64, Option<f64>, IndexedChunk)],
     k: usize,

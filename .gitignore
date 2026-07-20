@@ -84,12 +84,45 @@ secrets.json
 *.secret
 *.secret.*
 
+# Key / certificate material — never committed. Until 2026-07-19 the only
+# key patterns in the repo lived in rust/crates/wylde-updater/keys/.gitignore,
+# so they protected exactly one directory: a private key dropped anywhere
+# else (a crate root, tools/, a scratch dir) was stageable. These are the
+# repo-wide backstop. The updater's signing key is the live example —
+# `wylde-signing.key` must never leave the dev host (docs/self-updater-design.md).
+*.key
+*.pem
+*.sec
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.kdbx
+*.gpg
+*.asc
+.netrc
+.htpasswd
+
+# WireGuard / VPN peer configs — a generated wylde-vpn client config carries
+# a live private key and the operator's real endpoint. The wylde-vpn crate
+# builds these at runtime; none belong in the tree.
+wg*.conf
+*.wgconf
+
+# Certificates: `*.crt` / `*.cer` are public halves and some are legitimately
+# vendored (e.g. Core/Memgraph's neo4j.cer), so they are NOT blanket-ignored
+# here — a private key is what matters, and the patterns above cover it.
+
 Core/Memgraph/vendor/
 
 # ─── PLANNING DOCS: PRIVATE, *NOT* UNTRACKED — read this before assuming ───
 #
 # `docs/plans/` is a **DIRECTORY JUNCTION** into a separate private repo:
-#     C:\Users\aaron\Wylde\Core\docs\plans  ->  C:\Users\aaron\Wylde\wylde-planning\plans
+#     <WYLDE_ROOT>\Core\docs\plans  ->  <WYLDE_ROOT>\wylde-planning\plans
 #
 # Ignoring it HERE is the mechanism that keeps internal strategy out of THIS
 # public repo. It does **not** mean the content is untracked, local-only, or

@@ -292,7 +292,7 @@ pub async fn handle_get_default(_payload: Value) -> Reply {
 
 /// `models.get_effective` — the model whose defaults would apply to the
 /// *next* chat turn, resolving the inference-bar pick first and the
-/// starred default second (Aaron's "B with A fallback").
+/// starred default second (the maintainer's "B with A fallback").
 ///
 /// Resolution order: active (`active_model.json`) → default
 /// (`default_model.json`) → `WYLDE_DEFAULT_MODEL` env → `null`. The two

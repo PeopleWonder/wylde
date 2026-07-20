@@ -109,7 +109,7 @@ fn embed_query(client: &reqwest::blocking::Client, text: &str) -> Option<Vec<f32
     (!vec.is_empty()).then_some(vec)
 }
 
-/// The DRAFT gold set — grounded in real Wylde source (Aaron VETs + extends, same
+/// The DRAFT gold set — grounded in real Wylde source (the maintainer VETs + extends, same
 /// disclaimer as the routing gold set). The **lexical class** is exact
 /// identifiers / error codes / rare tokens the embedder blurs (where the BM25 arm
 /// is expected to win); the **semantic class** is topical queries dense already
@@ -283,7 +283,7 @@ fn run_full_eval() {
          The arms rank the full candidate set top-k (no production dynamic-k / \
          MMR) so recall@k isolates *ranking* quality; the cutoff itself is the \
          floor-calibration table below. The gold set is a DRAFT grounded in real \
-         Wylde source — Aaron vets + extends.\n\n",
+         Wylde source — the maintainer vets + extends.\n\n",
         chunks.len(),
         query_vecs.len(),
         K,

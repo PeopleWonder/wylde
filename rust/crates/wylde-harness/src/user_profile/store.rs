@@ -120,12 +120,12 @@ mod tests {
     fn with_store_persists_and_reloads() {
         let _env = TestEnv::new();
         with_store(|s| {
-            s.profile.name = Some("Aaron".into());
+            s.profile.name = Some("Sam".into());
             s.profile.free_text_rules = "Be terse.".into();
         })
         .unwrap();
         let back = read();
-        assert_eq!(back.profile.name.as_deref(), Some("Aaron"));
+        assert_eq!(back.profile.name.as_deref(), Some("Sam"));
         assert_eq!(back.profile.free_text_rules, "Be terse.");
     }
 

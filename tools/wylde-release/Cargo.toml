@@ -5,7 +5,7 @@
 # backend workspace (`rust/Cargo.toml`) or the GUI workspace
 # (`Core/GUI/Cargo.toml`):
 #
-#   * It only ever runs on Aaron's release machine — it has no place in
+#   * It only ever runs on the maintainer's release machine — it has no place in
 #     the shipped dependency graph, and pulling `clap` into the backend
 #     lock file for a tool no user ever runs would be noise.
 #   * It shells out to `rsign` and `gh` via `std::process::Command`.  The

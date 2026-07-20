@@ -1,6 +1,6 @@
 # Dependency hygiene policy
 
-_Owner: Aaron. Established 2026-07-14. Next scheduled review: **2026-10-14** (quarterly)._
+_Owner: the maintainer. Established 2026-07-14. Next scheduled review: **2026-10-14** (quarterly)._
 
 This is the standing policy for keeping Wylde's dependencies current and its
 advisory posture honest, so updates flow in as small reviewable PRs instead of

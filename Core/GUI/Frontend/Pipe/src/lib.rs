@@ -805,7 +805,7 @@ pub async fn service_health(service: &str) -> Result<Value, String> {
 
 // ── Reusable service-control affordance (GUI-wide) ────────────────────
 //
-// Aaron's locked decision 7: start/restart/stop backend services from ANYWHERE
+// The maintainer's locked decision 7: start/restart/stop backend services from ANYWHERE
 // in the GUI "for ease of use", not just one panel. These named wrappers over
 // `lifecycle_action` are the shared core every surface drives — the Workspaces
 // error states (down → Start, out-of-date → Restart), the Graph view's

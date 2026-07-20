@@ -449,7 +449,7 @@ const STRANGLER_SERVICES: &[StranglerService] = &[
         // SAME `extensions.dispatch` shape (the Rust impl additionally
         // exposes the nine `ext.*` actions + the `ext.events` stream),
         // so Gateway routing is unchanged. The master-plan §11 Q-E1
-        // dogfood gate was waived by Aaron with the full-Rust call.
+        // dogfood gate was waived by the maintainer with the full-Rust call.
         // `WYLDE_WYLDE_EXTENSION_BRIDGE_IMPL` no longer has a `python`
         // target.
         name: service_name::EXTENSION_BRIDGE,
@@ -1667,7 +1667,7 @@ mod tests {
         // Default impl per row. ALL five are rust-only — device_gate,
         // vram_broker, gateway on 2026-06-02, voice in the Phase 11.E
         // cutover, and extension_bridge in the full-Rust cutover
-        // (2026-06-09, dogfood gate waived by Aaron). The
+        // (2026-06-09, dogfood gate waived by the maintainer). The
         // `python_module` field itself went with the Python runtime
         // tree in slice R6.
         let cases = [

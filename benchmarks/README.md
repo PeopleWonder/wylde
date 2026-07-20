@@ -152,7 +152,7 @@ baking in a 0.0 would be a permanent false pass.
   Once the current tree is re-indexed (T0.5), `bench --accept-baseline` records
   the retrieval numbers automatically. The **mechanism** is complete and tested;
   the **retrieval data** is blocked on that infrastructure task, and the gold
-  set itself is still a draft pending Aaron's vetting.
+  set itself is still a draft pending the maintainer's vetting.
 - **Latency gating is coarse** by design (see the noise section) — it catches
   cliffs, not drift.
 - **Two reps is the preflight default** — enough to median-out a single slow

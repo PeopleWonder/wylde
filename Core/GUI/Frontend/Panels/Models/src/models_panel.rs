@@ -410,7 +410,7 @@ impl ModelsPanel {
 
     /// Pick a catalog suggestion: drop its exact tag into the field and
     /// latch it so the dropdown closes (the user can now hit Pull / Enter
-    /// or keep typing to search again).  Does not start the pull — Aaron
+    /// or keep typing to search again).  Does not start the pull — the maintainer
     /// asked to confirm the size before committing, so selection only
     /// fills the field and surfaces the detail strip.
     pub fn select_catalog(&mut self, tag: String, cx: &mut Context<Self>) {
@@ -1865,7 +1865,7 @@ pub(crate) fn searchable_text(m: &InstalledModel) -> String {
 ///     Equal scores fall back to name order so the list is deterministic
 ///     across renders instead of jittering.
 ///
-/// Fuzzy (subsequence) matching gives the UX Aaron asked for: "qwen"
+/// Fuzzy (subsequence) matching gives the UX the maintainer asked for: "qwen"
 /// matches every qwen tag, the typo "lama" still hits "llama3.2" (l-a-m-a
 /// is a subsequence), and a fragment like "32b" narrows to the 32b tags —
 /// all ranked rather than an unordered substring set.

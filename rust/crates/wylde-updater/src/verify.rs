@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn embedded_key_is_a_real_production_key() {
-        // The dev placeholder was replaced with Aaron's real signing key
+        // The dev placeholder was replaced with the maintainer's real signing key
         // (baked 2026-06-04), so the fail-closed guard no longer trips and
         // the convenience flag agrees a usable key is embedded.
         assert_ne!(PUBLIC_KEY, pubkey::PLACEHOLDER);

@@ -329,7 +329,7 @@ mod tests {
         // Past the hour → allowed.
         assert!(admit(&store, &c, 1000 + 3601).is_ok());
         // A different field is unaffected.
-        let other = cand("name", "Aaron", 0.9, None);
+        let other = cand("name", "Sam", 0.9, None);
         assert!(admit(&store, &other, 1000 + 1800).is_ok());
     }
 
@@ -377,8 +377,8 @@ mod tests {
         let mut store = ProfileStore::default();
         store
             .pending
-            .push(mint(cand("name", "Aaron", 0.9, None), 1000));
-        let dup = cand("name", "Aaron", 0.9, None);
+            .push(mint(cand("name", "Sam", 0.9, None), 1000));
+        let dup = cand("name", "Sam", 0.9, None);
         assert_eq!(admit(&store, &dup, 5000), Err(AdmitError::DuplicatePending));
     }
 
@@ -413,7 +413,7 @@ mod tests {
         });
         record_rejection(
             "name",
-            "Aaron",
+            "Sam",
             REJECTION_SUPPRESSION_SECS + 100,
             &mut store,
         );
@@ -424,9 +424,9 @@ mod tests {
 
     #[test]
     fn scan_detects_naming_request() {
-        let c = scan_user_message("Hey, call me Aaron please", None, Some("c1")).unwrap();
+        let c = scan_user_message("Hey, call me Sam please", None, Some("c1")).unwrap();
         assert_eq!(c.field, "name");
-        assert_eq!(c.proposed, "Aaron");
+        assert_eq!(c.proposed, "Sam");
         assert!(c.confidence >= CONFIDENCE_THRESHOLD);
 
         // "my name is" variant.
@@ -434,19 +434,19 @@ mod tests {
         assert_eq!(c.proposed, "Wylde");
 
         // No-op when the name already matches, or no marker present.
-        assert!(scan_user_message("call me Aaron", Some("Aaron"), None).is_none());
+        assert!(scan_user_message("call me Sam", Some("Sam"), None).is_none());
         assert!(scan_user_message("what's the weather", None, None).is_none());
     }
 
     #[test]
     fn reflect_after_turn_admits_then_suppresses_repeat() {
         let _env = TestEnv::new();
-        let id = reflect_after_turn("c1", "please call me Aaron");
+        let id = reflect_after_turn("c1", "please call me Sam");
         assert!(id.is_some());
         assert_eq!(store::read().pending.len(), 1);
         // A second identical detection is refused (duplicate-pending), so
         // the queue doesn't grow.
-        let again = reflect_after_turn("c1", "call me Aaron");
+        let again = reflect_after_turn("c1", "call me Sam");
         assert!(again.is_none());
         assert_eq!(store::read().pending.len(), 1);
     }

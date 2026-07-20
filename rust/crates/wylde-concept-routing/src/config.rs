@@ -154,7 +154,7 @@ pub struct RoutingConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Never inject silently (Aaron's lock): show the candidate menu before
+    /// Never inject silently (the maintainer's lock): show the candidate menu before
     /// any injection. Default `true`. **Inert until R2** (no injection yet).
     #[serde(default = "default_true")]
     pub curate_before_inject: bool,

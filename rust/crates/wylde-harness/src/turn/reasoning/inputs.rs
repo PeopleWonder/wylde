@@ -28,7 +28,7 @@
 //! suppressed this turn (with the before→after activation), and the
 //! authored `X IS NOT Y` boundary edges touching the live set.
 //!
-//! ## D2 relaxation (Aaron, 2026-07-13 — decision 3, do not "fix" back)
+//! ## D2 relaxation (the maintainer, 2026-07-13 — decision 3, do not "fix" back)
 //!
 //! [`select_lessons`] reads the long-term reflection store directly,
 //! INCLUDING on workspace-bound Deep turns, without the D2 workspace

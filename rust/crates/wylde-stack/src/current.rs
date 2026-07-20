@@ -460,7 +460,7 @@ mod tests {
         );
     }
 
-    /// **Aaron's rig must keep working.** With no pointer, the daemon
+    /// **The maintainer's rig must keep working.** With no pointer, the daemon
     /// resolves to exactly the file the old launcher's candidate order would
     /// have picked.
     #[test]

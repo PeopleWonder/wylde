@@ -202,13 +202,13 @@ mod tests {
             cfg,
             "plugin.fixture.ping",
             TIER_TOOL_USE,
-            json!({"name": "Aaron"}),
+            json!({"name": "Sam"}),
         )
         .await;
         assert_eq!(outcome.canonical_id, "plugin_fixture_ping");
         let ok = outcome.result.expect("plugin handler runs");
         assert_eq!(ok["status"], "success");
-        assert_eq!(ok["pong"], "Aaron");
+        assert_eq!(ok["pong"], "Sam");
     }
 
     // ── more host behavior against the fixture plugin ───────────────

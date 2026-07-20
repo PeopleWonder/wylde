@@ -2,7 +2,7 @@
 //!
 //! **Conceptual path:** `Core/Harness/Workspaces/Registry/`.
 //!
-//! This is Aaron's "workspaces memory of some sort that stores each
+//! This is the maintainer's "workspaces memory of some sort that stores each
 //! workspace configuration" — the *config* tier, distinct from the
 //! per-workspace memory-entries layer in [`super::memory`].
 //!

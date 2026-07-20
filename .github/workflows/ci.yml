@@ -124,6 +124,51 @@ jobs:
         shell: bash
         run: bash tools/check-versions.sh
 
+  # --- Personal-info scrub (G8) — this repo is public.
+  #
+  # Narrow on purpose: it runs ONE wylde_check rule (55,
+  # `no_personal_identifiers`) plus that rule's own tests, not the whole
+  # suite. The full `run_all()` sweep still reports pre-existing findings in
+  # other rules and is being wired into CI separately (#114); gating on it
+  # today would just be red. This job gates only the guarantee it owns, so it
+  # is green from the first commit and fails the moment personal data returns.
+  #
+  # Why it exists at all: the 2026-05-31 scrub drove the maintainer's name and
+  # home-directory paths to zero BY HAND and recorded "0 remaining". Seven
+  # weeks later the tree held ~175 name occurrences and 11 personal paths
+  # again. Nothing failed in between, so nothing stopped it — a hand-audited
+  # number is a snapshot, not a guarantee. When #114 lands its broader
+  # wylde_check job, this one can fold into it; until then it is the gate.
+  personal-info:
+    name: personal-info scrub (G8)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: rule 55 self-tests (the gate must fail when the guarantee breaks)
+        shell: bash
+        run: python -m pytest Core/harness/dev/tests/wylde_check/test_personal_identifiers.py -q
+      - name: rule 55 against the tree (must report zero findings)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, ".")
+          from Core.harness.dev import wylde_check as wc
+
+          findings = wc.check_no_personal_identifiers()
+          for f in findings:
+              # `context` is intentionally empty for name findings so the
+              # name itself never lands in a public CI log.
+              print(f"{f.file}:{f.line}: {f.message}")
+          if findings:
+              print(f"\n{len(findings)} personal-identifier finding(s).")
+              sys.exit(1)
+          print("clean: no personal identifiers in the tree")
+          PY
+
   # --- G4 (clippy, warnings-as-errors) + G6 (fmt --check) — ARMED (was staged).
   # The tree is now clippy- and fmt-clean across every CI-built workspace
   # (issue #32), so these steps FAIL the build on the first warning or

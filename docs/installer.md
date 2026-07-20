@@ -45,7 +45,7 @@ elevation entirely:
    should print e.g. `v3.12`.
 
 > Verified on this box: **NSIS 3.12 portable** at
-> `C:\Users\aaron\Tools\NSIS\nsis-3.12\makensis.exe` — a full pack + per-user
+> `C:\Users\<you>\Tools\NSIS\nsis-3.12\makensis.exe` — a full pack + per-user
 > test install + uninstall round-trip passed (see the build-state memory note).
 
 NSIS is only needed for the final **pack** step. You can stage and inspect

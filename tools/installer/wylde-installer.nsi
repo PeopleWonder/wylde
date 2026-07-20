@@ -197,7 +197,7 @@ SectionEnd
 
 Section /o "Start Wylde when I sign in" SEC_AUTOSTART
   ; Unchecked by default (the /o). Writes the same daemon-first command to
-  ; the per-user Run key. Aaron's stack already supports autostart via the
+  ; the per-user Run key. The maintainer's stack already supports autostart via the
   ; auto-launch crate; this is the installer-managed equivalent.
   WriteRegStr HKCU "${RUN_KEY}" "${PRODUCT_NAME}" \
     '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$INSTDIR\launch_wylde.ps1"'

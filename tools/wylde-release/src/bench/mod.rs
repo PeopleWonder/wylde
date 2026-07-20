@@ -48,7 +48,7 @@ pub const BASELINE_REL_PATH: &str = "benchmarks/baselines/wylde-benchmarks.json"
 /// ever compared like-for-like, and so the numbers mean something to a reader.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HostEnv {
-    /// Free-text rig label, e.g. "Aaron's dev rig".
+    /// Free-text rig label, e.g. "Sam's dev rig".
     pub label: String,
     pub cpu: String,
     pub gpu: String,

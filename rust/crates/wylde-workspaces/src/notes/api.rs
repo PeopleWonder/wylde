@@ -200,13 +200,13 @@ mod tests {
         let ws = "ws-notes-copyin-000000";
         let added = handle_add(json!({
             "workspace_id": ws,
-            "text": "Aaron prefers Bash over PowerShell",
+            "text": "Sam prefers Bash over PowerShell",
             "source": "long-term-copy",
         }))
         .await;
         assert!(added.ok, "add failed: {:?}", added.error);
         assert_eq!(added.data["source"], "long-term-copy");
-        assert_eq!(added.data["text"], "Aaron prefers Bash over PowerShell");
+        assert_eq!(added.data["text"], "Sam prefers Bash over PowerShell");
 
         let listed = handle_list(json!({ "workspace_id": ws })).await;
         assert_eq!(listed.data["count"], 1);
