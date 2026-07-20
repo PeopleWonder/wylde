@@ -107,7 +107,7 @@ stop"; it returns 11. `count` is gated by `is_or_was_tracked()`, which is a bare
 each service's runtime manifest under the ambient `WYLDE_ROOT` — so the test **stats the developer's
 real manifests**. 10 of the 12 core teardown steps have one on this box, plus `wylde-organize`
 discovered via `WYLDE_SERVICES` = 11. It read **10 yesterday** (#78) and **11 today**: the number
-tracks Aaron's actual service estate as it grows, which is the tell that it is measuring the machine
+tracks the maintainer's actual service estate as it grows, which is the tell that it is measuring the machine
 rather than the fixture. Pinning the env inside the body cannot fix it — the root is resolved before
 the body runs — so it needs the root *injected*
 (`registry::discovered_bucket_services_in(<tempdir>)` is the existing seam).
@@ -272,7 +272,7 @@ file isn't this issue's business.
 **Status:** CHORE · **Labels:** `chore` · **Area:** dev environment
 
 **Recorded so it isn't forgotten, not because it's broken.** The 2026-07-17 worktree sweep removed the
-14 merged worktrees under `C:\Users\aaron\Wylde\worktrees\`. **`C:\Users\aaron\Wylde\wt-license-gate`
+14 merged worktrees under `<WYLDE_ROOT>\worktrees\`. **`<WYLDE_ROOT>\wt-license-gate`
 (`chore/license-compliance-gate`) sits outside that directory** and was left alone: the approval was
 scoped to `worktrees\`, and widening it on a technicality wasn't this sweep's call.
 

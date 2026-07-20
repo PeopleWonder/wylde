@@ -1037,13 +1037,13 @@ mod tests {
     #[test]
     fn user_profile_parses_all_fields() {
         let p = UserProfile::from_value(&json!({
-            "name": "Aaron",
+            "name": "Sam",
             "style": "terse",
             "free_text_rules": "Show diffs.",
             "preferences": {"tone": "dry"},
             "recurring_topics": ["rust", "gpui"]
         }));
-        assert_eq!(p.name, "Aaron");
+        assert_eq!(p.name, "Sam");
         assert_eq!(p.style, "terse");
         assert_eq!(p.free_text_rules, "Show diffs.");
         assert_eq!(p.preferences, vec![("tone".to_owned(), "dry".to_owned())]);
@@ -1092,8 +1092,8 @@ mod tests {
         assert_eq!(rej["payload"]["proposal_id"], "p2");
 
         // update sends the field patch directly.
-        let upd = profile_request("user_profile.update", json!({"name": "Aaron"}));
+        let upd = profile_request("user_profile.update", json!({"name": "Sam"}));
         assert_eq!(upd["action"], "user_profile.update");
-        assert_eq!(upd["payload"]["name"], "Aaron");
+        assert_eq!(upd["payload"]["name"], "Sam");
     }
 }

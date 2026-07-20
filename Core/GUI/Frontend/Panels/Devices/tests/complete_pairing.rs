@@ -76,7 +76,7 @@ fn a_phone_completing_pairing_closes_the_card_and_lands_the_new_device(cx: &mut 
             "device_gate.list_devices",
             json!({ "devices": [{
                 "device_id": "dev-newphone",
-                "name": "Aaron's Pixel",
+                "name": "Sam's Pixel",
                 "tier": "read_only",
                 "paired_at": 1_784_226_899.0,
                 "last_seen": 1_784_226_899.0,

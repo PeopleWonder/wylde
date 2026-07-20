@@ -27,7 +27,7 @@
 //!   `WYLDE_OLLAMA_RECLAIM_SUPERSEDED` is explicitly enabled. Out of the
 //!   box a slot change *logs* the superseded model and its size and
 //!   deletes nothing — the operator opts in to actual reclaim. This is
-//!   Aaron's consent-gate ethos: a self-hosted app never silently deletes
+//!   The maintainer's consent-gate ethos: a self-hosted app never silently deletes
 //!   a model the user pulled.
 //! * **Pins always win.** `WYLDE_OLLAMA_GC_PINS` (comma-separated tags)
 //!   are passed as protected; the GC engine keeps referenced ∪ pinned out
@@ -35,7 +35,7 @@
 //!
 //! The fuller "sweep every unreferenced model" policy is left to an
 //! explicit operator-driven `ollama.gc` call (no `superseded` field) and
-//! is deliberately NOT auto-wired here — flagged for Aaron.
+//! is deliberately NOT auto-wired here — flagged for the maintainer.
 
 use std::collections::BTreeSet;
 

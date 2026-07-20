@@ -3,7 +3,7 @@
 //! the sibling of [`super::routing_bridge`] and [`super::relations_bridge`].
 //!
 //! Given the user-curated concept ids and the turn's already-embedded query
-//! vector, this builds the two payloads Aaron's "lean C" injects:
+//! vector, this builds the two payloads the maintainer's "lean C" injects:
 //!
 //! 1. a **boundary blurb** per concept — `Label — description. (depends on X;
 //!    not related to Y, Z.)` drawn from the concept's description plus its
@@ -18,7 +18,7 @@
 //! **Augment, never replace:** the result is returned alongside the existing
 //! RAG snippets (which still run unchanged) — strictly *more* context than
 //! today, never a substitution. An empty curated set ⇒ empty injection ⇒ the
-//! turn falls through to today's RAG (Aaron's lock: curated-empty injects
+//! turn falls through to today's RAG (the maintainer's lock: curated-empty injects
 //! nothing).
 //!
 //! **Removal test:** delete this file + the `concept_context` plumbing and the

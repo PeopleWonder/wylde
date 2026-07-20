@@ -106,7 +106,7 @@ pub async fn handle_concept_routing_set(payload: Value) -> Reply {
 /// serialized [`ReasoningConfig`](crate::turn::reasoning::ReasoningConfig)
 /// (`{enabled, slots{embedder,fast,reasoner}, mode, default_depth,
 /// auto_escalate, replan_budget, tier_budgets, reflect_gate}`).
-/// Default-off on a fresh install; the default slots implement Aaron's
+/// Default-off on a fresh install; the default slots implement the maintainer's
 /// 2026-07-13 same-model decision (fast == reasoner ⇒ mode single).
 pub async fn handle_reasoning_get(_payload: Value) -> Reply {
     let cfg = crate::turn::reasoning::ReasoningConfig::current();
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(got.data["default_depth"], json!("fast"));
         assert_eq!(
             got.data["slots"]["fast"], got.data["slots"]["reasoner"],
-            "Aaron 2026-07-13: plan+execute on the same model"
+            "maintainer 2026-07-13: plan+execute on the same model"
         );
 
         // Partial patch: flip only `enabled`; slots + knobs keep values.

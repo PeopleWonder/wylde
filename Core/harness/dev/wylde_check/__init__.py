@@ -348,6 +348,19 @@ The rules:
                             sites and empties when B9 migrates them.
                             Test fixtures opt out with
                             ``// wylde-check: prompt-literal-ok``.
+55. ``no_personal_identifiers`` — this repo is public.  Flags (A) real
+                            home-directory paths (``C:\\Users\\<x>``,
+                            ``/home/<x>``, ``/Users/<x>``) whose segment
+                            is not a recognised placeholder, and (B) the
+                            maintainer's name, matched as **salted
+                            SHA-256 digests** so the rule does not itself
+                            carry the name it removes.  Added 2026-07-19
+                            after the 2026-05-31 hand scrub — which
+                            recorded "0 remaining" — drifted back to ~175
+                            name occurrences and 11 personal paths in
+                            seven weeks, with nothing failing in between.
+                            Opt out with
+                            ``wylde-check: personal-identifier-ok``.
 
 All rules are advisory.  The checker returns an envelope; nothing here
 mutates state.
@@ -488,6 +501,9 @@ from .rules._prompts import (  # noqa: E402
 from .rules._silent_skip_in_service_start import (  # noqa: E402
     check_silent_skip_in_service_start,
 )
+from .rules._personal_identifiers import (  # noqa: E402
+    check_no_personal_identifiers,
+)
 from .rules._selfcheck import check_rule_targets_exist  # noqa: E402
 from ._single_file import (  # noqa: E402
     _check_dead_refs_lines,
@@ -580,6 +596,12 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # append-only `OpenOptions` outside the canonical rotation factory —
     # the ad-hoc uncapped sink that let `ipc.jsonl` grow to ~179 MB.
     "no_unbounded_log_sink_rust": check_no_unbounded_log_sink_rust,
+    # Rule 55 — personal identifiers in a public repo (scrub-drift slice,
+    # 2026-07-19). The 2026-05-31 scrub drove the maintainer's name and
+    # home paths to zero by hand; seven weeks later both had regrown,
+    # because nothing failed in between. Name tokens are matched as
+    # salted digests so this rule is not itself the leak.
+    "no_personal_identifiers": check_no_personal_identifiers,
     "rule_targets_exist": check_rule_targets_exist,
 }
 
@@ -601,7 +623,10 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # Enforcement audit (#116, 2026-07-19): +1 (rule 51, rule_targets_exist)
 # = 51 active.  Meta-rule: asserts every other rule's target path still
 # exists, so a refactor cannot silently disarm a gate again.
-assert len(_RULES) == 51, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 51)"
+# Scrub-drift slice (2026-07-19): +1 (rule 55, no_personal_identifiers)
+# = 52 active.  The public-repo personal-info guarantee, which had been
+# a hand-audited number and drifted back to non-zero once already.
+assert len(_RULES) == 52, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 52)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:

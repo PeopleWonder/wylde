@@ -5,7 +5,7 @@
     "date": "2026-07-15",
     "reps": 2,
     "host": {
-      "label": "Aaron's dev rig",
+      "label": "reference dev rig",
       "cpu": "Intel Core Ultra 9 285K",
       "gpu": "NVIDIA RTX 5080 16GB",
       "ram": "DDR5-4800",

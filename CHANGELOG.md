@@ -208,7 +208,7 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   because CI, having no live stack, can never observe this class at runtime (#75).
 - **Three eval/bench targets no longer default to a folder that doesn't exist.** `lexical_eval.rs`,
   `live_eval.rs` (`live_data_dir()`) and `index_bench.rs` each fell back to a hardcoded
-  `C:\Users\aaron\Documents\Obsidian Vault\Wylde-release` path when `WYLDE_ROOT` was unset. That vault
+  `%USERPROFILE%\Documents\Obsidian Vault\Wylde-release` path when `WYLDE_ROOT` was unset. That vault
   is gone, so the fallback silently read a dead directory and the evals reported an empty corpus rather
   than a misconfiguration — the same flattering-green shape #28 was made of. They now **fail closed**
   with a message naming the variable to set (`WYLDE_EVAL_DATA_DIR` / `WYLDE_ROOT`); `index_bench` exits

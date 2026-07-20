@@ -694,7 +694,7 @@ async fn drive_streaming_turn(
     .await;
 
     // Agentic-reasoning S4b: on a FAST turn with reasoning enabled +
-    // auto_escalate, arm the hard-tool-failure watch (Aaron's narrowed
+    // auto_escalate, arm the hard-tool-failure watch (the maintainer's narrowed
     // identity contract: byte-identical EXCEPT after ≥2 hard failures).
     // Pure counting — below the threshold nothing is emitted or changed;
     // toggle off ⇒ `None` and the fast path carries no watch at all.
@@ -1091,7 +1091,7 @@ async fn drive_streaming_turn(
             }
         } else if let Some(watch) = &mut escalation_watch {
             // Agentic-reasoning S4b: the 2nd hard tool failure escalates
-            // this Fast turn to planning (Aaron's narrowed identity
+            // this Fast turn to planning (the maintainer's narrowed identity
             // contract). One-shot — the watch is disarmed whether the
             // escalated PLAN succeeds or fail-softs to plain ReAct.
             if watch.should_escalate() {
@@ -1862,7 +1862,7 @@ mod tests {
     async fn gathered_slots_ride_the_user_message_not_the_system_prompt() {
         // B12: the system message stays byte-stable across turns; volatile
         // gathered slots ride at the head of the current user message.
-        let slots = "\n\n### User profile\nName: Aaron";
+        let slots = "\n\n### User profile\nName: Sam";
         let with_slots = initial_messages(base_system_prompt("stub-model"), &[], "hello", slots);
         let plain = initial_messages(base_system_prompt("stub-model"), &[], "hello", "");
 

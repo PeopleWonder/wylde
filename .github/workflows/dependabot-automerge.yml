@@ -26,7 +26,7 @@
 # 'version-update:semver-patch' and auto-merges too (security fixes should flow
 # fast, and they still pass every gate incl. cargo-deny). A security *minor* or
 # *major* does NOT — it's a semver-minor/major and stops for review. This is
-# Aaron's call, recorded here so the boundary is explicit.
+# The maintainer's call, recorded here so the boundary is explicit.
 #
 # ── What NEVER auto-merges (held for manual review) ─────────────────────────
 #   • minor and major bumps (breaking-change surface — a human looks)

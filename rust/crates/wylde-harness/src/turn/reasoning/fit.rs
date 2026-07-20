@@ -23,7 +23,7 @@ pub struct SlotFit {
     pub total_estimate_bytes: u64,
     /// The VRAM budget priced against. `0` = unknown (broker unreachable).
     pub budget_bytes: u64,
-    /// What the picker would run: `Single` when fast == reasoner (Aaron's
+    /// What the picker would run: `Single` when fast == reasoner (the maintainer's
     /// derivation rule) or when the combo won't co-reside; `Split` when a
     /// genuine split fits.
     pub suggested_mode: ReasonMode,
@@ -235,7 +235,7 @@ mod tests {
         );
     }
 
-    /// Aaron's RTX 5080 budget as the broker reports it (16303 MiB per
+    /// The maintainer's RTX 5080 budget as the broker reports it (16303 MiB per
     /// nvidia-smi, 2026-07-13) — the rig the default slots must fit.
     const DEV_RIG_BUDGET: u64 = 16303 * 1024 * 1024;
 
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn official_35b_a3b_on_the_dev_rig_warns_offload_honestly() {
-        // The model Aaron's ruling swapped OUT, pinned with its real
+        // The model the maintainer's ruling swapped OUT, pinned with its real
         // numbers: qwen3.6:35b-a3b is 23_938_333_577 bytes on disk
         // (× 1.2 est. ≈ 26.8 GiB) vs 15.9 GiB. One brain, so no collapse
         // to suggest — the correct verdict is the DRAM-offload advisory

@@ -21,7 +21,7 @@ pub(crate) const PLACEHOLDER: &str = "PLACEHOLDER_REPLACE_BEFORE_RELEASE";
 
 /// The embedded minisign public key (base64, one line).
 ///
-/// Aaron's production signing key (Ed25519/minisign), key ID
+/// The maintainer's production signing key (Ed25519/minisign), key ID
 /// `DA7E13F4E9F2ACB6`, generated 2026-06-04. The matching **private** key
 /// lives only on the dev host at
 /// `rust/crates/wylde-updater/keys/wylde-signing.key` (gitignored) and is

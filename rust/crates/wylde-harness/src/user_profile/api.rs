@@ -245,13 +245,13 @@ mod tests {
     #[tokio::test]
     async fn update_applies_patch_and_persists() {
         let _env = TestEnv::new();
-        let reply = handle_update(json!({"name": "Aaron", "free_text_rules": "Be terse."})).await;
+        let reply = handle_update(json!({"name": "Sam", "free_text_rules": "Be terse."})).await;
         assert!(reply.ok);
-        assert_eq!(reply.data["name"], "Aaron");
+        assert_eq!(reply.data["name"], "Sam");
         assert_eq!(reply.data["free_text_rules"], "Be terse.");
         // Persisted.
         let again = handle_get(Value::Null).await;
-        assert_eq!(again.data["name"], "Aaron");
+        assert_eq!(again.data["name"], "Sam");
     }
 
     #[tokio::test]

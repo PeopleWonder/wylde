@@ -156,7 +156,7 @@ older ⇒ "you're up to date".
 Every binary is signed with **minisign** (Frank Denis' Ed25519 signature
 format). We chose minisign over hand-rolled `ed25519-dalek` framing because:
 
-- The `.minisig` container is a well-specified, widely-tooled format. Aaron can
+- The `.minisig` container is a well-specified, widely-tooled format. The maintainer can
   sign with the standard `rsign2` CLI (pure Rust) on any machine without our
   code present.
 - `minisign-verify` is a **zero-dependency** verifier crate — the smallest
@@ -203,9 +203,9 @@ repo therefore:
 - ships `keys/pubkey.pub.example` documenting the on-disk `.pub` format,
 - gitignores the private key material (`rust/crates/wylde-updater/keys/*.key`,
   `*.sec`, and any `.wylde-release/` dir) so a real signing key can sit beside
-  the source on Aaron's machine without ever being staged.
+  the source on the maintainer's machine without ever being staged.
 
-See [Key management](#key-management--release-runbook) for how Aaron generates
+See [Key management](#key-management--release-runbook) for how the maintainer generates
 the real key and swaps the placeholder.
 
 ---
@@ -276,12 +276,12 @@ blocking pool — the same bridge the named-pipe IO already uses.
 > **Status: the production key has been generated and baked in (2026-06-04).**
 > Key ID `DA7E13F4E9F2ACB6`, base64
 > `RWS2rPLp9BN+2obJk6h80IJAlurEyac8bz7REt0ea7v6uLG2AoppP0kb`. The private key
-> lives **only** on Aaron's dev host at
+> lives **only** on the maintainer's dev host at
 > `rust/crates/wylde-updater/keys/wylde-signing.key` (gitignored, never
 > committed). The one-time procedure below is retained for **key rotation**;
 > for a normal cut skip to [per release](#per-release-build--sign--publish).
 
-Aaron generated the key once, on his dev machine, and it never enters the repo.
+The maintainer generated the key once, on their dev machine, and it never enters the repo.
 We standardise on `rsign2`, the pure-Rust minisign CLI (honours the
 everything-Rust rule).
 

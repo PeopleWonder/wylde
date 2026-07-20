@@ -414,7 +414,7 @@ broken service is **non-fatal** — Core logs a warning and skips the spawn (`st
 
 ### 8.1 The `min_core` compatibility floor — **implemented** (decided requirement)
 
-Aaron confirmed the decision: **service repos version independently and declare a minimum-Core
+The maintainer confirmed the decision: **service repos version independently and declare a minimum-Core
 compatibility floor; not lockstep.** This is built and shipped in `wylde-lifecycle` (not a
 post-0.2 spec) — code + tests below.
 

@@ -58,7 +58,7 @@ pub struct BenchArgs {
     #[arg(long)]
     pub reuse_out: bool,
     /// Human rig label recorded in a baseline.
-    #[arg(long, default_value = "Aaron's dev rig")]
+    #[arg(long, default_value = "Sam's dev rig")]
     pub host_label: String,
     /// Don't append this run to the trend history.
     #[arg(long)]
@@ -95,7 +95,7 @@ pub struct PreflightArgs {
     /// Reuse existing harness output in `--out` instead of re-running.
     #[arg(long)]
     pub reuse_out: bool,
-    #[arg(long, default_value = "Aaron's dev rig")]
+    #[arg(long, default_value = "Sam's dev rig")]
     pub host_label: String,
     #[arg(long)]
     pub no_history: bool,

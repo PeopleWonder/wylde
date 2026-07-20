@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// The wire form is `"<prefix>:<source-id>"`, split on the **first** colon so a
 /// source id that itself contains colons round-trips:
 ///   * `concept:dir:src/graph` | `concept:sem:0007` -- a concept node
-///   * `vocab:nextcloud`                             -- a vocabulary anchor node
+///   * `vocab:photos`                             -- a vocabulary anchor node
 ///   * `node:0003`                                   -- an overlay-only node (H1+)
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NodeId(pub String);
@@ -228,16 +228,13 @@ mod tests {
     #[test]
     fn node_id_constructors_and_split() {
         assert_eq!(NodeId::concept("sem:0007").as_str(), "concept:sem:0007");
-        assert_eq!(NodeId::vocab("nextcloud").as_str(), "vocab:nextcloud");
+        assert_eq!(NodeId::vocab("photos").as_str(), "vocab:photos");
         // Split is on the FIRST colon, so a colon-bearing concept id survives.
         assert_eq!(
             NodeId::concept("dir:src/graph").split(),
             Some(("concept", "dir:src/graph"))
         );
-        assert_eq!(
-            NodeId::vocab("nextcloud").split(),
-            Some(("vocab", "nextcloud"))
-        );
+        assert_eq!(NodeId::vocab("photos").split(), Some(("vocab", "photos")));
     }
 
     #[test]

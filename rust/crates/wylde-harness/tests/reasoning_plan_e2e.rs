@@ -1387,7 +1387,7 @@ fn set_reasoning(cfg: ReasoningConfig) {
 const FAIL_CALL_A: &str = "{\"name\": \"voice.mic.chunks\", \"arguments\": {}}";
 const FAIL_CALL_B: &str = "{\"name\": \"voice.wakeword.events\", \"arguments\": {}}";
 
-/// Aaron's narrowed contract, the identity half: reasoning enabled + Fast
+/// The maintainer's narrowed contract, the identity half: reasoning enabled + Fast
 /// with ZERO or ONE hard tool failure stays byte-identical to trunk —
 /// same event transcript, same request bodies, zero reasoner calls.
 #[tokio::test]

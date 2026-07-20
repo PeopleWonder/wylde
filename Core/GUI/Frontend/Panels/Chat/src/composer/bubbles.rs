@@ -374,7 +374,7 @@ mod tests {
                 "name": "set_active",
                 "body": "fn set_active() {\n    …\n}",
                 "blame": [
-                    {"author": "Aaron", "summary": "fix MRU ordering", "author_time": 200, "commit": "abc", "lines": 3}
+                    {"author": "Sam", "summary": "fix MRU ordering", "author_time": 200, "commit": "abc", "lines": 3}
                 ]
             },
             "callers": [{"name": "activate"}, {"name": "boot"}],
@@ -388,7 +388,7 @@ mod tests {
         assert_eq!(c.body_preview.as_deref(), Some("fn set_active() {"));
         assert_eq!(
             c.blame_line.as_deref(),
-            Some("edited by Aaron — fix MRU ordering")
+            Some("edited by Sam — fix MRU ordering")
         );
         // Lenient on junk.
         assert_eq!(CardContext::from_reply(&json!({})), CardContext::default());

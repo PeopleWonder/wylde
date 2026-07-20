@@ -380,21 +380,21 @@ mod tests {
     fn typed_relations_become_xrefs_skipping_dangling() {
         let c1 = ConceptView::new("c1", "C1", "one");
         let anchors = vec![
-            anchor("nextcloud", "a server", None),
-            anchor("ddns", "dynamic dns", None),
+            anchor("photos", "a server", None),
+            anchor("thumbnailer", "dynamic dns", None),
         ];
 
         let mut g_in = RelationGraph::empty();
         g_in.relations.push(Relation::normalized(
-            NodeRef::vocab("nextcloud"),
-            NodeRef::vocab("ddns"),
+            NodeRef::vocab("photos"),
+            NodeRef::vocab("thumbnailer"),
             RelationKind::Dependency,
             None,
         ));
         // A dangling relation (store-flagged) must NOT project.
         let mut dead = Relation::normalized(
             NodeRef::concept("c1"),
-            NodeRef::vocab("ddns"),
+            NodeRef::vocab("thumbnailer"),
             RelationKind::Positive,
             None,
         );
@@ -402,7 +402,7 @@ mod tests {
         g_in.relations.push(dead);
         // A relation to a NON-projected node must NOT project either.
         g_in.relations.push(Relation::normalized(
-            NodeRef::vocab("nextcloud"),
+            NodeRef::vocab("photos"),
             NodeRef::vocab("ghost"),
             RelationKind::Positive,
             None,
@@ -410,8 +410,8 @@ mod tests {
 
         let g = build_view(&[c1], &anchors, &g_in);
         assert!(g.xrefs.contains(&XRef {
-            from: NodeId::vocab("nextcloud"),
-            to: NodeId::vocab("ddns"),
+            from: NodeId::vocab("photos"),
+            to: NodeId::vocab("thumbnailer"),
             kind: XRefKind::Dependency,
         }));
         assert_eq!(

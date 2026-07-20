@@ -307,11 +307,16 @@ mod tests {
                 "src/rag/search.rs",
                 [0.0, 1.0, 0.0, 0.0],
             ),
-            ("ddns", "DDNS", "src/net/ddns.rs", [0.0, 0.0, 1.0, 0.0]),
             (
-                "nextcloud",
-                "Nextcloud",
-                "src/net/nextcloud.rs",
+                "thumbnailer",
+                "Thumbnailer",
+                "src/media/thumbnailer.rs",
+                [0.0, 0.0, 1.0, 0.0],
+            ),
+            (
+                "photos",
+                "Photos",
+                "src/media/photos.rs",
                 [0.0, 0.0, 0.0, 1.0],
             ),
         ];
@@ -342,19 +347,19 @@ mod tests {
         let gold = GoldSet {
             version: "test".into(),
             cases: vec![super::super::gold::GoldCase {
-                id: "nc".into(),
+                id: "ph".into(),
                 kind: CaseKind::Easy,
-                query: "nextcloud".into(),
-                relevant_files: vec!["src/net/nextcloud.rs".into()],
+                query: "photos".into(),
+                relevant_files: vec!["src/media/photos.rs".into()],
                 avoid_files: vec![],
                 dependency_files: vec![],
                 concepts: vec![],
             }],
         };
         let mut qv = HashMap::new();
-        // Query points mostly at nextcloud but flatly close to ddns (the flat-
+        // Query points mostly at photos but flatly close to thumbnailer (the flat-
         // cosine condition).
-        qv.insert("nc".into(), vec![0.0, 0.0, 0.55, 0.83]);
+        qv.insert("ph".into(), vec![0.0, 0.0, 0.55, 0.83]);
         (corpus, gold, qv)
     }
 
@@ -386,14 +391,14 @@ mod tests {
 
     #[test]
     fn dependency_recovered_only_with_relations() {
-        // Query fires Nextcloud; DDNS sits flat below the floor. A
-        // Nextcloud→DDNS dependency edge should pull DDNS's file in under
+        // Query fires Photos; Thumbnailer sits flat below the floor. A
+        // Photos→Thumbnailer dependency edge should pull Thumbnailer's file in under
         // RelationsOn but not SeedOnly.
         let (mut corpus, _g, mut qv) = clean_corpus();
         corpus.relations = RelationGraph {
             relations: vec![Relation::normalized(
-                NodeRef::concept("nextcloud"),
-                NodeRef::concept("ddns"),
+                NodeRef::concept("photos"),
+                NodeRef::concept("thumbnailer"),
                 RelationKind::Dependency,
                 None,
             )],
@@ -403,15 +408,15 @@ mod tests {
             cases: vec![super::super::gold::GoldCase {
                 id: "dep".into(),
                 kind: CaseKind::Dependency,
-                query: "nextcloud".into(),
-                relevant_files: vec!["src/net/nextcloud.rs".into()],
+                query: "photos".into(),
+                relevant_files: vec!["src/media/photos.rs".into()],
                 avoid_files: vec![],
-                dependency_files: vec!["src/net/ddns.rs".into()],
+                dependency_files: vec!["src/media/thumbnailer.rs".into()],
                 concepts: vec![],
             }],
         };
         qv.clear();
-        // Strong on nextcloud, weak (flat, below the relative floor) on ddns.
+        // Strong on photos, weak (flat, below the relative floor) on thumbnailer.
         qv.insert("dep".into(), vec![0.0, 0.0, 0.20, 0.98]);
         // CALIBRATION FINDING baked into the test: a 1-hop dependency reaches at
         // most `dep_decay × top`, so it can only clear `relative_floor × top`
@@ -450,17 +455,17 @@ mod tests {
         assert_eq!(
             rel.dependency_recovery_rate,
             Some(1.0),
-            "the dependency edge pulls DDNS in"
+            "the dependency edge pulls Thumbnailer in"
         );
     }
 
     #[test]
     fn conflation_suppressed_by_exclusion() {
-        // Query fires Nextcloud; Wylde (an off-topic neighbour) sits flat just
-        // below. With an authored Nextcloud ⊘ Wylde edge the Wylde file must
+        // Query fires Photos; Wylde (an off-topic neighbour) sits flat just
+        // below. With an authored Photos ⊘ Wylde edge the Wylde file must
         // stay out of the Replace results.
         let concepts = [
-            ("nextcloud", "Nextcloud", "src/net/nextcloud.rs", [1.0, 0.0]),
+            ("photos", "Photos", "src/media/photos.rs", [1.0, 0.0]),
             ("wylde", "Wylde", "src/wylde/core.rs", [0.80, 0.60]),
         ];
         let chunks = concepts
@@ -486,7 +491,7 @@ mod tests {
             concepts: ev_concepts,
             relations: RelationGraph {
                 relations: vec![Relation::normalized(
-                    NodeRef::concept("nextcloud"),
+                    NodeRef::concept("photos"),
                     NodeRef::concept("wylde"),
                     RelationKind::Negative,
                     None,
@@ -499,8 +504,8 @@ mod tests {
             cases: vec![super::super::gold::GoldCase {
                 id: "conf".into(),
                 kind: CaseKind::Conflation,
-                query: "nextcloud".into(),
-                relevant_files: vec!["src/net/nextcloud.rs".into()],
+                query: "photos".into(),
+                relevant_files: vec!["src/media/photos.rs".into()],
                 avoid_files: vec!["src/wylde/core.rs".into()],
                 dependency_files: vec![],
                 concepts: vec![],

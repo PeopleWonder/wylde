@@ -60,7 +60,7 @@ impl NodeRef {
     }
 }
 
-/// The three user-authored edge kinds (Aaron's locked relation model).
+/// The three user-authored edge kinds (the maintainer's locked relation model).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {

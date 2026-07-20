@@ -54,7 +54,7 @@
 //!   visible notice; a planner-declared `abort` action ends the turn
 //!   cleanly (`AbortReason::PlanPrecondition`). Everything else is
 //!   fail-soft: detector/L2/replan failures all continue the turn.
-//! * `auto_escalate` (OQ-5) is **LIVE since S4b** under Aaron's
+//! * `auto_escalate` (OQ-5) is **LIVE since S4b** under the maintainer's
 //!   2026-07-14 NARROWED identity contract: reasoning enabled + Fast is
 //!   byte-identical to trunk EXCEPT after
 //!   [`ESCALATE_AFTER_HARD_FAILURES`] (2) hard tool failures (L0's exact
@@ -81,7 +81,7 @@
 //!   `PlanInputs.lessons` grounding. The memory-consolidation scheduler
 //!   is untouched — machinery reused, pass not.
 //!
-//! **Identity guarantee (narrowed 2026-07-14, Aaron):** with
+//! **Identity guarantee (narrowed 2026-07-14, the maintainer):** with
 //! `ReasoningConfig.enabled == false` (the default), nothing in this
 //! module touches the turn — byte-identical, unconditionally. With
 //! reasoning ENABLED and `depth == Fast`, the turn is byte-identical
@@ -612,10 +612,10 @@ pub(crate) async fn maybe_reflect(
     reflect_phase::run(cfg, handle, turn_id, state, draft_answer, can_gap_round).await
 }
 
-// ── S4b: Fast→planning auto-escalation (Aaron's narrowed contract) ──────
+// ── S4b: Fast→planning auto-escalation (the maintainer's narrowed contract) ──────
 
 /// How many hard tool failures a watched Fast turn absorbs before it
-/// escalates to planning. Aaron's 2026-07-14 contract: "reasoning enabled
+/// escalates to planning. The maintainer's 2026-07-14 contract: "reasoning enabled
 /// + Fast tier is byte-identical to today EXCEPT after ≥2 hard tool
 ///   failures".
 pub const ESCALATE_AFTER_HARD_FAILURES: usize = 2;

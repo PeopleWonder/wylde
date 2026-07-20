@@ -956,7 +956,7 @@ fn back_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
 
 /// The readiness chip (decision 5): a small coloured dot + short label in the
 /// in-workspace tab bar. Conveys service-up/indexed state at a glance from any
-/// tab — itself meaningful status, per Aaron's no-decoration principle.
+/// tab — itself meaningful status, per the maintainer's no-decoration principle.
 fn readiness_chip(readiness: Readiness) -> gpui::Div {
     let (colour, label) = readiness.chip();
     div()
@@ -1806,7 +1806,7 @@ mod tests {
 
     #[test]
     fn reindex_missing_model_offers_download_with_retry_id() {
-        // The real error Aaron hit: the embed step fails because the model
+        // The real error the maintainer hit: the embed step fails because the model
         // isn't installed. The panel must offer an inline download tied to
         // the workspace that failed (for auto-retry).
         let mut p = panel_with_one_indexing_row();
