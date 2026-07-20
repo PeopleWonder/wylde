@@ -692,8 +692,9 @@ What replaced its three real responsibilities:
    §4 callers.
 
 The gpui binary's bundler/updater config is no longer a `tauri.conf.json`:
-per the rewrite plan the installer moves to standalone WiX scripts under
-`Core/GUI/installer/` and the updater to `self_update` + `self-replace`
+per the rewrite plan the installer moves to standalone bundler scripts (now
+extracted to https://github.com/PeopleWonder/wylde-installer, non-functional)
+and the updater to `self_update` + `self-replace`
 (declared in `Core/GUI/Cargo.toml`, wired in a post-alpha slice). The
 old Tauri bundle-resource and `core/security-api` cleanup items are moot
 now that `src-tauri/` is deleted.
