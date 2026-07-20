@@ -121,6 +121,7 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   - `tokio` 1.52.3 → 1.53.0 (#145)
   - `unicode-segmentation` 1.13.2 → 1.13.3 (#145)
   - `uuid` 1.23.1 → 1.24.0 (#145)
+  - `wry` 0.54.4 → 0.55.1 (#146)
 - **`wylde-release publish` now refuses to cut a release without a real changelog.** Previously, when
   neither `--notes-file` nor `--notes` was supplied, publish fell back to a one-line auto-message
   ("Automated release X (channel).") — so a stable or experimental release could ship with no real
