@@ -157,6 +157,13 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   2.0.19 coexist in the graph — expected, not a conflict. Consolidates and supersedes Dependabot
   #149, #154, #157, #158. (#172)
 
+- **`auto-launch` 0.5 → 0.6 (required a code edit).** The 0.6 release deprecated the boolean
+  `AutoLaunchBuilder::set_use_launch_agent` in favour of an explicit `set_macos_launch_mode(MacOSLaunchMode)`
+  enum, and under `-D warnings` the deprecation is a hard clippy error. Repointed the one call site
+  (`Core/GUI/Frontend/Panels/Settings/src/ipc.rs`) to `MacOSLaunchMode::AppleScript` — the exact mode the old
+  `false` mapped to. This is a macOS-only launch knob, inert on the Windows target the GUI ships to, so
+  behaviour is byte-for-byte unchanged. (#148)
+
 - **The NSIS installer has been removed from this repository.** It never produced a
   working install — the "Quick install" route documented in the README, and the
   `WyldeSetup-<version>.exe` asset attached to `v0.1.0-alpha.1`, do not work and

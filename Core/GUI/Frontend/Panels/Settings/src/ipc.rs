@@ -283,7 +283,10 @@ fn autostart_handle() -> Result<auto_launch::AutoLaunch, String> {
     auto_launch::AutoLaunchBuilder::new()
         .set_app_name(AUTOSTART_APP_NAME)
         .set_app_path(&exe)
-        .set_use_launch_agent(false)
+        // 0.6 deprecated the `use_launch_agent` bool for an explicit enum; the
+        // old `false` mapped to AppleScript mode. macOS-only knob, inert on the
+        // Windows target this GUI ships to — kept faithful to the prior value.
+        .set_macos_launch_mode(auto_launch::MacOSLaunchMode::AppleScript)
         .build()
         .map_err(|e| format!("auto-launch build: {e}"))
 }
