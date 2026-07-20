@@ -135,6 +135,7 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   - `serde` 1.0.228 → 1.0.229 (#145)
   - `serde_json` 1.0.149 → 1.0.151 (#145)
   - `tokio` 1.52.3 → 1.53.0 (#145)
+  - `tray-icon` 0.19.3 → 0.24.1 (#150)
   - `unicode-segmentation` 1.13.2 → 1.13.3 (#145)
   - `uuid` 1.23.1 → 1.24.0 (#145)
   - `wry` 0.54.4 → 0.55.1 (#146)
