@@ -233,6 +233,36 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   reports its shortfall instead of claiming success. The false doc claims have been replaced with
   what actually happens (#136).
 
+- **A concept rebuild could silently spend your hand-authored relations, in two ways.** Typed concept
+  relations (positive / "IS NOT" / dependency) are hand-authored and irreplaceable. The stable-id
+  machinery that protects them across a rebuild is real and works — semantic ids are minted ordinals
+  carried over by centroid similarity, never content-derived, never recycled, and authored edges are
+  flagged rather than deleted. But it collapsed completely in two situations, both silent.
+
+  **An empty or torn chunk index.** `build` chooses semantic clustering only when the index holds at
+  least two usable vectors, and otherwise falls through to the directory-cluster fallback — which
+  replaces the entire auto-generated concept set, keeping only manually-authored concepts. So a purge,
+  an interrupted reindex, or a data directory resolved against the wrong working directory would drop
+  every semantic concept. That is *unrecoverable*: because ordinals are never reused, a later rebuild
+  over a restored index mints new ids that can never re-match the relations authored on the old ones.
+  The edges survive on disk, permanently inert. The build now **refuses** in that situation, naming
+  what would be lost, unless the workspace has no semantic concepts at risk or the caller passes
+  `force`.
+
+  **An embedding-width change.** Carry-over pairs prior centroids with new drafts only where the two
+  vectors are the same length, so a change in embedding width makes carry-over arithmetically
+  impossible — every concept is reminted and every authored relation dangles in a single build, with
+  nothing but a non-zero count in the reply to say so. The build now detects a carry-over pool that
+  cannot possibly match the incoming vectors and refuses, again overridable with `force` (#137).
+
+- **The Relations editor showed broken relations as if they were fine.** When a rebuild drops a
+  concept, the backend flags every relation pointing at it as `dangling` — retained on disk, excluded
+  from routing — and has always sent that flag over the wire. The Relations sub-tab's view model did
+  not deserialise it, and the row model dropped it again, so an edge that had gone inert rendered
+  identically to a live one. The Hierarchy sub-tab badges the same flag correctly, so the two views
+  told opposite stories about the same data. Dangling relations now carry a "dangling — re-point"
+  badge, matching the Hierarchy treatment (#137).
+
 - **Four `wylde_check` rules could not fail, and one had been red and unnoticed for months.** The lint
   engine's rules 38 and 48 (`panel_verbs_exist_in_harness_registry`,
   `gateway_verbs_exist_in_harness_registry`) loaded their verb registry from two constants that both named
