@@ -147,6 +147,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # setup-python ships a bare interpreter; pytest is not included. The rule
+      # itself has no third-party dependency (stdlib re/hashlib only), so this
+      # is the only install the job needs.
+      - name: install pytest
+        shell: bash
+        run: python -m pip install --disable-pip-version-check --quiet pytest
       - name: rule 55 self-tests (the gate must fail when the guarantee breaks)
         shell: bash
         run: python -m pytest Core/harness/dev/tests/wylde_check/test_personal_identifiers.py -q
