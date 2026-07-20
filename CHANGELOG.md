@@ -170,6 +170,31 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   description of bundling Python service trees. The only supported way to run Wylde
   is a development checkout — see [`docs/setup.md`](docs/setup.md).
 
+- **`wylde_check` retired 22 dead rules (52 → 30 active) and repointed the file-size cap at Rust.** The #116
+  fix made rules that couldn't fail go red instead of quiet; this is the cleanup that followed. A rule-by-rule
+  audit against the real `develop` tree — not the synthetic fixtures the unit suite runs against — found 22 rules
+  policing code the Rust cutover deleted. Fifteen were structurally dead: their target trees (`Core/Lifecycle/`,
+  per-service `run.py`, `data/manifests/`, `Gateway/routes/`, `Core/harness/memory/`, the `tools/` manifest tree,
+  the Python pipe modules) no longer exist, so each walked nothing and reported a clean pass — `manifest_paths`,
+  `tool_id_regex`, `action_registry`, `gateway_scope`, `tool_docstring_required`, `spawn_paths_exist`,
+  `run_py_entry_point`, `run_py_startup_sequence`, `shutdown_handler_marks_stopped`, `memory_layer_boundaries`,
+  `action_docstring_required`, `manifest_sandbox_required`, `rest_routes_exist_in_service`,
+  `every_service_has_manifest`, `service_manifest_schema`. Seven were Python-only linters whose last inputs were
+  the checker's own tooling once every production `.py` was ported — `no_internal_http`, `import_paths`,
+  `logging_setup_only`, `no_external_subprocess`, `test_init_present`, `no_bare_except`,
+  `no_python_gateway_imports`; for the four of those with `*_rust` twins the coverage carries over, and the
+  internal-port constants are retained in `_config.py` for a queued `no_internal_http_rust` (no Rust twin exists
+  yet). Two rules were narrowed rather than dropped: `no_legacy_gui_imports_in_panels` lost its Svelte matcher
+  (zero `.svelte`/`.js`/`.ts` files remain; its only finding was a false positive on a file-icon table row) and
+  `first_party_manifest_must_be_gpui_view` lost its extension half (`Extensions/` is gone). `file_size_limit` —
+  formerly a flat 700-line cap on Python files, of which almost none remained — now caps Rust sources
+  (`rust/crates/*/src/**` + `Core/GUI/**`, excluding `/target/`) at the same 700 lines; the 91 files already over
+  cap (worst: `Core/GUI/Frontend/Panels/Chat/src/chat_panel.rs` at 5298) are recorded as queued splits so the cap
+  engages on new growth. The dispatcher's self-asserted count, module docstring, `docs/wylde_check_rules.md`, and
+  `tools/preflight-function-test.ps1` are all reconciled to 30. This does not change the outstanding-findings
+  backlog: every retired rule reported zero, so the 141 real findings (concentrated in `import_paths_rust` and
+  `no_silent_error_swallow_rust`) are untouched and remain #114's scope.
+
 - **`wylde-release publish` now refuses to cut a release without a real changelog.** Previously, when
   neither `--notes-file` nor `--notes` was supplied, publish fell back to a one-line auto-message
   ("Automated release X (channel).") — so a stable or experimental release could ship with no real

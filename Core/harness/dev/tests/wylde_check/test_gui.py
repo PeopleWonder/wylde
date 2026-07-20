@@ -1,11 +1,13 @@
-"""Tests for the surviving GUI rules — gateway_scope (8) and
-gui_no_backend_bypass (10) — mirrors prod-side wylde_check/rules/_gui.py.
+"""Tests for the surviving GUI rule — gui_no_backend_bypass (10) —
+mirrors prod-side wylde_check/rules/_gui.py.
 
 Rules 7 (inferencebar_purity), 11 (gui_pipe_constants) and 30
 (gui_error_reporting) were retired at the slice-11 cutover when the
-Svelte/Tauri trees were deleted; their tests went with them. Rule 10 was
-repointed from the Svelte/Tauri source to the gpui panel + shell Rust
-source, so its tests now write synthetic `.rs` files.
+Svelte/Tauri trees were deleted; rule 8 (gateway_scope) was retired
+2026-07-20 when the Python Gateway tree was deleted. Their tests went
+with them. Rule 10 was repointed from the Svelte/Tauri source to the
+gpui panel + shell Rust source, so its tests now write synthetic `.rs`
+files.
 """
 
 from __future__ import annotations
@@ -13,34 +15,6 @@ from __future__ import annotations
 from typing import Any
 
 from .conftest import _write
-
-
-# ── Rule 8: Gateway scope ─────────────────────────────────────────────
-
-
-def test_gateway_scope_accepts_documented_prefix(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    # Rule 8 composes the APIRouter prefix with the decorator path; the
-    # composed full URL has to start with one of GATEWAY_ROUTE_PREFIXES.
-    _write(
-        root / "Gateway" / "routes" / "egress.py",
-        'router = APIRouter(prefix="/api/egress")\n'
-        '@router.post("/forward")\ndef handler(): ...\n',
-    )
-    assert wc.check_gateway_scope() == []
-
-
-def test_gateway_scope_flags_undocumented_prefix(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Gateway" / "routes" / "weird.py",
-        'router = APIRouter(prefix="/random")\n'
-        '@router.get("/weird-route")\ndef handler(): ...\n',
-    )
-    findings = wc.check_gateway_scope()
-    assert len(findings) == 1
-    assert findings[0].rule == "gateway_scope"
-    assert "/random/weird-route" in findings[0].message
 
 
 # ── Rule 10: GUI no backend bypass (repointed to gpui Rust source) ────

@@ -27,35 +27,12 @@ EXCLUDED_DIRS: Tuple[str, ...] = (
 )
 
 
-# Files exempt from rule 1 (no_internal_http).  The Ollama / Memgraph
-# clients talk to external systems on the local box; extensions may call
-# the Gateway boundary.
-NO_HTTP_EXEMPT_PREFIXES: Tuple[str, ...] = (
-    "Core/harness/backend/ollama_client.py",  # external LLM daemon
-    "Core/harness/model_registry/_routing/ollama_watcher.py",
-    "Core/harness/backend/request_building.py",  # builds Ollama bodies
-    "Core/harness/tooling/tools/ollama",  # /api/* helpers
-    "Core/harness/tooling/tools/visual/browser_",  # Playwright HTTP
-    "Core/Memgraph",  # Bolt (7687) is DB wire protocol
-    "Extensions",  # extensions can call Gateway
-    # (The old `Core/GUI/src-tauri/src` exemption was dropped at the
-    # slice-11 cutover — that tree is deleted, and rule 1 walks only
-    # .py/.svelte/.js/.ts, so the gpui Rust GUI isn't scanned here.)
-    #
-    # The `Gateway`, `VPN`, and `Core/resource_monitor` exemptions were
-    # dropped once the strangler deleted their Python sources — Gateway
-    # (boundary HTTP), VPN (WireGuard/STUN/TURN), and the vram-broker
-    # (resource_monitor, deleted in 7072947). No .py/.svelte/.js/.ts
-    # source remains under those prefixes, so the exemptions matched
-    # nothing — same cleanup as the earlier device_gate / vram_broker
-    # prunes.
-)
-
-
+# Retained for the queued no_internal_http_rust rule (see issue) — the
+# Python rule was retired 2026-07-20 but no Rust counterpart exists yet.
+#
 # Wylde-internal ports + loopback hosts the rule scans for.
 # ``11434`` (Ollama) and ``7687`` (Memgraph Bolt) are external from
-# Wylde's perspective but listed for completeness — the exemption
-# prefixes above cover the legitimate callers.
+# Wylde's perspective but listed for completeness.
 INTERNAL_HOSTS: Tuple[str, ...] = (
     "127.0.0.1",
     "localhost",
@@ -147,39 +124,12 @@ DEAD_REF_ALLOWLISTED_FILES: Tuple[str, ...] = (
 )
 
 
-# Gateway route categories per the Wylde user's contract.  Any route handler
-# whose path doesn't start with one of these prefixes gets flagged for
-# review.  The list is intentionally generous — egress + the dozen
-# inbound mobile-future routes + MCP + extensions.
-GATEWAY_ROUTE_PREFIXES: Tuple[str, ...] = (
-    "/api/egress",
-    "/api/chat",
-    "/api/conversations",  # chat-history CRUD (mobile-bound)
-    "/api/prompts",  # system-prompt overrides + presets (mobile-bound)
-    "/api/devices",
-    "/api/link",
-    "/api/settings",
-    "/api/system",
-    "/api/rag",
-    "/api/images",
-    "/api/models",
-    "/api/tools",  # tool registry
-    "/api/dev",  # local-only dev diagnostics (GUI error-capture sink)
-    "/api/health",
-    "/health",
-    "/mcp",  # planned
-    "/extensions",  # phase 7 contract
-    "/__action__",  # internal action dispatch
-)
-
-
-# Canonical tool id / name regex.  Snake or dotted, lower-case, digits OK.
-TOOL_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
-
-
-# Pre-compiled patterns for rule 1.  Catches the common HTTP client
-# entry-points.  We intentionally keep it stringy so a future client
-# library doesn't slip through silently — add to this list.
+# Retained for the queued no_internal_http_rust rule (see issue) — the
+# Python rule was retired 2026-07-20 but no Rust counterpart exists yet.
+#
+# Catches the common HTTP client entry-points.  We intentionally keep it
+# stringy so a future client library doesn't slip through silently — add
+# to this list.
 HTTP_CLIENT_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"\brequests\.(?:get|post|put|delete|patch|head|options|request)\s*\("),
     re.compile(
@@ -209,67 +159,6 @@ ACTIVE_ROOTS: Tuple[str, ...] = (
 )
 
 
-# Service folders that are documented entry points (used by rules 16-19).
-# Some entries (Trainer, N8N, Extensions/*) are library-style and don't
-# host their own run.py — the rules tolerate the absence and only flag
-# violations of the naming/contract when a run.py IS present.
-SERVICE_FOLDERS: Tuple[str, ...] = (
-    "Core/resource_monitor",
-    "Core/Memgraph",
-    "device_gate",
-    "Gateway",
-    "Voice",
-    "VPN",
-    "Trainer",
-    "N8N",
-    "Extensions/extension_bridge",
-    "Extensions/Webcrawler",
-    "Extensions/Wylde_Study",
-)
-
-
-# Subprocess-spawn callsites are restricted to these prefixes (rule 14).
-# Lifecycle is the daemon's job; tool runtimes wrap external CLIs by
-# design; Memgraph wraps the Neo4j JVM; VPN/tunnel runs wg/iptables;
-# Voice/device_manager talks to the system audio stack.
-SUBPROCESS_ALLOWED_PREFIXES: Tuple[str, ...] = (
-    "Core/Lifecycle/",
-    "Core/harness/dev/",
-    "Core/harness/tooling/tools/",  # all tool runtimes
-    "Core/Memgraph/",  # Neo4j JVM wrapper
-    "Voice/device_manager.py",  # system audio device control
-    "VPN/tunnel/",  # wg-quick / iptables shell-outs
-)
-
-
-# Subprocess-spawn patterns rule 14 catches.  Stringy on purpose so the
-# rule stays diff-friendly when a new spawning API needs blocking.
-SUBPROCESS_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bsubprocess\.Popen\s*\("),
-    re.compile(r"\bsubprocess\.run\s*\("),
-    re.compile(r"\bsubprocess\.call\s*\("),
-    re.compile(r"\bsubprocess\.check_call\s*\("),
-    re.compile(r"\bsubprocess\.check_output\s*\("),
-    re.compile(r"\bos\.spawnv\s*\("),
-    re.compile(r"\bos\.spawnvp\s*\("),
-    re.compile(r"\bos\.spawnvpe\s*\("),
-    re.compile(r"\bos\.spawnl\s*\("),
-    re.compile(r"\bos\.spawnle\s*\("),
-    re.compile(r"\bos\.spawnlp\s*\("),
-    re.compile(r"\bos\.spawnlpe\s*\("),
-)
-
-
-# Logging-setup patterns rule 13 catches outside Core/shared/logging_setup.py.
-LOGGING_SETUP_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    re.compile(r"\blogging\.basicConfig\s*\("),
-    re.compile(r"\blogging\.getLogger\(\s*\)\s*\.\s*addHandler\s*\("),
-    re.compile(r"\blogging\.getLogger\(\s*\)\s*\.\s*setLevel\s*\("),
-    re.compile(r"\blogging\.root\s*\.\s*addHandler\s*\("),
-    re.compile(r"\blogging\.root\s*\.\s*setLevel\s*\("),
-)
-
-
 # Pipe-name convention regex (rule 17).  Two passes:
 #
 # * ``PIPE_NAME_REF_RE``: matches the canonical dash form anywhere in
@@ -283,17 +172,6 @@ LOGGING_SETUP_PATTERNS: Tuple[re.Pattern[str], ...] = (
 PIPE_NAME_REF_RE = re.compile(r"\bwylde-[A-Za-z0-9_\-]+")
 PIPE_NAME_TYPO_RE = re.compile(r"pipe[\\/](wylde_[A-Za-z][A-Za-z0-9_]*)")
 PIPE_NAME_GOOD_RE = re.compile(r"^wylde-[a-z][a-z0-9\-]*$")
-
-
-# Deprecated run.py naming variants (rule 16).  If any of these patterns
-# matches a top-level file in a service folder, the convention is broken.
-DEPRECATED_ENTRY_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    re.compile(r"^[A-Za-z0-9_-]+_run\.py$"),
-    re.compile(r"^start_[A-Za-z0-9_-]+\.py$"),
-    re.compile(r"^launcher[A-Za-z0-9_-]*\.py$"),
-    re.compile(r"^main_[A-Za-z0-9_-]+\.py$"),
-    re.compile(r"^server_[A-Za-z0-9_-]+\.py$"),
-)
 
 
 # Rust crate root.  Rules 26-29 walk this tree.
@@ -453,29 +331,3 @@ RUST_HARDCODED_SERVICE_ARRAY_RE = re.compile(
 # wylde_stack::shutdown_targets) and the counting gate is a Rust test:
 # rust/crates/wylde-stack/tests/shutdown_target_coverage.rs.
 GPUI_SHUTDOWN_DELEGATE_TOKEN: str = "lifecycle.shutdown_all"
-
-# Top-level dirs that are NOT discoverable services. Source of truth is
-# Core/Lifecycle/_common.EXCLUDED_TOP_LEVEL — keep this in sync when that
-# set changes (this module is deliberately import-free, so the mirror is
-# manual). `Core` holds a legitimate infra rollup manifest
-# (Core/manifest.json); `data`/`logs`/`docs` are runtime/archive dirs and
-# `rust`/`tools` are build/dev folders — none may carry a service manifest.
-SERVICE_MANIFEST_EXCLUDED_TOP_LEVEL: Tuple[str, ...] = (
-    "Core",
-    "data",
-    "logs",
-    "docs",
-    "rust",
-    "tools",
-)
-SERVICE_MANIFEST_NONSERVICE_DIRS: Tuple[str, ...] = ("data", "logs", "docs")
-
-# Required keys on a top-level service manifest (rule 47). `entry_point`
-# is the canonical launch command / binary (may be null for an in-process
-# / library / pipe-only service); there is deliberately no separate
-# `binary` key — one field, one source of truth.
-SERVICE_MANIFEST_REQUIRED_KEYS: Tuple[str, ...] = (
-    "name",
-    "entry_point",
-    "shutdown_order",
-)

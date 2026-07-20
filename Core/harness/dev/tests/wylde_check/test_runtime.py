@@ -1,8 +1,11 @@
-"""Tests for runtime hygiene rules (logging_setup_only,
-no_external_subprocess, spawn_paths_exist, run_py_entry_point,
-pipe_name_convention, run_py_startup_sequence,
-shutdown_handler_marks_stopped) — mirrors prod-side
+"""Tests for runtime rules (pipe_name_convention,
+shutdown_reaps_manifest_orphans) — mirrors prod-side
 wylde_check/rules/_runtime.py.
+
+Rules 13 (logging_setup_only), 14 (no_external_subprocess), 15
+(spawn_paths_exist), 16 (run_py_entry_point), 18 (run_py_startup_sequence)
+and 19 (shutdown_handler_marks_stopped) were retired 2026-07-20; their
+tests were removed with them.
 """
 
 from __future__ import annotations
@@ -10,131 +13,6 @@ from __future__ import annotations
 from typing import Any
 
 from .conftest import _write
-
-
-# ── Rule 13: logging setup is centralized ────────────────────────────
-
-
-def test_logging_setup_only_flags_basicconfig(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Voice" / "evil.py",
-        "import logging\nlogging.basicConfig(level=logging.INFO)\n",
-    )
-    findings = wc.check_logging_setup_only()
-    assert len(findings) == 1
-    assert findings[0].rule == "logging_setup_only"
-    assert findings[0].severity == "error"
-
-
-def test_logging_setup_only_allows_source_of_truth(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Core" / "shared" / "logging_setup.py",
-        "import logging\nlogging.basicConfig(level=logging.INFO)\n",
-    )
-    assert wc.check_logging_setup_only() == []
-
-
-def test_logging_setup_only_allows_tests(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Voice" / "tests" / "test_x.py",
-        "import logging\nlogging.basicConfig(level=logging.INFO)\n",
-    )
-    assert wc.check_logging_setup_only() == []
-
-
-# ── Rule 14: subprocess restriction ──────────────────────────────────
-
-
-def test_no_external_subprocess_flags_random_module(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Gateway" / "evil.py",
-        "import subprocess\nsubprocess.Popen(['echo'])\n",
-    )
-    findings = wc.check_no_external_subprocess()
-    assert len(findings) == 1
-    assert findings[0].rule == "no_external_subprocess"
-
-
-def test_no_external_subprocess_allows_lifecycle(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Core" / "Lifecycle" / "daemon_state.py",
-        "import subprocess\nsubprocess.Popen(['python', '-m', 'X'])\n",
-    )
-    assert wc.check_no_external_subprocess() == []
-
-
-def test_no_external_subprocess_allows_tool_runtimes(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Core" / "harness" / "tooling" / "tools" / "git" / "_git_lib.py",
-        "import subprocess\nsubprocess.run(['git', 'status'])\n",
-    )
-    assert wc.check_no_external_subprocess() == []
-
-
-# ── Rule 15: spawn-command paths exist ───────────────────────────────
-
-
-def test_spawn_paths_exist_clean_when_module_resolves(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(root / "Voice" / "run.py", '"""voice run module"""\n')
-    _write(
-        root / "Core" / "Lifecycle" / "daemon_state.py",
-        'cmd = [sys.executable, "-m", "Voice.run"]\n',
-    )
-    assert wc.check_spawn_paths_exist() == []
-
-
-def test_spawn_paths_exist_flags_missing_module(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Core" / "Lifecycle" / "daemon_state.py",
-        'cmd = [sys.executable, "-m", "Ghost.run"]\n',
-    )
-    findings = wc.check_spawn_paths_exist()
-    assert len(findings) == 1
-    assert "Ghost.run" in findings[0].message
-
-
-def test_spawn_paths_exist_flags_missing_script(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Core" / "Lifecycle" / "daemon_state.py",
-        'cmd = ["python", "missing/script.py"]\n',
-    )
-    findings = wc.check_spawn_paths_exist()
-    assert len(findings) == 1
-    assert "missing/script.py" in findings[0].message
-
-
-# ── Rule 16: run.py entry-point naming ───────────────────────────────
-
-
-def test_run_py_entry_point_flags_deprecated_pattern(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(root / "Voice" / "voice_run.py", "# legacy entry\n")
-    findings = wc.check_run_py_entry_point()
-    assert len(findings) == 1
-    assert findings[0].rule == "run_py_entry_point"
-    assert "voice_run.py" in findings[0].message
-
-
-def test_run_py_entry_point_clean_when_run_py_exists(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(root / "Voice" / "run.py", "# entry\n")
-    assert wc.check_run_py_entry_point() == []
-
-
-def test_run_py_entry_point_ignores_unlisted_folders(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    # Some random folder — not in SERVICE_FOLDERS — must be ignored.
-    _write(root / "RandomDir" / "voice_run.py", "# random\n")
-    assert wc.check_run_py_entry_point() == []
 
 
 # ── Rule 17: pipe name convention ────────────────────────────────────
@@ -205,74 +83,6 @@ def test_pipe_name_convention_clean_rust(isolated_tree: Any) -> None:
         'const PIPE: &str = "wylde-voice";\n',
     )
     assert wc.check_pipe_name_convention() == []
-
-
-# ── Rule 18: run.py startup sequence ─────────────────────────────────
-
-
-def test_run_py_startup_sequence_clean_when_all_present(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Voice" / "run.py",
-        "from Core.shared.logging_setup import configure_logging\n"
-        "configure_logging(service='wylde-voice')\n"
-        "write_manifest()\n"
-        "start_heartbeat()\n"
-        "serve_forever()\n",
-    )
-    findings = wc.check_run_py_startup_sequence()
-    assert findings == []
-
-
-def test_run_py_startup_sequence_warns_on_missing_steps(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Voice" / "run.py",
-        "configure_logging()\nserve_forever()\n",
-    )
-    findings = wc.check_run_py_startup_sequence()
-    # Expect warnings for write_manifest and start_heartbeat being missing.
-    rules = [f.rule for f in findings]
-    assert rules == ["run_py_startup_sequence"] * len(findings)
-    messages = " | ".join(f.message for f in findings)
-    assert "write_manifest" in messages
-    assert "start_heartbeat" in messages
-
-
-# ── Rule 19: shutdown handler marks stopped ──────────────────────────
-
-
-def test_shutdown_handler_marks_stopped_warns_no_signal(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(root / "Voice" / "run.py", "def main(): pass\n")
-    findings = wc.check_shutdown_handler_marks_stopped()
-    assert len(findings) == 1
-    assert findings[0].rule == "shutdown_handler_marks_stopped"
-    assert findings[0].severity == "warning"
-
-
-def test_shutdown_handler_marks_stopped_warns_signal_without_cleanup(
-    isolated_tree: Any,
-) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Voice" / "run.py",
-        "import signal\nsignal.signal(signal.SIGTERM, lambda *_: None)\n",
-    )
-    findings = wc.check_shutdown_handler_marks_stopped()
-    assert len(findings) == 1
-    assert "manifest-cleanup" in findings[0].message
-
-
-def test_shutdown_handler_marks_stopped_clean(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Voice" / "run.py",
-        "import signal\n"
-        "def _handler(*_): mark_stopped()\n"
-        "signal.signal(signal.SIGTERM, _handler)\n",
-    )
-    assert wc.check_shutdown_handler_marks_stopped() == []
 
 
 # ── Rule 31: shutdown reaps manifest orphans ─────────────────────────

@@ -137,17 +137,6 @@ def test_no_legacy_imports_flags_tauri_use(isolated_tree: Any) -> None:
     assert "tauri" in findings[0].message.lower()
 
 
-def test_no_legacy_imports_flags_svelte_reference(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Core" / "GUI" / "Frontend" / "Panels" / "Foo" / "src" / "lib.rs",
-        'let path = "../../src/components/InferenceBar.svelte";\n',
-    )
-    findings = wc.check_no_legacy_gui_imports_in_panels()
-    assert len(findings) == 1
-    assert "svelte" in findings[0].message.lower()
-
-
 def test_no_legacy_imports_ignores_doc_comments(isolated_tree: Any) -> None:
     wc, root = isolated_tree
     _write(
@@ -275,75 +264,6 @@ def test_first_party_manifest_flags_invalid_json(isolated_tree: Any) -> None:
     findings = wc.check_first_party_manifest_must_be_gpui_view()
     assert len(findings) == 1
     assert "not valid JSON" in findings[0].message
-
-
-# ── Rule 36 tightening: extension manifests must be iframe ────────────
-
-
-def test_extension_manifest_clean_iframe_kind(isolated_tree: Any) -> None:
-    """An extension manifest with ``ui_panels`` and iframe kind passes."""
-    wc, root = isolated_tree
-    _write(
-        root / "Extensions" / "N8N" / "mcp-server.json",
-        json.dumps(
-            {
-                "ui_panels": [
-                    {
-                        "id": "workflows",
-                        "title": "Workflows",
-                        "source": {"kind": "iframe", "url": "http://127.0.0.1:5678"},
-                    }
-                ]
-            }
-        ),
-    )
-    assert wc.check_first_party_manifest_must_be_gpui_view() == []
-
-
-def test_extension_manifest_flags_gpui_view_kind(isolated_tree: Any) -> None:
-    """Extensions can't ship native gpui Views — gpui_view declaration is
-    architecturally impossible."""
-    wc, root = isolated_tree
-    _write(
-        root / "Extensions" / "Bad" / "manifest.json",
-        json.dumps(
-            {
-                "ui_panels": [
-                    {
-                        "id": "bad",
-                        "source": {"kind": "gpui_view", "factory": "x::y::z"},
-                    }
-                ]
-            }
-        ),
-    )
-    findings = wc.check_first_party_manifest_must_be_gpui_view()
-    assert len(findings) == 1
-    assert findings[0].rule == "first_party_manifest_must_be_gpui_view"
-    assert "gpui_view" in findings[0].message
-    assert "extension" in findings[0].message.lower()
-
-
-def test_extension_manifest_without_ui_panels_skipped(isolated_tree: Any) -> None:
-    """Extensions with only tools (no ``ui_panels``) contribute nothing."""
-    wc, root = isolated_tree
-    _write(
-        root / "Extensions" / "Webcrawler" / "manifest.json",
-        json.dumps({"name": "Webcrawler", "tools": []}),
-    )
-    assert wc.check_first_party_manifest_must_be_gpui_view() == []
-
-
-def test_extension_manifest_flags_missing_source_object(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Extensions" / "Bad" / "manifest.json",
-        json.dumps({"ui_panels": [{"id": "x"}]}),
-    )
-    findings = wc.check_first_party_manifest_must_be_gpui_view()
-    assert len(findings) == 1
-    assert "source" in findings[0].message
-
 
 # ── Rule 37: panel_crate_must_be_workspace_member ────────────────────
 

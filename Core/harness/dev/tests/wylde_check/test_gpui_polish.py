@@ -1,8 +1,10 @@
-"""Tests for the three panel-polish rules introduced 2026-05-29
-(rules 41-43): rest_routes_exist_in_service, manifest_factory_resolves,
-stream_call_must_handle_cancel.
+"""Tests for the panel-polish rules (rules 42-43):
+manifest_factory_resolves, stream_call_must_handle_cancel.
 
 Mirrors prod-side ``wylde_check/rules/_gpui_polish.py``.
+
+Rule 41 (rest_routes_exist_in_service) was retired 2026-07-20; its tests
+were removed with it.
 """
 
 from __future__ import annotations
@@ -14,23 +16,6 @@ from .conftest import _write
 
 
 # ── Shared seeders ───────────────────────────────────────────────────
-
-
-def _seed_gateway_routes(root: Any, lines: str) -> None:
-    """Drop a synthetic ``rust/crates/wylde-gateway/src/routes.rs`` whose
-    ``Router::new().route(...)`` body is composed from ``lines``.  The
-    file is parsed only for ``.route("...", method(...))`` shapes; the
-    surrounding scaffold is incidental."""
-    body = (
-        "use axum::Router;\n"
-        "use axum::routing::{get, post, delete, put};\n"
-        "fn handler() {}\n"
-        "pub fn router() -> Router {\n"
-        "    Router::new()\n"
-        f"{lines}\n"
-        "}\n"
-    )
-    _write(root / "rust" / "crates" / "wylde-gateway" / "src" / "routes.rs", body)
 
 
 def _seed_panel_with_ipc(
@@ -58,159 +43,6 @@ def _seed_panel_with_ipc(
     }
     _write(base / "manifest.json", json.dumps(manifest))
     _write(base / "src" / "ipc.rs", ipc_body)
-
-
-# ── Rule 41: rest_routes_exist_in_service ────────────────────────────
-
-
-def test_rule41_clean_when_route_matches(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _seed_gateway_routes(
-        root,
-        '        .route("/api/images/library", get(handler))\n'
-        '        .route("/api/images/library/:img_id", get(handler).delete(handler))',
-    )
-    _seed_panel_with_ipc(
-        root,
-        "Images",
-        ipc_body=(
-            'pub const SVC_GATEWAY: &str = "wylde-gateway";\n'
-            "async fn _x() {\n"
-            '    let _ = wylde_gui_pipe::call(SVC_GATEWAY, "GET", "/api/images/library", None).await;\n'
-            "}\n"
-        ),
-    )
-    findings = wc.check_rest_routes_exist_in_service()
-    assert findings == []
-
-
-def test_rule41_clean_with_wildcard_path(isolated_tree: Any) -> None:
-    """Panel side uses ``format!("/api/foo/{id}")``; route declares
-    ``:img_id`` — must match."""
-    wc, root = isolated_tree
-    _seed_gateway_routes(
-        root,
-        '        .route("/api/images/library/:img_id", get(handler).delete(handler))',
-    )
-    _seed_panel_with_ipc(
-        root,
-        "Images",
-        ipc_body=(
-            'pub const SVC_GATEWAY: &str = "wylde-gateway";\n'
-            "async fn _x(id: &str) {\n"
-            '    let path = format!("/api/images/library/{id}");\n'
-            '    let _ = wylde_gui_pipe::call(SVC_GATEWAY, "GET", &format!("/api/images/library/{id}"), None).await;\n'
-            "}\n"
-        ),
-    )
-    findings = wc.check_rest_routes_exist_in_service()
-    assert findings == []
-
-
-def test_rule41_flags_missing_route(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _seed_gateway_routes(
-        root,
-        '        .route("/api/images/library", get(handler))',
-    )
-    _seed_panel_with_ipc(
-        root,
-        "Images",
-        ipc_body=(
-            'pub const SVC_GATEWAY: &str = "wylde-gateway";\n'
-            "async fn _x() {\n"
-            '    let _ = wylde_gui_pipe::call(SVC_GATEWAY, "POST", "/api/images/ghost", None).await;\n'
-            "}\n"
-        ),
-    )
-    findings = wc.check_rest_routes_exist_in_service()
-    assert len(findings) == 1
-    assert findings[0].rule == "rest_routes_exist_in_service"
-    assert "/api/images/ghost" in findings[0].message
-    assert "POST" in findings[0].message
-    assert findings[0].severity == "error"
-
-
-def test_rule41_flags_method_mismatch(isolated_tree: Any) -> None:
-    """Path matches but method doesn't — still a 404 at runtime."""
-    wc, root = isolated_tree
-    _seed_gateway_routes(
-        root,
-        '        .route("/api/images/library", get(handler))',
-    )
-    _seed_panel_with_ipc(
-        root,
-        "Images",
-        ipc_body=(
-            'pub const SVC_GATEWAY: &str = "wylde-gateway";\n'
-            "async fn _x() {\n"
-            '    let _ = wylde_gui_pipe::call(SVC_GATEWAY, "POST", "/api/images/library", None).await;\n'
-            "}\n"
-        ),
-    )
-    findings = wc.check_rest_routes_exist_in_service()
-    assert len(findings) == 1
-    assert "POST /api/images/library" in findings[0].message
-
-
-def test_rule41_skips_action_envelope(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _seed_gateway_routes(
-        root,
-        '        .route("/api/images/library", get(handler))',
-    )
-    _seed_panel_with_ipc(
-        root,
-        "Foo",
-        ipc_body=(
-            'pub const SVC_HARNESS: &str = "wylde-harness";\n'
-            "async fn _x() {\n"
-            '    let _ = wylde_gui_pipe::call(SVC_HARNESS, "POST", "/__action__", None).await;\n'
-            "}\n"
-        ),
-    )
-    assert wc.check_rest_routes_exist_in_service() == []
-
-
-def test_rule41_skips_non_route_indexed_services(isolated_tree: Any) -> None:
-    """wylde-vpn / wylde-harness have no axum router → skip."""
-    wc, root = isolated_tree
-    _seed_gateway_routes(
-        root,
-        '        .route("/api/images/library", get(handler))',
-    )
-    _seed_panel_with_ipc(
-        root,
-        "RemoteAccess",
-        ipc_body=(
-            'pub const SVC_VPN: &str = "wylde-vpn";\n'
-            "async fn _x() {\n"
-            '    let _ = wylde_gui_pipe::call(SVC_VPN, "GET", "/api/link/status", None).await;\n'
-            "}\n"
-        ),
-    )
-    assert wc.check_rest_routes_exist_in_service() == []
-
-
-def test_rule41_skips_non_literal_path(isolated_tree: Any) -> None:
-    """Path passed as a parameter — out of scope, no false positive."""
-    wc, root = isolated_tree
-    _seed_gateway_routes(
-        root,
-        '        .route("/api/images/library", get(handler))',
-    )
-    _seed_panel_with_ipc(
-        root,
-        "Images",
-        ipc_body=(
-            'pub const SVC_GATEWAY: &str = "wylde-gateway";\n'
-            "async fn _x(path: &str) {\n"
-            '    let _ = wylde_gui_pipe::call(SVC_GATEWAY, "GET", path, None).await;\n'
-            "}\n"
-        ),
-    )
-    assert wc.check_rest_routes_exist_in_service() == []
-
 
 # ── Rule 42: manifest_factory_resolves ───────────────────────────────
 
