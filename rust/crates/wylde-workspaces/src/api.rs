@@ -159,6 +159,38 @@ pub async fn handle_delete(payload: Value) -> Reply {
                 );
             }
         });
+        // #135 — sweep the workspace's DURABLE memory tier. The harness owns
+        // `<data_dir>/workspace_memories/<id>/`, which sits outside the
+        // workspace bundle on purpose (so MRU eviction of the file index can
+        // never take the curated memories with it) — but that also placed it
+        // outside the reach of every removal path, including this one. A
+        // deleted workspace left its memories on disk forever, and because a
+        // workspace id is derived from its folder (#28), re-registering the
+        // same folder re-derived the same id and silently re-attached memories
+        // the user believed they had deleted.
+        //
+        // This is the ONLY path that may sweep them: the delete verb, not the
+        // shared `teardown_bundle` primitive, because MRU eviction funnels
+        // through that too and eviction must PRESERVE the tier.
+        //
+        // Fire-and-forget + best-effort, matching the conversation sweep above
+        // (a Fast/Medium verb must not block on a peer service, and a unit-test
+        // delete must not stall on a pipe connect).
+        let mem_ws = id.clone();
+        tokio::spawn(async move {
+            let sweep = wylde_shared::ipc::send_action(
+                "wylde-harness",
+                "memory.workspace.delete_all",
+                json!({ "workspace_id": mem_ws.clone() }),
+            )
+            .await;
+            if !sweep.ok {
+                tracing::warn!(
+                    "workspaces.delete: durable memory sweep degraded for {mem_ws}: {:?}",
+                    sweep.error
+                );
+            }
+        });
         // #99 — cascade the workspace's Neo4j footprint (Chunk + now-orphan
         // Entity nodes) via the DURABLE pending-cleanup drain. `registry::delete`
         // already enqueued this id through the shared teardown primitive (and

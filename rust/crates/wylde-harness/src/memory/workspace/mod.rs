@@ -21,6 +21,15 @@
 //! only an explicit user delete removes it (see
 //! [`store::delete_memory_dir`]).
 //!
+//! That removal reaches this tier from the *workspaces service*, which owns
+//! the delete verb but not this store: on an explicit delete it asks the
+//! harness to sweep, over `memory.workspace.delete_all`
+//! ([`actions::handle_delete_all`]). Until #135 nothing did — the cleanup
+//! function had zero callers, so a deleted workspace's memories stayed on disk
+//! forever and a folder re-registered under the same derived id (#28) silently
+//! re-attached them. MRU eviction still must NOT sweep: surviving eviction is
+//! the entire reason the tier lives outside the bundle.
+//!
 //! ## Design decisions (vs. the Python implementation)
 //!
 //! * **Search is semantic when embeddings are available, text
