@@ -233,6 +233,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   reports its shortfall instead of claiming success. The false doc claims have been replaced with
   what actually happens (#136).
 
+- **A pre-manifest workspace index could have its vectors permanently mislabelled as compatible.**
+  The RAG index records the embedding model and width it was built with, and forces a full rebuild
+  when they no longer match. An **absent** manifest, though, was treated as "no rebuild needed", so a
+  legacy index upgraded in place through the delta path's mtime fallback — deliberately, to avoid a
+  mass re-embed. That is only safe if the stored vectors came from the current embedder, and an absent
+  manifest is exactly the case where that cannot be known.
+
+  Swapping the embedding model before the first post-manifest pass therefore kept every old vector
+  verbatim and then wrote a fresh manifest naming the **new** model: a mixed, silently incomparable
+  vector set, permanently blessed as compatible because every later compatibility check passed against
+  a record that had never been true. A legacy index that actually holds embeddings now forces a
+  rebuild, so its manifest describes its real contents; a never-indexed workspace, or one whose chunks
+  carry no embeddings, is unaffected and still takes the cheap path (#136).
+
 - **Four `wylde_check` rules could not fail, and one had been red and unnoticed for months.** The lint
   engine's rules 38 and 48 (`panel_verbs_exist_in_harness_registry`,
   `gateway_verbs_exist_in_harness_registry`) loaded their verb registry from two constants that both named
