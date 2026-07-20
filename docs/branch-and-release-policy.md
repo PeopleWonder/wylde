@@ -143,11 +143,12 @@ to the pre-release **`0.2.0-beta.1`** on 2026-07-19 when the maintainer confirme
 The stamp was made uniform across both workspaces and every non-`version.workspace` crate:
 `rust/Cargo.toml` and `Core/GUI/Cargo.toml` (the two `[workspace.package]` versions G7
 compares), `Core/GUI/Frontend/test-support/Cargo.toml`, `tools/xtask`,
-`tools/wylde-release`, `rust/tests/parity`, and the installer's display default — with all
+`tools/wylde-release`, and `rust/tests/parity` — with all
 five `Cargo.lock`s synced (`cargo update -w`, local crates only) so the `--locked` CI gates
-don't red-wall on a stale lock. `version consistency (G7)` passes. The installer's numeric
-`VI_VERSION` deliberately stays `0.2.0` (Windows `VIProductVersion` must be numeric X.Y.Z);
-only the display `VERSION` carries the `-beta.1` suffix.
+don't red-wall on a stale lock. `version consistency (G7)` passes.
+
+> The installer's `VI_VERSION` / display `VERSION` split no longer applies here — the
+> installer was extracted to https://github.com/PeopleWonder/wylde-installer.
 
 **Still gated on a separate say-so: tagging + publishing (#38).** #36 was the *version
 string in the source tree*; it does not create any tag, promote `develop`→`main`,

@@ -122,6 +122,19 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   - `unicode-segmentation` 1.13.2 → 1.13.3 (#145)
   - `uuid` 1.23.1 → 1.24.0 (#145)
   - `wry` 0.54.4 → 0.55.1 (#146)
+
+- **The NSIS installer has been removed from this repository.** It never produced a
+  working install — the "Quick install" route documented in the README, and the
+  `WyldeSetup-<version>.exe` asset attached to `v0.1.0-alpha.1`, do not work and
+  should not be used. `tools/installer/`, `Core/GUI/installer/`, and
+  `docs/installer.md` are gone; the work is parked at
+  [PeopleWonder/wylde-installer](https://github.com/PeopleWonder/wylde-installer)
+  (GPL-3.0-or-later, history preserved) and clearly marked non-functional planned
+  future work. Two long-standing false claims are retracted there: that a pack +
+  install + uninstall round-trip had been verified, and the pre-Rust-cutover
+  description of bundling Python service trees. The only supported way to run Wylde
+  is a development checkout — see [`docs/setup.md`](docs/setup.md).
+
 - **`wylde-release publish` now refuses to cut a release without a real changelog.** Previously, when
   neither `--notes-file` nor `--notes` was supplied, publish fell back to a one-line auto-message
   ("Automated release X (channel).") — so a stable or experimental release could ship with no real
