@@ -133,6 +133,27 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **Deleting a workspace left its concepts in the graph forever.** The workspace-teardown cascade
+  (`delete`, and MRU eviction) pruned a workspace's `Chunk` nodes and the `Entity` nodes left with no
+  surviving mention — but never its `Concept` nodes. The `DELETE_WORKSPACE_CONCEPTS` statement existed
+  and was wired into the *re-projection* path (a concept rebuild clears the prior set before writing the
+  new one); teardown simply never ran it. So every deleted or evicted workspace left its whole concept
+  layer — the `Concept` nodes plus the `CHILD_OF` edges between them — resident in Memgraph
+  permanently, scoped to a workspace id that no longer exists. Worse, the orphan-entity prune
+  `DETACH DELETE`s the entities those concepts pointed at, so the survivors were left holding `MEMBER`
+  edges into deleted nodes: unreachable from the panel, never reclaimed by a later rebuild (which only
+  clears the *current* workspace's set), and invisible to every other cleanup path. The graph accumulated
+  one such island per workspace ever removed. Teardown now runs the concept sweep first — before the
+  entity prune, so concepts are gone before the nodes they reference are — and reports a
+  `concepts_deleted` count alongside the existing chunk and orphan counts (#117).
+
+  The cascade's statement sequence is now declared once (`WORKSPACE_TEARDOWN_STEPS`) and consumed
+  twice: the Bolt client executes it, and the unit-test graph mock replays it. That shared declaration
+  is what makes the regression test real — the previous mock modelled only chunks and mentions, so a
+  teardown that skipped concepts looked correct against a universe containing none. The mock now models
+  `Concept`/`CHILD_OF`/`MEMBER` and panics on a cascade step it doesn't understand. Full proof against a
+  live Memgraph is an `#[ignore]`d integration test pending the live-test work in #121.
+
 - **Four `wylde_check` rules could not fail, and one had been red and unnoticed for months.** The lint
   engine's rules 38 and 48 (`panel_verbs_exist_in_harness_registry`,
   `gateway_verbs_exist_in_harness_registry`) loaded their verb registry from two constants that both named

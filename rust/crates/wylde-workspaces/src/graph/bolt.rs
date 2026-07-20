@@ -51,6 +51,48 @@ pub const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 /// `WYLDE_BOLT_WRITE_BATCH`.
 pub const WRITE_BATCH: usize = 500;
 
+/// One statement in the workspace-teardown cascade.
+pub(crate) struct TeardownStep {
+    /// Result key the deleted-row count is reported under.
+    pub key: &'static str,
+    /// The statement to run.
+    pub cypher: &'static str,
+    /// Whether the statement takes a `$ws` parameter. The orphan-entity prune
+    /// is global (it matches every Entity with no surviving mention), so it
+    /// takes none.
+    pub ws_scoped: bool,
+}
+
+/// The ordered statement sequence ONE full workspace teardown runs.
+///
+/// Declared once and consumed twice: [`BoltClient::delete_workspace`] executes
+/// it against the live graph, and the in-memory teardown mock in
+/// [`super::cleanup`]'s tests replays it against a fake node store. That shared
+/// declaration is the point — it makes the mock's coverage track the real
+/// cascade instead of restating it. Removing a step here deletes it from both
+/// sides at once, which is what lets a unit test catch a missing sweep.
+///
+/// Concepts go first (#117): they were previously absent from the cascade
+/// entirely, so a deleted workspace left its `Concept` nodes and `CHILD_OF`
+/// edges behind forever, their `MEMBER` targets torn out by the entity prune.
+pub(crate) const WORKSPACE_TEARDOWN_STEPS: &[TeardownStep] = &[
+    TeardownStep {
+        key: "concepts_deleted",
+        cypher: cypher::DELETE_WORKSPACE_CONCEPTS,
+        ws_scoped: true,
+    },
+    TeardownStep {
+        key: "chunks_deleted",
+        cypher: cypher::DELETE_WORKSPACE_CHUNKS,
+        ws_scoped: true,
+    },
+    TeardownStep {
+        key: "orphan_entities_deleted",
+        cypher: cypher::DELETE_ORPHAN_ENTITIES,
+        ws_scoped: false,
+    },
+];
+
 fn write_batch_size() -> usize {
     std::env::var("WYLDE_BOLT_WRITE_BATCH")
         .ok()
@@ -369,12 +411,60 @@ impl BoltClient {
         }
     }
 
-    /// `delete_workspace` — drop every Chunk in a workspace, then prune
-    /// now-orphaned Entity nodes. Returns counts so callers can confirm the
-    /// cleanup landed. The full workspace-teardown cascade (delete + MRU
-    /// eviction, #99) uses this.
+    /// `delete_workspace` — drop a workspace's whole graph footprint: its
+    /// `Concept` projection, then every Chunk, then the now-orphaned Entity
+    /// nodes. Returns counts so callers can confirm the cleanup landed. The
+    /// full workspace-teardown cascade (delete + MRU eviction, #99) uses this.
+    ///
+    /// The concept sweep (#117) belongs to **teardown only**, which is why it
+    /// lives here and not in [`delete_workspace_chunks`]: that primitive is
+    /// shared with the full-reindex replace path, where the workspace lives on
+    /// and its authored concepts MUST survive the recompute.
+    ///
+    /// Without it, deleting a workspace left its `Concept` nodes — and the
+    /// `CHILD_OF` edges between them — in the graph forever. The orphan-entity
+    /// prune `DETACH DELETE`s the entities a concept pointed at, so the
+    /// surviving concepts were left with their `MEMBER` targets torn out: a
+    /// workspace-shaped island of unreachable nodes that nothing ever collects.
+    ///
+    /// Concepts are swept *first* so a partial failure leaves the id queued for
+    /// the next drain rather than reporting a teardown that only half landed.
+    /// Every step is idempotent, so the retry is safe.
+    ///
+    /// The step list itself is [`WORKSPACE_TEARDOWN_STEPS`] — declared once so
+    /// the in-memory teardown mock in [`super::cleanup`] replays the same
+    /// sequence. A step dropped from that table stops being executed *and*
+    /// stops being simulated, so the unit regression test fails with it.
     pub async fn delete_workspace(&self, workspace: &str) -> Reply {
-        self.delete_workspace_chunks(workspace, true).await
+        let ws = workspace.trim().to_owned();
+        if ws.is_empty() {
+            return Reply::err_msg("bad_request", "'workspace' required");
+        }
+        let timeout = self.config.connect_timeout;
+        let fut = async {
+            let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
+            let mut out = serde_json::Map::new();
+            out.insert("ok".to_owned(), json!(true));
+            out.insert("workspace".to_owned(), json!(ws));
+            for step in WORKSPACE_TEARDOWN_STEPS {
+                let params = if step.ws_scoped {
+                    vec![("ws".to_owned(), BoltType::from(ws.clone()))]
+                } else {
+                    vec![]
+                };
+                let n = run_single_count(graph, step.cypher, params).await?;
+                out.insert(step.key.to_owned(), json!(n));
+            }
+            Ok::<_, (String, String)>(Value::Object(out))
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(v)) => Reply::ok(v),
+            Ok(Err((code, message))) => Reply::err_msg(code, message),
+            Err(_) => Reply::err_msg(
+                error_codes::QUERY,
+                format!("delete_workspace timed out after {timeout:?}"),
+            ),
+        }
     }
 
     /// DETACH DELETE every Chunk in a workspace, optionally pruning
