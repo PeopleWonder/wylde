@@ -40,6 +40,7 @@
 pub mod current;
 pub mod roster;
 pub mod service_name;
+pub mod shutdown_targets;
 
 pub use current::{resolve, ResolvedBinary, ResolvedStack, Source};
 pub use roster::{roster, roster_in, CoreEntry, StackBinary, Tier, CORE_STACK};
