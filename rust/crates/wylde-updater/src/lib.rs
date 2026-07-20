@@ -53,6 +53,8 @@ mod verify;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use semver::Version;
+
 pub use pubkey::{has_signing_key, PUBLIC_KEY};
 pub use release::{
     pick_assets, Channel, Release, ReleaseAsset, StackAsset, UpdateInfo, UpdateStatus,
@@ -176,6 +178,13 @@ pub fn download_release(info: &UpdateInfo) -> Result<DownloadedRelease, UpdateEr
 ///    ([`wylde_stack::current::set_current`]) makes the whole new stack live
 ///    at once. A reader sees either the entire old stack or the entire new
 ///    one — never the GUI from one and the daemon from another.
+/// 4. **Prune old version directories (#139).** With the pointer now on the
+///    new stack, `versions/<ver>/` directories older than the retention
+///    window ([`VERSIONS_RETAINED`]) are removed, so disk use stays bounded
+///    instead of growing by a full copy of the whole stack every update. This
+///    runs *last* and is best-effort: it never touches the current stack or
+///    the one-previous rollback target, and it never fails an update that has
+///    already succeeded (see [`prune_old_versions`]).
 ///
 /// On success the new stack takes effect on the **next launch** — prompt the
 /// user to restart. The running processes are deliberately *not*
@@ -192,6 +201,19 @@ pub fn install_stack(version: &str, release: &DownloadedRelease) -> Result<(), U
         verify_signature(&bin.bytes, &bin.minisig)?;
     }
 
+    // 2-4. Stage, switch, prune. Split into its own function so the
+    // post-verification sequence — the part #139 touches — is exercisable in
+    // tests without a production signature (whose private half no test can
+    // reproduce; the verification gate above is covered on its own in
+    // `verify.rs`).
+    stage_switch_and_prune(version, release)
+}
+
+/// Steps 2–4 of [`install_stack`], on an already-verified stack: stage into a
+/// fresh version directory, flip `current` to it, then prune older versions.
+/// Kept separate from the signature check so the staging → switch → prune path
+/// is unit-testable without the embedded signing key.
+fn stage_switch_and_prune(version: &str, release: &DownloadedRelease) -> Result<(), UpdateError> {
     // 2. Stage.
     let dir = version_dir(version)?;
 
@@ -215,6 +237,15 @@ pub fn install_stack(version: &str, release: &DownloadedRelease) -> Result<(), U
     // 3. Switch.
     wylde_stack::current::set_current(&dir).map_err(|e| UpdateError::Io(e.to_string()))?;
 
+    // 4. Bound disk growth (#139). The pointer already names `dir`, so the new
+    // stack is live and its predecessor is still on disk as the rollback
+    // fallback — there is no instant in which the fallback is deleted before
+    // the new version is committed. `dir` is `<home>/versions/<version>`, so
+    // its parent is the `versions/` root to prune within.
+    if let Some(versions_root) = dir.parent() {
+        prune_old_versions(versions_root, &dir, VERSIONS_RETAINED);
+    }
+
     tracing::info!(
         version,
         binaries = release.binaries.len(),
@@ -222,6 +253,93 @@ pub fn install_stack(version: &str, release: &DownloadedRelease) -> Result<(), U
         "whole-stack update installed; applies on next launch"
     );
     Ok(())
+}
+
+/// How many version directories to keep under `versions/` after a successful
+/// install: the newly-installed **current** stack, plus `VERSIONS_RETAINED - 1`
+/// older stacks kept as rollback fallbacks.
+///
+/// **Why two.** Each retained version is a *full copy of the whole stack*, so
+/// the floor is set as low as the rollback guarantee allows and no lower. The
+/// atomic `current` pointer makes rolling back to the immediately-previous
+/// version a single re-point; keeping exactly one previous is what that costs.
+/// There is no rollback *consumer* in the tree yet — only the pointer mechanism
+/// that would enable one — so this is a deliberate safety floor, not a tuned
+/// depth: raise it if and when a rollback path proves it needs deeper history.
+const VERSIONS_RETAINED: usize = 2;
+
+/// Prune `versions/` down to [`VERSIONS_RETAINED`] entries, always keeping
+/// `current` (the just-installed stack) and the newest older versions beneath
+/// it. Called from [`stage_switch_and_prune`] *after* the pointer has flipped,
+/// so what survives is decided with the new stack already live and its
+/// predecessor still present — there is no instant where the fallback is
+/// deleted before the new version is committed.
+///
+/// The properties #139 requires, and why each holds:
+///
+/// * **Bounded by construction.** Growth is capped on every install, not by
+///   anyone remembering to clean up. N installs leave at most
+///   [`VERSIONS_RETAINED`] directories, never N.
+/// * **Never the current or the rollback target.** `current` is excluded by
+///   path — not by parsing its name, which may be anything — and the single
+///   newest *other* version, the one a rollback would re-point to, is kept.
+/// * **Self-extending.** It enumerates `versions/*` from disk and removes whole
+///   directories, so a new service that drops extra binaries under a version
+///   dir is covered with no edit here, and a stray directory an earlier run
+///   failed to delete (or that arrived some other way) is reconsidered on the
+///   next install and caught up rather than leaking forever.
+/// * **Failure-safe.** A directory that can't be removed — a locked or in-use
+///   binary — is logged and skipped; the update already succeeded, so this
+///   returns nothing and never fails it. Because the enumeration re-runs every
+///   install, the stuck directory is simply retried next time.
+///
+/// Ordering is by semver descending, so "newest older version" is the highest
+/// version below `current` on an upgrade and the version just stepped down
+/// *from* on a downgrade — the correct rollback target either way. Names that
+/// don't parse as semver sort last and are pruned before any real version is.
+fn prune_old_versions(versions_root: &Path, current: &Path, keep: usize) {
+    let entries = match std::fs::read_dir(versions_root) {
+        Ok(entries) => entries,
+        // No `versions/` directory (or it vanished) — nothing to prune.
+        Err(_) => return,
+    };
+
+    // Every version directory except the live one. `current` is matched by
+    // path, so it is retained whatever its directory name happens to be.
+    let mut stale: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .filter(|p| !same_dir(p, current))
+        .collect();
+
+    // Newest first: parseable versions by semver descending, unparseable last.
+    stale.sort_by(|a, b| match (dir_version(a), dir_version(b)) {
+        (Some(x), Some(y)) => y.cmp(&x),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => b.file_name().cmp(&a.file_name()),
+    });
+
+    // `current` already occupies one retained slot, so keep `keep - 1` others.
+    for old in stale.iter().skip(keep.saturating_sub(1)) {
+        match std::fs::remove_dir_all(old) {
+            Ok(()) => tracing::info!(dir = %old.display(), "pruned old version dir (#139)"),
+            Err(e) => tracing::warn!(
+                dir = %old.display(),
+                error = %e,
+                "could not prune old version dir; will retry on next install"
+            ),
+        }
+    }
+}
+
+/// Parse a version directory's name as semver, tolerating a leading `v`.
+/// Returns `None` for anything that isn't a version; such directories sort
+/// last in the prune order and are therefore removed before any real one.
+fn dir_version(dir: &Path) -> Option<Version> {
+    let name = dir.file_name()?.to_str()?;
+    Version::parse(name.trim_start_matches(['v', 'V'])).ok()
 }
 
 /// `<home>/versions/<version>/`, created. `<home>` is `WYLDE_HOME` or
@@ -329,6 +447,7 @@ fn http_get_bytes(url: &str) -> Result<Vec<u8>, UpdateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn user_agent_carries_crate_version() {
@@ -434,6 +553,7 @@ mod tests {
 
     /// The guard must not reject legitimate release tags.
     #[test]
+    #[serial]
     fn version_dir_accepts_real_release_versions() {
         let home = tempfile::tempdir().unwrap();
         std::env::set_var(wylde_stack::current::HOME_DIR_ENV, home.path());
@@ -455,5 +575,202 @@ mod tests {
         assert!(UpdateError::NoSigningKey
             .to_string()
             .contains("no signing key"));
+    }
+
+    // ---- #139: `versions/` retention -------------------------------------
+    //
+    // These drive the post-verification install seam ([`stage_switch_and_prune`])
+    // directly. The signature gate above it is exercised in `verify.rs`; it
+    // can't be here, because no test can reproduce the private half of the
+    // embedded production key. Each test isolates the pointer/home env, so they
+    // are `#[serial]` against each other and the other env-touching test.
+
+    /// Isolate the `WYLDE_HOME` pointer root (and clear any `WYLDE_CURRENT`
+    /// override) for a test, restoring on drop even if the test panics so a
+    /// later serial test never inherits a dangling home. Mirrors the guard in
+    /// `wylde-stack`'s `current` tests.
+    struct HomeEnv;
+    impl HomeEnv {
+        fn set(home: &Path) -> Self {
+            std::env::set_var(wylde_stack::current::HOME_DIR_ENV, home);
+            std::env::remove_var(wylde_stack::current::CURRENT_DIR_ENV);
+            HomeEnv
+        }
+    }
+    impl Drop for HomeEnv {
+        fn drop(&mut self) {
+            std::env::remove_var(wylde_stack::current::HOME_DIR_ENV);
+            std::env::remove_var(wylde_stack::current::CURRENT_DIR_ENV);
+        }
+    }
+
+    /// A minimal well-formed downloaded stack. Bytes are non-empty (staging
+    /// rejects an empty payload); the version is baked into them so a retained
+    /// directory can be proven intact by content, not just existence.
+    fn stack(version: &str) -> DownloadedRelease {
+        DownloadedRelease {
+            binaries: vec![dl(
+                "wylde-lifecycle",
+                "wylde-lifecycle.exe",
+                format!("daemon bytes for {version}").as_bytes(),
+            )],
+        }
+    }
+
+    /// The version directories currently under `versions_root`, sorted by name.
+    fn version_dirs(versions_root: &Path) -> Vec<PathBuf> {
+        let mut dirs: Vec<PathBuf> = std::fs::read_dir(versions_root)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect()
+            })
+            .unwrap_or_default();
+        dirs.sort();
+        dirs
+    }
+
+    fn dir_names(versions_root: &Path) -> Vec<String> {
+        version_dirs(versions_root)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// **#139 — the boundedness gate.** Successive installs must leave
+    /// `versions/` holding at most the retention count, not one full stack per
+    /// update. Against the pre-#139 code — which staged every version and never
+    /// pruned — this asserts `<= 2` where the directory in fact holds six; it
+    /// goes red, which is the entire point. Delete the step-4 prune call and it
+    /// goes red again.
+    #[test]
+    #[serial]
+    fn successive_installs_keep_versions_bounded() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = HomeEnv::set(home.path());
+
+        for n in 1..=6 {
+            let v = format!("0.0.{n}");
+            stage_switch_and_prune(&v, &stack(&v)).unwrap();
+        }
+
+        let versions = home.path().join("versions");
+        let count = version_dirs(&versions).len();
+        assert!(
+            count <= VERSIONS_RETAINED,
+            "versions/ grew unbounded: {count} dirs after six installs, \
+             expected at most {VERSIONS_RETAINED} — {:?}",
+            dir_names(&versions),
+        );
+    }
+
+    /// **#139 — rollback safety.** After pruning, the one retained previous
+    /// version must be the immediately-preceding one AND be intact: a real,
+    /// re-pointable rollback target, not a hollowed-out directory.
+    #[test]
+    #[serial]
+    fn the_retained_previous_is_an_intact_rollback_target() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = HomeEnv::set(home.path());
+
+        for v in ["0.1.0", "0.2.0", "0.3.0"] {
+            stage_switch_and_prune(v, &stack(v)).unwrap();
+        }
+
+        let versions = home.path().join("versions");
+
+        // Bounded to current (0.3.0) + exactly one previous (0.2.0); the oldest
+        // (0.1.0) is gone.
+        assert_eq!(
+            dir_names(&versions),
+            vec!["0.2.0".to_string(), "0.3.0".to_string()],
+            "kept the wrong set",
+        );
+        assert!(
+            !versions.join("0.1.0").exists(),
+            "0.1.0 should have been pruned"
+        );
+
+        // The retained previous is a working rollback target: its staged daemon
+        // is byte-intact, and re-pointing `current` at it resolves.
+        let prev = versions.join("0.2.0");
+        assert_eq!(
+            std::fs::read(prev.join("wylde-lifecycle.exe")).unwrap(),
+            b"daemon bytes for 0.2.0",
+            "the rollback target was pruned or corrupted"
+        );
+        wylde_stack::current::set_current(&prev).unwrap();
+        assert_eq!(
+            wylde_stack::current::current_dir().as_deref(),
+            Some(prev.as_path()),
+            "rolling back to the retained previous must resolve"
+        );
+    }
+
+    /// **#139 — self-extending + catch-up.** Pruning enumerates `versions/*`
+    /// from disk and removes whole directories, so (a) a directory holding a
+    /// binary this code never heard of is still pruned in full — a new
+    /// service's extra binaries are covered with no edit here — and (b) a stray
+    /// directory left behind by an earlier run is caught up on a later install
+    /// rather than leaking.
+    #[test]
+    #[serial]
+    fn prune_is_disk_driven_so_foreign_dirs_are_caught_up() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = HomeEnv::set(home.path());
+
+        let versions = home.path().join("versions");
+        // A leftover no install this session created, carrying a binary no
+        // roster knows about.
+        let leaked = versions.join("0.0.9");
+        std::fs::create_dir_all(&leaked).unwrap();
+        std::fs::write(leaked.join("wylde-brand-new-service.exe"), b"unknown").unwrap();
+
+        stage_switch_and_prune("0.1.0", &stack("0.1.0")).unwrap();
+        stage_switch_and_prune("0.2.0", &stack("0.2.0")).unwrap();
+
+        // 0.0.9 is older than the retained window; it is removed whole,
+        // including the binary this code was never taught about.
+        assert!(
+            !leaked.exists(),
+            "a disk-enumerated foreign version dir must be pruned, extra \
+             binaries and all"
+        );
+        assert_eq!(version_dirs(&versions).len(), VERSIONS_RETAINED);
+    }
+
+    /// **#139 — failure-safe.** Pruning must never turn a successful update
+    /// into a failure. A `versions/` entry that isn't a prunable version
+    /// directory (here a stray file) is skipped, every install still returns
+    /// `Ok`, the pointer lands on the newest stack, and the stray is never
+    /// mistaken for a version.
+    #[test]
+    #[serial]
+    fn a_prune_hiccup_never_fails_the_install() {
+        let home = tempfile::tempdir().unwrap();
+        let _env = HomeEnv::set(home.path());
+
+        let versions = home.path().join("versions");
+        std::fs::create_dir_all(&versions).unwrap();
+        std::fs::write(versions.join("not-a-version.txt"), b"stray").unwrap();
+
+        for n in 1..=3 {
+            let v = format!("0.0.{n}");
+            assert!(
+                stage_switch_and_prune(&v, &stack(&v)).is_ok(),
+                "install {v} must succeed despite junk in versions/"
+            );
+        }
+
+        assert_eq!(
+            wylde_stack::current::current_dir(),
+            Some(versions.join("0.0.3")),
+            "the pointer must land on the newest install"
+        );
+        assert!(
+            versions.join("not-a-version.txt").is_file(),
+            "a non-version entry must be left untouched, never pruned"
+        );
     }
 }

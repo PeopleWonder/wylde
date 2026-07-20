@@ -112,6 +112,21 @@ Install is all-or-nothing:
    The live stack is untouched.
 3. `%LOCALAPPDATA%\Wylde\current` is repointed at that directory with a
    single atomic rename.
+4. Old version directories are pruned (#139). Without this, step 2 left a full
+   copy of the whole stack on disk for every update ever applied — unbounded
+   growth that worsened as the stack itself grew. `versions/` is now kept to a
+   fixed window: the just-installed **current** stack plus one previous, kept
+   as a rollback fallback (`VERSIONS_RETAINED`). The prune runs **after** the
+   pointer flip, so the new stack is live and its predecessor is present the
+   whole time — the rollback fallback is never deleted before the new version
+   is committed — and it never removes the current stack or the retained
+   previous. It enumerates `versions/` from disk and deletes whole directories
+   (so a new service's extra binaries are covered with no edit, and a directory
+   an earlier run couldn't remove is retried next install), and a delete that
+   fails on a locked binary is logged and skipped rather than failing an update
+   that already succeeded. There is no rollback *consumer* yet — only the
+   pointer that makes one possible — so keeping exactly one previous is a
+   deliberate safety floor, not a tuned depth.
 
 Because the launcher resolves through `current`, the switch takes effect for
 the whole stack at once on the next launch, and a shortcut can never go stale
