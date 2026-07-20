@@ -50,7 +50,7 @@ jobs:
           - rust/Cargo.toml
           - Core/GUI/Cargo.toml
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: cargo-deny check licenses
         uses: EmbarkStudios/cargo-deny-action@v2
         with:

@@ -33,7 +33,7 @@ jobs:
     name: version + tag consistency (G7)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: tag matches workspace version (and workspaces agree)
         run: bash tools/check-versions.sh   # reads GITHUB_REF; enforces tag == version on a tag build
 
@@ -43,7 +43,7 @@ jobs:
     runs-on: windows-latest
     needs: version-and-tag
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust (honoring rust-toolchain.toml)
         run: rustup show
         working-directory: rust
@@ -61,7 +61,7 @@ jobs:
     runs-on: windows-latest
     needs: version-and-tag
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup toolchain install stable --profile minimal
       - uses: Swatinem/rust-cache@v2
         with:
@@ -78,8 +78,8 @@ jobs:
     name: prerequisite milestones complete
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: refuse if a prerequisite milestone is still open
