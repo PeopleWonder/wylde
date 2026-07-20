@@ -118,7 +118,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 anyhow = "1"
 thiserror = "1"
 chrono = { version = "0.4", features = ["serde"] }
-windows = { version = "0.58", features = ["Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_Security", "Win32_Security_Cryptography", "Win32_Foundation"] }
+windows = { version = "0.62", features = ["Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_Security", "Win32_Security_Cryptography", "Win32_Foundation"] }
 # Test-only: serialises tests that mutate process-global state (env vars, the
 # manifest writer-registry) under named locks so cargo's parallel runner can't
 # interleave them. Dev-dependency in the crates that need it.
