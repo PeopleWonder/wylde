@@ -146,7 +146,7 @@ kept. One loose doc deleted (above).
 
 **Placeholder / TODO / TBD:** scanned all docs; every hit is legitimate (tracked work-item
 descriptions in plan/archive docs, honest "not-yet-wired stub" status such as
-`Core/GUI/installer/README.md`, or template variables). None were fill-in-the-blank filler;
+`Core/GUI/installer/README.md` (since extracted to PeopleWonder/wylde-installer), or template variables). None were fill-in-the-blank filler;
 nothing removed (removing would misrepresent genuinely-unbuilt state).
 
 ---

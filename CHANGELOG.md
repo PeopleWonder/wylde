@@ -72,6 +72,22 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   corresponding update/launch path, so the guarantee is checked rather than merely asserted.
   (#97, #92)
 
+- **The updater no longer leaves a full copy of the stack on disk for every update it has ever
+  applied.** Installs stage each release into its own `versions/<ver>/` directory and flip the
+  `current` pointer to it — correct and atomic, but nothing ever removed the old directories, so an
+  installed machine accumulated one entire stack per update, without bound, invisibly, and the leak
+  worsened as the stack itself grew. Each successful install now prunes `versions/` down to a fixed
+  retention window — the newly-installed **current** stack plus one previous, kept as a rollback
+  fallback — so disk stays bounded by construction rather than by anyone remembering to clean up.
+  The prune is deliberately ordered to be safe: it runs **after** the pointer has flipped, so the new
+  stack is already live and its predecessor is still present the whole time — there is no instant in
+  which the rollback fallback is gone but the new version is not yet committed — and it never touches
+  the current stack or the retained previous. It enumerates `versions/` from disk and removes whole
+  directories, so a new service's extra binaries under a version dir are covered with no edit, and a
+  directory a previous run couldn't delete (a locked or in-use binary) is retried on the next install
+  rather than leaking. A prune failure is logged and skipped: it can never fail an update that has
+  already succeeded. (#139)
+
 - **Wylde now reclaims disk when you switch the model behind a reasoning slot, instead of hoarding
   every model it ever pulled.** Until now the local model store had no bound and no cleanup: each
   time the default reasoner (or your chosen slot model) changed, the superseded model was left on
@@ -122,6 +138,37 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   - `unicode-segmentation` 1.13.2 → 1.13.3 (#145)
   - `uuid` 1.23.1 → 1.24.0 (#145)
   - `wry` 0.54.4 → 0.55.1 (#146)
+- **`windows` crate 0.58 → 0.62.2 (breaking; required code changes).** Not a routine bump: the
+  0.62 API reworked several Win32 wrappers to take `Option<…>` instead of a raw handle. `LocalFree`
+  is now `LocalFree(Option<HLOCAL>)` and `SetNamedSecurityInfoW`'s owner/group parameters are
+  `Option<PSID>`. Updated the DPAPI protect/unprotect paths (`wylde-shared/src/encryption.rs`) and
+  the Windows owner-only ACL-hardening path (`wylde-shared/src/secure_file.rs`): the freed-buffer
+  handles are wrapped in `Some(…)`, and the old null-`PSID` "leave owner/group unchanged" sentinel
+  is now the clearer `None`. Behaviour is byte-for-byte unchanged. Consolidates and supersedes
+  Dependabot #151, #155, #156 (one bump across the `rust/`, `Core/GUI/`, and `rust/tests/parity/`
+  manifests). (#171)
+
+- **`thiserror` 1 → 2 (major).** Bumped the single workspace pin (`rust/Cargo.toml`); all 34
+  `#[derive(thiserror::Error)]` error enums across the backend crates compile unchanged — 2.0 is
+  source-compatible with our derives (no `#[from]`, `#[error(transparent)]`, or display-attribute
+  edits were required). Refreshed the `rust/`, `Core/GUI/`, `rust/tests/parity/`, and
+  `tools/wylde-release/` lockfiles. Two transitive dependencies still pin `thiserror ^1`
+  (`nvml-wrapper` in `wylde-vram-broker`, `neo4rs` in the release tool), so `thiserror` 1.0.69 and
+  2.0.19 coexist in the graph — expected, not a conflict. Consolidates and supersedes Dependabot
+  #149, #154, #157, #158. (#172)
+
+- **The NSIS installer has been removed from this repository.** It never produced a
+  working install — the "Quick install" route documented in the README, and the
+  `WyldeSetup-<version>.exe` asset attached to `v0.1.0-alpha.1`, do not work and
+  should not be used. `tools/installer/`, `Core/GUI/installer/`, and
+  `docs/installer.md` are gone; the work is parked at
+  [PeopleWonder/wylde-installer](https://github.com/PeopleWonder/wylde-installer)
+  (GPL-3.0-or-later, history preserved) and clearly marked non-functional planned
+  future work. Two long-standing false claims are retracted there: that a pack +
+  install + uninstall round-trip had been verified, and the pre-Rust-cutover
+  description of bundling Python service trees. The only supported way to run Wylde
+  is a development checkout — see [`docs/setup.md`](docs/setup.md).
+
 - **`wylde-release publish` now refuses to cut a release without a real changelog.** Previously, when
   neither `--notes-file` nor `--notes` was supplied, publish fell back to a one-line auto-message
   ("Automated release X (channel).") — so a stable or experimental release could ship with no real
@@ -132,6 +179,16 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   changelog a required, verifiable release gate rather than an optional courtesy.
 
 ### Fixed
+
+- **The `develop → main` promotion PR failed commit-lint on already-merged history.** The
+  `conventional commits` check (`.github/workflows/pr-checks.yml`) linted the entire
+  `origin/${BASE}..HEAD` range, so a merge-up PR re-linted every commit already vetted on
+  `develop` and failed on one old Dependabot subject (`chore(deps)(deps): …`) that predates the
+  rule and cannot be corrected without rewriting public history. The check now excludes commits
+  already reachable from `origin/develop` (`git rev-list … "origin/${BASE}..HEAD" --not
+  "origin/develop"`), so a promotion lints *nothing* pre-existing, while a feature PR into
+  `develop` — and a `hotfix/* → main` that never went through `develop` — still lint their
+  genuinely new commits, so a malformed *new* subject is still caught.
 
 - **Deleting a workspace left its concepts in the graph forever.** The workspace-teardown cascade
   (`delete`, and MRU eviction) pruned a workspace's `Chunk` nodes and the `Entity` nodes left with no
@@ -262,6 +319,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   identically to a live one. The Hierarchy sub-tab badges the same flag correctly, so the two views
   told opposite stories about the same data. Dangling relations now carry a "dangling — re-point"
   badge, matching the Hierarchy treatment (#137).
+
+- **A pre-manifest workspace index could have its vectors permanently mislabelled as compatible.**
+  The RAG index records the embedding model and width it was built with, and forces a full rebuild
+  when they no longer match. An **absent** manifest, though, was treated as "no rebuild needed", so a
+  legacy index upgraded in place through the delta path's mtime fallback — deliberately, to avoid a
+  mass re-embed. That is only safe if the stored vectors came from the current embedder, and an absent
+  manifest is exactly the case where that cannot be known.
+
+  Swapping the embedding model before the first post-manifest pass therefore kept every old vector
+  verbatim and then wrote a fresh manifest naming the **new** model: a mixed, silently incomparable
+  vector set, permanently blessed as compatible because every later compatibility check passed against
+  a record that had never been true. A legacy index that actually holds embeddings now forces a
+  rebuild, so its manifest describes its real contents; a never-indexed workspace, or one whose chunks
+  carry no embeddings, is unaffected and still takes the cheap path (#136).
 
 - **Four `wylde_check` rules could not fail, and one had been red and unnoticed for months.** The lint
   engine's rules 38 and 48 (`panel_verbs_exist_in_harness_registry`,
