@@ -37,3 +37,7 @@ minisign-verify = "0.2"
 # committed key. Never pulled into the shipped binary.
 minisign = "0.9"
 tempfile = "3"
+# The #139 retention tests mutate the process-global `WYLDE_HOME`/`WYLDE_CURRENT`
+# env (via `wylde-stack`'s pointer), so they must not run concurrently with each
+# other or with `version_dir_accepts_real_release_versions`.
+serial_test = { workspace = true }
