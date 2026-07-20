@@ -1,4 +1,4 @@
-"""Rule 51: every rule's configured target path must exist.
+"""Rule 51: every rule's configured input corpus must be non-empty.
 
 The failure this exists to prevent
 ----------------------------------
@@ -8,19 +8,37 @@ Its walker finds nothing, its loop runs zero times, and it reports a
 clean pass while checking nothing at all.  The tree looks greener the
 more of the rule engine rots.
 
-That has now happened twice.  Rules 44/45 pointed at
+That has now happened repeatedly.  Rules 44/45 pointed at
 ``Core/Lifecycle/launcher.py`` and ``Core/Lifecycle/shutdown.py`` after
 the Rust cutover deleted them, and passed green for months (issue #101).
 Rule 48 pointed at ``rust/crates/wylde-harness/src/pipe.rs`` and
 ``Core/harness/pipe/__init__.py`` — the first renamed to ``pipe/mod.rs``,
 the second deleted outright — leaving 46 Gateway verbs unchecked
-(issue #116).
+(issue #116).  Then the whole Python-linter class rotted at once: ~20
+rules kept walking ``ACTIVE_ROOTS`` for ``*.py`` after the last
+production ``.py`` was ported to Rust, so every walk matched nothing and
+every rule "passed" — found by a hand audit, not by this gate (#114).
 
-Both were found by hand, by someone auditing rules one at a time.  This
-rule makes the next one turn up automatically: it asserts that every
-path the rule engine is *configured* to inspect is actually present in
-the tree.  Delete a file a rule depends on and CI tells you, on that PR,
-instead of the rule quietly becoming decorative.
+Why the previous version of this rule missed that
+--------------------------------------------------
+
+The prior implementation asserted *path existence* over six hand-typed
+paths carried forward from the #101 and #116 post-mortems.  Two holes,
+both fatal to the Python-linter class:
+
+* **Existence, not cardinality.**  ``Core/GUI/Frontend/Panels`` existing
+  tells you nothing about whether a walk under it matched 121 files or
+  zero.  A rule whose target *directory* survives but whose file class
+  was emptied — exactly the Python situation, where ``Core/`` is full of
+  Rust but holds no walkable ``.py`` — passed this check trivially.
+* **Six entries, not the whole suite.**  A rule whose target died for a
+  reason nobody had already been burned by was invisible: it was never
+  in the table.
+
+The fix is this file: assert **matched-file count > 0** for every
+surviving rule's input root, not path existence — so a corpus that
+collapses to zero files goes red on the PR that empties it, whatever the
+reason and whichever rule it disarms.
 
 Why a rule rather than an import-time assertion
 -----------------------------------------------
@@ -35,68 +53,164 @@ and is skipped by tests that don't select it.
 from __future__ import annotations
 
 import sys as _sys
-from typing import Dict, List
+from typing import List, Optional, Tuple
 
 from .. import Finding
+from .._walkers import _walk
 
 _pkg = _sys.modules[__name__.rsplit(".", 2)[0]]
 
 
-# Path → the rule(s) that would silently stop working if it vanished.
+# One spec per rule input corpus that would silently disarm a rule if it
+# emptied out.  Each is ``(root, extensions, owner)``:
 #
-# Only paths whose absence *disarms* a rule belong here.  A path a rule
-# merely walks for violations (e.g. a panel source root) does not: an
-# empty walk there is a legitimate "no violations".  The test is
-# "if this file disappeared, would the rule still report a pass?" — if
-# yes, it belongs in this table.
-RULE_TARGET_PATHS: Dict[str, str] = {
-    # Rule 31 — manifest orphan reap (repointed #116)
-    "rust/crates/wylde-lifecycle/src/daemon.rs": "shutdown_reaps_manifest_orphans",
-    "rust/crates/wylde-lifecycle/src/state/orphan_sweep.rs": "shutdown_reaps_manifest_orphans",
-    # Rules 38 + 48 — harness pipe action registry (repointed #116)
-    "rust/crates/wylde-harness/src/pipe/mod.rs": (
+# * ``extensions is None`` — ``root`` is a specific file (or directory) a
+#   rule reads *wholesale*; existence is its cardinality, so it must
+#   simply be present.  (An empty registry inside a present file is a
+#   different failure the owning rule catches itself, hard.)
+# * ``extensions`` is a tuple of suffixes — ``root`` is a *walk root*; at
+#   least one file with one of those suffixes must exist beneath it
+#   (EXCLUDED_DIRS like ``target/`` and ``__pycache__/`` are skipped, via
+#   ``_walk``).  This is the cardinality check the previous existence
+#   check lacked.
+#
+# Coverage is the whole surviving suite's input families, not a handful
+# of incident paths — that breadth is the point.  Rules that walk the
+# entire repo across many extensions (``dead_service_refs``,
+# ``no_personal_identifiers``, ``pipe_name_convention``) are omitted on
+# purpose: their corpus cannot collapse while any source file of any kind
+# survives, so a cardinality gate on them would only ever fire on an
+# empty checkout.
+_TargetSpec = Tuple[str, Optional[Tuple[str, ...]], str]
+
+RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
+    # ── specific files read wholesale (existence == cardinality) ──
+    (
+        "rust/crates/wylde-lifecycle/src/daemon.rs",
+        None,
+        "shutdown_reaps_manifest_orphans, launcher_enumerates_services_from_manifests",
+    ),
+    (
+        "rust/crates/wylde-lifecycle/src/state/orphan_sweep.rs",
+        None,
+        "shutdown_reaps_manifest_orphans",
+    ),
+    (
+        "rust/crates/wylde-lifecycle/src/state/mod.rs",
+        None,
+        "shutdown_enumerates_services_from_manifests",
+    ),
+    (
+        "rust/crates/wylde-lifecycle/src/state/services.rs",
+        None,
+        "silent_skip_in_service_start",
+    ),
+    (
+        "rust/crates/wylde-lifecycle/src/daemon_managed.rs",
+        None,
+        "launcher_enumerates_services_from_manifests, "
+        "shutdown_enumerates_services_from_manifests",
+    ),
+    (
+        "rust/crates/wylde-harness/src/pipe/mod.rs",
+        None,
         "panel_verbs_exist_in_harness_registry, "
-        "gateway_verbs_exist_in_harness_registry"
+        "gateway_verbs_exist_in_harness_registry",
     ),
-    # Rules 44/45 — DAEMON_MANAGED single-source boot + shutdown (#101)
-    "rust/crates/wylde-lifecycle/src/daemon_managed.rs": (
-        "launcher_enumerates_services_from_manifests, shutdown_stops_all_services"
+    (
+        "Core/GUI/Cargo.toml",
+        None,
+        "panel_crate_must_be_workspace_member",
     ),
-    # Rule 48 — Gateway route surface
-    "rust/crates/wylde-gateway/src": "gateway_verbs_exist_in_harness_registry",
-    # Rule 38 — panel tree the pipe-call walker covers
-    "Core/GUI/Frontend/Panels": "panel_verbs_exist_in_harness_registry",
-}
+    # ── walk roots (cardinality: at least one matching file) ──
+    (
+        "rust/crates",
+        (".rs",),
+        "import_paths_rust, no_silent_error_swallow_rust, "
+        "logging_setup_only_rust, no_external_process_spawn_rust, "
+        "no_hardcoded_prompts_rust, no_unbounded_log_sink_rust, "
+        "service_owns_its_state, file_size_limit",
+    ),
+    (
+        "rust/crates/wylde-gateway/src",
+        (".rs",),
+        "gateway_verbs_exist_in_harness_registry",
+    ),
+    (
+        "Core/GUI",
+        (".rs",),
+        "gui_no_backend_bypass, webview_only_in_extension_handlers, "
+        "nav_targets_exist, file_size_limit",
+    ),
+    (
+        "Core/GUI/Frontend/Panels",
+        (".rs",),
+        "no_legacy_gui_imports_in_panels, no_bare_tokio_in_panel_src, "
+        "no_panic_in_panel_render, stream_call_must_handle_cancel",
+    ),
+    (
+        "Core/GUI/Frontend/Panels",
+        (".json",),
+        "first_party_manifest_must_be_gpui_view, "
+        "required_services_includes_called_services, manifest_factory_resolves",
+    ),
+    (
+        "Core/GUI/Frontend/Panels",
+        (".toml",),
+        "no_cross_panel_imports, panel_crate_must_be_workspace_member",
+    ),
+)
+
+
+def _corpus_present(root_rel: str, exts: Optional[Tuple[str, ...]]) -> bool:
+    """True iff the rule's input corpus at ``root_rel`` is non-empty.
+
+    For a wholesale target (``exts is None``) that means the path exists.
+    For a walk root it means ``_walk`` finds ≥1 file with one of ``exts``
+    beneath it — the cardinality check.
+    """
+    if exts is None:
+        return (_pkg.WYLDE_ROOT / root_rel).exists()
+    return len(_walk(exts, roots=(root_rel,))) > 0
 
 
 def check_rule_targets_exist() -> List[Finding]:
-    """Every path in :data:`RULE_TARGET_PATHS` must exist.
+    """Every rule's input corpus in :data:`RULE_TARGET_SPECS` must be
+    non-empty.
 
-    Fires an ``error`` per missing path, naming the rule(s) that just
-    went dead.  This is the generalization of the #101 and #116 fixes:
-    the next time a refactor deletes or moves a file a rule depends on,
-    the PR that does it goes red, rather than the rule going quiet.
+    Fires an ``error`` per collapsed corpus, naming the rule(s) it just
+    disarmed.  This is the generalization of the #101, #116 and #114
+    fixes: the next time a refactor deletes a file — or empties out the
+    last file of a class a rule walks for — the PR that does it goes red,
+    rather than the rule going quiet.
 
-    If a path here is *intentionally* removed, the fix is to repoint or
+    If a corpus is *intentionally* emptied, the fix is to repoint or
     retire the owning rule and update this table in the same commit —
-    which is precisely the step both prior incidents skipped.
+    precisely the step every prior incident skipped.
     """
     out: List[Finding] = []
-    for rel, owner in sorted(RULE_TARGET_PATHS.items()):
-        if (_pkg.WYLDE_ROOT / rel).exists():
+    for root_rel, exts, owner in RULE_TARGET_SPECS:
+        if _corpus_present(root_rel, exts):
             continue
+        if exts is None:
+            what = f"Rule target {root_rel!r} does not exist"
+        else:
+            what = (
+                f"Rule walk root {root_rel!r} contains no "
+                f"{'/'.join(exts)} files"
+            )
         out.append(
             Finding(
                 rule="rule_targets_exist",
                 severity="error",
-                file=rel,
+                file=root_rel,
                 line=0,
                 message=(
-                    f"Rule target {rel!r} does not exist, so {owner} can no "
-                    f"longer do its job — and a rule that cannot inspect its "
-                    f"target reports a pass, not a failure.  Repoint or "
-                    f"retire that rule and update RULE_TARGET_PATHS in "
-                    f"wylde_check/rules/_selfcheck.py in the same change."
+                    f"{what}, so {owner} can no longer do its job — and a "
+                    f"rule with an empty input corpus reports a pass, not a "
+                    f"failure.  Repoint or retire that rule and update "
+                    f"RULE_TARGET_SPECS in wylde_check/rules/_selfcheck.py "
+                    f"in the same change."
                 ),
             )
         )

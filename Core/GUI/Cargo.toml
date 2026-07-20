@@ -99,7 +99,7 @@ tray-icon = "0.24"
 # Autostart toggle (HKCU\…\Run on Windows, LaunchAgent on macOS, .desktop
 # on Linux).  Not wired in this slice; declared here so the path is
 # confirmed for the slice that ports Settings.
-auto-launch = "0.5"
+auto-launch = "0.6"
 
 # Updater driver — `self_update` for the existing endpoint signing flow
 # (Phase 12.5), `self-replace` for the in-place binary swap.  Not wired
