@@ -84,6 +84,17 @@ pub(super) fn install(api: &Arc<dyn HarnessApi>) {
 
     let a = Arc::clone(api);
     register_action_with_meta(
+        "memory.long_term.reindex",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_long_term_reindex(p).await }
+        },
+        "Rebuild the long-term vector mirror from the authoritative JSON          records. No payload. Returns {ok, total, embedded, failed};          embedder_unavailable (leaving the existing mirror untouched) when          nothing could be embedded.",
+        HANDLER_MODULE_LONG_TERM,
+    );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
         "memory.long_term.search",
         move |p: Value| {
             let a = Arc::clone(&a);
@@ -182,6 +193,23 @@ pub(super) fn install(api: &Arc<dyn HarnessApi>) {
          only; MRU eviction must never call this. Payload {workspace_id}. \
          Returns {ok, workspace_id, removed}. bad_request for a blank \
          workspace_id (a blank id resolves to the tier root).",
+        HANDLER_MODULE_WORKSPACE_MEMORY,
+    );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
+        "memory.workspace.reindex",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.memory_workspace_reindex(p).await }
+        },
+        "Rebuild a workspace's vector mirror from its authoritative JSON \
+         records. The recovery path for an embedding-model / dimension \
+         change, and for the drift left behind whenever a save's embed \
+         failed and the record went JSON-only. Payload {workspace_id}. \
+         Returns {ok, workspace_id, total, embedded, failed}; \
+         embedder_unavailable (leaving the existing mirror untouched) when \
+         nothing could be embedded.",
         HANDLER_MODULE_WORKSPACE_MEMORY,
     );
 

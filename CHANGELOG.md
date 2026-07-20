@@ -203,6 +203,36 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   degradation through an explicit `load_or_default`, which is documented as never safe on a path that
   writes state back (#140).
 
+- **Changing the embedding dimension destroyed every stored memory vector, and the recovery function
+  the destruction relied on did not exist.** The memory tiers' vector mirrors
+  (`long_term.vec.bin`, each workspace's `memory.vec.bin`) recorded only a format version and a
+  width. Loading one at a different width returned an empty store and left the old file in place —
+  which sounds harmless, but the next write persisted that empty store straight over it. One `warn!`
+  was the only trace. Worse, the mirrors carried **no embedding-model identity at all**, so swapping
+  `WYLDE_EMBED_MODEL` at the same width kept every prior vector and silently compared it against
+  vectors from a different model forever, degrading search quality with no signal anywhere. The
+  workspaces RAG index already stamped its model and rebuilt on mismatch; the memory tiers did not,
+  and that asymmetry was the bug.
+
+  The on-disk envelope is now version 3 and stamps `embed_model`. An incompatible mirror — wrong
+  width *or* wrong embedder — is moved aside to `<path>.incompatible` instead of being left to be
+  overwritten, so the vectors survive. Version-2 files load transparently and adopt the current model
+  on their next persist (#136).
+
+- **`reindex` did not exist.** Three separate doc comments justified the behaviour above by claiming
+  the mirrors were "rebuilt by `reindex` from the JSON if the two ever drift". There was no
+  `reindex` — `git grep 'fn reindex'` over the harness returned nothing. The safety property the
+  destructive path depended on was fictional, and the mirrors drifted permanently partial in ordinary
+  operation too: whenever the embedder is down or over its 1.2 s budget the record saves JSON-only,
+  and nothing ever revisited it, so semantic search quietly skipped those records for good.
+
+  There is now a real rebuild, exposed as `memory.long_term.reindex` and `memory.workspace.reindex`.
+  It re-embeds the authoritative JSON and writes a fresh, stamped mirror. Critically, a rebuild that
+  embeds *nothing* — the embedder is down — refuses to persist and leaves the existing mirror
+  untouched, rather than completing the destruction it was meant to repair; and a partial rebuild
+  reports its shortfall instead of claiming success. The false doc claims have been replaced with
+  what actually happens (#136).
+
 - **Four `wylde_check` rules could not fail, and one had been red and unnoticed for months.** The lint
   engine's rules 38 and 48 (`panel_verbs_exist_in_harness_registry`,
   `gateway_verbs_exist_in_harness_registry`) loaded their verb registry from two constants that both named
