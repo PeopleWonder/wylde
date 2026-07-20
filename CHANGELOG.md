@@ -104,6 +104,12 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Changed
 
+- **Dependency bumps.** Routine updates carrying no API change and no code edit on our side.
+  Kept as one list so the narrative entries below stay readable; each line is the dependency and
+  the version span.
+  - `actions/checkout` v4 → v7 (#144)
+  - `actions/setup-python` v5 → v7 (#144)
+  - `dependabot/fetch-metadata` v2 → v3 (#144)
 - **`wylde-release publish` now refuses to cut a release without a real changelog.** Previously, when
   neither `--notes-file` nor `--notes` was supplied, publish fell back to a one-line auto-message
   ("Automated release X (channel).") — so a stable or experimental release could ship with no real
