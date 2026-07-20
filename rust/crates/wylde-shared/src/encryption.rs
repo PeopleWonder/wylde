@@ -232,7 +232,7 @@ fn backend_protect(data: &[u8]) -> io::Result<Vec<u8>> {
         )
         .map_err(|e| io::Error::other(format!("CryptProtectData: {e}")))?;
         let out = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
-        let _ = LocalFree(HLOCAL(out_blob.pbData as *mut core::ffi::c_void));
+        let _ = LocalFree(Some(HLOCAL(out_blob.pbData as *mut core::ffi::c_void)));
         Ok(out)
     }
 }
@@ -261,7 +261,7 @@ fn backend_unprotect(data: &[u8]) -> io::Result<Vec<u8>> {
         )
         .map_err(|e| io::Error::other(format!("CryptUnprotectData: {e}")))?;
         let out = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
-        let _ = LocalFree(HLOCAL(out_blob.pbData as *mut core::ffi::c_void));
+        let _ = LocalFree(Some(HLOCAL(out_blob.pbData as *mut core::ffi::c_void)));
         Ok(out)
     }
 }

@@ -122,6 +122,15 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   - `unicode-segmentation` 1.13.2 → 1.13.3 (#145)
   - `uuid` 1.23.1 → 1.24.0 (#145)
   - `wry` 0.54.4 → 0.55.1 (#146)
+- **`windows` crate 0.58 → 0.62.2 (breaking; required code changes).** Not a routine bump: the
+  0.62 API reworked several Win32 wrappers to take `Option<…>` instead of a raw handle. `LocalFree`
+  is now `LocalFree(Option<HLOCAL>)` and `SetNamedSecurityInfoW`'s owner/group parameters are
+  `Option<PSID>`. Updated the DPAPI protect/unprotect paths (`wylde-shared/src/encryption.rs`) and
+  the Windows owner-only ACL-hardening path (`wylde-shared/src/secure_file.rs`): the freed-buffer
+  handles are wrapped in `Some(…)`, and the old null-`PSID` "leave owner/group unchanged" sentinel
+  is now the clearer `None`. Behaviour is byte-for-byte unchanged. Consolidates and supersedes
+  Dependabot #151, #155, #156 (one bump across the `rust/`, `Core/GUI/`, and `rust/tests/parity/`
+  manifests). (#171)
 
 - **The NSIS installer has been removed from this repository.** It never produced a
   working install — the "Quick install" route documented in the README, and the
