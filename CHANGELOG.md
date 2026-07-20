@@ -72,6 +72,22 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   corresponding update/launch path, so the guarantee is checked rather than merely asserted.
   (#97, #92)
 
+- **The updater no longer leaves a full copy of the stack on disk for every update it has ever
+  applied.** Installs stage each release into its own `versions/<ver>/` directory and flip the
+  `current` pointer to it — correct and atomic, but nothing ever removed the old directories, so an
+  installed machine accumulated one entire stack per update, without bound, invisibly, and the leak
+  worsened as the stack itself grew. Each successful install now prunes `versions/` down to a fixed
+  retention window — the newly-installed **current** stack plus one previous, kept as a rollback
+  fallback — so disk stays bounded by construction rather than by anyone remembering to clean up.
+  The prune is deliberately ordered to be safe: it runs **after** the pointer has flipped, so the new
+  stack is already live and its predecessor is still present the whole time — there is no instant in
+  which the rollback fallback is gone but the new version is not yet committed — and it never touches
+  the current stack or the retained previous. It enumerates `versions/` from disk and removes whole
+  directories, so a new service's extra binaries under a version dir are covered with no edit, and a
+  directory a previous run couldn't delete (a locked or in-use binary) is retried on the next install
+  rather than leaking. A prune failure is logged and skipped: it can never fail an update that has
+  already succeeded. (#139)
+
 - **Wylde now reclaims disk when you switch the model behind a reasoning slot, instead of hoarding
   every model it ever pulled.** Until now the local model store had no bound and no cleanup: each
   time the default reasoner (or your chosen slot model) changed, the superseded model was left on
@@ -131,6 +147,15 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   is now the clearer `None`. Behaviour is byte-for-byte unchanged. Consolidates and supersedes
   Dependabot #151, #155, #156 (one bump across the `rust/`, `Core/GUI/`, and `rust/tests/parity/`
   manifests). (#171)
+
+- **`thiserror` 1 → 2 (major).** Bumped the single workspace pin (`rust/Cargo.toml`); all 34
+  `#[derive(thiserror::Error)]` error enums across the backend crates compile unchanged — 2.0 is
+  source-compatible with our derives (no `#[from]`, `#[error(transparent)]`, or display-attribute
+  edits were required). Refreshed the `rust/`, `Core/GUI/`, `rust/tests/parity/`, and
+  `tools/wylde-release/` lockfiles. Two transitive dependencies still pin `thiserror ^1`
+  (`nvml-wrapper` in `wylde-vram-broker`, `neo4rs` in the release tool), so `thiserror` 1.0.69 and
+  2.0.19 coexist in the graph — expected, not a conflict. Consolidates and supersedes Dependabot
+  #149, #154, #157, #158. (#172)
 
 - **The NSIS installer has been removed from this repository.** It never produced a
   working install — the "Quick install" route documented in the README, and the
