@@ -378,7 +378,7 @@ pub fn on_active_changed() {
     if !is_enabled() {
         return;
     }
-    let active_id = registry::state::load().active_id;
+    let active_id = registry::state::load_or_default().active_id;
     match active_id.and_then(|id| registry::get(&id)) {
         Some(def)
             if def.rag_enabled

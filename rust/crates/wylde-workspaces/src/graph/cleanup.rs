@@ -402,7 +402,7 @@ mod tests {
         let _env = TestEnv::new();
         // Same folder deleted then re-created reuses the id (#28). It is queued,
         // but it's live again — the drain must NOT prune its fresh graph data.
-        let def = registry::create(&_env.ws_path("re-created"), None);
+        let def = registry::create(&_env.ws_path("re-created"), None).unwrap();
         registry::pending::enqueue(&def.id);
 
         let graph = FakeGraph::default();

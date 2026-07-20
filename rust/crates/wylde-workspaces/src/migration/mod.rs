@@ -358,7 +358,7 @@ mod tests {
         let env = TestEnv::new();
         let folder = env.ws_path("hygiene-proj");
         std::fs::create_dir_all(&folder).unwrap();
-        let def = crate::registry::create(&folder, None);
+        let def = crate::registry::create(&folder, None).unwrap();
         let sep = std::path::MAIN_SEPARATOR;
         let mk = |rel: &str, n: u32| IndexedChunk {
             id: format!("id-{rel}-{n}"),

@@ -74,7 +74,27 @@ pub async fn handle_set_active(payload: Value) -> Reply {
         Err(registry::RegistryError::NotFound(_)) => {
             Reply::err_msg("not_found", format!("workspace {id:?} not found"))
         }
+        Err(e @ registry::RegistryError::IndexDamaged(_)) => index_damaged_reply(&e),
     }
+}
+
+/// The reply for a damaged `index.json` (#140).
+///
+/// A dedicated `index_damaged` code, NOT `not_found` and NOT a silent empty
+/// result. The registry's index is unreadable, so the set of workspaces is
+/// unknown — the data is still on disk and the user needs to be told that
+/// rather than shown an empty list they might "fix" by re-registering
+/// everything (which is what would actually destroy it).
+fn index_damaged_reply(e: &registry::RegistryError) -> Reply {
+    tracing::error!("workspaces: refusing to serve a damaged registry index: {e}");
+    Reply::err_msg(
+        "index_damaged",
+        format!(
+            "{e}. Your workspaces have NOT been deleted — the registry index \
+             could not be read, so the list is unknown. The file has been left \
+             untouched for recovery; restore or remove it to continue."
+        ),
+    )
 }
 
 /// `workspaces.create` — register a folder as a workspace (and activate
@@ -91,7 +111,10 @@ pub async fn handle_create(payload: Value) -> Reply {
         }
     }
     let name = payload.get("name").and_then(Value::as_str);
-    let def = registry::create(&folder, name);
+    let def = match registry::create(&folder, name) {
+        Ok(def) => def,
+        Err(e) => return index_damaged_reply(&e),
+    };
     // Index the folder in the background so create stays non-blocking;
     // first-time create has no index yet → a full pass.
     indexer::spawn_background_index(def.id.clone());
@@ -126,7 +149,10 @@ pub async fn handle_delete(payload: Value) -> Reply {
     let Some(id) = require_string(&payload, "workspace_id") else {
         return Reply::err_msg("bad_request", "workspace_id is required");
     };
-    let ok = registry::delete(&id);
+    let ok = match registry::delete(&id) {
+        Ok(ok) => ok,
+        Err(e) => return index_damaged_reply(&e),
+    };
     if ok {
         // Re-evaluate the watcher: if the deleted workspace was active, the
         // registry cleared the active pointer, so this stops the watch.
@@ -264,7 +290,11 @@ fn def_with_index_state(def: &registry::WorkspaceDefinition) -> Value {
 /// previously they were carried only in the one-shot `reindex` reply and
 /// lost on refresh.
 pub async fn handle_list_mru(_payload: Value) -> Reply {
-    let (defs, active_id) = registry::list_mru();
+    let (defs, active_id) = match registry::list_mru() {
+        Ok(v) => v,
+        // #140 — an unreadable index must NOT render as "no workspaces".
+        Err(e) => return index_damaged_reply(&e),
+    };
     let workspaces: Vec<Value> = defs.iter().map(def_with_index_state).collect();
     Reply::ok(json!({ "workspaces": workspaces, "active_id": active_id }))
 }
@@ -524,6 +554,62 @@ mod tests {
         let active = handle_set_active(json!({ "workspace_id": id })).await;
         assert!(active.ok);
         assert_eq!(active.data["active_id"], id);
+    }
+
+    /// #140 — the user-visible half. A damaged `index.json` must surface as an
+    /// error, not as an empty workspace list.
+    ///
+    /// Showing "no workspaces" for an unreadable index is the failure mode that
+    /// makes this severe: it looks exactly like total data loss, and the
+    /// natural user response (re-register everything, or delete and start over)
+    /// is what actually destroys the still-recoverable file.
+    #[tokio::test]
+    async fn damaged_index_surfaces_an_error_rather_than_an_empty_list() {
+        let _env = TestEnv::new();
+        let td = tempdir().unwrap();
+        let p = td.path().join("proj");
+        std::fs::create_dir(&p).unwrap();
+
+        let created = handle_create(json!({ "folder": p.to_string_lossy(), "name": "Proj" })).await;
+        assert!(created.ok, "create failed: {:?}", created.error);
+
+        // Sanity: it lists before the damage.
+        let before = handle_list_mru(Value::Null).await;
+        assert!(before.ok);
+        assert_eq!(before.data["workspaces"].as_array().unwrap().len(), 1);
+
+        // Tear the index the way a partial write would.
+        let torn = b"{\"active_id\": \"x\", \"mru\": [\"x\",".to_vec();
+        std::fs::write(registry::state::index_path(), &torn).unwrap();
+
+        let listed = handle_list_mru(Value::Null).await;
+        assert!(
+            !listed.ok,
+            "a damaged index must NOT report success with an empty list; got {:?}",
+            listed.data
+        );
+        assert_eq!(listed.error.as_ref().unwrap().code, "index_damaged");
+        assert!(
+            listed.data.get("workspaces").is_none(),
+            "must not present a workspace list it could not read"
+        );
+
+        // Mutating verbs refuse too — and leave the file alone.
+        let create2 = handle_create(json!({ "folder": p.to_string_lossy() })).await;
+        assert_eq!(create2.error.unwrap().code, "index_damaged");
+        let del = handle_delete(json!({ "workspace_id": "x" })).await;
+        assert_eq!(del.error.unwrap().code, "index_damaged");
+        // Decrypted content, not raw bytes — the at-rest layer re-encrypts a
+        // plaintext file on read, so the bytes may change while the content
+        // (the thing the user needs back) does not.
+        let on_disk =
+            wylde_shared::encryption::read_to_string_at_rest(&registry::state::index_path())
+                .unwrap();
+        assert_eq!(
+            on_disk.as_bytes(),
+            torn.as_slice(),
+            "the damaged index must survive every refused verb"
+        );
     }
 
     #[tokio::test]

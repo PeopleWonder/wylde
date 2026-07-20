@@ -60,7 +60,7 @@ pub fn delete_workspace_dir(workspace_id: &str) -> std::io::Result<()> {
 /// `definition.json` are skipped — the index is the source of truth for
 /// *which* workspaces exist, this reconstitutes their configs.
 pub fn load_all() -> Vec<WorkspaceDefinition> {
-    super::state::load()
+    super::state::load_or_default()
         .mru
         .iter()
         .filter_map(|id| load_definition(id))

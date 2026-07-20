@@ -182,6 +182,27 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   pipe. The destructive path now validates the id and refuses all three, with the verb layer rejecting
   a blank id separately (defence in depth) (#135).
 
+- **A damaged workspace index presented as "you have no workspaces" — and the next click made that
+  true.** The registry's `index.json` (the active pointer plus the MRU list, which is also the
+  authoritative set of workspaces the registry retains) was read by a loader that folded *every*
+  failure — unreadable file, failed decrypt, unparseable JSON — into an empty `WorkspaceState`. A
+  torn write or a decrypt failure was therefore indistinguishable from a brand-new install.
+
+  Presenting empty is alarming but, by itself, recoverable: the bytes are still on disk. The
+  destructive part was what came next. Every mutating path is load → mutate → save, so the first
+  activate, create, or delete after a failed read would write the empty-plus-one state straight over
+  the file that still held the real MRU — converting a recoverable file problem into permanent loss of
+  every other workspace's registration.
+
+  `load` now distinguishes *absent* (the legitimate first-run case, still an empty state) from
+  *damaged*, and fails. Verbs answer a dedicated `index_damaged` error telling the user their
+  workspaces have not been deleted and the file has been left alone, instead of rendering an empty
+  list. As a second, independent guard, `save` refuses to overwrite a damaged index at all, so even a
+  caller that wrongly defaulted a failed read cannot destroy the bytes. Read-only consumers that only
+  want "which workspace is active" (the file watcher, the symbol index) opt into the old quiet
+  degradation through an explicit `load_or_default`, which is documented as never safe on a path that
+  writes state back (#140).
+
 - **Four `wylde_check` rules could not fail, and one had been red and unnoticed for months.** The lint
   engine's rules 38 and 48 (`panel_verbs_exist_in_harness_registry`,
   `gateway_verbs_exist_in_harness_registry`) loaded their verb registry from two constants that both named
