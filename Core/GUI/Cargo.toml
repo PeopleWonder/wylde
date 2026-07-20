@@ -139,7 +139,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "b3d93d44
 #
 # Both gpui and wry use raw-window-handle 0.6; wry's `build_as_child`
 # accepts gpui's `Window` directly (`impl HasWindowHandle`).
-wry = "0.54"
+wry = "0.55"
 
 # HTTP client for iframe health probes.  Picked over `ureq` because
 # reqwest is already a transitive dep of every wylde-* crate that
