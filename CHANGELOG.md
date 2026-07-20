@@ -132,6 +132,7 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   - `chrono` 0.4.44 → 0.4.45 (#145)
   - `futures` 0.3.32 → 0.3.33 (#145)
   - `hyper` 1.9.0 → 1.10.1 (#145)
+  - `scraper` 0.20.0 → 0.27.0 (#153)
   - `serde` 1.0.228 → 1.0.229 (#145)
   - `serde_json` 1.0.149 → 1.0.151 (#145)
   - `tokio` 1.52.3 → 1.53.0 (#145)
