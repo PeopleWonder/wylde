@@ -484,6 +484,14 @@ pub const DEVICE_SYSTEM_DEFAULT: &str = "System default";
 /// set matches `wylde_voice::config_persist::VoiceConfig`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VoiceSettings {
+    /// The capture mode (`config_persist::ALL_MODES`: `push_to_talk` /
+    /// `always_on`). Deliberately NOT mirrored as a `MODE_PRESETS` cycle-list:
+    /// the panel exposes mode as a two-state toggle, not a cycle picker, so
+    /// there is no ordered preset list to keep in lockstep — and
+    /// `check-voice-presets-mirror.py` therefore does not (and need not) cover
+    /// it. If the panel ever grows a cycle-list over the modes, add a
+    /// `MODE_PRESETS` const with a `/// Mirrors …::ALL_MODES` comment and the
+    /// gate will pick it up automatically.
     pub mode: String,
     pub push_to_talk_hotkey: String,
     pub stt_backend_pref: String,

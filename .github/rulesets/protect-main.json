@@ -43,7 +43,8 @@
           { "context": "cargo-deny (licenses) (tools/xtask/Cargo.toml)" },
           { "context": "cargo-deny (licenses) (tools/wylde-release/Cargo.toml)" },
           { "context": "manifest coverage" },
-          { "context": "actions pinned to SHA" }
+          { "context": "actions pinned to SHA" },
+          { "context": "voice presets mirror" }
         ]
       }
     }
