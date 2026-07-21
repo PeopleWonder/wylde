@@ -105,35 +105,13 @@ pub async fn handle_build(payload: Value) -> Reply {
 
     // #137 — the index cannot support a semantic build. Falling through to the
     // directory fallback REPLACES the whole auto-generated set (`finish_build`
-    // keeps only `Manual` concepts), so every `sem:` concept would be dropped.
-    //
-    // That is unrecoverable. Semantic ordinals are never recycled, so a later
-    // build over a restored index mints NEW ids that can never re-match the
-    // authored relations anchored on the old ones — the edges survive on disk
-    // but are permanently inert. An empty or torn chunk index is exactly the
-    // transient condition (a purge, an interrupted reindex, a `data_dir`
-    // resolved against the wrong cwd) that must NOT be allowed to spend the
-    // user's hand-authored work.
-    //
-    // So: refuse, unless the workspace has no semantic concepts to lose or the
-    // caller explicitly forces it.
-    let prior_semantic = semantic_concept_count(&ws);
-    if prior_semantic > 0 && !force {
-        tracing::error!(
-            "workspaces.concepts.build: refusing the directory fallback for {ws} — \
-             the chunk index has {have_vectors} usable vectors but {prior_semantic} \
-             semantic concepts exist and would be dropped unrecoverably (#137)"
-        );
-        return Reply::err_msg(
-            "index_unavailable",
-            format!(
-                "The chunk index has no usable embeddings, so this would rebuild \
-                 concepts from directories and drop all {prior_semantic} semantic \
-                 concepts. Semantic ids are never reused, so any relations you \
-                 authored on them could not be reattached by a later rebuild. \
-                 Reindex the workspace first, or pass force=true to accept the loss."
-            ),
-        );
+    // keeps only `Manual` concepts), so every `sem:` concept would be dropped
+    // unrecoverably. Refuse when that would spend authored relations (shared
+    // guard — the explicit `build_semantic` verb gates on it too).
+    if let Some(refusal) =
+        refuse_empty_index_rebuild(&ws, have_vectors, semantic_concept_count(&ws), force)
+    {
+        return refusal;
     }
 
     // Fallback: label the directory clusters from the live code graph.
@@ -152,6 +130,49 @@ fn semantic_concept_count(ws: &str) -> usize {
         .iter()
         .filter(|c| c.source == super::concept::ConceptSource::Embedding)
         .count()
+}
+
+/// #137/#209 — refuse a rebuild that an empty or torn chunk index would turn
+/// into an unrecoverable drop of the existing semantic concepts.
+///
+/// A build with fewer than two usable vectors produces no `sem:` concepts, so
+/// `finish_build` keeps only `Manual` ones and every `sem:` concept is dropped.
+/// Their ordinals are never recycled, so a later build over a restored index
+/// mints NEW ids that can never re-match the authored relations anchored on the
+/// old ones — the edges survive on disk but are permanently inert. An empty or
+/// torn index is exactly the transient condition (a purge, an interrupted
+/// reindex, a `data_dir` resolved against the wrong cwd) that must NOT be
+/// allowed to spend the user's hand-authored work.
+///
+/// Returns the refusal reply when there ARE semantic concepts to lose and the
+/// caller has not forced it; `None` when it is safe to proceed — enough vectors
+/// to cluster, nothing to lose, or an explicit `force`. Both the auto verb
+/// ([`handle_build`]) and the explicit `build_semantic` verb
+/// ([`build_semantic_stable`]) gate on this, so neither entry point can orphan
+/// authored relations on an empty index.
+fn refuse_empty_index_rebuild(
+    ws: &str,
+    have_vectors: usize,
+    prior_semantic: usize,
+    force: bool,
+) -> Option<Reply> {
+    if have_vectors >= 2 || prior_semantic == 0 || force {
+        return None;
+    }
+    tracing::error!(
+        "workspaces.concepts.build: refusing to rebuild {ws} — the chunk index has \
+         {have_vectors} usable vectors but {prior_semantic} semantic concepts exist \
+         and would be dropped unrecoverably (#137/#209)"
+    );
+    Some(Reply::err_msg(
+        "index_unavailable",
+        format!(
+            "The chunk index has no usable embeddings, so this rebuild would drop all \
+             {prior_semantic} semantic concepts. Semantic ids are never reused, so any \
+             relations you authored on them could not be reattached by a later rebuild. \
+             Reindex the workspace first, or pass force=true to accept the loss."
+        ),
+    ))
 }
 
 /// A carry-over pool that cannot possibly match the incoming vectors (#137).
@@ -236,6 +257,17 @@ async fn build_semantic_stable(
         .into_iter()
         .filter(|c| c.source == super::concept::ConceptSource::Embedding)
         .collect();
+
+    // #137/#209 — an empty or torn index yields zero `sem:` concepts, so the
+    // store swap in `finish_build` would drop every existing one and orphan the
+    // authored relations anchored on them. `handle_build` guards this for the
+    // auto path, but the explicit `build_semantic` verb reaches here directly,
+    // so gate it here too (no-op for the auto path, which only calls in with
+    // have_vectors >= 2).
+    let have_vectors = chunks.iter().filter(|c| !c.vector.is_empty()).count();
+    if let Some(refusal) = refuse_empty_index_rebuild(ws, have_vectors, prior_emb.len(), force) {
+        return refusal;
+    }
 
     // #137 — carry-over matches prior centroids to new drafts by cosine, and
     // only ever pairs vectors of EQUAL length (`semantic::assign_stable_ids`).
@@ -1022,6 +1054,52 @@ mod tests {
         assert_eq!(
             ids_before, ids_after,
             "the refused build must not have touched the concept store"
+        );
+        let g = crate::concepts::relations_bridge::load(ws);
+        assert_eq!(g.relations.len(), 1);
+        assert!(
+            !g.relations[0].dangling,
+            "the authored relation must still be live"
+        );
+    }
+
+    /// #209 — the empty-index guard must ALSO cover the explicit
+    /// `workspaces.concepts.build_semantic` verb, not just the auto `build`.
+    /// That verb reaches `build_semantic_stable` directly; before this fix the
+    /// guard lived only in `handle_build`, so a `build_semantic` over an empty
+    /// index silently wiped every `sem:` concept (`finish_build` keeps only
+    /// `Manual`) and orphaned authored relations. It is a live path: `rag.purge`
+    /// empties the index and the documented follow-up step is exactly
+    /// `concepts.build_semantic`. Fails before the fix (the verb returns `ok`
+    /// and drops the concepts); passes after (it refuses like the auto verb).
+    #[tokio::test]
+    async fn build_semantic_verb_on_empty_index_refuses_rather_than_dropping() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-semempty";
+        let ids_before = seed_two_themes_with_authored_relation(ws, 0).await;
+
+        // Purge / tear the index — no usable vectors remain.
+        crate::rag::indexer::store::save_chunks(ws, &[]).unwrap();
+
+        // The explicit semantic verb (not the auto build) must refuse too.
+        let r = handle_build_semantic(json!({ "workspace_id": ws })).await;
+        assert!(
+            !r.ok,
+            "the build_semantic verb must refuse an empty-index rebuild that would \
+             drop every semantic concept; got {:?}",
+            r.data
+        );
+        assert_eq!(r.error.as_ref().unwrap().code, "index_unavailable");
+
+        // Nothing was spent: the concepts and the live relation survive.
+        let ids_after: Vec<String> = store::load(ws)
+            .into_iter()
+            .filter(|c| c.id.starts_with("sem:"))
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(
+            ids_before, ids_after,
+            "the refused verb must not have touched the concept store"
         );
         let g = crate::concepts::relations_bridge::load(ws);
         assert_eq!(g.relations.len(), 1);
