@@ -174,6 +174,8 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Changed
 
+- **The `tools/xtask` and `tools/wylde-release` cargo-deny advisory + license legs are now required checks on both branch rulesets, clearing the `manifest coverage` gate (#217).** All four ran (advisory) and green on every PR but were absent from the required set after the #204 record reconciliation; `tools/check-manifest-coverage.sh` requires every gated manifest's cargo-deny contexts to be required in **both** committed ruleset records, so their absence turned `manifest coverage` red. `protect-develop` is now 20 required checks, `protect-main` 19, and the committed `.github/rulesets/*.json` again match live — keeping the ruleset-parity gate (#128) accurate.
+
 - **CI now fails if a committed `.github/rulesets/*.json` record drifts from the live branch-protection ruleset it mirrors (#128).** A new `.github/workflows/ruleset-parity.yml` re-reads the live `protect-develop` / `protect-main` rulesets each run and diffs the meaningful writable fields (required-check contexts, `strict` flag, `bypass_actors`, `enforcement`) against the committed files, so the source of truth can no longer silently under-protect the branches the way it had in #204. Reading a ruleset needs `Administration: read`, which `GITHUB_TOKEN` cannot be granted, so the job uses a `RULESET_AUDIT_TOKEN` secret (a fine-grained PAT with Administration: Read-only) and degrades **green with a notice** when that secret is absent — never a false red. Informational for now; promotable to a required check once the token exists and it has reported green on `develop` once.
 
 - **Log rotation is now bounded by construction, so a newly-added sink can't reintroduce unbounded
@@ -338,6 +340,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   callers-read latency to reproduce a spent budget without a database. The live test now warms
   the Bolt pool + query planner before its timed 1-hop read, so the OI-1 per-hop budget
   measures traversal cost rather than a freshly-booted Neo4j's one-time connection/plan warmup.
+
+- **The `live-graph (Neo4j Bolt)` CI leg is no longer flaky, so a required check can't
+  intermittently stall auto-merge (closes #216).** The leg's test binaries all target one
+  shared Neo4j, and `cargo test` runs a binary's tests multi-threaded by default. `memgraph_live`
+  serialized via a `DB_LOCK`, but the `wylde-workspaces` `integration_graph` binary did not — so
+  its two tests hit the shared DB concurrently, contending on the graph's global-by-name Entity
+  space (the graph-wide orphan-entity prune and `stats()` counts) and piling connections onto the
+  freshly-booted, cold-planner JVM. That surfaced as non-deterministic `ok:false` operation
+  failures (`ensure_schema`/`delete_workspace`), a different test failing on each run. `integration_graph`
+  now holds an in-code `DB_LOCK` (mirroring `memgraph_live`), every live-graph `--ignored`
+  invocation runs with `--test-threads=1` as a uniform guard, and the CI leg warms the JVM planner
+  and pre-creates the schema indexes right after the DB reports query-ready, so the first real test
+  no longer pays cold-start latency. A flaky *required* check undermines the whole strict-up-to-date
+  auto-merge model, so this is a stability fix, not just a test tidy-up.
 
 - **A model store that is merely slow to come back after an update no longer reads as "you have no
   models" (closes #132).** Wylde never sets `OLLAMA_MODELS`, so the store lives in Ollama's own
@@ -1160,6 +1176,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   (only `deleteProjectV2Workflow` exists), so *Item added → Todo*, *Item closed →
   Done*, and *Pull request merged → Done* must be switched on once in the Project's
   Workflows settings.
+
+- **Issues now close automatically when their PR merges to `develop`.** GitHub's
+  native `Closes #N` auto-close only fires on a merge into the repository's
+  *default* branch evaluated at merge time, which left finished issues open here
+  (their PRs carried `Closes #N` and merged to develop, but develop was made
+  default only after those merges). A new `close-on-develop-merge.yml` workflow
+  (`push` to `develop`) resolves the merged PR from the pushed commit, reads its
+  `closingIssuesReferences` — the same set GitHub itself recognises — and closes
+  each still-open one with a comment linking the PR. It uses the built-in
+  `GITHUB_TOKEN` with least-privilege `issues: write` + `contents: read` (the
+  issues are in-repo, so no PAT is needed), is idempotent (skips already-closed
+  issues, so it never fights native auto-close), and no-ops gracefully on a direct
+  push or an absent token. This makes "merged to develop → issue closed" true by
+  construction without changing the default branch.
 
 - **Clippy (G4) + fmt (G6) CI gates are now LIVE.** The two staged enforcement
   gates were armed: a new `clippy (G4) + fmt (G6)` CI job runs

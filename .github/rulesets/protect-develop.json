@@ -40,7 +40,11 @@
           { "context": "cargo-deny (licenses) (Core/GUI/Cargo.toml)" },
           { "context": "personal-info scrub (G8)" },
           { "context": "linked issue" },
-          { "context": "live-graph (Neo4j Bolt) tests" }
+          { "context": "live-graph (Neo4j Bolt) tests" },
+          { "context": "cargo-deny (advisories) (tools/xtask/Cargo.toml)" },
+          { "context": "cargo-deny (advisories) (tools/wylde-release/Cargo.toml)" },
+          { "context": "cargo-deny (licenses) (tools/xtask/Cargo.toml)" },
+          { "context": "cargo-deny (licenses) (tools/wylde-release/Cargo.toml)" }
         ]
       }
     }
