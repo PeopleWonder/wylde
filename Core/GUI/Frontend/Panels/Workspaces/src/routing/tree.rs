@@ -544,6 +544,7 @@ mod tests {
             kind,
             note: None,
             created_at: 0.0,
+            dangling: false,
         }
     }
     fn universe() -> Vec<NodeItem> {
