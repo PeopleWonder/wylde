@@ -50,7 +50,7 @@ ruleset_has_context() {
 
 check_repo() {
   local manifests
-  mapfile -t manifests < <("$lister")
+  mapfile -t manifests < <(bash "$lister")
   if [[ ${#manifests[@]} -eq 0 ]]; then
     note "list-workspaces.sh returned no gated workspaces — discovery is broken"
     return
@@ -68,7 +68,7 @@ check_repo() {
     dir="$(dirname "$m")"
 
     # 1. deny.toml resolvable.
-    if ! "$lister" --deny-config "$m" >/dev/null 2>&1; then
+    if ! bash "$lister" --deny-config "$m" >/dev/null 2>&1; then
       note "$m has no deny.toml (adjacent or inherited) — cargo-deny cannot scan it"
     fi
 
@@ -101,7 +101,7 @@ selftest() {
   printf '[workspace]\nmembers=[]\n'        > "$fixture/scratch-seventh/Cargo.toml"
   printf '[package]\nname="spike"\n[workspace]\n' > "$fixture/rust/spikes/voice-npu-spike/Cargo.toml"
 
-  got="$(WYLDE_SCAN_ROOT="$fixture" "$lister")"
+  got="$(WYLDE_SCAN_ROOT="$fixture" bash "$lister")"
   if ! grep -qx 'scratch-seventh/Cargo.toml' <<<"$got"; then
     echo "SELFTEST FAIL: discovery did not find the new workspace root" >&2
     echo "got: $got" >&2
