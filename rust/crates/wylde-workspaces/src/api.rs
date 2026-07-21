@@ -160,70 +160,24 @@ pub async fn handle_delete(payload: Value) -> Reply {
         // Slice F-data — same re-evaluation for the symbol index: a deleted
         // active workspace clears the pointer, so this drops its index.
         crate::graph::symbol_index::on_active_changed();
-        // C9 — Route 1 deletion sweep. The registry's bundle-dir removal
-        // cascades the *legacy* per-workspace service-store conversations, but
-        // under Route 1 a workspace's live **bound** conversations live in the
-        // harness flat store (`<data_dir>/conversations/<id>.json` with a
-        // matching `workspace_id`), which the bundle removal never touches.
-        // Ask the harness — the canonical owner of that store — to sweep them,
-        // or they orphan in the global list forever. Fire-and-forget for the
-        // same reason as the graph prune below (a Fast/Medium verb must not
-        // block on a peer service) and so a unit-test delete never stalls on a
-        // pipe connect; best-effort, so an unreachable/slow harness only logs.
-        let sweep_ws = id.clone();
-        tokio::spawn(async move {
-            let sweep = wylde_shared::ipc::send_action(
-                "wylde-harness",
-                "conversations.delete_by_workspace",
-                json!({ "workspace_id": sweep_ws.clone() }),
-            )
-            .await;
-            if !sweep.ok {
-                tracing::warn!(
-                    "workspaces.delete: flat-store conversation sweep degraded for {sweep_ws}: {:?}",
-                    sweep.error
-                );
-            }
-        });
-        // #135 — sweep the workspace's DURABLE memory tier. The harness owns
-        // `<data_dir>/workspace_memories/<id>/`, which sits outside the
-        // workspace bundle on purpose (so MRU eviction of the file index can
-        // never take the curated memories with it) — but that also placed it
-        // outside the reach of every removal path, including this one. A
-        // deleted workspace left its memories on disk forever, and because a
-        // workspace id is derived from its folder (#28), re-registering the
-        // same folder re-derived the same id and silently re-attached memories
-        // the user believed they had deleted.
+        // #166 — cascade every peer-service store the workspace left behind, on
+        // ONE durable queue. `registry::delete` already enqueued the graph
+        // footprint (Chunk + now-orphan Entity + `Concept` nodes, #99/#117 — as
+        // does MRU eviction) AND, because this is an explicit delete, the two
+        // stores eviction must preserve: the Route-1 bound conversations in the
+        // harness flat store, and the durable workspace-memory tier at
+        // `<data_dir>/workspace_memories/<id>/` (#135). All three now drain
+        // here.
         //
-        // This is the ONLY path that may sweep them: the delete verb, not the
-        // shared `teardown_bundle` primitive, because MRU eviction funnels
-        // through that too and eviction must PRESERVE the tier.
-        //
-        // Fire-and-forget + best-effort, matching the conversation sweep above
-        // (a Fast/Medium verb must not block on a peer service, and a unit-test
-        // delete must not stall on a pipe connect).
-        let mem_ws = id.clone();
-        tokio::spawn(async move {
-            let sweep = wylde_shared::ipc::send_action(
-                "wylde-harness",
-                "memory.workspace.delete_all",
-                json!({ "workspace_id": mem_ws.clone() }),
-            )
-            .await;
-            if !sweep.ok {
-                tracing::warn!(
-                    "workspaces.delete: durable memory sweep degraded for {mem_ws}: {:?}",
-                    sweep.error
-                );
-            }
-        });
-        // #99 — cascade the workspace's Neo4j footprint (Chunk + now-orphan
-        // Entity nodes) via the DURABLE pending-cleanup drain. `registry::delete`
-        // already enqueued this id through the shared teardown primitive (and
-        // MRU eviction enqueues the same way), so we drain the whole queue —
-        // one drain retries anything a prior graph blip deferred. Spawned so a
-        // slow Bolt connect never blocks this Fast/Medium verb; the registry
-        // delete already succeeded and the prune can't fail the response.
+        // This replaces the two fire-and-forget `tokio::spawn` sweeps that used
+        // to live inline: a down/slow harness silently dropped them, orphaning
+        // the memory tier permanently — and because a workspace id derives from
+        // its folder (#28), re-registering the same folder silently re-attached
+        // memories the user believed deleted. Draining the durable queue instead
+        // retries each sweep until it lands (or dequeues it untouched if the
+        // workspace is live again). Still spawned so a slow Bolt/pipe connect
+        // never blocks this Fast/Medium verb; the registry delete already
+        // succeeded and the prune can't fail the response.
         tokio::spawn(async {
             crate::graph::cleanup::run_pending_cleanup().await;
         });

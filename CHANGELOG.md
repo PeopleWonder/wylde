@@ -258,6 +258,28 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   a test that registers past the window and asserts the LRU's `definition.json`, `persona.md`,
   `memory.jsonl`, and `index/chunks.jsonl` all survive — and that no graph teardown is enqueued.
 
+- **A deleted workspace's memory sweep is now durable instead of fire-and-forget,
+  so a down harness can no longer orphan `workspace_memories/` permanently
+  (closes #166).** Deleting a workspace swept its durable memory tier (#135) and
+  its bound flat-store conversations by firing two `tokio::spawn`ed IPC calls and
+  only logging on failure — if the harness was down, slow, or restarting at that
+  instant, the sweep was lost and `<data_dir>/workspace_memories/<id>/` orphaned
+  forever. Because a workspace id derives from its folder (#28), re-registering
+  the same folder later silently re-attached memories the user believed they had
+  deleted — a privacy failure, not just stray disk. Rather than stand up a second
+  bespoke queue, the durable pending-teardown queue #99 built for the graph
+  cascade is now generalized from bare workspace ids to `(workspace id, teardown
+  target)` pairs, with `target ∈ { graph, memory, conversations }`. The one drain
+  dispatches per target and applies the same rule to all: dequeue only on
+  `reply.ok`, leave queued (retry on the next create/activate/delete or at boot)
+  on failure, and — critically for the memory tier — skip-and-dequeue without
+  sweeping if the workspace is live again, so a delete-then-re-add can never wipe
+  fresh memories. Since #133 the only teardown path is explicit `delete`
+  (registering never evicts), so the memory + conversation sweeps are scoped to
+  it and no non-delete path enqueues them. The old #99 bare-id queue file
+  (`pending_graph_cleanup.json`) is migrated in place to the generalized
+  `pending_teardown.json` on first read.
+
 - **The L7 `panel-walk` gate's hand-kept crate list is now guarded against
   silent under-coverage (closes #95).** `cargo panel-walk` (the required `gui
   panel-walk (L7)` job) is a `-p`-scoped alias in `Core/GUI/.cargo/config.toml`
