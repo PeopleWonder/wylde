@@ -1,0 +1,56 @@
+# Add to Roadmap board — put every new issue (and PR) on projects/1 automatically.
+#
+# THE GAP THIS CLOSES. Milestoning is already automated (issue-milestone.yml),
+# but board *membership* was not: an issue only got a card if a human remembered
+# to add it. It drifted — dozens of issues ended up milestoned but off the board.
+# This workflow makes membership automatic so it can't drift again.
+#
+# WHY PROJECT_TOKEN, NOT GITHUB_TOKEN. projects/1 is a USER-owned Project (v2).
+# The default GITHUB_TOKEN cannot write a user-owned Project no matter what
+# `permissions:` we grant here, because the project is not owned by this repo —
+# exactly the constraint documented in roadmap-dates.yml. PROJECT_TOKEN is the
+# classic PAT (with the `project` scope) that roadmap-dates.yml already uses to
+# write this same board, so its scope is proven sufficient for the item add.
+#
+# LEAST PRIVILEGE. The add is performed by PROJECT_TOKEN via actions/add-to-project,
+# so the workflow's own GITHUB_TOKEN needs nothing beyond read. `contents: read`
+# at the top level (inherited by the job) is the minimal declaration and keeps us
+# clear of the actions/missing-workflow-permissions finding fixed in #177.
+name: Add to Roadmap board
+
+on:
+  issues:
+    types: [opened, reopened]
+  # PRs are secondary (issues are the priority) but cheap to include: a PR on the
+  # board makes in-flight work visible next to its tracking issue.
+  pull_request:
+    types: [opened]
+
+# Least privilege: the board write goes through PROJECT_TOKEN, not GITHUB_TOKEN,
+# so this token only ever needs to read.
+permissions:
+  contents: read
+
+jobs:
+  add-to-project:
+    name: add the issue/PR to projects/1
+    runs-on: ubuntu-latest
+    # Guards, all necessary:
+    #  - repository_owner: only the canonical PeopleWonder repo has PROJECT_TOKEN;
+    #    a fork would run the job with an empty secret and fail every event.
+    #  - dependabot: Dependabot events can't see repo secrets (they read a separate
+    #    Dependabot secret store), so PROJECT_TOKEN would be empty — skip its PRs
+    #    rather than fail them and block auto-merge.
+    #  - fork PRs: pull_request from a fork also runs without secrets; only add PRs
+    #    whose head is in this repo. (The issues path is unaffected by this clause.)
+    if: >-
+      github.repository_owner == 'PeopleWonder'
+      && github.actor != 'dependabot[bot]'
+      && (github.event_name != 'pull_request'
+          || github.event.pull_request.head.repo.full_name == github.repository)
+    steps:
+      - name: Add to Wylde Roadmap
+        uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd # v2.0.0
+        with:
+          project-url: https://github.com/users/PeopleWonder/projects/1
+          github-token: ${{ secrets.PROJECT_TOKEN }}
