@@ -160,6 +160,22 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Changed
 
+- **Log rotation is now bounded by construction, so a newly-added sink can't reintroduce unbounded
+  growth (#118).** #98 gave every log a shared rotating sink and a CI gate against ad-hoc appends, but
+  bounding was still opt-in per sink in one respect: routing through the factory was necessary but not
+  sufficient, because the factory stored whatever `RotationPolicy` it was handed. A future "5th sink"
+  given a never-rotate policy (`max_bytes` at the `u64` ceiling), or one built from a pathological
+  `WYLDE_LOG_MAX_BYTES`/`WYLDE_LOG_KEEP_FILES`, would still grow forever. Every construction path —
+  `RotationPolicy::from_env`, `RotatingLog::new`/`with_policy`, `rotating_sink`, and
+  `open_rotating_append` — now funnels its policy through a `RotationPolicy::bounded()` normalizer that
+  clamps to a structural ceiling (1 GiB per file, 1000 generations), so no sink obtainable from the
+  logging module can carry an unbounded policy. The normalizer only lowers a ceiling breach and never
+  raises a small cap, so the default 10 MiB × 5 operating bound and the deliberately-tiny caps the
+  rotation tests use are unchanged, and realistic operator widening still passes through untouched — the
+  ceiling exists only to keep a forgotten or nonsense value finite. A new `is_bounded()` predicate makes
+  the guarantee assertable: a test registers a fresh sink with no policy argument and proves it is
+  bounded without per-sink opt-in, and a companion test proves the factory normalizes an unbounded
+  policy handed to it (both red before the normalizer, green after).
 - **The live-Memgraph/Neo4j tests now run against a real database in CI, so the
   graph layer's Cypher is exercised end-to-end instead of only against mocks
   (#121).** A new `live-graph (Neo4j Bolt) tests` CI leg installs the vendored,
