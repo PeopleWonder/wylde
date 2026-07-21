@@ -49,11 +49,11 @@ jobs:
     name: backend (rust/) build + test
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (stable, honoring rust-toolchain.toml)
         run: rustup show
         working-directory: rust
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "rust -> target"
       - name: cargo build
@@ -73,10 +73,10 @@ jobs:
     name: gui (Core/GUI/) build
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (stable)
         run: rustup toolchain install stable --profile minimal
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "Core/GUI -> target"
       - name: cargo build
@@ -108,10 +108,10 @@ jobs:
     name: gui panel-walk (L7)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (stable)
         run: rustup toolchain install stable --profile minimal
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "Core/GUI -> target"
       - name: cargo panel-walk (panel-walk + behavioural, headless windowed gpui tests)
@@ -126,7 +126,7 @@ jobs:
     name: version consistency (G7)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: check workspace versions agree (and match the tag on a tag build)
         shell: bash
         run: bash tools/check-versions.sh
@@ -150,8 +150,8 @@ jobs:
     name: personal-info scrub (G8)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
       # setup-python ships a bare interpreter; pytest is not included. The rule
@@ -194,10 +194,10 @@ jobs:
     name: clippy (G4) + fmt (G6)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install clippy + rustfmt (stable)
         run: rustup component add clippy rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: |
             rust -> target
@@ -227,10 +227,10 @@ jobs:
     name: tools build
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (stable)
         run: rustup toolchain install stable --profile minimal
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: |
             tools/xtask -> target
@@ -252,10 +252,27 @@ jobs:
     name: manifest coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: discovery self-test (a new workspace root must be found)
         shell: bash
         run: bash tools/check-manifest-coverage.sh --selftest
       - name: every gated workspace is scanned, versioned, tracked, and required
         shell: bash
         run: bash tools/check-manifest-coverage.sh
+
+  # --- Action pinning (#127) — every third-party `uses:` must be pinned to a
+  # full commit SHA, not a mutable tag. A repointed tag on a write-scoped job
+  # (dependabot-automerge.yml holds contents+pull-requests write) is direct repo
+  # write access with no review in the path. Adding a tag-pinned action turns
+  # THIS red with the tag→SHA command to fix it. Pure bash/grep, cheap on ubuntu.
+  actions-pinned:
+    name: actions pinned to SHA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: validator self-test (a tag/branch/short-SHA ref must be rejected)
+        shell: bash
+        run: bash tools/check-actions-pinned.sh --selftest
+      - name: every third-party action is pinned to a commit SHA
+        shell: bash
+        run: bash tools/check-actions-pinned.sh

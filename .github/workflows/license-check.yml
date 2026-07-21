@@ -61,7 +61,7 @@ jobs:
           - tools/xtask/Cargo.toml
           - tools/wylde-release/Cargo.toml
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The two tools/ workspaces share one tools/deny.toml (resolved by walking
       # up from the manifest); rust/ and Core/GUI/ each have their own.
       - name: resolve deny.toml
@@ -69,7 +69,7 @@ jobs:
         shell: bash
         run: echo "config=$(bash tools/list-workspaces.sh --deny-config '${{ matrix.manifest }}')" >> "$GITHUB_OUTPUT"
       - name: cargo-deny check licenses
-        uses: EmbarkStudios/cargo-deny-action@v2
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           manifest-path: ${{ matrix.manifest }}
           command: check licenses

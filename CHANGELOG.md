@@ -942,6 +942,21 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Security
 
+- **Every third-party GitHub Action is now pinned to a commit SHA, and a CI gate
+  keeps it that way (closes #127).** Every `uses:` across the seven workflows was
+  pinned to a *mutable major tag* (`actions/checkout@v7`, `dependabot/fetch-metadata@v3`,
+  etc.) — a tag its upstream owner can repoint at any commit. The sharpest instance
+  is `dependabot-automerge.yml`, the one workflow holding write scopes (`contents:
+  write` + `pull-requests: write`) with a live `GITHUB_TOKEN`: there, a repointed
+  `fetch-metadata` tag is direct repo write access with no code review in the path.
+  All five distinct actions (`actions/checkout`, `Swatinem/rust-cache`,
+  `dependabot/fetch-metadata`, `EmbarkStudios/cargo-deny-action`, `actions/setup-python`)
+  are now pinned to the full 40-hex SHA their tag resolved to, with the tag kept as
+  a trailing `# vN` comment so Dependabot's github-actions ecosystem still bumps them.
+  A new `actions pinned to SHA` CI gate (`tools/check-actions-pinned.sh`, pure
+  bash/grep with a `--selftest`) turns **red** with the tag→SHA fix command if any
+  action is tag-pinned; both rulesets require its context.
+
 - **The cargo-deny advisory + license gates now cover every gated Cargo
   workspace, driven by one discovered list (closes #122).** The repo has four
   gated `[workspace]` roots (`rust/`, `Core/GUI/`, `tools/xtask`,

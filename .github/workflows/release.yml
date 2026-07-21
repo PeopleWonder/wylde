@@ -33,7 +33,7 @@ jobs:
     name: version + tag consistency (G7)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: tag matches workspace version (and workspaces agree)
         run: bash tools/check-versions.sh   # reads GITHUB_REF; enforces tag == version on a tag build
 
@@ -43,11 +43,11 @@ jobs:
     runs-on: windows-latest
     needs: version-and-tag
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (honoring rust-toolchain.toml)
         run: rustup show
         working-directory: rust
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "rust -> target"
       - run: cargo build --workspace --locked
@@ -61,9 +61,9 @@ jobs:
     runs-on: windows-latest
     needs: version-and-tag
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup toolchain install stable --profile minimal
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "Core/GUI -> target"
       - run: cargo build --workspace --locked
@@ -78,8 +78,8 @@ jobs:
     name: prerequisite milestones complete
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
       - name: refuse if a prerequisite milestone is still open
