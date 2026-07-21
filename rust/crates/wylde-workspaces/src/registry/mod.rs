@@ -20,11 +20,14 @@
 //!     └── memory.jsonl        # workspace-memory entries (super::super::memory)
 //! ```
 //!
-//! `index.json`'s `mru` list is the authoritative, **unbounded** enumeration
-//! of which workspaces exist on disk (#133). It is kept in recency order and
-//! the dropdown renders only the first [`state::MRU_WINDOW`], but a workspace
-//! leaves the registry only by explicit `delete` — registering another one
-//! never evicts or destroys it.
+//! `index.json`'s `mru` list drives the dropdown and its recency ordering,
+//! and is **unbounded** — a workspace leaves the registry only by explicit
+//! `delete`, never by being pushed past the window (#133). But the `mru` list
+//! is only a *cache* of which workspaces exist; the authoritative record is
+//! the set of bundle directories on disk. [`list_all`] walks them
+//! ([`persistence::list_bundle_ids`]) so a lost, stale, or damaged index can
+//! no longer orphan a bundle (#134), reconciling stale `mru` entries back out
+//! of the index.
 //!
 //! ## Split
 //!
@@ -110,6 +113,72 @@ pub fn list_mru() -> Result<(Vec<WorkspaceDefinition>, Option<String>), Registry
         .filter_map(|id| persistence::load_definition(id))
         .collect();
     Ok((defs, state.active_id))
+}
+
+/// Every workspace that exists **on disk**, MRU-ordered where the index is
+/// readable and disk-ordered when it is not (#134).
+///
+/// Unlike [`list_mru`] — the bounded, index-only dropdown feed — this is a
+/// disk-walk ([`persistence::list_bundle_ids`]): it surfaces bundles that
+/// never entered, or have fallen out of, `index.json`, so a lost or stale
+/// index can no longer orphan a workspace. Because everything it returns is a
+/// live workspace id, each is deletable through the same [`delete`] verb.
+///
+/// When the index is readable it also self-heals in two ways:
+///   * **reconcile stale entries** — an `mru` id (or the active pointer) whose
+///     bundle is gone is dropped from the persisted index rather than
+///     occupying a dropdown slot forever;
+///   * **surface orphans** — a bundle on disk but missing from the index is
+///     appended after the MRU-ordered ids.
+///
+/// When the index is *damaged* it is left untouched (that is #140's guard) and
+/// the list is recovered straight from disk — logged loudly, never folded to
+/// an empty "no workspaces".
+pub fn list_all() -> Vec<WorkspaceDefinition> {
+    let on_disk = persistence::list_bundle_ids();
+    let ordered = match state::load() {
+        Ok(mut state) => {
+            if reconcile_against_disk(&mut state, &on_disk) {
+                let _ = state::save(&state);
+            }
+            let mut ids = state.mru.clone();
+            for id in &on_disk {
+                if !state.mru.contains(id) {
+                    ids.push(id.clone());
+                }
+            }
+            ids
+        }
+        Err(e) => {
+            tracing::error!(
+                "workspaces.registry: index damaged ({e}); recovering the workspace \
+                 list from the on-disk bundles rather than presenting an empty registry"
+            );
+            on_disk
+        }
+    };
+    ordered
+        .iter()
+        .filter_map(|id| persistence::load_definition(id))
+        .collect()
+}
+
+/// Drop from `state` any MRU id (and the active pointer) whose bundle no
+/// longer exists on disk. Returns whether anything changed, so the caller
+/// persists only a real repair. This is what stops a stale manifest entry
+/// from silently costing a dropdown slot forever (#134).
+fn reconcile_against_disk(state: &mut WorkspaceState, on_disk: &[String]) -> bool {
+    let present: std::collections::HashSet<&String> = on_disk.iter().collect();
+    let before = state.mru.len();
+    state.mru.retain(|id| present.contains(id));
+    let mut changed = state.mru.len() != before;
+    if let Some(active) = state.active_id.as_deref() {
+        if !present.contains(&active.to_owned()) {
+            state.active_id = None;
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// Register a folder as a workspace (idempotent on the derived id) and
@@ -416,6 +485,92 @@ mod tests {
         assert!(
             pending::list().is_empty(),
             "non-destructive registration must not enqueue any teardown"
+        );
+    }
+
+    // ── #134: enumeration walks disk, not just the index manifest ──────────
+
+    /// Criterion 1 (plant-and-find): a complete bundle on disk with **no**
+    /// index entry must still be surfaced by the enumeration. Fails before —
+    /// every listing path read only `index.json`'s `mru`.
+    #[test]
+    fn list_all_surfaces_a_bundle_absent_from_the_index() {
+        let _env = TestEnv::new();
+        let registered = create(&_env.ws_path("registered"), None).unwrap();
+        // Plant an orphan straight to disk — a real bundle the index never saw.
+        let orphan = WorkspaceDefinition::new(&_env.ws_path("orphan-on-disk"));
+        persistence::save_definition(&orphan).unwrap();
+        assert!(
+            !state::load().unwrap().mru.contains(&orphan.id),
+            "the orphan is deliberately absent from the index"
+        );
+
+        let ids: Vec<String> = list_all().into_iter().map(|d| d.id).collect();
+        assert!(ids.contains(&registered.id));
+        assert!(
+            ids.contains(&orphan.id),
+            "the disk-walk must surface a bundle the index never knew about"
+        );
+    }
+
+    /// Criterion 2 (corrupt-index recovery): a damaged index must not fold the
+    /// enumeration to empty — it recovers the full set from the bundles on disk.
+    #[test]
+    fn list_all_recovers_from_a_corrupt_index_instead_of_reading_empty() {
+        let _env = TestEnv::new();
+        let a = create(&_env.ws_path("a"), None).unwrap();
+        let b = create(&_env.ws_path("b"), None).unwrap();
+        // Corrupt the index the way a torn write would.
+        std::fs::write(state::index_path(), b"{ not valid json").unwrap();
+        assert!(state::load().is_err(), "the index is now damaged");
+
+        let ids: Vec<String> = list_all().into_iter().map(|d| d.id).collect();
+        assert_eq!(ids.len(), 2, "must recover every bundle, not read empty");
+        assert!(ids.contains(&a.id) && ids.contains(&b.id));
+    }
+
+    /// Criterion 4 (reconcile): a stale `mru` id whose bundle is gone must be
+    /// dropped from the *persisted* index rather than occupying a slot forever.
+    #[test]
+    fn list_all_reconciles_a_stale_index_entry_out_of_the_persisted_mru() {
+        let _env = TestEnv::new();
+        let real = create(&_env.ws_path("real"), None).unwrap();
+        // Inject a ghost id (no bundle dir) into the persisted index.
+        let mut st = state::load().unwrap();
+        st.mru.insert(0, "ghost-000000".to_owned());
+        state::save(&st).unwrap();
+
+        let _ = list_all();
+
+        let after = state::load().unwrap();
+        assert!(
+            !after.mru.contains(&"ghost-000000".to_owned()),
+            "a stale id with no bundle must be dropped from the persisted index"
+        );
+        assert!(after.mru.contains(&real.id), "the real workspace stays");
+    }
+
+    /// Criterion 5 (found-is-deletable): a workspace discovered only by the
+    /// disk-walk is removable through the same `delete` verb — discovery and
+    /// the delete affordance stay paired (the #131 bar).
+    #[test]
+    fn a_disk_walked_orphan_is_deletable_through_the_delete_verb() {
+        let _env = TestEnv::new();
+        let orphan = WorkspaceDefinition::new(&_env.ws_path("orphan-del"));
+        persistence::save_definition(&orphan).unwrap();
+        assert!(
+            list_all().iter().any(|d| d.id == orphan.id),
+            "the orphan is discovered by the disk-walk"
+        );
+
+        assert!(delete(&orphan.id).unwrap(), "the discovered orphan existed");
+        assert!(
+            !persistence::workspace_dir(&orphan.id).exists(),
+            "bundle removed"
+        );
+        assert!(
+            !list_all().iter().any(|d| d.id == orphan.id),
+            "and it is gone from the enumeration after delete"
         );
     }
 }
