@@ -94,6 +94,24 @@ mod tests {
         for n in ALL_PIPE_ACTIONS {
             assert!(meta_names.contains(*n), "missing {n}");
         }
+        // #142: the CONVERSE direction — every REGISTERED action must appear in
+        // ALL_PIPE_ACTIONS. Paired with the loop above, this is set equality, so
+        // a verb registered in `install()` but forgotten from the table (the
+        // direction a developer actually trips) turns red and names the verb.
+        // Before #142 `conversations.get_active_for_workspace` /
+        // `set_active_for_workspace` were registered but absent from the table,
+        // and nothing asserted this — so rules 38/48 flagged their correct
+        // callers, and `reset_for_tests()` (which iterates the table) never
+        // unregistered them, leaking registry state across tests.
+        let table: std::collections::HashSet<&str> = ALL_PIPE_ACTIONS.iter().copied().collect();
+        for name in &meta_names {
+            assert!(
+                table.contains(name.as_str()),
+                "registered action {name:?} is missing from ALL_PIPE_ACTIONS \
+                 (add it to pipe/mod.rs so the contract, reset_for_tests, and \
+                 rules 38/48 all see it)"
+            );
+        }
         // The unary-only `list_actions()` is still the right surface
         // for non-streaming actions — pin a known unary subset there.
         // Anything streaming would show up via meta above instead.
