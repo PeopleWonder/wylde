@@ -15,6 +15,7 @@ pub mod shutdown;
 pub mod sidebar;
 pub mod slot;
 pub mod tray;
+pub mod update_pill;
 pub mod window;
 
 /// Canonical product title — used in the window title, tray tooltip,

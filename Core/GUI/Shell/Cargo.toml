@@ -22,6 +22,12 @@ wylde-webview      = { path = "../Frontend/Extension_handlers/WebView" }
 # startup and reads it during render to drive the sidebar + slot.
 wylde-panel-registry = { path = "../Manifest/Extension_handlers" }
 
+# Update-notification UI (#196) — the bottom-left pill's visibility policy
+# (`pill_visible`) and the lazy-loaded changelog viewer the pill opens. A
+# self-contained gpui component (no backend deps); the Shell owns the pill's
+# click handlers + modal chrome, this crate owns the changelog surface.
+wylde-changelog = { path = "../Frontend/Changelog" }
+
 # The stack roster drives the shutdown kill list + drain-wait poll set,
 # so neither is a hand-kept parallel list (#124).
 wylde-stack.workspace   = true

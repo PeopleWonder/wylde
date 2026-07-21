@@ -28,6 +28,12 @@
 # stack (`wylde-voice`/cpal, which segfaults headless). Widen test TARGETS here,
 # never the crate set.
 #
+# `wylde-changelog` (#196) is in the set for the same reason the 9 panels are: it
+# is a real user-facing gpui surface that the L7 gate must prove mounts without
+# panic. It is safe to add here specifically because — like a panel, unlike the
+# Shell — it links neither tray-icon/wry nor the `rust/` audio stack (its only
+# deps are `gpui` + `wylde-theme`), so it stays TestPlatform-headless-clean.
+#
 # The CI job keeps the context name `gui panel-walk (L7)` even though it now runs
 # more than the panel-walk. That is deliberate: the name is a REQUIRED status
 # check, and renaming it would mean the old context never reports again — GitHub
@@ -37,4 +43,4 @@
 # renamed, add the new context to both rulesets live BEFORE merging the rename,
 # and drop the old one after.
 [alias]
-panel-walk = "test -p wylde-panel-chat -p wylde-panel-dashboard -p wylde-panel-memory -p wylde-panel-workspaces -p wylde-panel-models -p wylde-panel-tools -p wylde-panel-devices -p wylde-panel-remote-access -p wylde-panel-settings"
+panel-walk = "test -p wylde-panel-chat -p wylde-panel-dashboard -p wylde-panel-memory -p wylde-panel-workspaces -p wylde-panel-models -p wylde-panel-tools -p wylde-panel-devices -p wylde-panel-remote-access -p wylde-panel-settings -p wylde-changelog"

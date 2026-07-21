@@ -8936,6 +8936,14 @@ name = "wylde-anchor-actions"
 version = "0.2.0-beta.1"
 
 [[package]]
+name = "wylde-changelog"
+version = "0.2.0-beta.1"
+dependencies = [
+ "gpui",
+ "wylde-theme",
+]
+
+[[package]]
 name = "wylde-concept-routing"
 version = "0.2.0-beta.1"
 dependencies = [
@@ -8976,6 +8984,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tray-icon",
+ "wylde-changelog",
  "wylde-gui-pipe",
  "wylde-panel-registry",
  "wylde-stack",

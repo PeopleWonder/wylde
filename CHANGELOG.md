@@ -48,6 +48,21 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **An ambient update notification, and a changelog you can actually read.** Until now the only sign a
+  new build existed was a small brand dot on the Settings sidebar row — easy to miss. There is now a
+  Claude-desktop-style **update pill** in the bottom-left of the window whenever an update is available:
+  it shows the resolved version, an **Update** button that runs the same whole-stack install the Settings
+  panel does (download → per-binary signature verify → atomic swap on next launch), and an **Ignore**
+  button that dismisses *only that version* — a newer release brings the pill right back, so Ignore never
+  silences updates for good (#196). The pill honours the same privacy gate as the dot: it appears only
+  when the user has opted into automatic checks. Its "What's new" link opens a **lazy-loaded changelog
+  viewer** — newest version first, each version separated by a divider, older versions revealed a page at
+  a time as you scroll ("theoretically the whole changelog") rather than rendered in one blob. The source
+  is deliberately the **bundled local `CHANGELOG.md`** — zero network calls, fully offline-capable — with
+  the one release newer than the current build (whose notes aren't in the bundled file yet) shown from the
+  update check's *already-fetched* metadata, so opening it phones home for nothing. The viewer is a new
+  `wylde-changelog` crate wired into the required `gui panel-walk (L7)` gate, so it mounts-without-panic
+  under CI like every other GUI surface.
 - **Every PR now has to tie to a tracking issue, and every issue now gets a milestone automatically.** Two
   halves of one project rule — "every issue is attached to a milestone, every merge is tied to an issue" —
   turned from a norm into automation (#183). A new `linked issue` job in `.github/workflows/pr-checks.yml`

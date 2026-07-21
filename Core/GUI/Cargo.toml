@@ -22,6 +22,7 @@ members = [
     "Frontend/Theme",
     "Frontend/Pipe",
     "Frontend/Input",
+    "Frontend/Changelog",
     "Frontend/Code_editor",
     "Frontend/Extension_handlers/WebView",
     "Frontend/Panels/Settings",

@@ -192,6 +192,10 @@ pub fn open_main_window(cx: &mut App) -> Option<WindowHandle<Shell>> {
             // opted-out install makes no network call.  Flips the Settings
             // row's hint dot when a newer release is found.
             shell.spawn_startup_update_check(cx);
+            // Seed the update pill's per-version dismissal (#196) from the
+            // persisted `skipped_version` so a previously-ignored update stays
+            // dismissed across restarts (a newer release re-shows it).
+            shell.spawn_seed_dismissed_version(cx);
             // Drain the cross-panel nav bus inside the Shell entity.
             // The forever-task lives as long as the entity does;
             // dropping the Shell drops the WeakEntity which short-
