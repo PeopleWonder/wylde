@@ -48,6 +48,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Every PR now has to tie to a tracking issue, and every issue now gets a milestone automatically.** Two
+  halves of one project rule — "every issue is attached to a milestone, every merge is tied to an issue" —
+  turned from a norm into automation (#183). A new `linked issue` job in `.github/workflows/pr-checks.yml`
+  fails any PR whose title, body, or introduced commits reference no issue (`#N`, or a
+  `Closes/Fixes/Resolves/Refs #N` keyword), and it is a **required check** on both `protect-develop` and
+  `protect-experimental`. The escape hatch is a `no-issue` label for a deliberate no-issue change; Dependabot
+  PRs and the `develop`→`main` promotion are exempt by construction (they carry no single issue and must keep
+  flowing — Dependabot auto-merge queues behind the required checks, so gating it would hang every bump). The
+  label is evaluated at step level, not as a job-level `if:`, so the required context always reports a
+  conclusion and can never leave the branch deadlocked on an "expected" check. On the issue side — which a
+  required status check can't reach — a new `.github/workflows/issue-milestone.yml` auto-assigns the catch-all
+  `0.x - backlog` milestone on `issues.opened`/`reopened` when none is set, with a weekly sweep for anything
+  that slips through, under a least-privilege `issues: write` token (#177). `0.x - backlog` is a floor, not a
+  verdict: triage still re-files into the right release milestone at will.
 - **Wylde's updater now carries the whole stack, and the launcher always runs the current one.** Two
   halves of the same gap, fixed against one shared resolver. The self-updater was structurally
   GUI-only: it selected release assets by matching the literal `wylde-gui`, then `self_replace`d the
