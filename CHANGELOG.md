@@ -231,6 +231,19 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **Registering a 6th workspace no longer silently destroys the least-recently-used
+  workspace's entire bundle (closes #133).** The MRU-5 window was a *disk cap*, not just
+  a dropdown limit: promoting a 6th workspace `remove_dir_all`'d the LRU bundle — persona,
+  `memory.jsonl`, RAG chunk store, conversations, and Memgraph nodes — with no prompt, no
+  warning, and no undo, the exact inverse of the never-auto-delete decision taken for models
+  (#120/#131). The window is now display-only: `WorkspaceState::promote` re-orders the `mru`
+  list but never evicts, so the list is the full, unbounded enumeration of every workspace on
+  disk. `promote_and_persist` no longer tears down anything; the sole bundle-destroying path is
+  now explicit `delete`. A workspace pushed past the window stays fully on disk and enumerable
+  (`persistence::load_all`); the dropdown still renders only the first `MRU_WINDOW`. Covered by
+  a test that registers past the window and asserts the LRU's `definition.json`, `persona.md`,
+  `memory.jsonl`, and `index/chunks.jsonl` all survive — and that no graph teardown is enqueued.
+
 - **The L7 `panel-walk` gate's hand-kept crate list is now guarded against
   silent under-coverage (closes #95).** `cargo panel-walk` (the required `gui
   panel-walk (L7)` job) is a `-p`-scoped alias in `Core/GUI/.cargo/config.toml`
