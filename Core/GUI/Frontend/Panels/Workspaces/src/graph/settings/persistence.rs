@@ -1,11 +1,14 @@
 //! `graph_profiles.json` load/save (Slice C-settings, Plan v2 §10).
 //!
 //! The library lives at `<data_dir>/graph_profiles.json`, where `<data_dir>`
-//! resolves exactly the way every Wylde service resolves it
-//! (`wylde_shared::encryption::data_dir`: `WYLDE_DATA_DIR` → `DATA_DIR` →
-//! `<WYLDE_ROOT>/.wylde/data`) — duplicated here because the GUI panel
-//! doesn't link the service crates (Build Order: the GUI's only backend
-//! dependency is the pipe).
+//! resolves exactly the way every Wylde service resolves it (convention A —
+//! the canonical `wylde_shared::paths::data_dir`: `WYLDE_DATA_DIR` → `DATA_DIR`
+//! → `<WYLDE_ROOT>/.wylde/data`). This is a **sanctioned copy** of that body:
+//! the GUI panel deliberately doesn't link the service crates (Build Order: the
+//! GUI's only backend dependency is the pipe), so it can't `use` the shared
+//! resolver without an approved dependency addition. #138 unified the six
+//! rust/crates copies onto the shared resolver and gates against new ones;
+//! folding this last copy in is tracked there and needs that dep decision.
 //!
 //! Stored as plain JSON, deliberately **outside** the OI-14 encryption sweep:
 //! profiles are visual preferences (zoom feel, layout choice), not user
@@ -139,9 +142,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// #138 — a real path-shape gate (was `ends_with("graph_profiles.json")`,
+    /// true by construction under any `data_dir()`). Pins that the library
+    /// lands under the resolved data dir, and — when no data-dir override is set
+    /// on the runner — that the convention-A `.wylde/data` tail holds. A
+    /// regression of `data_dir()` to `.` makes the clean-env branch red.
     #[test]
     fn profiles_path_lands_in_data_dir() {
         let p = profiles_path();
         assert!(p.ends_with("graph_profiles.json"));
+        // When no data-dir override is set on the runner, the convention-A tail
+        // must hold — a regression of `data_dir()` to `.` makes this red.
+        // (Read-only env check, so a concurrent test can't perturb it.)
+        if std::env::var_os("WYLDE_DATA_DIR").is_none() && std::env::var_os("DATA_DIR").is_none() {
+            assert!(p.ends_with(Path::new(".wylde").join("data").join("graph_profiles.json")));
+        }
     }
 }

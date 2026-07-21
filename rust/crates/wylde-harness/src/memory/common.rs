@@ -32,17 +32,10 @@ pub fn wylde_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// On-disk store root. Mirrors Python's `DATA_DIR`. Env override
-/// precedence: `WYLDE_DATA_DIR` → `DATA_DIR` → `<wylde_root>/.wylde/data`.
-pub fn data_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os("WYLDE_DATA_DIR") {
-        PathBuf::from(v)
-    } else if let Some(v) = std::env::var_os("DATA_DIR") {
-        PathBuf::from(v)
-    } else {
-        wylde_root().join(".wylde").join("data")
-    }
-}
+/// On-disk store root (convention A). Precedence: `WYLDE_DATA_DIR` →
+/// `DATA_DIR` → `<wylde_root>/.wylde/data`. Delegates to the ONE canonical
+/// resolver (#138) — this used to be a verbatim copy of that body.
+pub use wylde_shared::paths::data_dir;
 
 /// One JSON file per conversation lives here. Mirrors Python's
 /// `CONVERSATIONS_DIR`.
@@ -127,14 +120,23 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    /// `data_dir` is cached at first access — the assert below pins the
-    /// fallback path shape, not a specific value, so the test stays
-    /// correct regardless of env on the test runner.
+    /// #138 — a REAL fallback-shape gate. The harness `data_dir` is now the ONE
+    /// canonical resolver (`wylde_shared::paths`); its env-free fallback is
+    /// `<root>/.wylde/data`. The old body here asserted only `!p.is_empty()` —
+    /// green under any convention, including a regression to `.` — and its
+    /// docstring's "cached at first access" claim was false (it resolves per
+    /// call). This pins the actual `.wylde/data` shape via the pure helper, so a
+    /// drift to a different root or layout turns it red.
     #[test]
     fn data_dir_falls_back_to_dot_wylde_under_root() {
-        let p = data_dir();
-        // Path exists as a `Path` even if the dir hasn't been created.
-        assert!(!p.as_os_str().is_empty());
+        // Env-free: pin the canonical fallback shape via the pure helper the
+        // harness `data_dir` delegates to. (We avoid mutating `WYLDE_ROOT` here
+        // because harness memory tests share the process env without a lock.)
+        let root = Path::new("C:/estate-root");
+        assert_eq!(
+            wylde_shared::paths::data_dir_under(root),
+            root.join(".wylde").join("data"),
+        );
     }
 
     #[test]
