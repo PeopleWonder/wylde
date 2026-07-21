@@ -1,0 +1,80 @@
+# Auto-merge into develop — the standing default that DRAINS green PRs with no nudge.
+#
+# Purpose (issue #189, milestone "0.2 - Stability & autonomy"): a session opens a
+# PR into `develop`, then the PR sits idle waiting on CI and needs a human/agent
+# nudge to actually merge once it goes green. With the strict up-to-date rule now
+# OFF on `develop` (PRs may merge in any order the moment they are green — the
+# serialization Aaron deliberately removed), plain native auto-merge is exactly
+# the missing piece: this workflow arms it automatically for every qualifying PR,
+# so GitHub does the merge itself the instant the required checks pass. No polling,
+# no re-nudge, nothing in the session's merge loop.
+#
+# ── Auto-merge is NOT a gate bypass ─────────────────────────────────────────
+# `gh pr merge --auto` only ASKS GitHub to complete the merge once branch
+# protection is satisfied. It respects the full `protect-develop` required-check
+# set — backend build+test, GUI build, panel-walk (L7), clippy(G4)+fmt(G6),
+# version consistency (G7), personal-info scrub (G8), the cargo-deny advisory &
+# license legs, branch target+name, conventional commits, changelog updated, and
+# `linked issue`. A PR with a red check, or with no issue link, simply never
+# merges — auto-merge waits forever rather than forcing anything. Reviews are not
+# a blocker only because `protect-develop` sets required_approving_review_count:0
+# by design (solo, all-agent-authored repo); the checks are the review.
+#
+# ── Scope / guards (ALL must hold for a PR to be armed) ──────────────────────
+#   • base branch is `develop`. main and experimental are DELIBERATE manual
+#     promotions (see docs/branch-and-release-policy.md) and are never armed here.
+#   • the PR is not a draft. `--auto` errors on a draft, so drafts are skipped and
+#     picked up later via the `ready_for_review` trigger when they open for real.
+#   • the author is not dependabot[bot]. Dependabot PRs are handled by the
+#     narrower, MORE strictly-gated dependabot-automerge.yml (#68), which arms
+#     ONLY semver-patch bumps clear of the gpui git-rev tree. The two workflows
+#     partition cleanly by actor; this general one must never override that
+#     stricter gating by arming a minor/major or gpui-tree bump.
+#   • the PR is not labelled `no-auto-merge` — the explicit, visible escape hatch
+#     for a PR a human wants to hold and merge by hand.
+#
+# ── Trigger / permission shape ──────────────────────────────────────────────
+# Runs on `pull_request` (NOT pull_request_target) and never checks out or runs
+# the PR's code — it only reads PR context and arms auto-merge, so there is no
+# untrusted-code-execution surface. Top-level permissions are empty; the one job
+# that needs to arm the merge elevates itself to the minimum contents:write +
+# pull-requests:write. GITHUB_TOKEN suffices (same as #68) — no PAT/PROJECT_TOKEN
+# is needed, because enabling native auto-merge is a pull-request write, not a
+# user-owned Project write.
+#
+# This job is advisory, not a required check (the required set is the hand-kept
+# ruleset list, #128) — so if arming ever fails it can annoy but never deadlock a
+# branch, and a human can always merge normally.
+name: Auto-merge into develop
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  arm-auto-merge:
+    name: arm auto-merge (develop PRs)
+    runs-on: ubuntu-latest
+    # Partition by base/draft/actor/label. Anything else is left for a human.
+    if: >-
+      github.event.pull_request.base.ref == 'develop'
+      && github.event.pull_request.draft == false
+      && github.actor != 'dependabot[bot]'
+      && !contains(github.event.pull_request.labels.*.name, 'no-auto-merge')
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable native auto-merge (waits for all required checks)
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Arming auto-merge for ${PR_URL} — GitHub merges it once every required protect-develop check is green."
+          # Tolerant of benign races (already merged, already fully green and thus
+          # merged on the spot, or auto-merge not applicable): warn, don't red-X.
+          # The required checks remain the real safety net regardless.
+          gh pr merge --auto --squash "${PR_URL}" \
+            || echo "::warning::Could not arm auto-merge for ${PR_URL} (it may be already merged, already mergeable, or otherwise ineligible). A human can merge it normally."
