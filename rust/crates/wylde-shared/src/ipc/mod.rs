@@ -68,9 +68,10 @@ pub mod server;
 pub mod wire;
 
 pub use self::actions::{
-    dispatch_action, list_action_meta, list_actions, register_action, register_action_with_meta,
-    register_streaming_action, register_streaming_action_with_meta, take_streaming_action,
-    unregister_action, write_action_contract, ActionMeta, StreamSender, ACTION_DISPATCH_PATH,
+    assert_action_table_matches_registry, dispatch_action, list_action_meta, list_actions,
+    register_action, register_action_with_meta, register_streaming_action,
+    register_streaming_action_with_meta, take_streaming_action, unregister_action,
+    write_action_contract, ActionMeta, StreamSender, ACTION_DISPATCH_PATH,
 };
 pub use self::client::{
     call, call_action, register_handler, send, send_action, send_action_stream, send_with_verb,

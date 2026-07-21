@@ -209,6 +209,52 @@ pub fn list_actions() -> Vec<String> {
     names
 }
 
+/// Assert a service's `ALL_ACTIONS` verb table and the live action registry
+/// AGREE, for verbs under `prefix`, after `install()` has run. This is the
+/// shared registration gate for every service (#130).
+///
+/// Checks BOTH directions:
+///   * `table ⊆ registry` — every listed verb is actually registered (a
+///     listed-but-unregistered verb, e.g. a typo or a deleted handler); and
+///   * `registry ⊆ table` — every registered verb whose name starts with
+///     `prefix` appears in the table. This is the direction a developer
+///     actually trips — add a handler, forget the table — and the one no
+///     service guarded before #130. A verb missing from the table makes the
+///     gpui-contract lint flag its correct callers and leaks past
+///     `reset_for_tests()` (which unregisters by iterating the table).
+///
+/// The registry is process-wide, so the converse is scoped to `prefixes` — the
+/// service's verb namespace(s), e.g. `&["voice."]`, or `&["ext.", "extensions.",
+/// "inference."]` for a service that owns several. Panics naming the offending
+/// verb on any mismatch, so a falsification (register a verb, omit it from the
+/// table) turns the test red and says which verb.
+pub fn assert_action_table_matches_registry(prefixes: &[&str], all_actions: &[&str]) {
+    use std::collections::BTreeSet;
+    let registered: BTreeSet<String> = list_action_meta().into_iter().map(|(n, _)| n).collect();
+    let table: BTreeSet<&str> = all_actions.iter().copied().collect();
+    let owned = |name: &str| prefixes.iter().any(|p| name.starts_with(p));
+
+    // Collect EVERY mismatch (both directions) and report them together — a
+    // one-at-a-time assertion hides how many verbs have drifted.
+    let listed_not_registered: Vec<&&str> = all_actions
+        .iter()
+        .filter(|v| !registered.contains(**v))
+        .collect();
+    let registered_not_listed: Vec<&String> = registered
+        .iter()
+        .filter(|n| owned(n) && !table.contains(n.as_str()))
+        .collect();
+
+    if !listed_not_registered.is_empty() || !registered_not_listed.is_empty() {
+        panic!(
+            "{prefixes:?}: ALL_ACTIONS and the live registry disagree.\n  \
+             listed but NOT registered (typo / deleted handler): {listed_not_registered:?}\n  \
+             registered but NOT listed (add to ALL_ACTIONS — else reset_for_tests leaks them \
+             and the gpui-contract lint flags their callers): {registered_not_listed:?}"
+        );
+    }
+}
+
 /// Snapshot of action → metadata, sorted by name.
 pub fn list_action_meta() -> Vec<(String, ActionMeta)> {
     let reg = registry().lock().expect("action registry poisoned");
