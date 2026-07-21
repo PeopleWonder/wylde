@@ -143,7 +143,7 @@ impl Actor {
                 reply,
             } => {
                 if let Err(e) = self.ensure_started(&root).await {
-                    let _ = reply.send(Err(e));  // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
+                    let _ = reply.send(Err(e)); // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
                     return;
                 }
                 let note = jsonrpc::notification(
@@ -153,7 +153,7 @@ impl Actor {
                     }}),
                 );
                 let r = self.send(&note).await;
-                let _ = reply.send(r);  // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
+                let _ = reply.send(r); // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
             }
             LspCommand::Change {
                 uri,
@@ -162,7 +162,7 @@ impl Actor {
                 reply,
             } => {
                 if !self.started || self.unavailable.is_some() {
-                    let _ = reply.send(Err(self.unavailable_msg()));  // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
+                    let _ = reply.send(Err(self.unavailable_msg())); // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
                     return;
                 }
                 let note = jsonrpc::notification(
@@ -173,7 +173,7 @@ impl Actor {
                     }),
                 );
                 let r = self.send(&note).await;
-                let _ = reply.send(r);  // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
+                let _ = reply.send(r); // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
             }
             LspCommand::Request {
                 method,
@@ -181,20 +181,21 @@ impl Actor {
                 reply,
             } => {
                 if !self.started || self.unavailable.is_some() {
-                    let _ = reply.send(Err(self.unavailable_msg()));  // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
+                    let _ = reply.send(Err(self.unavailable_msg())); // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
                     return;
                 }
                 let id = self.next_id;
                 self.next_id += 1;
                 let req = jsonrpc::request(id, &method, params);
                 if let Err(e) = self.send(&req).await {
-                    let _ = reply.send(Err(e));  // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
+                    let _ = reply.send(Err(e)); // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
                     return;
                 }
                 self.pending.insert(id, reply);
             }
             LspCommand::Diagnostics { uri, reply } => {
-                let _ = reply.send(self.diagnostics.get(&uri).cloned().unwrap_or_default());  // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
+                let _ = reply.send(self.diagnostics.get(&uri).cloned().unwrap_or_default());
+                // best-effort reply; requester may have cancelled (wylde-check: discard-result-ok)
             }
         }
     }
@@ -216,9 +217,10 @@ impl Actor {
                             .and_then(Value::as_str)
                             .unwrap_or("lsp error")
                             .to_owned();
-                        let _ = tx.send(Err(m));  // pending-request channel may be gone (wylde-check: discard-result-ok)
+                        let _ = tx.send(Err(m)); // pending-request channel may be gone (wylde-check: discard-result-ok)
                     } else {
-                        let _ = tx.send(Ok(msg.get("result").cloned().unwrap_or(Value::Null)));  // pending-request channel may be gone (wylde-check: discard-result-ok)
+                        let _ = tx.send(Ok(msg.get("result").cloned().unwrap_or(Value::Null)));
+                        // pending-request channel may be gone (wylde-check: discard-result-ok)
                     }
                 }
             }
@@ -242,7 +244,7 @@ impl Actor {
                 Value::Null
             };
             let resp = json!({ "jsonrpc": "2.0", "id": id, "result": result });
-            let _ = self.send(&resp).await;  // best-effort LSP write; peer may have closed (wylde-check: discard-result-ok)
+            let _ = self.send(&resp).await; // best-effort LSP write; peer may have closed (wylde-check: discard-result-ok)
             return;
         }
 

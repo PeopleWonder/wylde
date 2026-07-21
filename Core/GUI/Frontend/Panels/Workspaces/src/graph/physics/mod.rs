@@ -510,9 +510,9 @@ impl PhysicsHandle {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
 
         let join = thread::Builder::new()
-            .name("wylde-graph-physics".to_owned())  // physics thread name, not the dead memgraph service (wylde-check: dead-ref-ok)
+            .name("wylde-graph-physics".to_owned()) // physics thread name, not the dead memgraph service (wylde-check: dead-ref-ok)
             .spawn(move || worker_loop(engine, cmd_rx, tx, frame_interval, step_delay))
-            .expect("spawn physics worker thread");  // SAFETY: thread spawn only fails on OS thread-resource exhaustion (unrecoverable). wylde-check: panel-panic-allowed
+            .expect("spawn physics worker thread"); // SAFETY: thread spawn only fails on OS thread-resource exhaustion (unrecoverable). wylde-check: panel-panic-allowed
 
         PhysicsHandle {
             cmd: cmd_tx,

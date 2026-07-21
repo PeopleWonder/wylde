@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
 /// stdout writer, which would corrupt the protocol stream.
 fn init_stderr_logging() {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let _ = tracing_subscriber::fmt()  // MCP stdio server: stdout is the JSON-RPC channel, so logging must go to stderr, not configure_logging's stdout writer (wylde-check: logging-init-ok)
+    let _ = tracing_subscriber::fmt() // MCP stdio server: stdout is the JSON-RPC channel, so logging must go to stderr, not configure_logging's stdout writer (wylde-check: logging-init-ok)
         .with_writer(std::io::stderr)
         .with_env_filter(filter)
         .with_target(true)

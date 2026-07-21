@@ -164,6 +164,21 @@ def test_no_silent_error_swallow_skips_bound_ok(isolated_tree: Any) -> None:
     assert findings[0].line == 4  # only the bare `bare_call().ok();`
 
 
+def test_no_silent_error_swallow_marker_on_adjacent_line(isolated_tree: Any) -> None:
+    """rustfmt parks an overflowing trailing marker comment on the following
+    line; the discard opt-out is still honoured when the marker sits on the
+    line directly below (or above) the statement."""
+    wc, root = isolated_tree
+    _write(
+        root / "rust" / "crates" / "wylde-foo" / "src" / "lib.rs",
+        "fn x() {\n"
+        "    let _ = reply.send(really_long_value);\n"
+        "    // best-effort reply (wylde-check: discard-result-ok)\n"
+        "}\n",
+    )
+    assert wc.check_no_silent_error_swallow_rust() == []
+
+
 def test_no_silent_error_swallow_skips_propagating_question_mark(
     isolated_tree: Any,
 ) -> None:

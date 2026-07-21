@@ -49,7 +49,11 @@ pub fn register_all(
                 icon: Some("chat".into()),
                 order: 5,
                 version: "0.1.0".into(),
-                required_services: vec!["wylde-harness".into(), "wylde-ollama".into()],
+                required_services: vec![
+                    "wylde-harness".into(),
+                    "wylde-ollama".into(),
+                    "wylde-workspaces".into(),
+                ],
                 source: PanelSource::GpuiView {
                     factory: factory_key.into(),
                 },
@@ -124,7 +128,7 @@ pub fn register_all(
                 icon: Some("brain".into()),
                 order: 20,
                 version: "0.1.0".into(),
-                required_services: vec!["wylde-harness".into()],
+                required_services: vec!["wylde-harness".into(), "wylde-workspaces".into()],
                 source: PanelSource::GpuiView {
                     factory: factory_key.into(),
                 },
@@ -203,7 +207,11 @@ pub fn register_all(
                 icon: Some("settings".into()),
                 order: 95,
                 version: "0.1.0".into(),
-                required_services: vec!["wylde-harness".into()],
+                required_services: vec![
+                    "wylde-harness".into(),
+                    "wylde-ollama".into(),
+                    "wylde-voice".into(),
+                ],
                 source: PanelSource::GpuiView {
                     factory: factory_key.into(),
                 },
@@ -253,7 +261,7 @@ pub fn register_all(
                 icon: Some("folder".into()),
                 order: 30,
                 version: "0.1.0".into(),
-                required_services: vec!["wylde-harness".into()],
+                required_services: vec!["wylde-workspaces".into()],
                 source: PanelSource::GpuiView {
                     factory: factory_key.into(),
                 },

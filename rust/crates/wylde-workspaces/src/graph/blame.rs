@@ -56,7 +56,7 @@ pub fn blame_lines(file: &str, start: u32, end: u32) -> Option<Vec<BlameEntry>> 
     let name = path.file_name()?;
     let end = end.max(start).min(start.saturating_add(MAX_SPAN_LINES));
 
-    let output = Command::new("git")  // local `git blame`, read-only, no lifecycle-pipe equivalent (wylde-check: external-spawn-ok)
+    let output = Command::new("git") // local `git blame`, read-only, no lifecycle-pipe equivalent (wylde-check: external-spawn-ok)
         .arg("-C")
         .arg(dir)
         .arg("blame")
@@ -188,7 +188,7 @@ mod tests {
     fn git_blame_appears_for_tracked_files_only() {
         let dir = tempfile::tempdir().unwrap();
         let run = |args: &[&str]| {
-            let out = Command::new("git")  // local `git blame`, read-only, no lifecycle-pipe equivalent (wylde-check: external-spawn-ok)
+            let out = Command::new("git") // local `git blame`, read-only, no lifecycle-pipe equivalent (wylde-check: external-spawn-ok)
                 .arg("-C")
                 .arg(dir.path())
                 .args(args)

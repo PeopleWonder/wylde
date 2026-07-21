@@ -203,6 +203,22 @@ def _line_is_marker_suppressed(line: str) -> bool:
     return RUST_DISCARD_RESULT_MARKER in line
 
 
+def _discard_marker_in_window(lines: List[str], idx: int) -> bool:
+    """True if the discard-result-ok marker sits on line ``idx`` (0-based) or
+    an immediately adjacent line.
+
+    The window matters because ``rustfmt`` parks an overflowing trailing
+    comment on the following line: ``let _ = foo(really_long_args);  // marker``
+    becomes the statement on one line and the ``// marker`` on the next when
+    the combined line exceeds ``max_width``. Checking the neighbours keeps a
+    deliberate opt-out honoured regardless of how the formatter lays it out.
+    """
+    for j in (idx - 1, idx, idx + 1):
+        if 0 <= j < len(lines) and RUST_DISCARD_RESULT_MARKER in lines[j]:
+            return True
+    return False
+
+
 # A statement whose trailing `.ok();` result is BOUND — `let name = …​.ok();`
 # (but not `let _ = …​`) or an assignment `lhs = …​.ok();` / `self.x = …​.ok();`.
 # A bound Option is retained, not swallowed, so such lines are not flagged.
@@ -311,8 +327,9 @@ def check_no_silent_error_swallow_rust() -> List[Finding]:
         text = _read_text(path)
         if not text:
             continue
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            if _line_is_marker_suppressed(line):
+        lines = text.splitlines()
+        for lineno, line in enumerate(lines, start=1):
+            if _discard_marker_in_window(lines, lineno - 1):
                 continue
             stripped = line.lstrip()
             if _is_doc_or_comment(stripped):
