@@ -68,6 +68,7 @@ wylde-shared  = { path = "../../rust/crates/wylde-shared" }
 # logic behind the `self_update`/`self-replace` placeholders noted below —
 # wylde-updater owns the self-replace dep internally.
 wylde-updater = { path = "../../rust/crates/wylde-updater" }
+
 # The stack roster — WHAT the stack is, as data. Already in this
 # workspace'"'"'s lock graph via wylde-updater, so naming it directly costs
 # no new dependency. Deliberately the lean crate: wylde-lifecycle owns the
