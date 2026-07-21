@@ -217,6 +217,18 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **`wylde_check` rule 44's anti-pattern regex did not match the literal it
+  exists to catch (closes #115).** Rule 44 (`boot_uses_daemon_managed_table`)
+  forbids a hand-kept `const`/`static` SERVICES roster reappearing in the Rust
+  boot path, but its regex had two blind spots: the prefix alternation covered
+  only `SERVICES`/`ALL_SERVICES`, not a qualifier like `CORE_SERVICES` (the exact
+  literal #101 deleted from `control.rs` — re-pasting it passed the gate clean);
+  and it required an array type annotation `: [`, so every idiomatic slice-form
+  roster `: &[&str] = &[` escaped regardless of name. The pattern now matches any
+  uppercase-qualified `SERVICES` name in both array and slice forms, with
+  regression tests asserting the previously-escaping cases fire and a scalar
+  `SERVICE_*` const does not (the widened pattern must not over-match).
+
 - **The `develop → main` promotion PR failed commit-lint on already-merged history.** The
   `conventional commits` check (`.github/workflows/pr-checks.yml`) linted the entire
   `origin/${BASE}..HEAD` range, so a merge-up PR re-linted every commit already vetted on
