@@ -3,9 +3,10 @@
 //! Each card on the Dashboard reads from a different service:
 //!
 //!   * **Service health strip** — fires `service.health` on
-//!     `wylde-lifecycle` for every service in [`MONITORED_SERVICES`].
-//!     Failures land as a red dot; absent means "haven't probed yet"
-//!     and renders as a neutral grey.
+//!     `wylde-lifecycle` for every service the strip covers (see
+//!     [`strip_services`], derived from the stack roster rather than a
+//!     hand-kept list). Failures land as a red dot; absent means "haven't
+//!     probed yet" and renders as a neutral grey.
 //!   * **Hardware card** — `system.inventory` on `wylde-vram-broker`,
 //!     projected to a small struct (full envelope is bigger than the
 //!     card needs).
@@ -20,31 +21,92 @@
 //! the dashboard, it just shows the relevant card in a degraded state.
 
 use serde_json::{json, Value};
+use wylde_stack::roster::{roster, StackBinary, Tier};
 
 pub const SVC_LIFECYCLE: &str = "wylde-lifecycle";
 pub const SVC_BROKER: &str = "wylde-vram-broker";
 pub const SVC_HARNESS: &str = "wylde-harness";
 pub const SVC_OLLAMA: &str = "wylde-ollama";
 
-/// Names of services the dashboard probes each refresh.  Order is the
-/// render order in the strip; tweak per-product taste without breaking
-/// the consumers (the View iterates the slice).
-pub const MONITORED_SERVICES: &[&str] = &[
-    "wylde-gateway",
-    "wylde-vram-broker",
-    "wylde-harness",
-    "wylde-ollama",
-    "wylde-lifecycle",
-    "wylde-memgraph",
-    "wylde-voice",
-    "wylde-extension-bridge",
-    // Device Gate is a top-level tier=core service (device pairing +
-    // 3-tier permissions; Gateway calls device_gate.verify on every
-    // external request). Discovery + the daemon's Phase-2f start
-    // sequence both know about it, so it belongs on the strip too —
-    // it was the one daemon-managed service missing from this list.
-    "wylde-device-gate",
-];
+/// Services the strip monitors that own no roster row, kept by name.
+///
+/// A roster row means a shippable Wylde binary. These services have none —
+/// they are a deliberate `image: None` in [`wylde_stack::CORE_STACK`] and so
+/// are absent from [`roster`] — yet they are daemon-managed and carry a real
+/// health signal, so the strip must still probe them. This is exactly the
+/// idiom `wylde_stack::shutdown_targets::NON_ROSTER_GUI_IMAGES` uses for the
+/// GUI's kill path: derive the bulk, keep the genuine exceptions *typed and
+/// documented* rather than silent.
+///
+/// * `wylde-memgraph` — JVM-supervised (no `wylde-memgraph.exe`). Its liveness
+///   is "is Neo4j accepting Bolt connections?"
+///   (`wylde_lifecycle::control::memgraph_health`), a signal the operator
+///   needs. It is a `Role::Standard` `DAEMON_MANAGED` row with a stop hook, so
+///   it also offers Stop — hence [`StripService::manageable`] is `true` for it.
+///
+/// `wylde-memory-scheduler` is *not* here: it is a `Role::BootOnlyNoop`
+/// in-process tokio task inside `wylde-harness` with no subprocess and nothing
+/// to probe or stop, so it correctly never appears on the strip.
+const NON_ROSTER_MONITORED: &[&str] = &["wylde-memgraph"];
+
+/// One row of the service-health strip: a service name plus whether the
+/// console may offer it a Stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StripService {
+    pub name: String,
+    /// Whether a Stop is a live backend action — the service's *role*, not a
+    /// name literal. `true` for every daemon-managed service (a roster
+    /// [`Tier::Service`] row, plus the managed [`NON_ROSTER_MONITORED`]
+    /// carve-outs); `false` for the daemon itself ([`Tier::Daemon`],
+    /// `wylde-lifecycle`), which serves the stop and is not in its own
+    /// manageable set, so a Stop there is a backend no-op.
+    pub manageable: bool,
+}
+
+/// Derive the strip's service list from a stack roster, in render order.
+///
+/// The GUI shell ([`Tier::Gui`]) is dropped — it renders the strip; there is
+/// nothing here to probe or stop. The daemon and every service — in-tree or a
+/// discovered `Services/` sibling — get a row, and so does each
+/// [`NON_ROSTER_MONITORED`] carve-out. Order is the roster's own stable order
+/// (daemon, in-tree declaration order, then siblings alphabetical), then the
+/// carve-outs; the exact order is a per-product concern, which is the only
+/// thing the old hand-kept list legitimately encoded.
+///
+/// Membership is *derived*: a new binary — including a future `Services/`
+/// sibling — gets a chip, and a Stop button where its role warrants one, with
+/// no edit here. That is the defect this closes (#123): the strip no longer
+/// drifts from the roster the updater and launcher already follow.
+pub fn strip_services_from(roster: &[StackBinary]) -> Vec<StripService> {
+    let mut out: Vec<StripService> = roster
+        .iter()
+        .filter(|b| b.tier != Tier::Gui)
+        .map(|b| StripService {
+            name: b.name.clone(),
+            manageable: b.tier == Tier::Service,
+        })
+        .collect();
+    for name in NON_ROSTER_MONITORED {
+        // Guard against a future roster row shadowing a carve-out.
+        if out.iter().any(|s| &s.name == name) {
+            continue;
+        }
+        out.push(StripService {
+            name: (*name).to_owned(),
+            // The carve-outs listed here are all daemon-managed (see the
+            // `NON_ROSTER_MONITORED` doc) — they offer Stop.
+            manageable: true,
+        });
+    }
+    out
+}
+
+/// The live strip roster, walked from the install tree. Thin wrapper over
+/// [`strip_services_from`] against [`wylde_stack::roster`]; the pure function
+/// is the tempdir-testable seam the falsification test drives.
+pub fn strip_services() -> Vec<StripService> {
+    strip_services_from(&roster())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthStatus {
@@ -575,21 +637,101 @@ mod tests {
     }
 
     #[test]
-    fn monitored_services_includes_canonical_set() {
-        // Pin the canonical service list so a future "rename a service"
-        // refactor surfaces here as a test failure rather than a
-        // silent missing row.
-        for svc in [
-            "wylde-harness",
-            "wylde-ollama",
-            "wylde-vram-broker",
-            "wylde-lifecycle",
-        ] {
-            assert!(
-                MONITORED_SERVICES.contains(&svc),
-                "missing {svc} in MONITORED_SERVICES",
-            );
+    fn strip_covers_every_binary_backed_service_in_the_roster() {
+        // #123: the strip must derive from the roster, so *every* service the
+        // roster carries a binary for appears — not a hand-kept subset. This
+        // is the criterion that MONITORED_SERVICES could not meet: it was
+        // short by four (workspaces, treesitter, n8n, vpn).
+        let strip = strip_services();
+        let names: Vec<&str> = strip.iter().map(|s| s.name.as_str()).collect();
+        for b in roster() {
+            if b.tier == Tier::Service {
+                assert!(
+                    names.contains(&b.name.as_str()),
+                    "roster service {} has no strip row — the strip drifted from the roster",
+                    b.name,
+                );
+            }
         }
+        // The four the hand-kept list silently dropped, named explicitly so a
+        // regression reads plainly.
+        for svc in [
+            "wylde-workspaces",
+            "wylde-treesitter",
+            "wylde-n8n",
+            "wylde-vpn",
+        ] {
+            assert!(names.contains(&svc), "missing {svc} on the strip");
+        }
+        // The daemon shows health but is never offered a Stop; the managed
+        // services are.
+        let daemon = strip
+            .iter()
+            .find(|s| s.name == "wylde-lifecycle")
+            .expect("daemon on the strip");
+        assert!(!daemon.manageable, "the daemon must not offer Stop");
+        let gateway = strip
+            .iter()
+            .find(|s| s.name == "wylde-gateway")
+            .expect("gateway on the strip");
+        assert!(gateway.manageable, "a managed service offers Stop");
+    }
+
+    #[test]
+    fn strip_carries_non_roster_monitored_services() {
+        // memgraph has no binary (JVM-supervised, `image: None`) so it never
+        // appears in `roster()`, but it is daemon-managed with a real Bolt
+        // health signal — the typed carve-out keeps it on the strip, with Stop.
+        let strip = strip_services();
+        let memgraph = strip
+            .iter()
+            .find(|s| s.name == "wylde-memgraph")
+            .expect("memgraph stays on the strip via the carve-out");
+        assert!(
+            memgraph.manageable,
+            "memgraph is daemon-managed → offers Stop"
+        );
+    }
+
+    #[test]
+    fn strip_never_lists_the_gui_shell() {
+        // The GUI renders the strip; probing/stopping itself is nonsense.
+        assert!(
+            !strip_services().iter().any(|s| s.name == "wylde-gui"),
+            "the GUI shell must not appear on its own strip",
+        );
+    }
+
+    #[test]
+    fn dropping_a_services_bucket_sibling_extends_the_strip_with_no_code_edit() {
+        // Aaron's bar: a synthetic service dropped into the `Services/` bucket
+        // is covered by construction. Revert `strip_services_from` to a
+        // hand-kept list and this goes red — the synthetic (and every real
+        // sibling) would vanish. Mirrors the discovery seam
+        // `wylde_updater/tests/whole_stack_coverage.rs` drives.
+        let tmp = tempfile::tempdir().unwrap();
+        let svc_dir = tmp.path().join("Services").join("wylde-synthetic-probe");
+        std::fs::create_dir_all(&svc_dir).unwrap();
+        std::fs::write(
+            svc_dir.join("manifest.json"),
+            r#"{"name":"synthetic-probe"}"#,
+        )
+        .unwrap();
+
+        let roster = wylde_stack::roster::roster_in(tmp.path());
+        let strip = strip_services_from(&roster);
+        let names: Vec<&str> = strip.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"wylde-synthetic-probe"),
+            "a dropped-in Services/ sibling must appear on the strip automatically; got {names:?}",
+        );
+        // And it is manageable (a discovered sibling is stoppable via the
+        // daemon's generic teardown), never the GUI.
+        let synth = strip
+            .iter()
+            .find(|s| s.name == "wylde-synthetic-probe")
+            .unwrap();
+        assert!(synth.manageable, "a discovered sibling offers Stop");
     }
 
     #[test]

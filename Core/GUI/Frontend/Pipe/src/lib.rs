@@ -815,9 +815,10 @@ pub async fn service_health(service: &str) -> Result<Value, String> {
 // `service.start` verb (see `slot::start_service_action`).
 
 /// The Lifecycle daemon's canonical name for the graph database (Memgraph,
-/// the Bolt `:7687` backend). Matches the Dashboard's `MONITORED_SERVICES`
-/// entry so a one-click "Start graph database" targets the same service the
-/// health strip probes.
+/// the Bolt `:7687` backend). Matches the service the Dashboard's health strip
+/// probes for Memgraph (kept on the strip as a `NON_ROSTER_MONITORED` carve-out
+/// — it is `image: None` in the stack roster) so a one-click "Start graph
+/// database" targets the same service the strip shows.
 pub const MEMGRAPH_SERVICE: &str = "wylde-memgraph";
 
 /// Start a stopped service (`service.start`). Used by the "down" recovery

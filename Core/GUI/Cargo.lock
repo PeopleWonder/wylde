@@ -9065,9 +9065,11 @@ dependencies = [
  "gpui",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "wylde-gui-pipe",
  "wylde-gui-test-support",
+ "wylde-stack",
  "wylde-theme",
 ]
 

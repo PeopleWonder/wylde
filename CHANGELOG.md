@@ -592,6 +592,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
     note (paths as-of that date, locations gone, don't navigate by it) instead of a scrub. Same call
     for `docs/mypy_baseline.txt`, whose paths are captured tool *stdout*; it's a Python-era artifact
     due for deletion with the Python scrub (T1.2), which is where that decision belongs.
+- **The Dashboard's service-health strip now derives from the stack roster, so no daemon-managed
+  service can silently lack a Stop button.** The strip rendered from a hand-kept nine-name array
+  (`MONITORED_SERVICES`) that had already drifted once and was short by four — `wylde-workspaces`,
+  `wylde-treesitter`, `wylde-n8n`, and `wylde-vpn` had no tile, and so no health dot and no #35 Stop
+  control — while the test that appeared to cover it (`service_health.len() == MONITORED_SERVICES.len()`)
+  compared the list to itself and was vacuously true for any content. The strip's membership now comes
+  from `wylde_stack::roster()` — the same discovery the updater and launcher follow — so every service,
+  in-tree or dropped into the `Services/` bucket, gets a chip and (where its roster `Tier` makes it
+  daemon-managed) a Stop, with no list to edit. `offers_stop`'s exclusion likewise derives from the
+  service's role (`Tier::Daemon`/`wylde-lifecycle`), not a name literal. `wylde-memgraph`, which is
+  JVM-supervised and so carries no roster binary, stays on the strip via one typed, documented carve-out
+  mirroring `wylde_stack::shutdown_targets::NON_ROSTER_GUI_IMAGES`. A falsification test drops a synthetic
+  `Services/` service into a tempdir and asserts it appears on the strip with no code edit; reverting the
+  derivation turns it red. (#123)
 
 ### Changed
 
