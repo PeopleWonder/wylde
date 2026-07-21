@@ -48,6 +48,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Green PRs into `develop` now merge themselves — no session left idle waiting to click merge.** With the
+  strict up-to-date rule off on `develop`, a PR can merge the moment its checks pass, but nothing armed that
+  merge, so the final step was still hand-babysat (a session opens a PR, sits waiting on CI, then needs a nudge
+  to merge). A new `.github/workflows/auto-merge-develop.yml` runs on `pull_request: [opened, ready_for_review]`
+  and calls `gh pr merge --auto --squash` for every qualifying PR, so GitHub completes the merge itself the
+  instant the required checks go green (#189). This is **not** a gate bypass: native auto-merge respects the
+  full `protect-develop` required-check set (backend build+test, GUI build, panel-walk L7, clippy/fmt, G7, the
+  `personal-info scrub (G8)`, the cargo-deny advisory/license legs, branch target+name, conventional commits,
+  changelog, and `linked issue`), so a PR that is red or unlinked simply never merges. It arms **only** PRs
+  targeting `develop` (the `develop`→`main` and experimental promotions stay deliberately manual), skips drafts,
+  honours a `no-auto-merge` label as an explicit hold, and excludes `dependabot[bot]` — those stay with the
+  narrower, patch-only `dependabot-automerge.yml` (#68), which the two workflows partition cleanly by actor so
+  the general one never loosens that stricter gating. Least-privilege `contents: write` + `pull-requests: write`
+  on `GITHUB_TOKEN`; the arming job is advisory, not a required check, so it can never deadlock a branch.
 - **Every PR now has to tie to a tracking issue, and every issue now gets a milestone automatically.** Two
   halves of one project rule — "every issue is attached to a milestone, every merge is tied to an issue" —
   turned from a norm into automation (#183). A new `linked issue` job in `.github/workflows/pr-checks.yml`
