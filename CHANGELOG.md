@@ -942,6 +942,23 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Security
 
+- **The GUI voice preset lists can no longer silently drift from the service's
+  accepted values (closes #129).** Four voice value-domain lists (PTT hotkeys,
+  STT backends, VAD sensitivities, wake-word models) are duplicated across the
+  `Core/GUI` ↔ `rust/` cargo-workspace boundary — the GUI can't `use`
+  `wylde-voice` because its audio stack (cpal) segfaults in the headless
+  panel-walk gate — and until now only a `/// Mirrors` doc comment held them in
+  sync. A drifted list offers a picker value the service validator
+  (`wylde-voice` `session.rs`) rejects, so the user selects a legal-looking
+  option and the `voice.set_config` silently fails. New
+  `tools/check-voice-presets-mirror.py` asserts each GUI list is **equal**
+  (value and order) to the `config_persist` const its `/// Mirrors` comment
+  names — deriving the pairing from that existing comment rather than a second
+  hand-kept map — and runs as the required `voice presets mirror` CI gate.
+  `VoiceSettings.mode` (`ALL_MODES`) is documented as deliberately unmirrored
+  (a toggle, not a cycle-list). Appending or reordering a GUI list now turns the
+  gate red and names both sides.
+
 - **The cargo-deny advisory + license gates now cover every gated Cargo
   workspace, driven by one discovered list (closes #122).** The repo has four
   gated `[workspace]` roots (`rust/`, `Core/GUI/`, `tools/xtask`,

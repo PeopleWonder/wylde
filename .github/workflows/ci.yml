@@ -259,3 +259,19 @@ jobs:
       - name: every gated workspace is scanned, versioned, tracked, and required
         shell: bash
         run: bash tools/check-manifest-coverage.sh
+
+  # --- Voice preset mirror (#129) — the four voice value-domain lists in the
+  # GUI Settings panel are copies of wylde-voice canonical consts across the
+  # cargo-workspace boundary (the GUI can't import wylde-voice: its audio stack
+  # segfaults headless in panel-walk). A drifted copy offers a picker value the
+  # service validator rejects. This turns THAT red, deriving the pairing from
+  # the `/// Mirrors` comments the code already carries. Pure Python stdlib.
+  voice-presets-mirror:
+    name: voice presets mirror
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: validator self-test (appended / reordered lists must be caught)
+        run: python3 tools/check-voice-presets-mirror.py --selftest
+      - name: each GUI voice preset list equals its wylde-voice canonical const
+        run: python3 tools/check-voice-presets-mirror.py
