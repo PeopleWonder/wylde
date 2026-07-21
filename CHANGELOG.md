@@ -614,6 +614,16 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   told opposite stories about the same data. Dangling relations now carry a "dangling — re-point"
   badge, matching the Hierarchy treatment (#137).
 
+- **The empty-index refusal only covered one of the two verbs that rebuild concepts.** The #137 guard
+  above was added to the auto `workspaces.concepts.build` verb, but the explicit
+  `workspaces.concepts.build_semantic` verb reaches the shared builder directly and carried only the
+  embedding-width guard — so on an empty or torn index it still produced zero semantic concepts and let
+  the store swap drop every one, orphaning the authored relations exactly as before. It was a *live*
+  path: `rag.purge` empties the index and the documented follow-up step is `concepts.build_semantic`.
+  The empty-index refusal is now hoisted into one shared helper that both verbs call, so neither can
+  spend hand-authored relations on an empty index; the auto path is unchanged (it only reaches the
+  shared builder with a usable index) (#209).
+
 - **A pre-manifest workspace index could have its vectors permanently mislabelled as compatible.**
   The RAG index records the embedding model and width it was built with, and forces a full rebuild
   when they no longer match. An **absent** manifest, though, was treated as "no rebuild needed", so a
