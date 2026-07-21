@@ -63,6 +63,17 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   update check's *already-fetched* metadata, so opening it phones home for nothing. The viewer is a new
   `wylde-changelog` crate wired into the required `gui panel-walk (L7)` gate, so it mounts-without-panic
   under CI like every other GUI surface.
+- **The Models panel now answers "is this safe to delete?" at a glance, and delete reports what it
+  freed (closes #131).** Consistent with the never-auto-delete decision (#120) — Wylde never GCs or
+  sweeps a model the user pulled — the installed list stays the complete on-disk inventory, and each
+  row now shows what the running config references it as: a `reasoner` / `fast` / `embedder` slot pill
+  (matched across the implicit `:latest`), or a muted `not referenced` label marking a
+  superseded/orphaned model that is safe to drop (still one click from deletion, never touched
+  automatically). `ollama.delete` now reads the model's on-disk size before removing it and returns
+  `freed_bytes`, which the panel surfaces as a "Freed 1.4 GB — deleted &lt;model&gt;" line; the size
+  lookup is best-effort and never blocks or fails the delete. Covered by wrapper wiremock tests
+  (bytes-freed, `:latest`-normalised size match, zero-when-unknown) and panel-walk tests (the freed
+  line, the slot / not-referenced labels).
 - **Green PRs into `develop` now merge themselves — no session left idle waiting to click merge.** With the
   strict up-to-date rule off on `develop`, a PR can merge the moment its checks pass, but nothing armed that
   merge, so the final step was still hand-babysat (a session opens a PR, sits waiting on CI, then needs a nudge
@@ -163,6 +174,22 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Changed
 
+- **Log rotation is now bounded by construction, so a newly-added sink can't reintroduce unbounded
+  growth (#118).** #98 gave every log a shared rotating sink and a CI gate against ad-hoc appends, but
+  bounding was still opt-in per sink in one respect: routing through the factory was necessary but not
+  sufficient, because the factory stored whatever `RotationPolicy` it was handed. A future "5th sink"
+  given a never-rotate policy (`max_bytes` at the `u64` ceiling), or one built from a pathological
+  `WYLDE_LOG_MAX_BYTES`/`WYLDE_LOG_KEEP_FILES`, would still grow forever. Every construction path —
+  `RotationPolicy::from_env`, `RotatingLog::new`/`with_policy`, `rotating_sink`, and
+  `open_rotating_append` — now funnels its policy through a `RotationPolicy::bounded()` normalizer that
+  clamps to a structural ceiling (1 GiB per file, 1000 generations), so no sink obtainable from the
+  logging module can carry an unbounded policy. The normalizer only lowers a ceiling breach and never
+  raises a small cap, so the default 10 MiB × 5 operating bound and the deliberately-tiny caps the
+  rotation tests use are unchanged, and realistic operator widening still passes through untouched — the
+  ceiling exists only to keep a forgotten or nonsense value finite. A new `is_bounded()` predicate makes
+  the guarantee assertable: a test registers a fresh sink with no policy argument and proves it is
+  bounded without per-sink opt-in, and a companion test proves the factory normalizes an unbounded
+  policy handed to it (both red before the normalizer, green after).
 - **The live-Memgraph/Neo4j tests now run against a real database in CI, so the
   graph layer's Cypher is exercised end-to-end instead of only against mocks
   (#121).** A new `live-graph (Neo4j Bolt) tests` CI leg installs the vendored,
@@ -279,6 +306,21 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **A model store that is merely slow to come back after an update no longer reads as "you have no
+  models" (closes #132).** Wylde never sets `OLLAMA_MODELS`, so the store lives in Ollama's own
+  ambient location — outside the Wylde install tree and untouched by an update or rebuild — and a
+  model a previous version pulled is still discovered by `/api/tags` afterwards. The remaining gap was
+  the panel: when the very first `ollama.list_models` failed (the daemon still restarting right after
+  an update), an empty list rendered the "pull your first model" empty state, telling a user with a
+  full disk their models were gone. The Models panel now tracks whether the last list attempt
+  *reached* the daemon and splits "reachable + empty" (genuinely no models) from "unreachable + empty"
+  (a distinct "Model store unavailable — your installed models are safe on disk" card with a Retry);
+  a failed refresh keeps the previous list rather than blanking it. A new lifecycle seam
+  (`ollama_serve_env_overrides`) is the single place any daemon env may be set and is guarded by a
+  test that fails red if `OLLAMA_MODELS`/`OLLAMA_HOME` is ever injected onto `ollama serve`, locking
+  in the version-independent store. Covered by a panel-walk asserting an unreachable store classifies
+  as `Unreachable`, not `Empty`.
+
 - **Registering a 6th workspace no longer silently destroys the least-recently-used
   workspace's entire bundle (closes #133).** The MRU-5 window was a *disk cap*, not just
   a dropdown limit: promoting a 6th workspace `remove_dir_all`'d the LRU bundle — persona,
@@ -291,6 +333,19 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   (`persistence::load_all`); the dropdown still renders only the first `MRU_WINDOW`. Covered by
   a test that registers past the window and asserts the LRU's `definition.json`, `persona.md`,
   `memory.jsonl`, and `index/chunks.jsonl` all survive — and that no graph teardown is enqueued.
+
+- **A lost, stale, or damaged workspace index can no longer silently orphan every
+  bundle on disk (closes #134).** Every enumeration path read `index.json`'s `mru` list and
+  nothing ever walked `<data_dir>/workspaces/`, so a bundle present on disk but absent from the
+  index was invisible forever — nothing listed it, nothing could delete it. This lands the
+  disk-walk half that complements the earlier fail-loud load guard (#140): a new
+  `persistence::list_bundle_ids` walks the bundle directories, `registry::list_all` (exposed as
+  the `workspaces.list_all` verb) enumerates every workspace on disk — MRU-ordered when the index
+  is readable, recovered straight from disk when it is damaged (never folded to an empty list) —
+  and reconciles stale `mru` ids (whose directory is gone) back out of the persisted index so
+  they stop occupying a dropdown slot. Everything the walk surfaces is deletable through the same
+  `delete` verb. Covered by tests for plant-and-find, corrupt-index recovery, stale-entry
+  reconciliation, and orphan-is-deletable — each failing before this change.
 
 - **A deleted workspace's memory sweep is now durable instead of fire-and-forget,
   so a down harness can no longer orphan `workspace_memories/` permanently

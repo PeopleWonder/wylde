@@ -55,13 +55,41 @@ pub fn delete_workspace_dir(workspace_id: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Load every workspace definition the registry index knows about, in
-/// MRU order (most-recent first). Ids with a missing/torn
-/// `definition.json` are skipped — the index is the source of truth for
-/// *which* workspaces exist, this reconstitutes their configs.
+/// Disk-walk: every workspace id whose bundle directory actually holds a
+/// `definition.json` under `<data_dir>/workspaces/`.
+///
+/// This is the **authoritative existence check** the `index.json` MRU only
+/// *caches* (#134). A bundle present here but absent from the index is still
+/// a real workspace — before this, nothing ever walked the directory, so a
+/// lost or stale index rendered every on-disk bundle permanently invisible.
+/// Sorted for deterministic enumeration.
+pub fn list_bundle_ids() -> Vec<String> {
+    let mut ids = Vec::new();
+    let Ok(entries) = std::fs::read_dir(workspaces_dir()) else {
+        return ids; // absent root == no workspaces yet
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        // A directory is a workspace bundle only if it carries a definition.
+        if definition_path(&name).exists() {
+            ids.push(name);
+        }
+    }
+    ids.sort();
+    ids
+}
+
+/// Load every workspace definition that exists **on disk**, discovered by
+/// [`list_bundle_ids`] rather than read from the index (#134). This no longer
+/// depends on `index.json`, so a lost or damaged index cannot hide a bundle.
+/// Order is by id; MRU ordering is applied by [`super::list_all`].
 pub fn load_all() -> Vec<WorkspaceDefinition> {
-    super::state::load_or_default()
-        .mru
+    list_bundle_ids()
         .iter()
         .filter_map(|id| load_definition(id))
         .collect()
@@ -96,5 +124,34 @@ mod tests {
         delete_workspace_dir(&def.id).unwrap();
         assert!(!workspace_dir(&def.id).exists());
         assert!(load_definition(&def.id).is_none());
+    }
+
+    /// #134: the disk-walk finds every bundle on disk regardless of any
+    /// index, and ignores directories that are not real bundles.
+    #[test]
+    fn list_bundle_ids_walks_disk_and_requires_a_definition() {
+        let _env = TestEnv::new();
+        let a = WorkspaceDefinition::new("/tmp/walk-a");
+        let b = WorkspaceDefinition::new("/tmp/walk-b");
+        save_definition(&a).unwrap();
+        save_definition(&b).unwrap();
+        // A stray directory with no definition.json must NOT count.
+        std::fs::create_dir_all(workspace_dir("not-a-bundle")).unwrap();
+
+        let ids = list_bundle_ids();
+        assert!(ids.contains(&a.id), "bundle a must be found");
+        assert!(ids.contains(&b.id), "bundle b must be found");
+        assert!(
+            !ids.contains(&"not-a-bundle".to_owned()),
+            "a dir without definition.json is not a bundle"
+        );
+        // load_all reconstitutes them without consulting the index.
+        assert_eq!(load_all().len(), 2);
+    }
+
+    #[test]
+    fn list_bundle_ids_is_empty_when_root_absent() {
+        let _env = TestEnv::new();
+        assert!(list_bundle_ids().is_empty());
     }
 }
