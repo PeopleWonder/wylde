@@ -8,7 +8,7 @@
       "icon": "brain",
       "order": 20,
       "version": "0.1.0",
-      "required_services": ["wylde-harness"],
+      "required_services": ["wylde-harness", "wylde-workspaces"],
       "source": {
         "kind": "gpui_view",
         "factory": "wylde_panel_memory::MemoryPanel::view"

@@ -48,6 +48,25 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **The `wylde_check` architectural linter is now a CI gate — all 30 rules are enforced, not advisory.**
+  Until now `wylde_check` ran in no workflow: its ~30 Wylde-specific contracts (crate-boundary imports,
+  no-panic-in-panel-render, silent-error swallows, pipe-name convention, the launcher/shutdown single-source
+  rules, and more) were documentation that nothing checked. Only rule 55 (`no_personal_identifiers`) was
+  wired, via the narrow `personal-info scrub (G8)` job. A new `wylde_check (full rule set)` CI job runs the
+  complete `run_all()` sweep over a clean checkout and **fails on any finding**, so the whole rule set now
+  blocks a red PR instead of merely describing the contract (#114). Turning the gate on surfaced — and this
+  change clears — every outstanding finding: a genuine latent runtime bug where the Gateway's `/api/workspaces/*`
+  and `/api/rag/collections` routes still dispatched `workspaces.*` verbs to the harness after those verbs were
+  retired to the `wylde-workspaces` service (they now route to the workspaces pipe, so the routes work instead
+  of returning `no_action`); four panel manifests whose `required_services` under- or over-declared what the
+  panel actually calls (so the Shell's degraded-state stub fires correctly); and a set of false-positive-prone
+  rules tightened to match their own stated intent (the deep-`super::super` rule now flags three-or-more hops
+  as its message always said, not two; the pipe-name rule no longer mistakes release-binary asset names for
+  pipe names; the silent-swallow rule no longer flags a `.ok()` whose Option is kept or a `?` that propagates;
+  the launcher rule no longer mistakes a typed impl-selection table for a hand-kept service roster). Deliberate
+  exceptions use the rules' own inline markers with a written reason. Following the required-check deadlock
+  lesson, the new job is **not** yet a required status check — it must report green on `develop` once before
+  being added to the branch rulesets.
 - **An ambient update notification, and a changelog you can actually read.** Until now the only sign a
   new build existed was a small brand dot on the Settings sidebar row — easy to miss. There is now a
   Claude-desktop-style **update pill** in the bottom-left of the window whenever an update is available:

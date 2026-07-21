@@ -24,7 +24,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use serde_json::{json, Value};
 
-use super::common::harness_dispatch;
+use super::common::{harness_dispatch, workspaces_dispatch};
 use crate::auth::require_local;
 
 /// `POST /api/rag/query` — semantic search via the `rag_ask` tool.
@@ -43,7 +43,7 @@ pub async fn ingest(body: Option<Json<Value>>) -> Response {
 /// to `GET /api/workspaces` in [`super::workspaces`]; kept here as the
 /// legacy MCP-facing alias.
 pub async fn collections() -> Response {
-    harness_dispatch("workspaces.list_mru", Value::Null).await
+    workspaces_dispatch("workspaces.list_mru", Value::Null).await
 }
 
 /// Build the rag sub-router.

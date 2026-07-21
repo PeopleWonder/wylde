@@ -1885,7 +1885,7 @@ mod tests {
             !native.contains("respond with a single JSON object"),
             "no salvage instruction for native-capable models"
         );
-        assert!(native.contains("You are Wylde"));
+        assert!(native.contains("You are Wylde"));  // assertion on prompt text in a test, not a shipped prompt (wylde-check: prompt-literal-ok)
         assert!(native.contains("Available tools:"));
 
         let salvage = base_system_prompt("totally-custom-model");

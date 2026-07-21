@@ -173,6 +173,17 @@ PIPE_NAME_REF_RE = re.compile(r"\bwylde-[A-Za-z0-9_\-]+")
 PIPE_NAME_TYPO_RE = re.compile(r"pipe[\\/](wylde_[A-Za-z][A-Za-z0-9_]*)")
 PIPE_NAME_GOOD_RE = re.compile(r"^wylde-[a-z][a-z0-9\-]*$")
 
+# A ``wylde-<name>`` token that carries a build-artifact / target-triple
+# marker is a RELEASE BINARY filename (``wylde-gui-x86_64-pc-windows-msvc.exe``,
+# ``…​.exe.minisig``), not a named pipe.  Pass-1 (canonical-form casing) would
+# otherwise flag every such asset name in the updater/roster code for the
+# uppercase/underscore inside the target triple — a false positive, since the
+# pipe-name convention governs pipes, not artifact filenames.  Names matching
+# this are skipped by pass-1.
+PIPE_NAME_BINARY_ARTIFACT_RE = re.compile(
+    r"x86_64|aarch64|pc-windows|unknown-linux|apple-darwin|-gnu\b|-msvc\b|\.exe\b|\.minisig\b"
+)
+
 
 # Rust crate root.  Rules 26-29 walk this tree.
 RUST_CRATES_ROOT: str = "rust/crates"
@@ -182,7 +193,14 @@ RUST_CRATES_ROOT: str = "rust/crates"
 # you're traversing three module levels up, the module organisation is
 # wrong.  Anchored regex used only against the part of the `use` line
 # after the keyword.
-RUST_DEEP_SUPER_RE = re.compile(r"\bsuper::super::")
+#
+# Matches THREE-or-more `super::` hops (`super::super::super::…`), which is
+# what the finding message has always described ("three or more module
+# levels up"). The prior pattern fired on the two-hop `super::super::` form
+# too — a within-a-nested-module reach to a grandparent's sibling that is
+# ordinary Rust, especially from an inline `#[cfg(test)]` module — so the
+# regex now matches the level the message actually calls out.
+RUST_DEEP_SUPER_RE = re.compile(r"\bsuper::super::super::")
 
 
 # Rule 26: cross-crate Rust imports.  Wylde crates (other than
@@ -192,6 +210,38 @@ RUST_DEEP_SUPER_RE = re.compile(r"\bsuper::super::")
 # are always allowed; imports of one's own crate name (path component) are
 # allowed.  All other ``wylde_<name>`` use-paths are flagged.
 RUST_USE_CRATE_RE = re.compile(r"\buse\s+(wylde_[A-Za-z0-9_]+)\b")
+
+
+# Rule 26: crates that are legitimately importable across the workspace,
+# in the same spirit as the existing ``wylde_shared`` / ``wylde_plugin_api``
+# exemptions.  Each is either a PURE library crate (types + algorithms, no
+# service pipe of its own that an importer would be bypassing) or the
+# dedicated ``*-client`` crate that IS the sanctioned way to reach a peer
+# service's pipe — importing it is USING the IPC contract, not routing
+# around it.  Add here (with a one-line reason) rather than sprinkling
+# per-file exemptions.
+RUST_SHARED_SURFACE_CRATES: Tuple[str, ...] = (
+    "wylde_stack",  # roster + service_name constants — a naming/topology lib, no pipe
+    "wylde_workspaces_client",  # the sanctioned client for the wylde-workspaces service pipe
+    "wylde_concept_routing",  # pure concept-routing algorithms + value types, no pipe
+    "wylde_concept_hierarchy",  # pure concept-hierarchy types, no pipe
+    "wylde_reasoning_plan",  # pure plan/DAG value types (evaluate/predicates), no pipe
+)
+
+
+# Rule 26: per-edge cross-crate exemptions — ``(importing_crate, imported)``
+# pairs where a direct dependency is the deliberate architecture, mirroring
+# the existing ``wylde_plugin_* from wylde-harness only`` host-linkage
+# carve-out.  ``wylde-gateway`` is the harness's REST facade: it links
+# ``wylde-harness`` on purpose and calls a handful of action handlers
+# in-process against the same on-disk store (the settings / model-registry
+# routes).  NOTE for the maintainer: the chat/conversations routes reach the
+# harness over the pipe instead; if the settings/model-registry routes should
+# too, that is a separate refactor — this carve-out keeps the rule honest
+# about the dependency that exists today rather than hiding it.
+RUST_CROSS_CRATE_EDGE_EXEMPTIONS: Tuple[Tuple[str, str], ...] = (
+    ("wylde-gateway", "wylde_harness"),
+)
 
 
 # Rule 27: Rust silent-Result-swallow patterns.  ``let _ = expr;`` and
@@ -216,6 +266,13 @@ RUST_LOGGING_INIT_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"\btracing::subscriber::set_global_default\s*\("),
     re.compile(r"\btracing::subscriber::with_default\s*\("),
 )
+# Same-line inline opt-out for a service that genuinely CANNOT use the
+# canonical ``configure_logging`` — specifically an MCP stdio server, whose
+# stdout is the JSON-RPC frame channel, so its subscriber MUST write to
+# stderr (``configure_logging`` installs a stdout writer that would corrupt
+# the protocol stream). Reserved for that constraint; the reason must sit in
+# a comment beside the call.
+RUST_LOGGING_INIT_OK_MARKER = "wylde-check: logging-init-ok"
 
 
 # Rule 29: only specific crates may spawn external processes.  These
@@ -249,6 +306,13 @@ RUST_PROCESS_SPAWN_ALLOWED_CRATES: Tuple[str, ...] = (
     "wylde-extension-bridge",
     "wylde-lsp",
 )
+# Same-line inline opt-out for a single justified spawn outside the allowed
+# crates — a surgical alternative to widening the crate allowlist (which
+# would wave through EVERY spawn in that crate).  Reserved for a spawn that
+# is inherently a local subprocess with no lifecycle-pipe equivalent, e.g.
+# ``git blame`` in the workspaces code graph.  Requires a reason in the same
+# small window (mirrors the panel-panic rule's justification requirement).
+RUST_PROCESS_SPAWN_OK_MARKER = "wylde-check: external-spawn-ok"
 # Back-compat alias for callers that still import the singular name.
 RUST_PROCESS_SPAWN_ALLOWED_CRATE: str = RUST_PROCESS_SPAWN_ALLOWED_CRATES[0]
 
@@ -326,8 +390,17 @@ RUST_SHUTDOWN_TABLE_TOKEN: str = "shutdown_sequence"
 #   * SLICE syntax `: &[&str] = &[`, not only the array-annotation form
 #     `: [&str; N] = [`. The idiomatic slice table has a `&` before the `[`,
 #     so every slice-form roster escaped regardless of name.
+#
+# The element type must be `&str` — the #101 anti-pattern is a hand-kept
+# roster of service NAME strings (`&[&str]` / `[&str; N]`), the exact
+# `CORE_SERVICES: &[&str]` shape deleted from control.rs. A TYPED struct
+# table (`&[StranglerService]` — a per-service impl-selection policy table,
+# NOT the boot roster; boot still derives from DAEMON_MANAGED via
+# `boot_sequence()`) is a different structure and is intentionally not
+# matched, exactly as the `DAEMON_MANAGED: &[DaemonService]` single source
+# is not.
 RUST_HARDCODED_SERVICE_ARRAY_RE = re.compile(
-    r"\b(?:const|static)\s+_?(?:[A-Z][A-Z0-9]*_)*SERVICES?(?:_LIST|_NAMES)?\s*:\s*&?\[",
+    r"\b(?:const|static)\s+_?(?:[A-Z][A-Z0-9]*_)*SERVICES?(?:_LIST|_NAMES)?\s*:\s*&?\[\s*&?\s*str\b",
 )
 
 # The gpui-side graceful shutdown must delegate to the daemon drain via

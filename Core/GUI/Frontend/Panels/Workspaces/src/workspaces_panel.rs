@@ -1566,7 +1566,7 @@ fn download_strip(pull: &ModelPull, cx: &mut Context<WorkspacesPanel>) -> gpui::
                     format!("Download of '{model}' failed: {msg}"),
                     "Retry download",
                 ),
-                PullPhase::Downloading(_) => unreachable!(),
+                PullPhase::Downloading(_) => unreachable!(),  // INVARIANT: enclosing `Offered | Failed` arm guarantees phase is not Downloading. wylde-check: panel-panic-allowed
             };
             strip = strip.child(
                 div()

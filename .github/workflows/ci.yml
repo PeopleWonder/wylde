@@ -303,6 +303,67 @@ jobs:
           print("clean: no personal identifiers in the tree")
           PY
 
+  # --- wylde_check full rule set (#114) — the architectural linter is now a GATE.
+  #
+  # Until #114, wylde_check ran in NO workflow: all 30 rules were advisory. The
+  # `personal-info scrub (G8)` job above gated exactly ONE of them (rule 55).
+  # This job runs the FULL `run_all()` over a clean checkout and FAILS on any
+  # finding (error OR warning), so every wylde_check rule is enforcement, not
+  # documentation.
+  #
+  # Pure-Python, stdlib only (the rules import nothing third-party) — no Rust
+  # build needed, so it is cheap and OS-independent (ubuntu, like the other
+  # bash/python meta-gates). A clean checkout has no build output (`target/`,
+  # `target-dev/`), no local runtime data (`.wylde/`), and no uncommitted files,
+  # so the sweep sees only committed source — the same set every other leg sees.
+  #
+  # NOT yet a required status check: adding a new required context deadlocks
+  # every open PR until the context first reports on `develop` (the L7 /
+  # live-graph lesson above). This job must be observed green on `develop`
+  # FIRST, then added to `.github/rulesets/protect-develop.json` (+
+  # protect-main.json) by the maintainer.
+  #
+  # `personal-info scrub (G8)` is deliberately LEFT IN PLACE: it is a required
+  # context, and removing/renaming a required context deadlocks PRs. Its rule-55
+  # coverage now overlaps this job and can fold in later, once THIS job is the
+  # required gate.
+  wylde-check:
+    name: wylde_check (full rule set)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      # setup-python ships a bare interpreter; pytest is not included. The rules
+      # have no third-party dependency (stdlib only), so this is the only install.
+      - name: install pytest
+        shell: bash
+        run: python -m pip install --disable-pip-version-check --quiet pytest
+      - name: wylde_check self-tests (the gate must fail when a rule itself breaks)
+        shell: bash
+        run: python -m pytest Core/harness/dev/tests/wylde_check -q
+      - name: wylde_check full sweep against the tree (must report zero findings)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, ".")
+          from Core.harness.dev import wylde_check as wc
+
+          res = wc.run_all()
+          findings = res["data"]["findings"]
+          # Rule 55 (no_personal_identifiers) leaves `context` empty on purpose so
+          # a name never lands in a public CI log; every message below is log-safe.
+          for f in findings:
+              print(f'{f["severity"]}: {f["file"]}:{f["line"]}: [{f["rule"]}] {f["message"]}')
+          if findings:
+              by_sev = res["data"]["summary"]["by_severity"]
+              print(f'\n{len(findings)} wylde_check finding(s): {by_sev}')
+              sys.exit(1)
+          print(f'clean: wylde_check reports zero findings across {res["data"]["rules_checked"]} rules')
+          PY
+
   # --- G4 (clippy, warnings-as-errors) + G6 (fmt --check) — ARMED (was staged).
   # The tree is now clippy- and fmt-clean across every CI-built workspace
   # (issue #32), so these steps FAIL the build on the first warning or
