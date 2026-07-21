@@ -36,8 +36,13 @@
           { "context": "changelog updated" },
           { "context": "cargo-deny (advisories) (rust/Cargo.toml)" },
           { "context": "cargo-deny (advisories) (Core/GUI/Cargo.toml)" },
+          { "context": "cargo-deny (advisories) (tools/xtask/Cargo.toml)" },
+          { "context": "cargo-deny (advisories) (tools/wylde-release/Cargo.toml)" },
           { "context": "cargo-deny (licenses) (rust/Cargo.toml)" },
-          { "context": "cargo-deny (licenses) (Core/GUI/Cargo.toml)" }
+          { "context": "cargo-deny (licenses) (Core/GUI/Cargo.toml)" },
+          { "context": "cargo-deny (licenses) (tools/xtask/Cargo.toml)" },
+          { "context": "cargo-deny (licenses) (tools/wylde-release/Cargo.toml)" },
+          { "context": "manifest coverage" }
         ]
       }
     }

@@ -48,6 +48,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Every PR now has to tie to a tracking issue, and every issue now gets a milestone automatically.** Two
+  halves of one project rule — "every issue is attached to a milestone, every merge is tied to an issue" —
+  turned from a norm into automation (#183). A new `linked issue` job in `.github/workflows/pr-checks.yml`
+  fails any PR whose title, body, or introduced commits reference no issue (`#N`, or a
+  `Closes/Fixes/Resolves/Refs #N` keyword), and it is a **required check** on both `protect-develop` and
+  `protect-experimental`. The escape hatch is a `no-issue` label for a deliberate no-issue change; Dependabot
+  PRs and the `develop`→`main` promotion are exempt by construction (they carry no single issue and must keep
+  flowing — Dependabot auto-merge queues behind the required checks, so gating it would hang every bump). The
+  label is evaluated at step level, not as a job-level `if:`, so the required context always reports a
+  conclusion and can never leave the branch deadlocked on an "expected" check. On the issue side — which a
+  required status check can't reach — a new `.github/workflows/issue-milestone.yml` auto-assigns the catch-all
+  `0.x - backlog` milestone on `issues.opened`/`reopened` when none is set, with a weekly sweep for anything
+  that slips through, under a least-privilege `issues: write` token (#177). `0.x - backlog` is a floor, not a
+  verdict: triage still re-files into the right release milestone at will.
 - **Wylde's updater now carries the whole stack, and the launcher always runs the current one.** Two
   halves of the same gap, fixed against one shared resolver. The self-updater was structurally
   GUI-only: it selected release assets by matching the literal `wylde-gui`, then `self_replace`d the
@@ -899,6 +913,26 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   backend watcher).
 
 ### Security
+
+- **The cargo-deny advisory + license gates now cover every gated Cargo
+  workspace, driven by one discovered list (closes #122).** The repo has four
+  gated `[workspace]` roots (`rust/`, `Core/GUI/`, `tools/xtask`,
+  `tools/wylde-release`) plus the deliberately-excluded `voice-npu-spike` spike,
+  but three independent hand-kept lists — the two `cargo-deny` matrices and the
+  G7 version check — each enumerated only the first *two*. So the two shipped
+  release tools got **no vulnerability scan and no GPLv3 license scan**, and
+  carried their own versions unchecked: a vulnerable or copyleft-incompatible
+  dependency, or a version split, could land in a release tool with all required
+  checks green. New `tools/list-workspaces.sh` discovers the workspace roots from
+  the tree (with a documented exclusion list); `tools/check-versions.sh` now
+  derives its set from it, the cargo-deny matrices cover all four (the two
+  `tools/` workspaces share one `tools/deny.toml`, resolved by walking up), and
+  both rulesets require the new `cargo-deny (advisories|licenses)
+  (tools/xtask|tools/wylde-release/Cargo.toml)` contexts. A new `manifest
+  coverage` CI gate (`tools/check-manifest-coverage.sh`) turns **red** with an
+  actionable message if any of those enumerations drifts from the discovered set,
+  so a forgotten edit fails loudly instead of shipping silently. `cargo deny
+  check advisories`/`licenses` → `ok` on all four workspaces today.
 
 - **CI workflows now declare a least-privilege `GITHUB_TOKEN` scope (CodeQL
   `actions/missing-workflow-permissions`, 9 alerts).** `ci.yml`,
