@@ -886,6 +886,26 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Security
 
+- **The cargo-deny advisory + license gates now cover every gated Cargo
+  workspace, driven by one discovered list (closes #122).** The repo has four
+  gated `[workspace]` roots (`rust/`, `Core/GUI/`, `tools/xtask`,
+  `tools/wylde-release`) plus the deliberately-excluded `voice-npu-spike` spike,
+  but three independent hand-kept lists — the two `cargo-deny` matrices and the
+  G7 version check — each enumerated only the first *two*. So the two shipped
+  release tools got **no vulnerability scan and no GPLv3 license scan**, and
+  carried their own versions unchecked: a vulnerable or copyleft-incompatible
+  dependency, or a version split, could land in a release tool with all required
+  checks green. New `tools/list-workspaces.sh` discovers the workspace roots from
+  the tree (with a documented exclusion list); `tools/check-versions.sh` now
+  derives its set from it, the cargo-deny matrices cover all four (the two
+  `tools/` workspaces share one `tools/deny.toml`, resolved by walking up), and
+  both rulesets require the new `cargo-deny (advisories|licenses)
+  (tools/xtask|tools/wylde-release/Cargo.toml)` contexts. A new `manifest
+  coverage` CI gate (`tools/check-manifest-coverage.sh`) turns **red** with an
+  actionable message if any of those enumerations drifts from the discovered set,
+  so a forgotten edit fails loudly instead of shipping silently. `cargo deny
+  check advisories`/`licenses` → `ok` on all four workspaces today.
+
 - **CI workflows now declare a least-privilege `GITHUB_TOKEN` scope (CodeQL
   `actions/missing-workflow-permissions`, 9 alerts).** `ci.yml`,
   `license-check.yml`, and `security-audit.yml` had no explicit `permissions:`
