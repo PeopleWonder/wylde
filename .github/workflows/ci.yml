@@ -234,3 +234,21 @@ jobs:
       - name: build wylde-release
         working-directory: tools/wylde-release
         run: cargo build --locked
+
+  # --- Manifest coverage (#122) — the meta-gate that keeps every dependency /
+  # version enumeration in lockstep with the discovered workspace set. Adding a
+  # `[workspace]` root and forgetting to scan/version/track/require it turns THIS
+  # red with an actionable message, instead of shipping a release tool with an
+  # unscanned vulnerable or copyleft-incompatible dependency (all other checks
+  # green). Pure bash/grep, no toolchain — cheap on ubuntu.
+  manifest-coverage:
+    name: manifest coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: discovery self-test (a new workspace root must be found)
+        shell: bash
+        run: bash tools/check-manifest-coverage.sh --selftest
+      - name: every gated workspace is scanned, versioned, tracked, and required
+        shell: bash
+        run: bash tools/check-manifest-coverage.sh

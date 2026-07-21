@@ -47,13 +47,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # This list MUST equal the gated set from tools/list-workspaces.sh.
+        # tools/check-manifest-coverage.sh (the `manifest coverage` CI job) fails
+        # red if it drifts — so a new workspace cannot go unscanned silently (#122).
         manifest:
           - rust/Cargo.toml
           - Core/GUI/Cargo.toml
+          - tools/xtask/Cargo.toml
+          - tools/wylde-release/Cargo.toml
     steps:
       - uses: actions/checkout@v7
+      # The two tools/ workspaces share one tools/deny.toml (resolved by walking
+      # up from the manifest); rust/ and Core/GUI/ each have their own. One rule,
+      # no per-crate policy copies.
+      - name: resolve deny.toml
+        id: cfg
+        shell: bash
+        run: echo "config=$(bash tools/list-workspaces.sh --deny-config '${{ matrix.manifest }}')" >> "$GITHUB_OUTPUT"
       - name: cargo-deny check advisories
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           manifest-path: ${{ matrix.manifest }}
           command: check advisories
+          # Preserve the action's default `--all-features`; add the resolved
+          # config (both are cargo-deny global flags).
+          arguments: --all-features --config ${{ steps.cfg.outputs.config }}
