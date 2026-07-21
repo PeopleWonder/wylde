@@ -860,6 +860,15 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Security
 
+- **CI workflows now declare a least-privilege `GITHUB_TOKEN` scope (CodeQL
+  `actions/missing-workflow-permissions`, 9 alerts).** `ci.yml`,
+  `license-check.yml`, and `security-audit.yml` had no explicit `permissions:`
+  block, so their jobs inherited the repository-default token scope — broader
+  than any of them use. Every job across the three only checks out, caches,
+  builds/tests, or runs `cargo-deny`; none comment on PRs, upload SARIF, or push.
+  Added a top-level `permissions: { contents: read }` to each (applies to all
+  jobs), clearing the CodeQL hardening finding with no behavioural change.
+
 - **`cargo-deny (advisories)` is now a blocking gate, not advisory-in-name-only
   (G5; closes #49).** The security-audit workflow's `pull_request` path filter was
   removed so both matrix legs — `cargo-deny (advisories) (rust/Cargo.toml)` and
