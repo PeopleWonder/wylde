@@ -234,6 +234,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   `workspaces.hierarchy.*` verbs and `workspaces.conversations.refresh_summary`
   were registered and handled but absent from `ALL_ACTIONS` — now added.
 
+- **Two registered `conversations.*` verbs were missing from the harness pipe's
+  `ALL_PIPE_ACTIONS` table, and no test guarded that direction (closes #142).**
+  `conversations.get_active_for_workspace` and `set_active_for_workspace` are
+  registered and work at runtime, but the verb table listed only eight of the
+  ten. Because the `wylde_check` rules 38/48 treat that table as the registry's
+  source of truth, every correct caller of the two verbs was flagged as calling
+  a nonexistent verb; and because `reset_for_tests()` unregisters by iterating
+  the table, the two verbs were never cleared between tests (registry leak). The
+  two verbs are now listed, and `install_registers_every_action` asserts the
+  table and the live registry are **equal** — the previous test only checked
+  `table ⊆ registered`, so a verb registered but forgotten from the table (the
+  direction a developer trips) passed. Removing any verb from the table now turns
+  the test red and names it.
+
 - **The `develop → main` promotion PR failed commit-lint on already-merged history.** The
   `conventional commits` check (`.github/workflows/pr-checks.yml`) linted the entire
   `origin/${BASE}..HEAD` range, so a merge-up PR re-linted every commit already vetted on
@@ -876,6 +890,15 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   backend watcher).
 
 ### Security
+
+- **CI workflows now declare a least-privilege `GITHUB_TOKEN` scope (CodeQL
+  `actions/missing-workflow-permissions`, 9 alerts).** `ci.yml`,
+  `license-check.yml`, and `security-audit.yml` had no explicit `permissions:`
+  block, so their jobs inherited the repository-default token scope — broader
+  than any of them use. Every job across the three only checks out, caches,
+  builds/tests, or runs `cargo-deny`; none comment on PRs, upload SARIF, or push.
+  Added a top-level `permissions: { contents: read }` to each (applies to all
+  jobs), clearing the CodeQL hardening finding with no behavioural change.
 
 - **`cargo-deny (advisories)` is now a blocking gate, not advisory-in-name-only
   (G5; closes #49).** The security-audit workflow's `pull_request` path filter was
