@@ -190,6 +190,18 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   the guarantee assertable: a test registers a fresh sink with no policy argument and proves it is
   bounded without per-sink opt-in, and a companion test proves the factory normalizes an unbounded
   policy handed to it (both red before the normalizer, green after).
+- **The committed branch-protection records (`.github/rulesets/protect-develop.json`,
+  `.github/rulesets/protect-main.json`) now match the live rulesets exactly, so the tracked
+  source of truth can no longer silently under-protect the branches (#204).** The
+  records had drifted: they listed four stale cargo-deny legs (`tools/xtask` + `tools/wylde-release`,
+  advisories + licenses) plus `manifest coverage`, `actions pinned to SHA`, and `voice presets
+  mirror` — none of them live required checks — while *omitting* three checks that are enforced
+  live: `personal-info scrub (G8)`, `linked issue` (develop only), and the `live-graph (Neo4j Bolt)
+  tests` leg added with #121. Re-applying the drifted files would have **dropped G8 and `linked
+  issue`** from live enforcement. Reconciled against a fresh read of the live rulesets: `develop`
+  now records 16 required checks, `main` 15, both keeping `strict_required_status_checks_policy:
+  true` and `bypass_actors: []`.
+
 - **The live-Memgraph/Neo4j tests now run against a real database in CI, so the
   graph layer's Cypher is exercised end-to-end instead of only against mocks
   (#121).** A new `live-graph (Neo4j Bolt) tests` CI leg installs the vendored,
