@@ -335,7 +335,9 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   and per-query timeouts still bound each individual read. The previously-excluded
   `integration_symbol_context` test is re-added to the live-graph (Neo4j Bolt) CI leg, and a
   deterministic mock regression test (`walk_hop1_survives_budget_already_spent`) injects
-  callers-read latency to reproduce a spent budget without a database.
+  callers-read latency to reproduce a spent budget without a database. The live test now warms
+  the Bolt pool + query planner before its timed 1-hop read, so the OI-1 per-hop budget
+  measures traversal cost rather than a freshly-booted Neo4j's one-time connection/plan warmup.
 
 - **A model store that is merely slow to come back after an update no longer reads as "you have no
   models" (closes #132).** Wylde never sets `OLLAMA_MODELS`, so the store lives in Ollama's own
