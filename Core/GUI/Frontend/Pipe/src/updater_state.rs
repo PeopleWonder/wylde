@@ -77,6 +77,48 @@ pub fn available_info() -> Option<UpdateInfo> {
     }
 }
 
+/// Run the **whole-stack** install for a resolved update, off the gpui
+/// executor. This is the exact path the Settings "Install" button drives
+/// (`download_release` → `install_stack`): every binary the release resolved to
+/// is fetched and re-verified against the embedded key before anything is
+/// written. Exposed here so the Shell's pill "Update" button triggers the same
+/// path without depending on the Settings panel crate — no new backend.
+pub async fn install(info: UpdateInfo) -> Result<(), String> {
+    crate::bridged_spawn_blocking(move || {
+        let dl = wylde_updater::download_release(&info).map_err(|e| e.to_string())?;
+        wylde_updater::install_stack(&info.version, &dl).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// Persist a "skip this version" decision — the pill's "Ignore" action. Writes
+/// `skipped_version` through the lifecycle pipe, the same pref the Settings
+/// "Skip this version" button and the automatic-check `skip_suppresses` gate
+/// read. Because the pref is the exact version string, a later, newer release
+/// is never suppressed by it (the skip self-expires).
+pub async fn ignore_version(version: &str) -> Result<(), String> {
+    crate::lifecycle_action(
+        "updater.set_prefs",
+        serde_json::json!({ "skipped_version": version }),
+    )
+    .await
+    .map(|_| ())
+}
+
+/// The version the user previously chose to skip, if any — read from the
+/// persisted prefs so the Shell can seed the pill's dismissed state at startup
+/// (a best-effort read; an unreadable pref just leaves the pill un-dismissed,
+/// and the automatic check already suppresses a skipped version anyway).
+pub async fn ignored_version() -> Option<String> {
+    let prefs = crate::lifecycle_action("updater.get_prefs", serde_json::json!({}))
+        .await
+        .ok()?;
+    prefs
+        .get("skipped_version")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+}
+
 /// Seconds in the cadence window for a persisted `frequency` string.
 /// Unknown/legacy values fall back to weekly (the prefs default).
 fn cadence_secs(frequency: &str) -> u64 {

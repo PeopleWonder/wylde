@@ -48,6 +48,21 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **An ambient update notification, and a changelog you can actually read.** Until now the only sign a
+  new build existed was a small brand dot on the Settings sidebar row — easy to miss. There is now a
+  Claude-desktop-style **update pill** in the bottom-left of the window whenever an update is available:
+  it shows the resolved version, an **Update** button that runs the same whole-stack install the Settings
+  panel does (download → per-binary signature verify → atomic swap on next launch), and an **Ignore**
+  button that dismisses *only that version* — a newer release brings the pill right back, so Ignore never
+  silences updates for good (#196). The pill honours the same privacy gate as the dot: it appears only
+  when the user has opted into automatic checks. Its "What's new" link opens a **lazy-loaded changelog
+  viewer** — newest version first, each version separated by a divider, older versions revealed a page at
+  a time as you scroll ("theoretically the whole changelog") rather than rendered in one blob. The source
+  is deliberately the **bundled local `CHANGELOG.md`** — zero network calls, fully offline-capable — with
+  the one release newer than the current build (whose notes aren't in the bundled file yet) shown from the
+  update check's *already-fetched* metadata, so opening it phones home for nothing. The viewer is a new
+  `wylde-changelog` crate wired into the required `gui panel-walk (L7)` gate, so it mounts-without-panic
+  under CI like every other GUI surface.
 - **The Models panel now answers "is this safe to delete?" at a glance, and delete reports what it
   freed (closes #131).** Consistent with the never-auto-delete decision (#120) — Wylde never GCs or
   sweeps a model the user pulled — the installed list stays the complete on-disk inventory, and each
@@ -59,7 +74,6 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   lookup is best-effort and never blocks or fails the delete. Covered by wrapper wiremock tests
   (bytes-freed, `:latest`-normalised size match, zero-when-unknown) and panel-walk tests (the freed
   line, the slot / not-referenced labels).
-
 - **Green PRs into `develop` now merge themselves — no session left idle waiting to click merge.** With the
   strict up-to-date rule off on `develop`, a PR can merge the moment its checks pass, but nothing armed that
   merge, so the final step was still hand-babysat (a session opens a PR, sits waiting on CI, then needs a nudge

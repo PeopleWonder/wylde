@@ -104,6 +104,17 @@ pub struct Shell {
     /// [`Self::spawn_startup_update_check`]'s task completes.  Stays
     /// `false` when updates are off (the check makes no network call).
     pub update_available: bool,
+    /// The version the user dismissed via the update pill's "Ignore" (#196),
+    /// keyed exactly so a *newer* release re-shows the pill (see
+    /// [`wylde_changelog::pill_visible`]). Seeded at startup from the persisted
+    /// `skipped_version` and updated on each "Ignore" click. `None` means "no
+    /// version dismissed" — the pill shows whenever an update is available.
+    pub dismissed_version: Option<String>,
+    /// The changelog pop-up, mounted lazily when the user clicks the pill's
+    /// "What's new" affordance and dropped on close. `None` while closed. Held
+    /// as an `AnyView` because the Shell only ever renders it and swaps it out —
+    /// the viewer drives its own lazy-paging internally.
+    pub changelog: Option<AnyView>,
 }
 
 impl Shell {
@@ -124,6 +135,8 @@ impl Shell {
             iframes: BTreeMap::new(),
             resources: None,
             update_available: false,
+            dismissed_version: None,
+            changelog: None,
         }
     }
 
@@ -292,6 +305,79 @@ impl Shell {
             }
         })
         .detach();
+    }
+
+    /// Seed [`Self::dismissed_version`] from the persisted `skipped_version`
+    /// (#196) so a version the user already declined stays dismissed across
+    /// restarts. Fire-and-forget and best-effort: an unreadable pref just
+    /// leaves the pill un-dismissed, and the automatic check already suppresses
+    /// a skipped version on its own — this only keeps the *pill's* own gate
+    /// consistent with a skip made elsewhere (e.g. the Settings panel).
+    pub fn spawn_seed_dismissed_version(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            if let Some(version) = wylde_gui_pipe::updater_state::ignored_version().await {
+                let _ = this.update(app_cx, |this, cx| {
+                    this.dismissed_version = Some(version);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Update-pill "Update" (#196) → run the existing **whole-stack** install
+    /// path for the resolved release. Same download-verify-install the Settings
+    /// "Install" button drives; no new backend. Fire-and-forget: the new stack
+    /// takes effect on the next launch, and the Settings Updates section is the
+    /// surface that reports install progress / "restart to apply" — the pill's
+    /// job is only to trigger it. A no-op if there's no resolved update.
+    pub fn on_update_click(&mut self, cx: &mut Context<Self>) {
+        let Some(info) = wylde_gui_pipe::updater_state::available_info() else {
+            return;
+        };
+        cx.spawn(async move |_this, _app_cx: &mut AsyncApp| {
+            let _ = wylde_gui_pipe::updater_state::install(info).await;
+        })
+        .detach();
+    }
+
+    /// Update-pill "Ignore" (#196) → dismiss the pill for **this version only**.
+    /// Records the version locally (so the pill hides this frame) and persists
+    /// it as `skipped_version` (so it stays hidden across restarts). Because the
+    /// dismissal is keyed on the exact version, a later, newer release re-shows
+    /// the pill — Ignore never permanently silences updates.
+    pub fn on_ignore_click(&mut self, version: String, cx: &mut Context<Self>) {
+        self.dismissed_version = Some(version.clone());
+        cx.notify();
+        cx.spawn(async move |_this, _app_cx: &mut AsyncApp| {
+            let _ = wylde_gui_pipe::updater_state::ignore_version(&version).await;
+        })
+        .detach();
+    }
+
+    /// Update-pill "What's new" (#196) → mount the changelog pop-up. The newest
+    /// (available) release's notes ride in from the already-fetched
+    /// `available_info()`, so opening makes **no** new network call; the older
+    /// history is the bundled local changelog. A no-op if it's already open.
+    pub fn open_changelog(&mut self, cx: &mut Context<Self>) {
+        if self.changelog.is_some() {
+            return;
+        }
+        let headline = wylde_gui_pipe::updater_state::available_info().map(|info| {
+            wylde_changelog::HeadlineRelease {
+                version: info.version,
+                notes: info.notes,
+            }
+        });
+        let view = cx.new(|cx| wylde_changelog::ChangelogView::new(headline, cx));
+        self.changelog = Some(view.into());
+        cx.notify();
+    }
+
+    /// Close the changelog pop-up, dropping the viewer entity.
+    pub fn close_changelog(&mut self, cx: &mut Context<Self>) {
+        self.changelog = None;
+        cx.notify();
     }
 
     /// Mount the selected panel's View if it isn't cached yet.  Called
@@ -485,8 +571,24 @@ impl Render for Shell {
         };
         let effective_state = synthetic_unavailable.unwrap_or(slot_state);
 
-        div()
+        // The bottom-left update pill (#196). Only touch the updater cache when
+        // a check actually found something — no lock/clone per frame otherwise.
+        let available_version = if update_available {
+            wylde_gui_pipe::updater_state::available_info().map(|info| info.version)
+        } else {
+            None
+        };
+        let show_pill = wylde_changelog::pill_visible(
+            update_available,
+            available_version.as_deref(),
+            self.dismissed_version.as_deref(),
+        );
+
+        // `.relative()` makes this container the positioning context for the
+        // absolutely-placed pill and the changelog modal overlaid on top.
+        let mut root = div()
             .size_full()
+            .relative()
             .flex()
             .flex_row()
             .child(render_sidebar(
@@ -504,7 +606,20 @@ impl Render for Shell {
                 iframe_frame.as_ref(),
                 window,
                 cx,
-            ))
+            ));
+
+        if show_pill {
+            if let Some(version) = available_version {
+                root = root.child(crate::update_pill::render_update_pill(&version, cx));
+            }
+        }
+
+        // The changelog pop-up, layered above everything while open.
+        if let Some(view) = self.changelog.as_ref() {
+            root = root.child(crate::update_pill::render_changelog_modal(view, cx));
+        }
+
+        root
     }
 }
 
