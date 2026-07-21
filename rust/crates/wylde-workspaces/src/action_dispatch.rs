@@ -33,6 +33,7 @@ pub const UPDATE: &str = "workspaces.update";
 pub const DELETE: &str = "workspaces.delete";
 pub const SET_PERSONA: &str = "workspaces.set_persona";
 pub const LIST_MRU: &str = "workspaces.list_mru";
+pub const LIST_ALL: &str = "workspaces.list_all";
 pub const RAG_QUERY: &str = "workspaces.rag_query";
 pub const REINDEX: &str = "workspaces.reindex";
 
@@ -153,6 +154,7 @@ pub const ALL_ACTIONS: &[&str] = &[
     DELETE,
     SET_PERSONA,
     LIST_MRU,
+    LIST_ALL,
     RAG_QUERY,
     REINDEX,
     // Index hygiene (P1)
@@ -311,6 +313,15 @@ pub fn install() {
         |p: Value| async move { api::handle_list_mru(p).await },
         "MRU-5 workspace list + active id. No payload. Reply: \
          {workspaces: [WorkspaceDefinition], active_id}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        LIST_ALL,
+        |p: Value| async move { api::handle_list_all(p).await },
+        "Every workspace on disk (disk-walk, not just the MRU-5 window); \
+         surfaces bundles the index lost or never knew about and reconciles \
+         stale entries (#134). No payload. Reply: {workspaces: \
+         [WorkspaceDefinition]}.",
         META_MODULE,
     );
     register_action_with_meta(
