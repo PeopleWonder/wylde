@@ -249,6 +249,7 @@ mod tests {
         td: TempDir,
         prior_hf: Option<std::ffi::OsString>,
         prior_root: Option<std::ffi::OsString>,
+        prior_services: Option<std::ffi::OsString>,
         prior_data: Option<std::ffi::OsString>,
         prior_wakeword: Option<std::ffi::OsString>,
     }
@@ -259,12 +260,17 @@ mod tests {
             let td = TempDir::new().expect("tempdir");
             let prior_hf = std::env::var_os("HF_HUB_CACHE");
             let prior_root = std::env::var_os("WYLDE_ROOT");
+            // A dev machine points WYLDE_SERVICES at its live install; the
+            // `Services/` discovery honours it, so clear it to keep the scan
+            // inside the tempdir (#125).
+            let prior_services = std::env::var_os("WYLDE_SERVICES");
             let prior_data = std::env::var_os("MODEL_DATA_DIR");
             let prior_wakeword = std::env::var_os("WYLDE_VOICE_WAKEWORD_MODELS_DIR");
             let hub = td.path().join("hub");
             std::fs::create_dir_all(&hub).unwrap();
             std::env::set_var("HF_HUB_CACHE", &hub);
             std::env::set_var("WYLDE_ROOT", td.path());
+            std::env::remove_var("WYLDE_SERVICES");
             std::env::set_var("MODEL_DATA_DIR", td.path().join("routing"));
             // Pin the wake-word scanner's root inside the sandbox so it
             // doesn't pick up the developer's real LOCALAPPDATA bundle.
@@ -280,6 +286,7 @@ mod tests {
                 td,
                 prior_hf,
                 prior_root,
+                prior_services,
                 prior_data,
                 prior_wakeword,
             }
@@ -309,6 +316,10 @@ mod tests {
                 Some(v) => std::env::set_var("WYLDE_ROOT", v),
                 None => std::env::remove_var("WYLDE_ROOT"),
             }
+            match self.prior_services.take() {
+                Some(v) => std::env::set_var("WYLDE_SERVICES", v),
+                None => std::env::remove_var("WYLDE_SERVICES"),
+            }
             match self.prior_data.take() {
                 Some(v) => std::env::set_var("MODEL_DATA_DIR", v),
                 None => std::env::remove_var("MODEL_DATA_DIR"),
@@ -328,7 +339,10 @@ mod tests {
     }
 
     fn write_service_manifest(root: &Path, service: &str, body: serde_json::Value) {
-        let path = root.join(service).join("manifest.json");
+        // The model registry discovers service manifests in the `Services/`
+        // bucket (`wylde_stack::roster::discovered_folders`, #125), so the
+        // fixture drops the service there rather than at the top level.
+        let path = root.join("Services").join(service).join("manifest.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, serde_json::to_string_pretty(&body).unwrap()).unwrap();
     }

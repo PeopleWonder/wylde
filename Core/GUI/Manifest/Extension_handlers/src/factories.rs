@@ -11,7 +11,12 @@
 //!   1. Drop a `manifest.json` under `Frontend/Panels/<Name>/`.
 //!   2. Add a dep on the panel crate in this crate's `Cargo.toml`.
 //!   3. Register its factory string here.
-//!   4. Re-run the aggregator to refresh `generated.rs`.
+//!   4. Re-run the aggregator to refresh `generated.rs`, then `cargo fmt`.
+//!
+//! Step 4 is no longer trust-me: the `gui` CI job runs
+//! `wylde-panel-aggregator --check`, which regenerates in memory and fails the
+//! build if the committed `generated.rs` is out of date — so a forgotten regen
+//! is a red build, not a panel that silently never appears (#125).
 //!
 //! Why not generate the factory wiring too?  The aggregator binary
 //! reads JSON; it can't introspect Rust crate exports.  Keeping the
