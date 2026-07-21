@@ -136,3 +136,70 @@ jobs:
             exit 1
           fi
           echo "OK: changelog requirement satisfied (src-touched=$touches_src, changelog-changed=$changed_changelog)."
+
+  # --- Every PR ties to a tracking issue (project rule: "every PR/merge is tied
+  # to an issue"). Fails a PR whose title, body, or any introduced commit
+  # references no issue (`#N`, or Closes/Fixes/Resolves/Refs #N). This is the
+  # counterpart to the issue-milestone auto-assign (issue-milestone.yml): issues
+  # can't be CI-gated, PRs can.
+  #
+  # Escape: add the `no-issue` label for a deliberate no-issue change (a pure
+  # tooling/meta PR with genuinely no tracking issue). The label is checked at
+  # STEP level (not a job-level `if:`) so the required context ALWAYS reports a
+  # conclusion — a job skipped by a job-level `if:` would leave the required
+  # check permanently "expected" and deadlock the branch.
+  #
+  # Exempt by construction (these carry no single tracking issue and must keep
+  # flowing): Dependabot PRs — auto-merge queues behind the required checks, so
+  # gating them here would hang every bump; and the develop->main promotion
+  # (head is `develop`), which bundles many issues at once.
+  linked-issue:
+    name: linked issue
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: PR must reference a tracking issue
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+          ACTOR: ${{ github.actor }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HAS_NO_ISSUE_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'no-issue') }}
+        run: |
+          set -euo pipefail
+
+          # Exemptions (see header): Dependabot, and the develop->main promotion.
+          if [ "$ACTOR" = "dependabot[bot]" ] || case "$HEAD" in dependabot/*) true;; *) false;; esac; then
+            echo "OK: Dependabot PR — exempt (bumps carry no tracking issue and auto-merge behind the required checks)."
+            exit 0
+          fi
+          if [ "$HEAD" = "develop" ]; then
+            echo "OK: develop->main promotion — exempt (bundles many issues at once)."
+            exit 0
+          fi
+          if [ "$HAS_NO_ISSUE_LABEL" = "true" ]; then
+            echo "OK: 'no-issue' label present — deliberate no-issue change, gate waived."
+            exit 0
+          fi
+
+          # An issue reference: a bare `#123`, or a keyword form. Matched
+          # case-insensitively in the title, the body, or any introduced commit
+          # message (subject + body) on the PR range.
+          ref_re='#[0-9]+'
+          found=0
+          if printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | grep -Eiq "$ref_re"; then
+            found=1
+          elif git log --format='%B' "origin/${BASE}..HEAD" --not "origin/develop" | grep -Eiq "$ref_re"; then
+            found=1
+          fi
+
+          if [ "$found" -eq 0 ]; then
+            echo "::error::This PR references no tracking issue. Add an issue reference to the PR title, body, or a commit — e.g. 'Closes #123', 'Refs #123', or a bare '#123'. Every PR must tie to an issue (see CONTRIBUTING.md). For a genuine no-issue change, add the 'no-issue' label."
+            exit 1
+          fi
+          echo "OK: PR references a tracking issue."
