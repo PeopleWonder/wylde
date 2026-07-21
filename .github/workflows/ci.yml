@@ -142,6 +142,19 @@ jobs:
             }
             if (-not $ready) { throw 'Neo4j did not become query-ready on bolt://127.0.0.1:7687 within 4 minutes' }
             Write-Host 'Neo4j is up and query-ready on bolt://127.0.0.1:7687 (auth off).'
+            # Warm the JVM query planner and pre-create the indexes the harness
+            # ensure_schema() asserts on, so the FIRST real test doesn't pay
+            # cold-start planning/connection latency and flake with an ok:false
+            # transient (#216). Statements mirror wylde-harness SCHEMA_STATEMENTS;
+            # the round-trip warms the write+read path. Best-effort, non-fatal.
+            $warmup = @(
+              'CREATE INDEX entity_name   IF NOT EXISTS FOR (n:Entity)    ON (n.name);',
+              'CREATE INDEX chunk_id      IF NOT EXISTS FOR (n:Chunk)     ON (n.id);',
+              'CREATE INDEX community_cid IF NOT EXISTS FOR (n:Community) ON (n.community_id);',
+              'MERGE (w:_Warmup {k:1}) WITH w MATCH (x:_Warmup) DETACH DELETE x RETURN 1;'
+            ) -join ' '
+            & $shell -a 'bolt://127.0.0.1:7687' $warmup *> $null
+            Write-Host "DB warmup complete (exit $LASTEXITCODE; non-fatal)."
             Push-Location (Join-Path $repo 'rust')
             # NOTE: `integration_symbol_context` is deliberately EXCLUDED — this
             # leg ran it first and it went RED against real Neo4j: the focal
@@ -150,14 +163,17 @@ jobs:
             # not show). That is the leg doing its job; it is tracked in #203 and
             # must be re-added to this line once fixed. Excluded, NOT silently
             # dropped. Each binary runs separately so one failure can't mask
-            # another.
-            cargo test -p wylde-workspaces --locked --test integration_graph -- --ignored --nocapture
+            # another. `--test-threads=1` serializes the tests WITHIN each binary
+            # onto the one shared Neo4j, so concurrent tests can't collide on the
+            # global Entity space / orphan-prune / stats or pile load on the JVM
+            # (#216); the wylde-workspaces binaries also hold a DB_LOCK in-code.
+            cargo test -p wylde-workspaces --locked --test integration_graph -- --ignored --nocapture --test-threads=1
             if ($LASTEXITCODE -ne 0) { $failed = $true }
-            cargo test -p wylde-workspaces --locked --test integration_symbols_find -- --ignored --nocapture
+            cargo test -p wylde-workspaces --locked --test integration_symbols_find -- --ignored --nocapture --test-threads=1
             if ($LASTEXITCODE -ne 0) { $failed = $true }
-            cargo test -p wylde-harness --locked --test memgraph_live -- --ignored --nocapture
+            cargo test -p wylde-harness --locked --test memgraph_live -- --ignored --nocapture --test-threads=1
             if ($LASTEXITCODE -ne 0) { $failed = $true }
-            cargo test -p wylde-harness --locked --test memgraph_bolt_integration -- --ignored --nocapture
+            cargo test -p wylde-harness --locked --test memgraph_bolt_integration -- --ignored --nocapture --test-threads=1
             if ($LASTEXITCODE -ne 0) { $failed = $true }
             Pop-Location
           } finally {
