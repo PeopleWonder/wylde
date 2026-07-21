@@ -500,6 +500,21 @@ impl RelationsView {
                             }),
                         ),
                 );
+            // #137 — an edge whose endpoint no longer resolves is retained on
+            // disk but excluded from routing. Say so, rather than rendering it
+            // identically to a live edge. Mirrors the Hierarchy sub-tab, which
+            // has always badged the same flag.
+            if edge.dangling {
+                row_el = row_el.child(
+                    div()
+                        .px_1()
+                        .rounded(px(3.0))
+                        .bg(rgb(pack(SURFACE_700)))
+                        .text_size(px(size::MICRO))
+                        .text_color(rgb(pack(DANGER)))
+                        .child(SharedString::from("dangling — re-point")),
+                );
+            }
             if !read_only {
                 row_el = row_el.child(Self::button(
                     ("relations-edge-remove", gi * 1000 + ei),

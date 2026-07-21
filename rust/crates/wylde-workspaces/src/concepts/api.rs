@@ -85,12 +85,55 @@ pub async fn handle_build(payload: Value) -> Reply {
         return Reply::err_msg("bad_request", "workspace_id is required");
     };
 
+    let force = payload
+        .get("force")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
     // Prefer semantic clustering when an embedding index exists.
     let chunks = crate::rag::indexer::store::load_chunks(&ws);
     let have_vectors = chunks.iter().filter(|c| !c.vector.is_empty()).count();
     if have_vectors >= 2 {
-        return build_semantic_stable(&ws, &chunks, super::semantic::SemanticParams::default())
-            .await;
+        return build_semantic_stable(
+            &ws,
+            &chunks,
+            super::semantic::SemanticParams::default(),
+            force,
+        )
+        .await;
+    }
+
+    // #137 — the index cannot support a semantic build. Falling through to the
+    // directory fallback REPLACES the whole auto-generated set (`finish_build`
+    // keeps only `Manual` concepts), so every `sem:` concept would be dropped.
+    //
+    // That is unrecoverable. Semantic ordinals are never recycled, so a later
+    // build over a restored index mints NEW ids that can never re-match the
+    // authored relations anchored on the old ones — the edges survive on disk
+    // but are permanently inert. An empty or torn chunk index is exactly the
+    // transient condition (a purge, an interrupted reindex, a `data_dir`
+    // resolved against the wrong cwd) that must NOT be allowed to spend the
+    // user's hand-authored work.
+    //
+    // So: refuse, unless the workspace has no semantic concepts to lose or the
+    // caller explicitly forces it.
+    let prior_semantic = semantic_concept_count(&ws);
+    if prior_semantic > 0 && !force {
+        tracing::error!(
+            "workspaces.concepts.build: refusing the directory fallback for {ws} — \
+             the chunk index has {have_vectors} usable vectors but {prior_semantic} \
+             semantic concepts exist and would be dropped unrecoverably (#137)"
+        );
+        return Reply::err_msg(
+            "index_unavailable",
+            format!(
+                "The chunk index has no usable embeddings, so this would rebuild \
+                 concepts from directories and drop all {prior_semantic} semantic \
+                 concepts. Semantic ids are never reused, so any relations you \
+                 authored on them could not be reattached by a later rebuild. \
+                 Reindex the workspace first, or pass force=true to accept the loss."
+            ),
+        );
     }
 
     // Fallback: label the directory clusters from the live code graph.
@@ -100,6 +143,56 @@ pub async fn handle_build(payload: Value) -> Reply {
     };
     let concepts = cheap::build_concepts(&graph);
     finish_build(&ws, concepts, "directory_cluster").await
+}
+
+/// How many `Embedding`-sourced concepts the workspace currently stores — the
+/// set a directory-fallback build would drop (#137).
+fn semantic_concept_count(ws: &str) -> usize {
+    store::load(ws)
+        .iter()
+        .filter(|c| c.source == super::concept::ConceptSource::Embedding)
+        .count()
+}
+
+/// A carry-over pool that cannot possibly match the incoming vectors (#137).
+#[derive(Debug)]
+struct WidthMismatch {
+    /// Distinct centroid widths found in the prior concepts.
+    prior_widths: Vec<usize>,
+    /// Width of the vectors the new build will cluster.
+    incoming_width: usize,
+}
+
+/// Detect an embedding-width change that would silently void the whole
+/// carry-over pool.
+///
+/// Returns `Some` only when there IS a pool with usable centroids and **none**
+/// of its widths match the incoming vectors — i.e. `assign_stable_ids` is
+/// guaranteed to produce zero candidate pairs. A pool that merely drifted below
+/// the cosine threshold is a different (legitimate) situation and is not
+/// flagged here; so is a first build, where there is nothing to carry.
+fn carry_over_width_mismatch(
+    prior_emb: &[Concept],
+    chunks: &[crate::rag::indexer::store::IndexedChunk],
+) -> Option<WidthMismatch> {
+    let mut prior_widths: Vec<usize> = prior_emb
+        .iter()
+        .filter_map(|c| c.centroid.as_ref())
+        .map(Vec::len)
+        .collect();
+    prior_widths.sort_unstable();
+    prior_widths.dedup();
+    if prior_widths.is_empty() {
+        return None; // nothing to carry over — first build, or no centroids
+    }
+    let incoming_width = chunks.iter().find(|c| !c.vector.is_empty())?.vector.len();
+    if prior_widths.contains(&incoming_width) {
+        return None; // at least some of the pool can still match
+    }
+    Some(WidthMismatch {
+        prior_widths,
+        incoming_width,
+    })
 }
 
 /// `workspaces.concepts.build_semantic` — force the embedding-clustering build
@@ -120,8 +213,12 @@ pub async fn handle_build_semantic(payload: Value) -> Reply {
     if let Some(s) = payload.get("seed").and_then(Value::as_u64) {
         params.seed = s;
     }
+    let force = payload
+        .get("force")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let chunks = crate::rag::indexer::store::load_chunks(&ws);
-    build_semantic_stable(&ws, &chunks, params).await
+    build_semantic_stable(&ws, &chunks, params, force).await
 }
 
 /// Build semantic concepts with **stable ids** (Phase-B §4.1): feed the prior
@@ -133,11 +230,52 @@ async fn build_semantic_stable(
     ws: &str,
     chunks: &[crate::rag::indexer::store::IndexedChunk],
     params: super::semantic::SemanticParams,
+    force: bool,
 ) -> Reply {
     let prior_emb: Vec<Concept> = store::load(ws)
         .into_iter()
         .filter(|c| c.source == super::concept::ConceptSource::Embedding)
         .collect();
+
+    // #137 — carry-over matches prior centroids to new drafts by cosine, and
+    // only ever pairs vectors of EQUAL length (`semantic::assign_stable_ids`).
+    // So if the embedding width changed, the candidate-pair list comes out
+    // empty, every draft mints a fresh ordinal, and every authored relation
+    // goes dangling in a single build — with nothing but a nonzero
+    // `dangling_count` in the reply to say so.
+    //
+    // Detect the condition up front: a non-empty carry-over pool whose
+    // centroids are ALL a different width than the incoming vectors means
+    // carry-over is arithmetically impossible, not merely unlikely.
+    if let Some(mismatch) = carry_over_width_mismatch(&prior_emb, chunks) {
+        if !force {
+            tracing::error!(
+                "workspaces.concepts.build: refusing to rebuild {ws} — embedding width \
+                 changed from {:?} to {} so no prior concept id can carry over (#137)",
+                mismatch.prior_widths,
+                mismatch.incoming_width,
+            );
+            return Reply::err_msg(
+                "embedding_width_changed",
+                format!(
+                    "The embedding width changed (stored concepts are {:?}-dimensional, \
+                     the index is now {}-dimensional), so no concept id can be carried \
+                     over and all {} semantic concepts would be reminted — dangling every \
+                     relation authored on them. Rebuild the index under the previous \
+                     embedder, or pass force=true to accept the loss.",
+                    mismatch.prior_widths,
+                    mismatch.incoming_width,
+                    prior_emb.len(),
+                ),
+            );
+        }
+        tracing::warn!(
+            "workspaces.concepts.build: forced rebuild of {ws} across an embedding-width \
+             change — {} concepts will be reminted and their authored relations will dangle",
+            prior_emb.len(),
+        );
+    }
+
     let mut ident = super::identity::load(ws);
     let out = super::semantic::build_semantic_concepts_stable(
         chunks,
@@ -814,6 +952,335 @@ mod tests {
         assert_eq!(
             ids_before, ids_after,
             "semantic ids stable across recompute"
+        );
+    }
+
+    /// Seed a two-theme semantic build and author a relation across it.
+    /// Returns `(ws, [id_a, id_b])`.
+    async fn seed_two_themes_with_authored_relation(ws: &str, dim_pad: usize) -> Vec<String> {
+        let mut chunks = Vec::new();
+        for j in 0..5 {
+            let mut va = vec![1.0, 0.02 * j as f32, 0.0];
+            let mut vg = vec![0.0, 0.02 * j as f32, 1.0];
+            va.extend(std::iter::repeat_n(0.0, dim_pad));
+            vg.extend(std::iter::repeat_n(0.0, dim_pad));
+            chunks.push(idx_chunk(&format!("a{j}"), "src/auth/a.rs", va));
+            chunks.push(idx_chunk(&format!("g{j}"), "src/graph/g.rs", vg));
+        }
+        crate::rag::indexer::store::save_chunks(ws, &chunks).unwrap();
+        let r = handle_build_semantic(json!({ "workspace_id": ws, "k": 2 })).await;
+        assert!(r.ok, "seed build failed: {:?}", r.error);
+        let ids: Vec<String> = store::load(ws)
+            .into_iter()
+            .filter(|c| c.id.starts_with("sem:"))
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids.len(), 2, "two semantic themes seeded");
+        let add = crate::concepts::relations_bridge::handle_add(json!({
+            "workspace_id": ws,
+            "from": {"node":"concept","id": ids[0]},
+            "to": {"node":"concept","id": ids[1]},
+            "kind": "positive",
+        }))
+        .await;
+        assert!(add.ok, "seed relation failed: {:?}", add.error);
+        ids
+    }
+
+    /// #137 criterion 1 — a build against an empty/torn chunk index must NOT
+    /// silently fall back to directory clustering and drop every semantic
+    /// concept.
+    ///
+    /// This is the highest-severity path in the issue and had no test at all.
+    /// It is unrecoverable: semantic ordinals are never recycled, so a later
+    /// build over a restored index mints new ids that can never re-match the
+    /// authored relations. The transient condition (a purge, an interrupted
+    /// reindex) must not be allowed to spend hand-authored work.
+    #[tokio::test]
+    async fn empty_index_build_refuses_rather_than_dropping_semantic_concepts() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-emptyidx";
+        let ids_before = seed_two_themes_with_authored_relation(ws, 0).await;
+
+        // The index is purged / torn — no usable vectors remain.
+        crate::rag::indexer::store::save_chunks(ws, &[]).unwrap();
+
+        let r = handle_build(json!({ "workspace_id": ws })).await;
+        assert!(
+            !r.ok,
+            "a build that would drop every semantic concept must refuse; got {:?}",
+            r.data
+        );
+        assert_eq!(r.error.as_ref().unwrap().code, "index_unavailable");
+
+        // Nothing was spent: the concepts and the live relation survive.
+        let ids_after: Vec<String> = store::load(ws)
+            .into_iter()
+            .filter(|c| c.id.starts_with("sem:"))
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(
+            ids_before, ids_after,
+            "the refused build must not have touched the concept store"
+        );
+        let g = crate::concepts::relations_bridge::load(ws);
+        assert_eq!(g.relations.len(), 1);
+        assert!(
+            !g.relations[0].dangling,
+            "the authored relation must still be live"
+        );
+    }
+
+    /// The refusal is a guard, not a wall: an explicit `force` still performs
+    /// the fallback, so a user who genuinely wants directory concepts is not
+    /// stuck.
+    ///
+    /// `#[ignore]`: the forced path runs the directory-cluster build, which
+    /// enumerates the live code graph over Bolt (`graph::api::graph`) and so
+    /// needs a running Memgraph — the same reason the rest of the live-graph
+    /// suite is ignored (cross-ref #121). The data-safety half of this pair —
+    /// the *refusal* (criterion 1) — takes no graph path and IS gated in CI by
+    /// `empty_index_build_refuses_rather_than_dropping_semantic_concepts`.
+    #[tokio::test]
+    #[ignore = "requires live Memgraph — the directory-cluster fallback reads the graph over Bolt"]
+    async fn empty_index_build_proceeds_when_forced() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-emptyidx-f";
+        seed_two_themes_with_authored_relation(ws, 0).await;
+        crate::rag::indexer::store::save_chunks(ws, &[]).unwrap();
+
+        let r = handle_build(json!({ "workspace_id": ws, "force": true })).await;
+        assert!(r.ok, "forced build must proceed: {:?}", r.error);
+        assert_eq!(r.data["source"], "directory_cluster");
+        // ...and the consequence is visible rather than hidden: the authored
+        // edge is now flagged dangling, never deleted.
+        let g = crate::concepts::relations_bridge::load(ws);
+        assert_eq!(g.relations.len(), 1, "the edge is retained, not deleted");
+        assert!(
+            g.relations[0].dangling,
+            "the edge must be surfaced as dangling after a forced drop"
+        );
+    }
+
+    /// #137 criterion 2 — an embedding-width change makes carry-over
+    /// arithmetically impossible (`assign_stable_ids` only pairs equal-length
+    /// centroids), so every id would be reminted and every authored relation
+    /// would dangle in one build. Detect it instead of absorbing it.
+    #[tokio::test]
+    async fn embedding_width_change_refuses_rather_than_reminting_every_id() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-dimchg";
+        let ids_before = seed_two_themes_with_authored_relation(ws, 0).await;
+
+        // Re-index the same corpus at a different embedding width.
+        let mut wide = Vec::new();
+        for j in 0..5 {
+            let mut va = vec![1.0, 0.02 * j as f32, 0.0];
+            let mut vg = vec![0.0, 0.02 * j as f32, 1.0];
+            va.extend(std::iter::repeat_n(0.0, 5)); // 3 -> 8 dims
+            vg.extend(std::iter::repeat_n(0.0, 5));
+            wide.push(idx_chunk(&format!("a{j}"), "src/auth/a.rs", va));
+            wide.push(idx_chunk(&format!("g{j}"), "src/graph/g.rs", vg));
+        }
+        crate::rag::indexer::store::save_chunks(ws, &wide).unwrap();
+
+        let r = handle_build_semantic(json!({ "workspace_id": ws, "k": 2 })).await;
+        assert!(
+            !r.ok,
+            "a width change that voids the whole carry-over pool must refuse; got {:?}",
+            r.data
+        );
+        assert_eq!(r.error.as_ref().unwrap().code, "embedding_width_changed");
+
+        // The prior ids and the live relation are untouched.
+        let ids_after: Vec<String> = store::load(ws)
+            .into_iter()
+            .filter(|c| c.id.starts_with("sem:"))
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids_before, ids_after, "ids must not have been reminted");
+        assert!(!crate::concepts::relations_bridge::load(ws).relations[0].dangling);
+    }
+
+    /// The width guard must not fire on an ordinary rebuild at the SAME width —
+    /// otherwise it would block the normal path. Guards that cry wolf get
+    /// forced past reflexively.
+    #[tokio::test]
+    async fn same_width_rebuild_is_not_blocked_by_the_width_guard() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-samewidth";
+        let ids_before = seed_two_themes_with_authored_relation(ws, 0).await;
+
+        let r = handle_build_semantic(json!({ "workspace_id": ws, "k": 2 })).await;
+        assert!(r.ok, "a same-width rebuild must proceed: {:?}", r.error);
+        assert_eq!(r.data["dangling_count"], 0);
+        let ids_after: Vec<String> = store::load(ws)
+            .into_iter()
+            .filter(|c| c.id.starts_with("sem:"))
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(ids_before, ids_after);
+    }
+
+    /// #137 criterion 3 — the existing survival gate pins `k: 2` on both
+    /// builds over a byte-identical corpus. Production uses `k: None`
+    /// (`k = sqrt(n)` clamped), so corpus growth re-partitions the space and
+    /// moves centroids. That realistic drift case was ungated.
+    #[tokio::test]
+    async fn ids_survive_a_growth_driven_k_change_with_default_params() {
+        let _env = TestEnv::new();
+        let ws = "ws-api-kgrowth";
+
+        // Small corpus: sqrt(10) -> k = 3.
+        let mut chunks = Vec::new();
+        for j in 0..5 {
+            chunks.push(idx_chunk(
+                &format!("a{j}"),
+                "src/auth/a.rs",
+                vec![1.0, 0.01 * j as f32, 0.0],
+            ));
+            chunks.push(idx_chunk(
+                &format!("g{j}"),
+                "src/graph/g.rs",
+                vec![0.0, 0.01 * j as f32, 1.0],
+            ));
+        }
+        crate::rag::indexer::store::save_chunks(ws, &chunks).unwrap();
+        // NOTE: no `k` — the production default.
+        let r1 = handle_build(json!({ "workspace_id": ws })).await;
+        assert!(r1.ok, "{:?}", r1.error);
+        let before: Vec<String> = store::load(ws)
+            .into_iter()
+            .filter(|c| c.id.starts_with("sem:"))
+            .map(|c| c.id)
+            .collect();
+        assert!(!before.is_empty(), "seeded semantic concepts");
+
+        // Author a relation on the first concept (self-edge avoided by using
+        // the two extremes when available).
+        let other = before.last().unwrap().clone();
+        if other != before[0] {
+            let add = crate::concepts::relations_bridge::handle_add(json!({
+                "workspace_id": ws,
+                "from": {"node":"concept","id": before[0]},
+                "to": {"node":"concept","id": other},
+                "kind": "positive",
+            }))
+            .await;
+            assert!(add.ok, "{:?}", add.error);
+        }
+
+        // Grow the corpus enough to move sqrt(n): 10 -> 40 chunks, k 3 -> 6.
+        for j in 5..20 {
+            chunks.push(idx_chunk(
+                &format!("a{j}"),
+                "src/auth/a.rs",
+                vec![1.0, 0.01 * j as f32, 0.0],
+            ));
+            chunks.push(idx_chunk(
+                &format!("g{j}"),
+                "src/graph/g.rs",
+                vec![0.0, 0.01 * j as f32, 1.0],
+            ));
+        }
+        crate::rag::indexer::store::save_chunks(ws, &chunks).unwrap();
+        let r2 = handle_build(json!({ "workspace_id": ws })).await;
+        assert!(r2.ok, "{:?}", r2.error);
+
+        // The themes are the same two directions, so the prior ids must be
+        // carried over even though k changed and the partition moved.
+        let after: Vec<String> = store::load(ws)
+            .into_iter()
+            .filter(|c| c.id.starts_with("sem:"))
+            .map(|c| c.id)
+            .collect();
+        let carried = before.iter().filter(|id| after.contains(id)).count();
+        assert!(
+            carried > 0,
+            "corpus growth changed k and NO prior id carried over \
+             (before={before:?}, after={after:?}) — authored relations would all dangle"
+        );
+    }
+
+    /// #137 criterion 4 — a `dir:` concept is path-derived (`dir:<path>`) and
+    /// has no carry-over pool at all (carry-over filters to `Embedding`/`sem:`
+    /// only), so moving or renaming the directory produces a NEW id and the old
+    /// one vanishes. A relation authored on it must then be SURFACED as
+    /// dangling — retained on disk, excluded from routing — never silently
+    /// dropped. This is the state the GUI change in this PR renders.
+    ///
+    /// Deliberately graph-free: the directory-cluster *build* enumerates the
+    /// live code graph over Bolt (`graph::api::graph`), which needs a running
+    /// Memgraph and is covered by the `#[ignore]`d live-graph suite. The
+    /// property under test — a relation onto a vanished `dir:` concept goes
+    /// dangling — is exercised here by seeding the store directly and running
+    /// the same `sweep_dangling` that every build runs at its tail, so it gates
+    /// in CI without a backend.
+    #[tokio::test]
+    async fn renaming_a_directory_surfaces_its_relations_as_dangling() {
+        use crate::concepts::concept::{Concept, ConceptSource};
+
+        let _env = TestEnv::new();
+        let ws = "ws-api-dirrename";
+
+        // A directory-sourced concept set, as a build's fallback would write.
+        let dir_a = "dir:src/graph";
+        let dir_b = "dir:src/rag";
+        store::save(
+            ws,
+            &[
+                Concept::new(dir_a, "graph", "", ConceptSource::DirectoryCluster),
+                Concept::new(dir_b, "rag", "", ConceptSource::DirectoryCluster),
+            ],
+        )
+        .unwrap();
+
+        // Author a relation across the two directories; it starts live.
+        let add = crate::concepts::relations_bridge::handle_add(json!({
+            "workspace_id": ws,
+            "from": {"node":"concept","id": dir_a},
+            "to": {"node":"concept","id": dir_b},
+            "kind": "positive",
+        }))
+        .await;
+        assert!(add.ok, "{:?}", add.error);
+        assert!(
+            !crate::concepts::relations_bridge::load(ws).relations[0].dangling,
+            "the relation starts live"
+        );
+
+        // Rename `src/graph` → `src/graph_v2`. A rebuild re-derives dir ids from
+        // paths and, having no carry-over for `dir:`, mints `dir:src/graph_v2`
+        // while `dir:src/graph` simply ceases to exist. Model that by replacing
+        // the concept set with the renamed layout.
+        store::save(
+            ws,
+            &[
+                Concept::new(
+                    "dir:src/graph_v2",
+                    "graph_v2",
+                    "",
+                    ConceptSource::DirectoryCluster,
+                ),
+                Concept::new(dir_b, "rag", "", ConceptSource::DirectoryCluster),
+            ],
+        )
+        .unwrap();
+        assert!(
+            store::get(ws, dir_a).is_none(),
+            "the renamed directory's old id no longer resolves"
+        );
+
+        // The tail-of-build sweep must flag — never delete — the now-orphaned
+        // edge, and report it in its count.
+        let dangling = crate::concepts::relations_bridge::sweep_dangling(ws);
+        assert_eq!(dangling, 1, "the sweep must report the dangling edge");
+
+        let g = crate::concepts::relations_bridge::load(ws);
+        assert_eq!(g.relations.len(), 1, "the authored edge is never deleted");
+        assert!(
+            g.relations[0].dangling,
+            "a relation onto a vanished dir: concept must be flagged dangling"
         );
     }
 
