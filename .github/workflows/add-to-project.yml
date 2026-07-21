@@ -48,9 +48,22 @@ jobs:
       && github.actor != 'dependabot[bot]'
       && (github.event_name != 'pull_request'
           || github.event.pull_request.head.repo.full_name == github.repository)
+    # Lift the secret to a job env so a step `if:` can read it — secrets are not
+    # available in `if:` conditions directly.
+    env:
+      PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
     steps:
+      # Graceful-skip when the secret is absent, mirroring roadmap-dates.yml: a
+      # missing PROJECT_TOKEN leaves a green run with a notice instead of a red X
+      # on every issue/PR. add-to-project is a marketplace action (not a run step),
+      # so the empty-token guard has to live on the step, not inside it.
       - name: Add to Wylde Roadmap
+        if: ${{ env.PROJECT_TOKEN != '' }}
         uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd # v2.0.0
         with:
           project-url: https://github.com/users/PeopleWonder/projects/1
-          github-token: ${{ secrets.PROJECT_TOKEN }}
+          github-token: ${{ env.PROJECT_TOKEN }}
+      - name: Note when PROJECT_TOKEN is absent
+        if: ${{ env.PROJECT_TOKEN == '' }}
+        run: |
+          echo "::notice::PROJECT_TOKEN not set — this issue/PR was NOT added to the board. Add a repo Actions secret PROJECT_TOKEN (a classic PAT with the 'project' scope) to enable auto-add. The same secret also unblocks roadmap-dates.yml."
