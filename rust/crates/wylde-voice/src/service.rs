@@ -393,7 +393,7 @@ pub fn all_actions() -> &'static [&'static str] {
 mod tests {
     use super::*;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-    use wylde_shared::ipc::{dispatch_action, list_action_meta};
+    use wylde_shared::ipc::{assert_action_table_matches_registry, dispatch_action};
 
     async fn registry_guard() -> MutexGuard<'static, ()> {
         static LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
@@ -405,15 +405,12 @@ mod tests {
         let _g = registry_guard().await;
         reset_for_tests();
         install();
-        // list_action_meta covers both unary and streaming registrations,
-        // which matters now that the surface includes voice.*_stream.
-        let names: Vec<String> = list_action_meta()
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect();
-        for n in ALL_ACTIONS {
-            assert!(names.contains(&n.to_string()), "missing {n}");
-        }
+        // #130: both directions — every listed verb is registered AND every
+        // registered voice.* verb is listed. The helper walks list_action_meta,
+        // which covers unary AND streaming (matters for voice.*_stream). The old
+        // test only checked table ⊆ registry, so a registered-but-unlisted verb
+        // passed green.
+        assert_action_table_matches_registry(&["voice."], &ALL_ACTIONS);
         reset_for_tests();
     }
 

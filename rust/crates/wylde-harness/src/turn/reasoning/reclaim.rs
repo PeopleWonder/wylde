@@ -42,7 +42,7 @@ use std::collections::BTreeSet;
 use serde_json::json;
 use wylde_shared::ipc::{self, IpcError};
 
-use super::config::ReasoningConfig;
+use super::config::{ModelSlots, ReasoningConfig};
 
 /// Env flag that opts in to *performing* the reclaim (vs. announce-only).
 const RECLAIM_OPT_IN_ENV: &str = "WYLDE_OLLAMA_RECLAIM_SUPERSEDED";
@@ -55,18 +55,33 @@ const PINS_ENV: &str = "WYLDE_OLLAMA_GC_PINS";
 /// one-definition-of-the-embedder rule). Empty tags are skipped. These
 /// are the models Wylde is actively configured to use — the protected set
 /// a GC must never reclaim.
+///
+/// The slot set is enumerated by an EXHAUSTIVE destructure of [`ModelSlots`]
+/// with no `..` (#119). Adding a slot field then FAILS TO COMPILE here until
+/// it is explicitly classified as a reference root or excluded with a reason —
+/// so a new slot cannot be silently left unreferenced (before this, a fourth
+/// slot's model was invisible to the reference set, and sweep-mode `ollama.gc`
+/// would delete a model a live slot needs).
 pub fn referenced_models(cfg: &ReasoningConfig) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    for tag in [
-        cfg.slots.reasoner.trim(),
-        cfg.slots.fast.trim(),
-        crate::memory::common::embed_model().trim(),
-    ] {
-        if !tag.is_empty() {
-            out.insert(tag.to_owned());
-        }
-    }
-    out
+    let ReasoningConfig { slots, .. } = cfg;
+    // Exhaustive — the compiler forces every future slot through this line.
+    let ModelSlots {
+        // The embedder SLOT is intentionally NOT a reference root: the model
+        // actually loaded is the *effective* embedder resolved below
+        // (`embed_model()`, env override wins per S2), so classifying the slot
+        // field too would double-count / disagree with what is loaded. If S2's
+        // rule ever changes so the slot itself is authoritative, add it here.
+        embedder: _effective_embedder_is_resolved_below,
+        fast,
+        reasoner,
+    } = slots;
+
+    let effective_embedder = crate::memory::common::embed_model();
+    [reasoner.trim(), fast.trim(), effective_embedder.trim()]
+        .into_iter()
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Tags the transition `prev → next` dereferenced: referenced by the old
@@ -225,15 +240,38 @@ mod tests {
     }
 
     #[test]
-    fn referenced_set_is_the_slots_plus_embedder() {
+    fn referenced_set_is_exactly_the_slot_tags_plus_effective_embedder() {
         let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("WYLDE_EMBED_MODEL");
-        let cfg = ReasoningConfig::default();
-        let refs = referenced_models(&cfg);
-        // Default single-mode: reasoner == fast ⇒ two distinct tags.
-        assert!(refs.contains(DEFAULT_REASONER_MODEL));
-        assert!(refs.contains(DEFAULT_EMBED_MODEL));
-        assert_eq!(refs.len(), 2, "shared brain dedupes: {refs:?}");
+
+        // Default single-mode: reasoner == fast ⇒ the shared brain dedupes to
+        // two distinct tags {reasoner, embedder}.
+        let refs = referenced_models(&ReasoningConfig::default());
+        assert_eq!(
+            refs,
+            set(&[DEFAULT_REASONER_MODEL, DEFAULT_EMBED_MODEL]),
+            "default single-mode set: {refs:?}"
+        );
+
+        // #119: assert the set EQUALS the slot-derived roots, not just a count.
+        // Split mode with three distinct tags — every slot contributes exactly
+        // one reference. The `refs.len() == 2` assertion this replaces was
+        // theatre: it signalled only "a number moved", and did not fire for a
+        // slot defaulting to an empty string.
+        let split = cfg_with("reasoner-tag", "fast-tag", "unused-embedder-slot");
+        let refs = referenced_models(&split);
+        // The embedder SLOT ("unused-embedder-slot") is deliberately NOT a
+        // reference root — the effective embedder (env unset ⇒ default) is.
+        assert_eq!(
+            refs,
+            set(&["reasoner-tag", "fast-tag", DEFAULT_EMBED_MODEL]),
+            "each of reasoner + fast + effective embedder is an independent root: {refs:?}"
+        );
+
+        // Each slot is an INDEPENDENT root: changing one changes the set.
+        let moved = cfg_with("reasoner-tag-2", "fast-tag", "unused-embedder-slot");
+        let refs2 = referenced_models(&moved);
+        assert!(refs2.contains("reasoner-tag-2") && !refs2.contains("reasoner-tag"));
     }
 
     #[test]

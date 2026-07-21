@@ -1255,7 +1255,9 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-    use wylde_shared::ipc::{dispatch_action, list_actions, unregister_action};
+    use wylde_shared::ipc::{
+        assert_action_table_matches_registry, dispatch_action, list_actions, unregister_action,
+    };
 
     // The action registry is a process-global. Without a guard,
     // parallel tests race each other's register/cleanup pairs and
@@ -1344,10 +1346,13 @@ mod tests {
         let _g = registry_guard().await;
         cleanup();
         register_with_ipc();
-        let actions = list_actions();
-        for n in ALL_ACTIONS {
-            assert!(actions.contains(&n.to_string()), "missing action {n}");
-        }
+        // #130: both directions. This service owns four verb namespaces; a
+        // registered verb under any of them that is missing from ALL_ACTIONS
+        // (which drives cleanup() too) now fails, not only the reverse.
+        assert_action_table_matches_registry(
+            &["service.", "lifecycle.", "updater.", "paths."],
+            &ALL_ACTIONS,
+        );
         cleanup();
     }
 

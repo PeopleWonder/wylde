@@ -48,6 +48,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Every PR now has to tie to a tracking issue, and every issue now gets a milestone automatically.** Two
+  halves of one project rule — "every issue is attached to a milestone, every merge is tied to an issue" —
+  turned from a norm into automation (#183). A new `linked issue` job in `.github/workflows/pr-checks.yml`
+  fails any PR whose title, body, or introduced commits reference no issue (`#N`, or a
+  `Closes/Fixes/Resolves/Refs #N` keyword), and it is a **required check** on both `protect-develop` and
+  `protect-experimental`. The escape hatch is a `no-issue` label for a deliberate no-issue change; Dependabot
+  PRs and the `develop`→`main` promotion are exempt by construction (they carry no single issue and must keep
+  flowing — Dependabot auto-merge queues behind the required checks, so gating it would hang every bump). The
+  label is evaluated at step level, not as a job-level `if:`, so the required context always reports a
+  conclusion and can never leave the branch deadlocked on an "expected" check. On the issue side — which a
+  required status check can't reach — a new `.github/workflows/issue-milestone.yml` auto-assigns the catch-all
+  `0.x - backlog` milestone on `issues.opened`/`reopened` when none is set, with a weekly sweep for anything
+  that slips through, under a least-privilege `issues: write` token (#177). `0.x - backlog` is a floor, not a
+  verdict: triage still re-files into the right release milestone at will.
 - **Wylde's updater now carries the whole stack, and the launcher always runs the current one.** Two
   halves of the same gap, fixed against one shared resolver. The self-updater was structurally
   GUI-only: it selected release assets by matching the literal `wylde-gui`, then `self_replace`d the
@@ -227,6 +241,49 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   helpers), turning silent under-coverage into a red that names the missing
   `-p`. It runs under the L7 gate itself and needs no `--workspace` (which would
   drag in the Shell's headless-unsafe `wry`/tray-icon graph the scoping avoids).
+
+- **Every service's `ALL_ACTIONS` verb table is now asserted EQUAL to the live
+  registry, both directions — and the reverse direction caught 11 verbs that had
+  silently drifted (closes #130).** Each service's registration test asserted
+  only `table ⊆ registry`; none asserted `registry ⊆ table`, the direction a
+  developer trips (register a handler, forget the table). A missing entry leaks
+  past `reset_for_tests` (which unregisters by iterating the table) and makes the
+  gpui-contract lint flag correct callers as calling a nonexistent verb. A shared
+  `assert_action_table_matches_registry(prefixes, all_actions)` helper now checks
+  both directions and is wired into all eight services (`voice`, `lifecycle`,
+  `n8n`, `treesitter`, `ollama`, `extension-bridge`, `lsp`, `workspaces`); the two
+  hardcoded inline verb lists (`ollama`, `extension-bridge` — a third, already
+  stale copy of the set) are deleted in favour of iterating `ALL_ACTIONS`, and
+  `lsp` + `workspaces` gained the test they never had. Turning the reverse
+  direction on immediately surfaced real drift in `wylde-workspaces`: ten
+  `workspaces.hierarchy.*` verbs and `workspaces.conversations.refresh_summary`
+  were registered and handled but absent from `ALL_ACTIONS` — now added.
+
+- **The model-GC reference set now derives structurally from `ModelSlots`, so a
+  new model slot cannot be silently unreferenced (closes #119).**
+  `referenced_models` hardcoded a three-element array of slot fields
+  (`reasoner`, `fast`, effective embedder). A fourth slot added later would not
+  grow it — its model would be unreferenced by definition, and an operator-run
+  sweep-mode `ollama.gc` (which makes every unreferenced model eligible) could
+  delete a model a live slot needs. The set is now built from an **exhaustive
+  destructure of `ModelSlots`** with no `..`, so adding a slot field fails to
+  compile until it is explicitly classified as a reference root or excluded with
+  a reason — the guarantee is enforced at compile time, not by a runtime test
+  someone must remember. The `refs.len() == 2` count assertion (which only
+  signalled "a number moved" and never fired for an empty-string slot) is
+  replaced by a set-equality test asserting each slot is an independent root.
+
+- **`wylde_check` rule 44's anti-pattern regex did not match the literal it
+  exists to catch (closes #115).** Rule 44 (`boot_uses_daemon_managed_table`)
+  forbids a hand-kept `const`/`static` SERVICES roster reappearing in the Rust
+  boot path, but its regex had two blind spots: the prefix alternation covered
+  only `SERVICES`/`ALL_SERVICES`, not a qualifier like `CORE_SERVICES` (the exact
+  literal #101 deleted from `control.rs` — re-pasting it passed the gate clean);
+  and it required an array type annotation `: [`, so every idiomatic slice-form
+  roster `: &[&str] = &[` escaped regardless of name. The pattern now matches any
+  uppercase-qualified `SERVICES` name in both array and slice forms, with
+  regression tests asserting the previously-escaping cases fire and a scalar
+  `SERVICE_*` const does not (the widened pattern must not over-match).
 
 - **Two registered `conversations.*` verbs were missing from the harness pipe's
   `ALL_PIPE_ACTIONS` table, and no test guarded that direction (closes #142).**
@@ -884,6 +941,26 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   backend watcher).
 
 ### Security
+
+- **The cargo-deny advisory + license gates now cover every gated Cargo
+  workspace, driven by one discovered list (closes #122).** The repo has four
+  gated `[workspace]` roots (`rust/`, `Core/GUI/`, `tools/xtask`,
+  `tools/wylde-release`) plus the deliberately-excluded `voice-npu-spike` spike,
+  but three independent hand-kept lists — the two `cargo-deny` matrices and the
+  G7 version check — each enumerated only the first *two*. So the two shipped
+  release tools got **no vulnerability scan and no GPLv3 license scan**, and
+  carried their own versions unchecked: a vulnerable or copyleft-incompatible
+  dependency, or a version split, could land in a release tool with all required
+  checks green. New `tools/list-workspaces.sh` discovers the workspace roots from
+  the tree (with a documented exclusion list); `tools/check-versions.sh` now
+  derives its set from it, the cargo-deny matrices cover all four (the two
+  `tools/` workspaces share one `tools/deny.toml`, resolved by walking up), and
+  both rulesets require the new `cargo-deny (advisories|licenses)
+  (tools/xtask|tools/wylde-release/Cargo.toml)` contexts. A new `manifest
+  coverage` CI gate (`tools/check-manifest-coverage.sh`) turns **red** with an
+  actionable message if any of those enumerations drifts from the discovered set,
+  so a forgotten edit fails loudly instead of shipping silently. `cargo deny
+  check advisories`/`licenses` → `ok` on all four workspaces today.
 
 - **CI workflows now declare a least-privilege `GITHUB_TOKEN` scope (CodeQL
   `actions/missing-workflow-permissions`, 9 alerts).** `ci.yml`,

@@ -113,7 +113,7 @@ pub fn reset_for_tests() {
 mod tests {
     use super::*;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-    use wylde_shared::ipc::{dispatch_action, list_actions};
+    use wylde_shared::ipc::{assert_action_table_matches_registry, dispatch_action};
 
     async fn registry_guard() -> MutexGuard<'static, ()> {
         static LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
@@ -121,14 +121,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_registers_all_eight_actions() {
+    async fn install_registers_all_actions() {
         let _g = registry_guard().await;
         reset_for_tests();
         install();
-        let actions = list_actions();
-        for n in ALL_ACTIONS {
-            assert!(actions.contains(&n.to_string()), "missing {n}");
-        }
+        // #130: both directions — a registered n8n.* verb missing from
+        // ALL_ACTIONS now fails, not only a listed-but-unregistered one.
+        assert_action_table_matches_registry(&["n8n."], &ALL_ACTIONS);
         reset_for_tests();
     }
 
