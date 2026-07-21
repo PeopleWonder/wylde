@@ -322,6 +322,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **The `live-graph (Neo4j Bolt)` CI leg is no longer flaky, so a required check can't
+  intermittently stall auto-merge (closes #216).** The leg's test binaries all target one
+  shared Neo4j, and `cargo test` runs a binary's tests multi-threaded by default. `memgraph_live`
+  serialized via a `DB_LOCK`, but the `wylde-workspaces` `integration_graph` binary did not — so
+  its two tests hit the shared DB concurrently, contending on the graph's global-by-name Entity
+  space (the graph-wide orphan-entity prune and `stats()` counts) and piling connections onto the
+  freshly-booted, cold-planner JVM. That surfaced as non-deterministic `ok:false` operation
+  failures (`ensure_schema`/`delete_workspace`), a different test failing on each run. `integration_graph`
+  now holds an in-code `DB_LOCK` (mirroring `memgraph_live`), every live-graph `--ignored`
+  invocation runs with `--test-threads=1` as a uniform guard, and the CI leg warms the JVM planner
+  and pre-creates the schema indexes right after the DB reports query-ready, so the first real test
+  no longer pays cold-start latency. A flaky *required* check undermines the whole strict-up-to-date
+  auto-merge model, so this is a stability fix, not just a test tidy-up.
+
 - **A model store that is merely slow to come back after an update no longer reads as "you have no
   models" (closes #132).** Wylde never sets `OLLAMA_MODELS`, so the store lives in Ollama's own
   ambient location — outside the Wylde install tree and untouched by an update or rebuild — and a

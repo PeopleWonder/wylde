@@ -24,10 +24,27 @@
 
 #![cfg(windows)]
 
+use std::sync::OnceLock;
+
 use serde_json::json;
+use tokio::sync::{Mutex, MutexGuard};
 
 use wylde_workspaces::graph::projection::NodeKind;
 use wylde_workspaces::graph::{api, BoltClient, EntityPair, RelType};
+
+/// Serialize every test in this binary against the one shared Neo4j.
+///
+/// `cargo test` runs a binary's tests multi-threaded by default, but the graph
+/// is global-by-name: `delete_workspace`'s orphan-entity prune and `stats()`
+/// are graph-wide, and concurrent tests also pile connections onto the freshly-
+/// booted (cold-planner) JVM, which intermittently can't service a query inside
+/// the connect timeout — surfacing as flaky `ok:false` operation failures on
+/// the live-graph CI leg (#216). Holding this lock for the whole test gives each
+/// one exclusive DB access, mirroring `wylde-harness`'s `memgraph_live` DB_LOCK.
+async fn db_guard() -> MutexGuard<'static, ()> {
+    static DB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    DB_LOCK.get_or_init(|| Mutex::new(())).lock().await
+}
 
 fn nonce() -> String {
     let micros = std::time::SystemTime::now()
@@ -40,6 +57,7 @@ fn nonce() -> String {
 #[tokio::test]
 #[ignore = "requires live Neo4j (bolt://127.0.0.1:7687) — run the stack first"]
 async fn graph_verb_returns_expected_shape_from_live_neo4j() {
+    let _db = db_guard().await;
     let p = nonce();
     let ws = format!("{p}ws");
     let client = BoltClient::new();
@@ -215,6 +233,7 @@ async fn graph_verb_returns_expected_shape_from_live_neo4j() {
 #[tokio::test]
 #[ignore = "requires live Neo4j (bolt://127.0.0.1:7687) — run the stack first"]
 async fn teardown_sweeps_concept_projection_from_live_neo4j() {
+    let _db = db_guard().await;
     let p = nonce();
     let ws = format!("{p}ws_concepts");
     let client = BoltClient::new();
