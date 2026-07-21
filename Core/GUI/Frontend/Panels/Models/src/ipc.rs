@@ -86,6 +86,40 @@ impl InstalledModel {
     }
 }
 
+/// The models the running config actively references — the reasoning
+/// slots read from `settings.reasoning.get`. The panel labels each
+/// installed row against this set so "what references this model?" (and
+/// therefore "is it safe to delete?") is answerable at a glance (#131):
+/// a model matching no slot, no VRAM-resident set, and not the session
+/// default is superseded/orphaned and safe to drop. Empty strings mean
+/// "slot unset"; a down harness leaves the whole set empty (every model
+/// then reads as unreferenced only if it's also not loaded / not default).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReferenceSet {
+    pub reasoner: String,
+    pub fast: String,
+    pub embedder: String,
+}
+
+impl ReferenceSet {
+    pub fn from_value(v: &Value) -> Self {
+        let slots = v.get("slots").cloned().unwrap_or_else(|| json!({}));
+        let slot = |k: &str| {
+            slots
+                .get(k)
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_owned()
+        };
+        Self {
+            reasoner: slot("reasoner"),
+            fast: slot("fast"),
+            embedder: slot("embedder"),
+        }
+    }
+}
+
 /// One chunk of the `ollama.pull` NDJSON stream, projected to the
 /// fields the progress bar reads.  `status` is always present; the
 /// `completed` / `total` pair appears on the per-layer download
@@ -261,8 +295,12 @@ pub async fn list_loaded_model_names() -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-pub async fn delete_installed_model(name: &str) -> Result<(), String> {
-    wylde_gui_pipe::call(
+/// Delete a local model. Returns the bytes freed as reported by the
+/// wrapper (`freed_bytes`), or 0 when the wrapper couldn't determine the
+/// size — the panel then falls back to the size it already had cached for
+/// the row, so it can still report "Freed N" (#131).
+pub async fn delete_installed_model(name: &str) -> Result<u64, String> {
+    let v = wylde_gui_pipe::call(
         SVC_OLLAMA,
         "POST",
         "/__action__",
@@ -271,8 +309,23 @@ pub async fn delete_installed_model(name: &str) -> Result<(), String> {
             "payload": { "name": name },
         })),
     )
-    .await
-    .map(|_| ())
+    .await?;
+    Ok(v.get("freed_bytes").and_then(|x| x.as_u64()).unwrap_or(0))
+}
+
+/// Read the reasoning slots (`settings.reasoning.get` on the harness) so
+/// the panel can label which installed models the running config
+/// references. Soft-fails to an empty [`ReferenceSet`] on a down harness —
+/// the panel then just shows no slot labels rather than erroring.
+pub async fn get_reasoning_slots() -> Result<ReferenceSet, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "settings.reasoning.get", "payload": {} })),
+    )
+    .await?;
+    Ok(ReferenceSet::from_value(&v))
 }
 
 /// Read `system.inventory` from the VRAM broker.  Soft-fails on the
@@ -450,6 +503,25 @@ mod tests {
     }
 
     #[test]
+    fn reference_set_parses_reasoning_get_slots() {
+        let v = json!({
+            "enabled": true,
+            "slots": { "embedder": "nomic-embed-text", "fast": "qwen2.5:1.5b", "reasoner": "qwen2.5:7b" },
+            "mode": "single",
+        });
+        let refs = ReferenceSet::from_value(&v);
+        assert_eq!(refs.reasoner, "qwen2.5:7b");
+        assert_eq!(refs.fast, "qwen2.5:1.5b");
+        assert_eq!(refs.embedder, "nomic-embed-text");
+    }
+
+    #[test]
+    fn reference_set_defaults_empty_when_slots_absent() {
+        let refs = ReferenceSet::from_value(&json!({}));
+        assert!(refs.reasoner.is_empty() && refs.fast.is_empty() && refs.embedder.is_empty());
+    }
+
+    #[test]
     fn pipe_call_helpers_exist() {
         // Build-time witness pattern — matches Settings / Memory tests.
         let _ = list_installed_models;
@@ -459,6 +531,7 @@ mod tests {
         let _ = pull_model;
         let _ = get_default;
         let _ = set_default;
+        let _ = get_reasoning_slots;
     }
 
     #[test]

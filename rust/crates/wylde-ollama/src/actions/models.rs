@@ -206,6 +206,45 @@ fn parse_parameters(blob: &str) -> serde_json::Map<String, Value> {
     out
 }
 
+/// Normalise a model tag for on-disk matching: Ollama's `/api/tags`
+/// reports an implicit `:latest` on an untagged pull
+/// (`nomic-embed-text` → `nomic-embed-text:latest`) while a delete may
+/// name the bare tag, so a trailing `:latest` is stripped on both sides
+/// before comparison. Mirrors the same rule in `actions::gc`.
+fn normalize_delete_tag(tag: &str) -> &str {
+    let t = tag.trim();
+    t.strip_suffix(":latest").unwrap_or(t)
+}
+
+/// Best-effort on-disk size (bytes) for `name` from `/api/tags`, so the
+/// delete reply can report bytes freed (#131: "delete must report bytes
+/// freed"). Returns `None` — not an error — on any failure: the size is a
+/// courtesy the delete never depends on. Matches with the `:latest`
+/// normalisation so a bare tag still finds its implicit-`:latest` row.
+async fn lookup_model_size(up: &Upstream, name: &str) -> Option<u64> {
+    let cfg = Config::get();
+    let resp = up
+        .request(Method::GET, "/api/tags", None, cfg.list_models_timeout_s)
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let envelope: Value = serde_json::from_slice(&resp.bytes().await.ok()?).ok()?;
+    let target = normalize_delete_tag(name);
+    envelope
+        .get("models")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|m| {
+            m.get("name")
+                .and_then(Value::as_str)
+                .map(|n| normalize_delete_tag(n) == target)
+                .unwrap_or(false)
+        })
+        .and_then(|m| m.get("size").and_then(Value::as_u64))
+}
+
 pub async fn handle_delete(payload: Value, up: Arc<Upstream>) -> Reply {
     // Python sends `{"name": ...}` (ollama_client.py:170); the Ollama
     // /api/delete spec also accepts {"model": ...}. We accept either on
@@ -227,6 +266,10 @@ pub async fn handle_delete(payload: Value, up: Arc<Upstream>) -> Reply {
         }
     };
     let cfg = Config::get();
+    // Read the on-disk size BEFORE deleting so the reply can report bytes
+    // freed. Best-effort: a failed/absent lookup reports 0 (unknown) and
+    // never blocks or fails the delete itself.
+    let freed_bytes = lookup_model_size(&up, &name).await.unwrap_or(0);
     let body = json!({"name": name});
     let resp = match up
         .request(
@@ -248,7 +291,12 @@ pub async fn handle_delete(payload: Value, up: Arc<Upstream>) -> Reply {
         let body = resp.text().await.unwrap_or_default();
         return Reply::err(ollama_http_err(status, excerpt(&body, BODY_EXCERPT_CAP)));
     }
-    Reply::ok(json!({"ok": true, "freed": true}))
+    Reply::ok(json!({
+        "ok": true,
+        "freed": true,
+        "freed_bytes": freed_bytes,
+        "name": name,
+    }))
 }
 
 pub async fn handle_eject(payload: Value, up: Arc<Upstream>) -> Reply {
@@ -647,6 +695,76 @@ mod tests {
         let r = handle_delete(json!({"name": "ghost"}), up).await;
         assert!(!r.ok);
         assert_eq!(r.error.unwrap().code, "model_not_found");
+    }
+
+    #[tokio::test]
+    async fn delete_reports_freed_bytes_from_tags() {
+        // #131: delete must report bytes freed. The handler reads the
+        // on-disk size from /api/tags before deleting and echoes it back.
+        let (server, up) = fake_upstream().await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "models": [
+                    {"name": "qwen", "size": 1_234_567_u64},
+                    {"name": "other", "size": 42_u64},
+                ]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/delete"))
+            .and(body_json(json!({"name": "qwen"})))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let r = handle_delete(json!({"name": "qwen"}), up).await;
+        assert!(r.ok);
+        assert_eq!(r.data["ok"], true);
+        assert_eq!(r.data["freed"], true);
+        assert_eq!(r.data["freed_bytes"], 1_234_567_u64);
+        assert_eq!(r.data["name"], "qwen");
+    }
+
+    #[tokio::test]
+    async fn delete_matches_size_across_latest_normalisation() {
+        // /api/tags reports the implicit `:latest`; the delete names the
+        // bare tag. The size lookup normalises both so bytes-freed is
+        // still reported.
+        let (server, up) = fake_upstream().await;
+        Mock::given(method("GET"))
+            .and(path("/api/tags"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "models": [{"name": "nomic-embed-text:latest", "size": 500_u64}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/delete"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let r = handle_delete(json!({"name": "nomic-embed-text"}), up).await;
+        assert!(r.ok);
+        assert_eq!(r.data["freed_bytes"], 500_u64);
+    }
+
+    #[tokio::test]
+    async fn delete_reports_zero_when_size_unknown_but_still_deletes() {
+        // The size lookup is best-effort: an unreachable/empty /api/tags
+        // must never block the delete — it reports freed_bytes=0 and the
+        // delete still succeeds. No GET mock is mounted, so /api/tags 404s.
+        let (server, up) = fake_upstream().await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/delete"))
+            .and(body_json(json!({"name": "ghost"})))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let r = handle_delete(json!({"name": "ghost"}), up).await;
+        assert!(r.ok);
+        assert_eq!(r.data["ok"], true);
+        assert_eq!(r.data["freed_bytes"], 0);
     }
 
     #[tokio::test]

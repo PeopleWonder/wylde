@@ -1082,6 +1082,18 @@ pub fn spawn_ollama_serve() -> Result<PathBuf> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // Version-independent model store (#132). Ollama keeps its models in
+    // its own ambient store (`OLLAMA_MODELS`, else `~/.ollama/models`),
+    // which lives OUTSIDE the Wylde install tree and is therefore untouched
+    // by a Wylde update/rebuild. We inherit that environment as-is and
+    // inject NOTHING that would relocate the store to a versioned/install-
+    // scoped path — so a model pulled by a previous Wylde version is still
+    // discovered by `/api/tags` after an update. `ollama_serve_env_overrides`
+    // is the single, guarded seam for any env we ever DO add; it is empty of
+    // store-locating vars by contract (see its regression test).
+    for (key, val) in ollama_serve_env_overrides() {
+        cmd.env(key, val);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -1099,6 +1111,27 @@ pub fn spawn_ollama_serve() -> Result<PathBuf> {
     // daemon keeps running after we drop our handle.
     drop(child);
     Ok(bin)
+}
+
+/// The environment variables Wylde injects onto the `ollama serve` child,
+/// on top of the inherited process environment.
+///
+/// **Version-independence contract (#132).** This is the ONLY place Wylde
+/// may set env for the upstream daemon, and it MUST NOT set any variable
+/// that relocates the model store — `OLLAMA_MODELS` or `OLLAMA_HOME`.
+/// Pinning the store to a Wylde-versioned or install-scoped directory is
+/// exactly how a model pulled by a previous version would go missing after
+/// an update: the new daemon would look in a fresh, empty path while the
+/// real blobs sit in the old one. Leaving the store at its ambient default
+/// (the user's `~/.ollama` or their own `OLLAMA_MODELS`) keeps discovery
+/// (`/api/tags`) version-independent by construction.
+///
+/// Returns empty today; kept as a guarded seam so any future daemon env
+/// (a log level, a host binding) is added here and screened by
+/// [`tests::ollama_serve_env_never_relocates_the_store`] rather than being
+/// sprinkled onto the spawn ad hoc.
+pub fn ollama_serve_env_overrides() -> Vec<(&'static str, String)> {
+    Vec::new()
 }
 
 // ── Tree-sitter sidecar ─────────────────────────────────────────────────
@@ -1428,6 +1461,30 @@ mod tests {
     fn impl_for_defaults_to_rust() {
         clear_env("WYLDE_WYLDE_TEST_IMPL");
         assert_eq!(impl_for("wylde-test"), ImplLang::Rust);
+    }
+
+    /// #132 storage guarantee: the env Wylde injects onto `ollama serve`
+    /// must NEVER relocate the model store. If a future change adds
+    /// `OLLAMA_MODELS` / `OLLAMA_HOME` here, a model pulled by a previous
+    /// Wylde version would vanish after an update (the new daemon would
+    /// read a fresh, empty, versioned path). This fails red before that
+    /// mistake can ship.
+    #[test]
+    fn ollama_serve_env_never_relocates_the_store() {
+        let overrides = ollama_serve_env_overrides();
+        for (key, _) in &overrides {
+            let k = key.to_ascii_uppercase();
+            assert_ne!(
+                k, "OLLAMA_MODELS",
+                "Wylde must not pin the Ollama model store — it must stay the daemon's \
+                 ambient, version-independent location so prior-version models survive an update"
+            );
+            assert_ne!(
+                k, "OLLAMA_HOME",
+                "OLLAMA_HOME relocates the store root; same version-independence hazard as \
+                 OLLAMA_MODELS"
+            );
+        }
     }
 
     // Regression: the Neo4j supervisor MUST spawn with absolute paths. When
