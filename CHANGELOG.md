@@ -280,6 +280,29 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   (`pending_graph_cleanup.json`) is migrated in place to the generalized
   `pending_teardown.json` on first read.
 
+- **Convention-A data-root resolution now has ONE source of truth instead of
+  seven copy-pasted `fn data_dir()`s, and the gate named for it can finally fire
+  (closes #138).** The canonical `WYLDE_DATA_DIR` → `DATA_DIR` →
+  `<WYLDE_ROOT>/.wylde/data` ladder — the root under which encryption prefs,
+  graph profiles, `settings/*.json`, the memory tiers, and the workspace
+  registry all live — was duplicated as a private resolver in six `rust/crates`
+  modules (`wylde-shared/encryption`, `wylde-harness/memory/common` +
+  `turn/reasoning/config`, `wylde-workspaces/common`, `wylde-concept-routing` and
+  `wylde-concept-hierarchy` config), each free to drift, while the three tests
+  named for the property asserted only that the resolved path was *non-empty* —
+  green under any convention, including a regression to the process cwd. There is
+  now one `wylde_shared::paths::data_dir` (with a pure, env-free
+  `data_dir_under(root)` core); every other copy delegates via
+  `pub use wylde_shared::paths::data_dir`. A new **required** backend test
+  (`wylde-shared/tests/single_data_dir_resolver.rs`) walks every crate's `src/`
+  and turns red if any file outside the canonical one reintroduces a
+  convention-A `fn data_dir`, and the fake non-empty gates are replaced with
+  assertions that pin the real `.wylde/data` shape. Scope: the genuinely
+  different resolvers (`data/model_registry`, `device_gate/data`, `<ROOT>/data`)
+  are not convention A and are unchanged; the GUI graph-settings panel keeps a
+  sanctioned copy because it deliberately links no service crate (folding it in
+  needs an approved dependency addition — see #138).
+
 - **The L7 `panel-walk` gate's hand-kept crate list is now guarded against
   silent under-coverage (closes #95).** `cargo panel-walk` (the required `gui
   panel-walk (L7)` job) is a `-p`-scoped alias in `Core/GUI/.cargo/config.toml`

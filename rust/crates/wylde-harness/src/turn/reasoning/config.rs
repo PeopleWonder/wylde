@@ -397,21 +397,10 @@ impl ReasoningConfig {
     }
 }
 
-/// `<data_dir>` resolved exactly the way every other settings store does
-/// (`WYLDE_DATA_DIR` → `DATA_DIR` → `<WYLDE_ROOT>/.wylde/data`). Read on
-/// every call so tests can point the env at a scratch dir per-case.
-fn data_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os("WYLDE_DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    if let Some(v) = std::env::var_os("DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    let root = std::env::var_os("WYLDE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    root.join(".wylde").join("data")
-}
+// `<data_dir>` (convention A: `WYLDE_DATA_DIR` → `DATA_DIR` →
+// `<WYLDE_ROOT>/.wylde/data`) from the ONE canonical resolver (#138) — this was
+// a verbatim copy of that body.
+use wylde_shared::paths::data_dir;
 
 /// `<data_dir>/settings/reasoning.json` — alongside the other settings
 /// stores (`privacy.json`, `ollama.json`, `concept_routing.json`).

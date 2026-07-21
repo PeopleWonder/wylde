@@ -11,4 +11,5 @@ pub mod ipc;
 pub mod logging;
 pub mod manifest;
 pub mod manifest_status;
+pub mod paths;
 pub mod secure_file;
