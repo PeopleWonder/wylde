@@ -204,7 +204,9 @@ fn header() -> gpui::Div {
                 .font_family(FAMILY_INTER)
                 .text_size(px(size::XS))
                 .text_color(rgb(pack(TEXT_MUTED)))
-                .child(SharedString::from("Newest first — scroll for older versions")),
+                .child(SharedString::from(
+                    "Newest first — scroll for older versions",
+                )),
         )
 }
 
@@ -428,7 +430,10 @@ mod tests {
         assert_eq!(v.total_count(), 5);
         assert_eq!(v.sections[0].version, "0.3.0");
         assert_eq!(v.sections[0].body, "authoritative");
-        assert_eq!(v.sections.iter().filter(|s| s.version == "0.3.0").count(), 1);
+        assert_eq!(
+            v.sections.iter().filter(|s| s.version == "0.3.0").count(),
+            1
+        );
     }
 
     #[test]

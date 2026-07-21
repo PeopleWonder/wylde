@@ -142,7 +142,9 @@ fn finalize(mut sec: ChangelogSection) -> ChangelogSection {
 /// itself (so an odd `## ` line still gets a stable, non-empty key).
 fn extract_version(heading: &str) -> String {
     match (heading.find('['), heading.find(']')) {
-        (Some(open), Some(close)) if close > open + 1 => heading[open + 1..close].trim().to_string(),
+        (Some(open), Some(close)) if close > open + 1 => {
+            heading[open + 1..close].trim().to_string()
+        }
         _ => heading.trim().to_string(),
     }
 }
