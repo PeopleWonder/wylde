@@ -905,6 +905,27 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   along with the newly-filed #55/#56/#57. Re-running remains a no-op against a
   fully-seeded board.
 
+- **New issues (and same-repo PRs) now land on the Roadmap board automatically.**
+  Milestoning was already automated (`issue-milestone.yml`) but board *membership*
+  was not — an issue got a card only if a human remembered, and it had drifted (an
+  audit found 31 milestoned issues off the board and 11 closed issues still sitting
+  in Todo). A new `add-to-project.yml` workflow (`issues: [opened, reopened]`,
+  `pull_request: [opened]`) adds each item to `projects/1` via
+  `actions/add-to-project`, pinned to a commit SHA and authenticated with the same
+  `PROJECT_TOKEN` classic PAT `roadmap-dates.yml` already uses — the default
+  `GITHUB_TOKEN` cannot write a user-owned Project. It declares a least-privilege
+  `contents: read` (the board write goes through the PAT, not `GITHUB_TOKEN`), so it
+  stays clear of the `actions/missing-workflow-permissions` class fixed in #177, and
+  it skips Dependabot and fork PRs, whose events carry no repo secrets, and it
+  no-ops with a notice (never a red X) if `PROJECT_TOKEN` is unset. The one-time
+  backlog gap was also backfilled by hand. **Two one-time manual steps are still
+  required** before automation is live: (1) the `PROJECT_TOKEN` repo secret must be
+  configured — it is currently unset, so both this workflow and `roadmap-dates.yml`
+  no-op; and (2) status transitions need a manual enable — GitHub exposes no API to toggle a Project's built-in workflows
+  (only `deleteProjectV2Workflow` exists), so *Item added → Todo*, *Item closed →
+  Done*, and *Pull request merged → Done* must be switched on once in the Project's
+  Workflows settings.
+
 - **Clippy (G4) + fmt (G6) CI gates are now LIVE.** The two staged enforcement
   gates were armed: a new `clippy (G4) + fmt (G6)` CI job runs
   `cargo fmt --all -- --check` and
