@@ -864,11 +864,6 @@ mod tests {
         }
     }
 
-    /// A chunk with no embedding — drives the directory-cluster path.
-    fn idx_chunk_novec(id: &str, path: &str) -> crate::rag::indexer::store::IndexedChunk {
-        idx_chunk(id, path, Vec::new())
-    }
-
     #[tokio::test]
     async fn build_semantic_clusters_chunks_and_preserves_manual() {
         let _env = TestEnv::new();
@@ -1038,9 +1033,16 @@ mod tests {
 
     /// The refusal is a guard, not a wall: an explicit `force` still performs
     /// the fallback, so a user who genuinely wants directory concepts is not
-    /// stuck. (And a workspace with nothing to lose never sees the guard —
-    /// covered by `build_falls_back_to_directory_when_no_index`.)
+    /// stuck.
+    ///
+    /// `#[ignore]`: the forced path runs the directory-cluster build, which
+    /// enumerates the live code graph over Bolt (`graph::api::graph`) and so
+    /// needs a running Memgraph — the same reason the rest of the live-graph
+    /// suite is ignored (cross-ref #121). The data-safety half of this pair —
+    /// the *refusal* (criterion 1) — takes no graph path and IS gated in CI by
+    /// `empty_index_build_refuses_rather_than_dropping_semantic_concepts`.
     #[tokio::test]
+    #[ignore = "requires live Memgraph — the directory-cluster fallback reads the graph over Bolt"]
     async fn empty_index_build_proceeds_when_forced() {
         let _env = TestEnv::new();
         let ws = "ws-api-emptyidx-f";
@@ -1200,67 +1202,86 @@ mod tests {
         );
     }
 
-    /// #137 criterion 4 — a `dir:` concept is path-derived and has no
-    /// carry-over pool at all, so moving/renaming the directory drops it.
-    /// The relation must then be SURFACED as dangling (never deleted), which
-    /// is what the GUI change in this PR renders.
+    /// #137 criterion 4 — a `dir:` concept is path-derived (`dir:<path>`) and
+    /// has no carry-over pool at all (carry-over filters to `Embedding`/`sem:`
+    /// only), so moving or renaming the directory produces a NEW id and the old
+    /// one vanishes. A relation authored on it must then be SURFACED as
+    /// dangling — retained on disk, excluded from routing — never silently
+    /// dropped. This is the state the GUI change in this PR renders.
+    ///
+    /// Deliberately graph-free: the directory-cluster *build* enumerates the
+    /// live code graph over Bolt (`graph::api::graph`), which needs a running
+    /// Memgraph and is covered by the `#[ignore]`d live-graph suite. The
+    /// property under test — a relation onto a vanished `dir:` concept goes
+    /// dangling — is exercised here by seeding the store directly and running
+    /// the same `sweep_dangling` that every build runs at its tail, so it gates
+    /// in CI without a backend.
     #[tokio::test]
     async fn renaming_a_directory_surfaces_its_relations_as_dangling() {
+        use crate::concepts::concept::{Concept, ConceptSource};
+
         let _env = TestEnv::new();
         let ws = "ws-api-dirrename";
 
-        // A directory-sourced build (no vectors → the fallback, and there are
-        // no semantic concepts to lose so the guard does not fire).
-        let chunks = vec![
-            idx_chunk_novec("d0", "src/graph/g.rs"),
-            idx_chunk_novec("d1", "src/rag/r.rs"),
-        ];
-        crate::rag::indexer::store::save_chunks(ws, &chunks).unwrap();
-        let r1 = handle_build(json!({ "workspace_id": ws })).await;
-        assert!(r1.ok, "{:?}", r1.error);
-        assert_eq!(r1.data["source"], "directory_cluster");
+        // A directory-sourced concept set, as a build's fallback would write.
+        let dir_a = "dir:src/graph";
+        let dir_b = "dir:src/rag";
+        store::save(
+            ws,
+            &[
+                Concept::new(dir_a, "graph", "", ConceptSource::DirectoryCluster),
+                Concept::new(dir_b, "rag", "", ConceptSource::DirectoryCluster),
+            ],
+        )
+        .unwrap();
 
-        let dir_ids: Vec<String> = store::load(ws)
-            .into_iter()
-            .filter(|c| c.id.starts_with("dir:"))
-            .map(|c| c.id)
-            .collect();
-        if dir_ids.len() < 2 {
-            return; // graph unavailable in this env — nothing to assert
-        }
-
+        // Author a relation across the two directories; it starts live.
         let add = crate::concepts::relations_bridge::handle_add(json!({
             "workspace_id": ws,
-            "from": {"node":"concept","id": dir_ids[0]},
-            "to": {"node":"concept","id": dir_ids[1]},
+            "from": {"node":"concept","id": dir_a},
+            "to": {"node":"concept","id": dir_b},
             "kind": "positive",
         }))
         .await;
         assert!(add.ok, "{:?}", add.error);
-        assert!(!crate::concepts::relations_bridge::load(ws).relations[0].dangling);
+        assert!(
+            !crate::concepts::relations_bridge::load(ws).relations[0].dangling,
+            "the relation starts live"
+        );
 
-        // "Rename" the directory — the path-derived id can no longer resolve.
-        let renamed = vec![
-            idx_chunk_novec("d0", "src/graph_v2/g.rs"),
-            idx_chunk_novec("d1", "src/rag/r.rs"),
-        ];
-        crate::rag::indexer::store::save_chunks(ws, &renamed).unwrap();
-        let r2 = handle_build(json!({ "workspace_id": ws })).await;
-        assert!(r2.ok, "{:?}", r2.error);
+        // Rename `src/graph` → `src/graph_v2`. A rebuild re-derives dir ids from
+        // paths and, having no carry-over for `dir:`, mints `dir:src/graph_v2`
+        // while `dir:src/graph` simply ceases to exist. Model that by replacing
+        // the concept set with the renamed layout.
+        store::save(
+            ws,
+            &[
+                Concept::new(
+                    "dir:src/graph_v2",
+                    "graph_v2",
+                    "",
+                    ConceptSource::DirectoryCluster,
+                ),
+                Concept::new(dir_b, "rag", "", ConceptSource::DirectoryCluster),
+            ],
+        )
+        .unwrap();
+        assert!(
+            store::get(ws, dir_a).is_none(),
+            "the renamed directory's old id no longer resolves"
+        );
 
-        // Retained, flagged, and counted — never silently dropped.
+        // The tail-of-build sweep must flag — never delete — the now-orphaned
+        // edge, and report it in its count.
+        let dangling = crate::concepts::relations_bridge::sweep_dangling(ws);
+        assert_eq!(dangling, 1, "the sweep must report the dangling edge");
+
         let g = crate::concepts::relations_bridge::load(ws);
         assert_eq!(g.relations.len(), 1, "the authored edge is never deleted");
-        if store::get(ws, &dir_ids[0]).is_none() {
-            assert!(
-                g.relations[0].dangling,
-                "a relation onto a vanished dir: concept must be flagged dangling"
-            );
-            assert!(
-                r2.data["dangling_count"].as_u64().unwrap_or(0) >= 1,
-                "the build must report the dangling count"
-            );
-        }
+        assert!(
+            g.relations[0].dangling,
+            "a relation onto a vanished dir: concept must be flagged dangling"
+        );
     }
 
     #[tokio::test]
