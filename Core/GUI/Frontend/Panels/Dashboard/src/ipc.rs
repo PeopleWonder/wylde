@@ -704,11 +704,11 @@ mod tests {
 
     #[test]
     fn dropping_a_services_bucket_sibling_extends_the_strip_with_no_code_edit() {
-        // Aaron's bar: a synthetic service dropped into the `Services/` bucket
-        // is covered by construction. Revert `strip_services_from` to a
-        // hand-kept list and this goes red — the synthetic (and every real
-        // sibling) would vanish. Mirrors the discovery seam
-        // `wylde_updater/tests/whole_stack_coverage.rs` drives.
+        // The maintainer's bar: a synthetic service dropped into the
+        // `Services/` bucket is covered by construction. Revert
+        // `strip_services_from` to a hand-kept list and this goes red — the
+        // synthetic (and every real sibling) would vanish. Mirrors the
+        // discovery seam `wylde_updater/tests/whole_stack_coverage.rs` drives.
         let tmp = tempfile::tempdir().unwrap();
         let svc_dir = tmp.path().join("Services").join("wylde-synthetic-probe");
         std::fs::create_dir_all(&svc_dir).unwrap();
