@@ -160,6 +160,8 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Changed
 
+- **CI now fails if a committed `.github/rulesets/*.json` record drifts from the live branch-protection ruleset it mirrors (#128).** A new `.github/workflows/ruleset-parity.yml` re-reads the live `protect-develop` / `protect-main` rulesets each run and diffs the meaningful writable fields (required-check contexts, `strict` flag, `bypass_actors`, `enforcement`) against the committed files, so the source of truth can no longer silently under-protect the branches the way it had in #204. Reading a ruleset needs `Administration: read`, which `GITHUB_TOKEN` cannot be granted, so the job uses a `RULESET_AUDIT_TOKEN` secret (a fine-grained PAT with Administration: Read-only) and degrades **green with a notice** when that secret is absent — never a false red. Informational for now; promotable to a required check once the token exists and it has reported green on `develop` once.
+
 - **Log rotation is now bounded by construction, so a newly-added sink can't reintroduce unbounded
   growth (#118).** #98 gave every log a shared rotating sink and a CI gate against ad-hoc appends, but
   bounding was still opt-in per sink in one respect: routing through the factory was necessary but not
