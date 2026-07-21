@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from .conftest import _write
 
 _DAEMON_MANAGED = "rust/crates/wylde-lifecycle/src/daemon_managed.rs"
@@ -73,6 +75,50 @@ def test_boot_flags_rust_const_services_array(isolated_tree: Any) -> None:
     )
     findings = wc.check_launcher_enumerates_services_from_manifests()
     assert any("hardcoded service roster in the Rust boot path" in f.message for f in findings)
+
+
+# #115 — each of these ESCAPED rule 44 before the regex fix. The first is the
+# exact CORE_SERVICES literal #101 deleted from control.rs: re-pasting it back
+# passed the gate clean. The prefix alternation missed any qualifier
+# (CORE_/DAEMON_/WYLDE_), and the `: [` type-annotation requirement missed the
+# idiomatic slice form `: &[&str] = &[` (the `[` is preceded by `&`).
+_PREVIOUSLY_ESCAPING_ROSTERS = [
+    ("core_services_array", 'const CORE_SERVICES: [&str; 2] = ["wylde-gateway", "wylde-voice"];\n'),
+    ("core_services_slice", 'pub const CORE_SERVICES: &[&str] = &["wylde-gateway"];\n'),
+    ("daemon_services_slice", 'static DAEMON_SERVICES: &[&str] = &["wylde-gateway"];\n'),
+    ("bare_services_slice", 'const SERVICES: &[&str] = &["wylde-gateway"];\n'),
+]
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [lit for _, lit in _PREVIOUSLY_ESCAPING_ROSTERS],
+    ids=[label for label, _ in _PREVIOUSLY_ESCAPING_ROSTERS],
+)
+def test_boot_flags_prefixed_and_slice_service_rosters(isolated_tree: Any, literal: str) -> None:
+    """A qualifier-prefixed name or a slice-form declaration is still a
+    hand-kept roster and must fire rule 44. Testing only the two forms that
+    already matched (bare/`ALL_` array) reproduces the blind spot #115 exists
+    to close, so these assert the previously-escaping cases."""
+    wc, root = isolated_tree
+    _write_single_source(root)
+    _write(root / "rust/crates/wylde-lifecycle/src/roster.rs", literal)
+    findings = wc.check_launcher_enumerates_services_from_manifests()
+    assert any(
+        "hardcoded service roster in the Rust boot path" in f.message for f in findings
+    ), f"rule 44 did not flag: {literal!r}"
+
+
+def test_boot_does_not_flag_non_roster_service_constants(isolated_tree: Any) -> None:
+    """The widened regex must not over-match: a scalar const whose name merely
+    starts with SERVICE (e.g. a timeout) is not a roster and must stay clean."""
+    wc, root = isolated_tree
+    _write_single_source(root)
+    _write(
+        root / "rust/crates/wylde-lifecycle/src/roster.rs",
+        "const SERVICE_TIMEOUT_MS: u64 = 5_000;\nconst MAX_SERVICES: usize = 12;\n",
+    )
+    assert wc.check_launcher_enumerates_services_from_manifests() == []
 
 
 # ── Rule 45: shutdown is derived from the same DAEMON_MANAGED table ────
