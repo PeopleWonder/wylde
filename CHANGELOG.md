@@ -304,6 +304,19 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   a test that registers past the window and asserts the LRU's `definition.json`, `persona.md`,
   `memory.jsonl`, and `index/chunks.jsonl` all survive — and that no graph teardown is enqueued.
 
+- **A lost, stale, or damaged workspace index can no longer silently orphan every
+  bundle on disk (closes #134).** Every enumeration path read `index.json`'s `mru` list and
+  nothing ever walked `<data_dir>/workspaces/`, so a bundle present on disk but absent from the
+  index was invisible forever — nothing listed it, nothing could delete it. This lands the
+  disk-walk half that complements the earlier fail-loud load guard (#140): a new
+  `persistence::list_bundle_ids` walks the bundle directories, `registry::list_all` (exposed as
+  the `workspaces.list_all` verb) enumerates every workspace on disk — MRU-ordered when the index
+  is readable, recovered straight from disk when it is damaged (never folded to an empty list) —
+  and reconciles stale `mru` ids (whose directory is gone) back out of the persisted index so
+  they stop occupying a dropdown slot. Everything the walk surfaces is deletable through the same
+  `delete` verb. Covered by tests for plant-and-find, corrupt-index recovery, stale-entry
+  reconciliation, and orphan-is-deletable — each failing before this change.
+
 - **A deleted workspace's memory sweep is now durable instead of fire-and-forget,
   so a down harness can no longer orphan `workspace_memories/` permanently
   (closes #166).** Deleting a workspace swept its durable memory tier (#135) and

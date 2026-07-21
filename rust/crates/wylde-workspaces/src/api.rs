@@ -253,6 +253,21 @@ pub async fn handle_list_mru(_payload: Value) -> Reply {
     Reply::ok(json!({ "workspaces": workspaces, "active_id": active_id }))
 }
 
+/// `workspaces.list_all` — **every** workspace on disk (a disk-walk), not just
+/// the MRU-5 window. No payload. Reply: `{ workspaces: [WorkspaceDefinition] }`.
+///
+/// This is the enumeration that makes `index.json` no longer the *sole* record
+/// of which workspaces exist (#134): it surfaces bundles the index never knew
+/// about or has lost, so none can be silently orphaned, and every id it returns
+/// is deletable through `workspaces.delete`. It reconciles stale index entries
+/// as a side effect and recovers from a damaged index straight off disk rather
+/// than folding to an empty list.
+pub async fn handle_list_all(_payload: Value) -> Reply {
+    let defs = registry::list_all();
+    let workspaces: Vec<Value> = defs.iter().map(def_with_index_state).collect();
+    Reply::ok(json!({ "workspaces": workspaces }))
+}
+
 /// `workspaces.rag_query` — k-NN search over a workspace's file index.
 /// Payload: `{ "workspace_id": string, "query": string, "k"?: number }`.
 /// Returns `{ hits: [{file_path, line_range, content, score, chunk_idx}] }`.
@@ -563,6 +578,36 @@ mod tests {
             on_disk.as_bytes(),
             torn.as_slice(),
             "the damaged index must survive every refused verb"
+        );
+    }
+
+    /// #134 — `workspaces.list_all` surfaces a bundle the index never knew
+    /// about, over the wire, so nothing on disk is unreachable through the GUI.
+    #[tokio::test]
+    async fn list_all_verb_surfaces_an_orphan_bundle() {
+        let _env = TestEnv::new();
+        let td = tempdir().unwrap();
+        let p = td.path().join("proj");
+        std::fs::create_dir(&p).unwrap();
+        let created = handle_create(json!({ "folder": p.to_string_lossy() })).await;
+        assert!(created.ok, "create failed: {:?}", created.error);
+
+        // Plant an orphan bundle straight to disk — no index entry.
+        let orphan =
+            registry::WorkspaceDefinition::new(td.path().join("orphan").to_string_lossy().as_ref());
+        registry::persistence::save_definition(&orphan).unwrap();
+
+        let reply = handle_list_all(Value::Null).await;
+        assert!(reply.ok, "list_all failed: {:?}", reply.error);
+        let ids: Vec<String> = reply.data["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(
+            ids.contains(&orphan.id),
+            "list_all must surface the orphan bundle; got {ids:?}"
         );
     }
 
