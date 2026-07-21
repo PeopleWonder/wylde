@@ -190,6 +190,22 @@ pub fn delete(workspace_id: &str) -> Result<bool, RegistryError> {
         }));
     }
     teardown_bundle(workspace_id);
+    if existed {
+        // #166 — an EXPLICIT delete additionally sweeps the peer-service stores
+        // beyond the graph: the durable workspace-memory tier (#135) and the
+        // bound flat-store conversations. Both ride the same durable queue as
+        // the graph cascade above, enqueued here rather than in
+        // `teardown_bundle`. Since #133 that distinction is belt-and-braces —
+        // `delete` is now the only caller of `teardown_bundle` (registering a
+        // workspace no longer evicts anything) — but keeping the peer-service
+        // sweeps scoped to `delete` documents that ONLY an explicit delete may
+        // touch these stores. The old handler fired them as fire-and-forget
+        // `tokio::spawn`s that a down harness silently dropped; queuing them
+        // makes the sweep retry until it lands (re-attaching memories the user
+        // deleted is the #166 privacy bug).
+        pending::enqueue(workspace_id, pending::TeardownTarget::Memory);
+        pending::enqueue(workspace_id, pending::TeardownTarget::Conversations);
+    }
     Ok(existed)
 }
 
@@ -230,7 +246,7 @@ fn promote_and_persist(workspace_id: &str) -> Result<(), RegistryError> {
 /// never be repointed, so teardown must cascade rather than repoint.)
 fn teardown_bundle(workspace_id: &str) {
     let _ = persistence::delete_workspace_dir(workspace_id);
-    pending::enqueue(workspace_id);
+    pending::enqueue(workspace_id, pending::TeardownTarget::Graph);
 }
 
 #[cfg(test)]
@@ -339,6 +355,17 @@ mod tests {
 
     // ── #99: BOTH removal paths cascade to the graph via one primitive ───
 
+    /// Targets queued for a given workspace id, as a sorted list.
+    fn queued_targets(id: &str) -> Vec<pending::TeardownTarget> {
+        let mut ts: Vec<_> = pending::list()
+            .into_iter()
+            .filter(|e| e.workspace_id == id)
+            .map(|e| e.target)
+            .collect();
+        ts.sort();
+        ts
+    }
+
     #[test]
     fn delete_enqueues_the_graph_teardown() {
         let _env = TestEnv::new();
@@ -346,14 +373,38 @@ mod tests {
         assert!(pending::list().is_empty(), "clean slate");
         delete(&def.id).unwrap();
         assert!(
-            pending::list().contains(&def.id),
+            queued_targets(&def.id).contains(&pending::TeardownTarget::Graph),
             "explicit delete must enqueue the graph cascade"
+        );
+    }
+
+    /// #166 — an explicit delete must ALSO durably queue the memory + conversation
+    /// sweeps. Before #166 these were fire-and-forget and nothing was queued;
+    /// this asserts all three targets now are. (Since #133 the ONLY teardown
+    /// path is explicit delete — registering never evicts — so there is no
+    /// eviction path that would need to preserve the memory tier separately.)
+    #[test]
+    fn delete_enqueues_the_peer_service_sweeps() {
+        let _env = TestEnv::new();
+        let def = create(&_env.ws_path("del-sweeps"), None).unwrap();
+        assert!(pending::list().is_empty(), "clean slate");
+        delete(&def.id).unwrap();
+        assert_eq!(
+            queued_targets(&def.id),
+            vec![
+                pending::TeardownTarget::Graph,
+                pending::TeardownTarget::Memory,
+                pending::TeardownTarget::Conversations,
+            ],
+            "explicit delete must durably queue graph + memory + conversation sweeps"
         );
     }
 
     /// #133: the flip side of the graph cascade. Because registering past the
     /// window no longer evicts anything, it must **not** enqueue a graph
     /// teardown either — the old code cascaded a destructive eviction here.
+    /// This is also the #166 guarantee that a non-delete path queues NO sweep
+    /// of any target (graph, memory, or conversations).
     #[test]
     fn create_past_mru_window_enqueues_no_teardown() {
         let _env = TestEnv::new();
@@ -364,7 +415,7 @@ mod tests {
         assert!(get(&first.id).is_some(), "w0 survives past the window");
         assert!(
             pending::list().is_empty(),
-            "non-destructive registration must not enqueue any graph teardown"
+            "non-destructive registration must not enqueue any teardown"
         );
     }
 }
