@@ -48,6 +48,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Green PRs into `develop` now merge themselves — no session left idle waiting to click merge.** With the
+  strict up-to-date rule off on `develop`, a PR can merge the moment its checks pass, but nothing armed that
+  merge, so the final step was still hand-babysat (a session opens a PR, sits waiting on CI, then needs a nudge
+  to merge). A new `.github/workflows/auto-merge-develop.yml` runs on `pull_request: [opened, ready_for_review]`
+  and calls `gh pr merge --auto --squash` for every qualifying PR, so GitHub completes the merge itself the
+  instant the required checks go green (#189). This is **not** a gate bypass: native auto-merge respects the
+  full `protect-develop` required-check set (backend build+test, GUI build, panel-walk L7, clippy/fmt, G7, the
+  `personal-info scrub (G8)`, the cargo-deny advisory/license legs, branch target+name, conventional commits,
+  changelog, and `linked issue`), so a PR that is red or unlinked simply never merges. It arms **only** PRs
+  targeting `develop` (the `develop`→`main` and experimental promotions stay deliberately manual), skips drafts,
+  honours a `no-auto-merge` label as an explicit hold, and excludes `dependabot[bot]` — those stay with the
+  narrower, patch-only `dependabot-automerge.yml` (#68), which the two workflows partition cleanly by actor so
+  the general one never loosens that stricter gating. Least-privilege `contents: write` + `pull-requests: write`
+  on `GITHUB_TOKEN`; the arming job is advisory, not a required check, so it can never deadlock a branch.
 - **Every PR now has to tie to a tracking issue, and every issue now gets a milestone automatically.** Two
   halves of one project rule — "every issue is attached to a milestone, every merge is tied to an issue" —
   turned from a norm into automation (#183). A new `linked issue` job in `.github/workflows/pr-checks.yml`
@@ -230,6 +244,19 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   changelog a required, verifiable release gate rather than an optional courtesy.
 
 ### Fixed
+
+- **Registering a 6th workspace no longer silently destroys the least-recently-used
+  workspace's entire bundle (closes #133).** The MRU-5 window was a *disk cap*, not just
+  a dropdown limit: promoting a 6th workspace `remove_dir_all`'d the LRU bundle — persona,
+  `memory.jsonl`, RAG chunk store, conversations, and Memgraph nodes — with no prompt, no
+  warning, and no undo, the exact inverse of the never-auto-delete decision taken for models
+  (#120/#131). The window is now display-only: `WorkspaceState::promote` re-orders the `mru`
+  list but never evicts, so the list is the full, unbounded enumeration of every workspace on
+  disk. `promote_and_persist` no longer tears down anything; the sole bundle-destroying path is
+  now explicit `delete`. A workspace pushed past the window stays fully on disk and enumerable
+  (`persistence::load_all`); the dropdown still renders only the first `MRU_WINDOW`. Covered by
+  a test that registers past the window and asserts the LRU's `definition.json`, `persona.md`,
+  `memory.jsonl`, and `index/chunks.jsonl` all survive — and that no graph teardown is enqueued.
 
 - **The L7 `panel-walk` gate's hand-kept crate list is now guarded against
   silent under-coverage (closes #95).** `cargo panel-walk` (the required `gui
@@ -918,6 +945,27 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   change that cannot drift. The missing issues are now in the map with their Tiers,
   along with the newly-filed #55/#56/#57. Re-running remains a no-op against a
   fully-seeded board.
+
+- **New issues (and same-repo PRs) now land on the Roadmap board automatically.**
+  Milestoning was already automated (`issue-milestone.yml`) but board *membership*
+  was not — an issue got a card only if a human remembered, and it had drifted (an
+  audit found 31 milestoned issues off the board and 11 closed issues still sitting
+  in Todo). A new `add-to-project.yml` workflow (`issues: [opened, reopened]`,
+  `pull_request: [opened]`) adds each item to `projects/1` via
+  `actions/add-to-project`, pinned to a commit SHA and authenticated with the same
+  `PROJECT_TOKEN` classic PAT `roadmap-dates.yml` already uses — the default
+  `GITHUB_TOKEN` cannot write a user-owned Project. It declares a least-privilege
+  `contents: read` (the board write goes through the PAT, not `GITHUB_TOKEN`), so it
+  stays clear of the `actions/missing-workflow-permissions` class fixed in #177, and
+  it skips Dependabot and fork PRs, whose events carry no repo secrets, and it
+  no-ops with a notice (never a red X) if `PROJECT_TOKEN` is unset. The one-time
+  backlog gap was also backfilled by hand. **Two one-time manual steps are still
+  required** before automation is live: (1) the `PROJECT_TOKEN` repo secret must be
+  configured — it is currently unset, so both this workflow and `roadmap-dates.yml`
+  no-op; and (2) status transitions need a manual enable — GitHub exposes no API to toggle a Project's built-in workflows
+  (only `deleteProjectV2Workflow` exists), so *Item added → Todo*, *Item closed →
+  Done*, and *Pull request merged → Done* must be switched on once in the Project's
+  Workflows settings.
 
 - **Clippy (G4) + fmt (G6) CI gates are now LIVE.** The two staged enforcement
   gates were armed: a new `clippy (G4) + fmt (G6)` CI job runs

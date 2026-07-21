@@ -8,19 +8,25 @@
 //! Kept separate from [`super::definition`] so activating a workspace
 //! (a hot, frequent write) doesn't rewrite a workspace's config.
 //!
-//! ## Static MRU-5 (Q2)
+//! ## MRU window is display-only (Q2 / #133)
 //!
 //! [`MRU_WINDOW`] is a hard-coded constant — the redesign deliberately
 //! drops the legacy user-configurable `mru_limit` + `set_mru_limit`
-//! verb. Changing the window is a one-line edit here. Because eviction
-//! past the window is the only way a workspace leaves the registry, the
-//! `mru` list is also the authoritative set of workspaces on disk.
+//! verb. Changing the window is a one-line edit here.
+//!
+//! It bounds only *how many* workspaces the InferenceBar dropdown renders;
+//! it is **not** a cap on how many exist. The `mru` list is the full,
+//! unbounded enumeration of every workspace on disk, kept in recency order.
+//! A workspace leaves the registry **only** by explicit `delete` — never by
+//! being pushed past the window. (#133: the old code `remove_dir_all`'d the
+//! least-recently-used bundle when a 6th workspace was registered, silently
+//! destroying its persona, memory, RAG index and conversations.)
 
 use serde::{Deserialize, Serialize};
 
-/// MRU window the InferenceBar dropdown shows, and the hard cap on how
-/// many workspaces the registry retains. Static (Q2): if this ever needs
-/// to change it's a one-line edit.
+/// How many workspaces the InferenceBar dropdown shows (the MRU window).
+/// A *display* bound only — not a cap on how many workspaces exist (#133).
+/// Static (Q2): if this ever needs to change it's a one-line edit.
 pub const MRU_WINDOW: usize = 5;
 
 /// The mutable selection state, distinct from the per-workspace config
@@ -32,22 +38,26 @@ pub struct WorkspaceState {
     #[serde(default)]
     pub active_id: Option<String>,
 
-    /// Most-recently-used workspace ids, newest first. The dropdown
-    /// renders the first [`MRU_WINDOW`]; eviction keeps the list at most
-    /// `MRU_WINDOW` long.
+    /// Every workspace id that exists on disk, newest-used first. This is
+    /// the authoritative enumeration and is **unbounded** — the dropdown
+    /// renders only the first [`MRU_WINDOW`], but the list is never trimmed
+    /// automatically (a workspace leaves only via explicit `delete`, #133).
     #[serde(default)]
     pub mru: Vec<String>,
 }
 
 impl WorkspaceState {
-    /// Move `id` to the MRU head and mark it active. Returns the ids
-    /// evicted past the static [`MRU_WINDOW`] (the caller removes their
-    /// on-disk bundles).
-    pub fn promote(&mut self, id: &str) -> Vec<String> {
+    /// Move `id` to the MRU head and mark it active.
+    ///
+    /// The `mru` list is the *full, unbounded* enumeration of workspaces
+    /// that exist on disk (#133): promotion re-orders it but never drops an
+    /// entry, so a 6th (or 600th) workspace can never auto-destroy an older
+    /// one's bundle. [`MRU_WINDOW`] governs only how many the dropdown shows
+    /// (see [`super::list_mru`]) — it is a *display* window, not a disk cap.
+    pub fn promote(&mut self, id: &str) {
         self.mru.retain(|x| x != id);
         self.mru.insert(0, id.to_owned());
         self.active_id = Some(id.to_owned());
-        self.evict_overflow()
     }
 
     /// Forget `id`: drop it from the MRU and clear the active pointer if
@@ -57,19 +67,6 @@ impl WorkspaceState {
         if self.active_id.as_deref() == Some(id) {
             self.active_id = None;
         }
-    }
-
-    fn evict_overflow(&mut self) -> Vec<String> {
-        let mut evicted = Vec::new();
-        while self.mru.len() > MRU_WINDOW {
-            if let Some(victim) = self.mru.pop() {
-                if self.active_id.as_deref() == Some(victim.as_str()) {
-                    self.active_id = None;
-                }
-                evicted.push(victim);
-            }
-        }
-        evicted
     }
 }
 
@@ -197,30 +194,36 @@ mod tests {
     #[test]
     fn promote_moves_to_head_and_sets_active() {
         let mut s = WorkspaceState::default();
-        assert!(s.promote("a").is_empty());
-        assert!(s.promote("b").is_empty());
+        s.promote("a");
+        s.promote("b");
         assert_eq!(s.mru, vec!["b", "a"]);
         assert_eq!(s.active_id.as_deref(), Some("b"));
 
         // Re-promoting an existing id moves it to head (no dup).
-        assert!(s.promote("a").is_empty());
+        s.promote("a");
         assert_eq!(s.mru, vec!["a", "b"]);
         assert_eq!(s.active_id.as_deref(), Some("a"));
     }
 
+    /// #133 regression: promotion past the display window must NEVER drop an
+    /// id. Before the fix the 6th `promote` evicted (and the caller destroyed)
+    /// the least-recently-used workspace; now the enumeration is unbounded.
     #[test]
-    fn promote_evicts_past_static_mru_window() {
+    fn promote_past_window_keeps_full_unbounded_enumeration() {
         let mut s = WorkspaceState::default();
         for i in 0..MRU_WINDOW {
-            assert!(s.promote(&format!("w{i}")).is_empty());
+            s.promote(&format!("w{i}"));
         }
         assert_eq!(s.mru.len(), MRU_WINDOW);
-        // The 6th distinct workspace evicts the least-recently-used (w0).
-        let evicted = s.promote("w-new");
-        assert_eq!(evicted, vec!["w0".to_owned()]);
-        assert_eq!(s.mru.len(), MRU_WINDOW);
-        assert_eq!(s.mru[0], "w-new");
-        assert!(!s.mru.contains(&"w0".to_owned()));
+        // Register a 6th (and 7th) distinct workspace.
+        s.promote("w-new");
+        s.promote("w-newer");
+        // Nothing is evicted: the list holds every id, newest-first.
+        assert_eq!(s.mru.len(), MRU_WINDOW + 2);
+        assert_eq!(s.mru[0], "w-newer");
+        assert_eq!(s.mru[1], "w-new");
+        // The least-recently-used original is still enumerated (not destroyed).
+        assert!(s.mru.contains(&"w0".to_owned()));
     }
 
     #[test]
