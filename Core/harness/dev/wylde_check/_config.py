@@ -318,8 +318,16 @@ RUST_SHUTDOWN_TABLE_TOKEN: str = "shutdown_sequence"
 # (Rust) reintroducing a hand-kept roster. Case-sensitive so ordinary
 # lowercase locals never match. (The `DAEMON_MANAGED` table is not a
 # `SERVICES` array and is intentionally not matched.)
+#
+# Two blind spots were closed in #115:
+#   * ANY uppercase qualifier prefix — `CORE_SERVICES`, `DAEMON_SERVICES`,
+#     `WYLDE_SERVICES` — not just the bare/`ALL_` forms. `CORE_SERVICES`
+#     (the exact literal #101 deleted from control.rs) escaped before.
+#   * SLICE syntax `: &[&str] = &[`, not only the array-annotation form
+#     `: [&str; N] = [`. The idiomatic slice table has a `&` before the `[`,
+#     so every slice-form roster escaped regardless of name.
 RUST_HARDCODED_SERVICE_ARRAY_RE = re.compile(
-    r"\b(?:const|static)\s+_?(?:ALL_)?SERVICES?(?:_LIST|_NAMES)?\s*:\s*\[",
+    r"\b(?:const|static)\s+_?(?:[A-Z][A-Z0-9]*_)*SERVICES?(?:_LIST|_NAMES)?\s*:\s*&?\[",
 )
 
 # The gpui-side graceful shutdown must delegate to the daemon drain via
