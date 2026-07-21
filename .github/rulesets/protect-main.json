@@ -36,15 +36,10 @@
           { "context": "changelog updated" },
           { "context": "cargo-deny (advisories) (rust/Cargo.toml)" },
           { "context": "cargo-deny (advisories) (Core/GUI/Cargo.toml)" },
-          { "context": "cargo-deny (advisories) (tools/xtask/Cargo.toml)" },
-          { "context": "cargo-deny (advisories) (tools/wylde-release/Cargo.toml)" },
           { "context": "cargo-deny (licenses) (rust/Cargo.toml)" },
           { "context": "cargo-deny (licenses) (Core/GUI/Cargo.toml)" },
-          { "context": "cargo-deny (licenses) (tools/xtask/Cargo.toml)" },
-          { "context": "cargo-deny (licenses) (tools/wylde-release/Cargo.toml)" },
-          { "context": "manifest coverage" },
-          { "context": "actions pinned to SHA" },
-          { "context": "voice presets mirror" }
+          { "context": "personal-info scrub (G8)" },
+          { "context": "live-graph (Neo4j Bolt) tests" }
         ]
       }
     }
