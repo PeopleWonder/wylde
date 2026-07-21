@@ -213,8 +213,8 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   `integration_symbols_find`, `wylde-harness` `memgraph_live` +
   `memgraph_bolt_integration`). On its very first run the leg earned its keep —
   it caught a real live-DB bug the mocks never could (`symbol_context` returns
-  zero callees against real Neo4j), now tracked as #203 and its test excluded
-  from the leg with a pointer until fixed. The default
+  zero callees against real Neo4j), tracked as #203; its `integration_symbol_context`
+  test was excluded with a pointer until the fix landed and is now re-added (#203). The default
   `backend` job still runs DB-less and skips them, so the markers stay; a
   dedicated `--ignored` leg is what makes them live rather than dead. The leg is
   Windows + vendored Neo4j because the shipped DB is a JVM (not the Memgraph
@@ -319,6 +319,23 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   changelog a required, verifiable release gate rather than an optional courtesy.
 
 ### Fixed
+
+- **`workspaces.symbol_context` no longer drops every outgoing callee to zero against a
+  live graph (closes #203).** The k-hop walk applies a shared time budget
+  (`200ms + 300ms × hops`) measured from a single instant taken *before* the focal/type/
+  sibling reads and *before* either call-graph BFS. `walk` runs the callers BFS before the
+  callees BFS, and the deadline was checked at the top of every hop — including hop 1. So
+  against a cold live Neo4j, the first query's connection/planner warmup plus the reads that
+  follow could consume the ~500ms budget, and by the time the *second* direction (callees)
+  started, `elapsed >= deadline` broke its loop before it fetched even the direct callees:
+  callers resolved fine, callees came back empty. The zero-latency mock never spent the
+  budget, so no unit test or `FakeGraph` could surface it — only the live-graph CI leg did,
+  on its first run. The fix makes hop 1 unconditional (the direct neighbours are the core
+  result and must always resolve); the budget now bounds only *deeper* expansion (hop ≥ 2),
+  and per-query timeouts still bound each individual read. The previously-excluded
+  `integration_symbol_context` test is re-added to the live-graph (Neo4j Bolt) CI leg, and a
+  deterministic mock regression test (`walk_hop1_survives_budget_already_spent`) injects
+  callers-read latency to reproduce a spent budget without a database.
 
 - **A model store that is merely slow to come back after an update no longer reads as "you have no
   models" (closes #132).** Wylde never sets `OLLAMA_MODELS`, so the store lives in Ollama's own

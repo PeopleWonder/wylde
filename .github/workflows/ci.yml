@@ -106,7 +106,7 @@ jobs:
       - name: Build the live-graph test binaries (no DB needed)
         working-directory: rust
         run: |
-          cargo test -p wylde-workspaces --locked --no-run --test integration_graph --test integration_symbols_find
+          cargo test -p wylde-workspaces --locked --no-run --test integration_graph --test integration_symbol_context --test integration_symbols_find
           cargo test -p wylde-harness --locked --no-run --test memgraph_live --test memgraph_bolt_integration
       - name: Boot Neo4j and run the live-graph tests (--ignored)
         shell: pwsh
@@ -143,15 +143,16 @@ jobs:
             if (-not $ready) { throw 'Neo4j did not become query-ready on bolt://127.0.0.1:7687 within 4 minutes' }
             Write-Host 'Neo4j is up and query-ready on bolt://127.0.0.1:7687 (auth off).'
             Push-Location (Join-Path $repo 'rust')
-            # NOTE: `integration_symbol_context` is deliberately EXCLUDED — this
-            # leg ran it first and it went RED against real Neo4j: the focal
-            # node's outgoing-CALLS *callees* resolve to zero while its incoming
-            # *callers* resolve fine (a real behaviour the FakeGraph mock could
-            # not show). That is the leg doing its job; it is tracked in #203 and
-            # must be re-added to this line once fixed. Excluded, NOT silently
-            # dropped. Each binary runs separately so one failure can't mask
-            # another.
+            # Each binary runs separately so one failure can't mask another.
+            # `integration_symbol_context` was RED here on its first run against
+            # real Neo4j — the focal's outgoing-CALLS *callees* resolved to zero
+            # while its incoming *callers* resolved fine, a live-DB behaviour the
+            # zero-latency mock could not show. Root-caused + fixed in #203 (the
+            # shared walk budget was starving the second BFS direction of even
+            # its first hop); re-added below so the leg gates it again.
             cargo test -p wylde-workspaces --locked --test integration_graph -- --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            cargo test -p wylde-workspaces --locked --test integration_symbol_context -- --ignored --nocapture
             if ($LASTEXITCODE -ne 0) { $failed = $true }
             cargo test -p wylde-workspaces --locked --test integration_symbols_find -- --ignored --nocapture
             if ($LASTEXITCODE -ne 0) { $failed = $true }
