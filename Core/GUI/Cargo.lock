@@ -9034,6 +9034,7 @@ dependencies = [
  "wylde-prebuild-guard",
  "wylde-reasoning-plan",
  "wylde-shared",
+ "wylde-stack",
  "wylde-workspaces-client",
 ]
 

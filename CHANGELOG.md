@@ -697,6 +697,23 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   mirroring `wylde_stack::shutdown_targets::NON_ROSTER_GUI_IMAGES`. A falsification test drops a synthetic
   `Services/` service into a tempdir and asserts it appears on the strip with no code edit; reverting the
   derivation turns it red. (#123)
+- **A new panel and a new `Services/` bucket both used to vanish silently; now each is caught.** Two
+  hand-kept enumerations where the *missing* direction was silent while the *extra* direction was
+  loud — which made them easy to mistake for covered (#125). (A) The committed panel-registry codegen
+  (`Manifest/Extension_handlers/src/generated.rs`, output of `wylde-panel-aggregator`) was never
+  verified against the real `Panels/*/manifest.json` set: add a 10th panel and forget the regen, and it
+  compiled clean, all required checks stayed green, and the panel was simply absent from the tab bar.
+  The aggregator gains a `--check` mode that regenerates in memory and fails non-zero on any drift, wired
+  as a CI step so the drift is a red build instead of a missing product surface. (B) The model registry's
+  service-manifest scan (`wylde-harness`'s `SERVICE_ROOTS`) walked a hand-kept list of pre-cutover
+  top-level folder names — most long gone — and did **not** include `Services/`, so a
+  `Services/<svc>/manifest.json` that declared a model was invisible to the registry, silently by
+  construction (a manifest with no `models` key is legitimately skipped, so an absent root looked
+  identical to a no-op). The roots now derive from `wylde_stack::roster::discovered_folders` — the same
+  `Services/` discovery the updater, launcher, and lifecycle daemon already follow — so a bucket service
+  is covered with no edit, honouring the same `WYLDE_SERVICES` override. Both halves ship a
+  falsification test that is red without the fix: a panel added without regenerating fails `--check`, and
+  a synthetic `Services/<svc>/manifest.json` declaring a model is now seen by the model registry. (#125)
 
 ### Changed
 
