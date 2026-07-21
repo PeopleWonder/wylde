@@ -712,7 +712,7 @@ async fn run_stream_pipe(
         let body = match read_res {
             Ok(Ok(b)) => b,
             Ok(Err(e)) => {
-                let _ = tx.send(Err(IpcError::new("pipe_io", e.to_string()))).await;
+                let _ = tx.send(Err(IpcError::new("pipe_io", e.to_string()))).await;  // subscriber channel may be dropped (wylde-check: discard-result-ok)
                 return;
             }
             Err(e) => {

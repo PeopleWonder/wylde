@@ -146,7 +146,7 @@ impl QuadTree {
     fn place_in_child(&mut self, cell: usize, idx: u32, x: f32, y: f32, depth: u32) {
         let (children, x0, y0, half) = {
             let c = &self.cells[cell];
-            (c.children.unwrap(), c.x0, c.y0, c.size * 0.5)
+            (c.children.unwrap(), c.x0, c.y0, c.size * 0.5)  // INVARIANT: place_in_child is only called on a subdivided (internal) cell, whose children are Some. wylde-check: panel-panic-allowed
         };
         let east = x >= x0 + half;
         let south = y >= y0 + half;

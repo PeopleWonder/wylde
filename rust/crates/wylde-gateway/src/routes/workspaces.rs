@@ -38,7 +38,7 @@ use axum::routing::{delete, get, post, put};
 use axum::Router;
 use serde_json::{json, Map, Value};
 
-use super::common::{authorize, harness_dispatch};
+use super::common::{authorize, workspaces_dispatch};
 use crate::envelopes::failure;
 
 fn merged_payload(body: Option<Json<Value>>, extra: Vec<(&str, Value)>) -> Value {
@@ -69,7 +69,7 @@ pub async fn list_workspaces(headers: HeaderMap) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    harness_dispatch("workspaces.list_mru", Value::Null).await
+    workspaces_dispatch("workspaces.list_mru", Value::Null).await
 }
 
 /// `GET /api/workspaces/recent[?limit=N]` — MRU-5 list (limit ignored;
@@ -81,7 +81,7 @@ pub async fn recent_workspaces(
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    harness_dispatch("workspaces.list_mru", Value::Null).await
+    workspaces_dispatch("workspaces.list_mru", Value::Null).await
 }
 
 /// `GET /api/workspaces/mru_limit` — retired (static MRU-5).
@@ -119,7 +119,7 @@ pub async fn activate_workspace(headers: HeaderMap, body: Option<Json<Value>>) -
     if folder.trim().is_empty() {
         return failure("bad_request", "path is required", StatusCode::BAD_REQUEST);
     }
-    harness_dispatch("workspaces.create", json!({ "folder": folder })).await
+    workspaces_dispatch("workspaces.create", json!({ "folder": folder })).await
 }
 
 /// `DELETE /api/workspaces/:workspace_id` — drop a workspace.
@@ -134,7 +134,7 @@ pub async fn delete_workspace(headers: HeaderMap, Path(workspace_id): Path<Strin
             StatusCode::BAD_REQUEST,
         );
     }
-    harness_dispatch("workspaces.delete", json!({ "workspace_id": workspace_id })).await
+    workspaces_dispatch("workspaces.delete", json!({ "workspace_id": workspace_id })).await
 }
 
 /// `GET /api/workspaces/:workspace_id/status` — retired (no file indexer).
@@ -182,7 +182,7 @@ pub async fn set_persona(
         );
     }
     let payload = merged_payload(body, vec![("workspace_id", Value::String(workspace_id))]);
-    harness_dispatch("workspaces.set_persona", payload).await
+    workspaces_dispatch("workspaces.set_persona", payload).await
 }
 
 /// Build the workspaces sub-router.

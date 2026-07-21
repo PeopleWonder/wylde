@@ -199,7 +199,7 @@ pub struct ConceptHighlight {
 
 impl Default for ConceptHighlight {
     fn default() -> Self {
-        serde_yaml::from_str("{}").expect("defaults")
+        serde_yaml::from_str("{}").expect("defaults")  // INVARIANT: parses the literal "{}" to fill serde defaults — cannot fail. wylde-check: panel-panic-allowed
     }
 }
 
@@ -240,7 +240,7 @@ pub struct UnderlineStyle {
 
 impl Default for UnderlineStyle {
     fn default() -> Self {
-        serde_yaml::from_str("{}").expect("defaults")
+        serde_yaml::from_str("{}").expect("defaults")  // INVARIANT: parses the literal "{}" to fill serde defaults — cannot fail. wylde-check: panel-panic-allowed
     }
 }
 
@@ -260,7 +260,7 @@ pub struct TetherLine {
 
 impl Default for TetherLine {
     fn default() -> Self {
-        serde_yaml::from_str("{}").expect("defaults")
+        serde_yaml::from_str("{}").expect("defaults")  // INVARIANT: parses the literal "{}" to fill serde defaults — cannot fail. wylde-check: panel-panic-allowed
     }
 }
 
@@ -288,7 +288,7 @@ pub struct PerWordChip {
 
 impl Default for PerWordChip {
     fn default() -> Self {
-        serde_yaml::from_str("{}").expect("defaults")
+        serde_yaml::from_str("{}").expect("defaults")  // INVARIANT: parses the literal "{}" to fill serde defaults — cannot fail. wylde-check: panel-panic-allowed
     }
 }
 
@@ -308,7 +308,7 @@ pub struct AmbiguousChip {
 
 impl Default for AmbiguousChip {
     fn default() -> Self {
-        serde_yaml::from_str("{}").expect("defaults")
+        serde_yaml::from_str("{}").expect("defaults")  // INVARIANT: parses the literal "{}" to fill serde defaults — cannot fail. wylde-check: panel-panic-allowed
     }
 }
 

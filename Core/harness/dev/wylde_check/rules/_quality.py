@@ -171,6 +171,16 @@ _FILE_SIZE_QUEUED_SPLITS: Tuple[str, ...] = (
     "rust/crates/wylde-workspaces/src/rag/indexer/mod.rs",
     "rust/crates/wylde-workspaces/src/rag/indexer/search.rs",
     "rust/crates/wylde-workspaces/src/rag/lexical_eval.rs",
+    # Already over the cap when wylde_check became a CI gate (#114, 2026-07-21).
+    # Queued debt on the same terms as the entries above — the cap still fires
+    # on every NEW file and any further growth of these; each is removed as its
+    # split lands. Not new exemptions in principle.
+    "Core/GUI/Frontend/Panels/Dashboard/src/ipc.rs",
+    "Core/GUI/Manifest/Extension_handlers/src/bin/wylde_panel_aggregator.rs",
+    "rust/crates/wylde-harness/src/memory/vector/mod.rs",
+    "rust/crates/wylde-updater/src/lib.rs",
+    "rust/crates/wylde-workspaces/src/api.rs",
+    "rust/crates/wylde-workspaces/src/rag/indexer/manifest.rs",
 )
 
 

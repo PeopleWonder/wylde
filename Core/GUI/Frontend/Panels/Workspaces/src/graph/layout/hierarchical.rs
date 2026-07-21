@@ -202,8 +202,8 @@ impl Hierarchical {
         for &c in kids {
             self.assign(c, depth + 1, tree, cursor, pos);
         }
-        let first = pos[*kids.first().unwrap()].x;
-        let last = pos[*kids.last().unwrap()].x;
+        let first = pos[*kids.first().unwrap()].x;  // INVARIANT: kids is non-empty — the is_empty() branch returned above. wylde-check: panel-panic-allowed
+        let last = pos[*kids.last().unwrap()].x;  // INVARIANT: kids is non-empty — the is_empty() branch returned above. wylde-check: panel-panic-allowed
         pos[m] = Position {
             x: (first + last) * 0.5,
             y,

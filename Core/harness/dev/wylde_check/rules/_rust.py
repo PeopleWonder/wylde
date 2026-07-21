@@ -23,6 +23,7 @@ crate's public API.
 
 from __future__ import annotations
 
+import re
 import sys as _sys
 from pathlib import Path
 from typing import List, Optional
@@ -30,13 +31,17 @@ from typing import List, Optional
 from .. import Finding
 from .._config import (
     RUST_CRATES_ROOT,
+    RUST_CROSS_CRATE_EDGE_EXEMPTIONS,
     RUST_DEEP_SUPER_RE,
     RUST_DISCARD_RESULT_MARKER,
     RUST_LET_UNDERSCORE_RE,
     RUST_LOG_ROTATION_FACTORY_FILE,
+    RUST_LOGGING_INIT_OK_MARKER,
     RUST_LOGGING_INIT_PATTERNS,
     RUST_PROCESS_SPAWN_ALLOWED_CRATES,
+    RUST_PROCESS_SPAWN_OK_MARKER,
     RUST_PROCESS_SPAWN_PATTERNS,
+    RUST_SHARED_SURFACE_CRATES,
     RUST_UNBOUNDED_APPEND_MARKER,
     RUST_UNBOUNDED_APPEND_PATTERNS,
     RUST_USE_CRATE_RE,
@@ -158,10 +163,19 @@ def check_import_paths_rust() -> List[Finding]:
                 # surface like wylde_shared — importable everywhere.
                 if imported == "wylde_plugin_api":
                     continue
+                # Shared authoring surfaces / client crates — pure library
+                # crates and the sanctioned ``*-client`` peers (see
+                # RUST_SHARED_SURFACE_CRATES for the per-crate reason).
+                if imported in RUST_SHARED_SURFACE_CRATES:
+                    continue
                 # TX S4: plugin crates are linked by the harness host
                 # only (compile-time discovery — see
                 # rust/crates/wylde-harness/src/plugins/mod.rs).
                 if imported.startswith("wylde_plugin_") and crate == "wylde-harness":
+                    continue
+                # Per-edge deliberate-dependency carve-outs (e.g. the
+                # wylde-gateway REST facade linking wylde-harness).
+                if (crate, imported) in RUST_CROSS_CRATE_EDGE_EXEMPTIONS:
                     continue
                 out.append(
                     Finding(
@@ -189,6 +203,12 @@ def _line_is_marker_suppressed(line: str) -> bool:
     return RUST_DISCARD_RESULT_MARKER in line
 
 
+# A statement whose trailing `.ok();` result is BOUND — `let name = …​.ok();`
+# (but not `let _ = …​`) or an assignment `lhs = …​.ok();` / `self.x = …​.ok();`.
+# A bound Option is retained, not swallowed, so such lines are not flagged.
+_RUST_OK_BINDING_RE = re.compile(r"^(?:let\s+(?!_\b)[A-Za-z_]|[A-Za-z_][\w.\[\]()]*\s*=(?!=))")
+
+
 def _let_underscore_likely_swallows_result(expr: str) -> bool:
     """Best-effort heuristic for whether ``expr`` is Result-shaped.
 
@@ -211,6 +231,10 @@ def _let_underscore_likely_swallows_result(expr: str) -> bool:
     """
     e = expr.strip()
     if not e:
+        return False
+    # A trailing `?` PROPAGATES the error (only the Ok value is dropped by the
+    # `let _ =`), so `let _ = foo()?;` is not a swallow — the error is handled.
+    if e.rstrip().endswith("?"):
         return False
     # Trivially-not-Result lhs's that are common idioms.
     no_result_substrings = (
@@ -314,7 +338,16 @@ def check_no_silent_error_swallow_rust() -> List[Finding]:
             # to () via discarding the error — flag it.  Chained forms
             # like `.ok().map(...)` or `.ok().unwrap_or_default()` are
             # using Result as an Option pipeline, not dropping it.
-            if line.rstrip().endswith(".ok();") and ".ok().map" not in line:
+            #
+            # A BOUND result (`let prev = …​.ok();`, `self.x = …​.ok();`) keeps
+            # the Option and is the idiomatic Result→Option conversion — the
+            # value is retained (e.g. saved to restore later), not dropped —
+            # so only a bare expression statement (`foo().ok();`) is a swallow.
+            if (
+                line.rstrip().endswith(".ok();")
+                and ".ok().map" not in line
+                and not _RUST_OK_BINDING_RE.match(line.lstrip())
+            ):
                 out.append(
                     Finding(
                         rule="no_silent_error_swallow_rust",
@@ -352,6 +385,8 @@ def check_logging_setup_only_rust() -> List[Finding]:
         for lineno, line in enumerate(text.splitlines(), start=1):
             stripped = line.lstrip()
             if _is_doc_or_comment(stripped):
+                continue
+            if RUST_LOGGING_INIT_OK_MARKER in line:
                 continue
             for pat in RUST_LOGGING_INIT_PATTERNS:
                 if pat.search(line):
@@ -399,6 +434,8 @@ def check_no_external_process_spawn_rust() -> List[Finding]:
         for lineno, line in enumerate(text.splitlines(), start=1):
             stripped = line.lstrip()
             if _is_doc_or_comment(stripped):
+                continue
+            if RUST_PROCESS_SPAWN_OK_MARKER in line:
                 continue
             for pat in RUST_PROCESS_SPAWN_PATTERNS:
                 if pat.search(line):

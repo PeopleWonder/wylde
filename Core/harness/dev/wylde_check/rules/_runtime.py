@@ -16,6 +16,7 @@ from typing import List
 
 from .. import Finding
 from .._config import (
+    PIPE_NAME_BINARY_ARTIFACT_RE,
     PIPE_NAME_GOOD_RE,
     PIPE_NAME_REF_RE,
     PIPE_NAME_TYPO_RE,
@@ -51,6 +52,11 @@ def check_pipe_name_convention() -> List[Finding]:
             for m in PIPE_NAME_REF_RE.finditer(line):
                 name = m.group(0)
                 if PIPE_NAME_GOOD_RE.match(name):
+                    continue
+                # A build-artifact / target-triple token is a release binary
+                # filename (``wylde-gui-x86_64-pc-windows-msvc.exe``), not a
+                # pipe — the convention governs pipes, not asset names.
+                if PIPE_NAME_BINARY_ARTIFACT_RE.search(name):
                     continue
                 if (name, rel, lineno) in seen:
                     continue

@@ -50,6 +50,28 @@ def test_gui_no_backend_bypass_flags_manifest_path(isolated_tree: Any) -> None:
     assert "manifest.json" in findings[0].message
 
 
+def test_gui_no_backend_bypass_skips_test_code(isolated_tree: Any) -> None:
+    """A `#[test]` writing a SYNTHETIC manifest.json to a tempdir (roster
+    coverage tests) is a fixture, not a runtime backend bypass. Production
+    code in the same file is still flagged."""
+    wc, root = isolated_tree
+    _panel(
+        root,
+        "Dashboard/src/ipc.rs",
+        'fn prod() { let _ = std::fs::read_to_string("Voice/manifest.json"); }\n'
+        "#[cfg(test)]\nmod tests {\n"
+        "    #[test]\n"
+        "    fn writes_synthetic_manifest() {\n"
+        '        let dir = tempdir().unwrap();\n'
+        '        std::fs::write(dir.path().join("manifest.json"), b"{}").unwrap();\n'
+        "    }\n"
+        "}\n",
+    )
+    findings = wc.check_gui_no_backend_bypass()
+    assert len(findings) == 1  # only the production `prod()` line
+    assert findings[0].line == 1
+
+
 def test_gui_no_backend_bypass_clean_when_going_through_pipe(isolated_tree: Any) -> None:
     wc, root = isolated_tree
     _panel(

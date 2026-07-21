@@ -54,7 +54,7 @@ pub fn apply(
             };
             Some((graph, Layout::from_positions(proj.positions.clone())))
         }
-        ViewMode::CodeGraph => unreachable!("early-returned above"),
+        ViewMode::CodeGraph => unreachable!("early-returned above"),  // INVARIANT: CodeGraph early-returns above this match arm. wylde-check: panel-panic-allowed
     }
 }
 
