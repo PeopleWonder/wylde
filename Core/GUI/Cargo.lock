@@ -9043,6 +9043,7 @@ dependencies = [
  "wylde-prebuild-guard",
  "wylde-reasoning-plan",
  "wylde-shared",
+ "wylde-stack",
  "wylde-workspaces-client",
 ]
 
@@ -9074,9 +9075,11 @@ dependencies = [
  "gpui",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "wylde-gui-pipe",
  "wylde-gui-test-support",
+ "wylde-stack",
  "wylde-theme",
 ]
 

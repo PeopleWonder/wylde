@@ -63,6 +63,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   update check's *already-fetched* metadata, so opening it phones home for nothing. The viewer is a new
   `wylde-changelog` crate wired into the required `gui panel-walk (L7)` gate, so it mounts-without-panic
   under CI like every other GUI surface.
+- **Green PRs into `develop` now merge themselves — no session left idle waiting to click merge.** With the
+  strict up-to-date rule off on `develop`, a PR can merge the moment its checks pass, but nothing armed that
+  merge, so the final step was still hand-babysat (a session opens a PR, sits waiting on CI, then needs a nudge
+  to merge). A new `.github/workflows/auto-merge-develop.yml` runs on `pull_request: [opened, ready_for_review]`
+  and calls `gh pr merge --auto --squash` for every qualifying PR, so GitHub completes the merge itself the
+  instant the required checks go green (#189). This is **not** a gate bypass: native auto-merge respects the
+  full `protect-develop` required-check set (backend build+test, GUI build, panel-walk L7, clippy/fmt, G7, the
+  `personal-info scrub (G8)`, the cargo-deny advisory/license legs, branch target+name, conventional commits,
+  changelog, and `linked issue`), so a PR that is red or unlinked simply never merges. It arms **only** PRs
+  targeting `develop` (the `develop`→`main` and experimental promotions stay deliberately manual), skips drafts,
+  honours a `no-auto-merge` label as an explicit hold, and excludes `dependabot[bot]` — those stay with the
+  narrower, patch-only `dependabot-automerge.yml` (#68), which the two workflows partition cleanly by actor so
+  the general one never loosens that stricter gating. Least-privilege `contents: write` + `pull-requests: write`
+  on `GITHUB_TOKEN`; the arming job is advisory, not a required check, so it can never deadlock a branch.
 - **Every PR now has to tie to a tracking issue, and every issue now gets a milestone automatically.** Two
   halves of one project rule — "every issue is attached to a milestone, every merge is tied to an issue" —
   turned from a norm into automation (#183). A new `linked issue` job in `.github/workflows/pr-checks.yml`
@@ -148,6 +162,25 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   UI (previously "Beta"; the on-disk value is unchanged). All controls are native gpui.
 
 ### Changed
+
+- **The live-Memgraph/Neo4j tests now run against a real database in CI, so the
+  graph layer's Cypher is exercised end-to-end instead of only against mocks
+  (#121).** A new `live-graph (Neo4j Bolt) tests` CI leg installs the vendored,
+  checksum-pinned Neo4j (`tools/install-neo4j.ps1`), boots it auth-off on
+  `bolt://127.0.0.1:7687`, and runs the previously-dead `#[ignore]`d integration
+  tests with `--ignored` (`wylde-workspaces` `integration_graph` +
+  `integration_symbols_find`, `wylde-harness` `memgraph_live` +
+  `memgraph_bolt_integration`). On its very first run the leg earned its keep —
+  it caught a real live-DB bug the mocks never could (`symbol_context` returns
+  zero callees against real Neo4j), now tracked as #203 and its test excluded
+  from the leg with a pointer until fixed. The default
+  `backend` job still runs DB-less and skips them, so the markers stay; a
+  dedicated `--ignored` leg is what makes them live rather than dead. The leg is
+  Windows + vendored Neo4j because the shipped DB is a JVM (not the Memgraph
+  database) and the tests are `#![cfg(windows)]`, so a Linux service container
+  would not compile them. It is intentionally not yet a required status check —
+  it must be observed green on `develop` first, then added to the branch
+  rulesets (the `gui-panel-walk` deadlock lesson).
 
 - **Dependency bumps.** Routine updates carrying no API change and no code edit on our side.
   Kept as one list so the narrative entries below stay readable; each line is the dependency and
@@ -245,6 +278,64 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   changelog a required, verifiable release gate rather than an optional courtesy.
 
 ### Fixed
+
+- **Registering a 6th workspace no longer silently destroys the least-recently-used
+  workspace's entire bundle (closes #133).** The MRU-5 window was a *disk cap*, not just
+  a dropdown limit: promoting a 6th workspace `remove_dir_all`'d the LRU bundle — persona,
+  `memory.jsonl`, RAG chunk store, conversations, and Memgraph nodes — with no prompt, no
+  warning, and no undo, the exact inverse of the never-auto-delete decision taken for models
+  (#120/#131). The window is now display-only: `WorkspaceState::promote` re-orders the `mru`
+  list but never evicts, so the list is the full, unbounded enumeration of every workspace on
+  disk. `promote_and_persist` no longer tears down anything; the sole bundle-destroying path is
+  now explicit `delete`. A workspace pushed past the window stays fully on disk and enumerable
+  (`persistence::load_all`); the dropdown still renders only the first `MRU_WINDOW`. Covered by
+  a test that registers past the window and asserts the LRU's `definition.json`, `persona.md`,
+  `memory.jsonl`, and `index/chunks.jsonl` all survive — and that no graph teardown is enqueued.
+
+- **A deleted workspace's memory sweep is now durable instead of fire-and-forget,
+  so a down harness can no longer orphan `workspace_memories/` permanently
+  (closes #166).** Deleting a workspace swept its durable memory tier (#135) and
+  its bound flat-store conversations by firing two `tokio::spawn`ed IPC calls and
+  only logging on failure — if the harness was down, slow, or restarting at that
+  instant, the sweep was lost and `<data_dir>/workspace_memories/<id>/` orphaned
+  forever. Because a workspace id derives from its folder (#28), re-registering
+  the same folder later silently re-attached memories the user believed they had
+  deleted — a privacy failure, not just stray disk. Rather than stand up a second
+  bespoke queue, the durable pending-teardown queue #99 built for the graph
+  cascade is now generalized from bare workspace ids to `(workspace id, teardown
+  target)` pairs, with `target ∈ { graph, memory, conversations }`. The one drain
+  dispatches per target and applies the same rule to all: dequeue only on
+  `reply.ok`, leave queued (retry on the next create/activate/delete or at boot)
+  on failure, and — critically for the memory tier — skip-and-dequeue without
+  sweeping if the workspace is live again, so a delete-then-re-add can never wipe
+  fresh memories. Since #133 the only teardown path is explicit `delete`
+  (registering never evicts), so the memory + conversation sweeps are scoped to
+  it and no non-delete path enqueues them. The old #99 bare-id queue file
+  (`pending_graph_cleanup.json`) is migrated in place to the generalized
+  `pending_teardown.json` on first read.
+
+- **Convention-A data-root resolution now has ONE source of truth instead of
+  seven copy-pasted `fn data_dir()`s, and the gate named for it can finally fire
+  (closes #138).** The canonical `WYLDE_DATA_DIR` → `DATA_DIR` →
+  `<WYLDE_ROOT>/.wylde/data` ladder — the root under which encryption prefs,
+  graph profiles, `settings/*.json`, the memory tiers, and the workspace
+  registry all live — was duplicated as a private resolver in six `rust/crates`
+  modules (`wylde-shared/encryption`, `wylde-harness/memory/common` +
+  `turn/reasoning/config`, `wylde-workspaces/common`, `wylde-concept-routing` and
+  `wylde-concept-hierarchy` config), each free to drift, while the three tests
+  named for the property asserted only that the resolved path was *non-empty* —
+  green under any convention, including a regression to the process cwd. There is
+  now one `wylde_shared::paths::data_dir` (with a pure, env-free
+  `data_dir_under(root)` core); every other copy delegates via
+  `pub use wylde_shared::paths::data_dir`. A new **required** backend test
+  (`wylde-shared/tests/single_data_dir_resolver.rs`) walks every crate's `src/`
+  and turns red if any file outside the canonical one reintroduces a
+  convention-A `fn data_dir`, and the fake non-empty gates are replaced with
+  assertions that pin the real `.wylde/data` shape. Scope: the genuinely
+  different resolvers (`data/model_registry`, `device_gate/data`, `<ROOT>/data`)
+  are not convention A and are unchanged; the GUI graph-settings panel keeps a
+  sanctioned copy because it deliberately links no service crate (folding it in
+  needs an approved dependency addition — see #138).
 
 - **The L7 `panel-walk` gate's hand-kept crate list is now guarded against
   silent under-coverage (closes #95).** `cargo panel-walk` (the required `gui
@@ -607,6 +698,37 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
     note (paths as-of that date, locations gone, don't navigate by it) instead of a scrub. Same call
     for `docs/mypy_baseline.txt`, whose paths are captured tool *stdout*; it's a Python-era artifact
     due for deletion with the Python scrub (T1.2), which is where that decision belongs.
+- **The Dashboard's service-health strip now derives from the stack roster, so no daemon-managed
+  service can silently lack a Stop button.** The strip rendered from a hand-kept nine-name array
+  (`MONITORED_SERVICES`) that had already drifted once and was short by four — `wylde-workspaces`,
+  `wylde-treesitter`, `wylde-n8n`, and `wylde-vpn` had no tile, and so no health dot and no #35 Stop
+  control — while the test that appeared to cover it (`service_health.len() == MONITORED_SERVICES.len()`)
+  compared the list to itself and was vacuously true for any content. The strip's membership now comes
+  from `wylde_stack::roster()` — the same discovery the updater and launcher follow — so every service,
+  in-tree or dropped into the `Services/` bucket, gets a chip and (where its roster `Tier` makes it
+  daemon-managed) a Stop, with no list to edit. `offers_stop`'s exclusion likewise derives from the
+  service's role (`Tier::Daemon`/`wylde-lifecycle`), not a name literal. `wylde-memgraph`, which is
+  JVM-supervised and so carries no roster binary, stays on the strip via one typed, documented carve-out
+  mirroring `wylde_stack::shutdown_targets::NON_ROSTER_GUI_IMAGES`. A falsification test drops a synthetic
+  `Services/` service into a tempdir and asserts it appears on the strip with no code edit; reverting the
+  derivation turns it red. (#123)
+- **A new panel and a new `Services/` bucket both used to vanish silently; now each is caught.** Two
+  hand-kept enumerations where the *missing* direction was silent while the *extra* direction was
+  loud — which made them easy to mistake for covered (#125). (A) The committed panel-registry codegen
+  (`Manifest/Extension_handlers/src/generated.rs`, output of `wylde-panel-aggregator`) was never
+  verified against the real `Panels/*/manifest.json` set: add a 10th panel and forget the regen, and it
+  compiled clean, all required checks stayed green, and the panel was simply absent from the tab bar.
+  The aggregator gains a `--check` mode that regenerates in memory and fails non-zero on any drift, wired
+  as a CI step so the drift is a red build instead of a missing product surface. (B) The model registry's
+  service-manifest scan (`wylde-harness`'s `SERVICE_ROOTS`) walked a hand-kept list of pre-cutover
+  top-level folder names — most long gone — and did **not** include `Services/`, so a
+  `Services/<svc>/manifest.json` that declared a model was invisible to the registry, silently by
+  construction (a manifest with no `models` key is legitimately skipped, so an absent root looked
+  identical to a no-op). The roots now derive from `wylde_stack::roster::discovered_folders` — the same
+  `Services/` discovery the updater, launcher, and lifecycle daemon already follow — so a bucket service
+  is covered with no edit, honouring the same `WYLDE_SERVICES` override. Both halves ship a
+  falsification test that is red without the fix: a panel added without regenerating fails `--check`, and
+  a synthetic `Services/<svc>/manifest.json` declaring a model is now seen by the model registry. (#125)
 
 ### Changed
 
@@ -919,6 +1041,27 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   change that cannot drift. The missing issues are now in the map with their Tiers,
   along with the newly-filed #55/#56/#57. Re-running remains a no-op against a
   fully-seeded board.
+
+- **New issues (and same-repo PRs) now land on the Roadmap board automatically.**
+  Milestoning was already automated (`issue-milestone.yml`) but board *membership*
+  was not — an issue got a card only if a human remembered, and it had drifted (an
+  audit found 31 milestoned issues off the board and 11 closed issues still sitting
+  in Todo). A new `add-to-project.yml` workflow (`issues: [opened, reopened]`,
+  `pull_request: [opened]`) adds each item to `projects/1` via
+  `actions/add-to-project`, pinned to a commit SHA and authenticated with the same
+  `PROJECT_TOKEN` classic PAT `roadmap-dates.yml` already uses — the default
+  `GITHUB_TOKEN` cannot write a user-owned Project. It declares a least-privilege
+  `contents: read` (the board write goes through the PAT, not `GITHUB_TOKEN`), so it
+  stays clear of the `actions/missing-workflow-permissions` class fixed in #177, and
+  it skips Dependabot and fork PRs, whose events carry no repo secrets, and it
+  no-ops with a notice (never a red X) if `PROJECT_TOKEN` is unset. The one-time
+  backlog gap was also backfilled by hand. **Two one-time manual steps are still
+  required** before automation is live: (1) the `PROJECT_TOKEN` repo secret must be
+  configured — it is currently unset, so both this workflow and `roadmap-dates.yml`
+  no-op; and (2) status transitions need a manual enable — GitHub exposes no API to toggle a Project's built-in workflows
+  (only `deleteProjectV2Workflow` exists), so *Item added → Todo*, *Item closed →
+  Done*, and *Pull request merged → Done* must be switched on once in the Project's
+  Workflows settings.
 
 - **Clippy (G4) + fmt (G6) CI gates are now LIVE.** The two staged enforcement
   gates were armed: a new `clippy (G4) + fmt (G6)` CI job runs

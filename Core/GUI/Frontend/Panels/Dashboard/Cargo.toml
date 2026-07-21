@@ -21,6 +21,13 @@ wylde-theme = { path = "../../Theme" }
 # which would create a cycle through the factory wiring.
 wylde-gui-pipe = { path = "../../Pipe" }
 
+# The stack roster — the service-health strip derives its membership (and each
+# chip's Stop affordance, from the roster `Tier`) from here rather than a
+# hand-kept list, so a new service — in-tree or a `Services/` sibling — gets a
+# chip automatically (#123). Dependency-lean by charter; already in the lock
+# graph via wylde-updater, so no new weight lands in the shipped GUI.
+wylde-stack.workspace = true
+
 # Tokio for the auto-refresh loop's sleep.
 tokio.workspace = true
 
@@ -42,3 +49,7 @@ wylde-gui-test-support = { path = "../../test-support" }
 gpui = { workspace = true, features = ["test-support"] }
 wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
 serde_json.workspace = true
+# Drives the #123 falsification test: a synthetic `Services/<svc>/manifest.json`
+# in a tempdir, run through `roster_in` + `strip_services_from`, must appear on
+# the strip with no code edit. Mirrors wylde-stack's own tempdir discovery tests.
+tempfile = "3"

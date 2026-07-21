@@ -63,6 +63,112 @@ jobs:
         working-directory: rust
         run: cargo test --workspace --locked
 
+  # --- Live-graph (Neo4j Bolt) tests (#121) — the leg that runs REAL Cypher
+  # against a real database. The `backend` job above runs `cargo test
+  # --workspace` WITHOUT `--ignored`, so every live-Memgraph test is skipped
+  # there and the graph layer's correctness was proven only against hand-written
+  # mocks — the exact blind spot that let #117's Concept-orphan leak ship green.
+  # This job stands the DB up and runs those tests with `--ignored`, so they are
+  # no longer dead.
+  #
+  # Why Windows + a vendored Neo4j rather than a Linux service container: the DB
+  # Wylde ships is Neo4j Community (a JVM), not the Memgraph *database*, and
+  # these tests are `#![cfg(windows)]` (they exercise the Windows named-pipe /
+  # Bolt stack that ships). GitHub service containers only run on Linux runners,
+  # where the tests would not even compile, so the honest leg is: install the
+  # same vendored Neo4j the dev docs use (`tools/install-neo4j.ps1`, checksum-
+  # pinned), boot it auth-off on 127.0.0.1:7687, and run the ignored tests.
+  #
+  # The `#[ignore]` markers stay: removing them would make the DB-less `backend`
+  # job (which runs `--workspace` with no DB) fail on every PR. An `#[ignore]`
+  # that a dedicated `--ignored` job actually runs is NOT the dead-gate shape
+  # #121 objects to — that was an ignore no job ran. See the PR for the residual
+  # gaps (the pipe-service parity tests + the #117 red-falsification).
+  #
+  # NOT yet a required status check: adding a new required context deadlocks
+  # every open PR until the context first reports on `develop` (the L7 lesson in
+  # `gui-panel-walk` below). This job must be observed green on `develop` FIRST,
+  # THEN added to `.github/rulesets/protect-develop.json` (+ protect-main.json).
+  live-graph:
+    name: live-graph (Neo4j Bolt) tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Rust (stable, honoring rust-toolchain.toml)
+        run: rustup show
+        working-directory: rust
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: "rust -> target"
+      - name: Install vendored Neo4j + JDK (checksum-pinned)
+        shell: pwsh
+        run: ./tools/install-neo4j.ps1
+      - name: Build the live-graph test binaries (no DB needed)
+        working-directory: rust
+        run: |
+          cargo test -p wylde-workspaces --locked --no-run --test integration_graph --test integration_symbols_find
+          cargo test -p wylde-harness --locked --no-run --test memgraph_live --test memgraph_bolt_integration
+      - name: Boot Neo4j and run the live-graph tests (--ignored)
+        shell: pwsh
+        env:
+          GRAPH_BOLT_URL: bolt://127.0.0.1:7687
+        run: |
+          # Boot AND run in ONE step: the Neo4j JVM is a background child of this
+          # step's shell, and the runner reaps a step's process tree at the step
+          # boundary — so booting in a separate step killed the DB before the
+          # tests ran (connection refused). Keeping both here holds it alive.
+          $repo  = (Get-Location).Path
+          $neo4j = (Resolve-Path 'Core/Memgraph/vendor/neo4j').Path
+          $jdk   = (Resolve-Path 'Core/Memgraph/vendor/jdk').Path
+          $env:JAVA_HOME = $jdk
+          $env:JAVACMD   = Join-Path $jdk 'bin/java.exe'
+          $outLog = Join-Path $repo 'neo4j-out.log'
+          $errLog = Join-Path $repo 'neo4j-err.log'
+          $proc = Start-Process -FilePath (Join-Path $neo4j 'bin/neo4j-admin.bat') `
+            -ArgumentList 'server','console' -WorkingDirectory $neo4j -PassThru `
+            -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+          $failed = $false
+          try {
+            # Poll a real `RETURN 1` (implies the Bolt port is up AND query-ready).
+            $shell = Join-Path $neo4j 'bin/cypher-shell.bat'
+            $deadline = (Get-Date).AddMinutes(4)
+            $ready = $false
+            while ((Get-Date) -lt $deadline) {
+              try {
+                & $shell -a 'bolt://127.0.0.1:7687' 'RETURN 1 AS ok;' *> $null
+                if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+              } catch { }
+              Start-Sleep -Seconds 3
+            }
+            if (-not $ready) { throw 'Neo4j did not become query-ready on bolt://127.0.0.1:7687 within 4 minutes' }
+            Write-Host 'Neo4j is up and query-ready on bolt://127.0.0.1:7687 (auth off).'
+            Push-Location (Join-Path $repo 'rust')
+            # NOTE: `integration_symbol_context` is deliberately EXCLUDED — this
+            # leg ran it first and it went RED against real Neo4j: the focal
+            # node's outgoing-CALLS *callees* resolve to zero while its incoming
+            # *callers* resolve fine (a real behaviour the FakeGraph mock could
+            # not show). That is the leg doing its job; it is tracked in #203 and
+            # must be re-added to this line once fixed. Excluded, NOT silently
+            # dropped. Each binary runs separately so one failure can't mask
+            # another.
+            cargo test -p wylde-workspaces --locked --test integration_graph -- --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            cargo test -p wylde-workspaces --locked --test integration_symbols_find -- --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            cargo test -p wylde-harness --locked --test memgraph_live -- --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            cargo test -p wylde-harness --locked --test memgraph_bolt_integration -- --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            Pop-Location
+          } finally {
+            if ($failed) {
+              Write-Host '--- neo4j-out.log ---'; Get-Content $outLog -ErrorAction SilentlyContinue
+              Write-Host '--- neo4j-err.log ---'; Get-Content $errLog -ErrorAction SilentlyContinue
+            }
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+          }
+          if ($failed) { throw 'live-graph tests failed' }
+
   # --- GUI workspace (Core/GUI/) — build only. It compiles the gpui + wry +
   # tray-icon graph, which is what dependency bumps here would break. (The
   # windowed gpui tests DO run headless — see the `gui-panel-walk` job below;
@@ -74,14 +180,29 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Install Rust (stable)
-        run: rustup toolchain install stable --profile minimal
+      - name: Install Rust (stable) + rustfmt
+        # rustfmt is needed by the panel-codegen check below: it compares the
+        # committed generated.rs against `rustfmt(fresh render)`.
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup component add rustfmt
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "Core/GUI -> target"
       - name: cargo build
         working-directory: Core/GUI
         run: cargo build --workspace --locked
+      # Panel registry codegen must be in sync with the panel manifests (#125).
+      # `generated.rs` is committed output of `wylde-panel-aggregator`; without
+      # this gate a panel added (or removed) without re-running the aggregator
+      # compiles clean and passes every other check, yet is silently absent from
+      # (or stale in) the product's tab bar. `--check` regenerates in memory and
+      # fails on any drift, writing nothing. Rides the required `gui` build so a
+      # forgotten regen is a red build. The bin is already built by the step
+      # above, so this only runs it.
+      - name: panel registry codegen is in sync (#125)
+        working-directory: Core/GUI
+        run: cargo run -q -p wylde-panel-registry --bin wylde-panel-aggregator --locked -- --check --repo-root ../..
 
   # --- GUI panel tests (L7) — the "does every page load, and does it still
   # behave?" gate. Runs every test target in the 9 panel crates as headless

@@ -5724,6 +5724,7 @@ dependencies = [
  "wylde-prebuild-guard",
  "wylde-reasoning-plan",
  "wylde-shared",
+ "wylde-stack",
  "wylde-treesitter",
  "wylde-workspaces-client",
 ]
