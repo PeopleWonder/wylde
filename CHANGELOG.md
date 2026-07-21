@@ -139,8 +139,12 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   (#121).** A new `live-graph (Neo4j Bolt) tests` CI leg installs the vendored,
   checksum-pinned Neo4j (`tools/install-neo4j.ps1`), boots it auth-off on
   `bolt://127.0.0.1:7687`, and runs the previously-dead `#[ignore]`d integration
-  tests with `--ignored` (`wylde-workspaces` graph/symbol-context/symbols-find +
-  `wylde-harness` `memgraph_live`/`memgraph_bolt_integration`). The default
+  tests with `--ignored` (`wylde-workspaces` `integration_graph` +
+  `integration_symbols_find`, `wylde-harness` `memgraph_live` +
+  `memgraph_bolt_integration`). On its very first run the leg earned its keep —
+  it caught a real live-DB bug the mocks never could (`symbol_context` returns
+  zero callees against real Neo4j), now tracked as #203 and its test excluded
+  from the leg with a pointer until fixed. The default
   `backend` job still runs DB-less and skips them, so the markers stay; a
   dedicated `--ignored` leg is what makes them live rather than dead. The leg is
   Windows + vendored Neo4j because the shipped DB is a JVM (not the Memgraph
