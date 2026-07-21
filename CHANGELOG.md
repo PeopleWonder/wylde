@@ -134,6 +134,21 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Changed
 
+- **The live-Memgraph/Neo4j tests now run against a real database in CI, so the
+  graph layer's Cypher is exercised end-to-end instead of only against mocks
+  (#121).** A new `live-graph (Neo4j Bolt) tests` CI leg installs the vendored,
+  checksum-pinned Neo4j (`tools/install-neo4j.ps1`), boots it auth-off on
+  `bolt://127.0.0.1:7687`, and runs the previously-dead `#[ignore]`d integration
+  tests with `--ignored` (`wylde-workspaces` graph/symbol-context/symbols-find +
+  `wylde-harness` `memgraph_live`/`memgraph_bolt_integration`). The default
+  `backend` job still runs DB-less and skips them, so the markers stay; a
+  dedicated `--ignored` leg is what makes them live rather than dead. The leg is
+  Windows + vendored Neo4j because the shipped DB is a JVM (not the Memgraph
+  database) and the tests are `#![cfg(windows)]`, so a Linux service container
+  would not compile them. It is intentionally not yet a required status check —
+  it must be observed green on `develop` first, then added to the branch
+  rulesets (the `gui-panel-walk` deadlock lesson).
+
 - **Dependency bumps.** Routine updates carrying no API change and no code edit on our side.
   Kept as one list so the narrative entries below stay readable; each line is the dependency and
   the version span, newest wins where a crate was bumped in more than one manifest.
