@@ -180,14 +180,29 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Install Rust (stable)
-        run: rustup toolchain install stable --profile minimal
+      - name: Install Rust (stable) + rustfmt
+        # rustfmt is needed by the panel-codegen check below: it compares the
+        # committed generated.rs against `rustfmt(fresh render)`.
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup component add rustfmt
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: "Core/GUI -> target"
       - name: cargo build
         working-directory: Core/GUI
         run: cargo build --workspace --locked
+      # Panel registry codegen must be in sync with the panel manifests (#125).
+      # `generated.rs` is committed output of `wylde-panel-aggregator`; without
+      # this gate a panel added (or removed) without re-running the aggregator
+      # compiles clean and passes every other check, yet is silently absent from
+      # (or stale in) the product's tab bar. `--check` regenerates in memory and
+      # fails on any drift, writing nothing. Rides the required `gui` build so a
+      # forgotten regen is a red build. The bin is already built by the step
+      # above, so this only runs it.
+      - name: panel registry codegen is in sync (#125)
+        working-directory: Core/GUI
+        run: cargo run -q -p wylde-panel-registry --bin wylde-panel-aggregator --locked -- --check --repo-root ../..
 
   # --- GUI panel tests (L7) — the "does every page load, and does it still
   # behave?" gate. Runs every test target in the 9 panel crates as headless

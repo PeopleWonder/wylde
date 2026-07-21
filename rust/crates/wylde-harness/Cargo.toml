@@ -21,6 +21,12 @@ wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
 
 [dependencies]
 wylde-shared = { path = "../wylde-shared" }
+# The stack roster — the model registry derives its service-manifest scan roots
+# from the same `Services/` discovery the updater, launcher, and lifecycle
+# daemon walk (`roster::discovered_folders`), rather than a hand-kept list of
+# pre-cutover folder names (#125). Dependency-lean by charter (names + paths
+# only, no tokio/anyhow beyond what the harness already pulls).
+wylde-stack = { path = "../wylde-stack" }
 # Thought Bubble System Slice 0d: all workspace code now lives in the
 # `wylde-workspaces` service. The harness is a pure CONSUMER — it reaches the
 # service ONLY over the pipe via the shared client crate (no dep on the
