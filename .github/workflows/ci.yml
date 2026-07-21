@@ -27,6 +27,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege GITHUB_TOKEN. Every job here only checks out, caches, builds
+# and tests — none comment on PRs, upload SARIF, or push. Declaring read-only at
+# the top level applies to all jobs and satisfies the CodeQL
+# `actions/missing-workflow-permissions` hardening check.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   # The pre-build guard inspects live daemon status, which does not exist on a

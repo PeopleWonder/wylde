@@ -85,9 +85,12 @@ mod settings;
 mod tools;
 mod user_profile;
 
-/// Every action the harness pipe registers. Tests compare this against
-/// `list_action_meta()` to catch a missing registration. Order mirrors
-/// the Phase 9 sectioning so the contract emitter produces stable output.
+/// Every action the harness pipe registers. `install_registers_every_action`
+/// asserts this table and `list_action_meta()` are EQUAL — every table entry is
+/// registered (a listed-but-unregistered verb) AND every registered verb is
+/// listed (the direction a developer actually trips: add a handler, forget the
+/// table — #142). Order mirrors the Phase 9 sectioning so the contract emitter
+/// produces stable output.
 pub const ALL_PIPE_ACTIONS: &[&str] = &[
     // chat.* — turn driver (7 verbs)
     "chat.run_turn",
@@ -187,7 +190,7 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.short_term.get",
     "memory.short_term.append",
     "memory.short_term.clear",
-    // conversations.* — lifecycle + active selection + workspace (8 verbs)
+    // conversations.* — lifecycle + active selection + workspace (10 verbs)
     "conversations.new",
     "conversations.list",
     "conversations.get",
@@ -195,6 +198,8 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "conversations.delete_by_workspace",
     "conversations.get_active",
     "conversations.set_active",
+    "conversations.get_active_for_workspace",
+    "conversations.set_active_for_workspace",
     "conversations.set_workspace",
     // consent.* — per-tool consent gate (Phase 12.2; 6 unary + 1 streaming = 7 verbs)
     "consent.list",

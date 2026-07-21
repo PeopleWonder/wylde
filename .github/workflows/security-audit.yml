@@ -37,6 +37,12 @@ concurrency:
   group: security-audit-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege GITHUB_TOKEN. The single cargo-deny job only checks out and
+# resolves the dependency graph — it never writes back. Read-only at the top
+# level satisfies the CodeQL `actions/missing-workflow-permissions` check.
+permissions:
+  contents: read
+
 jobs:
   cargo-deny:
     name: cargo-deny (advisories)
