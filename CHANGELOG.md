@@ -231,6 +231,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **The model-GC reference set now derives structurally from `ModelSlots`, so a
+  new model slot cannot be silently unreferenced (closes #119).**
+  `referenced_models` hardcoded a three-element array of slot fields
+  (`reasoner`, `fast`, effective embedder). A fourth slot added later would not
+  grow it — its model would be unreferenced by definition, and an operator-run
+  sweep-mode `ollama.gc` (which makes every unreferenced model eligible) could
+  delete a model a live slot needs. The set is now built from an **exhaustive
+  destructure of `ModelSlots`** with no `..`, so adding a slot field fails to
+  compile until it is explicitly classified as a reference root or excluded with
+  a reason — the guarantee is enforced at compile time, not by a runtime test
+  someone must remember. The `refs.len() == 2` count assertion (which only
+  signalled "a number moved" and never fired for an empty-string slot) is
+  replaced by a set-equality test asserting each slot is an independent root.
+
 - **`wylde_check` rule 44's anti-pattern regex did not match the literal it
   exists to catch (closes #115).** Rule 44 (`boot_uses_daemon_managed_table`)
   forbids a hand-kept `const`/`static` SERVICES roster reappearing in the Rust
