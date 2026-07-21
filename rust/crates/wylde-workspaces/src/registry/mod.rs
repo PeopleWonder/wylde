@@ -20,9 +20,11 @@
 //!     └── memory.jsonl        # workspace-memory entries (super::super::memory)
 //! ```
 //!
-//! Because MRU-5 eviction (a hard, static window — Q2) is the only way
-//! a workspace leaves the registry, `index.json`'s `mru` list is also
-//! the authoritative enumeration of which workspaces exist on disk.
+//! `index.json`'s `mru` list is the authoritative, **unbounded** enumeration
+//! of which workspaces exist on disk (#133). It is kept in recency order and
+//! the dropdown renders only the first [`state::MRU_WINDOW`], but a workspace
+//! leaves the registry only by explicit `delete` — registering another one
+//! never evicts or destroys it.
 //!
 //! ## Split
 //!
@@ -83,8 +85,8 @@ pub enum RegistryError {
 // The verb handlers in [`super::api`] drive the registry through these
 // functions; they compose `persistence` (per-workspace `definition.json`)
 // with `state` (the `index.json` active+MRU machine) and keep the two in
-// sync — including deleting the on-disk bundle of any workspace evicted
-// past the static MRU-5 window.
+// sync. A workspace's on-disk bundle is destroyed only by explicit
+// [`delete`] — never as a side effect of registering another one (#133).
 
 /// One workspace's config, or `None` if unregistered.
 pub fn get(workspace_id: &str) -> Option<WorkspaceDefinition> {
@@ -188,19 +190,37 @@ pub fn delete(workspace_id: &str) -> Result<bool, RegistryError> {
         }));
     }
     teardown_bundle(workspace_id);
+    if existed {
+        // #166 — an EXPLICIT delete additionally sweeps the peer-service stores
+        // beyond the graph: the durable workspace-memory tier (#135) and the
+        // bound flat-store conversations. Both ride the same durable queue as
+        // the graph cascade above, enqueued here rather than in
+        // `teardown_bundle`. Since #133 that distinction is belt-and-braces —
+        // `delete` is now the only caller of `teardown_bundle` (registering a
+        // workspace no longer evicts anything) — but keeping the peer-service
+        // sweeps scoped to `delete` documents that ONLY an explicit delete may
+        // touch these stores. The old handler fired them as fire-and-forget
+        // `tokio::spawn`s that a down harness silently dropped; queuing them
+        // makes the sweep retry until it lands (re-attaching memories the user
+        // deleted is the #166 privacy bug).
+        pending::enqueue(workspace_id, pending::TeardownTarget::Memory);
+        pending::enqueue(workspace_id, pending::TeardownTarget::Conversations);
+    }
     Ok(existed)
 }
 
-/// Promote `id` to the active/MRU head, persist `index.json`, and tear down
-/// the bundles of any workspaces evicted past the static MRU-5 window.
+/// Promote `id` to the active/MRU head and persist `index.json`.
 ///
-/// `Err(IndexDamaged)` when the index can't be read or persisted (#140).
-/// Eviction teardown only runs once the new index has actually landed —
-/// otherwise a failed save would delete bundles the on-disk index still
-/// references, which is unrecoverable.
-fn promote_and_persist(workspace_id: &str) -> Result<Vec<String>, RegistryError> {
+/// #133: promotion is **non-destructive**. Registering or activating a
+/// workspace only re-orders the (unbounded) MRU enumeration — it never
+/// evicts, and therefore never tears down, an older workspace's bundle. The
+/// only path that destroys a bundle is explicit [`delete`].
+///
+/// `Err(IndexDamaged)` when the index can't be read or persisted (#140): the
+/// promotion is abandoned rather than written over an index we couldn't read.
+fn promote_and_persist(workspace_id: &str) -> Result<(), RegistryError> {
     let mut state = state::load()?;
-    let evicted = state.promote(workspace_id);
+    state.promote(workspace_id);
     if let Err(e) = state::save(&state) {
         tracing::error!("workspaces.registry: promote could not persist index: {e}");
         return Err(RegistryError::IndexDamaged(state::StateError::Unreadable {
@@ -208,10 +228,7 @@ fn promote_and_persist(workspace_id: &str) -> Result<Vec<String>, RegistryError>
             source: e,
         }));
     }
-    for victim in &evicted {
-        teardown_bundle(victim);
-    }
-    Ok(evicted)
+    Ok(())
 }
 
 /// The single teardown primitive **every** removal path funnels through:
@@ -219,16 +236,17 @@ fn promote_and_persist(workspace_id: &str) -> Result<Vec<String>, RegistryError>
 /// cascade (Chunk + now-orphan Entity prune, [`crate::graph::cleanup`]).
 ///
 /// Centralising it here is the structural guarantee #99 asks for: explicit
-/// `delete` AND MRU eviction — and any future removal path — cascade to the
-/// graph *by construction*, because they can only remove a bundle by calling
-/// this. The graph prune itself is durable, not fire-and-forget: the id stays
+/// `delete` — and any future removal path — cascades to the graph *by
+/// construction*, because it can only remove a bundle by calling this. Since
+/// #133 the sole caller is `delete`: registering a workspace no longer evicts
+/// or destroys anything. The graph prune itself is durable, not fire-and-forget: the id stays
 /// on the [`pending`] queue until the async drain confirms the teardown
 /// landed, so a transient graph outage can't permanently orphan a workspace's
 /// nodes. (Cross-ref #28 — a workspace id derives from its folder and can
 /// never be repointed, so teardown must cascade rather than repoint.)
 fn teardown_bundle(workspace_id: &str) {
     let _ = persistence::delete_workspace_dir(workspace_id);
-    pending::enqueue(workspace_id);
+    pending::enqueue(workspace_id, pending::TeardownTarget::Graph);
 }
 
 #[cfg(test)]
@@ -255,21 +273,53 @@ mod tests {
         assert_eq!(defs.len(), 1, "idempotent create must not duplicate");
     }
 
+    /// #133 acceptance criterion 1: registering a 6th (and beyond) workspace
+    /// must NOT destroy the least-recently-used one's bundle. Before the fix
+    /// this `remove_dir_all`'d w0's entire bundle — definition, persona,
+    /// memory, and RAG chunks — the moment the 6th workspace was created.
     #[test]
-    fn create_evicts_past_mru_window_and_deletes_bundle() {
+    fn create_past_mru_window_preserves_the_lru_bundle() {
         let _env = TestEnv::new();
-        let mut first_id = String::new();
-        for i in 0..=MRU_WINDOW {
-            let def = create(&_env.ws_path(&format!("w{i}")), None).unwrap();
-            if i == 0 {
-                first_id = def.id.clone();
-            }
+        // Register the first workspace and plant the full bundle a real one
+        // accumulates: persona, workspace memory, and a RAG chunk store.
+        let first = create(&_env.ws_path("w0"), None).unwrap();
+        let dir = persistence::workspace_dir(&first.id);
+        std::fs::write(dir.join("persona.md"), b"# persona\nirreplaceable").unwrap();
+        std::fs::write(dir.join("memory.jsonl"), b"{\"entry\":\"hand-authored\"}\n").unwrap();
+        std::fs::create_dir_all(dir.join("index")).unwrap();
+        std::fs::write(dir.join("index").join("chunks.jsonl"), b"{\"chunk\":0}\n").unwrap();
+
+        // Register enough further workspaces to push w0 well past the window.
+        let mut ids = vec![first.id.clone()];
+        for i in 1..MRU_WINDOW + 2 {
+            ids.push(create(&_env.ws_path(&format!("w{i}")), None).unwrap().id);
         }
-        // The first (least-recently-used) workspace is evicted.
+
+        // w0's entire bundle survives on disk — nothing was torn down.
+        assert!(
+            get(&first.id).is_some(),
+            "the LRU definition must still load"
+        );
+        assert!(dir.join("definition.json").exists());
+        assert!(dir.join("persona.md").exists(), "persona must survive");
+        assert!(dir.join("memory.jsonl").exists(), "memory must survive");
+        assert!(
+            dir.join("index").join("chunks.jsonl").exists(),
+            "the RAG chunk store must survive"
+        );
+
+        // Every bundle survives; the dropdown still renders only the window,
+        // while the full enumeration retains all of them.
+        for id in &ids {
+            assert!(persistence::workspace_dir(id).exists());
+        }
         let (defs, _) = list_mru().unwrap();
-        assert_eq!(defs.len(), MRU_WINDOW);
-        assert!(get(&first_id).is_none(), "evicted bundle must be gone");
-        assert!(!persistence::workspace_dir(&first_id).exists());
+        assert_eq!(defs.len(), MRU_WINDOW, "dropdown still renders the window");
+        assert_eq!(
+            persistence::load_all().len(),
+            ids.len(),
+            "all still enumerable"
+        );
     }
 
     #[test]
@@ -305,6 +355,17 @@ mod tests {
 
     // ── #99: BOTH removal paths cascade to the graph via one primitive ───
 
+    /// Targets queued for a given workspace id, as a sorted list.
+    fn queued_targets(id: &str) -> Vec<pending::TeardownTarget> {
+        let mut ts: Vec<_> = pending::list()
+            .into_iter()
+            .filter(|e| e.workspace_id == id)
+            .map(|e| e.target)
+            .collect();
+        ts.sort();
+        ts
+    }
+
     #[test]
     fn delete_enqueues_the_graph_teardown() {
         let _env = TestEnv::new();
@@ -312,24 +373,49 @@ mod tests {
         assert!(pending::list().is_empty(), "clean slate");
         delete(&def.id).unwrap();
         assert!(
-            pending::list().contains(&def.id),
+            queued_targets(&def.id).contains(&pending::TeardownTarget::Graph),
             "explicit delete must enqueue the graph cascade"
         );
     }
 
+    /// #166 — an explicit delete must ALSO durably queue the memory + conversation
+    /// sweeps. Before #166 these were fire-and-forget and nothing was queued;
+    /// this asserts all three targets now are. (Since #133 the ONLY teardown
+    /// path is explicit delete — registering never evicts — so there is no
+    /// eviction path that would need to preserve the memory tier separately.)
     #[test]
-    fn mru_eviction_enqueues_the_graph_teardown() {
+    fn delete_enqueues_the_peer_service_sweeps() {
         let _env = TestEnv::new();
-        // Fill the MRU window, then push one more so the LRU is evicted.
+        let def = create(&_env.ws_path("del-sweeps"), None).unwrap();
+        assert!(pending::list().is_empty(), "clean slate");
+        delete(&def.id).unwrap();
+        assert_eq!(
+            queued_targets(&def.id),
+            vec![
+                pending::TeardownTarget::Graph,
+                pending::TeardownTarget::Memory,
+                pending::TeardownTarget::Conversations,
+            ],
+            "explicit delete must durably queue graph + memory + conversation sweeps"
+        );
+    }
+
+    /// #133: the flip side of the graph cascade. Because registering past the
+    /// window no longer evicts anything, it must **not** enqueue a graph
+    /// teardown either — the old code cascaded a destructive eviction here.
+    /// This is also the #166 guarantee that a non-delete path queues NO sweep
+    /// of any target (graph, memory, or conversations).
+    #[test]
+    fn create_past_mru_window_enqueues_no_teardown() {
+        let _env = TestEnv::new();
         let first = create(&_env.ws_path("w0"), None).unwrap();
-        for i in 1..=MRU_WINDOW {
+        for i in 1..MRU_WINDOW + 2 {
             create(&_env.ws_path(&format!("w{i}")), None).unwrap();
         }
-        assert!(get(&first.id).is_none(), "w0 evicted past the MRU window");
-        // Eviction — not just explicit delete — must cascade to the graph.
+        assert!(get(&first.id).is_some(), "w0 survives past the window");
         assert!(
-            pending::list().contains(&first.id),
-            "the evicted workspace must enqueue the graph cascade"
+            pending::list().is_empty(),
+            "non-destructive registration must not enqueue any teardown"
         );
     }
 }

@@ -12,28 +12,14 @@
 //! Resolution is per-call (not cached) so tests can rebind `WYLDE_DATA_DIR`
 //! to a tempdir; in a service process the env never changes after boot.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Install / repo root. `WYLDE_ROOT` (set by Lifecycle when it spawns us)
-/// or the cwd fallback. Mirrors the harness `memory::common::wylde_root`.
-pub fn wylde_root() -> PathBuf {
-    std::env::var_os("WYLDE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-/// On-disk store root. Override precedence: `WYLDE_DATA_DIR` → `DATA_DIR`
-/// → `<wylde_root>/.wylde/data`. **Identical** to the harness resolver so
-/// the relocated stores keep their existing files.
-pub fn data_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os("WYLDE_DATA_DIR") {
-        PathBuf::from(v)
-    } else if let Some(v) = std::env::var_os("DATA_DIR") {
-        PathBuf::from(v)
-    } else {
-        wylde_root().join(".wylde").join("data")
-    }
-}
+/// Install / repo root and on-disk store root (convention A) — both delegate to
+/// the ONE canonical resolver (#138). These used to be verbatim copies of the
+/// `wylde_shared::paths` bodies; keeping the re-export means the relocated
+/// workspace stores still resolve `<data_dir>/workspaces/` at the byte-identical
+/// location the harness used, now from a single source that can't drift.
+pub use wylde_shared::paths::{data_dir, wylde_root};
 
 /// Create `p` (and parents) if missing. Returns the path for chaining.
 pub fn ensure_dir(p: &Path) -> std::io::Result<&Path> {
@@ -78,9 +64,40 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// #138 — a REAL fallback-shape gate. `data_dir` is now the ONE canonical
+    /// resolver; convention A resolves `<root>/.wylde/data`. The old body
+    /// asserted only that the path was non-empty, which held under any
+    /// convention (including a regression to `.`). Here we drive the ACTUAL
+    /// re-exported `data_dir()` under a controlled env (holding the shared lock
+    /// so a concurrent `TestEnv` can't perturb `WYLDE_DATA_DIR`) and pin the
+    /// exact `<root>/.wylde/data` shape — red on any drift or a stub to `.`.
     #[test]
-    fn data_dir_resolves_to_a_nonempty_path() {
-        assert!(!data_dir().as_os_str().is_empty());
+    fn data_dir_resolves_to_the_dot_wylde_data_shape() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prev_dd = std::env::var_os("WYLDE_DATA_DIR");
+        let prev_d = std::env::var_os("DATA_DIR");
+        let prev_root = std::env::var_os("WYLDE_ROOT");
+        std::env::remove_var("WYLDE_DATA_DIR");
+        std::env::remove_var("DATA_DIR");
+        std::env::set_var("WYLDE_ROOT", "C:/estate-root");
+
+        assert_eq!(
+            data_dir(),
+            Path::new("C:/estate-root").join(".wylde").join("data"),
+        );
+
+        match prev_dd {
+            Some(v) => std::env::set_var("WYLDE_DATA_DIR", v),
+            None => std::env::remove_var("WYLDE_DATA_DIR"),
+        }
+        match prev_d {
+            Some(v) => std::env::set_var("DATA_DIR", v),
+            None => std::env::remove_var("DATA_DIR"),
+        }
+        match prev_root {
+            Some(v) => std::env::set_var("WYLDE_ROOT", v),
+            None => std::env::remove_var("WYLDE_ROOT"),
+        }
     }
 
     #[test]

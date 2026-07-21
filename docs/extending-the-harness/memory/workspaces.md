@@ -101,10 +101,10 @@ workspace; the old one orphans until pruned.
   service** owns the delete verb and the workspace bundle; the **harness**
   owns `<data_dir>/workspace_memories/<id>/`. So the delete handler asks
   the harness to sweep its own store, over the
-  `memory.workspace.delete_all` verb — the same fire-and-forget,
-  best-effort shape the flat-store conversation sweep
-  (`conversations.delete_by_workspace`) already uses, because a
-  Fast/Medium verb must not block on a peer service.
+  `memory.workspace.delete_all` verb. The delete verb still returns
+  without blocking on that peer call (a Fast/Medium verb must not stall on
+  a service that may be down) — but the sweep is now **durable**, not
+  fire-and-forget: see the pending-teardown queue note below.
 
   Until #135 that call did not exist. `delete_memory_dir` was written,
   correct, unit-tested, and had **zero callers**, so this bullet described
@@ -114,10 +114,21 @@ workspace; the old one orphans until pruned.
   the same id and silently re-attached memories the user believed they had
   deleted — a privacy consequence as much as a disk one.
 
-  Being best-effort, the sweep is not durable: if the harness is down or
-  slow when a workspace is deleted, the sweep is logged as degraded and
-  lost. The graph cascade solved the equivalent problem with a durable
-  pending queue (#99); this tier has no such queue yet.
+  As of #166 the sweep is durable. `registry::delete` enqueues the memory
+  sweep (and the flat-store conversation sweep) on the same on-disk
+  pending-teardown queue the graph cascade uses (#99), generalized from
+  bare workspace ids to `(workspace id, target)` pairs where `target ∈
+  { graph, memory, conversations }`. The drain
+  (`graph::cleanup::run_pending_cleanup`, fired on the next
+  create/activate/delete and at boot) dispatches each target and dequeues
+  a pair only on `reply.ok`; a down harness leaves the memory pair queued
+  for the next drain instead of dropping it. The re-created-workspace
+  guard applies to every target — if the folder is live again when the
+  drain runs, its queued sweeps are dequeued **without** running, so a
+  delete-then-re-add can't wipe the fresh memories. The memory + conversation
+  sweeps are enqueued only by explicit `delete`; since #133 that is the only
+  teardown path at all (registering a workspace no longer evicts anything), so
+  no non-delete path can sweep the memory tier.
 
 ### MRU semantics (`mru.rs`)
 

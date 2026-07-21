@@ -1,92 +1,148 @@
-//! Durable workspace-teardown graph cascade (#99).
+//! Durable workspace-teardown cascade (#99; generalized to peer-service sweeps
+//! in #166).
 //!
-//! The executor half of the teardown cascade. [`crate::registry::teardown_bundle`]
-//! (the one primitive every removal path funnels through) enqueues a torn-down
-//! workspace id on the durable [`crate::registry::pending`] queue; this module
-//! drains that queue, pruning each workspace's `Concept` projection, Chunk
-//! nodes, and now-orphan Entity nodes from Memgraph and dequeuing an id only
-//! once its teardown has actually landed. A graph outage therefore defers —
-//! never drops — the cleanup: the id stays queued for the next drain (fired on
-//! the next create/activate/delete, or at service boot).
+//! The executor half of the teardown cascade. Every removal path enqueues
+//! `(workspace id, teardown target)` pairs on the durable
+//! [`crate::registry::pending`] queue — [`crate::registry::teardown_bundle`]
+//! (the one primitive both delete and MRU eviction funnel through) enqueues the
+//! graph target, and explicit [`crate::registry::delete`] additionally enqueues
+//! the memory + conversation targets that eviction must preserve. This module
+//! drains that one queue, dispatching each pair to its target's prune and
+//! dequeuing a pair only once its teardown has actually landed. An outage of
+//! any target therefore defers — never drops — the cleanup: the pair stays
+//! queued for the next drain (fired on the next create/activate/delete, or at
+//! service boot).
 //!
-//! This replaces the old fire-and-forget prune bolted onto the `delete`
-//! handler alone (which (a) missed MRU eviction entirely and (b) silently
-//! orphaned on a transient `warn!`).
+//! This replaces the old fire-and-forget prunes bolted onto the `delete`
+//! handler alone (which (a) missed MRU eviction for the graph and (b) silently
+//! orphaned on a transient `warn!` for the graph, the memory tier, and the
+//! conversation store alike).
 //!
-//! The cascade's exact statement sequence is
+//! The graph cascade's exact statement sequence is
 //! [`crate::graph::bolt::WORKSPACE_TEARDOWN_STEPS`]. Concepts were added to it
 //! in #117; before that a deleted workspace's `Concept` nodes and `CHILD_OF`
 //! edges were left in the graph permanently.
 
 use std::future::Future;
 
-use wylde_shared::ipc::Reply;
+use serde_json::json;
+use wylde_shared::ipc::{send_action, Reply};
 
 use crate::graph::BoltClient;
 use crate::registry;
+use crate::registry::pending::TeardownTarget;
 
-/// The narrow graph-teardown surface the drain needs: prune one workspace's
-/// whole graph footprint — its `Concept` projection, its Chunk nodes, and the
-/// now-orphan Entity nodes. Implemented by [`BoltClient`] and a test mock, so
-/// the drain logic is unit-testable without a live Neo4j.
-pub trait WorkspaceGraphTeardown {
-    fn delete_workspace(&self, workspace: &str) -> impl Future<Output = Reply> + Send;
+/// The narrow teardown surface the drain needs: prune one workspace's footprint
+/// from one peer-service store. Implemented by [`LiveTeardown`] (the real
+/// dispatch) and a test mock, so the drain logic is unit-testable without a
+/// live Neo4j or harness.
+pub trait WorkspaceTeardown {
+    fn teardown(
+        &self,
+        target: TeardownTarget,
+        workspace: &str,
+    ) -> impl Future<Output = Reply> + Send;
 }
 
-impl WorkspaceGraphTeardown for BoltClient {
-    fn delete_workspace(&self, workspace: &str) -> impl Future<Output = Reply> + Send {
+/// The production sink: dispatches each target to its owning service. The graph
+/// prune runs the Bolt cascade in-process; the memory + conversation sweeps go
+/// to the harness (the canonical owner of both stores) over IPC — the exact
+/// calls the `delete` handler used to fire-and-forget, now retried durably.
+struct LiveTeardown {
+    graph: BoltClient,
+}
+
+impl LiveTeardown {
+    fn new() -> Self {
+        Self {
+            graph: BoltClient::new(),
+        }
+    }
+}
+
+impl WorkspaceTeardown for LiveTeardown {
+    fn teardown(
+        &self,
+        target: TeardownTarget,
+        workspace: &str,
+    ) -> impl Future<Output = Reply> + Send {
         let ws = workspace.to_owned();
-        async move { BoltClient::delete_workspace(self, &ws).await }
+        async move {
+            match target {
+                TeardownTarget::Graph => BoltClient::delete_workspace(&self.graph, &ws).await,
+                TeardownTarget::Memory => {
+                    send_action(
+                        "wylde-harness",
+                        "memory.workspace.delete_all",
+                        json!({ "workspace_id": ws }),
+                    )
+                    .await
+                }
+                TeardownTarget::Conversations => {
+                    send_action(
+                        "wylde-harness",
+                        "conversations.delete_by_workspace",
+                        json!({ "workspace_id": ws }),
+                    )
+                    .await
+                }
+            }
+        }
     }
 }
 
 /// What one drain pass did — for logs + tests.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DrainReport {
-    /// Workspaces whose graph teardown landed (dequeued).
+    /// Teardowns that landed (dequeued).
     pub removed: u32,
-    /// Ids skipped because the workspace is live again (dequeued, not pruned).
+    /// Pairs skipped because the workspace is live again (dequeued, not pruned).
     pub skipped_live: u32,
-    /// Ids whose teardown failed (left queued for the next drain).
+    /// Teardowns that failed (left queued for the next drain).
     pub failed: u32,
 }
 
-/// Drain the durable pending-cleanup queue against the real Bolt backend.
+/// Drain the durable pending-cleanup queue against the real backends.
 /// Best-effort + idempotent — safe to call from any handler or at boot.
 pub async fn run_pending_cleanup() -> DrainReport {
-    drain(&BoltClient::new()).await
+    drain(&LiveTeardown::new()).await
 }
 
-/// Testable core: drive `sink` over the pending queue.
-pub(crate) async fn drain<T: WorkspaceGraphTeardown>(sink: &T) -> DrainReport {
+/// Testable core: drive `sink` over the pending queue, one entry per target.
+pub(crate) async fn drain<T: WorkspaceTeardown>(sink: &T) -> DrainReport {
     let mut report = DrainReport::default();
-    for id in registry::pending::list() {
+    for entry in registry::pending::list() {
+        let id = entry.workspace_id;
+        let target = entry.target;
         // A workspace id derives from its folder (#28), so a delete-then-add of
         // the same folder REUSES the id. If the id is a live workspace again,
-        // it is NOT an orphan — dequeue it without touching its (fresh) graph
-        // data, so a re-create can't be wiped by a stale teardown entry.
+        // it is NOT an orphan — dequeue every target for it without touching
+        // its (fresh) data, so a re-create can't be wiped by a stale teardown
+        // entry. This guard matters MORE for the memory tier than the graph:
+        // re-attaching memories the user believed deleted is the #166 privacy
+        // failure.
         if registry::get(&id).is_some() {
-            registry::pending::remove(&id);
+            registry::pending::remove(&id, target);
             report.skipped_live += 1;
             continue;
         }
-        let reply = sink.delete_workspace(&id).await;
+        let reply = sink.teardown(target, &id).await;
         if reply.ok {
-            registry::pending::remove(&id);
+            registry::pending::remove(&id, target);
             report.removed += 1;
         } else {
             // Leave it queued — the next drain retries. Durable, not
             // fire-and-forget.
             report.failed += 1;
             tracing::warn!(
-                "workspaces.cleanup: graph teardown deferred for {id}: {:?}",
+                "workspaces.cleanup: {target:?} teardown deferred for {id}: {:?}",
                 reply.error
             );
         }
     }
     if report.removed > 0 || report.failed > 0 || report.skipped_live > 0 {
         tracing::info!(
-            "workspaces.cleanup: drained pending graph teardown \
+            "workspaces.cleanup: drained pending teardown \
              (removed={}, skipped_live={}, deferred={})",
             report.removed,
             report.skipped_live,
@@ -245,8 +301,17 @@ mod tests {
             }
         }
     }
-    impl WorkspaceGraphTeardown for FakeGraph {
-        fn delete_workspace(&self, workspace: &str) -> impl Future<Output = Reply> + Send {
+    impl WorkspaceTeardown for FakeGraph {
+        fn teardown(
+            &self,
+            target: TeardownTarget,
+            workspace: &str,
+        ) -> impl Future<Output = Reply> + Send {
+            assert_eq!(
+                target,
+                TeardownTarget::Graph,
+                "FakeGraph only models the graph target"
+            );
             let ws = workspace.to_owned();
             let fail = self.fail;
             if !fail {
@@ -265,6 +330,51 @@ mod tests {
         }
     }
 
+    /// A peer-service teardown sink for the #166 durability tests: records the
+    /// `(target, workspace)` pairs it swept and can be told one target is
+    /// unavailable (an unreachable harness). Deliberately store-agnostic — it
+    /// proves the SAME drain/queue serves memory + conversations, not a second
+    /// bespoke mechanism.
+    #[derive(Default)]
+    struct FakeSink {
+        swept: Mutex<Vec<(TeardownTarget, String)>>,
+        /// This target is "down": every teardown for it fails and defers.
+        unavailable: Option<TeardownTarget>,
+    }
+    impl WorkspaceTeardown for FakeSink {
+        fn teardown(
+            &self,
+            target: TeardownTarget,
+            workspace: &str,
+        ) -> impl Future<Output = Reply> + Send {
+            let down = self.unavailable == Some(target);
+            if !down {
+                self.swept
+                    .lock()
+                    .unwrap()
+                    .push((target, workspace.to_owned()));
+            }
+            async move {
+                if down {
+                    Reply::err_msg("unavailable", "peer service down")
+                } else {
+                    Reply::ok(json!({ "ok": true }))
+                }
+            }
+        }
+    }
+    impl FakeSink {
+        fn swept_targets(&self, ws: &str) -> Vec<TeardownTarget> {
+            self.swept
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, w)| w == ws)
+                .map(|(t, _)| *t)
+                .collect()
+        }
+    }
+
     #[tokio::test]
     async fn drain_removes_target_workspace_chunks_and_orphan_entities() {
         let _env = TestEnv::new();
@@ -276,7 +386,7 @@ mod tests {
         graph.seed_chunk("ws-B", "b0", &["shared", "bar"]);
 
         // Only ws-A was torn down.
-        registry::pending::enqueue("ws-A");
+        registry::pending::enqueue("ws-A", TeardownTarget::Graph);
         let report = drain(&graph).await;
 
         assert_eq!(report.removed, 1);
@@ -317,7 +427,7 @@ mod tests {
         graph.seed_chunk("ws-B", "b0", &["parser"]);
         graph.seed_concept("ws-B", "sem:syntax", &["parser"], None);
 
-        registry::pending::enqueue("ws-A");
+        registry::pending::enqueue("ws-A", TeardownTarget::Graph);
         let report = drain(&graph).await;
         assert_eq!(report.removed, 1);
         assert_eq!(report.failed, 0);
@@ -378,14 +488,20 @@ mod tests {
             ..Default::default()
         };
         graph.seed_chunk("ws-A", "a0", &["foo"]);
-        registry::pending::enqueue("ws-A");
+        registry::pending::enqueue("ws-A", TeardownTarget::Graph);
 
         let report = drain(&graph).await;
         assert_eq!(report.failed, 1);
         assert_eq!(report.removed, 0);
         // Durable: a graph blip must NOT drop the cleanup — the id stays queued
         // for the next drain, and the chunk is still there to prune later.
-        assert_eq!(registry::pending::list(), vec!["ws-A".to_owned()]);
+        assert_eq!(
+            registry::pending::list()
+                .into_iter()
+                .map(|e| e.workspace_id)
+                .collect::<Vec<_>>(),
+            vec!["ws-A".to_owned()]
+        );
         assert_eq!(graph.chunk_count("ws-A"), 1);
 
         // A later drain against a healthy backend finishes the job.
@@ -403,7 +519,7 @@ mod tests {
         // Same folder deleted then re-created reuses the id (#28). It is queued,
         // but it's live again — the drain must NOT prune its fresh graph data.
         let def = registry::create(&_env.ws_path("re-created"), None).unwrap();
-        registry::pending::enqueue(&def.id);
+        registry::pending::enqueue(&def.id, TeardownTarget::Graph);
 
         let graph = FakeGraph::default();
         graph.seed_chunk(&def.id, "fresh0", &["foo"]);
@@ -417,6 +533,97 @@ mod tests {
             "a re-created workspace's fresh chunks are preserved"
         );
         // ...and the stale queue entry is cleared.
+        assert!(registry::pending::list().is_empty());
+    }
+
+    // ── #166: the memory + conversation sweeps ride the SAME durable queue ──
+
+    /// #166 crit 1+2: an explicit delete's memory sweep, fired while the harness
+    /// is unreachable, must be LEFT QUEUED (not lost), and a later drain against
+    /// a healthy harness must complete it. This is exactly the durability the
+    /// old fire-and-forget `tokio::spawn` in `handle_delete` lacked.
+    #[tokio::test]
+    async fn memory_sweep_defers_while_the_harness_is_down_then_drains_on_recovery() {
+        let _env = TestEnv::new();
+        // The delete verb enqueues the memory sweep (see `registry::delete`).
+        registry::pending::enqueue("ws-gone", TeardownTarget::Memory);
+
+        // Harness down: the memory target is unavailable.
+        let down = FakeSink {
+            unavailable: Some(TeardownTarget::Memory),
+            ..Default::default()
+        };
+        let report = drain(&down).await;
+        assert_eq!(report.failed, 1, "an unreachable harness defers, not drops");
+        assert_eq!(report.removed, 0);
+        assert!(
+            down.swept_targets("ws-gone").is_empty(),
+            "nothing swept yet"
+        );
+        // Still queued — the sweep is durable.
+        assert_eq!(
+            registry::pending::list(),
+            vec![registry::pending::PendingEntry {
+                workspace_id: "ws-gone".to_owned(),
+                target: TeardownTarget::Memory,
+            }]
+        );
+
+        // Harness recovers: the next drain finishes the job and dequeues it.
+        let up = FakeSink::default();
+        let report = drain(&up).await;
+        assert_eq!(report.removed, 1);
+        assert_eq!(up.swept_targets("ws-gone"), vec![TeardownTarget::Memory]);
+        assert!(registry::pending::list().is_empty());
+    }
+
+    /// #166 crit 4 (the destructive case): delete a folder, re-add it — same
+    /// folder-derived id (#28) — then drain. The stale memory-sweep entry must
+    /// be cleared WITHOUT sweeping, so the user's fresh memories survive. This
+    /// is the memory-tier analogue of `drain_skips_a_re_created_workspace_...`.
+    #[tokio::test]
+    async fn re_created_workspace_is_not_memory_swept() {
+        let _env = TestEnv::new();
+        // Deleted → memory sweep queued.
+        let def = registry::create(&_env.ws_path("re-add"), None).unwrap();
+        registry::pending::enqueue(&def.id, TeardownTarget::Memory);
+        // ...but it is live again (the re-add already happened).
+        let sink = FakeSink::default();
+        let report = drain(&sink).await;
+
+        assert_eq!(report.skipped_live, 1);
+        assert_eq!(report.removed, 0);
+        assert!(
+            sink.swept_targets(&def.id).is_empty(),
+            "a re-created workspace's fresh memories must NOT be swept (#166)"
+        );
+        assert!(registry::pending::list().is_empty(), "stale entry cleared");
+    }
+
+    /// #166 crit 5: one mechanism, not two. A single drain pass tears down the
+    /// graph, memory, AND conversation targets for a deleted workspace — all
+    /// through the one `pending`/`drain` primitive, dequeuing each as it lands.
+    #[tokio::test]
+    async fn one_drain_tears_down_every_peer_service_target() {
+        let _env = TestEnv::new();
+        registry::pending::enqueue("ws-x", TeardownTarget::Graph);
+        registry::pending::enqueue("ws-x", TeardownTarget::Memory);
+        registry::pending::enqueue("ws-x", TeardownTarget::Conversations);
+
+        let sink = FakeSink::default();
+        let report = drain(&sink).await;
+
+        assert_eq!(report.removed, 3, "all three targets drained in one pass");
+        let mut swept = sink.swept_targets("ws-x");
+        swept.sort();
+        assert_eq!(
+            swept,
+            vec![
+                TeardownTarget::Graph,
+                TeardownTarget::Memory,
+                TeardownTarget::Conversations,
+            ]
+        );
         assert!(registry::pending::list().is_empty());
     }
 }
