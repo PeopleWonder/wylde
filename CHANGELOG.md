@@ -48,6 +48,18 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **The Models panel now answers "is this safe to delete?" at a glance, and delete reports what it
+  freed (closes #131).** Consistent with the never-auto-delete decision (#120) — Wylde never GCs or
+  sweeps a model the user pulled — the installed list stays the complete on-disk inventory, and each
+  row now shows what the running config references it as: a `reasoner` / `fast` / `embedder` slot pill
+  (matched across the implicit `:latest`), or a muted `not referenced` label marking a
+  superseded/orphaned model that is safe to drop (still one click from deletion, never touched
+  automatically). `ollama.delete` now reads the model's on-disk size before removing it and returns
+  `freed_bytes`, which the panel surfaces as a "Freed 1.4 GB — deleted &lt;model&gt;" line; the size
+  lookup is best-effort and never blocks or fails the delete. Covered by wrapper wiremock tests
+  (bytes-freed, `:latest`-normalised size match, zero-when-unknown) and panel-walk tests (the freed
+  line, the slot / not-referenced labels).
+
 - **Green PRs into `develop` now merge themselves — no session left idle waiting to click merge.** With the
   strict up-to-date rule off on `develop`, a PR can merge the moment its checks pass, but nothing armed that
   merge, so the final step was still hand-babysat (a session opens a PR, sits waiting on CI, then needs a nudge
@@ -263,6 +275,21 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   changelog a required, verifiable release gate rather than an optional courtesy.
 
 ### Fixed
+
+- **A model store that is merely slow to come back after an update no longer reads as "you have no
+  models" (closes #132).** Wylde never sets `OLLAMA_MODELS`, so the store lives in Ollama's own
+  ambient location — outside the Wylde install tree and untouched by an update or rebuild — and a
+  model a previous version pulled is still discovered by `/api/tags` afterwards. The remaining gap was
+  the panel: when the very first `ollama.list_models` failed (the daemon still restarting right after
+  an update), an empty list rendered the "pull your first model" empty state, telling a user with a
+  full disk their models were gone. The Models panel now tracks whether the last list attempt
+  *reached* the daemon and splits "reachable + empty" (genuinely no models) from "unreachable + empty"
+  (a distinct "Model store unavailable — your installed models are safe on disk" card with a Retry);
+  a failed refresh keeps the previous list rather than blanking it. A new lifecycle seam
+  (`ollama_serve_env_overrides`) is the single place any daemon env may be set and is guarded by a
+  test that fails red if `OLLAMA_MODELS`/`OLLAMA_HOME` is ever injected onto `ollama serve`, locking
+  in the version-independent store. Covered by a panel-walk asserting an unreachable store classifies
+  as `Unreachable`, not `Empty`.
 
 - **Registering a 6th workspace no longer silently destroys the least-recently-used
   workspace's entire bundle (closes #133).** The MRU-5 window was a *disk cap*, not just
