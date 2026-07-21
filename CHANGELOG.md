@@ -231,6 +231,23 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **Every service's `ALL_ACTIONS` verb table is now asserted EQUAL to the live
+  registry, both directions — and the reverse direction caught 11 verbs that had
+  silently drifted (closes #130).** Each service's registration test asserted
+  only `table ⊆ registry`; none asserted `registry ⊆ table`, the direction a
+  developer trips (register a handler, forget the table). A missing entry leaks
+  past `reset_for_tests` (which unregisters by iterating the table) and makes the
+  gpui-contract lint flag correct callers as calling a nonexistent verb. A shared
+  `assert_action_table_matches_registry(prefixes, all_actions)` helper now checks
+  both directions and is wired into all eight services (`voice`, `lifecycle`,
+  `n8n`, `treesitter`, `ollama`, `extension-bridge`, `lsp`, `workspaces`); the two
+  hardcoded inline verb lists (`ollama`, `extension-bridge` — a third, already
+  stale copy of the set) are deleted in favour of iterating `ALL_ACTIONS`, and
+  `lsp` + `workspaces` gained the test they never had. Turning the reverse
+  direction on immediately surfaced real drift in `wylde-workspaces`: ten
+  `workspaces.hierarchy.*` verbs and `workspaces.conversations.refresh_summary`
+  were registered and handled but absent from `ALL_ACTIONS` — now added.
+
 - **The model-GC reference set now derives structurally from `ModelSlots`, so a
   new model slot cannot be silently unreferenced (closes #119).**
   `referenced_models` hardcoded a three-element array of slot fields
