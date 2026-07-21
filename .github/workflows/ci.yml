@@ -103,48 +103,59 @@ jobs:
       - name: Install vendored Neo4j + JDK (checksum-pinned)
         shell: pwsh
         run: ./tools/install-neo4j.ps1
-      - name: Boot Neo4j (auth off, bolt 127.0.0.1:7687) and wait for readiness
-        shell: pwsh
+      - name: Build the live-graph test binaries (no DB needed)
+        working-directory: rust
         run: |
-          $ErrorActionPreference = 'Stop'
+          cargo test -p wylde-workspaces --locked --no-run --test integration_graph --test integration_symbol_context --test integration_symbols_find
+          cargo test -p wylde-harness --locked --no-run --test memgraph_live --test memgraph_bolt_integration
+      - name: Boot Neo4j and run the live-graph tests (--ignored)
+        shell: pwsh
+        env:
+          GRAPH_BOLT_URL: bolt://127.0.0.1:7687
+        run: |
+          # Boot AND run in ONE step: the Neo4j JVM is a background child of this
+          # step's shell, and the runner reaps a step's process tree at the step
+          # boundary — so booting in a separate step killed the DB before the
+          # tests ran (connection refused). Keeping both here holds it alive.
+          $repo  = (Get-Location).Path
           $neo4j = (Resolve-Path 'Core/Memgraph/vendor/neo4j').Path
           $jdk   = (Resolve-Path 'Core/Memgraph/vendor/jdk').Path
           $env:JAVA_HOME = $jdk
           $env:JAVACMD   = Join-Path $jdk 'bin/java.exe'
-          # Boot the server in the background; it runs until the job ends.
-          Start-Process -FilePath (Join-Path $neo4j 'bin/neo4j-admin.bat') `
-            -ArgumentList 'server','console' -WorkingDirectory $neo4j `
-            -RedirectStandardOutput 'neo4j-out.log' -RedirectStandardError 'neo4j-err.log'
-          # Poll a real `RETURN 1` (implies the Bolt port is up AND query-ready).
-          $shell = Join-Path $neo4j 'bin/cypher-shell.bat'
-          $deadline = (Get-Date).AddMinutes(4)
-          $ready = $false
-          while ((Get-Date) -lt $deadline) {
-            try {
-              & $shell -a 'bolt://127.0.0.1:7687' 'RETURN 1 AS ok;' *> $null
-              if ($LASTEXITCODE -eq 0) { $ready = $true; break }
-            } catch { }
-            Start-Sleep -Seconds 3
+          $outLog = Join-Path $repo 'neo4j-out.log'
+          $errLog = Join-Path $repo 'neo4j-err.log'
+          $proc = Start-Process -FilePath (Join-Path $neo4j 'bin/neo4j-admin.bat') `
+            -ArgumentList 'server','console' -WorkingDirectory $neo4j -PassThru `
+            -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+          $failed = $false
+          try {
+            # Poll a real `RETURN 1` (implies the Bolt port is up AND query-ready).
+            $shell = Join-Path $neo4j 'bin/cypher-shell.bat'
+            $deadline = (Get-Date).AddMinutes(4)
+            $ready = $false
+            while ((Get-Date) -lt $deadline) {
+              try {
+                & $shell -a 'bolt://127.0.0.1:7687' 'RETURN 1 AS ok;' *> $null
+                if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+              } catch { }
+              Start-Sleep -Seconds 3
+            }
+            if (-not $ready) { throw 'Neo4j did not become query-ready on bolt://127.0.0.1:7687 within 4 minutes' }
+            Write-Host 'Neo4j is up and query-ready on bolt://127.0.0.1:7687 (auth off).'
+            Push-Location (Join-Path $repo 'rust')
+            cargo test -p wylde-workspaces --locked --test integration_graph --test integration_symbol_context --test integration_symbols_find -- --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            cargo test -p wylde-harness --locked --test memgraph_live --test memgraph_bolt_integration -- --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            Pop-Location
+          } finally {
+            if ($failed) {
+              Write-Host '--- neo4j-out.log ---'; Get-Content $outLog -ErrorAction SilentlyContinue
+              Write-Host '--- neo4j-err.log ---'; Get-Content $errLog -ErrorAction SilentlyContinue
+            }
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
           }
-          if (-not $ready) {
-            Write-Host '--- neo4j-out.log ---'; Get-Content 'neo4j-out.log' -ErrorAction SilentlyContinue
-            Write-Host '--- neo4j-err.log ---'; Get-Content 'neo4j-err.log' -ErrorAction SilentlyContinue
-            throw 'Neo4j did not become query-ready on bolt://127.0.0.1:7687 within 4 minutes'
-          }
-          Write-Host 'Neo4j is up and query-ready on bolt://127.0.0.1:7687 (auth off).'
-      - name: Live-graph tests (workspaces + harness Bolt), --ignored
-        working-directory: rust
-        env:
-          GRAPH_BOLT_URL: bolt://127.0.0.1:7687
-        run: |
-          cargo test -p wylde-workspaces --locked --test integration_graph --test integration_symbol_context --test integration_symbols_find -- --ignored --nocapture
-          cargo test -p wylde-harness --locked --test memgraph_live --test memgraph_bolt_integration -- --ignored --nocapture
-      - name: Neo4j logs (on failure)
-        if: failure()
-        shell: pwsh
-        run: |
-          Write-Host '--- neo4j-out.log ---'; Get-Content 'neo4j-out.log' -ErrorAction SilentlyContinue
-          Write-Host '--- neo4j-err.log ---'; Get-Content 'neo4j-err.log' -ErrorAction SilentlyContinue
+          if ($failed) { throw 'live-graph tests failed' }
 
   # --- GUI workspace (Core/GUI/) — build only. It compiles the gpui + wry +
   # tray-icon graph, which is what dependency bumps here would break. (The
