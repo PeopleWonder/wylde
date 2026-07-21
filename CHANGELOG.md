@@ -217,6 +217,17 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **The L7 `panel-walk` gate's hand-kept crate list is now guarded against
+  silent under-coverage (closes #95).** `cargo panel-walk` (the required `gui
+  panel-walk (L7)` job) is a `-p`-scoped alias in `Core/GUI/.cargo/config.toml`
+  listing today's nine panel crates. A tenth panel added without extending the
+  alias would have its tests silently skipped by the gate while CI stayed green.
+  A new static test in `wylde-panel-workspaces` asserts the alias's `-p` set
+  covers every `Frontend/Panels/*` workspace member (excluding the `shared/*`
+  helpers), turning silent under-coverage into a red that names the missing
+  `-p`. It runs under the L7 gate itself and needs no `--workspace` (which would
+  drag in the Shell's headless-unsafe `wry`/tray-icon graph the scoping avoids).
+
 - **Two registered `conversations.*` verbs were missing from the harness pipe's
   `ALL_PIPE_ACTIONS` table, and no test guarded that direction (closes #142).**
   `conversations.get_active_for_workspace` and `set_active_for_workspace` are
