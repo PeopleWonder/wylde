@@ -44,7 +44,8 @@
           { "context": "cargo-deny (advisories) (tools/xtask/Cargo.toml)" },
           { "context": "cargo-deny (advisories) (tools/wylde-release/Cargo.toml)" },
           { "context": "cargo-deny (licenses) (tools/xtask/Cargo.toml)" },
-          { "context": "cargo-deny (licenses) (tools/wylde-release/Cargo.toml)" }
+          { "context": "cargo-deny (licenses) (tools/wylde-release/Cargo.toml)" },
+          { "context": "wylde_check (full rule set)" }
         ]
       }
     }
