@@ -56,6 +56,21 @@ use wylde_harness::memory::memgraph::client::{Client, TraverseRequest as PipeTra
 use wylde_harness::memory::memgraph::{BoltClient, EntityPair, TraverseRequest};
 use wylde_shared::ipc::Reply;
 
+/// Serialize every parity test against the one shared Neo4j (#83).
+///
+/// `cargo test` runs a binary's tests multi-threaded by default, and this
+/// binary is **not** in the CI live-graph leg (it also needs the Python
+/// `wylde-memgraph` service), so it only ever runs from a developer's ad-hoc
+/// `--ignored` invocation — precisely the multi-threaded, shared-DB context the
+/// `--test-threads=1` CI guard never covers. Per-test data is nonce-namespaced
+/// (see [`test_workspace`]), but `parity_02_ensure_schema` / `parity_11_stats`
+/// and each verb's `delete_workspace` orphan-prune touch graph-global state, so
+/// concurrent tests contend on the shared Entity space and pile connections onto
+/// the JVM — the self-collision class `#216` fixed for the sister live-graph
+/// binaries via an in-code `DB_LOCK`. Held for each test body; the nonce
+/// namespacing remains layered on top as hygiene.
+static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Per-test nonce → unique workspace label that no production data
 /// can collide with. Same shape as the sister `memgraph_bolt_integration`
 /// test's `test_workspace()` helper.
@@ -113,6 +128,7 @@ fn inner_ok(reply: &Reply) -> Option<bool> {
 #[tokio::test]
 #[ignore = "parity test — requires Neo4j + wylde-memgraph service live"]
 async fn parity_01_health() {
+    let _db = DB_LOCK.lock().await;
     let pipe = pipe_client().health().await;
     let bolt = bolt_client().health().await;
     log_pair("health", &pipe, &bolt);
@@ -128,6 +144,7 @@ async fn parity_01_health() {
 #[tokio::test]
 #[ignore = "parity test — requires Neo4j + wylde-memgraph service live"]
 async fn parity_02_ensure_schema() {
+    let _db = DB_LOCK.lock().await;
     let pipe = pipe_client().ensure_schema().await;
     let bolt = bolt_client().ensure_schema().await;
     log_pair("ensure_schema", &pipe, &bolt);
@@ -143,6 +160,7 @@ async fn parity_02_ensure_schema() {
 #[tokio::test]
 #[ignore = "parity test — requires Neo4j + wylde-memgraph service live"]
 async fn parity_03_upsert() {
+    let _db = DB_LOCK.lock().await;
     let pipe_c = pipe_client();
     let bolt_c = bolt_client();
     let ws = test_workspace("upsert");
@@ -188,6 +206,7 @@ async fn parity_03_upsert() {
 #[tokio::test]
 #[ignore = "parity test — requires Neo4j + wylde-memgraph service live"]
 async fn parity_04_delete_path() {
+    let _db = DB_LOCK.lock().await;
     let pipe_c = pipe_client();
     let bolt_c = bolt_client();
     let ws = test_workspace("dpath");
@@ -218,6 +237,7 @@ async fn parity_04_delete_path() {
 #[tokio::test]
 #[ignore = "parity test — requires Neo4j + wylde-memgraph service live"]
 async fn parity_05_delete_workspace() {
+    let _db = DB_LOCK.lock().await;
     let pipe_c = pipe_client();
     let bolt_c = bolt_client();
     let ws_pipe = test_workspace("dwspipe");
@@ -257,6 +277,7 @@ async fn parity_05_delete_workspace() {
 #[tokio::test]
 #[ignore = "parity test — requires Neo4j + wylde-memgraph service live"]
 async fn parity_06_traverse() {
+    let _db = DB_LOCK.lock().await;
     let pipe_c = pipe_client();
     let bolt_c = bolt_client();
     let ws = test_workspace("trv");
@@ -327,6 +348,7 @@ async fn parity_06_traverse() {
 #[tokio::test]
 #[ignore = "parity test — requires Neo4j + wylde-memgraph service live"]
 async fn parity_07_relate() {
+    let _db = DB_LOCK.lock().await;
     let pipe_c = pipe_client();
     let bolt_c = bolt_client();
     // Unique prefix so we don't disturb any production Entity rows.
@@ -368,6 +390,7 @@ async fn parity_07_relate() {
 #[tokio::test]
 #[ignore = "parity test — requires Neo4j + wylde-memgraph service live"]
 async fn parity_08_unrelate() {
+    let _db = DB_LOCK.lock().await;
     let pipe_c = pipe_client();
     let bolt_c = bolt_client();
     let pfx = format!("parity_unrel_{}", std::process::id());
@@ -414,6 +437,7 @@ async fn parity_08_unrelate() {
 #[tokio::test]
 #[ignore = "parity test — requires Neo4j + wylde-memgraph service live"]
 async fn parity_09_multihop() {
+    let _db = DB_LOCK.lock().await;
     let pipe_c = pipe_client();
     let bolt_c = bolt_client();
     let ws = test_workspace("mh");
@@ -455,6 +479,7 @@ async fn parity_09_multihop() {
 #[tokio::test]
 #[ignore = "parity test — requires Neo4j + wylde-memgraph service live"]
 async fn parity_10_upsert_edge() {
+    let _db = DB_LOCK.lock().await;
     let pipe_c = pipe_client();
     let bolt_c = bolt_client();
     let pfx = format!("parity_uedge_{}", std::process::id());
@@ -489,6 +514,7 @@ async fn parity_10_upsert_edge() {
 #[tokio::test]
 #[ignore = "parity test — requires Neo4j + wylde-memgraph service live"]
 async fn parity_11_stats() {
+    let _db = DB_LOCK.lock().await;
     let pipe = pipe_client().stats().await;
     let bolt = bolt_client().stats().await;
     log_pair("stats", &pipe, &bolt);

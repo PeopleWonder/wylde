@@ -343,6 +343,38 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **The self-collision test class is swept and the live-graph half is closed out (refs #83).**
+  #83 names a recurring bug class: a test that asserts against a resource the *product* owns, so
+  it is deterministically RED on a developer's rig (Wylde installed/running, `WYLDE_*` set) yet
+  permanently GREEN on CI (a clean box that runs no stack and sets no `WYLDE_*`) — the one
+  environment reviewing every PR is the one blind to the bug. A full audit of the test suite
+  (every `rust/crates/**`, `Core/GUI/**`, and `Core/harness/dev/tests/**` test) turned up **zero**
+  live instances of the sighting-#80 shape (an assertion whose expected value tracks the machine)
+  and confirmed the existing guards hold — the #79 fixture-pipe scanner, the #82 hermetic
+  `cfg(test)` root, `unique_service_name()`/`unique_pipe_name()` (#29), and the `model_registry`
+  env sandbox (#125). What it did surface was the *other half* of the #216 flake: the shared-Neo4j
+  `DB_LOCK` added there for `wylde-workspaces`' `integration_graph` was never extended to the two
+  remaining multi-test live-graph binaries. `wylde-harness`'s `memgraph_bolt_integration` (11
+  tests) and `memgraph_parity_integration` (11 tests) nonce-namespace their per-workspace data but
+  ran unserialized against the one shared graph — so their graph-global operations (`ensure_schema`,
+  `stats()`, and the graph-wide orphan-entity prune inside `delete_workspace`, plus bare
+  global-by-name entities like `shared_entity`) could contend when `cargo test` runs a binary's
+  tests multi-threaded. CI serialized `memgraph_bolt_integration` with `--test-threads=1`, but
+  `memgraph_parity_integration` is not in the live-graph leg at all, so it only ever runs from a
+  developer's ad-hoc `--ignored` invocation — precisely the unguarded, multi-threaded, shared-DB
+  context. Both binaries now hold an in-code `DB_LOCK` for each test body (mirroring `memgraph_live`),
+  making the serialization a property of the test rather than of how it happens to be invoked;
+  the nonce namespacing stays layered on top as hygiene. Verified against the live Neo4j: the
+  fixed `memgraph_bolt_integration` passes 11/11 deterministically across repeated multi-threaded
+  runs. Two out-of-scope class instances found by the audit are carried as concrete follow-ups
+  rather than left in a vague tracker — an ambient-`WYLDE_IMAGES_*` read in the separate
+  `wylde-images` service repo (#224; a demonstrable local RED under
+  `WYLDE_IMAGES_GENERATE_TIMEOUT_S=60`, GREEN once its `Config::load` reads are env-scrubbed),
+  and a coverage gap in the #79 scanner (#225; it does not walk `src/**` `#[cfg(test)]` modules);
+  a third follow-up (#226) proposes a static guard that makes "a multi-test `bolt://` binary must
+  hold a `DB_LOCK`" the enforcement half. #83 stays open as the documented home for the fourth
+  sighting.
+
 - **`workspaces.symbol_context` no longer drops every outgoing callee to zero against a
   live graph (closes #203).** The k-hop walk applies a shared time budget
   (`200ms + 300ms × hops`) measured from a single instant taken *before* the focal/type/
