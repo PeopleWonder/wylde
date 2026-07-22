@@ -40,18 +40,30 @@ def _ci(root: Any, *run_stems: str) -> None:
     _write(root / ".github" / "workflows" / "ci.yml", "\n".join(lines) + "\n")
 
 
-# Two live-graph test bodies. `guarded` toggles the per-test DB_LOCK.
-def _two_test_binary(guarded_a: bool, guarded_b: bool, *, decl_lock: bool = True) -> str:
+# Two live-graph test bodies. `guarded` toggles the per-test DB_LOCK;
+# `pipe_parity` adds the pipe-service tell that exempts a binary from the
+# CI-coverage arm.
+def _two_test_binary(
+    guarded_a: bool,
+    guarded_b: bool,
+    *,
+    decl_lock: bool = True,
+    pipe_parity: bool = False,
+) -> str:
     lock_decl = (
         "static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());\n\n"
         if decl_lock
         else ""
     )
+    # The pipe-service tell (`pipe_client`) makes this a pipe-vs-bolt parity
+    # binary, exempt from the CI-coverage arm.
+    parity_helper = "fn pipe_client() -> Client {\n    Client::new()\n}\n\n" if pipe_parity else ""
     a = "    let _g = DB_LOCK.lock().await;\n" if guarded_a else ""
     b = "    let _g = DB_LOCK.lock().await;\n" if guarded_b else ""
     return (
         "//! Live graph binary.\n"
         f"{lock_decl}"
+        f"{parity_helper}"
         "#[tokio::test]\n"
         '#[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687"]\n'
         "async fn round_trip_a() {\n"
@@ -127,6 +139,29 @@ def test_pass_single_live_test_is_exempt(isolated_tree: Any) -> None:
     _bin(root, "integration_symbol_context", src)
     _ci(root)  # not in the leg — still fine, it's single-test
     assert wc.check_graph_test_serialized_on_db_lock() == []
+
+
+def test_pass_pipe_parity_binary_exempt_from_ci_arm(isolated_tree: Any) -> None:
+    # A pipe-vs-bolt parity binary (the memgraph_parity_integration shape)
+    # needs the wylde-memgraph pipe service the bolt-only leg can't boot, so it
+    # is exempt from the CI-coverage arm even when absent from the leg — as long
+    # as it still holds the DB_LOCK.
+    wc, root = isolated_tree
+    _bin(root, "memgraph_parity_integration", _two_test_binary(True, True, pipe_parity=True))
+    _ci(root)  # NOT in the leg — must still pass, because it's pipe-parity
+    assert wc.check_graph_test_serialized_on_db_lock() == []
+
+
+def test_fail_pipe_parity_binary_still_subject_to_lock_arm(isolated_tree: Any) -> None:
+    # Exemption is from the CI-coverage arm ONLY. An unguarded test in a
+    # pipe-parity binary is still flagged by the DB_LOCK arm.
+    wc, root = isolated_tree
+    _bin(root, "memgraph_parity_integration", _two_test_binary(True, False, pipe_parity=True))
+    _ci(root)
+    findings = wc.check_graph_test_serialized_on_db_lock()
+    assert len(findings) == 1, findings
+    assert findings[0].context == "round_trip_b"
+    assert "does not serialize on a DB_LOCK" in findings[0].message
 
 
 def test_pass_non_ignored_second_test_not_counted(isolated_tree: Any) -> None:

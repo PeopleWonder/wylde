@@ -107,7 +107,7 @@ jobs:
         working-directory: rust
         run: |
           cargo test -p wylde-workspaces --locked --no-run --test integration_graph --test integration_symbol_context --test integration_symbols_find
-          cargo test -p wylde-harness --locked --no-run --test memgraph_live --test memgraph_bolt_integration --test memgraph_parity_integration
+          cargo test -p wylde-harness --locked --no-run --test memgraph_live --test memgraph_bolt_integration
       - name: Boot Neo4j and run the live-graph tests (--ignored)
         shell: pwsh
         env:
@@ -177,13 +177,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { $failed = $true }
             cargo test -p wylde-harness --locked --test memgraph_bolt_integration -- --ignored --nocapture --test-threads=1
             if ($LASTEXITCODE -ne 0) { $failed = $true }
-            # memgraph_parity_integration (11 tests) holds an in-code DB_LOCK
-            # per test body, but was absent from this leg — so its live-graph
-            # coverage never actually ran in CI (the #83 audit gap). Wired in
-            # here; wylde_check rule 56 keeps every multi-test bolt:// binary
-            # in this leg from now on.
-            cargo test -p wylde-harness --locked --test memgraph_parity_integration -- --ignored --nocapture --test-threads=1
-            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            # NOTE: memgraph_parity_integration is deliberately NOT run here. It
+            # is a pipe-vs-bolt PARITY binary: every test asserts `pipe.ok &&
+            # bolt.ok`, driving the memgraph service over `\\.\pipe\wylde-memgraph`
+            # as well as Bolt. This leg only stands up the vendored Neo4j (Bolt),
+            # not the wylde-memgraph pipe service, so the pipe half fails
+            # `connect(...) file not found` and the whole binary goes red — it
+            # needs the full local stack, which is why it is `#[ignore]`d. It
+            # still holds a per-test DB_LOCK (#227) so its dev `--ignored` runs
+            # are serialized, and wylde_check rule 56 keeps that lock in place.
+            # rule 56's CI-coverage arm applies only to bolt-only binaries.
             Pop-Location
           } finally {
             if ($failed) {

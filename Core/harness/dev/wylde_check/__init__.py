@@ -328,19 +328,26 @@ The rules:
                             must (a) acquire a per-test ``DB_LOCK`` in every
                             such test body — directly
                             (``DB_LOCK.lock().await``) or via a same-file
-                            ``db_guard()`` helper — and (b) be run in the
-                            live-graph leg of ``.github/workflows/ci.yml``
-                            (a ``--test <stem> … --ignored`` invocation).  The
-                            self-collision class (#83) recurred three times
-                            (#216/#227) because the lock was a convention a
-                            reviewer had to remember and CI ran these
-                            ``#[ignore]``d tests only in a dedicated job; a
-                            binary added later without the lock — or one that
-                            holds the lock but isn't in the leg, the exact
-                            ``memgraph_parity_integration`` gap the #83 audit
-                            found — now turns the build red.  Single-test
-                            live-graph binaries can't self-collide and are out
-                            of scope.  Details in docs/wylde_check_rules.md.
+                            ``db_guard()`` helper — and (b), for a *bolt-only*
+                            binary, be run in the live-graph leg of
+                            ``.github/workflows/ci.yml`` (a ``--test <stem> …
+                            --ignored`` invocation).  The self-collision class
+                            (#83) recurred three times (#216/#227) because the
+                            lock was a convention a reviewer had to remember and
+                            CI ran these ``#[ignore]``d tests only in a
+                            dedicated job; a bolt-only binary added later
+                            without the lock — or one that holds the lock but
+                            isn't in the leg — now turns the build red.  A
+                            pipe-vs-bolt PARITY binary
+                            (``memgraph_parity_integration``: asserts
+                            ``pipe.ok && bolt.ok``; tell ``pipe_client`` /
+                            ``WYLDE_MEMGRAPH_SERVICE``) needs the
+                            ``wylde-memgraph`` pipe service the bolt-only leg
+                            can't boot, so it is exempt from arm (b) — that is
+                            why the #83 audit found it outside the leg — but the
+                            DB_LOCK arm still covers it.  Single-test live-graph
+                            binaries can't self-collide and are out of scope.
+                            Details in docs/wylde_check_rules.md.
 
 All rules are advisory.  The checker returns an envelope; nothing here
 mutates state.
