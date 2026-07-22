@@ -320,6 +320,27 @@ The rules:
                             seven weeks, with nothing failing in between.
                             Opt out with
                             ``wylde-check: personal-identifier-ok``.
+56. ``graph_test_serialized_on_db_lock`` — every Rust integration-test
+                            binary (``rust/crates/**/tests/*.rs``) with two or
+                            more *live-graph* tests (a ``#[test]`` /
+                            ``#[tokio::test]`` that is also ``#[ignore]``d with
+                            a reason naming ``bolt://`` / Neo4j / Memgraph)
+                            must (a) acquire a per-test ``DB_LOCK`` in every
+                            such test body — directly
+                            (``DB_LOCK.lock().await``) or via a same-file
+                            ``db_guard()`` helper — and (b) be run in the
+                            live-graph leg of ``.github/workflows/ci.yml``
+                            (a ``--test <stem> … --ignored`` invocation).  The
+                            self-collision class (#83) recurred three times
+                            (#216/#227) because the lock was a convention a
+                            reviewer had to remember and CI ran these
+                            ``#[ignore]``d tests only in a dedicated job; a
+                            binary added later without the lock — or one that
+                            holds the lock but isn't in the leg, the exact
+                            ``memgraph_parity_integration`` gap the #83 audit
+                            found — now turns the build red.  Single-test
+                            live-graph binaries can't self-collide and are out
+                            of scope.  Details in docs/wylde_check_rules.md.
 
 All rules are advisory.  The checker returns an envelope; nothing here
 mutates state.
@@ -435,6 +456,9 @@ from .rules._silent_skip_in_service_start import (  # noqa: E402
 from .rules._personal_identifiers import (  # noqa: E402
     check_no_personal_identifiers,
 )
+from .rules._graph_test_isolation import (  # noqa: E402
+    check_graph_test_serialized_on_db_lock,
+)
 from .rules._selfcheck import check_rule_targets_exist  # noqa: E402
 from ._single_file import (  # noqa: E402
     _check_dead_refs_lines,
@@ -504,6 +528,11 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # because nothing failed in between. Name tokens are matched as
     # salted digests so this rule is not itself the leak.
     "no_personal_identifiers": check_no_personal_identifiers,
+    # Rule 56 — multi-test bolt:// binaries must serialize each test on a
+    # DB_LOCK and be run in the live-graph CI leg (0.2 Stability, #226). The
+    # #83 self-collision class recurred three times because the lock was an
+    # unenforced convention; this makes it structural.
+    "graph_test_serialized_on_db_lock": check_graph_test_serialized_on_db_lock,
     "rule_targets_exist": check_rule_targets_exist,
 }
 
@@ -532,7 +561,11 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # structurally dead (target tree deleted in the Rust cutover — they
 # walked nothing and could only report a pass) and seven were Python-only
 # rules with no production Python left.  52 - 22 = 30.
-assert len(_RULES) == 30, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 30)"
+# 0.2 Stability enforcement (#226, 2026-07-22): +1 (rule 56,
+# graph_test_serialized_on_db_lock) = 31 active.  Makes the shared-Neo4j
+# per-test DB_LOCK + live-graph CI coverage a structural gate, so the #83
+# self-collision class (which recurred three times) cannot recur silently.
+assert len(_RULES) == 31, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 31)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -675,4 +708,5 @@ __all__ = [
     "check_rule_targets_exist",
     "check_silent_skip_in_service_start",
     "check_no_hardcoded_prompts_rust",
+    "check_graph_test_serialized_on_db_lock",
 ]

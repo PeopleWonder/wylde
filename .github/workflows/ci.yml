@@ -107,7 +107,7 @@ jobs:
         working-directory: rust
         run: |
           cargo test -p wylde-workspaces --locked --no-run --test integration_graph --test integration_symbol_context --test integration_symbols_find
-          cargo test -p wylde-harness --locked --no-run --test memgraph_live --test memgraph_bolt_integration
+          cargo test -p wylde-harness --locked --no-run --test memgraph_live --test memgraph_bolt_integration --test memgraph_parity_integration
       - name: Boot Neo4j and run the live-graph tests (--ignored)
         shell: pwsh
         env:
@@ -176,6 +176,13 @@ jobs:
             cargo test -p wylde-harness --locked --test memgraph_live -- --ignored --nocapture --test-threads=1
             if ($LASTEXITCODE -ne 0) { $failed = $true }
             cargo test -p wylde-harness --locked --test memgraph_bolt_integration -- --ignored --nocapture --test-threads=1
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            # memgraph_parity_integration (11 tests) holds an in-code DB_LOCK
+            # per test body, but was absent from this leg — so its live-graph
+            # coverage never actually ran in CI (the #83 audit gap). Wired in
+            # here; wylde_check rule 56 keeps every multi-test bolt:// binary
+            # in this leg from now on.
+            cargo test -p wylde-harness --locked --test memgraph_parity_integration -- --ignored --nocapture --test-threads=1
             if ($LASTEXITCODE -ne 0) { $failed = $true }
             Pop-Location
           } finally {

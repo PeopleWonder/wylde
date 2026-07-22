@@ -48,6 +48,24 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **`wylde_check` rule 56 (`graph_test_serialized_on_db_lock`) makes the shared-Neo4j self-collision class a structural gate, and the last unwired live-graph binary now runs in CI (closes #226; refs #83).**
+  The #83 self-collision class — a live-graph test binary whose two-or-more `#[ignore]`d `bolt://` tests hit
+  one shared Neo4j without serialization, non-deterministically failing on `ensure_schema` / `stats()` / the
+  `delete_workspace` orphan-prune — recurred three times (#216, #227) by the same omission: the per-test
+  `DB_LOCK` was a convention a reviewer had to remember, and CI runs these `#[ignore]`d tests only in a
+  dedicated `--ignored` job. The new rule walks every `rust/crates/**/tests/*.rs` binary and, for each with
+  ≥2 live-graph tests, **fails the build** unless (a) every such test body acquires the binary's `DB_LOCK`
+  (directly, or via a same-file `db_guard()` helper) and (b) the binary is actually run in the live-graph leg
+  of `.github/workflows/ci.yml` (a `--test <stem> … --ignored` invocation). A new multi-test `bolt://` binary
+  added later without the lock — or one that holds the lock but isn't in the leg — now turns red instead of
+  passing quietly. The CI-coverage half closes the concrete gap the #83 audit found: `memgraph_parity_integration`
+  (11 tests) *held* the lock but was absent from the leg entirely, so its serialization was never exercised in
+  CI; it is now wired into the leg's `--no-run` build and `--ignored` run steps. Single-test live-graph binaries
+  can't self-collide and are out of scope, as is `memgraph_integration` (one ignored live test; its second test
+  is a non-ignored negative case). The rule is registered in the `wylde_check (full rule set)` gate (now 31
+  rules) and its CI-workflow target is pinned in `rule_targets_exist`, so a rename of `ci.yml` turns this gate
+  red rather than disarming it. #83 stays open as the umbrella tracker for the class.
+
 - **The `wylde_check` architectural linter is now a CI gate — all 30 rules are enforced, not advisory.**
   Until now `wylde_check` ran in no workflow: its ~30 Wylde-specific contracts (crate-boundary imports,
   no-panic-in-panel-render, silent-error swallows, pipe-name convention, the launcher/shutdown single-source

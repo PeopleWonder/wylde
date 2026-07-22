@@ -122,6 +122,11 @@ RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
         None,
         "panel_crate_must_be_workspace_member",
     ),
+    (
+        ".github/workflows/ci.yml",
+        None,
+        "graph_test_serialized_on_db_lock",
+    ),
     # ── walk roots (cardinality: at least one matching file) ──
     (
         "rust/crates",
@@ -129,7 +134,8 @@ RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
         "import_paths_rust, no_silent_error_swallow_rust, "
         "logging_setup_only_rust, no_external_process_spawn_rust, "
         "no_hardcoded_prompts_rust, no_unbounded_log_sink_rust, "
-        "service_owns_its_state, file_size_limit",
+        "service_owns_its_state, file_size_limit, "
+        "graph_test_serialized_on_db_lock",
     ),
     (
         "rust/crates/wylde-gateway/src",

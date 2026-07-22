@@ -88,6 +88,10 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
         # slice, 2026-07-19): real home-directory paths, and the
         # maintainer's name matched as salted digests.
         "no_personal_identifiers",
+        # Rule 56 — multi-test bolt:// binaries must serialize on a DB_LOCK
+        # and be run in the live-graph CI leg (0.2 Stability, #226). Makes
+        # the #83 self-collision class a structural gate.
+        "graph_test_serialized_on_db_lock",
     }
     assert set(result["data"]["summary"]["by_rule"].keys()) == expected
 
@@ -113,7 +117,7 @@ def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
     #116 was about.  Bump this when a rule is genuinely added or retired.
     """
     wc, _root = isolated_tree
-    assert len(wc._RULES) == 30
+    assert len(wc._RULES) == 31
     result = wc.run_all()
     assert result["ok"] is True
     assert result["data"]["rules_checked"] == len(wc._RULES)
