@@ -177,16 +177,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { $failed = $true }
             cargo test -p wylde-harness --locked --test memgraph_bolt_integration -- --ignored --nocapture --test-threads=1
             if ($LASTEXITCODE -ne 0) { $failed = $true }
-            # NOTE: memgraph_parity_integration is deliberately NOT run here. It
-            # is a pipe-vs-bolt PARITY binary: every test asserts `pipe.ok &&
-            # bolt.ok`, driving the memgraph service over `\\.\pipe\wylde-memgraph`
-            # as well as Bolt. This leg only stands up the vendored Neo4j (Bolt),
-            # not the wylde-memgraph pipe service, so the pipe half fails
-            # `connect(...) file not found` and the whole binary goes red — it
-            # needs the full local stack, which is why it is `#[ignore]`d. It
-            # still holds a per-test DB_LOCK (#227) so its dev `--ignored` runs
-            # are serialized, and wylde_check rule 56 keeps that lock in place.
-            # rule 56's CI-coverage arm applies only to bolt-only binaries.
             Pop-Location
           } finally {
             if ($failed) {
