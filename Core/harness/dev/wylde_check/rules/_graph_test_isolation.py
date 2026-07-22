@@ -13,11 +13,11 @@ The symptom is a non-deterministic ``ok:false`` operation failure, a
 different test failing on each run.
 
 The fix, established across ``memgraph_live`` / ``memgraph_bolt_integration``
-/ ``memgraph_parity_integration`` / ``integration_graph`` (#216, #227), is a
-process-wide ``DB_LOCK`` (a ``tokio::sync::Mutex``) acquired at the top of
-every test body, so the serialization is a property of the *test* rather than
-of how it happens to be invoked (``--test-threads=1`` in CI is only a
-belt-and-suspenders second guard).
+/ ``integration_graph`` (#216, #227), is a process-wide ``DB_LOCK`` (a
+``tokio::sync::Mutex``) acquired at the top of every test body, so the
+serialization is a property of the *test* rather than of how it happens to be
+invoked (``--test-threads=1`` in CI is only a belt-and-suspenders second
+guard).
 
 That class has now recurred three times, each time by the same omission: a
 new multi-test live-graph binary was added, or an existing one grew a second
@@ -40,23 +40,12 @@ that is also ``#[ignore]``d with a reason naming the graph DB
   that does (the ``db_guard()`` form ``integration_graph`` uses). A test that
   opens the shared DB without the lock is flagged.
 
-* **CI coverage (structural), bolt-only binaries.** A *bolt-only* live-graph
-  binary — one that reaches the graph purely over Bolt — must be run in the
-  live-graph leg of ``.github/workflows/ci.yml`` (a ``--test <stem> …
-  --ignored`` invocation). A bolt-only live-graph binary CI never runs is a
-  dead gate: its serialization is unverified and a regression in it can't be
-  caught.
-
-  A **pipe-vs-bolt parity** binary is exempt from this second arm.
-  ``memgraph_parity_integration`` drives the ``wylde-memgraph`` service over
-  its named pipe *and* over Bolt, asserting ``pipe.ok && bolt.ok`` on every
-  test. The live-graph leg stands up only the vendored Neo4j (Bolt), not that
-  pipe service, so the binary cannot pass there — it needs the full local
-  stack, which is exactly why it is ``#[ignore]``d and why the #83 audit found
-  it outside the leg. Forcing it in would only ever be red. Its DB_LOCK is
-  still enforced by the first arm, so its dev ``--ignored`` runs stay
-  serialized (#227). The tell for "needs the pipe service" is
-  :data:`_PIPE_SERVICE_TELL_RE` (``pipe_client`` / ``WYLDE_MEMGRAPH_SERVICE``).
+* **CI coverage (structural).** The binary must be run in the live-graph leg
+  of ``.github/workflows/ci.yml`` (a ``--test <stem> … --ignored``
+  invocation). A live-graph binary CI never runs is a dead gate: its
+  serialization is unverified and a regression in it can't be caught. Every
+  live-graph binary in the tree reaches the graph over Bolt, which the leg
+  stands up (the vendored Neo4j on ``bolt://127.0.0.1:7687``).
 
 A single-test live-graph binary can't self-collide, so it is intentionally
 not in scope (``integration_symbol_context`` / ``integration_symbols_find`` /
@@ -95,16 +84,6 @@ _CI_WORKFLOW_REL = ".github/workflows/ci.yml"
 # A test is "live-graph" when it is #[ignore]d with a reason naming the graph
 # database. Matched against the joined attribute block preceding the fn.
 _DB_TELL_RE = re.compile(r"bolt://|neo4j|memgraph", re.IGNORECASE)
-
-# A binary "requires the memgraph PIPE service" (not just Bolt) when it drives
-# the `wylde-memgraph` service over its named pipe — the pipe-vs-bolt PARITY
-# shape (`memgraph_parity_integration`: `pipe_client()`, asserts `pipe.ok &&
-# bolt.ok`). The live-graph CI leg stands up only the vendored Neo4j (Bolt),
-# not that pipe service, so such a binary CANNOT run there — it needs the full
-# local stack, which is why it is `#[ignore]`d. The CI-coverage arm therefore
-# applies to BOLT-ONLY binaries only; a pipe-parity binary is exempt from it
-# (the DB_LOCK arm still applies, so its dev `--ignored` runs stay serialized).
-_PIPE_SERVICE_TELL_RE = re.compile(r"\bpipe_client\b|WYLDE_MEMGRAPH_SERVICE")
 
 # Test attribute (`#[test]`, `#[tokio::test]`, `#[tokio::test(flavor = …)]`).
 _TEST_ATTR_RE = re.compile(r"#\[\s*(?:tokio::)?test\b")
@@ -309,12 +288,8 @@ def check_graph_test_serialized_on_db_lock() -> List[Finding]:
                     )
                 )
 
-        # CI-coverage arm — bolt-only binaries only. A pipe-vs-bolt parity
-        # binary needs the wylde-memgraph pipe service the bolt-only leg can't
-        # boot, so requiring it there would only ever be red; it's exempt.
-        if _PIPE_SERVICE_TELL_RE.search(text):
-            continue
-
+        # CI-coverage arm — the binary must actually be run in the live-graph
+        # leg, or its serialization is never verified (a dead gate).
         stem = rel.rsplit("/", 1)[-1][: -len(".rs")]
         if not _ci_runs_binary(ci_text, stem):
             out.append(
@@ -329,9 +304,8 @@ def check_graph_test_serialized_on_db_lock() -> List[Finding]:
                         f"`--test {stem} … --ignored` invocation found. A "
                         f"live-graph binary CI never runs is a dead gate — its "
                         f"serialization is unverified and a regression can't be "
-                        f"caught (the #83 audit found `memgraph_parity_integration` "
-                        f"in exactly this state). Add it to the live-graph job's "
-                        f"`--no-run` build and `--ignored` run steps."
+                        f"caught. Add it to the live-graph job's `--no-run` "
+                        f"build and `--ignored` run steps."
                     ),
                     context=stem,
                 )
