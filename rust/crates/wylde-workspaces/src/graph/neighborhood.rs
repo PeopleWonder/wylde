@@ -44,7 +44,10 @@
 //! formula server-side: it computes a deadline up front and stops expanding
 //! once it's crossed, returning whatever depth it reached in
 //! `hops_traversed` (which is also `< hops` when the call graph simply runs
-//! dry). `took_ms` reports the measured wall time for OI-1 observability.
+//! dry). The deadline only bounds *deeper* expansion (hop ≥ 2); the direct
+//! neighbours (hop 1) always resolve, so a slow graph degrades depth rather
+//! than dropping the immediate callers/callees to zero (#203). `took_ms`
+//! reports the measured wall time for OI-1 observability.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -371,7 +374,15 @@ async fn bfs_calls<S: NeighborhoodSource + Sync>(
     let mut out: Vec<RelatedSymbol> = Vec::new();
 
     for hop in 1..=hops {
-        if started.elapsed() >= deadline {
+        // Hop 1 (the direct neighbours) always runs: it is the core result and
+        // must never be starved. The shared walk deadline is measured from
+        // before the focal/type/sibling reads AND the *other* direction's walk
+        // (callers run before callees in `walk`), so against a cold live graph
+        // that pre-work can already consume the budget — which silently dropped
+        // every direct callee to zero (#203; invisible to the zero-latency
+        // mock). The budget's job is to bound *deeper* expansion, so only guard
+        // hop ≥ 2. Individual queries stay bounded by `per_query_timeout`.
+        if hop > 1 && started.elapsed() >= deadline {
             break; // per-hop budget hit — surface partial depth.
         }
         let rows = match dir {
@@ -1174,6 +1185,10 @@ fn beta() {}
         files: HashMap<String, String>,
         types: HashMap<String, Vec<TypeRow>>,
         siblings: HashMap<String, Vec<NeighborRow>>,
+        /// Latency injected into `callers_of` only — models a cold live graph
+        /// where the pre-callees reads consume the shared walk budget (#203
+        /// regression: callers run before callees in `walk`).
+        callers_delay: Duration,
     }
 
     impl MockSource {
@@ -1205,7 +1220,13 @@ fn beta() {}
                     out.push(nrow(caller, &self.file_of(caller)));
                 }
             }
-            async move { Ok(out) }
+            let delay = self.callers_delay;
+            async move {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                Ok(out)
+            }
         }
 
         fn callees_of(
@@ -1282,6 +1303,7 @@ fn beta() {}
             files,
             types,
             siblings,
+            ..Default::default()
         }
     }
 
@@ -1309,6 +1331,42 @@ fn beta() {}
         assert_eq!(ctx.symbol.line, 0);
         // Focal kind from its type edges (import endpoint → Module).
         assert_eq!(ctx.symbol.kind, NodeKind::Module);
+    }
+
+    /// #203 regression: direct callees must survive even when the shared walk
+    /// budget is already spent before the callees BFS begins. `walk` runs the
+    /// callers BFS *before* the callees BFS, so latency there (modelling a cold
+    /// live graph's connection/planner warmup) pushes `elapsed >= deadline` by
+    /// the time callees start — which used to break the callees loop at hop 1
+    /// and drop every direct callee to zero, while callers (run first) resolved
+    /// fine. The zero-latency mock could never surface this; the injected
+    /// `callers_delay` does. Hop 1 must always run, so both directions resolve.
+    #[tokio::test]
+    async fn walk_hop1_survives_budget_already_spent() {
+        let mut src = graph_fixture();
+        // 1-hop deadline is budget_for(1) = 500ms; overshoot it in the callers
+        // read so the callees BFS starts already past the deadline.
+        src.callers_delay = Duration::from_millis(600);
+
+        let ctx = walk(&src, "ws", "focal", 1, false, |_| None)
+            .await
+            .unwrap()
+            .expect("focal resolves");
+
+        // Callers (run before the budget was blown) resolve — the pre-fix state.
+        let callers: Vec<&str> = ctx.callers.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(callers, vec!["caller1"], "direct caller still resolves");
+
+        // Callees (run after the budget was blown) MUST still resolve: hop 1 is
+        // unconditional. Pre-fix this was empty (the #203 bug).
+        let callees: Vec<&str> = ctx.callees.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            callees,
+            vec!["callee1", "callee3"],
+            "direct callees survive a spent budget (#203)"
+        );
+        assert!(ctx.callees.iter().all(|r| r.hop_distance == 1));
+        assert_eq!(ctx.hops_traversed, 1);
     }
 
     #[tokio::test]
