@@ -1,34 +1,35 @@
 # Close on develop merge — make "merged to develop -> issue closed" true by
 # construction, so finished work leaves the open list without a human nudge.
 #
-# WHY THIS EXISTS. GitHub's native `Closes #N` auto-close only fires when a PR
-# merges into the repository's DEFAULT branch, evaluated at merge time, and it has
-# proven unreliable here (issues whose PRs carried `Closes #N` and merged to
-# develop stayed open — e.g. #216). Rather than lean on that fragile default-branch
-# coupling (changing the default has other side effects, so we do NOT), this reads
-# the merged PR's own closingIssuesReferences — the exact set GitHub itself
-# recognises — and closes them.
+# WHY THIS EXISTS. GitHub's native `Closes #N` auto-close only fires on a merge
+# into the repository's DEFAULT branch, evaluated at merge time, and it has proven
+# unreliable here — issues whose PRs carried a formal `Closes #N` and merged to
+# develop stayed open anyway (#216, #225, #226). This closes them by construction
+# from the PR's own closingIssuesReferences — the exact set GitHub itself uses.
 #
-# WHY pull_request, NOT push. The first cut triggered on `push` to develop and
-# resolved the PR via `commits/{sha}/pulls`. That was unreliable twice over: the
-# commit->PR association lags the merge by seconds (so the lookup raced and
-# no-op'd), and one merge (#219) produced no push run at all — leaving #216 open.
-# The `closed` activity of pull_request_target carries the PR number in the event
-# payload, so there is no commits/{sha}/pulls race and it fires reliably once per
-# merged PR. pull_request_target (not pull_request) so a merged FORK PR still runs
-# with a write-capable token; this is safe because the job NEVER checks out or
-# executes PR head code — it only reads the PR's closingIssuesReferences by number
-# and closes issues via the API.
+# WHY TWO TRIGGERS. Each single trigger missed merges on its own:
+#   - `push` to develop (+ commits/{sha}/pulls) raced the commit->PR association
+#     (which lags the merge by seconds) and once produced no run at all.
+#   - `pull_request_target: [closed]` fired on its own introducing merge but not on
+#     the next real merge.
+# Running BOTH, with the job made fully idempotent, means a merge is caught if
+# EITHER trigger fires — belt and suspenders. Double-firing on one merge is
+# harmless: whichever runs second finds the issue already closed and skips.
 #
-# TOKEN. The issues live in THIS repo, so the built-in GITHUB_TOKEN with
-# `issues: write` can close + comment; no PAT is needed (unlike the user-owned
-# Project board, which needs PROJECT_TOKEN). Least privilege: issues: write to
-# close/comment, contents: read for the API reads. GITHUB_TOKEN is always injected,
-# but the run still degrades gracefully if it is ever absent, matching the
-# missing-secret handling in roadmap-dates.yml / add-to-project.yml.
+# SAFE pull_request_target. The job NEVER checks out or executes PR head code — it
+# only reads closingIssuesReferences by PR number and closes issues via the API —
+# so the one footgun of pull_request_target does not apply. Using `_target` (not
+# `pull_request`) keeps a write-capable token for merged fork PRs.
+#
+# TOKEN. Issues live in THIS repo, so the built-in GITHUB_TOKEN with `issues:
+# write` closes + comments; no PAT needed. Least privilege: issues: write to
+# close/comment, contents: read for the API reads. Degrades gracefully if the
+# token is ever absent, matching roadmap-dates.yml / add-to-project.yml.
 name: Close issues on develop merge
 
 on:
+  push:
+    branches: [develop]
   pull_request_target:
     types: [closed]
 
@@ -40,18 +41,21 @@ jobs:
   close-referenced:
     name: close issues referenced by the merged PR
     runs-on: ubuntu-latest
-    # Only a PR that actually MERGED into develop, on the canonical repo. A PR that
-    # was closed-without-merging, or targeted another base, closes nothing.
+    # push: always (the branch filter already scopes it to develop).
+    # pull_request_target: only a PR that actually MERGED into develop.
     if: >-
       github.repository_owner == 'PeopleWonder'
-      && github.event.pull_request.merged == true
-      && github.event.pull_request.base.ref == 'develop'
+      && (github.event_name == 'push'
+          || (github.event.pull_request.merged == true
+              && github.event.pull_request.base.ref == 'develop'))
     steps:
       - name: Close the merged PR's open closing-issue references
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          PR_FROM_EVENT: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
@@ -59,12 +63,33 @@ jobs:
             exit 0
           fi
           OWNER="${REPO%/*}"; NAME="${REPO#*/}"
-          echo "merged develop PR #$PR"
 
-          # The PR's linked closing issues (Closes/Fixes/Resolves #N, or a manual
-          # dev-panel link) — read straight from the event's PR number, no
-          # commits/{sha}/pulls race. Only those still OPEN need action, which keeps
-          # the job idempotent and means it never fights native auto-close.
+          # --- Resolve the merged PR number, per trigger ------------------------
+          PR=""
+          if [ "$EVENT" = "pull_request_target" ]; then
+            # The event payload carries it directly — no lookup, no race.
+            PR="$PR_FROM_EVENT"
+            echo "pull_request_target: merged develop PR #$PR"
+          else
+            # push: map the pushed head commit back to its PR. The commit->PR
+            # association lags the merge by a few seconds, so RETRY before giving
+            # up — this is what the first (racy) cut got wrong. A direct push with
+            # no PR simply exhausts the retries and no-ops.
+            for attempt in 1 2 3 4 5 6; do
+              PR=$(gh api "repos/$OWNER/$NAME/commits/$SHA/pulls" \
+                    --jq '[.[] | select(.base.ref=="develop" and .merged_at!=null) | .number][0] // empty' 2>/dev/null || true)
+              [ -n "$PR" ] && break
+              echo "push: no merged develop PR for $SHA yet (attempt $attempt/6) — waiting…"
+              sleep 5
+            done
+            if [ -z "$PR" ]; then
+              echo "::notice::commit $SHA has no merged develop PR (after retries) — nothing to close."
+              exit 0
+            fi
+            echo "push: resolved merged PR #$PR for $SHA"
+          fi
+
+          # --- Read the PR's closing issues (the set GitHub recognises) ---------
           ISSUES=$(gh api graphql -f query='
             query($o:String!,$n:String!,$pr:Int!){
               repository(owner:$o,name:$n){ pullRequest(number:$pr){
@@ -78,7 +103,16 @@ jobs:
             exit 0
           fi
 
+          # --- Close each, idempotently ----------------------------------------
           for i in $ISSUES; do
+            # Re-check state immediately before closing. Both triggers can fire for
+            # the same merge; whichever runs second finds the issue already CLOSED
+            # and skips here, so there is exactly one close and one comment.
+            state=$(gh issue view "$i" --repo "$OWNER/$NAME" --json state --jq '.state' 2>/dev/null || echo "")
+            if [ "$state" != "OPEN" ]; then
+              echo "#$i already ${state:-unknown} — skipping (idempotent)."
+              continue
+            fi
             if gh issue close "$i" --repo "$OWNER/$NAME" --reason completed \
                  --comment "Merged to develop in #$PR — closed automatically."; then
               echo "closed #$i (via #$PR)"
