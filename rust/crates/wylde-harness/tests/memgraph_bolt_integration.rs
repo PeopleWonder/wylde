@@ -28,6 +28,21 @@
 use serde_json::json;
 use wylde_harness::memory::memgraph::{BoltClient, EntityPair, TraverseRequest};
 
+/// Serialize every test in this binary against the one shared Neo4j (#83).
+///
+/// `cargo test` runs a binary's tests multi-threaded by default. Per-workspace
+/// data is nonce-namespaced by [`test_workspace`], but the `Entity` table is
+/// **global-by-name** (these tests seed bare labels like `shared_entity` /
+/// `alpha_seed`), and `stats()` / `ensure_schema` / the orphan-entity prune in
+/// `delete_workspace` are graph-wide. Run concurrently against the shared DB
+/// those contend — the exact self-collision `#216` fixed for the sister
+/// `wylde-workspaces` `integration_graph` binary and `memgraph_live`. CI passes
+/// `--test-threads=1` as a uniform guard, but a developer's ad-hoc `--ignored`
+/// run does not; holding this lock for each test body makes the serialization a
+/// property of the test, not of how it happens to be invoked. Distinct
+/// workspace/entity prefixes remain layered on top as namespace hygiene.
+static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Generate a workspace label that won't collide with real data —
 /// includes both a static prefix (so `delete_workspace` against the
 /// prefix wouldn't be needed in cleanup; the label is unique anyway)
@@ -50,6 +65,7 @@ fn test_workspace() -> String {
 #[tokio::test]
 #[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687 (e.g. via wylde-memgraph service)"]
 async fn health_returns_ok_against_live_neo4j() {
+    let _db = DB_LOCK.lock().await;
     let client = BoltClient::new();
     let cfg = client.config().clone();
     eprintln!("connecting to {} (user={:?})", cfg.uri, cfg.user);
@@ -68,6 +84,7 @@ async fn health_returns_ok_against_live_neo4j() {
 #[tokio::test]
 #[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687"]
 async fn ensure_schema_returns_ok() {
+    let _db = DB_LOCK.lock().await;
     let client = BoltClient::new();
     let reply = client.ensure_schema().await;
     assert!(
@@ -80,6 +97,7 @@ async fn ensure_schema_returns_ok() {
 #[tokio::test]
 #[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687"]
 async fn upsert_then_traverse_round_trip_returns_seeded_chunks() {
+    let _db = DB_LOCK.lock().await;
     let client = BoltClient::new();
     let ws = test_workspace();
     eprintln!("using workspace {ws}");
@@ -155,6 +173,7 @@ async fn upsert_then_traverse_round_trip_returns_seeded_chunks() {
 #[tokio::test]
 #[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687"]
 async fn traverse_workspace_filter_excludes_other_workspaces() {
+    let _db = DB_LOCK.lock().await;
     let client = BoltClient::new();
     let ws_keep = test_workspace();
     let ws_other = test_workspace();
@@ -223,6 +242,7 @@ async fn traverse_workspace_filter_excludes_other_workspaces() {
 #[tokio::test]
 #[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687"]
 async fn multihop_returns_chunks_for_known_entities() {
+    let _db = DB_LOCK.lock().await;
     let client = BoltClient::new();
     let ws = test_workspace();
     let _ = client.delete_workspace(&ws).await;
@@ -280,6 +300,7 @@ async fn multihop_returns_chunks_for_known_entities() {
 #[tokio::test]
 #[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687"]
 async fn relate_unrelate_round_trip() {
+    let _db = DB_LOCK.lock().await;
     let client = BoltClient::new();
     // Use a unique prefix so we don't disturb existing Entity nodes
     // (Entity isn't workspace-scoped on the upsert side).
@@ -304,6 +325,7 @@ async fn relate_unrelate_round_trip() {
 #[tokio::test]
 #[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687"]
 async fn relate_rejects_unknown_rel_type() {
+    let _db = DB_LOCK.lock().await;
     let client = BoltClient::new();
     let r = client
         .relate("MADE_UP", vec![EntityPair::new("x", "y")])
@@ -315,6 +337,7 @@ async fn relate_rejects_unknown_rel_type() {
 #[tokio::test]
 #[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687"]
 async fn upsert_edge_succeeds_on_valid_label() {
+    let _db = DB_LOCK.lock().await;
     let client = BoltClient::new();
     let prefix = format!("rust_bolt_edge_{}", std::process::id());
     let r = client
@@ -331,6 +354,7 @@ async fn upsert_edge_succeeds_on_valid_label() {
 #[tokio::test]
 #[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687"]
 async fn upsert_edge_rejects_invalid_label() {
+    let _db = DB_LOCK.lock().await;
     let client = BoltClient::new();
     // Spaces and punctuation aren't valid Cypher rel types.
     let r = client.upsert_edge("src", "BAD LABEL!", "tgt", 1.0).await;
@@ -341,6 +365,7 @@ async fn upsert_edge_rejects_invalid_label() {
 #[tokio::test]
 #[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687"]
 async fn stats_returns_all_five_counts() {
+    let _db = DB_LOCK.lock().await;
     let client = BoltClient::new();
     let s = client.stats().await;
     assert!(s.ok, "stats failed: {:?}", s.error);
@@ -362,6 +387,7 @@ async fn stats_returns_all_five_counts() {
 #[tokio::test]
 #[ignore = "requires Neo4j alive on bolt://127.0.0.1:7687"]
 async fn delete_workspace_returns_chunk_count() {
+    let _db = DB_LOCK.lock().await;
     let client = BoltClient::new();
     let ws = test_workspace();
     let _ = client.delete_workspace(&ws).await; // pre-clean
