@@ -2,13 +2,23 @@
 # construction, so finished work leaves the open list without a human nudge.
 #
 # WHY THIS EXISTS. GitHub's native `Closes #N` auto-close only fires when a PR
-# merges into the repository's DEFAULT branch, evaluated at merge time. `develop`
-# is the default now, yet issues whose PRs carried `Closes #N` and merged to
-# develop stayed open — most plausibly because develop was made default only after
-# those merges (main was still default then). Rather than lean on that fragile
-# default-branch coupling (changing the default has other side effects, so we do
-# NOT), this reads the merged PR's own closingIssuesReferences — the exact set
-# GitHub itself recognises — and closes them.
+# merges into the repository's DEFAULT branch, evaluated at merge time, and it has
+# proven unreliable here (issues whose PRs carried `Closes #N` and merged to
+# develop stayed open — e.g. #216). Rather than lean on that fragile default-branch
+# coupling (changing the default has other side effects, so we do NOT), this reads
+# the merged PR's own closingIssuesReferences — the exact set GitHub itself
+# recognises — and closes them.
+#
+# WHY pull_request, NOT push. The first cut triggered on `push` to develop and
+# resolved the PR via `commits/{sha}/pulls`. That was unreliable twice over: the
+# commit->PR association lags the merge by seconds (so the lookup raced and
+# no-op'd), and one merge (#219) produced no push run at all — leaving #216 open.
+# The `closed` activity of pull_request_target carries the PR number in the event
+# payload, so there is no commits/{sha}/pulls race and it fires reliably once per
+# merged PR. pull_request_target (not pull_request) so a merged FORK PR still runs
+# with a write-capable token; this is safe because the job NEVER checks out or
+# executes PR head code — it only reads the PR's closingIssuesReferences by number
+# and closes issues via the API.
 #
 # TOKEN. The issues live in THIS repo, so the built-in GITHUB_TOKEN with
 # `issues: write` can close + comment; no PAT is needed (unlike the user-owned
@@ -19,8 +29,8 @@
 name: Close issues on develop merge
 
 on:
-  push:
-    branches: [develop]
+  pull_request_target:
+    types: [closed]
 
 permissions:
   contents: read
@@ -30,13 +40,18 @@ jobs:
   close-referenced:
     name: close issues referenced by the merged PR
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'PeopleWonder' }}
+    # Only a PR that actually MERGED into develop, on the canonical repo. A PR that
+    # was closed-without-merging, or targeted another base, closes nothing.
+    if: >-
+      github.repository_owner == 'PeopleWonder'
+      && github.event.pull_request.merged == true
+      && github.event.pull_request.base.ref == 'develop'
     steps:
       - name: Close the merged PR's open closing-issue references
         env:
           GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.sha }}
           REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
@@ -44,21 +59,12 @@ jobs:
             exit 0
           fi
           OWNER="${REPO%/*}"; NAME="${REPO#*/}"
-
-          # Which PR did this pushed head commit come from? A merge/squash of a PR
-          # into develop maps the pushed commit back to exactly that PR. A direct
-          # push (no PR) resolves to nothing, and the job no-ops.
-          PR=$(gh api "repos/$OWNER/$NAME/commits/$SHA/pulls" \
-                --jq '[.[] | select(.base.ref=="develop" and .merged_at!=null) | .number][0] // empty' 2>/dev/null || true)
-          if [ -z "$PR" ]; then
-            echo "::notice::commit $SHA has no merged develop PR — nothing to close."
-            exit 0
-          fi
-          echo "resolved merged PR #$PR for $SHA"
+          echo "merged develop PR #$PR"
 
           # The PR's linked closing issues (Closes/Fixes/Resolves #N, or a manual
-          # dev-panel link). Only those still OPEN need action — this keeps the job
-          # idempotent and means it never fights native auto-close if that fires.
+          # dev-panel link) — read straight from the event's PR number, no
+          # commits/{sha}/pulls race. Only those still OPEN need action, which keeps
+          # the job idempotent and means it never fights native auto-close.
           ISSUES=$(gh api graphql -f query='
             query($o:String!,$n:String!,$pr:Int!){
               repository(owner:$o,name:$n){ pullRequest(number:$pr){
