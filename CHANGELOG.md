@@ -366,6 +366,23 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **The `fixture_pipes_are_private` scanner (#79) now covers fixture-pipe binds declared in `src/**` `#[cfg(test)]` modules, not just `tests/**` files (closes #225; refs #83).**
+  The #79 guard is a source-text scan that catches a test standing up a fixture server on a *production* pipe
+  name (`\\.\pipe\wylde-<service>`) — a bind that is deterministically RED on any machine running Wylde yet
+  permanently GREEN on CI, which runs no stack (the #75 shape). Its walk only visited `tests/` directories, so
+  a fixture server bound on a production name inside a `src/**` `#[cfg(test)]` block was invisible — the coverage
+  gap the #83 audit flagged. The scanner now also walks `src/**` sources and scans their `#[cfg(test)]` regions.
+  Critically, the `src` half is **bind-scoped**: it flags a production literal only when it is an argument to a
+  named-pipe `create(...)` — a fixture-server bind — because production code in `src` legitimately holds the real
+  pipe literal (it *is* the service) and a `src` test module legitimately *names* it in a resolver assertion
+  (e.g. `assert_eq!(pipe_name("lifecycle"), r"\\.\pipe\wylde-lifecycle")` in `Core/GUI/Frontend/Pipe/src/lib.rs`).
+  The whole-file "any literal is the tell" rule stays for dedicated `tests/**` files. A new
+  `guard_covers_a_src_cfg_test_bind_but_not_a_name_assertion` test pins the behaviour with a synthetic offender:
+  the in-`#[cfg(test)]` bind is caught, the resolver assertion and the production bind outside the region are not,
+  and swapping the offending name for a minted `-test-` fixture name turns it green. The scanner runs in the
+  required `gui panel-walk (L7)` job (the `wylde-panel-workspaces` test targets), so the tightened guard is
+  enforcement, not documentation. #83 stays open as the umbrella tracker.
+
 - **The self-collision test class is swept and the live-graph half is closed out (refs #83).**
   #83 names a recurring bug class: a test that asserts against a resource the *product* owns, so
   it is deterministically RED on a developer's rig (Wylde installed/running, `WYLDE_*` set) yet
