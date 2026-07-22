@@ -1200,17 +1200,19 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 - **Issues now close automatically when their PR merges to `develop`.** GitHub's
   native `Closes #N` auto-close only fires on a merge into the repository's
-  *default* branch evaluated at merge time, which left finished issues open here
-  (their PRs carried `Closes #N` and merged to develop, but develop was made
-  default only after those merges). A new `close-on-develop-merge.yml` workflow
-  (`push` to `develop`) resolves the merged PR from the pushed commit, reads its
+  *default* branch evaluated at merge time, and proved unreliable here — finished
+  issues (e.g. #216) stayed open despite their PRs carrying `Closes #N` and merging
+  to develop. A new `close-on-develop-merge.yml` workflow closes them by
+  construction: on a merged pull request into develop (`pull_request_target:
+  closed`, filtered to `merged == true` and `base == develop`) it reads the PR's
   `closingIssuesReferences` — the same set GitHub itself recognises — and closes
   each still-open one with a comment linking the PR. It uses the built-in
   `GITHUB_TOKEN` with least-privilege `issues: write` + `contents: read` (the
   issues are in-repo, so no PAT is needed), is idempotent (skips already-closed
-  issues, so it never fights native auto-close), and no-ops gracefully on a direct
-  push or an absent token. This makes "merged to develop → issue closed" true by
-  construction without changing the default branch.
+  issues, so it never fights native auto-close), and degrades gracefully. It reads
+  the PR number straight from the event — never checking out PR code — which
+  avoids the `commits/{sha}/pulls` race and the missed trigger that an earlier
+  `push`-based cut hit, so it fires reliably once per merged PR.
 
 - **Clippy (G4) + fmt (G6) CI gates are now LIVE.** The two staged enforcement
   gates were armed: a new `clippy (G4) + fmt (G6)` CI job runs
