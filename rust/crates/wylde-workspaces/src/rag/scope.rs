@@ -103,8 +103,8 @@ fn relativize(folder: &str, path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::registry::WorkspaceDefinition;
     use super::*;
+    use crate::registry::WorkspaceDefinition;
     use crate::test_support::TestEnv;
 
     #[test]

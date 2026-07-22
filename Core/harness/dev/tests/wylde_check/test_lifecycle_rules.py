@@ -121,6 +121,21 @@ def test_boot_does_not_flag_non_roster_service_constants(isolated_tree: Any) -> 
     assert wc.check_launcher_enumerates_services_from_manifests() == []
 
 
+def test_boot_does_not_flag_typed_policy_table(isolated_tree: Any) -> None:
+    """The #101 anti-pattern is a hand-kept roster of service-NAME strings
+    (`&[&str]`). A TYPED struct table (e.g. the strangler-fig impl-selection
+    table `&[StranglerService]`) is a different structure — boot still derives
+    from DAEMON_MANAGED — and must not be flagged, exactly as `DAEMON_MANAGED:
+    &[DaemonService]` is not."""
+    wc, root = isolated_tree
+    _write_single_source(root)
+    _write(
+        root / "rust/crates/wylde-lifecycle/src/state/services.rs",
+        "const STRANGLER_SERVICES: &[StranglerService] = &[];\n",
+    )
+    assert wc.check_launcher_enumerates_services_from_manifests() == []
+
+
 # ── Rule 45: shutdown is derived from the same DAEMON_MANAGED table ────
 
 

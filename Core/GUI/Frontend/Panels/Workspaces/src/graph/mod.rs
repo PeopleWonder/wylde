@@ -1922,7 +1922,7 @@ mod tests {
     #[test]
     fn save_current_profile_captures_bookmarks_and_persists() {
         let dir = std::env::temp_dir()
-            .join("wylde-graphview-profile-tests")
+            .join("wylde-graphview-profile-tests") // graph-view profile dir name, not the dead memgraph service (wylde-check: dead-ref-ok)
             .join(format!("save-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 

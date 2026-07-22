@@ -448,9 +448,9 @@ fn start_for(def: WorkspaceDefinition) -> ::notify::Result<()> {
 /// Stop the active watcher (if any). Idempotent.
 pub fn stop() {
     if let Some(a) = active().lock().expect("watcher mutex").take() {
-        let _ = a.control.send(Control::Shutdown);
-        // Dropping `a` drops the notify handle (stops the OS watch) and the
-        // control sender; the loop ends on the Shutdown / closed channel.
+        let _ = a.control.send(Control::Shutdown); // best-effort control signal to watcher (wylde-check: discard-result-ok)
+                                                   // Dropping `a` drops the notify handle (stops the OS watch) and the
+                                                   // control sender; the loop ends on the Shutdown / closed channel.
         tracing::info!("workspaces.watcher: stopped ({})", a.workspace_id);
     }
 }
@@ -468,7 +468,7 @@ pub fn status() -> WatcherStatus {
 pub fn pause() -> Option<String> {
     let guard = active().lock().expect("watcher mutex");
     let a = guard.as_ref()?;
-    let _ = a.control.send(Control::Pause);
+    let _ = a.control.send(Control::Pause); // best-effort control signal to watcher (wylde-check: discard-result-ok)
     Some(a.workspace_id.clone())
 }
 
@@ -477,7 +477,7 @@ pub fn pause() -> Option<String> {
 pub fn resume() -> Option<String> {
     let guard = active().lock().expect("watcher mutex");
     let a = guard.as_ref()?;
-    let _ = a.control.send(Control::Resume);
+    let _ = a.control.send(Control::Resume); // best-effort control signal to watcher (wylde-check: discard-result-ok)
     Some(a.workspace_id.clone())
 }
 
@@ -631,7 +631,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         // After shutdown, the loop has dropped its receiver — sends now fail,
         // and nothing is dispatched.
-        let _ = ev.send((PathBuf::from("/y.rs"), ChangeKind::Upsert));
+        let _ = ev.send((PathBuf::from("/y.rs"), ChangeKind::Upsert)); // test-only event feed (wylde-check: discard-result-ok)
         tokio::time::sleep(Duration::from_millis(120)).await;
         assert!(mock.dispatched.lock().unwrap().is_empty());
     }

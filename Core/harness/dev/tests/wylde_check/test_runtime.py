@@ -61,6 +61,18 @@ def test_pipe_name_convention_clean(isolated_tree: Any) -> None:
     assert wc.check_pipe_name_convention() == []
 
 
+def test_pipe_name_convention_ignores_binary_asset_names(isolated_tree: Any) -> None:
+    """A `wylde-<name>` token carrying a target-triple / `.exe` marker is a
+    release BINARY filename, not a pipe — the convention governs pipes."""
+    wc, root = isolated_tree
+    _write(
+        root / "rust" / "crates" / "wylde-updater" / "src" / "release.rs",
+        'fn a() { asset("wylde-gui-x86_64-pc-windows-msvc.exe"); }\n'
+        'fn b() { asset("wylde-gui-x86_64-pc-windows-msvc.exe.minisig"); }\n',
+    )
+    assert wc.check_pipe_name_convention() == []
+
+
 def test_pipe_name_convention_fires_on_rust(isolated_tree: Any) -> None:
     """Rule 17 walks .rs files too — uppercase / typo'd pipe names in
     Rust source get flagged just like Python."""

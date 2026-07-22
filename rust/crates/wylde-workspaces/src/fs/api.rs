@@ -229,12 +229,12 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
             std::fs::remove_file(target)?;
             let r = std::fs::rename(&tmp, target);
             if r.is_err() {
-                let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&tmp); // best-effort temp-file cleanup (wylde-check: discard-result-ok)
             }
             r
         }
         Err(e) => {
-            let _ = std::fs::remove_file(&tmp);
+            let _ = std::fs::remove_file(&tmp); // best-effort temp-file cleanup (wylde-check: discard-result-ok)
             Err(e)
         }
     }

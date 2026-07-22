@@ -67,6 +67,15 @@ _MANIFEST_PATH_RE = re.compile(r"""['"`](?:[A-Za-z0-9_./-]*?/)?manifest\.json['"
 _GUI_SOURCE_ROOTS = ("Core/GUI/Frontend", "Core/GUI/Shell")
 
 
+# Test-code region markers. A `#[cfg(test)]` module or `#[test]` fn that
+# writes a SYNTHETIC manifest.json to a tempdir (the roster-discovery
+# coverage tests) is not the GUI reaching past the pipe boundary — it is a
+# fixture. Tracked by brace depth so the exemption ends with the test block.
+_CFG_TEST_RE = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
+_TOKIO_TEST_RE = re.compile(r"#\[\s*tokio::test")
+_TEST_ATTR_RE = re.compile(r"#\[\s*test\s*\]")
+
+
 def _strip_comment(line: str, ext: str) -> str:
     """Drop trailing comment chunks so we don't flag mentions in
     explanatory comments. Crude — we only need to dodge the common
@@ -99,12 +108,34 @@ def check_gui_no_backend_bypass() -> List[Finding]:
         if not text:
             continue
         ext = path.suffix.lower()
+        # Brace-depth tracking to exempt `#[cfg(test)]` / `#[test]` regions.
+        allow_starts: List[int] = []  # depths at which a test region opened
+        depth = 0
+        pending_allow = False  # a test attribute awaiting its block
         for lineno, raw_line in enumerate(text.splitlines(), start=1):
             stripped = raw_line.lstrip()
             if stripped.startswith("//"):
                 continue
             line = _strip_comment(raw_line, ext)
             if not line.strip():
+                continue
+
+            if (
+                _CFG_TEST_RE.search(line)
+                or _TOKIO_TEST_RE.search(line)
+                or _TEST_ATTR_RE.search(line)
+            ):
+                pending_allow = True
+            open_braces = line.count("{")
+            close_braces = line.count("}")
+            if pending_allow and open_braces > 0:
+                allow_starts.append(depth)
+                pending_allow = False
+            inside_test = bool(allow_starts)
+            depth += open_braces - close_braces
+            while allow_starts and depth <= allow_starts[-1]:
+                allow_starts.pop()
+            if inside_test:
                 continue
             # Quick reject: backend bypass always lives inside a string
             # literal. If the line has no quotes, skip the regex work.

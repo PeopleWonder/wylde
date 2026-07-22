@@ -88,7 +88,7 @@ mod tests {
 
     fn temp_path(name: &str) -> PathBuf {
         let dir = std::env::temp_dir()
-            .join("wylde-graph-profiles-tests")
+            .join("wylde-graph-profiles-tests") // graph profiles dir name, not the dead memgraph service (wylde-check: dead-ref-ok)
             .join(format!("{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir.join("graph_profiles.json")

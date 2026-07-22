@@ -79,6 +79,30 @@ PANEL_SHARED_INFRA_CRATES: Tuple[str, ...] = (
     "wylde-panel-registry",
 )
 
+# Additional shared crates a panel may depend on: gpui WIDGET crates and
+# pure TOPOLOGY/type libs that are not themselves panels and carry no
+# backend pipe an importer would be bypassing. Kept separate from the core
+# infra list above (which the finding message quotes) so the reason for
+# each is explicit.
+PANEL_EXTRA_ALLOWED_CRATES: Tuple[str, ...] = (
+    "wylde-gui-test-support",  # shared test harness — dev-dependency only, not shipped
+    "wylde-stack",  # roster + service_name topology lib (Dashboard service strip)
+    "wylde-updater",  # updater types/lib for the Settings update UI (a lib, not a service)
+    "wylde-gpui-code-editor",  # shared gpui code-editor widget (Workspaces IDE)
+    "wylde-anchor-actions",  # shared anchor action definitions (Chat / Workspaces)
+)
+
+# Per-edge panel→panel carve-outs: `(owning_panel_crate, depended_panel)`
+# pairs that are a DELIBERATE, documented composition rather than accidental
+# coupling. NOTE for the maintainer: Workspaces mounts the SHARED singleton
+# ChatPanel's `InferenceBarDock` at its base (workspaces_panel.rs) — a real
+# panel→panel dependency. If that dock should live in a shared crate instead,
+# that is a separate refactor; this carve-out names the coupling that exists
+# today rather than hiding it behind the generic allowlist.
+PANEL_CROSS_PANEL_EDGE_EXEMPTIONS: Tuple[Tuple[str, str], ...] = (
+    ("wylde-panel-workspaces", "wylde-panel-chat"),
+)
+
 
 # ── Walk helpers ──────────────────────────────────────────────────────
 
@@ -217,7 +241,7 @@ def check_no_cross_panel_imports() -> List[Finding]:
     knows about another panel's existence.
     """
     out: List[Finding] = []
-    allow = set(PANEL_SHARED_INFRA_CRATES)
+    allow = set(PANEL_SHARED_INFRA_CRATES) | set(PANEL_EXTRA_ALLOWED_CRATES)
     for cargo in _walk_panel_cargo_tomls():
         rel = _to_rel(cargo)
         text = _read_text(cargo)
@@ -237,6 +261,8 @@ def check_no_cross_panel_imports() -> List[Finding]:
             if dep in allow:
                 continue
             if dep.startswith("wylde-panel-"):
+                if (own_crate, dep) in PANEL_CROSS_PANEL_EDGE_EXEMPTIONS:
+                    continue
                 out.append(
                     Finding(
                         rule="no_cross_panel_imports",
