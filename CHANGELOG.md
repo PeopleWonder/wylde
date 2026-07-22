@@ -48,6 +48,29 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **`wylde_check` rule 56 (`graph_test_serialized_on_db_lock`) makes the shared-Neo4j self-collision class a structural gate (closes #226; refs #83).**
+  The #83 self-collision class — a live-graph test binary whose two-or-more `#[ignore]`d `bolt://` tests hit
+  one shared Neo4j without serialization, non-deterministically failing on `ensure_schema` / `stats()` / the
+  `delete_workspace` orphan-prune — recurred three times (#216, #227) by the same omission: the per-test
+  `DB_LOCK` was a convention a reviewer had to remember, and CI runs these `#[ignore]`d tests only in a
+  dedicated `--ignored` job. The new rule walks every `rust/crates/**/tests/*.rs` binary and, for each with
+  ≥2 live-graph tests, **fails the build** unless (a) every such test body acquires the binary's `DB_LOCK`
+  (directly, or via a same-file `db_guard()` helper) and (b) — for a **bolt-only** binary — it is actually run
+  in the live-graph leg of `.github/workflows/ci.yml` (a `--test <stem> … --ignored` invocation). A new
+  multi-test `bolt://` binary added later without the lock — or a bolt-only one that holds the lock but isn't in
+  the leg — now turns red instead of passing quietly. The CI-coverage arm is deliberately **bolt-only**:
+  `memgraph_parity_integration` is a pipe-vs-bolt *parity* binary (every test asserts `pipe.ok && bolt.ok`,
+  driving the `wylde-memgraph` service over its named pipe as well as over Bolt), and the live-graph leg stands
+  up only the vendored Neo4j — not that pipe service — so the binary cannot pass there; it needs the full local
+  stack, which is exactly why it is `#[ignore]`d and why the #83 audit found it outside the leg. The rule detects
+  that shape by its pipe-service tell (`pipe_client` / `WYLDE_MEMGRAPH_SERVICE`) and exempts it from the
+  CI-coverage arm while still enforcing its `DB_LOCK` (so its dev `--ignored` runs stay serialized, #227).
+  Single-test live-graph binaries can't self-collide and are out of scope, as is `memgraph_integration` (one
+  ignored live test; its second test is a non-ignored negative case). The rule is registered in the
+  `wylde_check (full rule set)` gate (now 31 rules) and its CI-workflow target is pinned in `rule_targets_exist`,
+  so a rename of `ci.yml` turns this gate red rather than disarming it. #83 stays open as the umbrella tracker
+  for the class.
+
 - **The `wylde_check` architectural linter is now a CI gate — all 30 rules are enforced, not advisory.**
   Until now `wylde_check` ran in no workflow: its ~30 Wylde-specific contracts (crate-boundary imports,
   no-panic-in-panel-render, silent-error swallows, pipe-name convention, the launcher/shutdown single-source
