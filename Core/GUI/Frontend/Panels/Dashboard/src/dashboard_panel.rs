@@ -21,9 +21,10 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, FontWeight,
-    IntoElement, Render, SharedString, Stateful, Window,
+    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, FontWeight, IntoElement,
+    Render, SharedString, Stateful, Window,
 };
+use wylde_gui_controls::control;
 use wylde_theme::colors::{
     BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_LIGHT, SURFACE_800, SURFACE_900, TEXT_MUTED,
     TEXT_PRIMARY, TEXT_SECONDARY,
@@ -326,9 +327,7 @@ fn header_row(panel: &DashboardPanel, cx: &mut Context<DashboardPanel>) -> gpui:
 }
 
 fn refresh_button(cx: &mut Context<DashboardPanel>) -> Stateful<gpui::Div> {
-    let id: ElementId = ElementId::Name("dashboard-refresh".into());
-    div()
-        .id(id)
+    control(div(), "dashboard-refresh")
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -390,9 +389,7 @@ fn service_chip(svc: &ServiceRow, cx: &mut Context<DashboardPanel>) -> Stateful<
     let health = &svc.health;
     let label = SharedString::from(short_service_name(name));
     let colour = status_colour(health.status);
-    let id: ElementId = ElementId::Name(format!("dashboard-svc::{name}").into());
-    let mut chip = div()
-        .id(id)
+    let mut chip = control(div(), format!("dashboard-svc::{name}"))
         .px_2()
         .py_1()
         .rounded(px(999.0))
@@ -434,8 +431,7 @@ fn service_chip(svc: &ServiceRow, cx: &mut Context<DashboardPanel>) -> Stateful<
     if offers_stop(svc.manageable, health.status) {
         let service = name.to_owned();
         chip = chip.child(
-            div()
-                .id(ElementId::Name(format!("dashboard-stop::{name}").into()))
+            control(div(), format!("dashboard-stop::{name}"))
                 .px_1()
                 .rounded(px(4.0))
                 .border_1()
@@ -629,9 +625,7 @@ fn recent_row(r: &RecentMemory, cx: &mut Context<DashboardPanel>) -> Stateful<gp
         },
         recency_label(r.last_used_at, r.created_at),
     ));
-    let id: ElementId = ElementId::Name(format!("dashboard-recent::{}", r.id).into());
-    div()
-        .id(id)
+    control(div(), format!("dashboard-recent::{}", r.id))
         .border_b_1()
         .border_color(rgb(pack(BORDER_SUBTLE)))
         .pb_2()
@@ -694,10 +688,7 @@ fn placeholder_card_clickable(
     nav_key: &'static str,
     cx: &mut Context<DashboardPanel>,
 ) -> gpui::Div {
-    let body = div()
-        .id(ElementId::Name(
-            format!("dashboard-empty::{nav_key}").into(),
-        ))
+    let body = control(div(), format!("dashboard-empty::{nav_key}"))
         .cursor_pointer()
         .font_family(FAMILY_INTER)
         .text_size(px(size::XS))

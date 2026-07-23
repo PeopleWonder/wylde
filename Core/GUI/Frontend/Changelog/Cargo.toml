@@ -17,6 +17,10 @@ wylde-theme = { path = "../Theme" }
 
 # gpui — div builders, Render, scroll + click listeners.  Pinned through
 # the workspace dep so a rev bump touches one place.
+# The one constructor every interactive control routes through (#247).
+# In this (normal) build it is `.id()` and nothing else.
+wylde-gui-controls = { path = "../Controls" }
+
 gpui.workspace = true
 
 # ── DEV-ONLY (windowed gpui tests) ───────────────────────────────────
@@ -25,4 +29,7 @@ gpui.workspace = true
 # dev-dependency-only feature, so resolver = "2" never unifies it into the
 # shipped Shell's normal lib (see docs/gui-testing.md).
 [dev-dependencies]
+# Shared control-walk harness + scripted backend (#247, #35).
+wylde-gui-test-support = { path = "../test-support" }
+wylde-gui-controls = { path = "../Controls", features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }

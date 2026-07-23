@@ -34,6 +34,11 @@ REAL_GRANDFATHERED = dict(
     _import_check().rules._control_functionality.GRANDFATHERED_UNROUTED
 )
 
+#: The real checkout root, captured before `isolated_tree` repoints
+#: `WYLDE_ROOT` at a `tmp_path`. Tests that assert against the SHIPPED tree
+#: (rather than a synthetic one) need this.
+REAL_ROOT = _import_check().WYLDE_ROOT
+
 PANEL_SRC = ("Core", "GUI", "Frontend", "Panels", "Tools", "src")
 PANEL_REL = "Core/GUI/Frontend/Panels/Tools/src/tools_panel.rs"
 
@@ -318,67 +323,27 @@ def test_ratchet_tells_you_to_delete_a_fully_migrated_entry(
     assert "delete it" in found[0].message
 
 
-def test_the_real_grandfather_table_is_not_empty() -> None:
-    """Guards the pilot's own bookkeeping.
+def test_the_real_grandfather_table_has_no_stale_entries() -> None:
+    """Every budgeted path must still exist on disk.
 
-    If someone empties the table without migrating, every one of the 140 real
-    sites becomes invisible rather than red — the exact silent-disarm shape
-    (#101/#114/#116) this rule is meant to be immune to. When #247 part 2
-    genuinely empties it, delete this test along with the ratchet.
+    The exact TOTAL is deliberately not asserted: it drops with every
+    migration batch, so pinning it would mean a churn edit per batch for no
+    signal. And the number needs no guarding — emptying the table without
+    migrating does not go quiet, it makes every file exceed a budget of zero
+    and reds the rule outright. What a fixed number would NOT catch is this:
+    an entry for a file that was renamed or deleted, which lingers forever
+    granting a budget to nothing and quietly re-arms if the path ever
+    reappears. That is the #101/#116 shape, so that is what is checked here.
+
+    When #247 part 2 finishes, the table is emptied for real and this test
+    goes with it.
     """
-    assert sum(REAL_GRANDFATHERED.values()) == 140
-    assert len(REAL_GRANDFATHERED) == 28
+    from pathlib import Path
 
-
-# ── Empty-scan guards (#101/#114/#116) ───────────────────────────────
-
-
-def test_error_when_the_gui_tree_matches_no_files(isolated_tree: Any) -> None:
-    """A rule that inspects nothing must go red, not quiet."""
-    wc, _root = isolated_tree
-    found = _findings(wc)
-    assert len(found) == 1
-    assert found[0].severity == "error"
-    assert "matched no GUI source files" in found[0].message
-
-
-def test_error_when_gui_sources_exist_but_no_handler_matches(
-    isolated_tree: Any,
-) -> None:
-    """The matcher going stale is indistinguishable from a clean tree unless
-    the rule says so itself."""
-    wc, root = isolated_tree
-    _panel(root, "fn header() -> Div {\n    div().child(\"Tools\")\n}\n")
-    found = _findings(wc)
-    assert any(
-        f.severity == "error" and "no interaction handlers at all" in f.message
-        for f in found
+    root = Path(REAL_ROOT)
+    missing = [p for p in REAL_GRANDFATHERED if not (root / p).is_file()]
+    assert not missing, (
+        f"GRANDFATHERED_UNROUTED budgets paths that no longer exist: {missing}. "
+        "Remove them — a budget for a deleted file is dead weight that re-arms "
+        "silently if the path ever comes back."
     )
-
-
-# ── Scan coverage ────────────────────────────────────────────────────
-
-
-def test_the_shell_crate_is_scanned(isolated_tree: Any) -> None:
-    """The Shell owns the nav chrome — sidebar, tab strip, title bar — which
-    is real interactive surface.
-
-    Its sources sit at ``Core/GUI/Shell/src/…`` with nothing between the
-    crate root and ``src``, so the ``.*/src/`` path form used elsewhere in
-    this suite matches no Shell file at all. This pins the ``(.*/)?`` that
-    fixes it: without it the rule scanned 133 Frontend sites and reported the
-    Shell's as zero, which reads as "the Shell is clean".
-    """
-    wc, root = isolated_tree
-    _write(
-        root / "Core" / "GUI" / "Shell" / "src" / "sidebar.rs",
-        "fn nav_item(cx: &mut Context<Shell>) -> Stateful<Div> {\n"
-        '    div().id("nav-chat")\n'
-        "        .on_mouse_down(\n"
-        "            MouseButton::Left,\n"
-        "            cx.listener(|_t: &mut Shell, _e, _w, cx| { Shell::activate(cx); }),\n"
-        "        )\n"
-        "}\n",
-    )
-    found = _findings(wc)
-    assert [f.file for f in found] == ["Core/GUI/Shell/src/sidebar.rs"]

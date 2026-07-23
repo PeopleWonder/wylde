@@ -8940,6 +8940,8 @@ name = "wylde-changelog"
 version = "0.2.0-beta.1"
 dependencies = [
  "gpui",
+ "wylde-gui-controls",
+ "wylde-gui-test-support",
  "wylde-theme",
 ]
 
@@ -9088,6 +9090,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "wylde-gui-controls",
  "wylde-gui-pipe",
  "wylde-gui-test-support",
  "wylde-stack",
@@ -9119,6 +9122,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "wylde-gpui-input",
+ "wylde-gui-controls",
  "wylde-gui-pipe",
  "wylde-gui-test-support",
  "wylde-theme",
@@ -9169,6 +9173,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "wylde-gui-controls",
  "wylde-gui-pipe",
  "wylde-gui-test-support",
  "wylde-theme",
