@@ -99,14 +99,15 @@ to be edited on the day the tracker expires.
 For prose references in other markdown, mark the line so the expiry step can strip it:
 
 ```markdown
-Background: [the widget-drift tracker](trackers/widget-drift.md). <!-- tracker&#8209;ref: widget-drift -->
+Background: [the widget-drift tracker](trackers/widget-drift.md). <!-- tracker-ref: <slug> -->
 ```
 
-Any line carrying `tracker-ref: <slug>` is removed by the expiry PR — including, note, a
-line inside a fenced code block, since the stripper is line-based and does not parse
-markdown. That is why the example above spells the marker with a non-breaking hyphen: a
-literal marker here would make this README strip its own documentation the day
-`widget-drift` expired. Use a real marker only where you mean it.
+Substitute the real slug for `<slug>`. Any line carrying `tracker-ref: <the slug>` is
+removed by the expiry PR — including, note, a line inside a fenced code block, since the
+stripper is line-based and does not parse markdown. That is why the example above leaves
+the placeholder in: a real slug here would make this README strip its own documentation
+the day that tracker expired. (`<slug>` is safe because the marker pattern matches only
+`[A-Za-z0-9._-]`, and `<` is not in it.)
 
 An unmarked prose mention is left alone — write those so they still read correctly in the
 past tense.
