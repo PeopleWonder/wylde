@@ -76,6 +76,27 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   backend tests and 4 L7 panel-walk cases (star survives restart; deleted default falls through;
   empty inventory recommends with warnings; unreachable ≠ empty).
 
+- **`wylde_check` rule 57 (`service_backed_surface_declares_availability`) makes "no silent dead panel" a structural gate for every service/extension surface (refs #239).**
+  The GUI already gated a panel's *dependence on services* two ways — `required_services` → the Shell's
+  `SlotState::ServiceUnavailable` (rule 40 enforces the declaration), and the URL probe behind a first-party iframe.
+  Neither could cover the defect in #239, and the reason is worth stating precisely: the Tools panel declared
+  `wylde-extension-bridge` correctly, so **rule 40 was satisfied**. The bridge was up and the panel mounted — and then
+  drew one card per extension panel, each pointing at a *different* service's URL that nothing checked. A panel-level
+  gate is structurally incapable of covering a per-item surface, because the unit that can be dead is the item.
+  The new rule closes that in three clauses, all **derived from the tree rather than a list of panels**: a wire row
+  carrying a `url` must also carry an `availability` field (the endpoint is the tell — a row modelling something
+  remote can be dead, so it has to say whether it is); the panel owning such a row must actually *read* that field
+  outside its wire module (a field nothing renders is the same silent dead panel with extra steps); and a panel that
+  opts out of rule 40 — thereby taking responsibility for showing unavailability itself — must demonstrably render a
+  status, closing what was otherwise a free pass out of every gate. Corpus is both sides of the wire
+  (`Core/GUI/Frontend/Panels/*/src/ipc.rs` plus the bridge's `host.rs`, which mints the rows), both registered in
+  `RULE_TARGET_SPECS` so emptying either goes red instead of quietly disarming the rule. **Verified against the
+  pre-fix tree: it reports both `Tools::ExtensionPanel` and `host::PanelEntry`** — it would have red-walled the change
+  that shipped the dead Images card. A panel added later is walked because it exists, not because anyone remembered
+  to register it, so coverage cannot regress by omission. It is a source rule and not a Rust test deliberately: the
+  property has to hold for a panel nobody has written yet, and `Core/GUI` CI runs `build` + `panel-walk` only, so a
+  test in the registry crate would never execute.
+
 - **`wylde_check` rule 56 (`graph_test_serialized_on_db_lock`) makes the shared-Neo4j self-collision class a structural gate (closes #226; refs #83).**
   The #83 self-collision class — a live-graph test binary whose two-or-more `#[ignore]`d `bolt://` tests hit
   one shared Neo4j without serialization, non-deterministically failing on `ensure_schema` / `stats()` / the
@@ -414,6 +435,43 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   changelog a required, verifiable release gate rather than an optional courtesy.
 
 ### Fixed
+
+- **The GUI now reflects service presence + health instead of a stale registration — no silent dead panel (closes #239).**
+  The Images panel kept rendering, pointed at a dead `127.0.0.1:8015`, purely because a stub file sat in
+  `Extensions/`. Deleting the stub by hand was the only way to make it go away, and *that* was the bug: the GUI was
+  projecting a snapshot taken at process start rather than what is actually there. Three separate mechanisms
+  combined to produce it. **(1)** `Host::list_panels` read an in-memory catalog that `refresh_catalog` populated at
+  bootstrap and on an enable/disable toggle only — `discovery::discover` was already live (mtime/size-signature
+  cached), it was simply never called again — so a registration deleted from disk kept being reported until the
+  bridge process restarted. **(2)** Nothing probed reachability anywhere: `list_panels` was documented
+  status-independent, so a panel whose service had been extracted was handed to the GUI indistinguishable from a
+  working one. **(3)** The Tools panel painted each declared panel as a title and a URL with no status and no
+  affordance, and re-read only on mount or a Refresh click, so even correct data went stale in place.
+
+  The fix makes availability a computed property of every panel rather than a fact about one of them. `list_panels`
+  re-walks the filesystem per read (cheap — an unchanged tree is a stat pass, no re-parse) and attaches a
+  `availability` verdict of `live` / `unreachable` / `not_running` from the new `availability` module: a loopback
+  TCP connect, TTL-cached, which answers "is anything listening" exactly and keeps the bridge free of an HTTP
+  client dependency. Manifest content can never aim that probe off-box — non-loopback hosts are refused before
+  connecting, defence in depth behind `validate_ui_panels`. `ext.list` re-walks too, so a removed extension leaves
+  that list as well. The GUI renders live **only** on `live`; every other state, including one a build doesn't
+  recognise, renders as a status chip with the reason. The Tools panel polls on a 5 s loop, so a service dying or
+  an extension folder disappearing lands within a tick.
+
+  Two properties fall out by construction rather than by convention, which is the point: **absence is the signal**
+  (a deregistered panel is not in the list at all, so there is no "removed" state to forget to handle), and
+  **exactly one state permits a live render** (`Availability::is_live`, `overlay::live_extension_panels`) — so a
+  state added later cannot silently start counting as working. This covers every extension and every panel with no
+  per-extension wiring; nothing about it is specific to Images, and the ComfyUI stub now resolves itself with no
+  file surgery. Pruning is deliberately conservative in two directions: entries discovery doesn't own are never
+  pruned, and an *unreadable* extensions directory is treated as absence of information rather than evidence that
+  everything was uninstalled — blanking the whole GUI on a transient unreadable mount would be a worse silent
+  failure than the one being fixed.
+
+  Coverage lands in the panel-walk (L7) crate, where CI actually executes it: a registration the bridge no longer
+  reports yields no card; an unreachable-but-registered panel renders its status and never reads as live; a
+  reachable one is the only thing that does; and a second read replaces the first, so going away lands without a
+  restart. All four fail against the pre-fix behaviour.
 
 - **Retired `memgraph_parity_integration` — a test whose pipe half targeted a transport removed in the Rust cutover, so it could never pass (closes #232; refs #83).**
   The binary was a *pipe-vs-bolt parity* test: every one of its 11 tests asserted `pipe.ok && bolt.ok`, driving

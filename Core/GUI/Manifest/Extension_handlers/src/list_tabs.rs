@@ -70,6 +70,7 @@ mod tests {
             order: 50,
             version: "0.0.1".into(),
             url: "http://127.0.0.1:5678".into(),
+            availability: "live".into(),
         };
         let fut = list_tabs(&r, || async move { vec![ext] });
         let v = futures_lite_block_on(fut);

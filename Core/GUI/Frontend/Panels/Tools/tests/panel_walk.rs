@@ -17,6 +17,7 @@ use gpui::TestAppContext;
 use serde_json::json;
 
 use wylde_gui_test_support::ScriptedBackend;
+use wylde_panel_tools::ipc::PanelAvailability;
 use wylde_panel_tools::ToolsPanel;
 
 fn mount(cx: &mut TestAppContext) -> gpui::WindowHandle<ToolsPanel> {
@@ -116,6 +117,185 @@ fn tools_tolerates_empty_backend(cx: &mut TestAppContext) {
             assert!(
                 panel.extensions.is_empty(),
                 "an empty bridge yields an empty list"
+            );
+        })
+        .unwrap();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// #239 — "no silent dead panel".
+//
+// The GUI is a projection of live discovery + live health. These pin the
+// two halves at the surface the user actually looks at:
+//
+//   * a registration the bridge no longer reports yields no card; and
+//   * a registration it DOES report but cannot reach renders with its
+//     unavailable status, never as a card that looks like it works.
+//
+// The bridge recomputes both per read (`Host::list_panels`), so these
+// hold for every extension with no per-extension wiring — the property
+// that makes the mechanism self-extending. `wylde-images` appears as the
+// worked example because it is the stub that forced the issue; nothing
+// here is specific to it.
+// ────────────────────────────────────────────────────────────────────
+
+/// The `extensions.list_panels` reply for a panel-only extension whose
+/// service is gone — the shape the bridge produces for a stub pointing
+/// at a dead port.
+fn dead_images_panel() -> serde_json::Value {
+    json!({ "panels": [{
+        "extension": "wylde-images",
+        "id": "images",
+        "title": "Images",
+        "icon": "image",
+        "kind": "iframe",
+        "url": "http://127.0.0.1:8015",
+        "availability": "unreachable",
+        "detail": "nothing is listening at its address"
+    }]})
+}
+
+#[gpui::test]
+fn a_registration_the_bridge_no_longer_reports_yields_no_card(cx: &mut TestAppContext) {
+    // The extension is gone from disk, so the bridge's re-walked catalog
+    // no longer mentions it. The panel must hold nothing to render — not
+    // a stale card carried over from an earlier read.
+    let fake = ScriptedBackend::new()
+        .on("ext.list", json!({ "extensions": [] }))
+        .on("extensions.list_panels", json!({ "panels": [] }));
+    let _guard = fake.clone().install();
+
+    let window = mount(cx);
+
+    window
+        .update(cx, |panel, _w, _cx| {
+            assert!(
+                panel.panels.is_empty(),
+                "a registration that is no longer reported must leave no card behind"
+            );
+            assert!(panel.error.is_none(), "an empty catalog is not an error");
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn an_unreachable_panel_renders_its_status_not_a_live_card(cx: &mut TestAppContext) {
+    // Registered but dead: the card must exist (the user needs to know it
+    // is there and broken) and must never read as live.
+    let fake = ScriptedBackend::new()
+        .on(
+            "ext.list",
+            json!({ "extensions": [
+                { "name": "wylde-images", "version": "1.0", "enabled": false, "status": "disabled" },
+            ]}),
+        )
+        .on("extensions.list_panels", dead_images_panel());
+    let _guard = fake.clone().install();
+
+    let window = mount(cx);
+
+    window
+        .update(cx, |panel, _w, _cx| {
+            assert_eq!(panel.panels.len(), 1, "the dead panel is still listed");
+            let p = &panel.panels[0];
+            assert_eq!(
+                p.availability,
+                PanelAvailability::Unreachable,
+                "a panel pointing at a dead port is unavailable"
+            );
+            assert!(
+                !p.availability.is_live(),
+                "it must never be presented as a live panel — the point of #239"
+            );
+            assert!(
+                p.detail.is_some(),
+                "the card carries a reason, not just a bare URL"
+            );
+            assert!(
+                !p.availability.label().is_empty(),
+                "every card shows status or affords action"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn a_reachable_panel_is_the_only_thing_that_reads_as_live(cx: &mut TestAppContext) {
+    // The other side of the gate, so the assertion above can't pass by
+    // the panel simply never reporting anything as live.
+    let fake = ScriptedBackend::new().on(
+        "extensions.list_panels",
+        json!({ "panels": [
+            {
+                "extension": "n8n", "id": "workflows", "title": "Workflows",
+                "kind": "iframe", "url": "http://127.0.0.1:5678",
+                "availability": "live"
+            },
+            {
+                "extension": "wylde-images", "id": "images", "title": "Images",
+                "kind": "iframe", "url": "http://127.0.0.1:8015",
+                "availability": "unreachable",
+                "detail": "nothing is listening at its address"
+            },
+        ]}),
+    );
+    let _guard = fake.clone().install();
+
+    let window = mount(cx);
+
+    window
+        .update(cx, |panel, _w, _cx| {
+            let live: Vec<&str> = panel
+                .panels
+                .iter()
+                .filter(|p| p.availability.is_live())
+                .map(|p| p.id.as_str())
+                .collect();
+            assert_eq!(
+                live,
+                vec!["workflows"],
+                "exactly the reachable panel reads as live"
+            );
+        })
+        .unwrap();
+}
+
+#[gpui::test]
+fn a_service_going_away_lands_on_the_next_read_without_a_restart(cx: &mut TestAppContext) {
+    // Reacting at runtime is the requirement, not just being right once.
+    // A second read must replace the first rather than be ignored.
+    let fake = ScriptedBackend::new().on(
+        "extensions.list_panels",
+        json!({ "panels": [{
+            "extension": "n8n", "id": "workflows", "title": "Workflows",
+            "kind": "iframe", "url": "http://127.0.0.1:5678",
+            "availability": "live"
+        }]}),
+    );
+    let _guard = fake.clone().install();
+
+    let window = mount(cx);
+    window
+        .update(cx, |panel, _w, _cx| {
+            assert!(panel.panels[0].availability.is_live(), "live to begin with");
+        })
+        .unwrap();
+
+    // The service dies: the bridge's next reply reports it unreachable.
+    fake.clone()
+        .on("extensions.list_panels", dead_images_panel());
+    window
+        .update(cx, |_panel, _w, cx| ToolsPanel::spawn_refresh(cx))
+        .unwrap();
+    cx.run_until_parked();
+
+    window
+        .update(cx, |panel, _w, _cx| {
+            assert_eq!(panel.panels.len(), 1);
+            assert!(
+                !panel.panels[0].availability.is_live(),
+                "the card flips to unavailable on the next read — no restart, \
+                 no manual file surgery"
             );
         })
         .unwrap();

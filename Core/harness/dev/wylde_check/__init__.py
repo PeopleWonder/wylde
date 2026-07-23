@@ -430,6 +430,9 @@ from .rules._gpui_contract import (  # noqa: E402
     check_panel_verbs_exist_in_harness_registry,
     check_required_services_includes_called_services,
 )
+from .rules._gpui_availability import (  # noqa: E402
+    check_service_backed_surface_declares_availability,
+)
 from .rules._gpui_nav import (  # noqa: E402
     check_nav_targets_exist,
 )
@@ -494,6 +497,9 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     "panel_verbs_exist_in_harness_registry": check_panel_verbs_exist_in_harness_registry,
     "nav_targets_exist": check_nav_targets_exist,
     "required_services_includes_called_services": check_required_services_includes_called_services,
+    "service_backed_surface_declares_availability": (
+        check_service_backed_surface_declares_availability
+    ),
     "manifest_factory_resolves": check_manifest_factory_resolves,
     "stream_call_must_handle_cancel": check_stream_call_must_handle_cancel,
     # Rules 44-45 — launcher / shutdown correctness (slice-11 cutover).
@@ -566,7 +572,13 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # graph_test_serialized_on_db_lock) = 31 active.  Makes the shared-Neo4j
 # per-test DB_LOCK + live-graph CI coverage a structural gate, so the #83
 # self-collision class (which recurred three times) cannot recur silently.
-assert len(_RULES) == 31, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 31)"
+# 0.2 Stability enforcement (#239, 2026-07-22): +1 (rule 57,
+# service_backed_surface_declares_availability) = 32 active. Rule 40 gates a
+# panel's dependence on services, but the unit that can be dead is the *item*,
+# not the panel — Tools declared its bridge correctly and still rendered a card
+# per extension pointing at a service nothing checked. This makes the per-item
+# state a structural gate on both sides of the wire.
+assert len(_RULES) == 32, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 32)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -699,6 +711,7 @@ __all__ = [
     "check_panel_verbs_exist_in_harness_registry",
     "check_nav_targets_exist",
     "check_required_services_includes_called_services",
+    "check_service_backed_surface_declares_availability",
     "check_manifest_factory_resolves",
     "check_stream_call_must_handle_cancel",
     "check_launcher_enumerates_services_from_manifests",
