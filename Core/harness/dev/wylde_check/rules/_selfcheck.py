@@ -168,7 +168,17 @@ RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
         "Core/GUI/Frontend/Panels",
         (".json",),
         "first_party_manifest_must_be_gpui_view, "
-        "required_services_includes_called_services, manifest_factory_resolves",
+        "required_services_includes_called_services, manifest_factory_resolves, "
+        "service_backed_surface_declares_availability",
+    ),
+    (
+        # The producer half of rule 57's corpus. Wholesale, because exactly
+        # one file in `rust/` models a GUI-rendered remote surface — if it
+        # moves, rule 57 silently stops policing the side that mints the
+        # availability verdict.
+        "rust/crates/wylde-extension-bridge/src/host.rs",
+        None,
+        "service_backed_surface_declares_availability",
     ),
     (
         "Core/GUI/Frontend/Panels",

@@ -130,6 +130,7 @@ pub trait HarnessApi: Send + Sync {
     async fn models_set_default(&self, payload: Value) -> Reply;
     async fn models_get_default(&self, payload: Value) -> Reply;
     async fn models_get_effective(&self, payload: Value) -> Reply;
+    async fn models_resolve_default(&self, payload: Value) -> Reply;
 
     // ── settings.ollama.* (4 verbs; per-model inference override store) ─
     async fn settings_ollama_get_overrides(&self, payload: Value) -> Reply;
@@ -384,6 +385,13 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn models_get_effective(&self, payload: Value) -> Reply {
         model_actions::handle_get_effective(payload).await
+    }
+
+    async fn models_resolve_default(&self, payload: Value) -> Reply {
+        let ollama = model_actions::LiveOllama {
+            service: Config::get().ollama_service.clone(),
+        };
+        crate::model_registry::default_model::handle_resolve_default(payload, &ollama).await
     }
 
     // ── settings.ollama.* ────────────────────────────────────────────

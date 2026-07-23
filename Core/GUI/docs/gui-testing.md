@@ -293,7 +293,7 @@ the same machine is neither disturbed nor consulted (#75).
 
 Adding a chat surface? The test's `COVERED` registry derives from an exhaustive
 `match` on `ChatScope`, so a new variant stops it compiling — and `wylde_check`
-rule 57 catches the cases the compiler can't see (an arm added but never driven,
+rule 58 catches the cases the compiler can't see (an arm added but never driven,
 and a new panel growing its own chat bar). Both are deliberate: chat is the
 primary path, and a new place to type must be proven end-to-end before it ships.
 

@@ -1,4 +1,4 @@
-"""Tests for rule 57 (``chat_surfaces_are_e2e_covered``) — mirrors prod-side
+"""Tests for rule 58 (``chat_surfaces_are_e2e_covered``) — mirrors prod-side
 ``wylde_check/rules/_chat_surface_coverage.py``.
 
 Chat is the product's primary path and has more than one entry point. The

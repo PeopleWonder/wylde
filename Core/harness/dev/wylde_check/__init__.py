@@ -342,7 +342,7 @@ The rules:
                             Single-test live-graph binaries can't self-collide
                             and are out of scope.  Details in
                             docs/wylde_check_rules.md.
-57. ``chat_surfaces_are_e2e_covered`` — every GUI chat entry point must be
+58. ``chat_surfaces_are_e2e_covered`` — every GUI chat entry point must be
                             driven by the all-surfaces chat-turn e2e
                             (``Core/GUI/Frontend/Panels/Chat/tests/
                             chat_turn_e2e.rs``, #236).  Two checks the Rust
@@ -448,6 +448,9 @@ from .rules._gpui_contract import (  # noqa: E402
     check_panel_verbs_exist_in_harness_registry,
     check_required_services_includes_called_services,
 )
+from .rules._gpui_availability import (  # noqa: E402
+    check_service_backed_surface_declares_availability,
+)
 from .rules._gpui_nav import (  # noqa: E402
     check_nav_targets_exist,
 )
@@ -515,6 +518,9 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     "panel_verbs_exist_in_harness_registry": check_panel_verbs_exist_in_harness_registry,
     "nav_targets_exist": check_nav_targets_exist,
     "required_services_includes_called_services": check_required_services_includes_called_services,
+    "service_backed_surface_declares_availability": (
+        check_service_backed_surface_declares_availability
+    ),
     "manifest_factory_resolves": check_manifest_factory_resolves,
     "stream_call_must_handle_cancel": check_stream_call_must_handle_cancel,
     # Rules 44-45 — launcher / shutdown correctness (slice-11 cutover).
@@ -592,11 +598,18 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # graph_test_serialized_on_db_lock) = 31 active.  Makes the shared-Neo4j
 # per-test DB_LOCK + live-graph CI coverage a structural gate, so the #83
 # self-collision class (which recurred three times) cannot recur silently.
-# All-surfaces chat-turn e2e (#236, 2026-07-22): +1 (rule 57,
-# chat_surfaces_are_e2e_covered) = 32 active.  Chat is the primary path
+# 0.2 Stability enforcement (#239, 2026-07-22): +1 (rule 57,
+# service_backed_surface_declares_availability) = 32 active. Rule 40 gates a
+# panel's dependence on services, but the unit that can be dead is the *item*,
+# not the panel — Tools declared its bridge correctly and still rendered a card
+# per extension pointing at a service nothing checked. This makes the per-item
+# state a structural gate on both sides of the wire.
+# All-surfaces chat-turn e2e (#236, 2026-07-22): +1 (rule 58,
+# chat_surfaces_are_e2e_covered) = 33 active.  Chat is the primary path
 # and has more than one entry point; this keeps a newly-added surface
 # from shipping with no end-to-end proof that typing in it does anything.
-assert len(_RULES) == 32, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 32)"
+# (Numbered 58, not 57: #239 landed its own rule 57 on develop first.)
+assert len(_RULES) == 33, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 33)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -729,6 +742,7 @@ __all__ = [
     "check_panel_verbs_exist_in_harness_registry",
     "check_nav_targets_exist",
     "check_required_services_includes_called_services",
+    "check_service_backed_surface_declares_availability",
     "check_manifest_factory_resolves",
     "check_stream_call_must_handle_cancel",
     "check_launcher_enumerates_services_from_manifests",

@@ -20,6 +20,11 @@
 //! | `models.set_default` | [`crate::model_registry::model_state`]      |
 //! | `models.get_default` | [`crate::model_registry::model_state`]      |
 //!
+//! Plus one verb with no Python ancestor — `models.resolve_default`
+//! (#235). Its handler lives beside its resolver in
+//! [`crate::model_registry::default_model`] rather than here, so the
+//! whole default-resolution concern reads in one file.
+//!
 //! Two more verbs — `models.transcribe` / `models.synthesize` — used to
 //! drive the Python Voice STT/TTS engines. They were retired at the
 //! Phase-11.E voice cutover (STT/TTS moved in-process into `wylde-voice`,
@@ -68,7 +73,7 @@ pub fn rust_enabled() -> bool {
 /// `python` (the rollback path). `not_implemented` is in the Python
 /// forwarder's transport-fallback set, so the forward reverts to the
 /// in-process Python body instead of erroring the caller.
-fn disabled() -> Reply {
+pub(crate) fn disabled() -> Reply {
     Reply::err_msg(
         "not_implemented",
         "models.* Rust handlers are disabled by WYLDE_HARNESS_MODELS_IMPL=python \

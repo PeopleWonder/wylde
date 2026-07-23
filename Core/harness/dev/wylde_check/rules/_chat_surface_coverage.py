@@ -1,4 +1,4 @@
-"""Rule 57: every GUI chat entry point is covered by the chat-turn e2e.
+"""Rule 58: every GUI chat entry point is covered by the chat-turn e2e.
 
 The failure this exists to prevent
 ----------------------------------
@@ -153,7 +153,7 @@ def _is_chat_composer(code: str) -> bool:
 
 
 def check_chat_surfaces_are_e2e_covered() -> List[Finding]:
-    """Rule 57 — see the module docstring."""
+    """Rule 58 — see the module docstring."""
     import sys as _sys
 
     pkg = _sys.modules[__name__.rsplit(".", 2)[0]]
@@ -172,7 +172,7 @@ def check_chat_surfaces_are_e2e_covered() -> List[Finding]:
                 file=SCOPE_FILE,
                 line=0,
                 message=(
-                    "the ChatScope definition is missing — rule 57 cannot "
+                    "the ChatScope definition is missing — rule 58 cannot "
                     "enumerate chat surfaces. If the enum moved, repoint "
                     "SCOPE_FILE; do not leave the rule pointing at nothing."
                 ),
@@ -206,7 +206,7 @@ def check_chat_surfaces_are_e2e_covered() -> List[Finding]:
                 line=0,
                 message=(
                     "could not parse any ChatScope variant — the enum's shape "
-                    "changed and rule 57 is now checking nothing. Update "
+                    "changed and rule 58 is now checking nothing. Update "
                     "_SCOPE_ENUM_RE / _VARIANT_RE to match."
                 ),
             )
@@ -221,7 +221,7 @@ def check_chat_surfaces_are_e2e_covered() -> List[Finding]:
                 file=E2E_FILE,
                 line=0,
                 message=(
-                    "could not parse the COVERED surface list — rule 57 cannot "
+                    "could not parse the COVERED surface list — rule 58 cannot "
                     "tell which chat surfaces are exercised end-to-end."
                 ),
             )

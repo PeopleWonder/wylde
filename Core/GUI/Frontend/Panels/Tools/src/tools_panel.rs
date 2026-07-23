@@ -15,21 +15,36 @@
 //! IPC reads use `cx.spawn` — same pattern Settings + Workspaces adopt.
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use gpui::{
     div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, FontWeight,
     IntoElement, Render, SharedString, Stateful, Window,
 };
 use wylde_theme::colors::{
-    BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_DIM, SURFACE_800, SURFACE_900, TEXT_MUTED,
-    TEXT_PRIMARY, TEXT_SECONDARY,
+    BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_DIM, BRAND_LIGHT, DANGER, SURFACE_800, SURFACE_900,
+    TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, WARNING,
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::ipc::{
     disable_extension, enable_extension, list_extension_panels, list_extensions, ExtensionPanel,
-    ExtensionStatus,
+    ExtensionStatus, PanelAvailability,
 };
+
+/// How often the panel re-reads the extension catalog + panel
+/// availability.
+///
+/// This is what makes the surface *react* rather than merely be correct
+/// once (#239): a service that dies, or an extension folder that is
+/// deleted, changes the cards within one tick — no restart, no Refresh
+/// click, no manual file surgery. The Shell caches a panel's View for
+/// the process lifetime, so without a poll a Tools tab opened at launch
+/// would show launch-time truth forever.
+///
+/// 5 s matches the Dashboard's refresh cadence; the reads behind it are
+/// a cached directory stat plus TTL-cached loopback probes.
+pub const PANEL_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Root Tools panel.
 pub struct ToolsPanel {
@@ -56,10 +71,36 @@ impl ToolsPanel {
     pub fn view(_window: &mut Window, cx: &mut App) -> AnyView {
         cx.new(|cx| {
             let panel = Self::new();
-            Self::spawn_refresh(cx);
+            // The loop's first iteration fires synchronously, so this
+            // also covers the initial load.
+            Self::spawn_refresh_loop(cx);
             panel
         })
         .into()
+    }
+
+    /// Long-lived poll: re-read the catalog every
+    /// [`PANEL_POLL_INTERVAL`] for the panel's lifetime.
+    ///
+    /// Same shape as the Dashboard's refresh loop — leading iteration
+    /// with no sleep, gpui's native timer (the executor has no tokio
+    /// reactor), and exit as soon as the entity is gone.
+    pub fn spawn_refresh_loop(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| loop {
+            let alive = this
+                .update(app_cx, |_panel, cx| {
+                    Self::spawn_refresh(cx);
+                })
+                .is_ok();
+            if !alive {
+                return;
+            }
+            app_cx
+                .background_executor()
+                .timer(PANEL_POLL_INTERVAL)
+                .await;
+        })
+        .detach();
     }
 
     /// Reload extensions + declared panels from the bridge.  Two async
@@ -342,6 +383,24 @@ fn extension_row(ext: &ExtensionStatus, pending: bool, cx: &mut Context<ToolsPan
     row.child(button)
 }
 
+/// The chip colour for an availability state. `LIVE` reads as active in
+/// the brand hue; the two "you can't use this" states take the semantic
+/// danger/warning tokens rather than a bespoke hex.
+fn availability_color(a: PanelAvailability) -> gpui::Rgba {
+    match a {
+        PanelAvailability::Live => BRAND_LIGHT,
+        PanelAvailability::Unreachable => DANGER,
+        PanelAvailability::NotRunning | PanelAvailability::Unknown => WARNING,
+    }
+}
+
+/// One declared-panel card.
+///
+/// Every card carries a status chip — the Workspaces rule ("a card shows
+/// status or affords action") applied to services. Before #239 this
+/// rendered a title and a URL and nothing else, which is why a stub
+/// pointing at a port whose service had been extracted looked
+/// indistinguishable from a working panel.
 fn panel_row(p: &ExtensionPanel) -> gpui::Div {
     let icon_glyph = p
         .icon
@@ -355,6 +414,48 @@ fn panel_row(p: &ExtensionPanel) -> gpui::Div {
                 .map(|c| c.to_ascii_uppercase().to_string())
                 .unwrap_or_else(|| "·".into())
         });
+    let status = p.availability;
+    let status_color = availability_color(status);
+    // An unavailable panel's identity is de-emphasised so the eye lands
+    // on the chip, not on a title that looks as live as its neighbours.
+    let title_color = if status.is_live() {
+        TEXT_PRIMARY
+    } else {
+        TEXT_MUTED
+    };
+
+    let mut meta = div()
+        .flex_1()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::SM))
+                .text_color(rgb(pack(title_color)))
+                .child(SharedString::from(format!("{} / {}", p.extension, p.title))),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(p.url.clone())),
+        );
+
+    // The reason, when there is one. Without it "UNAVAILABLE" leaves the
+    // user guessing between "wrong port", "not installed" and "crashed".
+    if let Some(detail) = p.detail.as_deref() {
+        meta = meta.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(status_color)))
+                .child(SharedString::from(detail.to_owned())),
+        );
+    }
+
     div()
         .bg(rgb(pack(SURFACE_800)))
         .border_1()
@@ -380,27 +481,31 @@ fn panel_row(p: &ExtensionPanel) -> gpui::Div {
                 .text_color(rgb(pack(TEXT_PRIMARY)))
                 .child(SharedString::from(icon_glyph)),
         )
-        .child(
-            div()
-                .flex_1()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .child(
-                    div()
-                        .font_family(FAMILY_INTER)
-                        .text_size(px(size::SM))
-                        .text_color(rgb(pack(TEXT_PRIMARY)))
-                        .child(SharedString::from(format!("{} / {}", p.extension, p.title))),
-                )
-                .child(
-                    div()
-                        .font_family(FAMILY_INTER)
-                        .text_size(px(size::MICRO))
-                        .text_color(rgb(pack(TEXT_MUTED)))
-                        .child(SharedString::from(p.url.clone())),
-                ),
-        )
+        .child(meta)
+        .child(availability_chip(status, status_color))
+}
+
+/// The status chip itself — a tinted pill carrying the state's label.
+fn availability_chip(status: PanelAvailability, color: gpui::Rgba) -> gpui::Div {
+    div()
+        .px_2()
+        .py(px(2.0))
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(tint(color, 0.35))
+        .bg(tint(color, 0.12))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::MICRO))
+        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+        .text_color(rgb(pack(color)))
+        .child(SharedString::from(status.label()))
+}
+
+/// The same hue at a lower opacity, for the chip's fill and border.
+/// Keeps the chip readable on `SURFACE_800` without introducing three
+/// more palette tokens.
+fn tint(c: gpui::Rgba, alpha: f32) -> gpui::Rgba {
+    gpui::Rgba { a: alpha, ..c }
 }
 
 fn empty_state() -> gpui::Div {

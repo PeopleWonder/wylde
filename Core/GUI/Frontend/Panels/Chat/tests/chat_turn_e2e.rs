@@ -93,7 +93,7 @@
 //! 1. **Compile time, here.** [`spec`] matches `ChatScope` **exhaustively**
 //!    with no `_` arm. A new variant stops this test binary compiling, which
 //!    reds `cargo panel-walk` — the required `gui panel-walk (L7)` gate.
-//! 2. **Source scan, in `wylde_check`.** Rule 57
+//! 2. **Source scan, in `wylde_check`.** Rule 58
 //!    (`chat_surfaces_are_e2e_covered`) reads the `ChatScope` variants out of
 //!    `chat_panel.rs` and the [`COVERED`] entries out of this file and fails
 //!    when they disagree — and independently flags any *new* send-capable
@@ -168,7 +168,7 @@ const fn spec(scope: ChatScope) -> SurfaceSpec {
     }
 }
 
-/// The surfaces this test actually exercises. Rule 57 cross-checks this list
+/// The surfaces this test actually exercises. Rule 58 cross-checks this list
 /// against the `ChatScope` variants declared in `chat_panel.rs`.
 const COVERED: &[SurfaceSpec] = &[spec(ChatScope::Global), spec(ChatScope::Docked)];
 
@@ -176,7 +176,7 @@ const COVERED: &[SurfaceSpec] = &[spec(ChatScope::Global), spec(ChatScope::Docke
 /// Enter reaches the chat turn path — and are therefore accounted for by the
 /// surfaces in [`COVERED`].
 ///
-/// Rule 57 scans the whole GUI tree for such composers and compares the result
+/// Rule 58 scans the whole GUI tree for such composers and compares the result
 /// against this list. A new panel growing its own chat bar is invisible to the
 /// [`spec`] match (it adds no `ChatScope` variant), so this is the half of the
 /// enforcement that catches it: the rule goes red until the new composer is
@@ -376,7 +376,7 @@ fn a_turn_on_one_surface_does_not_leak_into_the_other(cx: &mut TestAppContext) {
 fn the_covered_registry_is_well_formed() {
     assert!(
         !COVERED_COMPOSER_FILES.is_empty(),
-        "the composer-file declaration rule 57 reads must never be emptied — \
+        "the composer-file declaration rule 58 reads must never be emptied — \
          an empty list would make the source scan vacuously pass"
     );
     for (i, s) in COVERED.iter().enumerate() {
