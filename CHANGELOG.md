@@ -48,6 +48,34 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **A persistent default model that survives restart, with sensible fallbacks — and a recommendation instead of
+  silence when nothing is installed (closes #235; builds on #131/#132).**
+  Wylde already persisted a starred default (`models.set_default` → `default_model.json`), but nothing ever
+  checked it against reality. Three holes shared one symptom — *the model picker points at nothing usable*:
+  the star was never validated against the store, so deleting that model (which #131 made a one-click
+  operation) left a phantom tag that failed at inference time as an Ollama 404 rather than at selection time
+  as a fallback; a user who never touched the star got `null` even with five models on disk; and an empty
+  store also resolved to `null`, offering no way forward. The new `models.resolve_default` verb resolves
+  against the **live on-disk inventory** in a fixed order: **(1)** the persisted default *if it is still
+  installed* (matched across the implicit `:latest`, same rule #131 established for slot labelling);
+  **(2)** otherwise the first available model in the inventory — a star whose model was deleted falls
+  *through* to this silently, reporting the dangling name for the UI to explain but never erroring;
+  **(3)** otherwise, with a genuinely empty store, a **recommendation** of `qwen3.5:9b` (6.6 GB, the real
+  ~9B on-device Qwen) carrying its warnings: download size, VRAM fit, and the slower first message while
+  weights load. It is a recommendation with a Pull button, **never an auto-download** — the same discipline
+  as the locked never-auto-delete decision, pointed the other way: Wylde does not move 6.6 GB across
+  someone's network because a picker was empty. Crucially, an **unreachable** model store is an error, not
+  an empty one — #132's distinction applied to resolution, so a daemon still restarting after an update is
+  never answered with "nothing installed, here is a 6.6 GB download". The Models panel now hydrates from
+  this verb rather than the raw star, so a deleted default lights up no row, a fallen-through default
+  explains itself in a note, and the empty state renders the recommendation and its warnings verbatim from
+  the harness (one owner for that copy, so a second surface can't drift). Persistence itself is unchanged:
+  `default_model.json` remains the single store — the resolver is a pure function over it, not a parallel
+  one. The recommended chat model is deliberately distinct from `DEFAULT_REASONER_MODEL` (the 35B-A3B
+  UD-IQ3_XXS quant locked by the 2026-07-13 planning eval): different slot, different job. Covered by 22
+  backend tests and 4 L7 panel-walk cases (star survives restart; deleted default falls through;
+  empty inventory recommends with warnings; unreachable ≠ empty).
+
 - **`wylde_check` rule 56 (`graph_test_serialized_on_db_lock`) makes the shared-Neo4j self-collision class a structural gate (closes #226; refs #83).**
   The #83 self-collision class — a live-graph test binary whose two-or-more `#[ignore]`d `bolt://` tests hit
   one shared Neo4j without serialization, non-deterministically failing on `ensure_schema` / `stats()` / the
