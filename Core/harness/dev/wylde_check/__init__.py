@@ -340,8 +340,14 @@ The rules:
                             build red.  Every live-graph binary in the tree
                             reaches the graph over Bolt, which the leg stands up.
                             Single-test live-graph binaries can't self-collide
-                            and are out of scope.  Details in
-                            docs/wylde_check_rules.md.
+                            and are out of scope.  Findings carry a pointer to
+                            the #83 class's diagnosis home,
+                            docs/trackers/self-collision-class.md, when that
+                            doc is present — a SELF-EXPIRING tracker, so the
+                            pointer is presence-gated via
+                            ``rules._tracker_ref.tracker_pointer`` and simply
+                            goes quiet once the doc is auto-deleted (#253).
+                            Details in docs/wylde_check_rules.md.
 58. ``chat_surfaces_are_e2e_covered`` — every GUI chat entry point must be
                             driven by the all-surfaces chat-turn e2e
                             (``Core/GUI/Frontend/Panels/Chat/tests/
