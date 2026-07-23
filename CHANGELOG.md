@@ -48,6 +48,27 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **The persistent default model is now guaranteed to survive an UPDATE, not just a restart (closes #243; refs
+  #235, #132).**
+  #235 made the default survive a shutdown — it is read from disk on start. Whether it survives an *update* had
+  never been asserted anywhere, and the answer was not obvious: the store resolves `DATA_DIR` → the **relative**
+  literal `"data"`, so where it lands depends on the working directory lifecycle spawns services with
+  (`cmd.current_dir(wylde_root())`, itself exported by `launch_wylde.ps1` as `$PSScriptRoot`). The investigation
+  found it **is** safe today: `wylde-updater::install_stack` stages into `<home>/versions/<version>/`, flips the
+  `%LOCALAPPDATA%\Wylde\current` pointer, then prunes older version directories — that `versions/` tree plus the
+  pointer is its entire write surface, and it never touches the estate root the store lives under. **No
+  relocation was required.** But it was safe by circumstance rather than by construction: the store sits in the
+  stack/estate tree rather than a designated user-data directory, and stays safe only while the updater's blast
+  radius stays narrow. Three tests turn that from an accident into a checked property — a round-trip that stages
+  a new stack, prunes the old one, drops every in-memory cache and asserts the default is still readable; a
+  **structural** assertion that neither `default_model.json` nor `active_model.json` resolves inside the
+  `versions/` tree an update replaces; and a guard that a stale copy inside a superseded stack directory cannot
+  shadow the live default. Rooting model-selection state in the stack directory — the change that would silently
+  reset every user's default on every release — now turns the build red instead of shipping. Deliberately not
+  addressed: that this store uses `<ROOT>/data` rather than convention A (`<WYLDE_ROOT>/.wylde/data`, #138), a
+  documented deliberate deviation whose unification carries data-migration risk across the model registry,
+  device gate and ollama overrides.
+
 - **A persistent default model that survives restart, with sensible fallbacks — and a recommendation instead of
   silence when nothing is installed (closes #235; builds on #131/#132).**
   Wylde already persisted a starred default (`models.set_default` → `default_model.json`), but nothing ever
