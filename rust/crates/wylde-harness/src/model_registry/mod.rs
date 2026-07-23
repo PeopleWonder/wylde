@@ -17,6 +17,10 @@
 //!   manifest claims a repo.
 //! * **Routing** ([`routing`]) — LLM capability slots, profiles, churn
 //!   prevention, opt-in HF discovery state. Sub-modules per concern.
+//! * **Default resolution** ([`default_model`]) — the persisted star
+//!   checked against the live on-disk inventory, with the
+//!   first-available and recommend fallbacks (#235). Persistence itself
+//!   stays in [`model_state`]; this is a pure function over it.
 //! * **Public API** ([`api`]) — `list_models`, `get_model`, `is_loaded`,
 //!   `refresh_cache`. Merges scanner + manifests + Ollama probe +
 //!   routing profiles into one view.
@@ -37,6 +41,7 @@
 
 pub mod actions;
 pub mod api;
+pub mod default_model;
 pub mod heuristics;
 pub mod hf_scanner;
 pub mod model_state;

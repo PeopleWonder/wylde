@@ -135,4 +135,22 @@ pub(super) fn install(api: &Arc<dyn HarnessApi>) {
          one of active|default|env|null.",
         HANDLER_MODULE_MODELS,
     );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
+        "models.resolve_default",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.models_resolve_default(p).await }
+        },
+        "Resolve the default model against the live on-disk inventory \
+         (#235): the starred default if still installed → the first \
+         available model → a recommendation of qwen3.5:9b with warnings. \
+         A star whose model was deleted falls through rather than \
+         erroring. An unreachable model store is an error, never an empty \
+         one (#132). No payload. Returns {model, source, stale_default, \
+         recommendation, inventory_count} where source is one of \
+         default|first_available|recommend.",
+        HANDLER_MODULE_MODELS,
+    );
 }
