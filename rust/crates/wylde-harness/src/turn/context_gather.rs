@@ -2805,6 +2805,81 @@ mod tests {
         assert!(!picked.is_empty(), "the newest message still loads");
     }
 
+    /// **#242 — the writer and the reader must be the same store.**
+    ///
+    /// Every other history test seeds `messages` by hand, so all of them
+    /// stayed green while the product shipped an empty history: they proved
+    /// `load_history` reads a well-formed document, never that anything
+    /// writes one. This one seeds through the ONLY producer on the turn
+    /// path — `append_exchange`, the call `run_post_turn_hooks` makes — and
+    /// asserts the next turn's gather sees it.
+    ///
+    /// If the turn path's persistence is removed, re-routed to another
+    /// store, or changes the message shape `load_history` decodes, this
+    /// goes red. Hand-seeded tests cannot catch any of those.
+    #[test]
+    fn history_loads_what_the_turn_path_actually_persisted() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        use crate::memory::conversations::store::append_exchange;
+
+        // Turn 1 completes and the driver persists the exchange. No
+        // document exists yet — the id was minted by `conversations.new`
+        // and the GUI has not saved anything, which is the real first-turn
+        // state (the upsert is load-bearing, not a convenience).
+        append_exchange(
+            "conv-242-roundtrip",
+            None,
+            "stub-model",
+            "what is the capital of France?",
+            "Paris.",
+        )
+        .expect("the turn path persists the exchange");
+
+        // Turn 2 gathers. THIS is the assertion the product failed: the
+        // model must be able to see what was already said.
+        let picked = load_history(
+            "conv-242-roundtrip",
+            "and its population?",
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        );
+        let pairs: Vec<(&str, &str)> = picked
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("user", "what is the capital of France?"),
+                ("assistant", "Paris."),
+            ],
+            "the prior exchange must reach the next turn's history, in order \
+             and with both roles — an empty vec here is #242 itself"
+        );
+
+        // And it accumulates: turn 2's own exchange joins the record
+        // without displacing turn 1's.
+        append_exchange(
+            "conv-242-roundtrip",
+            None,
+            "stub-model",
+            "and its population?",
+            "About 2.1 million.",
+        )
+        .expect("second exchange persists");
+        let picked = load_history(
+            "conv-242-roundtrip",
+            "thanks",
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        );
+        assert_eq!(
+            picked.len(),
+            4,
+            "each turn appends; history is cumulative, not last-turn-only"
+        );
+        assert_eq!(picked[0].content, "what is the capital of France?");
+        assert_eq!(picked[3].content, "About 2.1 million.");
+    }
+
     // ── B3: long-term memory injection ──────────────────────────────────
 
     #[tokio::test]

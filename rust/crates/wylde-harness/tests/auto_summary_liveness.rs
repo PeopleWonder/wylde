@@ -172,6 +172,15 @@ async fn kill_switch_disables_producer() {
     );
 }
 
+/// The summary counted here is **7**, not the 5 seeded (#242).
+///
+/// The turn path now persists its own exchange before the summary hook
+/// runs (`run_post_turn_hooks` → `conversations::store::append_exchange`),
+/// so the document the summariser reads is the 5 seeded messages plus this
+/// turn's user message and reply. That ordering is deliberate: a summary
+/// that omitted the turn which triggered it would always be one exchange
+/// stale. The old `5` was only ever right because nothing on the turn path
+/// wrote to `messages` at all — the bug this asserts the absence of.
 #[tokio::test]
 async fn post_turn_hook_drives_producer_end_to_end() {
     let (_g, _dir) = test_guard().await;
@@ -194,7 +203,17 @@ async fn post_turn_hook_drives_producer_end_to_end() {
             .and_then(Value::as_str)
             .is_some_and(|s| !s.is_empty())
         {
-            assert_eq!(doc["summary_msg_count"], 5);
+            assert_eq!(
+                doc["summary_msg_count"], 7,
+                "5 seeded + the turn's own user message and reply — the \
+                 summariser must see the exchange that triggered it (#242)"
+            );
+            // And the exchange really is the turn's, not filler.
+            let msgs = doc["messages"].as_array().expect("messages");
+            assert_eq!(msgs.len(), 7);
+            assert_eq!(msgs[5]["role"], "user");
+            assert_eq!(msgs[5]["content"], "hi there");
+            assert_eq!(msgs[6]["role"], "assistant");
             assert_eq!(doc["embedding"].as_array().expect("embedding").len(), 4);
             found = true;
             break;
