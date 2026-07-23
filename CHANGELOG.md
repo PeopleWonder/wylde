@@ -526,6 +526,49 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **The assistant remembers the rest of the conversation — every chat turn is no longer answered blind (closes #242).**
+  Ask a follow-up question and Wylde had no idea what you had just said. Not a model limitation and not a prompt
+  problem: **the chat turn never wrote the exchange down.** `turn/context_gather.rs::load_history` — the slot whose
+  whole job is "the model can finally see the previous turns" — builds itself by reading the conversation
+  document's `messages` array, and nothing on the Rust turn path ever appended to it. `conversations.new` minted
+  the array empty and it stayed empty forever, so `load_history` returned nothing on every turn of every chat. The
+  cause is a gap in the Python→Rust cutover: the harness's own strangler note recorded that `save_conversation`
+  *on the chat-turn path* was still Python's job, and when Python was deleted that one write went with it. What
+  was left carrying context was the short-term working-memory slot — extracted entries rather than the raw
+  exchange, and off entirely under `WYLDE_POST_TURN_EXTRACTION=off`. The result read to a user as the assistant
+  being forgetful or dim, which is exactly how a missing write disguises itself.
+
+  The fix is the missing write, at the one seam both drivers already share: `run_post_turn_hooks` (reached by the
+  streaming `chat.start_turn`/`chat.stream_turn` path and by unary `chat.run_turn` alike, on natural completion
+  only) now calls the new `conversations::store::append_exchange` before anything else. It records the **raw** user
+  message — never the slot-augmented prompt body, so injected context can't silt up in the record — and the
+  pre-notice assistant reply, upserting the document because a chat's first turn normally runs before one exists.
+  Intra-turn tool scaffolding is deliberately not persisted: tool round-trips are not conversation. This is a
+  correctness path, so it has no kill switch, and it is fail-soft — a disk error is logged, never turned into a
+  failed turn for a reply the user has already read.
+
+  **Both chat surfaces, correctly scoped.** The global Chat panel (`ChatScope::Global`, structurally unbound) and
+  the Workspaces docked InferenceBar (`ChatScope::Docked`, workspace-bound) persist through this one path: under
+  Route 1 the harness flat store is canonical for live turns and a bound conversation is a document there carrying
+  a `workspace_id`, which is the same invariant workspace deletion already sweeps on. The binding is *seeded* on a
+  new document and never rewritten, so an append can't silently re-bind a chat or undo a deliberate unbind; a
+  bound turn's extra workspace context stays a per-turn gather and is not baked into the stored history.
+
+  Two adjacent faults fell out of the same root and are fixed with it. The **5-message auto-summary** was starved
+  by the identical missing write — it counts `messages`, so it never regenerated; it now runs, and because the
+  exchange is persisted *before* the summary hook, a summary can no longer be one turn stale. And short-term
+  memory's merge-save rebuilt the conversation document from a fixed key list, silently dropping
+  `auto_summary` / `summary_msg_count` / `topic_tags` / `embedding`; harmless while no summary ever existed, but it
+  would have wiped each fresh summary the moment this fix switched the summariser on. It now preserves every field
+  it does not own, and both writers of the document serialise on one lock so neither rolls back the other's append.
+
+  Guarded where it broke: the all-surfaces chat-turn e2e (#236) had to *omit* the follow-up-carries-history
+  assertion because the behaviour did not exist. It is now on, per surface, and reads the real
+  `ollama.chat_stream` request bodies rather than the store — proving the prior exchange reaches the **model**,
+  not merely that a file was written. It runs in the required `gui panel-walk (L7)` gate; a harness-side test
+  additionally pins the writer to the reader, so re-routing or reshaping the persisted messages goes red instead
+  of quietly returning an empty history again.
+
 - **The GUI now reflects service presence + health instead of a stale registration — no silent dead panel (closes #239).**
   The Images panel kept rendering, pointed at a dead `127.0.0.1:8015`, purely because a stub file sat in
   `Extensions/`. Deleting the stub by hand was the only way to make it go away, and *that* was the bug: the GUI was

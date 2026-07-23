@@ -278,12 +278,8 @@ fn every_chat_surface_completes_a_turn_end_to_end(cx: &mut TestAppContext) {
 /// ids across the two surfaces, can only happen if each surface's turns really
 /// were threaded through the driver on its own thread.
 ///
-/// Note on what this deliberately does NOT assert: that the follow-up turn
-/// carries the first exchange in its model-facing messages. It does not, and
-/// that is a property of the harness, not of this wiring — nothing on the Rust
-/// turn path appends to a conversation's `messages`, so `load_history` has
-/// nothing to read (see the issue filed alongside #236). Asserting it here
-/// would be asserting a behaviour the product does not have.
+/// Threading only — that the *ids* are right. What the thread actually
+/// carries into the model is [`a_follow_up_turn_carries_the_prior_exchange`].
 #[gpui::test]
 fn each_surface_threads_its_own_conversation(cx: &mut TestAppContext) {
     let (_guard, _fixture) = case_guard();
@@ -333,6 +329,90 @@ fn each_surface_threads_its_own_conversation(cx: &mut TestAppContext) {
                  — sharing one would leak each surface's chat into the other"
             );
         }
+    }
+}
+
+/// **The memory assertion (#242).** On every surface, a second turn's
+/// model-facing messages must contain the first turn's exchange — the user's
+/// question AND the assistant's answer — so the model can see what was already
+/// said.
+///
+/// This is the assertion #236 had to leave out. It failed then against the real
+/// driver, and it was not a test artifact: nothing on the Rust turn path
+/// appended to the conversation's persisted `messages`, so
+/// `turn/context_gather.rs::load_history` — the slot labelled "the model can
+/// finally see the previous turns" — read an array that was always empty and
+/// every turn was answered blind. #242 ported the missing write
+/// (`run_post_turn_hooks` → `conversations::store::append_exchange`); this
+/// turns the assertion on.
+///
+/// Read through the **inference request bodies**, not the store, on purpose.
+/// A store-level check would prove only that a file was written; what the
+/// product owes the user is that the prior exchange reaches the *model*, which
+/// is exactly what is in `ollama.chat_stream`'s `messages`. Every layer between
+/// the write and the wire — the gather, the history window, the budget, the
+/// prompt assembly — is therefore under test too.
+///
+/// Run for **both** surfaces: history is the per-chat tier of the scoping
+/// model, and Global and Docked persist through the same flat store keyed by
+/// conversation. A regression that starved one while sparing the other (say, a
+/// workspace-bound turn routed to a store `load_history` doesn't read) fails
+/// here on the affected surface alone.
+#[gpui::test]
+fn a_follow_up_turn_carries_the_prior_exchange(cx: &mut TestAppContext) {
+    let (_guard, fixture) = case_guard();
+
+    for surface in COVERED {
+        let window = mount(cx, surface.scope, surface.workspace);
+
+        // Turn 1 — distinctive strings so their appearance in turn 2's
+        // request can only have come from the persisted history.
+        let asked = format!(
+            "remember this: my rubber duck on {} is named Hex",
+            surface.label
+        );
+        assert_eq!(
+            run_turn(cx, &window, &asked, surface.label),
+            STUB_REPLY,
+            "{}: first turn",
+            surface.label
+        );
+
+        // Only turn 2's requests are examined.
+        fixture.inference_requests.lock().unwrap().clear();
+
+        let follow_up = format!("what did I just tell you, on {}?", surface.label);
+        assert_eq!(
+            run_turn(cx, &window, &follow_up, surface.label),
+            STUB_REPLY,
+            "{}: follow-up turn",
+            surface.label
+        );
+
+        let requests = fixture.inference_requests.lock().unwrap().clone();
+        assert!(
+            !requests.is_empty(),
+            "{}: the follow-up never reached inference",
+            surface.label
+        );
+        let contents: Vec<String> = requests.iter().flat_map(message_contents).collect();
+
+        assert!(
+            contents.iter().any(|c| c.contains(&asked)),
+            "{}: the follow-up turn did not carry the PRIOR USER MESSAGE into \
+             the model-facing messages — the turn path is not persisting the \
+             exchange, so `load_history` has nothing to read (#242). Contents \
+             were {contents:?}",
+            surface.label
+        );
+        assert!(
+            contents.iter().any(|c| c.contains(STUB_REPLY)),
+            "{}: the follow-up turn carried the prior question but not the \
+             prior ANSWER — a half-persisted exchange leaves the model reading \
+             its own questions with no record of what it replied. Contents \
+             were {contents:?}",
+            surface.label
+        );
     }
 }
 
