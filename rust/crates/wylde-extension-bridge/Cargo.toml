@@ -17,7 +17,10 @@ wylde-prebuild-guard = { path = "../../build-support/wylde-prebuild-guard" }
 
 [dependencies]
 wylde-shared = { path = "../wylde-shared" }
-tokio = { workspace = true, features = ["process", "io-util", "macros", "sync", "time", "rt-multi-thread"] }
+# `net` powers the loopback reachability probe behind
+# `extensions.list_panels` (#239) — a TCP connect, so the bridge stays
+# free of an HTTP client dependency.
+tokio = { workspace = true, features = ["process", "io-util", "macros", "net", "sync", "time", "rt-multi-thread"] }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
