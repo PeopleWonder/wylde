@@ -242,6 +242,25 @@ pub fn set_default_model(name: Option<&str>) -> Option<String> {
     cleaned
 }
 
+/// The resolved on-disk path of the starred-default store.
+///
+/// Exposed so the update-safety gate (#243) can assert *where* the store
+/// lands, not merely that a write round-trips. The persistent default has
+/// to survive an update, not just a shutdown (the guarantee #132 gave
+/// installed models), and that is a property of this path's location
+/// relative to the stack directory the updater replaces — so a test has to
+/// be able to see it.
+pub fn default_model_store_path() -> PathBuf {
+    default_path()
+}
+
+/// The resolved on-disk path of the active-model store. Same rationale as
+/// [`default_model_store_path`] — the inference bar's pick is selection
+/// state with the same update-survival requirement.
+pub fn active_model_store_path() -> PathBuf {
+    active_path()
+}
+
 /// Test-only: drop the cached active/default selections and the
 /// capability cache so the next read re-loads from whatever path the env
 /// currently points at. The on-disk files are left untouched.
