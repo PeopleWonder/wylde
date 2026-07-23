@@ -72,6 +72,22 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   it does not, so the day the tracker auto-deletes, findings simply lose a sentence rather than the linter
   gaining a dangling path. The tracker is deliberately *not* registered in `RULE_TARGET_SPECS`, which would
   have turned rule 51 red on the exact day the doc was designed to disappear.
+- **Memory and Changelog controls are now walked (refs #247, part 2 batch 2).** Both crates route their
+  interactive sites through `controls::control(el, "id")` and gain a `tests/control_walk.rs`, taking the
+  grandfather ratchet from 140 sites / 28 files to **136 / 26**.
+  Memory is the first panel to need a walk **state**: its copy-in button paints only on an *expanded* row, so
+  the default frame never shows it. `.state("row-expanded", …)` opens the row and the walk covers it — with a
+  test asserting the button is actually reached, so deleting the state fails rather than silently shrinking
+  coverage (the button's id is built at runtime, so the literal-id guard cannot see it; that assertion is what
+  keeps it honest). Changelog is the opposite case and a useful one: it takes **no backend at all**, so its
+  walk runs on the state channel alone — proof the oracle does not quietly depend on IPC traffic to notice that
+  a control did something.
+  The ratchet's self-test changed shape with this batch. It used to pin the exact total (140 across 28 files),
+  which would mean a churn edit every batch for no signal — and the total needs no guarding, because emptying
+  the table without migrating does not go quiet, it puts every file over a budget of zero and reds the rule.
+  What a fixed number would *not* catch is a budget entry for a renamed or deleted file, which lingers granting
+  a budget to nothing and re-arms silently if the path returns (#101/#116). That is what it now asserts.
+
 - **The control walk is now a shared harness, so covering a new GUI control costs nothing (refs #247, part 2 of N).**
   The #247 pilot proved the mechanism on one panel with the walk logic inlined in that panel's test. This lifts
   it into `wylde_gui_test_support::control_walk`, where a panel's whole cost is a fixture, a fingerprint and a

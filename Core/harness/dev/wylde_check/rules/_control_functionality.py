@@ -122,7 +122,8 @@ RULE = "gui_controls_are_wired_and_walkable"
 SEVERITY = "error"
 
 #: Per-file budget of interactive controls that still bypass the constructor,
-#: recorded at the #247 pilot.  140 sites across 28 files.
+#: recorded at the #247 pilot (140 sites / 28 files) and drained since.
+#: Batch 2 (#247 part 2): Memory + Changelog migrated -> 136 / 26.
 #:
 #: This is a **ratchet**, not an exemption list.  Findings are emitted when a
 #: file's actual count goes *above* its budget (a new unrouted control — the
@@ -134,7 +135,6 @@ SEVERITY = "error"
 #: #247 part 2 empties this table file by file; when it is empty, delete it
 #: and the ratchet branch with it — the rule then simply forbids the pattern.
 GRANDFATHERED_UNROUTED = {
-    "Core/GUI/Frontend/Changelog/src/view.rs": 1,
     "Core/GUI/Frontend/Code_editor/src/lib.rs": 1,
     "Core/GUI/Frontend/Input/src/lib.rs": 1,
     "Core/GUI/Frontend/Panels/Chat/src/chat_panel.rs": 16,
@@ -142,7 +142,6 @@ GRANDFATHERED_UNROUTED = {
     "Core/GUI/Frontend/Panels/Chat/src/markdown.rs": 1,
     "Core/GUI/Frontend/Panels/Dashboard/src/dashboard_panel.rs": 5,
     "Core/GUI/Frontend/Panels/Devices/src/devices_panel.rs": 11,
-    "Core/GUI/Frontend/Panels/Memory/src/memory_panel.rs": 3,
     "Core/GUI/Frontend/Panels/Models/src/models_panel.rs": 17,
     "Core/GUI/Frontend/Panels/RemoteAccess/src/remote_access_panel.rs": 4,
     "Core/GUI/Frontend/Panels/Settings/src/sections.rs": 7,
