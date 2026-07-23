@@ -48,6 +48,30 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Self-expiring tracker docs — a standing tracking issue becomes a doc that garbage-collects itself (closes #253; closes #83).**
+  A *tracker* is an issue that holds no open work and exists only to be the home for the next instance of a
+  recurring problem. #83 — the self-collision class, tests that assert against production or shared resources —
+  had been exactly that for months: five sightings (#80, #224, #225, #226, #232), all closed, both halves of
+  the class guarded, and nothing to do. Its own closing criterion was *"close it when the class has gone quiet
+  long enough to call it dead"* — a judgement call that requires someone to notice the **absence** of events,
+  which nobody ever does, so it stayed open. Kept as a plain doc instead it would have rotted the other way:
+  outliving its subject and becoming a confident description of a problem that no longer exists.
+  This makes that criterion a timer. `docs/trackers/self-collision-class.md` carries the full diagnosis —
+  the class, the tell, all five sightings, the two-halves split that decides which kind of guard a new one
+  needs, and a "record a new sighting here" section — behind front matter with an `expires` date. **Recording
+  a sighting resets the clock** (a commit touching the file re-derives `expires` to that commit's date + one
+  month); untouched past expiry, a scheduled workflow **deletes it** through an ordinary squash-merged PR with
+  an explanatory body — no force-push, no bypass, recoverable via `git log --diff-filter=D`. A heads-up issue
+  opens seven days ahead so nothing ever vanishes unannounced.
+  The mechanism is **general**, not special-cased: any `docs/trackers/*.md` with an `expires` key gets the
+  same behaviour, with no registry to update (`docs/trackers/README.md` is the contract).
+  Two details carry the design. Every commit the automation authors is marked, and the touch-detector skips
+  its own marks — without that the bump commit would itself count as a touch and the doc could never expire,
+  which is the rot failure mode with extra steps. And rule 56's pointer at the tracker is **presence-gated**
+  (`rules._tracker_ref.tracker_pointer`): it returns a sentence when the doc exists and an empty string when
+  it does not, so the day the tracker auto-deletes, findings simply lose a sentence rather than the linter
+  gaining a dangling path. The tracker is deliberately *not* registered in `RULE_TARGET_SPECS`, which would
+  have turned rule 51 red on the exact day the doc was designed to disappear.
 - **GUI controls are now proved to DO something, not just to render (refs #247; pilot — Tools panel).**
   The L7 panel-walk (#35) proves every panel *loads*. Nothing proved a control in it *works*: no test in the
   tree had ever clicked a GUI control through its real listener, so a button could ship with an empty handler,

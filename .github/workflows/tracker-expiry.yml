@@ -1,0 +1,317 @@
+# Self-expiring tracker docs — keep `docs/trackers/*.md` honest, or delete them.
+#
+# A tracker doc is the home for the NEXT instance of a recurring problem. It holds no
+# open work; its value is that a future diagnosis lands somewhere that already knows the
+# history. Both ways of keeping one rot:
+#
+#   * as an open ISSUE it clutters the list forever, because its closing criterion is
+#     always "close it when the thing has gone quiet long enough to call it dead" — a
+#     judgement call requiring someone to notice the ABSENCE of events, which nobody does;
+#   * as a DOC it outlives its subject and becomes a confidently-worded description of a
+#     problem that no longer exists, which is worse than nothing because a reader trusts it.
+#
+# This workflow makes that criterion a timer. See docs/trackers/README.md for the
+# contract; Core/harness/dev/tracker_expiry.py is the mechanism, and its date logic is
+# unit-tested in Core/harness/dev/tests/test_tracker_expiry.py (run by the required
+# `wylde_check (full rule set)` job, so this is not an unwatched gate).
+#
+# ── CADENCE — this is the number to ratify ───────────────────────────────────
+#
+#     lifetime   1 month from the last touch      (tracker_expiry._LIFETIME_MONTHS)
+#     warn       7 days before expiry             (each doc's `warn_days` front matter)
+#     delete     the day AFTER `expires`          (`today == expires` is still a live day)
+#
+# `warn_days` is per-doc front matter precisely so this is cheap to change: edit the
+# number in the doc, and that edit is itself a touch that buys another month. The
+# lifetime is a module constant. Neither is hard-coded here.
+#
+# ── Nothing vanishes silently ────────────────────────────────────────────────
+#
+#   1. a heads-up ISSUE opens `warn_days` before expiry, naming the doc and the date;
+#   2. deletion is an ordinary PR with an explanatory body, squash-merged behind every
+#      required check — no force-push, no direct push to develop, no bypass;
+#   3. the content is recoverable:
+#        git log --diff-filter=D -- docs/trackers/<slug>.md
+#        git show <sha>^:docs/trackers/<slug>.md
+#
+# ── The renewal loop ─────────────────────────────────────────────────────────
+#
+# Every commit this workflow authors carries `[tracker-expiry]` in its subject, and
+# `tracker_expiry.last_touch()` SKIPS those commits. Without that filter the bump commit
+# would itself count as a touch and the doc would renew itself forever — a doc that can
+# never expire, i.e. the rot failure mode with extra steps. The squash-merge subject is
+# the PR TITLE, so the titles below carry the marker too; changing them breaks the guard.
+#
+# ── Known limitation: TRACKER_BOT_TOKEN (maintainer action) ──────────────────
+#
+# GitHub deliberately does NOT trigger workflow runs for events raised by GITHUB_TOKEN.
+# A PR opened with GITHUB_TOKEN therefore gets no CI, its required checks stay
+# "Expected", and armed auto-merge waits forever. That is not a gate failure — the PR is
+# correct and sitting there — but it is not autonomous either.
+#
+# So: if the repository secret `TRACKER_BOT_TOKEN` (a PAT with `repo` scope) is set, the
+# PR is opened as that identity, CI runs normally, and auto-merge completes the cycle
+# unattended. If it is NOT set, everything still works except the final merge: the PR is
+# opened with GITHUB_TOKEN, labelled `needs-nudge`, and a human closes the loop with one
+# click. Degrading with a notice beats failing (the roadmap-dates.yml PROJECT_TOKEN
+# pattern).
+name: Tracker expiry
+
+on:
+  schedule:
+    # 06:17 UTC daily. Off the hour on purpose — GitHub's scheduler is heavily
+    # oversubscribed at :00 and delays cron runs there by tens of minutes.
+    - cron: "17 6 * * *"
+  push:
+    branches: [develop]
+    paths: ["docs/trackers/**"]
+  workflow_dispatch:
+    inputs:
+      today:
+        description: "ISO date override (YYYY-MM-DD) — walk the logic forward without waiting"
+        required: false
+        type: string
+      dry_run:
+        description: "Report only; open no issues and no PRs"
+        required: false
+        default: true
+        type: boolean
+
+permissions: {}
+
+jobs:
+  sweep:
+    name: sweep docs/trackers
+    runs-on: ubuntu-latest
+    # Never run on a fork: it would open PRs and issues against someone else's copy.
+    if: ${{ github.repository_owner == 'PeopleWonder' }}
+    permissions:
+      contents: write # push the bump / expiry branch (NOT develop — protection applies)
+      pull-requests: write # open the PR and arm auto-merge
+      issues: write # open the heads-up issue
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history: `last_touch` reads `git log` on each doc, and a shallow
+          # clone would report the checkout commit as the touch — every doc immortal.
+          fetch-depth: 0
+          token: ${{ secrets.TRACKER_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+
+      - name: Evaluate every tracker
+        id: report
+        shell: bash
+        env:
+          TODAY: ${{ inputs.today }}
+        run: |
+          set -euo pipefail
+          # `report` is the human-readable JSON, printed to the log for the run record.
+          python Core/harness/dev/tracker_expiry.py --repo . \
+            ${TODAY:+--today "$TODAY"} report
+          # `plan` is the machine-readable TSV the next step consumes — no jq needed.
+          # `tr -d '\r'`: this runner is Linux so Python emits bare \n, but the same
+          # command is run by hand on Windows during development, where print() emits
+          # CRLF and the trailing `needs_bump` field would arrive as "yes\r" and never
+          # match. Strip it here rather than trusting the platform.
+          # Written to RUNNER_TEMP, never the workspace: the next step runs `git add -A`
+          # on this repo, and a plan file sitting in the root would be committed into the
+          # tracker PR.
+          python Core/harness/dev/tracker_expiry.py --repo . \
+            ${TODAY:+--today "$TODAY"} plan | tr -d '\r' > "$RUNNER_TEMP/plan.tsv"
+          echo "count=$(wc -l < "$RUNNER_TEMP/plan.tsv" | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Act on each tracker
+        if: ${{ steps.report.outputs.count != '0' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.TRACKER_BOT_TOKEN || secrets.GITHUB_TOKEN }}
+          HAVE_PAT: ${{ secrets.TRACKER_BOT_TOKEN != '' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          TODAY: ${{ inputs.today }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # `[tracker-expiry]` in every subject — the renewal-loop guard. See header.
+          MARKER="[tracker-expiry]"
+
+          say() { echo "::notice::$*"; }
+
+          # Open a PR from an already-pushed branch and arm auto-merge.
+          #
+          # `skip-changelog`: a tracker doc is not product source and has no user-facing
+          # change; the gate would otherwise block a docs-only PR that happens to touch a
+          # marked reference under Core/. `needs-nudge` is applied only when there is no
+          # PAT, so the maintainer can filter for "PRs that will never merge themselves".
+          open_pr() {  # $1 = branch  $2 = title  $3 = body file
+            local branch="$1" title="$2" bodyfile="$3" url labels="skip-changelog"
+            if [ "$HAVE_PAT" != "true" ]; then labels="$labels,needs-nudge"; fi
+            url=$(gh pr create --base develop --head "$branch" \
+                    --title "$title" --body-file "$bodyfile" --label "$labels" 2>&1) || {
+              echo "::warning::could not open a PR for $branch: $url"; return 0; }
+            say "opened $url"
+            # Auto-merge-develop.yml also arms this on `pull_request: opened`, but that
+            # event does not fire for a GITHUB_TOKEN-authored PR — so arm it here too.
+            # Idempotent; a warning if it is already armed or already mergeable.
+            gh pr merge --auto --squash "$url" \
+              || echo "::warning::could not arm auto-merge on $url — a human can merge it normally."
+            if [ "$HAVE_PAT" != "true" ]; then
+              echo "::warning::TRACKER_BOT_TOKEN is not set, so $url will get no CI runs and auto-merge cannot complete. Merge it by hand, or set the secret. See .github/workflows/tracker-expiry.yml."
+            fi
+          }
+
+          # A branch already pushed with an open PR means this cycle is already handled.
+          pr_already_open() {
+            [ -n "$(gh pr list --head "$1" --state open --json number --jq '.[].number')" ]
+          }
+
+          # Heads-up issues are found by a hidden body marker, never by title: the title
+          # carries backticks and an em dash, and GitHub's search tokenizer mangles both,
+          # which would silently defeat the de-dupe and open one issue PER DAY.
+          warn_issues() {  # $1 = slug -> newline-separated issue numbers
+            gh issue list --state open --search "\"tracker-warn: $1\" in:body" \
+              --json number --jq '.[].number'
+          }
+
+          # Read the whole plan up front: the loop body runs `git` and `gh`, which would
+          # otherwise consume the loop's own stdin and swallow rows.
+          mapfile -t ROWS < "$RUNNER_TEMP/plan.tsv"
+
+          for row in "${ROWS[@]}"; do
+            # Positional destructuring — the field order is pinned by
+            # tracker_expiry.PLAN_FIELDS and its unit test. Do not reorder one without
+            # the other, or `status` lands in `path` and the sweep acts on the wrong thing.
+            IFS=$'\t' read -r slug path status expiry warn_days origin needs_bump <<<"$row"
+
+            # Every PR/issue body must name an issue or the `linked issue` gate fails.
+            # A tracker's `origin:` is that issue; #253 is the fallback (this mechanism).
+            ref="#${origin:-253}"
+
+            echo "=== $slug: status=$status expiry=$expiry bump=$needs_bump ==="
+
+            if [ "$DRY_RUN" = "true" ]; then
+              say "dry run — no action for $slug ($status)"
+              continue
+            fi
+
+            # A heads-up is SHORT-LIVED: once the doc is touched (back to live) or the
+            # expiry PR has taken over, the notice has served its purpose and closing it
+            # keeps the issue list clean — the whole point of moving trackers out of it.
+            # This runs BEFORE the expired arm, which `continue`s: putting it after would
+            # leave every heads-up open forever, since expiry is exactly when it resolves.
+            if [ "$status" != "warn" ]; then
+              for n in $(warn_issues "$slug"); do
+                gh issue close "$n" --reason completed \
+                  --comment "Resolved: \`$slug\` is now **$status**. $( [ "$status" = "expired" ] && echo "The deletion PR carries the explanation." || echo "The doc was touched, so its clock reset." )" \
+                  && say "closed stale heads-up #$n for $slug"
+              done
+            fi
+
+            # ---------------------------------------------------------------- expired
+            if [ "$status" = "expired" ]; then
+              branch="chore/tracker-expire-$slug"
+              if pr_already_open "$branch"; then say "expiry PR already open for $slug"; continue; fi
+              git checkout -B "$branch" origin/develop
+              python Core/harness/dev/tracker_expiry.py --repo . \
+                ${TODAY:+--today "$TODAY"} --slug "$slug" expire
+              git add -A
+              if git diff --cached --quiet; then say "nothing to delete for $slug"; continue; fi
+              title="docs(trackers): retire the expired \`$slug\` tracker $MARKER"
+              git commit -q -m "$title" -m "Untouched past $expiry, so the class it tracked has gone quiet long enough to call it dead. Recover with: git show \$(git log --diff-filter=D --format=%H -1 -- $path)^:$path. Refs $ref"
+              # No force anywhere: we only reach here with no open PR for this
+              # branch, so a leftover branch from a superseded cycle is dead and is
+              # deleted outright before a plain push. Keeps the "never force-push"
+              # rule true of the automation as well as of people.
+              git push -q origin --delete "$branch" 2>/dev/null || true
+              git push -q origin "$branch"
+              cat > /tmp/body.md <<EOF
+          ## Retiring an expired tracker
+
+          \`$path\` was untouched past its expiry (**$expiry**), so by its own contract the
+          class it tracked has gone quiet long enough to call it dead. This PR deletes it and
+          strips any lines marked \`tracker-ref: $slug\`.
+
+          **This is the designed end state, not a failure.** A heads-up issue opened
+          $warn_days days ago.
+
+          ### Nothing is lost
+
+          \`\`\`
+          git log --diff-filter=D -- $path
+          git show <sha>^:$path
+          \`\`\`
+
+          ### If this is wrong
+
+          Close this PR and edit the doc — any edit is a "touch" and buys another month.
+
+          Refs $ref. Mechanism: \`docs/trackers/README.md\`. Run: $RUN_URL
+          EOF
+              open_pr "$branch" "$title" /tmp/body.md
+              git checkout -q --detach
+              continue
+            fi
+
+            # ------------------------------------------------------------------- warn
+            if [ "$status" = "warn" ]; then
+              wtitle="Tracker \`$slug\` expires $expiry — record something or let it go"
+              if [ -n "$(warn_issues "$slug")" ]; then
+                say "heads-up issue already open for $slug"
+              else
+                gh issue create --title "$wtitle" --label chore --body "$(cat <<EOF
+          \`$path\` expires on **$expiry** ($warn_days days' notice). If nothing is recorded in
+          it by then, a PR will delete it — that is the tracker contract, not a bug.
+
+          **To keep it:** record whatever you have in the doc's "record a new sighting"
+          section and commit. Any commit touching the file re-derives its expiry to that
+          commit's date + 1 month. You do not edit the date by hand.
+
+          **To let it go:** do nothing. The deletion PR will explain itself and the content
+          stays recoverable from git history.
+
+          Refs $ref. Mechanism: \`docs/trackers/README.md\`. Run: $RUN_URL
+
+          <!-- tracker-warn: $slug -->
+          EOF
+          )" && say "opened heads-up issue for $slug"
+              fi
+            fi
+
+            # ------------------------------------------------------------------- bump
+            # Front matter lags reality after a touch. Cosmetic (the derived date is what
+            # is enforced either way) but the doc must not display a date it will not die
+            # on. Never runs for an expiring doc — the delete PR wins.
+            if [ "$needs_bump" = "yes" ]; then
+              branch="chore/tracker-bump-$slug"
+              if pr_already_open "$branch"; then say "bump PR already open for $slug"; continue; fi
+              git checkout -B "$branch" origin/develop
+              python Core/harness/dev/tracker_expiry.py --repo . \
+                ${TODAY:+--today "$TODAY"} --slug "$slug" bump
+              git add -A
+              if git diff --cached --quiet; then say "no bump needed for $slug"; continue; fi
+              title="docs(trackers): reset \`$slug\` expiry to $expiry $MARKER"
+              git commit -q -m "$title" -m "The doc was touched, which buys another month. Front matter now matches the derived expiry. Refs $ref"
+              # No force anywhere: we only reach here with no open PR for this
+              # branch, so a leftover branch from a superseded cycle is dead and is
+              # deleted outright before a plain push. Keeps the "never force-push"
+              # rule true of the automation as well as of people.
+              git push -q origin --delete "$branch" 2>/dev/null || true
+              git push -q origin "$branch"
+              cat > /tmp/body.md <<EOF
+          Someone touched \`$path\`, which resets its expiry clock. This syncs the
+          \`expires:\` front matter to the derived date **$expiry** (last touch + 1 month)
+          so the doc does not advertise a date it will not die on.
+
+          Mechanical and safe to merge unread. Refs $ref. Run: $RUN_URL
+          EOF
+              open_pr "$branch" "$title" /tmp/body.md
+              git checkout -q --detach
+            fi
+          done
