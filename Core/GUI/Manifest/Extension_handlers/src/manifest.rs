@@ -123,6 +123,35 @@ pub struct ExtensionPanel {
     pub version: String,
     /// Iframe URL.  Same loopback rule as first-party iframe panels.
     pub url: String,
+    /// Live availability as the extension bridge computed it for this
+    /// read — `live`, `unreachable`, or `not_running` (see
+    /// `wylde_extension_bridge::availability`).
+    ///
+    /// Carried through the overlay so no path in the GUI can turn a
+    /// bridge row into a tab without the answer in hand (#239). A panel
+    /// that is no longer *registered* never reaches here at all — the
+    /// bridge re-walks the filesystem per read, so absence is the
+    /// signal, and there is deliberately no "removed" value.
+    ///
+    /// Defaults to `live` when absent, matching the Shell's existing
+    /// treatment of a missing health field: never over-block against a
+    /// daemon that predates the field.
+    #[serde(default = "default_availability")]
+    pub availability: String,
+}
+
+/// An extension panel whose reply carried no `availability` — an older
+/// bridge — is treated as live rather than blanked.
+fn default_availability() -> String {
+    "live".to_owned()
+}
+
+/// Whether an `availability` wire value permits rendering the panel as a
+/// working panel. Exactly one value does; anything unrecognised does
+/// not, so a state this build doesn't know can never be mistaken for a
+/// working one.
+pub fn availability_is_live(raw: &str) -> bool {
+    raw == "live"
 }
 
 /// Parse a `manifest.json` file's contents into a `PanelManifest`,
