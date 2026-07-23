@@ -118,6 +118,33 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   property has to hold for a panel nobody has written yet, and `Core/GUI` CI runs `build` + `panel-walk` only, so a
   test in the registry crate would never execute.
 
+- **An end-to-end chat-turn test across every GUI chat entry point, and a gate that keeps it complete (closes #236).**
+  Chat is the product's primary path, and nothing tested it end-to-end from the GUI. Coverage stopped short at
+  both ends and nothing joined them: `Chat/tests/type_and_send.rs` drove the real composer but answered
+  `chat.start_turn` from a canned `ScriptedBackend` reply, so the **turn driver never ran**;
+  `wylde-harness/tests/reasoning_plan_e2e.rs` drove the real turn driver with a mock inference backend but
+  entered at `chat::handle_start_turn`, so the **GUI was never involved**. Everything between them — the
+  `start_turn` + `stream_turn` pair, the harness verb registry, the turn-event decode, and the render back onto
+  the assistant bubble — was covered by nothing.
+  The new `Chat/tests/chat_turn_e2e.rs` joins them. For **each** chat surface it types into that surface's own
+  composer, presses Enter, and asserts the reply renders in that same surface — running the real
+  `wylde_harness::install()` verb registry and the production turn driver, with only *inference* stubbed (a
+  fixture `wylde-ollama` service reached over a real named pipe). It also asserts the scoping model per surface:
+  the Workspaces dock's bound turn gathers workspace context, and the Global slot — structurally unbound (D1) —
+  provably does not. Hermetic by construction (private pid-keyed pipes, a temp `WYLDE_DATA_DIR`, no ambient
+  service env inherited), so it never touches a live install (#83/#75), and it runs in ~1.5s inside the
+  required `gui panel-walk (L7)` gate.
+  Coverage is enforced rather than documented, in two halves. The registry the test iterates derives from an
+  **exhaustive `match` on `ChatScope`**, so adding a chat surface stops the test binary compiling and reds the
+  panel-walk. And new **`wylde_check` rule 58 (`chat_surfaces_are_e2e_covered`)** catches the two cases the
+  compiler cannot see: a scope arm added but never actually driven, and a *new panel growing its own chat bar*
+  — which adds no `ChatScope` variant, so the match is structurally blind to it. A new place a user can type
+  now fails the build until it is proven end-to-end.
+  Rule 33 (`no_cross_panel_imports`) became **section-aware** in the same change: a panel may link a
+  carved-out backend crate in `[dev-dependencies]` only, which is how the e2e reaches the real harness.
+  The production boundary is untouched — the same dependency in `[dependencies]` is still an error, and
+  the carve-out is per-`(panel, crate)` edge rather than a blanket allowlist entry.
+
 - **`wylde_check` rule 56 (`graph_test_serialized_on_db_lock`) makes the shared-Neo4j self-collision class a structural gate (closes #226; refs #83).**
   The #83 self-collision class — a live-graph test binary whose two-or-more `#[ignore]`d `bolt://` tests hit
   one shared Neo4j without serialization, non-deterministically failing on `ensure_schema` / `stats()` / the

@@ -257,3 +257,43 @@ recipe):
 - **Conversation switcher** select / new / delete on a docked dock.
 - **Input-driven** sends via `VisualTestContext::simulate_keystrokes` to cover
   the TextInput → submit path end-to-end (vs. calling `send_user_message`).
+
+## The exception: the all-surfaces chat-turn e2e
+
+`Panels/Chat/tests/chat_turn_e2e.rs` (#236) is the one test in this tree that
+does **not** script its backend. Everything above is about `ScriptedBackend`
+answering with canned JSON; that test installs a backend which answers by
+dispatching into the *real* harness — `wylde_shared::ipc::dispatch_action`
+against the registry `wylde_harness::install()` populated, exactly what the pipe
+server does on the far side of a socket. `chat.start_turn` therefore lands on the
+production `DefaultHarnessApi` and runs the production turn driver. Only
+*inference* is stubbed, and even that is reached over a real named pipe.
+
+Read it before writing anything similar, because two constraints shaped it and
+both will bite the next person:
+
+1. **A windowed gpui test and the GUI's own async transport are mutually
+   exclusive.** gpui's test scheduler records a non-determinism error — "Detected
+   activity on thread `tokio-rt-worker` … Your test is not deterministic" — the
+   moment a gpui task is woken from a foreign thread, which is exactly what a
+   real pipe round-trip on `wylde_gui_pipe`'s tokio bridge does. That is why the
+   backend seam is drawn where it is: `FakeBackend`'s methods are *synchronous*,
+   so the whole harness round-trip runs inside the gpui task's own poll on the
+   test thread. Do not "fix" it by installing a runtime bridge — it will pass
+   locally and flake in CI.
+2. **`run_until_parked` alone is not enough** once real work is involved. The
+   file's `pump_until` alternates draining gpui with yielding real time, because
+   a completion that lands off-executor is only visible to the *next* pump.
+
+It is also the model for hermeticity when a test must touch real services:
+private pid-keyed pipe names, a temp `WYLDE_DATA_DIR`, and every
+`WYLDE_HARNESS_*_SERVICE` set explicitly rather than inherited — so an ambient
+dev shell cannot steer the test at the live install (#83), and a running Wylde on
+the same machine is neither disturbed nor consulted (#75).
+
+Adding a chat surface? The test's `COVERED` registry derives from an exhaustive
+`match` on `ChatScope`, so a new variant stops it compiling — and `wylde_check`
+rule 58 catches the cases the compiler can't see (an arm added but never driven,
+and a new panel growing its own chat bar). Both are deliberate: chat is the
+primary path, and a new place to type must be proven end-to-end before it ships.
+

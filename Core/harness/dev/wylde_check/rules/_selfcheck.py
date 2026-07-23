@@ -127,6 +127,16 @@ RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
         None,
         "graph_test_serialized_on_db_lock",
     ),
+    (
+        "Core/GUI/Frontend/Panels/Chat/src/chat_panel.rs",
+        None,
+        "chat_surfaces_are_e2e_covered",
+    ),
+    (
+        "Core/GUI/Frontend/Panels/Chat/tests/chat_turn_e2e.rs",
+        None,
+        "chat_surfaces_are_e2e_covered",
+    ),
     # ── walk roots (cardinality: at least one matching file) ──
     (
         "rust/crates",
