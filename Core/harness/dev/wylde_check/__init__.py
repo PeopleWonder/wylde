@@ -490,6 +490,9 @@ from .rules._graph_test_isolation import (  # noqa: E402
 from .rules._chat_surface_coverage import (  # noqa: E402
     check_chat_surfaces_are_e2e_covered,
 )
+from .rules._global_bus_test_isolation import (  # noqa: E402
+    check_global_bus_test_isolation,
+)
 from .rules._control_functionality import (  # noqa: E402
     check_gui_controls_are_wired_and_walkable,
 )
@@ -582,6 +585,13 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # Error, with a per-file grandfather ratchet over the 140 pre-existing
     # sites: this job fails on any finding, so WARN would red develop too.
     "gui_controls_are_wired_and_walkable": check_gui_controls_are_wired_and_walkable,
+    # Rule 60 — a unit test touching a process-global broadcast bus must own
+    # its channel or serialize on a test-module guard (#246). The other half
+    # of rule 56's #83 self-collision class: same hazard, but in a `src/`
+    # unit-test module rather than a `tests/` binary, and with no
+    # minimum-count carve-out — #246 had exactly ONE bus-touching test, and
+    # its colliders never mentioned the bus at all.
+    "global_bus_test_isolation": check_global_bus_test_isolation,
     "rule_targets_exist": check_rule_targets_exist,
 }
 
@@ -631,7 +641,15 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # Ships at error with a grandfather ratchet rather than at WARNING: the CI
 # gate fails on any finding, warning included, so "warn for now" would red
 # develop just as hard.  (Numbered 59, not 58: #236 landed 58 first.)
-assert len(_RULES) == 34, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 34)"
+# Global-bus test isolation (#246, 2026-07-23): +1 (rule 60,
+# global_bus_test_isolation) = 35 active.  The `src/`-unit-test half of the
+# #83 self-collision class rule 56 covers for `tests/` binaries: a watcher
+# test asserting on the first event off a process-global broadcast bus was
+# really asserting that no sibling test published during its window, and
+# failed ~17% of the time at --test-threads=8 on unrelated PRs.  No
+# minimum-count carve-out, unlike rule 56 — #246 had exactly one
+# bus-touching test and its colliders never named the bus.
+assert len(_RULES) == 35, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 35)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -777,4 +795,5 @@ __all__ = [
     "check_no_hardcoded_prompts_rust",
     "check_graph_test_serialized_on_db_lock",
     "check_chat_surfaces_are_e2e_covered",
+    "check_global_bus_test_isolation",
 ]

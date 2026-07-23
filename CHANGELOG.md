@@ -94,6 +94,32 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   Beside the constructor it rides `cargo panel-walk` (now 53 test binaries green, `wylde-gui-controls` at 10
   tests).
 
+
+- **`wylde_check` rule 60 — a unit test that touches a process-global broadcast bus must own its channel or serialize on a guard (closes #246).**
+  #246 was not a one-off flake, it was the #83 self-collision class again: several tests in one binary contending on
+  one shared resource with nothing serializing them. Rule 56 (`graph_test_serialized_on_db_lock`) was written for
+  exactly that shape and still missed this instance, twice over, and both misses are structural rather than bad luck:
+
+  1. **Scope.** Rule 56 walks `rust/crates/**/tests/*.rs` — integration binaries only. #246 lived in a
+     `#[cfg(test)] mod tests` inside `src/`, which no self-collision rule looked at.
+  2. **The single-toucher carve-out.** Rule 56 deliberately skips a binary with fewer than two live-graph tests, on
+     the reasoning that one test can't self-collide. For a *bus* that reasoning does not hold, and #246 is the
+     counter-example: exactly **one** test called `subscribe()`. Its colliders were tests that never mentioned the
+     bus at all — they merely ran watcher loops, and the loop published.
+
+  So rule 60 covers the `src/` half with **no** minimum-count carve-out, and propagates "touches the bus" through
+  helpers and through same-file product functions, so the publishing colliders are named too, not just the one test
+  that reads. It is satisfied by **isolation** (the test, or a helper it calls, constructs its own
+  `broadcast::channel`) or by **serialization** (a test-module `Mutex` guard — rule 56's `DB_LOCK` pattern, and the
+  `TEST_GUARD`/`guard()` shape `Pipe/src/conversation_bus.rs` and `model_bus.rs` already use). Injection is preferred:
+  serialization costs parallelism and is still a convention every new test must remember.
+
+  Verified both directions on the real tree rather than only on fixtures: **5 findings** against the pre-fix watcher
+  (the reader plus all four publishing colliders), **0** after. The rule also follows a *file-backed*
+  `#[cfg(test)] mod tests;` into its sibling file — load-bearing, because #246's own fix pushed `watcher/mod.rs` past
+  rule 20's 700-line cap and moved the tests to `watcher/tests.rs`. A rule that only understood the inline form would
+  have gone quiet at precisely the moment the file it guards was split, which is the #101/#116 decay shape (a gate
+  going quiet rather than red) that this suite exists to prevent.
 - **GUI controls are now proved to DO something, not just to render (refs #247; pilot — Tools panel).**
   The L7 panel-walk (#35) proves every panel *loads*. Nothing proved a control in it *works*: no test in the
   tree had ever clicked a GUI control through its real listener, so a button could ship with an empty handler,
@@ -639,6 +665,42 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   panel-only scope; rule 58 was the only one with the hole. `Core/GUI/Manifest/` stays out of scope on purpose
   — it is a shipped GUI crate but renders no gpui UI at all (no `impl Render`, no `div()`), so it cannot own a
   composer.
+
+- **The watcher's flaky delta-event test no longer reddens other people's PRs — the event bus is injected, not global (closes #246).**
+  `wylde-workspaces`'s `delta_event_is_broadcast_on_dispatch` failed intermittently on the required `backend (rust/)
+  build + test` gate, most visibly on **#244 — a PR that touched only `wylde-harness`** and could not possibly have
+  caused it. Re-running turned it green, which is the worst outcome: it taught everyone that red means "try again".
+  Measured on the pre-fix tree it failed **10/60 runs at `--test-threads=8`** and **0/30 serially** — the giveaway
+  that this was never about the change under test.
+
+  The cause was a process-global event bus. The watcher published every settled delta to a
+  `static BUS: OnceLock<broadcast::Sender<DeltaEvent>>`, and the test subscribed to it and asserted on the **first**
+  event it received. But `cargo test` runs a binary's tests on parallel threads in one process, and the sibling
+  watcher tests each spawn their own loop and dispatch their own paths — `/a.rs`, `/b.rs`, `/c.rs`, `/proj/src/main.rs`.
+  Whichever loop dispatched first won the receiver. The assertion was really "no other test in this binary dispatched
+  during my 300 ms window", which is a scheduling coincidence rather than a property of the watcher — and it is why
+  the failure sometimes landed on the `action` assertion instead, the test having been handed another test's
+  `remove` of `/c.rs`.
+
+  The fix injects the bus instead of reaching for it. `run_loop` now takes its `broadcast::Sender<DeltaEvent>`:
+  `start_for` hands it `event_bus().clone()` so the live service still publishes on the one process-wide stream that
+  `subscribe()` callers (the graph panel) read, while each test hands its loop a private `broadcast::channel`. No
+  sibling can reach a test's receiver however the tests are scheduled — the hazard is gone by construction rather
+  than by a convention each new test has to remember. A new `each_loop_publishes_to_its_own_bus_only` pins it by
+  running two loops in one test and asserting neither sees the other's event; it fails deterministically on the old
+  code, so the guard is proved rather than assumed.
+
+  The second flake source named in the issue is gone too: the 300 ms budget. It encoded "a contended CI runner
+  scheduled me promptly", which is not a property of the watcher either — this suite takes **~600 s** on the backend
+  leg. The tests now poll until the condition holds (returning the moment it does, so they still finish in under a
+  second locally) with a generous deadlock backstop, and the two genuinely negative checks — "nothing dispatched
+  while paused", "nothing more after coalescing" — are the only remaining waits, where erring long makes them slower
+  but never red. `shutdown_ends_the_loop` no longer sleeps at all: it waits for the loop to drop its receiver, a
+  deterministic signal. After the fix: **300/300 runs green across `--test-threads=1/2/4/8/16`**, plus three clean
+  passes of the full 586-test binary.
+
+  `watcher/mod.rs` crossed rule 20's 700-line cap in the process, so the test module moved to a sibling
+  `watcher/tests.rs` — see the rule 60 note under *Added* for why that split had to teach the new gate to follow it.
 
 - **The assistant remembers the rest of the conversation — every chat turn is no longer answered blind (closes #242).**
   Ask a follow-up question and Wylde had no idea what you had just said. Not a model limitation and not a prompt
