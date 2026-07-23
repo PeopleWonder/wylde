@@ -30,9 +30,10 @@ pub mod devices;
 pub mod egress;
 pub mod extensions;
 pub mod health;
-// `/api/images` was extracted to the standalone `wylde-images` Service
-// (Services/wylde-images/) — generate proxy + library now speak action
-// verbs on `\\.\pipe\wylde-images` and serve their own loopback gallery.
+// `/api/images` is gone. It was extracted to a standalone Service in
+// 2026-06, then that Service was parked outright when ComfyUI was removed
+// from Wylde (#234). The gateway has no image surface and is not getting
+// one back — see https://github.com/PeopleWonder/wylde-images (archived).
 pub mod link;
 pub mod mcp;
 pub mod memory;
