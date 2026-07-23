@@ -526,6 +526,31 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **`wylde_check` rule 58's chat-composer scan had never once looked at the Shell (closes #251; refs #247).**
+  Rule 58 declares its scope as `Core/GUI/{Frontend,Shell}/**/src/**/*.rs`, but its path matcher was
+  `^Core/GUI/(Frontend|Shell)/.*/src/.+\.rs$` — and `.*/src/` requires at least one path segment between the
+  crate root and `src`. `Frontend/<crate>/src/…` matched; `Core/GUI/Shell/src/…`, with nothing in between,
+  matched nothing at all. The `Shell` alternation was dead from the day it was written: **158 Frontend files
+  scanned, 0 of the Shell's 13**.
+  Nothing caught it because the failure is silent by construction — the walk simply returns fewer files, the
+  rule finds no undeclared composer among them, and reports a clean pass. Rule 51 (`rule_targets_exist`) is no
+  help either: it asserts a rule's *corpus root* is non-empty, and `Core/GUI` very much is. It surfaced only
+  when rule 59 (#247) hit the identical bug in a copy of the same pattern.
+  **No live exposure** — the Shell owns no `SubmitMode::EnterSubmits` input and reaches no chat turn path, so
+  there was no hidden uncovered chat surface. The guarantee was simply unenforced over the Shell, which owns
+  the nav chrome and is exactly where a "quick ask" bar would get added.
+  The fix is two parts, and the second is the one that matters. The form is now `(.*/)?src/`, so a crate's own
+  `src` is reachable. And `GUI_SCAN_ROOTS` now names every root the matcher claims, each of which must
+  contribute at least one scanned file or the rule errors — cardinality per root being the only thing that
+  distinguishes "this root is clean" from "this root is unreachable". That is the distinction rule 51 draws for
+  a whole rule's corpus, drawn one level down, and it turns this whole class from silent into loud. Pinned by
+  five new tests, including one that restores the old pattern and asserts the guard fires, and one that asserts
+  the shipped pattern reaches every named root in the real checkout.
+  Audited the rest of the suite for the same shape: rules 50/51 use `Panels/[^/]+/src/`, correct for their
+  panel-only scope; rule 58 was the only one with the hole. `Core/GUI/Manifest/` stays out of scope on purpose
+  — it is a shipped GUI crate but renders no gpui UI at all (no `impl Render`, no `div()`), so it cannot own a
+  composer.
+
 - **The assistant remembers the rest of the conversation — every chat turn is no longer answered blind (closes #242).**
   Ask a follow-up question and Wylde had no idea what you had just said. Not a model limitation and not a prompt
   problem: **the chat turn never wrote the exchange down.** `turn/context_gather.rs::load_history` — the slot whose

@@ -50,10 +50,42 @@ A file that contains **both**:
   ``send_user_message``, ``start_turn``, ``start_turn_with_model`` or
   ``chat.start_turn``).
 
+``Core/GUI/Manifest/`` is out of scope on purpose: it is a shipped GUI crate,
+but it renders no gpui UI at all (no ``impl Render``, no ``div()``) — it is
+panel-registry codegen and manifest plumbing, so it cannot own a composer.
+
 Requiring both keeps the scan honest in each direction: the Models panel's
 model-search field is ``EnterSubmits`` but reaches no turn, and the Chat
 panel's own ``chat.cancel`` plumbing reaches the turn path but is no
 composer.  Neither is flagged.
+
+What the scan covers, and the hole that was in it
+-------------------------------------------------
+
+The composer scan walks ``Core/GUI/{Frontend,Shell}/**/src/**/*.rs``.  Until
+this was fixed, the ``Shell`` half of that was a lie: the path pattern was
+``.*/src/``, which needs at least one segment between the crate root and
+``src``.  ``Frontend/<crate>/src/…`` matched; ``Core/GUI/Shell/src/…`` — with
+nothing in between — matched **nothing**.  All 13 Shell sources were invisible,
+and the rule had never scanned one of them.
+
+Nothing caught it because the failure is silent by construction: the walk
+simply returns fewer files and the rule reports a clean pass.  The scan looked
+healthy at 158 files while a whole named root was unreachable.  It surfaced
+only when rule 59 (#247) hit the identical bug in a copy of the same pattern.
+
+So the fix is two parts, and the second is the important one:
+
+* the pattern is now ``(.*/)?src/``, which reaches a crate root's own ``src``; and
+* :data:`GUI_SCAN_ROOTS` names every root the pattern claims, and each must
+  contribute at least one scanned file or the rule errors.  Cardinality per
+  root is the only thing that distinguishes "this root is clean" from "this
+  root is unreachable" — the same distinction rule 51 draws for a whole rule's
+  corpus, drawn here one level down.
+
+The widening exposed no new finding: the Shell owns no ``SubmitMode::EnterSubmits``
+input and reaches no chat turn path, so there was no hidden uncovered surface.
+The guarantee was simply unenforced over it.
 
 Like the rest of the suite this walks the active tree read-only and emits
 ``Finding`` objects without mutating state.
@@ -62,7 +94,7 @@ Like the rest of the suite this walks the active tree read-only and emits
 from __future__ import annotations
 
 import re
-from typing import List, Set
+from typing import List, Set, Tuple
 
 from .. import Finding
 from .._walkers import _read_text, _to_rel, _walk
@@ -79,7 +111,30 @@ E2E_FILE = "Core/GUI/Frontend/Panels/Chat/tests/chat_turn_e2e.rs"
 
 #: GUI source roots the composer scan walks. Test sources are excluded — a
 #: fixture composer in a test is not a shipped entry point.
-_GUI_SRC_RE = re.compile(r"^Core/GUI/(Frontend|Shell)/.*/src/.+\.rs$")
+#:
+#: The ``(.*/)?`` is load-bearing. The original form was ``.*/src/``, which
+#: requires at least one path segment between the crate root and ``src`` — so
+#: it matched every ``Frontend/<crate>/src/…`` file but **no**
+#: ``Core/GUI/Shell/src/…`` file at all, because the Shell has nothing in
+#: between. The ``Shell`` alternation was dead from the day it was written:
+#: the rule named the Shell in its scope and scanned 0 of its 13 sources.
+#: Same bug, same fix as rule 59's matcher (#247).
+_GUI_SRC_RE = re.compile(r"^Core/GUI/(Frontend|Shell)/(.*/)?src/.+\.rs$")
+
+#: Every root ``_GUI_SRC_RE`` claims to cover. Each must contribute at least
+#: one scanned file, or the rule reports the shortfall as an error.
+#:
+#: This is the guard that would have caught the above. A regex that names a
+#: root it cannot reach fails *silently* — the walk just returns fewer files
+#: and every rule downstream reports a clean pass, which is the #101/#114/#116
+#: decay shape one level down: not a rule pointing at a deleted tree, but a
+#: rule pointing at a live tree it cannot express a path to.
+#:
+#: `Core/GUI/Manifest/` is deliberately NOT here. It is a shipped GUI crate,
+#: but it renders no gpui UI at all (no `impl Render`, no `div()`) — it is
+#: panel-registry codegen and manifest plumbing, so it cannot own a chat
+#: composer. Out of scope by intent, not by accident.
+GUI_SCAN_ROOTS: Tuple[str, ...] = ("Core/GUI/Frontend", "Core/GUI/Shell")
 
 # ── Matchers ─────────────────────────────────────────────────────────
 
@@ -280,10 +335,14 @@ def check_chat_surfaces_are_e2e_covered() -> List[Finding]:
         )
 
     found_files: Set[str] = set()
+    scanned_per_root = {root: 0 for root in GUI_SCAN_ROOTS}
     for path in _walk((".rs",), roots=("Core/GUI",)):
         rel = _to_rel(path)
         if not _GUI_SRC_RE.match(rel):
             continue
+        for root in GUI_SCAN_ROOTS:
+            if rel.startswith(root + "/"):
+                scanned_per_root[root] += 1
         if not _is_chat_composer(_strip_line_comments(_read_text(path))):
             continue
         found_files.add(rel)
@@ -302,6 +361,30 @@ def check_chat_surfaces_are_e2e_covered() -> List[Finding]:
                         "user can chat must be driven end-to-end before it "
                         "ships: give it a surface in COVERED and add this path "
                         "to COVERED_COMPOSER_FILES."
+                    ),
+                )
+            )
+
+    # A root the matcher claims to cover but reaches zero files in. Not a
+    # hypothetical: `Shell` sat in this regex matching nothing at all, because
+    # `.*/src/` cannot express `Core/GUI/Shell/src/…`. The scan looked healthy
+    # — 158 files — while a whole named root was invisible. Cardinality per
+    # root is the only thing that distinguishes "clean" from "unreachable".
+    for root in GUI_SCAN_ROOTS:
+        if scanned_per_root[root] == 0:
+            findings.append(
+                Finding(
+                    rule=RULE,
+                    severity="error",
+                    file=root,
+                    line=0,
+                    message=(
+                        f"the composer scan matched no file under {root}, which "
+                        "_GUI_SRC_RE claims to cover. Either the tree moved or the "
+                        "path pattern cannot express it — a chat bar added there "
+                        "would be invisible to this rule. Fix _GUI_SRC_RE (or drop "
+                        "the root from GUI_SCAN_ROOTS if it is genuinely gone); do "
+                        "not leave a named root unreachable."
                     ),
                 )
             )
