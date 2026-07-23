@@ -104,6 +104,11 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
         # (#247). Panel-walk proves a panel LOADS; nothing proved a control
         # in it DOES anything. WARNING for the pilot, ERROR after migration.
         "gui_controls_are_wired_and_walkable",
+        # Rule 60 — a unit test touching a process-global broadcast bus owns
+        # its channel or serializes on a test-module guard (#246). The
+        # `src/`-unit-test half of rule 56's #83 class, with no
+        # minimum-count carve-out: #246's colliders never named the bus.
+        "global_bus_test_isolation",
     }
     assert set(result["data"]["summary"]["by_rule"].keys()) == expected
 
@@ -129,7 +134,7 @@ def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
     #116 was about.  Bump this when a rule is genuinely added or retired.
     """
     wc, _root = isolated_tree
-    assert len(wc._RULES) == 34
+    assert len(wc._RULES) == 35
     result = wc.run_all()
     assert result["ok"] is True
     assert result["data"]["rules_checked"] == len(wc._RULES)

@@ -61,6 +61,7 @@ testing the code.
 | **#225** | fixture pipe in `src/**` | the #79 scanner walked `tests/**` only, so a `#[cfg(test)]` module inside `src/**` could bind a production pipe unseen. No offender existed; the hole did | closed; scanner extended |
 | **#226** | shared Neo4j (`bolt://`) | two `#[ignore]`d live-graph tests in one binary contend on graph-*global* state (`ensure_schema`, `stats()`, the `delete_workspace` orphan prune) under the default multi-threaded runner | closed; became rule 56 |
 | **#232** | pipe half of `memgraph_parity_integration` | targeted a service removed in the Rust cutover — a guard aimed at something that no longer exists | closed; retired |
+| **#246** | process-global `broadcast::Sender` (the watcher delta bus) | a test asserted on the FIRST event off a global bus; sibling tests in the same binary published into it. **10/60 red at `--test-threads=8`, 0/30 serially** — and it went red on **#244, a PR touching a different crate entirely** | fixed; bus injected; became rule 60 |
 
 Two of the first three were caught by accident. That is the argument for a gate.
 
@@ -74,6 +75,7 @@ builds a check that cannot fail, which is worse than no check because it reads a
 | resource is a **literal in the test** | `\\.\pipe\wylde-x` appears in the source | **static source scan** — `Core/GUI/Frontend/Panels/Workspaces/tests/fixture_pipes_are_private.rs` (#79, extended to `src/**` `#[cfg(test)]` regions by #225) | #47, #75 |
 | resource is **resolved inside production code** | **nothing appears in the test at all** | **hermetic `cfg(test)`** + a test pinning the property — `rust/crates/wylde-lifecycle/src/state/mod.rs::resolve_root_is_hermetic_under_cfg_test` (#82) | #80 |
 | resource is **shared and stateful** (one live DB) | two live tests, one process, no lock | **wylde_check rule 56** `graph_test_serialized_on_db_lock` — every multi-test `bolt://` binary must take a per-test `DB_LOCK` **and** be run in the live-graph CI leg (#216/#226/#227) | #226 |
+| resource is a **shared in-process bus** (a global `broadcast::Sender`) | one test reads the bus; *any* sibling test running product code publishes into it | **wylde_check rule 60** `global_bus_test_isolation` — a `#[cfg(test)]` test touching a process-global bus must own its `broadcast::channel` (injection, preferred) or take a test-module `Mutex` guard. **No minimum-count carve-out** — see below (#246) | #246 |
 | resource is **the GUI's own runtime** | a panel test that boots the real Shell | **panel-walk hermeticity** — `cargo panel-walk` drives panels against fixture state, never a live service; a panel test that reaches a real pipe fails the walk | #75 |
 
 **Why the second half can't be scanned for.** #80's test named no resource. It called
@@ -130,5 +132,37 @@ work tracked — this doc is the *diagnosis* home, not a substitute for an issue
 - **Fix + new guard:** <what changed, and which half now enforces it>
 ```
 
-*No sightings recorded since this doc was created. The guards above are the reason — see
-the closing note in #83.*
+### 2026-07-23 — watcher delta-event test flaked on a process-global broadcast bus (#246)
+
+- **Resource:** the watcher's delta-event bus — `static BUS: OnceLock<broadcast::Sender<DeltaEvent>>`
+  in `rust/crates/wylde-workspaces/src/watcher/mod.rs`.
+- **Half:** shared-stateful — but *in-process*, not a live external service, which is the
+  variation that mattered (see below).
+- **How it presented:** **not** the usual red-on-dev / green-on-CI inversion. This one was
+  red **on CI**, intermittently, and green on re-run: 10/60 at `--test-threads=8`, 0/30
+  serially. It surfaced on **#244, a PR that touched only `wylde-harness`** — so the
+  misleading reading was the mirror image of the classic one: not "CI is right, my box is
+  weird", but "this red has nothing to do with me, hit re-run" — which was *true* about the
+  PR and *false* about the tree, and is how the flake survived.
+- **Why the existing guards missed it:** rule 56 is the guard for this half of the class and
+  it misses this shape twice over, both structurally.
+  **(a) Scope** — rule 56 walks `rust/crates/**/tests/*.rs`, integration binaries only; #246
+  lived in a `#[cfg(test)] mod tests` inside `src/`, which no self-collision guard looked at.
+  **(b) The single-toucher carve-out** — rule 56 skips a binary with fewer than two live-graph
+  tests, reasoning that one test cannot self-collide. That reasoning holds for a DB every
+  participant must explicitly connect to. It does **not** hold for a bus, and #246 is the
+  counter-example: exactly **one** test called `subscribe()`. Its colliders never named the
+  bus at all — they merely spawned watcher loops, and the *loop* published. The colliding end
+  was ordinary product code, so counting bus-mentioning tests counted one and stopped.
+  That is the generalisable lesson: **for a shared resource that production code writes to on
+  its own, the number of tests that mention it is not the number of tests that touch it.**
+- **Fix + new guard:** the bus is now injected — `run_loop` takes its
+  `broadcast::Sender<DeltaEvent>`, `start_for` passes `event_bus().clone()` so the live
+  service is unchanged, and each test passes a private `broadcast::channel`. Isolation by
+  construction rather than by a convention each new test must remember. Enforced by
+  **rule 60** (`global_bus_test_isolation`), which covers the `src/` half with no
+  minimum-count carve-out and propagates "touches the bus" through helpers and same-file
+  product functions so the publishing colliders are named too. Verified in both directions on
+  the real tree: 5 findings pre-fix, 0 after. A second flake source in the same tests — a
+  300 ms wall-clock budget on a leg where the suite takes ~600 s — was removed at the same
+  time; that half was never a self-collision, just a latency assumption.
