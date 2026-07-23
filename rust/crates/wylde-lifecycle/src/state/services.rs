@@ -1759,12 +1759,12 @@ mod tests {
         // The WYLDE_<NAME>_BIN override (dev staging) wins and must point at
         // an existing file; a missing override path resolves to None.
         let me = std::env::current_exe().unwrap();
-        std::env::set_var("WYLDE_WYLDE_IMAGES_BIN", &me);
-        let folder = std::path::Path::new("Services/wylde-images");
-        assert_eq!(sibling_binary_path(folder, "wylde-images"), Some(me));
-        std::env::set_var("WYLDE_WYLDE_IMAGES_BIN", "/no/such/sibling/bin");
-        assert_eq!(sibling_binary_path(folder, "wylde-images"), None);
-        std::env::remove_var("WYLDE_WYLDE_IMAGES_BIN");
+        std::env::set_var("WYLDE_WYLDE_EXAMPLE_BIN", &me);
+        let folder = std::path::Path::new("Services/wylde-example");
+        assert_eq!(sibling_binary_path(folder, "wylde-example"), Some(me));
+        std::env::set_var("WYLDE_WYLDE_EXAMPLE_BIN", "/no/such/sibling/bin");
+        assert_eq!(sibling_binary_path(folder, "wylde-example"), None);
+        std::env::remove_var("WYLDE_WYLDE_EXAMPLE_BIN");
     }
 
     #[test]

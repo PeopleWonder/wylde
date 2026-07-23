@@ -483,7 +483,10 @@ running" + Start. Threaded through `nav::service_health_body_is_ready`/`service_
 - `wylde-lifecycle/src/control.rs`: `service.health` short-circuit + `service.list` `incompatible_reason` field.
 - `Core/GUI/Shell/src/{nav,slot,shell_root}.rs`: the GUI reason display. Tests in `nav::tests`.
 - `semver = "1"` added to `wylde-lifecycle/Cargo.toml`.
-- Applied as a live example to `Services/wylde-images/manifest.json` (`"min_core": "0.1.0"`, compatible).
+- First applied as a worked example to the `wylde-images` Service's `manifest.json`
+  (`"min_core": "0.1.0"`, compatible). That Service has since been parked to
+  [PeopleWonder/wylde-images](https://github.com/PeopleWonder/wylde-images) (#234), so the example
+  is no longer in this tree — see the archived repo's `manifest.json` if you want to read it.
 
 **For the two external service repos** (`wylde-organize`, `wylde-tabulate`) — add to each repo's
 folder `manifest.json` when their repos are next touched (they aren't in Core's tree):

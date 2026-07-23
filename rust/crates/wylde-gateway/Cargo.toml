@@ -55,8 +55,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 # CIDR matching for the auth.local tier — equivalent to Python ipaddress.
 ipnet = "2"
 
-# (base64 dep removed with the `/api/images` extraction to the
-# wylde-images Service — it was the gateway's only base64 consumer.)
+# (base64 dep removed with the `/api/images` extraction — that route was
+# the gateway's only base64 consumer, and the image surface is gone for
+# good now that ComfyUI is out of Wylde entirely. See #234.)
 
 # Per-bucket rate-limit timestamps — chrono is overkill for monotonic
 # windowing; std::time::Instant is the right tool.

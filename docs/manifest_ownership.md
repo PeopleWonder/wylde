@@ -1,7 +1,7 @@
 # Manifest ownership
 
 > ⚠️ **ARCHIVED / SUPERSEDED — describes the REMOVED Python runtime, NOT the current all-Rust stack. Kept for history.**
-> The ownership *split* below (service owns its own manifest; the Lifecycle daemon supervises + sweeps orphans) is still conceptually accurate, but the mechanism is wrong: it teaches each service to call `write_manifest()`/`start_heartbeat()`/`mark_stopped()` "in its `run.py`" with `atexit.register(...)`. **No `run.py` exists anywhere** — the Python runtime was deleted in the full-Rust cutover (R6, commit `2f5aa82`, 2026-06-10). Services now publish their manifest via the Rust four-phase `ipc::serve` entry point (see `Services/wylde-images/src/main.rs` and `wylde-shared`'s manifest helpers), not a Python `run.py`. Read the table for the *ownership model*, not the API.
+> The ownership *split* below (service owns its own manifest; the Lifecycle daemon supervises + sweeps orphans) is still conceptually accurate, but the mechanism is wrong: it teaches each service to call `write_manifest()`/`start_heartbeat()`/`mark_stopped()` "in its `run.py`" with `atexit.register(...)`. **No `run.py` exists anywhere** — the Python runtime was deleted in the full-Rust cutover (R6, commit `2f5aa82`, 2026-06-10). Services now publish their manifest via the Rust four-phase `ipc::serve` entry point (see `wylde-shared`'s manifest helpers), not a Python `run.py`. Read the table for the *ownership model*, not the API.
 > *Banner added 2026-06-27 on branch `chore/structure-tidy` (structure-tidy pass).*
 
 This is the reference for how Wylde services publish runtime state via
