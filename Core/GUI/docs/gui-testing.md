@@ -277,26 +277,76 @@ remaining ~140 sites and the other 8 panels are #247 part 2.
    records the id into a per-frame registry. `wylde_check` rule 59 flags
    interactive sites that bypass it, because a control that is not registered
    is never enumerated and never clicked — coverage that goes quiet, not red.
-2. **The walk** draws the panel, reads the registry for what was
-   *constructed*, and looks each id up in gpui's own `debug_bounds` map for
-   what actually *painted* (gpui clears that map per frame, so the painted
-   half is always frame-exact). The intersection is what gets clicked.
-3. **The click** is `VisualTestContext::simulate_click` at the control's
-   painted centre — real platform event, real hit-testing, real listener.
-4. **The oracle** samples two things either side of the click: the
-   `ScriptedBackend` call count, and a per-panel state fingerprint closure.
-   A control passes if **either** moved.
+2. **`wylde_gui_test_support::control_walk`** — the shared harness. It draws
+   the panel, reads the registry for what was *constructed*, looks each id up
+   in gpui's own `debug_bounds` for what actually *painted* (gpui clears that
+   map per frame, so the painted half is always frame-exact), and clicks the
+   intersection at each control's painted centre via `simulate_click`.
+3. **The oracle** samples two channels either side of the click: the
+   `ScriptedBackend` call count, and a per-panel state fingerprint closure. A
+   control passes if **either** moved.
 
-That oracle is deliberately weak per control and strong in aggregate. It
-cannot tell you the button did the *right* thing — it cannot be satisfied by a
-button that does *nothing*, which is the class #247 is about. Per-control
-behavioural depth stays in ordinary windowed tests next to the walk. One
-fingerprint closure per panel is what keeps this affordable across ~140 sites;
-one assertion per button would not be.
+### What a panel writes
+
+The whole per-panel cost is a fixture, a fingerprint, and a call:
+
+```rust
+use wylde_gui_test_support::control_walk::ControlWalk;
+
+#[gpui::test]
+fn every_control_does_something(cx: &mut TestAppContext) {
+    let fake = healthy();
+    let _guard = fake.clone().install();
+    let window = mount(cx);
+
+    ControlWalk::new(window, &fake)
+        .fingerprint(|p: &ToolsPanel| format!("{} {:?}", p.loading, p.error))
+        .sources(&[include_str!("../src/tools_panel.rs")])
+        .run(cx)
+        .assert_every_control_lives()
+        .assert_covers_every_literal_id();
+}
+```
+
+**Adding a control after that needs no test edit at all.** Build it with
+`control(div(), "my-id")` and it is registered, painted, walked, clicked and
+required to do something — automatically. That is the entire point of routing
+every control through one constructor: coverage becomes a property of
+*construction* rather than of somebody remembering to add a case. `Tools/tests/
+control_walk.rs` is the reference copy.
+
+The oracle is deliberately weak per control and strong in aggregate. It cannot
+tell you the button did the *right* thing — it cannot be satisfied by a button
+that does *nothing*, which is the class #247 is about. Per-control behavioural
+depth stays in ordinary windowed tests next to the walk. One fingerprint
+closure per panel is what makes this affordable across the whole GUI; one
+assertion per button would not be.
 
 It also repaints branches panel-walk never touches. A click drives the panel
 into its loaded / error tree, so a **panic on click** in one of those branches
 surfaces here rather than in front of the user.
+
+### Modal-gated controls, and false coverage
+
+A control that only paints once a modal is open is not in the default frame's
+registry. Walking only that frame would report it as "covered" **by never
+mentioning it** — which is worse than not walking the panel at all, because the
+number looks complete.
+
+Two pieces fix that:
+
+* **`.state("label", |panel, window, cx| …)`** drives the panel into some
+  condition (open a dialog, expand a section, select a row); the walk redraws
+  and walks whatever *that* frame paints. Every state is walked and coverage is
+  asserted over the union.
+* **`.assert_covers_every_literal_id()`** scans the declared `include_str!`
+  sources for `control(…, "literal")` ids and fails on any that no state ever
+  painted, naming the id and telling you to add a state.
+
+So a modal control cannot be quietly uncovered: either a state paints it, or
+the walk goes red. Ids built at runtime (`format!("row::{}", id)`) carry no
+literal and are not checked that way — they are covered by the rows the fixture
+renders, and the live-control assertion still clicks them.
 
 ### The trap that will cost you an afternoon
 
@@ -316,26 +366,22 @@ itself — so the walk does not send one.
 
 ### Mount with the one-shot loader, not the poll loop
 
-Tools has a `spawn_refresh_loop`. The walk mounts with `spawn_refresh`
-instead, because the walk must own every backend call it counts: a background
+A panel with a `spawn_refresh_loop` should be mounted with its one-shot
+`spawn_refresh`. The walk must own every backend call it counts: a background
 poll landing mid-walk would move the counter on its own and let a dead button
 read as alive.
 
-### Known gap: modal-gated controls
+### Migration status (#247 part 2)
 
-A control that only paints once a modal is open is not in the first frame's
-registry, so the walk never reaches it. Covering those needs a per-panel "open
-the modal, walk again" pre-step. Tools has no modal, which is part of why it is
-the pilot. Tracked on #247 part 2.
+The constructor + harness are in place and Tools is walked. The remaining
+panels are being routed through `control()` in batches; the per-file budget in
+`wylde_check` rule 59's `GRANDFATHERED_UNROUTED` is the live count of what is
+left, and it is deleted outright when the last file lands.
 
-### Known gap: the Shell
-
-The Shell (`wylde-gui`) owns the nav chrome — sidebar, tab strip, update pill
-— with its own interactive sites (rule 59 finds 7). Shell tests link `wry` and
-tray-icon, which the headless L7 job deliberately never builds (see the `-p`
-scoping note in `.cargo/config.toml`). Walking that chrome needs it extracted
-into a panel-shaped crate, or a separate non-headless job. Out of scope for the
-pilot.
+The Shell's nav chrome (sidebar, tab strip, update pill) needs extracting into
+a `wry`-free crate before the headless L7 job can walk it — Shell tests
+currently link `wry` and tray-icon, which that job deliberately never builds
+(see the `-p` scoping note in `.cargo/config.toml`).
 
 ---
 

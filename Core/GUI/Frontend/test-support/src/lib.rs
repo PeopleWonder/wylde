@@ -35,7 +35,16 @@
 //! }
 //! ```
 //!
+//! ## The control walk
+//!
+//! [`control_walk`] is the other half of this crate: a shared harness that
+//! clicks every control a panel paints and proves something happened (#247).
+//! A panel's `tests/control_walk.rs` is a fixture, a fingerprint and a call —
+//! the logic lives here so adding a control stays a one-liner.
+//!
 //! See `Core/GUI/docs/gui-testing.md` for the full guide.
+
+pub mod control_walk;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
