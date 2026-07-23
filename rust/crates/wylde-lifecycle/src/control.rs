@@ -1386,7 +1386,7 @@ mod tests {
         // Default first (no override yet).
         let got = dispatch_action(json!({
             "action": "paths.get",
-            "payload": {"name": "wylde-images"},
+            "payload": {"name": "wylde-example"},
         }))
         .await;
         assert!(got.ok, "paths.get must succeed");
@@ -1395,7 +1395,7 @@ mod tests {
         // Set an override, then read it back.
         let set = dispatch_action(json!({
             "action": "paths.set",
-            "payload": {"name": "wylde-images", "data_dir": "E:/MyLib"},
+            "payload": {"name": "wylde-example", "data_dir": "E:/MyLib"},
         }))
         .await;
         assert!(set.ok, "paths.set must succeed");
@@ -1404,7 +1404,7 @@ mod tests {
 
         let got2 = dispatch_action(json!({
             "action": "paths.get",
-            "payload": {"name": "wylde-images"},
+            "payload": {"name": "wylde-example"},
         }))
         .await;
         assert_eq!(got2.data["source"], "override");

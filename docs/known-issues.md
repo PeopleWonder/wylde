@@ -75,6 +75,13 @@ carried "the remaining ~4 still need enumeration" for weeks. A full sweep on a c
 | `Core/GUI` `cargo panel-walk` (44 binaries) | all green |
 | `tools/xtask` · `tools/wylde-release` · `Services/wylde-images` | all green |
 
+**Re the `Services/wylde-images` lane:** that sweep result stands as recorded, but the lane no
+longer exists — ComfyUI was removed from Wylde and the Service was parked to
+[PeopleWonder/wylde-images](https://github.com/PeopleWonder/wylde-images) (#234). Its "all green"
+also turned out to be env-dependent in the way this entry is about: #224 found its `Config::load`
+tests read ambient `WYLDE_IMAGES_*`, so they were green on that box and red on a differently
+configured one. That fix landed in the archived repo (`9ec8402`) before parking.
+
 **Re GUI tests:** both `cargo test --workspace --locked` and `cargo panel-walk` run them from
 `Core/GUI` — the `test-support` seam is wired via the panels' `[dev-dependencies]`, so it compiles
 into each crate's test targets under either. CI's required `gui panel-walk (L7)` job uses the alias,

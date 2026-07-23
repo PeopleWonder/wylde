@@ -9,13 +9,19 @@ realizes lives (untracked) at `outputs/wylde-out-of-tree-runtime-plan.md`.
 > service extraction and the WyldeStudy extension build ride on top of it
 > later; neither is done here.
 >
-> **Update (2026-06-17):** the Images extraction is now **done** — it is
-> the first inhabitant of the `Services/` bucket. `wylde-images` is its own
-> GPL-3.0-or-later repo under `Services/wylde-images/`, discovered/spawned
-> by this foundation with **zero new Core code**, and surfaced as a
-> loopback iframe (no compiled-in panel). See
-> [`docs/services/wylde-images.md`](services/wylde-images.md) — the worked
-> example for the Services tier. WyldeStudy is still pending.
+> **Update (2026-06-17):** the Images extraction shipped — the first
+> inhabitant of the `Services/` bucket, discovered/spawned by this
+> foundation with **zero new Core code** and surfaced as a loopback iframe
+> (no compiled-in panel). WyldeStudy is still pending.
+>
+> **Update (2026-07-22, #234):** ComfyUI has been removed from Wylde, so
+> that Service is **parked**. It now lives, with full history, at
+> [PeopleWonder/wylde-images](https://github.com/PeopleWonder/wylde-images)
+> — archived, not maintained, not planned for revival. Its in-repo worked
+> example (`docs/services/wylde-images.md`) is deleted; the archived repo's
+> README is the record. The foundation described below is unchanged and
+> still the model for the Services tier — the Service leaving without a
+> single edit to Core *is* the removability contract being honoured.
 
 ## 1. The single-root, git-ignored buckets
 
@@ -146,13 +152,12 @@ so the path is persisted in **Core** config, not the service
   picker writes via `paths.set`; if dismissed, the service falls back to the
   default so it is never blocked. (Flow only — no GUI here.)
 - **Injection**: `spawn_rust_binary` injects `WYLDE_<SVC>_DATA_DIR`
-  (`data_dir_env_name`, e.g. `WYLDE_IMAGES_DATA_DIR`) = `resolve_data_dir`
+  (`data_dir_env_name`, e.g. `WYLDE_EXAMPLE_DATA_DIR`) = `resolve_data_dir`
   on every child. A data-owning service reads that env var in place of any
   hardcoded path; a path change takes effect on the next bounce.
 
 This contract is generic — any future data-owning service gets it for free;
-the only per-service work is the one "read env-or-default" line (for Images,
-the later extraction's edit to `routes/images.rs::library_dir`).
+the only per-service work is the one "read env-or-default" line.
 
 ## 6. The removability contract
 

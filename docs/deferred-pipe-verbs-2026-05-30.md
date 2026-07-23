@@ -14,8 +14,10 @@ Recommended ship order (cheapest / highest-leverage first):
 3. **E — `vpn.ddns.status` / `vpn.ddns.set`** (provider lib already
    present; needs action wiring + a last-update field).
 4. **F — AdGuard rewrites** (needs a whole new API client + infra).
-5. **G — `images.generate` streaming progress** (blocked upstream on
-   ComfyUI exposing a progress endpoint).
+5. ~~**G — `images.generate` streaming progress**~~ — **abandoned
+   2026-07-22 (#234).** ComfyUI was removed from Wylde and the image
+   Service was parked; there is no `images.generate` verb left to add
+   progress to. Kept below as a record of the upstream audit only.
 
 ---
 
@@ -144,7 +146,15 @@ action registry, panel crate.
 
 ---
 
-## G — images.generate streaming progress
+## G — images.generate streaming progress — ABANDONED
+
+> **Abandoned 2026-07-22 (#234).** ComfyUI has been removed from Wylde and
+> the image Service is parked at
+> [PeopleWonder/wylde-images](https://github.com/PeopleWonder/wylde-images).
+> There is no image route, no `images.generate` verb, and no Images panel,
+> so none of the plan below is actionable. It stays on the page because the
+> upstream finding — ComfyUI's one-shot REST path exposes no progress —
+> is a real audit result worth not re-deriving.
 
 **Why deferred:** the Gateway forwards image generation one-shot to
 ComfyUI (`127.0.0.1:8014`). The audit found ComfyUI exposes **no

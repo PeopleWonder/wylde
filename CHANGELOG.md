@@ -239,6 +239,32 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Changed
 
+- **ComfyUI is out of Wylde. The `wylde-images` Service is parked to its own repo, preserved but
+  not maintained and not planned for revival (#234).** Image generation was extracted from Core to
+  a standalone Service in 2026-06; that Service — the only ComfyUI integration Wylde ever had — is
+  now retired outright. Its full history, including the #224 env-sandbox fix, lives at
+  [PeopleWonder/wylde-images](https://github.com/PeopleWonder/wylde-images) (public,
+  GPL-3.0-or-later), whose README states plainly that it is archived for reference. This follows
+  the #162 installer precedent: preserve the code, park the repo, stop carrying it here.
+  **No code changed** — nothing in Core ever depended on it. Both `Services/` and `Extensions/`
+  are git-ignored, so neither the Service source nor its `Extensions/wylde-images` iframe stub was
+  ever tracked in this repo (the stub, which lived in no git repo at all, was captured into the
+  archive before parking); the gateway's `/api/images` routes and the `wylde-panel-images` crate
+  were already deleted at extraction time; the service roster and both `deny.toml` files never
+  carried an entry; and there was no pinned ComfyUI version or URL anywhere. What this change
+  removes is documentation and naming: `docs/services/wylde-images.md` is deleted in favour of the
+  archive's README, the live docs that treated it as a present-tense inhabitant of `Services/` now
+  point at the archived repo, four "why this isn't here" tombstone comments say ComfyUI is gone for
+  good rather than moved, and the unit-test sample service in `tools/xtask` and `wylde-lifecycle`
+  is renamed `wylde-images` → `wylde-example` so the tree stops asserting `WYLDE_IMAGES_DATA_DIR`
+  as a live env contract (those tests exercise generic bucket-discovery, data-dir-env-naming and
+  sibling-binary mechanisms; the name was always arbitrary). Frozen history — earlier changelog
+  entries, `WYLDE_ENDPOINTS.md`, `docs/r3_gateway_deferred.md`, `docs/manifest_ownership.md`, the
+  gateway's wave-history doc comment — is left exactly as written. The deferred `images.generate`
+  streaming-progress item (G) in `docs/deferred-pipe-verbs-2026-05-30.md` is marked abandoned,
+  since there is no longer a verb to add progress to. That a Service could leave without a single
+  edit to Core is the out-of-tree removability contract being honoured rather than merely asserted.
+
 - **The `wylde_check (full rule set)` architectural-linter gate (#114) is now a required check on both branch rulesets (#220).** #114/#215 turned the linter into a CI job that fails on any finding; it runs on every PR and was green on develop, but was advisory (not in the required set). It is now required on `protect-develop` (21 checks) and `protect-main` (20), and the committed `.github/rulesets/*.json` match live — keeping the ruleset-parity gate (#128) accurate.
 
 - **The `tools/xtask` and `tools/wylde-release` cargo-deny advisory + license legs are now required checks on both branch rulesets, clearing the `manifest coverage` gate (#217).** All four ran (advisory) and green on every PR but were absent from the required set after the #204 record reconciliation; `tools/check-manifest-coverage.sh` requires every gated manifest's cargo-deny contexts to be required in **both** committed ruleset records, so their absence turned `manifest coverage` red. `protect-develop` is now 20 required checks, `protect-main` 19, and the committed `.github/rulesets/*.json` again match live — keeping the ruleset-parity gate (#128) accurate.
