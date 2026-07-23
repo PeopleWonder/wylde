@@ -17,10 +17,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from .conftest import _write
+from .conftest import _import_check, _write
 
 CHAT_SRC = ("Core", "GUI", "Frontend", "Panels", "Chat", "src")
 CHAT_TESTS = ("Core", "GUI", "Frontend", "Panels", "Chat", "tests")
+SHELL_SRC = ("Core", "GUI", "Shell", "src")
 
 SCOPE_REL = "Core/GUI/Frontend/Panels/Chat/src/chat_panel.rs"
 
@@ -69,9 +70,27 @@ def _e2e(
     )
 
 
+def _shell(root: Any, body: str | None = None) -> None:
+    """A Shell source with no composer signals.
+
+    Every synthetic tree needs one. The rule now requires each root named in
+    `GUI_SCAN_ROOTS` to contribute at least one scanned file, because `Shell`
+    sat in the path pattern matching NOTHING for the rule's whole life and the
+    scan still reported a clean pass. A fixture tree with no Shell would be a
+    fixture that cannot reproduce the shape of the real one.
+    """
+    _at(
+        root,
+        SHELL_SRC,
+        "nav.rs",
+        body or 'pub fn nav_bar() -> Div {\n    div().child("Chat")\n}\n',
+    )
+
+
 def _tree(root: Any, **kw: Any) -> None:
     _chat_panel(root, **{k: v for k, v in kw.items() if k == "variants"})
     _e2e(root, **{k: v for k, v in kw.items() if k != "variants"})
+    _shell(root)
 
 
 # ── PASS cases (no findings) ─────────────────────────────────────────
@@ -229,3 +248,125 @@ def test_fail_scope_enum_shape_changed_beyond_recognition(isolated_tree: Any) ->
     _e2e(root)
     findings = wc.check_chat_surfaces_are_e2e_covered()
     assert any("checking nothing" in f.message for f in findings)
+
+
+# ── Scan reach: the Shell (issue #250) ───────────────────────────────
+#
+# `Shell` sat in `_GUI_SRC_RE` matching NOTHING for the rule's entire life,
+# because `.*/src/` needs a path segment between the crate root and `src` and
+# `Core/GUI/Shell/src/…` has none. The scan reported 158 files and a clean
+# pass while all 13 Shell sources were invisible. These pin both the fix and
+# the guard that makes the class of bug loud instead of silent.
+
+
+def test_a_chat_composer_in_the_shell_is_found(isolated_tree: Any) -> None:
+    """The regression this fixes.
+
+    The Shell owns the nav chrome; a chat bar added there is a real place a
+    user can type. Before the fix this file was unreachable by the scan, so
+    it would have shipped covered by nothing while the rule passed green.
+    """
+    wc, root = isolated_tree
+    _tree(root)
+    _shell(
+        root,
+        "pub fn shell_chat_bar(cx: &mut Context<Shell>) -> Div {\n"
+        "    let input = cx.new(|c| {\n"
+        "        TextInput::multi_line(c).with_submit_mode(SubmitMode::EnterSubmits)\n"
+        "    });\n"
+        "    cx.subscribe(&input, |this, _e, ev, cx| {\n"
+        "        this.send_user_message(ev.text(), cx);\n"
+        "    });\n"
+        "    div()\n"
+        "}\n",
+    )
+    findings = wc.check_chat_surfaces_are_e2e_covered()
+    flagged = [f for f in findings if f.file == "Core/GUI/Shell/src/nav.rs"]
+    assert len(flagged) == 1, (
+        "the Shell composer must be flagged; got "
+        f"{[(f.file, f.message[:60]) for f in findings]}"
+    )
+    assert "COVERED_COMPOSER_FILES" in flagged[0].message
+
+
+def test_a_declared_shell_composer_passes(isolated_tree: Any) -> None:
+    """The other direction: once declared, the Shell composer is accepted —
+    so the rule is genuinely scanning it rather than flagging it blindly."""
+    wc, root = isolated_tree
+    _chat_panel(root)
+    _e2e(
+        root,
+        composer_files=f'&["{SCOPE_REL}", "Core/GUI/Shell/src/nav.rs"]',
+    )
+    _shell(
+        root,
+        "pub fn shell_chat_bar(cx: &mut Context<Shell>) -> Div {\n"
+        "    let input = cx.new(|c| {\n"
+        "        TextInput::multi_line(c).with_submit_mode(SubmitMode::EnterSubmits)\n"
+        "    });\n"
+        "    cx.subscribe(&input, |this, _e, ev, cx| {\n"
+        "        this.send_user_message(ev.text(), cx);\n"
+        "    });\n"
+        "    div()\n"
+        "}\n",
+    )
+    assert wc.check_chat_surfaces_are_e2e_covered() == []
+
+
+def test_a_shell_file_without_composer_signals_is_not_flagged(
+    isolated_tree: Any,
+) -> None:
+    """Scanning the Shell must not mean crying wolf over it. This is the real
+    tree's shape: 13 Shell sources, none of them a composer."""
+    wc, root = isolated_tree
+    _tree(root)
+    assert wc.check_chat_surfaces_are_e2e_covered() == []
+
+
+def test_a_named_root_the_pattern_cannot_reach_is_an_error(
+    isolated_tree: Any, monkeypatch: Any
+) -> None:
+    """The guard, exercised against the exact original bug.
+
+    Restoring the old `.*/src/` pattern must now produce a finding rather than
+    a silent 158-file "clean" pass. Without this, the next person to touch the
+    path form gets no signal at all that they disarmed a root.
+    """
+    import re as _re
+
+    wc, root = isolated_tree
+    _tree(root)
+    monkeypatch.setattr(
+        wc.rules._chat_surface_coverage,
+        "_GUI_SRC_RE",
+        _re.compile(r"^Core/GUI/(Frontend|Shell)/.*/src/.+\.rs$"),
+    )
+    findings = wc.check_chat_surfaces_are_e2e_covered()
+    assert len(findings) == 1
+    assert findings[0].severity == "error"
+    assert findings[0].file == "Core/GUI/Shell"
+    assert "matched no file under Core/GUI/Shell" in findings[0].message
+
+
+def test_every_root_in_gui_scan_roots_is_reachable_in_the_real_tree() -> None:
+    """Belt and braces against the fixture lying.
+
+    The guard above runs against a synthetic tree the test itself wrote. This
+    one asserts the shipped pattern reaches every named root in the REAL
+    checkout — which is the thing that was actually false for two months.
+    """
+    import re as _re
+
+    wc = _import_check()
+    mod = wc.rules._chat_surface_coverage
+    from Core.harness.dev.wylde_check._walkers import _to_rel, _walk
+
+    scanned = [
+        _to_rel(p) for p in _walk((".rs",), ("Core/GUI",)) if mod._GUI_SRC_RE.match(_to_rel(p))
+    ]
+    for scan_root in mod.GUI_SCAN_ROOTS:
+        n = sum(1 for r in scanned if r.startswith(scan_root + "/"))
+        assert n > 0, f"{scan_root} is named in GUI_SCAN_ROOTS but the pattern reaches 0 files"
+    assert _re.compile(r"\(\.\*\/\)\?").search(
+        mod._GUI_SRC_RE.pattern
+    ), "the path form must keep the optional-segment shape that reaches a crate's own src/"

@@ -192,6 +192,12 @@ Half the enforcement needs no rule — `chat_turn_e2e.rs`'s `spec()` matches `Ch
 
 **Fix:** give the new surface a `SurfaceSpec` in `spec()`, add it to `COVERED`, and — if it owns a new composer — add that file to `COVERED_COMPOSER_FILES`. The e2e then drives it composer → turn driver → rendered reply like the others.
 
+**Scan reach, and the hole that was in it (#251):** the matcher was `^Core/GUI/(Frontend|Shell)/.*/src/.+\.rs$`. `.*/src/` needs at least one path segment between the crate root and `src`, so `Frontend/<crate>/src/…` matched but `Core/GUI/Shell/src/…` — with nothing in between — matched **nothing**. The `Shell` alternation was dead from the day it was written: 158 Frontend files scanned, **0 of the Shell's 13**. Nothing caught it because the failure is silent by construction — the walk simply returns fewer files and the rule reports a clean pass; rule 51 doesn't help either, since it asserts the *corpus root* (`Core/GUI`) is non-empty, which it is. It surfaced only when rule 59 (#247) hit the identical bug in a copy of the same pattern.
+
+The fix is two parts, and the second is the one that matters: the form is now `(.*/)?src/`, **and** `GUI_SCAN_ROOTS` names every root the pattern claims, each of which must contribute at least one scanned file or the rule errors. Cardinality per root is the only thing that distinguishes "this root is clean" from "this root is unreachable" — the same distinction rule 51 draws for a whole rule's corpus, drawn one level down. Widening exposed no new finding: the Shell owns no `EnterSubmits` input and reaches no turn path, so there was no hidden uncovered surface — the guarantee was simply unenforced over it.
+
+`Core/GUI/Manifest/` stays out of scope on purpose: it is a shipped GUI crate but renders no gpui UI at all (no `impl Render`, no `div()`), so it cannot own a composer.
+
 **Allowed (not flagged):** a `SubmitMode::EnterSubmits` input in a file that reaches no turn path (search/filter fields such as the Models panel's model search); a file that reaches the turn path but owns no composer (`Chat/src/ipc.rs`); test sources (a fixture composer is not a shipped entry point); and matches inside `//` comments, which are stripped before scanning.
 
 ### 59. `gui_controls_are_wired_and_walkable`
@@ -216,4 +222,4 @@ It is a ratchet, not an exemption list: a count *below* budget is **also** a fin
 
 **Empty-scan guard:** the rule emits an **error** (not a warning) if the GUI walk matches no source files, or if it scans GUI sources and finds no interaction handlers at all. A rule that inspects nothing otherwise reports a pass — the #114/#116 lesson that rule 51 exists for.
 
-**Note — the Shell path form:** the `_GUI_SRC_RE` here is `^Core/GUI/(Frontend|Shell)/(.*/)?src/.+\.rs$`. The `(.*/)?` is load-bearing: the Shell's sources sit at `Core/GUI/Shell/src/…` with nothing between the crate root and `src`, so the `.*/src/` form used by rule 58 matches **no** Shell file at all. The Shell owns the nav chrome (sidebar, tab strip, update pill), which is real interactive surface — 7 of the 140 sites.
+**Note — the Shell path form:** the `_GUI_SRC_RE` here is `^Core/GUI/(Frontend|Shell)/(.*/)?src/.+\.rs$`. The `(.*/)?` is load-bearing: the Shell's sources sit at `Core/GUI/Shell/src/…` with nothing between the crate root and `src`, so a `.*/src/` form matches **no** Shell file at all. The Shell owns the nav chrome (sidebar, tab strip, update pill), which is real interactive surface — 7 of the 140 sites. Rule 58 carried the identical bug and had never scanned a single Shell source; fixed in #251, which also added the per-root cardinality guard that makes this class loud instead of silent.
