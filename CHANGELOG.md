@@ -48,6 +48,27 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **`wylde_check` rule 57 (`service_backed_surface_declares_availability`) makes "no silent dead panel" a structural gate for every service/extension surface (refs #239).**
+  The GUI already gated a panel's *dependence on services* two ways — `required_services` → the Shell's
+  `SlotState::ServiceUnavailable` (rule 40 enforces the declaration), and the URL probe behind a first-party iframe.
+  Neither could cover the defect in #239, and the reason is worth stating precisely: the Tools panel declared
+  `wylde-extension-bridge` correctly, so **rule 40 was satisfied**. The bridge was up and the panel mounted — and then
+  drew one card per extension panel, each pointing at a *different* service's URL that nothing checked. A panel-level
+  gate is structurally incapable of covering a per-item surface, because the unit that can be dead is the item.
+  The new rule closes that in three clauses, all **derived from the tree rather than a list of panels**: a wire row
+  carrying a `url` must also carry an `availability` field (the endpoint is the tell — a row modelling something
+  remote can be dead, so it has to say whether it is); the panel owning such a row must actually *read* that field
+  outside its wire module (a field nothing renders is the same silent dead panel with extra steps); and a panel that
+  opts out of rule 40 — thereby taking responsibility for showing unavailability itself — must demonstrably render a
+  status, closing what was otherwise a free pass out of every gate. Corpus is both sides of the wire
+  (`Core/GUI/Frontend/Panels/*/src/ipc.rs` plus the bridge's `host.rs`, which mints the rows), both registered in
+  `RULE_TARGET_SPECS` so emptying either goes red instead of quietly disarming the rule. **Verified against the
+  pre-fix tree: it reports both `Tools::ExtensionPanel` and `host::PanelEntry`** — it would have red-walled the change
+  that shipped the dead Images card. A panel added later is walked because it exists, not because anyone remembered
+  to register it, so coverage cannot regress by omission. It is a source rule and not a Rust test deliberately: the
+  property has to hold for a panel nobody has written yet, and `Core/GUI` CI runs `build` + `panel-walk` only, so a
+  test in the registry crate would never execute.
+
 - **`wylde_check` rule 56 (`graph_test_serialized_on_db_lock`) makes the shared-Neo4j self-collision class a structural gate (closes #226; refs #83).**
   The #83 self-collision class — a live-graph test binary whose two-or-more `#[ignore]`d `bolt://` tests hit
   one shared Neo4j without serialization, non-deterministically failing on `ensure_schema` / `stats()` / the

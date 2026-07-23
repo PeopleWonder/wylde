@@ -113,14 +113,13 @@ pub fn classify(
 /// [`crate::manifest`]'s deliberate choice — the failure mode is a
 /// `None`, which callers treat as unreachable.
 pub fn authority_of(url: &str) -> Option<(String, u16)> {
-    let (scheme, rest) = if let Some(r) = url.strip_prefix("http://") {
-        ("http", r)
-    } else if let Some(r) = url.strip_prefix("https://") {
-        ("https", r)
-    } else {
-        return None;
+    // Only http(s) — anything else we cannot probe, so it is not live.
+    let default_port = match url.split_once("://") {
+        Some(("http", _)) => 80,
+        Some(("https", _)) => 443,
+        _ => return None,
     };
-    let default_port = if scheme == "https" { 443 } else { 80 };
+    let rest = url.split_once("://").map(|(_, r)| r)?;
     // Strip optional userinfo, then cut the host at the first path char.
     let after_userinfo = rest.rsplit_once('@').map_or(rest, |(_, h)| h);
     let host_with_port = after_userinfo.split(['/', '?', '#']).next().unwrap_or("");
