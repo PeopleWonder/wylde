@@ -8993,6 +8993,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wylde-gui-controls"
+version = "0.2.0-beta.1"
+dependencies = [
+ "gpui",
+]
+
+[[package]]
 name = "wylde-gui-pipe"
 version = "0.2.0-beta.1"
 dependencies = [
@@ -9190,6 +9197,7 @@ dependencies = [
  "gpui",
  "serde",
  "serde_json",
+ "wylde-gui-controls",
  "wylde-gui-pipe",
  "wylde-gui-test-support",
  "wylde-theme",

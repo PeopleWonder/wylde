@@ -484,6 +484,9 @@ from .rules._graph_test_isolation import (  # noqa: E402
 from .rules._chat_surface_coverage import (  # noqa: E402
     check_chat_surfaces_are_e2e_covered,
 )
+from .rules._control_functionality import (  # noqa: E402
+    check_gui_controls_are_wired_and_walkable,
+)
 from .rules._selfcheck import check_rule_targets_exist  # noqa: E402
 from ._single_file import (  # noqa: E402
     _check_dead_refs_lines,
@@ -566,6 +569,13 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # the compile-time half; this catches the two cases it cannot see —
     # an arm added but never driven, and a brand-new chat bar elsewhere.
     "chat_surfaces_are_e2e_covered": check_chat_surfaces_are_e2e_covered,
+    # Rule 59 — every interactive GUI control is wired and walkable (#247).
+    # The static half of the control-functionality gate: a dead handler
+    # body, and an interactive site that bypasses `controls::control()` and
+    # so never enters the per-frame registry the control walk enumerates.
+    # Error, with a per-file grandfather ratchet over the 140 pre-existing
+    # sites: this job fails on any finding, so WARN would red develop too.
+    "gui_controls_are_wired_and_walkable": check_gui_controls_are_wired_and_walkable,
     "rule_targets_exist": check_rule_targets_exist,
 }
 
@@ -609,7 +619,13 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # and has more than one entry point; this keeps a newly-added surface
 # from shipping with no end-to-end proof that typing in it does anything.
 # (Numbered 58, not 57: #239 landed its own rule 57 on develop first.)
-assert len(_RULES) == 33, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 33)"
+# GUI control-functionality enforcement (#247, 2026-07-23): +1 (rule 59,
+# gui_controls_are_wired_and_walkable) = 34 active.  Panel-walk proves a
+# panel LOADS; nothing proved a control in it DOES anything.  Ships at
+# Ships at error with a grandfather ratchet rather than at WARNING: the CI
+# gate fails on any finding, warning included, so "warn for now" would red
+# develop just as hard.  (Numbered 59, not 58: #236 landed 58 first.)
+assert len(_RULES) == 34, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 34)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:

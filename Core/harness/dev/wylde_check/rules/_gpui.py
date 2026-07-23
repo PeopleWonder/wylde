@@ -75,6 +75,7 @@ GPUI_WORKSPACE_CARGO: str = "Core/GUI/Cargo.toml"
 PANEL_SHARED_INFRA_CRATES: Tuple[str, ...] = (
     "wylde-theme",
     "wylde-gui-pipe",
+    "wylde-gui-controls",
     "wylde-gpui-input",
     "wylde-panel-registry",
 )

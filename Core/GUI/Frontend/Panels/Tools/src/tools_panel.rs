@@ -18,9 +18,10 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, FontWeight,
-    IntoElement, Render, SharedString, Stateful, Window,
+    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, FontWeight, IntoElement,
+    Render, SharedString, Stateful, Window,
 };
+use wylde_gui_controls::control;
 use wylde_theme::colors::{
     BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_DIM, BRAND_LIGHT, DANGER, SURFACE_800, SURFACE_900,
     TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, WARNING,
@@ -266,9 +267,7 @@ fn header_row(cx: &mut Context<ToolsPanel>) -> gpui::Div {
 }
 
 fn refresh_button(cx: &mut Context<ToolsPanel>) -> Stateful<gpui::Div> {
-    let id: ElementId = ElementId::Name("tools-refresh".into());
-    div()
-        .id(id)
+    control(div(), "tools-refresh")
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -306,7 +305,6 @@ fn extension_row(ext: &ExtensionStatus, pending: bool, cx: &mut Context<ToolsPan
     } else {
         "Enable"
     };
-    let toggle_id: ElementId = ElementId::Name(format!("ext-toggle::{}", ext.name).into());
     let status_color = match ext.status.as_str() {
         "running" => TEXT_PRIMARY,
         "starting" => TEXT_SECONDARY,
@@ -361,8 +359,7 @@ fn extension_row(ext: &ExtensionStatus, pending: bool, cx: &mut Context<ToolsPan
         );
     }
 
-    let mut button = div()
-        .id(toggle_id)
+    let mut button = control(div(), format!("ext-toggle::{}", ext.name))
         .px_2()
         .py_1()
         .rounded(px(4.0))

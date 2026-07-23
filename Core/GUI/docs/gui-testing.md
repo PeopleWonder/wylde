@@ -258,6 +258,87 @@ recipe):
 - **Input-driven** sends via `VisualTestContext::simulate_keystrokes` to cover
   the TextInput → submit path end-to-end (vs. calling `send_user_message`).
 
+## The control walk — does the button DO anything? (#247)
+
+The panel-walk above proves every panel **loads**. It says nothing about
+whether a control in it **works**. Until #247 no test in this tree had ever
+clicked a GUI control through its real listener, so a button could ship with an
+empty handler, a handler wired to a method that no longer runs, or no listener
+at all, and every gate stayed green.
+
+`tests/control_walk.rs` closes that. **Pilot status: Tools only** — the
+remaining ~140 sites and the other 8 panels are #247 part 2.
+
+### How it works
+
+1. **`wylde_gui_controls::control(el, "id")`** — the one constructor every
+   interactive control routes through. In a shipped build it is
+   `el.id(ElementId::Name(id))` and nothing else; in a test build it also
+   records the id into a per-frame registry. `wylde_check` rule 59 flags
+   interactive sites that bypass it, because a control that is not registered
+   is never enumerated and never clicked — coverage that goes quiet, not red.
+2. **The walk** draws the panel, reads the registry for what was
+   *constructed*, and looks each id up in gpui's own `debug_bounds` map for
+   what actually *painted* (gpui clears that map per frame, so the painted
+   half is always frame-exact). The intersection is what gets clicked.
+3. **The click** is `VisualTestContext::simulate_click` at the control's
+   painted centre — real platform event, real hit-testing, real listener.
+4. **The oracle** samples two things either side of the click: the
+   `ScriptedBackend` call count, and a per-panel state fingerprint closure.
+   A control passes if **either** moved.
+
+That oracle is deliberately weak per control and strong in aggregate. It
+cannot tell you the button did the *right* thing — it cannot be satisfied by a
+button that does *nothing*, which is the class #247 is about. Per-control
+behavioural depth stays in ordinary windowed tests next to the walk. One
+fingerprint closure per panel is what keeps this affordable across ~140 sites;
+one assertion per button would not be.
+
+It also repaints branches panel-walk never touches. A click drives the panel
+into its loaded / error tree, so a **panic on click** in one of those branches
+surfaces here rather than in front of the user.
+
+### The trap that will cost you an afternoon
+
+**Mount with `add_window`, not `open_window`.** At gpui rev `b3d93d44`,
+`TestAppContext::open_window(size, …)` sets the window's reported
+`viewport_size` but the root element still lays out against the test *display*
+(1920×1080). Every control then paints at coordinates outside the window you
+asked for, `simulate_click` there hits nothing, and **every control in the walk
+reads as dead** — a total false positive that looks exactly like the bug the
+test is for. `add_window` maximizes to the test display, so layout and viewport
+agree. The display is a fixed size in gpui's `TestPlatform`, so this is
+deterministic, not machine-dependent.
+
+A `simulate_mouse_move` before each click was measured and changes nothing —
+`dispatch_mouse_event` recomputes the hit test from the mouse-down position
+itself — so the walk does not send one.
+
+### Mount with the one-shot loader, not the poll loop
+
+Tools has a `spawn_refresh_loop`. The walk mounts with `spawn_refresh`
+instead, because the walk must own every backend call it counts: a background
+poll landing mid-walk would move the counter on its own and let a dead button
+read as alive.
+
+### Known gap: modal-gated controls
+
+A control that only paints once a modal is open is not in the first frame's
+registry, so the walk never reaches it. Covering those needs a per-panel "open
+the modal, walk again" pre-step. Tools has no modal, which is part of why it is
+the pilot. Tracked on #247 part 2.
+
+### Known gap: the Shell
+
+The Shell (`wylde-gui`) owns the nav chrome — sidebar, tab strip, update pill
+— with its own interactive sites (rule 59 finds 7). Shell tests link `wry` and
+tray-icon, which the headless L7 job deliberately never builds (see the `-p`
+scoping note in `.cargo/config.toml`). Walking that chrome needs it extracted
+into a panel-shaped crate, or a separate non-headless job. Out of scope for the
+pilot.
+
+---
+
 ## The exception: the all-surfaces chat-turn e2e
 
 `Panels/Chat/tests/chat_turn_e2e.rs` (#236) is the one test in this tree that

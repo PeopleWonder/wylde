@@ -20,6 +20,7 @@ resolver = "2"
 members = [
     "Shell",
     "Frontend/Theme",
+    "Frontend/Controls",
     "Frontend/Pipe",
     "Frontend/Input",
     "Frontend/Changelog",

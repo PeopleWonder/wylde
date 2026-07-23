@@ -100,6 +100,10 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
         # chat-turn e2e (#236). Chat is the primary path and has more than one
         # entry point; a new surface must not ship covered by nothing.
         "chat_surfaces_are_e2e_covered",
+        # Rule 59 — every interactive GUI control is wired and walkable
+        # (#247). Panel-walk proves a panel LOADS; nothing proved a control
+        # in it DOES anything. WARNING for the pilot, ERROR after migration.
+        "gui_controls_are_wired_and_walkable",
     }
     assert set(result["data"]["summary"]["by_rule"].keys()) == expected
 
@@ -125,7 +129,7 @@ def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
     #116 was about.  Bump this when a rule is genuinely added or retired.
     """
     wc, _root = isolated_tree
-    assert len(wc._RULES) == 33
+    assert len(wc._RULES) == 34
     result = wc.run_all()
     assert result["ok"] is True
     assert result["data"]["rules_checked"] == len(wc._RULES)
