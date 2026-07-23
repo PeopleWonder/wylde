@@ -572,6 +572,49 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **Your settings live in one place, and an update no longer risks losing half of them (closes #250).**
+  Wylde documented a single canonical data root — `WYLDE_DATA_DIR` → `DATA_DIR` → `<WYLDE_ROOT>/.wylde/data`,
+  "convention A" — and then kept four stores somewhere else, each somewhere *different*. Model selection
+  (`default_model.json`, `active_model.json`) and the routing/model registry fell back to a **cwd-relative**
+  `data/`, honouring neither `WYLDE_DATA_DIR` nor `WYLDE_ROOT`; per-model Ollama overrides landed at
+  `<ROOT>/data`; the device gate had a third top-level tree at `<ROOT>/device_gate/data`. #138 named those
+  deviations and deferred them "to #138's remaining criteria" — but #138 closed, so the deferral pointed at
+  nothing and the deviations had no owner.
+
+  Two things were actually wrong. First, two of the stores had **no root anchor at all**: their location was a
+  property of the process working directory, stable only because lifecycle pins that to `wylde_root()`, and
+  silently different for a harness started from anywhere else. Second, a user's data was **split across two
+  roots** with nothing saying which was which — `settings/`, `conversations/`, `workspaces/` and the memory
+  tiers under `.wylde/data/`, but the starred model, routing profiles and inference overrides under `data/`.
+  Two directories to back up, and one of them undocumented.
+
+  All four now resolve through the one resolver, with per-store subdirectories under `<WYLDE_ROOT>/.wylde/data/`.
+  Every existing env override (`DATA_DIR`, `MODEL_DATA_DIR`, `DEVICE_GATE_DATA_DIR`, `DEFAULT_MODEL_PATH`,
+  `ACTIVE_MODEL_PATH`) still wins outright — they are test seams and operator escape hatches, not legacy
+  compatibility.
+
+  **Nothing is lost getting there**, which is the part that needed care rather than a find-and-replace. Every one
+  of these paths has live user data behind it on existing installs, and a resolver that moves without its bytes
+  fails *silently*: the store reads an empty directory and reports "nothing configured". No error is logged
+  anywhere; it presents as Wylde forgetting your starred model, resetting your per-model inference settings,
+  clearing your routing profiles (re-running every benchmark from scratch), and unpairing every phone. So each
+  store adopts its legacy location on first touch, via a shared migration that is one-way (legacy → canonical,
+  copied and never moved, so a downgrade still reads it), never-clobbering (it runs only when the canonical
+  location is absent or empty, so a value written since the move always wins), and idempotent (the first copy
+  creates the destination, so every later call no-ops for the price of one `exists()` stat). The Gateway's old
+  flat `ollama.json` is still looked for under the legacy root too — a box that has not opened the Settings
+  panel since this change has it nowhere else.
+
+  Guarded, not asserted: each store has a **legacy-only-data test** — data present at the old path, nothing at
+  the new one, still reads correctly — plus one for idempotence and one for the env overrides. The
+  `single_data_dir_resolver` gate that deliberately *ignored* these four now covers them: it fails on any second
+  `fn data_dir` under any convention (the old `.wylde` qualifier existed only to let these four through), on any
+  store root built from a bare relative `"data"`, and on any of the four dropping its reference to the canonical
+  resolver. The #243 update-survival tests still hold — wherever these stores land, they stay outside the
+  `versions/` tree the updater prunes. `docs/data-roots.md` is the table the whole thing was missing: every
+  store, its canonical path, its env override, its legacy path — including the three stores still at
+  `<ROOT>/data` that #250's own scope leaves for a follow-up.
+
 - **`wylde_check` rule 58's chat-composer scan had never once looked at the Shell (closes #251; refs #247).**
   Rule 58 declares its scope as `Core/GUI/{Frontend,Shell}/**/src/**/*.rs`, but its path matcher was
   `^Core/GUI/(Frontend|Shell)/.*/src/.+\.rs$` — and `.*/src/` requires at least one path segment between the

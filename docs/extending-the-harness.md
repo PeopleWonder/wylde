@@ -154,8 +154,12 @@ Extension points:
   that filters on kind has to be updated. Update `KIND_VALUES` and
   `default_chat_visible` together.
 * **Routing profiles** (`routing/profiles.rs`) — LLM-only; persisted at
-  `data/model_registry/profiles.json`. Profile schema mirrors Python.
-  Add a new profile field by extending the struct + writing migration.
+  `<data_dir>/model_registry/profiles.json`, where `<data_dir>` is
+  convention A (`routing::store_root`, `MODEL_DATA_DIR` still overrides —
+  see [`docs/data-roots.md`](data-roots.md)). Pre-#250 this was a
+  cwd-relative `data/model_registry/`; that location is adopted on first
+  touch, so existing profiles are not lost. Add a new profile field by
+  extending the struct + writing migration.
 * **`OllamaProbe` trait** (`api.rs:30–37`) — abstraction for "ask Ollama
   what models it has." Tests use `NullProbe`; production uses
   `LivePipeProbe`. Swap for a custom impl (e.g. HTTP-direct) by

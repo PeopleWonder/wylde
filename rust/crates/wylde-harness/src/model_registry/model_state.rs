@@ -16,18 +16,34 @@
 //!
 //! ## Storage backend
 //!
-//! The Python module reads/writes two tiny JSON files (`{"model": "..."}`).
-//! There is no shared sqlite/db layer — these are flat files in the
-//! harness data dir. This Rust port talks to the same files honouring the
-//! same env overrides (`ACTIVE_MODEL_PATH`, `DEFAULT_MODEL_PATH`,
-//! `DATA_DIR`) so the two impls round-trip the same on-disk state. The
-//! value cache mirrors Python's module-global `_cached` / `_loaded`
+//! Two tiny JSON files (`{"model": "..."}`) — there is no shared
+//! sqlite/db layer. The env overrides `ACTIVE_MODEL_PATH`,
+//! `DEFAULT_MODEL_PATH` and `DATA_DIR` are all still honoured; the first
+//! two name a file outright, the third is convention A's second arm. The
+//! value cache mirrors the original module-global `_cached` / `_loaded`
 //! latch; [`reset_for_tests`] drops it so a test that re-points the path
 //! env re-reads from disk.
+//!
+//! ## Where they live (#250)
+//!
+//! Canonical: `<data_dir>/active_model.json`, `<data_dir>/default_model.json`
+//! where `<data_dir>` is [`wylde_shared::paths::data_dir`] — convention A,
+//! `WYLDE_DATA_DIR` → `DATA_DIR` → `<WYLDE_ROOT>/.wylde/data`.
+//!
+//! Before #250 this module resolved `DATA_DIR` **only**, falling back to a
+//! *cwd-relative* `"data"`: the store's location was a property of the
+//! process working directory, stable only because lifecycle pins that to
+//! `wylde_root()`. A harness started anywhere else read and wrote a
+//! different set of files. The legacy location — `<WYLDE_ROOT>/data` — is
+//! adopted on first touch, so an existing install's starred default is not
+//! reset by the move (see [`wylde_shared::data_migration`]).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+
+use wylde_shared::data_migration::adopt_legacy_file;
+use wylde_shared::paths::{data_dir, legacy_data_dir};
 
 /// One lazily-loaded persisted selection (active or default). Mirrors
 /// Python's `(_cached, _loaded)` / `(_default_cached, _default_loaded)`
@@ -56,30 +72,38 @@ fn tool_failures() -> &'static Mutex<HashSet<String>> {
     TF.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-// ── Path resolution (Python parity) ────────────────────────────────────
+// ── Path resolution ────────────────────────────────────────────────────
 
-/// `$DATA_DIR` (default `"data"`) — the harness data dir. Note this is a
-/// *different* root from the model-registry store (`MODEL_DATA_DIR`,
-/// default `data/model_registry`); the Python `model_state` module reads
-/// `DATA_DIR` directly, so we match that.
-fn data_dir() -> PathBuf {
-    std::env::var_os("DATA_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("data"))
+/// Filename of the active-model store, under whichever root resolves.
+const ACTIVE_FILE: &str = "active_model.json";
+/// Filename of the starred-default store.
+const DEFAULT_FILE: &str = "default_model.json";
+
+/// Resolve one selection file under convention A, adopting the pre-#250
+/// `<WYLDE_ROOT>/data/<file>` copy first if this install still has one.
+///
+/// The adoption runs on every resolution rather than behind a `OnceLock`:
+/// its steady-state cost is a single `exists()` stat, and a process-wide
+/// latch would be wrong here because both this module's tests and the
+/// #243 update-survival suite rebind the path env mid-process.
+fn selection_path(file: &str) -> PathBuf {
+    let canonical = data_dir().join(file);
+    adopt_legacy_file(&legacy_data_dir().join(file), &canonical);
+    canonical
 }
 
 fn active_path() -> PathBuf {
     if let Some(p) = std::env::var_os("ACTIVE_MODEL_PATH") {
         return PathBuf::from(p);
     }
-    data_dir().join("active_model.json")
+    selection_path(ACTIVE_FILE)
 }
 
 fn default_path() -> PathBuf {
     if let Some(p) = std::env::var_os("DEFAULT_MODEL_PATH") {
         return PathBuf::from(p);
     }
-    data_dir().join("default_model.json")
+    selection_path(DEFAULT_FILE)
 }
 
 /// Trim + treat empty as "unset". Mirrors Python's
@@ -282,6 +306,51 @@ mod tests {
     use crate::memory::common::TEST_ENV_LOCK;
     use tempfile::tempdir;
 
+    /// Restores every path-affecting env var this module reads on drop, so a
+    /// test that rebinds the *root* (rather than the two file overrides)
+    /// cannot leak into the next test or into the ambient dev install.
+    struct EnvSandbox {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvSandbox {
+        /// Clear every override and pin `WYLDE_ROOT` at `root`, so path
+        /// resolution goes through the convention-A fallback — the arm #250
+        /// changed, and the only one a legacy-adoption test can exercise.
+        fn rooted_at(root: &std::path::Path) -> Self {
+            const VARS: [&str; 5] = [
+                "WYLDE_ROOT",
+                "WYLDE_DATA_DIR",
+                "DATA_DIR",
+                "ACTIVE_MODEL_PATH",
+                "DEFAULT_MODEL_PATH",
+            ];
+            let saved = VARS
+                .iter()
+                .map(|k| (*k, std::env::var_os(k)))
+                .collect::<Vec<_>>();
+            for (k, _) in &saved {
+                std::env::remove_var(k);
+            }
+            std::env::set_var("WYLDE_ROOT", root);
+            std::env::remove_var("WYLDE_DEFAULT_MODEL");
+            reset_for_tests();
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvSandbox {
+        fn drop(&mut self) {
+            for (k, v) in &self.saved {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+            reset_for_tests();
+        }
+    }
+
     /// Point the active + default paths at a fresh tempdir and clear the
     /// caches. Returns the dir guard (keep it alive for the test).
     fn isolated() -> tempfile::TempDir {
@@ -360,5 +429,136 @@ mod tests {
         assert!(model_supports_tools(""));
         mark_tool_failure("");
         assert!(model_supports_tools(""));
+    }
+
+    // ── #250: convention A, and no data lost getting there ──────────────
+
+    /// The store roots at `<WYLDE_ROOT>/.wylde/data`, not at the process
+    /// working directory. Pre-#250 this fell back to a bare relative
+    /// `"data"`, so a harness launched from anywhere but the estate root
+    /// silently used a different set of files (the H6 hazard `paths.rs`
+    /// documents).
+    #[test]
+    fn selection_stores_root_under_convention_a_not_the_cwd() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let td = tempdir().unwrap();
+        let _env = EnvSandbox::rooted_at(td.path());
+
+        let expected = td.path().join(".wylde").join("data");
+        for (label, path) in [
+            ("default", default_model_store_path()),
+            ("active", active_model_store_path()),
+        ] {
+            assert!(
+                path.starts_with(&expected),
+                "{label}-model store resolved to {} — convention A is {}",
+                path.display(),
+                expected.display()
+            );
+            assert!(
+                path.is_absolute(),
+                "{label}-model store is cwd-relative: {}",
+                path.display()
+            );
+        }
+    }
+
+    /// THE upgrade guarantee: data present only at the legacy path, nothing
+    /// at the canonical one, still reads correctly after the move. Without
+    /// the adoption this returns `None` and the user's starred model is
+    /// silently gone, with no error anywhere.
+    #[test]
+    fn a_legacy_only_default_is_still_read_after_the_move() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let td = tempdir().unwrap();
+        let _env = EnvSandbox::rooted_at(td.path());
+
+        // The pre-#250 layout on a live install: `<ROOT>/data/*.json`.
+        let legacy = td.path().join("data");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(
+            legacy.join("default_model.json"),
+            br#"{"model":"gemma3:4b"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            legacy.join("active_model.json"),
+            br#"{"model":"phi4:latest"}"#,
+        )
+        .unwrap();
+        assert!(
+            !td.path().join(".wylde").join("data").exists(),
+            "precondition: nothing at the canonical root yet"
+        );
+
+        assert_eq!(get_default_model(), Some("gemma3:4b".to_owned()));
+        assert_eq!(get_active_model(), Some("phi4:latest".to_owned()));
+
+        // The bytes really moved — a later read does not depend on the
+        // legacy file still being there.
+        let canonical = td.path().join(".wylde").join("data");
+        assert!(canonical.join("default_model.json").is_file());
+        assert!(canonical.join("active_model.json").is_file());
+        // ...and the legacy copy is preserved, so a downgrade still reads it.
+        assert!(legacy.join("default_model.json").is_file());
+    }
+
+    /// One-way and idempotent: a value written since the move outranks the
+    /// legacy one, and re-running adoption never resurrects the stale value.
+    #[test]
+    fn a_stale_legacy_value_never_overwrites_the_canonical_one() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let td = tempdir().unwrap();
+        let _env = EnvSandbox::rooted_at(td.path());
+
+        let legacy = td.path().join("data");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("default_model.json"), br#"{"model":"old:1b"}"#).unwrap();
+
+        // The user re-stars after upgrading.
+        set_default_model(Some("new:9b"));
+        // Every subsequent resolution re-runs adoption; none may clobber.
+        for _ in 0..3 {
+            reset_for_tests();
+            assert_eq!(
+                get_default_model(),
+                Some("new:9b".to_owned()),
+                "the canonical value is newer by construction"
+            );
+        }
+        // The legacy file is left exactly as it was — never written to.
+        assert_eq!(
+            std::fs::read_to_string(legacy.join("default_model.json")).unwrap(),
+            r#"{"model":"old:1b"}"#
+        );
+    }
+
+    /// The explicit file overrides are a test seam and an operator escape
+    /// hatch; they must still win outright, with no adoption behind them.
+    #[test]
+    fn explicit_path_overrides_still_win_over_convention_a() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let td = tempdir().unwrap();
+        let _env = EnvSandbox::rooted_at(td.path());
+
+        let elsewhere = td.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::env::set_var("DEFAULT_MODEL_PATH", elsewhere.join("d.json"));
+        std::env::set_var("ACTIVE_MODEL_PATH", elsewhere.join("a.json"));
+        reset_for_tests();
+
+        assert_eq!(default_model_store_path(), elsewhere.join("d.json"));
+        assert_eq!(active_model_store_path(), elsewhere.join("a.json"));
+
+        // `DATA_DIR` — convention A's second arm — likewise still wins over
+        // the `<WYLDE_ROOT>/.wylde/data` fallback.
+        std::env::remove_var("DEFAULT_MODEL_PATH");
+        std::env::remove_var("ACTIVE_MODEL_PATH");
+        std::env::set_var("DATA_DIR", &elsewhere);
+        reset_for_tests();
+        assert_eq!(
+            default_model_store_path(),
+            elsewhere.join("default_model.json")
+        );
     }
 }

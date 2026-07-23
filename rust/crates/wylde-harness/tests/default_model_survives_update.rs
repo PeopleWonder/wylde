@@ -31,12 +31,18 @@
 //! directory — the change that would make every update silently reset the
 //! user's default — now turns the build red.
 //!
-//! Deliberately NOT asserted here: that the store follows convention A
-//! (`<WYLDE_ROOT>/.wylde/data`, #138). It does not — `<ROOT>/data` is a
-//! documented, deliberate deviation whose unification carries
-//! data-migration risk and spans the model registry, device gate and
-//! ollama overrides. Update-survival does not depend on which of the two
-//! roots it uses, only on both being outside `versions/`.
+//! Deliberately NOT asserted here: *which* root the store uses. #250 has
+//! since moved it onto convention A (`<WYLDE_ROOT>/.wylde/data`) along with
+//! the model registry, device gate and ollama overrides — but update-survival
+//! never depended on that choice, only on the root being outside `versions/`,
+//! which both the canonical and the legacy root are. Keeping this suite
+//! root-agnostic is the point: it stays a check on the updater's blast
+//! radius, not a second copy of the convention-A gate (that lives in
+//! `wylde-shared/tests/single_data_dir_resolver.rs`, and the store's own
+//! `#[test] selection_stores_root_under_convention_a`).
+//!
+//! These tests bind `DATA_DIR`, which convention A honours as-is, so they
+//! exercise the same resolution path before and after #250.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
