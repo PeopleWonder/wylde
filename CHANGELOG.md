@@ -72,6 +72,28 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   it does not, so the day the tracker auto-deletes, findings simply lose a sentence rather than the linter
   gaining a dangling path. The tracker is deliberately *not* registered in `RULE_TARGET_SPECS`, which would
   have turned rule 51 red on the exact day the doc was designed to disappear.
+- **The control walk is now a shared harness, so covering a new GUI control costs nothing (refs #247, part 2 of N).**
+  The #247 pilot proved the mechanism on one panel with the walk logic inlined in that panel's test. This lifts
+  it into `wylde_gui_test_support::control_walk`, where a panel's whole cost is a fixture, a fingerprint and a
+  call — and **adding a control after that needs no test edit at all.** Build it with
+  `controls::control(div(), "id")` and it is registered, painted, walked, clicked and required to produce an
+  observable effect automatically. Coverage becomes a property of *construction* rather than of somebody
+  remembering to add a case, which is the whole reason every control routes through one constructor.
+  Two capabilities land with the extraction. **Named states** (`.state("label", |panel, window, cx| …)`) drive
+  the panel into a condition — a modal open, a section expanded — and walk whatever *that* frame paints, with
+  coverage asserted over the union. That closes the modal-gated-control gap the pilot flagged. And
+  **`.assert_covers_every_literal_id()`** scans the panel's own source (declared via `include_str!`) for
+  `control(…, "literal")` ids and fails on any that no walked state ever painted. That is the part that matters:
+  without it a modal control the walk never reaches is not reported as uncovered, it is simply never mentioned —
+  the walk succeeds over a smaller set than the panel has, and the number looks complete. Now it goes red and
+  names the id. Proven by adding a modal-gated control to Tools (walk red, naming `tools-advanced-reset` and
+  telling you to add a state), adding the state (green), then reverting both.
+  The id scanner lives in `wylde-gui-controls`, not in the test-support crate, for a reason worth recording:
+  test-support is EXCLUDED from the GUI workspace and so has no lock file and cannot be `cargo test`-ed in CI at
+  all. A scanner whose own tests never run would be the #56 shape exactly — enforcement enforced by nothing.
+  Beside the constructor it rides `cargo panel-walk` (now 53 test binaries green, `wylde-gui-controls` at 10
+  tests).
+
 
 - **`wylde_check` rule 60 — a unit test that touches a process-global broadcast bus must own its channel or serialize on a guard (closes #246).**
   #246 was not a one-off flake, it was the #83 self-collision class again: several tests in one binary contending on

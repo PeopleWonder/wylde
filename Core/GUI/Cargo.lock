@@ -9019,7 +9019,9 @@ dependencies = [
 name = "wylde-gui-test-support"
 version = "0.2.0-beta.1"
 dependencies = [
+ "gpui",
  "serde_json",
+ "wylde-gui-controls",
  "wylde-gui-pipe",
 ]
 

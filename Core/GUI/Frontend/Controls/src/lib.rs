@@ -78,6 +78,9 @@ use gpui::{ElementId, InteractiveElement, SharedString, Stateful};
 #[cfg(any(test, feature = "test-support"))]
 pub mod registry;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod scan;
+
 /// Give `el` a stable control id and make it interactive.
 ///
 /// This is the **only** sanctioned way to build an interactive control in the
