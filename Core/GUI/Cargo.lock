@@ -9064,6 +9064,8 @@ dependencies = [
  "wylde-gpui-input",
  "wylde-gui-pipe",
  "wylde-gui-test-support",
+ "wylde-harness",
+ "wylde-shared",
  "wylde-theme",
 ]
 

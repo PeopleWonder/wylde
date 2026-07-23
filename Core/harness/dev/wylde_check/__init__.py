@@ -342,6 +342,24 @@ The rules:
                             Single-test live-graph binaries can't self-collide
                             and are out of scope.  Details in
                             docs/wylde_check_rules.md.
+58. ``chat_surfaces_are_e2e_covered`` — every GUI chat entry point must be
+                            driven by the all-surfaces chat-turn e2e
+                            (``Core/GUI/Frontend/Panels/Chat/tests/
+                            chat_turn_e2e.rs``, #236).  Two checks the Rust
+                            compiler cannot make: (a) every ``ChatScope``
+                            variant appears in the test's ``COVERED`` list —
+                            an arm can be added to the exhaustive ``spec()``
+                            match without ever being driven; and (b) every
+                            *send-capable chat composer* in the GUI tree (a
+                            ``SubmitMode::EnterSubmits`` input in a file that
+                            also reaches the turn path) is declared in
+                            ``COVERED_COMPOSER_FILES`` — a new panel growing
+                            its own chat bar adds no ``ChatScope`` variant, so
+                            the match is blind to it.  Chat is the product's
+                            primary path; a new place to type into it must be
+                            proven end-to-end before it ships, not covered by
+                            a percentage that quietly drops.  Details in
+                            docs/wylde_check_rules.md.
 
 All rules are advisory.  The checker returns an envelope; nothing here
 mutates state.
@@ -463,6 +481,9 @@ from .rules._personal_identifiers import (  # noqa: E402
 from .rules._graph_test_isolation import (  # noqa: E402
     check_graph_test_serialized_on_db_lock,
 )
+from .rules._chat_surface_coverage import (  # noqa: E402
+    check_chat_surfaces_are_e2e_covered,
+)
 from .rules._selfcheck import check_rule_targets_exist  # noqa: E402
 from ._single_file import (  # noqa: E402
     _check_dead_refs_lines,
@@ -540,6 +561,11 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # #83 self-collision class recurred three times because the lock was an
     # unenforced convention; this makes it structural.
     "graph_test_serialized_on_db_lock": check_graph_test_serialized_on_db_lock,
+    # Rule 57 — every GUI chat entry point is driven by the all-surfaces
+    # chat-turn e2e (#236). The exhaustive ChatScope match in that test is
+    # the compile-time half; this catches the two cases it cannot see —
+    # an arm added but never driven, and a brand-new chat bar elsewhere.
+    "chat_surfaces_are_e2e_covered": check_chat_surfaces_are_e2e_covered,
     "rule_targets_exist": check_rule_targets_exist,
 }
 
@@ -578,7 +604,12 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # not the panel — Tools declared its bridge correctly and still rendered a card
 # per extension pointing at a service nothing checked. This makes the per-item
 # state a structural gate on both sides of the wire.
-assert len(_RULES) == 32, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 32)"
+# All-surfaces chat-turn e2e (#236, 2026-07-22): +1 (rule 58,
+# chat_surfaces_are_e2e_covered) = 33 active.  Chat is the primary path
+# and has more than one entry point; this keeps a newly-added surface
+# from shipping with no end-to-end proof that typing in it does anything.
+# (Numbered 58, not 57: #239 landed its own rule 57 on develop first.)
+assert len(_RULES) == 33, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 33)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -723,4 +754,5 @@ __all__ = [
     "check_silent_skip_in_service_start",
     "check_no_hardcoded_prompts_rust",
     "check_graph_test_serialized_on_db_lock",
+    "check_chat_surfaces_are_e2e_covered",
 ]

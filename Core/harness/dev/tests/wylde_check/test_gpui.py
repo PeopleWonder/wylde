@@ -95,6 +95,79 @@ def test_no_cross_panel_imports_flags_arbitrary_wylde_dep(isolated_tree: Any) ->
     assert "wylde-harness" in findings[0].message
 
 
+# ── Rule 33: the dev-only backend carve-out (#236) ───────────────────
+#
+# The production boundary is absolute: a panel reaches the backend through the
+# pipe surface, never by linking the harness. A carved-out *dev*-dependency is
+# a different object — `resolver = "2"` keeps it out of the shipped Shell — and
+# the chat-turn e2e needs one to drive the real turn driver. These pin the
+# asymmetry, because a carve-out that silently applied to `[dependencies]` too
+# would quietly delete the boundary it is an exception to.
+
+_CARVED_PANEL_HEAD = """[package]
+name = "wylde-panel-chat"
+version = "0.1.0"
+
+[dependencies]
+wylde-theme = { path = "../../Theme" }
+wylde-gui-pipe = { path = "../../Pipe" }
+"""
+
+
+def test_carved_out_backend_dep_is_allowed_in_dev_dependencies(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write(
+        root / "Core" / "GUI" / "Frontend" / "Panels" / "Chat" / "Cargo.toml",
+        _CARVED_PANEL_HEAD
+        + "\n[dev-dependencies]\n"
+        + "wylde-harness.workspace = true\n"
+        + "wylde-shared.workspace = true\n",
+    )
+    assert wc.check_no_cross_panel_imports() == []
+
+
+def test_carved_out_backend_dep_is_still_flagged_in_dependencies(isolated_tree: Any) -> None:
+    """THE point of making the rule section-aware: the same edge in the
+    production section must stay an error."""
+    wc, root = isolated_tree
+    _write(
+        root / "Core" / "GUI" / "Frontend" / "Panels" / "Chat" / "Cargo.toml",
+        _CARVED_PANEL_HEAD + "wylde-harness.workspace = true\n",
+    )
+    findings = wc.check_no_cross_panel_imports()
+    assert len(findings) == 1
+    assert "wylde-harness" in findings[0].message
+
+
+def test_carve_out_does_not_generalise_to_other_panels(isolated_tree: Any) -> None:
+    """The exemption is per-edge. Another panel dev-depending on the harness
+    is not covered by Chat's carve-out."""
+    wc, root = isolated_tree
+    _write(
+        root / "Core" / "GUI" / "Frontend" / "Panels" / "Foo" / "Cargo.toml",
+        _PANEL_CARGO_CLEAN + "\n[dev-dependencies]\nwylde-harness.workspace = true\n",
+    )
+    findings = wc.check_no_cross_panel_imports()
+    assert len(findings) == 1
+    assert "wylde-harness" in findings[0].message
+
+
+def test_carve_out_does_not_permit_a_sibling_panel_in_dev_dependencies(
+    isolated_tree: Any,
+) -> None:
+    """Dev-only does not mean anything-goes: panel->panel coupling still needs
+    its own explicit edge exemption."""
+    wc, root = isolated_tree
+    _write(
+        root / "Core" / "GUI" / "Frontend" / "Panels" / "Chat" / "Cargo.toml",
+        _CARVED_PANEL_HEAD
+        + '\n[dev-dependencies]\nwylde-panel-bar = { path = "../Bar" }\n',
+    )
+    findings = wc.check_no_cross_panel_imports()
+    assert len(findings) == 1
+    assert "wylde-panel-bar" in findings[0].message
+
+
 def test_no_cross_panel_imports_allows_all_four_shared_crates(isolated_tree: Any) -> None:
     wc, root = isolated_tree
     _write(
