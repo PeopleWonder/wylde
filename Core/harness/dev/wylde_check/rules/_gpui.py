@@ -99,6 +99,28 @@ PANEL_EXTRA_ALLOWED_CRATES: Tuple[str, ...] = (
 # panel→panel dependency. If that dock should live in a shared crate instead,
 # that is a separate refactor; this carve-out names the coupling that exists
 # today rather than hiding it behind the generic allowlist.
+# Per-edge carve-outs for a backend crate a panel may link **in
+# `[dev-dependencies]` only**: `(owning_panel_crate, backend_crate)`.
+#
+# The production boundary above is absolute and stays that way — a panel
+# reaches the backend through the pipe surface, never by linking the harness.
+# A dev-dependency is a different object: with `resolver = "2"` its features
+# are not unified into normal builds, so the edge cannot reach the shipped
+# Shell (verified for the GUI via `cargo tree -p wylde-gui`; see
+# `Core/GUI/docs/gui-testing.md`). Listing the edge here rather than adding the
+# crate to PANEL_EXTRA_ALLOWED_CRATES keeps that asymmetry visible: the same
+# dependency in `[dependencies]` is still an error.
+#
+# wylde-panel-chat -> wylde-harness / wylde-shared (#236): the all-surfaces
+# chat-turn e2e drives the REAL turn driver, by dispatching the GUI's own
+# request envelope into the real harness action registry. Stubbing the harness
+# instead would defeat the test's whole purpose — proving a typed message
+# reaches the production driver and its reply renders back.
+PANEL_DEV_ONLY_BACKEND_EDGE_EXEMPTIONS: Tuple[Tuple[str, str], ...] = (
+    ("wylde-panel-chat", "wylde-harness"),
+    ("wylde-panel-chat", "wylde-shared"),
+)
+
 PANEL_CROSS_PANEL_EDGE_EXEMPTIONS: Tuple[Tuple[str, str], ...] = (
     ("wylde-panel-workspaces", "wylde-panel-chat"),
 )
@@ -191,17 +213,24 @@ _CARGO_DEP_LINE_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)\s*=")
 _CARGO_SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
 
 
-def _parse_cargo_deps(text: str) -> List[Tuple[int, str]]:
-    """Return ``(line_number, dep_name)`` pairs for every entry inside a
-    ``[dependencies]`` / ``[dev-dependencies]`` / ``[build-dependencies]``
-    /  ``[target.*.dependencies]`` section.
+def _parse_cargo_deps(text: str) -> List[Tuple[int, str, bool]]:
+    """Return ``(line_number, dep_name, is_dev)`` triples for every entry
+    inside a ``[dependencies]`` / ``[dev-dependencies]`` /
+    ``[build-dependencies]`` / ``[target.*.dependencies]`` section.
 
     The dep name is the *crate* name as it appears on the left-hand side
     (so ``wylde-panel-chat.workspace = true`` and
     ``wylde-panel-chat = { path = "..." }`` both yield ``"wylde-panel-chat"``).
+
+    ``is_dev`` marks a ``[dev-dependencies]`` (or ``[target.*.dev-dependencies]``)
+    entry.  The distinction matters because with ``resolver = "2"`` a
+    dev-dependency's features are NOT unified into normal builds, so such an
+    edge cannot reach the shipped Shell — see
+    ``PANEL_DEV_ONLY_BACKEND_EDGE_EXEMPTIONS``.
     """
-    out: List[Tuple[int, str]] = []
+    out: List[Tuple[int, str, bool]] = []
     in_deps = False
+    is_dev = False
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.rstrip()
         sec = _CARGO_SECTION_RE.match(line)
@@ -214,6 +243,7 @@ def _parse_cargo_deps(text: str) -> List[Tuple[int, str]]:
                 or name.endswith(".dependencies")
                 or name.endswith(".dev-dependencies")
             )
+            is_dev = name == "dev-dependencies" or name.endswith(".dev-dependencies")
             continue
         if not in_deps:
             continue
@@ -224,7 +254,7 @@ def _parse_cargo_deps(text: str) -> List[Tuple[int, str]]:
         if not m:
             continue
         dep_name = m.group(1).split(".", 1)[0]
-        out.append((lineno, dep_name))
+        out.append((lineno, dep_name, is_dev))
     return out
 
 
@@ -251,7 +281,7 @@ def check_no_cross_panel_imports() -> List[Finding]:
         m = re.search(r'^\s*name\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
         if m:
             own_crate = m.group(1)
-        for lineno, dep in _parse_cargo_deps(text):
+        for lineno, dep, is_dev in _parse_cargo_deps(text):
             if not dep.startswith("wylde-"):
                 continue
             if dep == own_crate:
@@ -278,6 +308,12 @@ def check_no_cross_panel_imports() -> List[Finding]:
                         context=f"{dep} = ...",
                     )
                 )
+                continue
+            # A backend crate is permitted when the edge is dev-only AND
+            # explicitly carved out: test code may drive the real backend, the
+            # shipped Shell may not link it. The same dep in `[dependencies]`
+            # still falls through to the finding below.
+            if is_dev and (own_crate, dep) in PANEL_DEV_ONLY_BACKEND_EDGE_EXEMPTIONS:
                 continue
             # Any other wylde-* crate the panel reaches for is also a
             # boundary break — panels talk to the backend through the

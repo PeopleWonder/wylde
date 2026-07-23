@@ -66,5 +66,19 @@ opener.workspace = true
 wylde-gui-test-support = { path = "../../test-support" }
 # gpui's test harness: `#[gpui::test]`, `TestAppContext`, windows, etc.
 gpui = { workspace = true, features = ["test-support"] }
-# Compile the Pipe crate's injectable seam into the test binary.
+# Compile the Pipe crate's injectable seam into the test binary. `tests/
+# chat_turn_e2e.rs` needs it for `test_backend::PipeNameOverride` — the hook
+# that points the GUI's `wylde-harness` service at a private fixture pipe
+# instead of the live one (#75).
 wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
+
+# The all-surfaces chat-turn e2e (#236) stands up the REAL harness verb
+# surface (`wylde_harness::install()` — the same call the shipped harness
+# binary makes) on a private pipe and drives the production turn driver
+# through it, stubbing only inference. Both crates are already in this
+# crate's link graph via `wylde-gui-pipe`, so naming them here as
+# dev-dependencies adds no crate to the lock graph and nothing to the
+# shipped Shell (resolver = "2" keeps dev-dependency features out of
+# normal builds).
+wylde-harness.workspace = true
+wylde-shared.workspace = true

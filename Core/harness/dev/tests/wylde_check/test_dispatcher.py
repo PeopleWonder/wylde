@@ -92,6 +92,10 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
         # and be run in the live-graph CI leg (0.2 Stability, #226). Makes
         # the #83 self-collision class a structural gate.
         "graph_test_serialized_on_db_lock",
+        # Rule 57 — every GUI chat entry point is driven by the all-surfaces
+        # chat-turn e2e (#236). Chat is the primary path and has more than one
+        # entry point; a new surface must not ship covered by nothing.
+        "chat_surfaces_are_e2e_covered",
     }
     assert set(result["data"]["summary"]["by_rule"].keys()) == expected
 
@@ -117,7 +121,7 @@ def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
     #116 was about.  Bump this when a rule is genuinely added or retired.
     """
     wc, _root = isolated_tree
-    assert len(wc._RULES) == 31
+    assert len(wc._RULES) == 32
     result = wc.run_all()
     assert result["ok"] is True
     assert result["data"]["rules_checked"] == len(wc._RULES)
