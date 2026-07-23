@@ -1170,21 +1170,21 @@ mod tests {
         write_json(
             &tmp.path()
                 .join("Services")
-                .join("wylde-images")
+                .join("wylde-example")
                 .join("manifest.json"),
             &json!({
-                "name": "wylde-images",
+                "name": "wylde-example",
                 "description": "image gallery",
                 "version": "0.1.0",
                 "enabled": true,
                 "tier": "standard",
-                "pipe": "wylde-images",
+                "pipe": "wylde-example",
             }),
         );
         let infos = list_services_in(tmp.path());
         let img = infos
             .iter()
-            .find(|s| s.name == "wylde-images")
+            .find(|s| s.name == "wylde-example")
             .expect("Services/ child must surface in the registry");
         assert_eq!(img.description, "image gallery");
         assert!(img.enabled);
@@ -1221,10 +1221,13 @@ mod tests {
     #[test]
     fn discovered_bucket_services_reports_name_folder_enabled() {
         let tmp = TempDir::new().unwrap();
-        let folder = tmp.path().join("Services").join("Images");
+        // Folder/manifest name is deliberately capitalised and un-prefixed:
+        // discovery canonicalises it to `wylde-example` via
+        // `name_with_wylde_prefix`, which is part of what this asserts.
+        let folder = tmp.path().join("Services").join("Example");
         write_json(
             &folder.join("manifest.json"),
-            &json!({ "name": "Images", "enabled": true }),
+            &json!({ "name": "Example", "enabled": true }),
         );
         // A disabled sibling is still discovered (visible) — the boot loop,
         // not discovery, gates on `enabled`.
@@ -1237,9 +1240,9 @@ mod tests {
         );
         let found = discovered_bucket_services_in(tmp.path());
         assert_eq!(found.len(), 2);
-        let images = found.iter().find(|d| d.name == "wylde-images").unwrap();
-        assert!(images.enabled);
-        assert_eq!(images.folder, folder);
+        let example = found.iter().find(|d| d.name == "wylde-example").unwrap();
+        assert!(example.enabled);
+        assert_eq!(example.folder, folder);
         let notes = found.iter().find(|d| d.name == "wylde-notes").unwrap();
         assert!(!notes.enabled);
     }
