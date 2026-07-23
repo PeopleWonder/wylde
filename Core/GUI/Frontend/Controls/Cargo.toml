@@ -1,0 +1,30 @@
+[package]
+name = "wylde-gui-controls"
+description = "The one constructor every interactive Wylde GUI control routes through.  In a shipped build `control()` is `.id()` and nothing else; in a test build it also records the control into a per-frame registry, so a `control_walk` test can enumerate what ACTUALLY painted and click each one through its real listener (issue #247)."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+gpui.workspace = true
+
+[features]
+# Dev-only registry. Requested ONLY from a panel's `[dev-dependencies]`;
+# with `resolver = "2"` that never unifies into the shipped Shell's normal
+# lib, exactly like `wylde-gui-pipe/test-support` (see docs/gui-testing.md).
+#
+# The registry module is `#[cfg(any(test, feature = "test-support"))]`, so this
+# crate's OWN unit tests reach it without the feature and without a cyclic
+# self-dev-dependency — the same shape gpui uses for `debug_selector`.
+test-support = []
+
+[dev-dependencies]
+# `debug_selector` (the paint-time half of the registry) is a real method only
+# when gpui carries `test-support`; without it gpui compiles an `#[inline]`
+# no-op of the same name. This crate's unit tests assert the real one.
+gpui = { workspace = true, features = ["test-support"] }

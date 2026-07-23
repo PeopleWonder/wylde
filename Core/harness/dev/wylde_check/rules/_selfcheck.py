@@ -159,6 +159,14 @@ RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
         "nav_targets_exist, file_size_limit",
     ),
     (
+        # Rule 59's corpus, listed separately from "Core/GUI" above because
+        # it walks the Shell as well as the Frontend — the Shell owns the nav
+        # chrome, and a control gate blind to it would be half a gate.
+        "Core/GUI/Shell/src",
+        (".rs",),
+        "gui_controls_are_wired_and_walkable",
+    ),
+    (
         "Core/GUI/Frontend/Panels",
         (".rs",),
         "no_legacy_gui_imports_in_panels, no_bare_tokio_in_panel_src, "

@@ -5,6 +5,10 @@
 #   * the windowed `#[gpui::test]` panel-walk (`tests/panel_walk.rs`) — every page
 #     mounts + loads without panic and detects an error state per panel, under
 #     four backend conditions (healthy / down / error envelope / empty); and
+#   * the windowed `control_walk` (`tests/control_walk.rs`, #247) — every control
+#     that ACTUALLY painted is clicked through gpui hit-testing and its real
+#     listener, and must produce an observable effect, so a dead / unwired /
+#     panicking button reds the gate; and
 #   * the behavioural windowed tests that cover critical-path behaviour —
 #     `Chat/tests/dock_scoping.rs` + `conversations.rs` (workspace-id scoping on
 #     send), `Memory/tests/copy_in.rs` (notes.add provenance + failure),
@@ -42,5 +46,11 @@
 # lesson as #49/#57's "never require a path-filtered context". If it is ever
 # renamed, add the new context to both rulesets live BEFORE merging the rename,
 # and drop the old one after.
+# `wylde-gui-controls` (#247) is in the set for the same reason: it owns the
+# per-frame control registry that every `tests/control_walk.rs` reads, so a
+# regression in it would silently empty every control walk. Its only dependency
+# is `gpui`, so it stays TestPlatform-headless-clean like `wylde-changelog`.
+# Leaving it out would recreate #56 exactly — a gate whose foundation is
+# enforced by nothing.
 [alias]
-panel-walk = "test -p wylde-panel-chat -p wylde-panel-dashboard -p wylde-panel-memory -p wylde-panel-workspaces -p wylde-panel-models -p wylde-panel-tools -p wylde-panel-devices -p wylde-panel-remote-access -p wylde-panel-settings -p wylde-changelog"
+panel-walk = "test -p wylde-gui-controls -p wylde-panel-chat -p wylde-panel-dashboard -p wylde-panel-memory -p wylde-panel-workspaces -p wylde-panel-models -p wylde-panel-tools -p wylde-panel-devices -p wylde-panel-remote-access -p wylde-panel-settings -p wylde-changelog"

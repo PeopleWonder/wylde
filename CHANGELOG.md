@@ -48,6 +48,48 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **GUI controls are now proved to DO something, not just to render (refs #247; pilot — Tools panel).**
+  The L7 panel-walk (#35) proves every panel *loads*. Nothing proved a control in it *works*: no test in the
+  tree had ever clicked a GUI control through its real listener, so a button could ship with an empty handler,
+  a handler wired to a method that no longer runs, or no listener at all, and every gate stayed green. This
+  lands the mechanism and pilots it on one panel; the ~140-site migration across the other eight panels is
+  part 2, gated on the pilot result.
+  Three pieces. **`wylde_gui_controls::control(el, "id")`** — the one constructor every interactive control
+  routes through. In a shipped build it is `.id()` and nothing else: the registry module is behind a
+  `test-support` feature requested only from `[dev-dependencies]` (which `resolver = "2"` never unifies into a
+  normal lib), and the paint-time hook is gpui's own `debug_selector`, which **gpui itself** compiles as an
+  `#[inline]` no-op that drops its closure unless gpui carries `test-support`. Verified the same way the pipe
+  seam is: `cargo tree -p wylde-gui -e normal,features -i wylde-gui-controls` reports only `feature "default"`.
+  **`tests/control_walk.rs`** — draws the panel, enumerates the controls that *actually painted* (the
+  constructed-this-frame registry intersected with gpui's per-frame `debug_bounds`), clicks each at its painted
+  centre through `simulate_click` — real platform event, real hit-testing, real listener — and asserts an
+  observable effect via a two-channel oracle: the scripted backend's call count, and a per-panel state
+  fingerprint. Deliberately weak per control and strong in aggregate: it cannot tell you the button did the
+  *right* thing, but it cannot be satisfied by a button that does *nothing*. One fingerprint closure per panel
+  is what makes it affordable at ~140 sites. It also repaints the loaded/error branches panel-walk never
+  touches, so a **panic on click** in one of those surfaces as a red test rather than in front of the user.
+  **`wylde_check` rule 59** — the static half: a dead handler body (empty, or only `cx.notify()` / `todo!()`),
+  and an interactive site that bypasses the constructor. The second is the important one — an unregistered
+  control is never enumerated and never clicked, so coverage drops silently while the suite stays green, the
+  same decay shape as #56/#101/#116. It ships at **error** with a per-file grandfather ratchet recording the
+  140 pre-existing sites, rather than the WARNING a staged rollout would suggest: the `wylde_check (full rule
+  set)` CI job fails on any finding, warning included (by design since #114), so a WARN-only rule would red
+  `develop` exactly as hard as an error one. The ratchet reports zero today and fails the build on a **new**
+  unrouted control — the goal delivered now rather than after the migration. It tightens in both directions:
+  a count below budget is also a finding, because an allowlist nobody must lower rusts open.
+  The oracle was proved rather than assumed: the Refresh button was deliberately broken three ways — emptied
+  handler, listener removed entirely, and a panic reachable only once the catalog loads — and the walk went red
+  each time, naming the dead control; restoring it went green. The panic case reds exactly the two branch tests
+  and correctly leaves the healthy-path tests green, which is the point of repainting those branches. 30
+  consecutive runs at default parallelism: 30 green, 0 flakes.
+  Two findings worth recording. gpui's `TestAppContext::open_window(size, …)` sets the reported `viewport_size`
+  but the root still lays out against the test *display*, so every control paints outside the window, every
+  click misses, and **every control reads as dead** — a total false positive shaped exactly like the bug. The
+  walk mounts with `add_window`; `Core/GUI/docs/gui-testing.md` documents the trap. And rule 59's path matcher
+  needed `(.*/)?` rather than the `.*/src/` form used elsewhere in the suite, because the Shell's sources sit
+  at `Core/GUI/Shell/src/…` with nothing between the crate root and `src` — the `.*/src/` form matches no Shell
+  file at all, and the Shell owns the nav chrome (7 of the 140 sites).
+
 - **The persistent default model is now guaranteed to survive an UPDATE, not just a restart (closes #243; refs
   #235, #132).**
   #235 made the default survive a shutdown — it is read from disk on start. Whether it survives an *update* had
