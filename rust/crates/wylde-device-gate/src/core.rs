@@ -44,31 +44,61 @@ fn now_secs() -> f64 {
         .unwrap_or(0.0)
 }
 
-fn data_dir() -> PathBuf {
+/// Subdirectory of the canonical data root holding the gate's state.
+const STORE_SUBDIR: &str = "device_gate";
+
+/// The gate's on-disk store root: `DEVICE_GATE_DATA_DIR` →
+/// `<data_dir>/device_gate`, where `<data_dir>` is
+/// [`wylde_shared::paths::data_dir`] (convention A, #250).
+///
+/// Until #250 this rooted at `<WYLDE_ROOT>/device_gate/data` — a third
+/// top-level tree, so an operator backing up "Wylde's data" had to know
+/// about it separately or lose every paired device on restore. The legacy
+/// location is adopted on first touch; `devices.json` carries the paired
+/// mobiles and `htpasswd` their credentials, so losing it means re-pairing
+/// every device by hand.
+///
+/// Named `store_root`, not `data_dir`: the `single_data_dir_resolver` gate
+/// requires that no crate but `wylde-shared/src/paths.rs` define one.
+fn store_root() -> PathBuf {
     if let Some(p) = std::env::var_os(DEFAULT_DATA_DIR_ENV) {
         return PathBuf::from(p);
     }
-    // Python's fallback is `<service folder>/data`; here we anchor on
-    // `WYLDE_ROOT/device_gate/data` so the Rust binary stays consistent
-    // when launched outside the vault root. Tests always override via env.
-    let root = std::env::var_os("WYLDE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    root.join("device_gate").join("data")
+    let canonical = wylde_shared::paths::data_dir().join(STORE_SUBDIR);
+    wylde_shared::data_migration::adopt_legacy_tree(
+        &wylde_shared::paths::legacy_device_gate_dir(),
+        &canonical,
+    );
+    canonical
 }
 
 fn devices_path() -> PathBuf {
-    data_dir().join("devices.json")
+    store_root().join("devices.json")
 }
 
 fn htpasswd_path() -> PathBuf {
     std::env::var_os(HTPASSWD_PATH_ENV)
         .map(PathBuf::from)
-        .unwrap_or_else(|| data_dir().join("htpasswd"))
+        .unwrap_or_else(|| store_root().join("htpasswd"))
 }
 
 fn action_log_path() -> PathBuf {
-    data_dir().join("action_log.json")
+    store_root().join("action_log.json")
+}
+
+/// The gate's resolved store root.
+///
+/// Exposed so the #250 data-root gate can assert *where* paired-device state
+/// lands rather than only that it round-trips — the same rationale as
+/// `model_state::default_model_store_path` (#243). A store that quietly moved
+/// would present as "every device is unpaired", with no error anywhere.
+pub fn store_root_path() -> PathBuf {
+    store_root()
+}
+
+/// The resolved `devices.json` path — the paired mobiles and their tokens.
+pub fn devices_store_path() -> PathBuf {
+    devices_path()
 }
 
 // ── Errors ────────────────────────────────────────────────────────────
