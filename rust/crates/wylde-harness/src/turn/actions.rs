@@ -312,6 +312,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
         run_post_turn_hooks(
             &conversation_id,
             workspace_id.as_deref(),
+            &model,
             &user_message,
             &final_text,
         );
@@ -962,6 +963,7 @@ async fn drive_streaming_turn(
             run_post_turn_hooks(
                 &conversation_id,
                 workspace_id.as_deref(),
+                &model,
                 &user_message,
                 &final_text,
             );
@@ -1133,6 +1135,13 @@ async fn drive_streaming_turn(
 
 /// Post-turn hooks, run only on natural completion:
 ///
+/// 0. **The exchange itself** ([`persist_exchange`], #242) — the user
+///    message and the model's reply appended to the conversation's
+///    persisted `messages`. Synchronous and FIRST, for two reasons: it is
+///    the input the other two hooks read (the summary producer counts
+///    `messages`; the extractor's working-memory merge-save rewrites the
+///    document from its own read), and unlike them it is not an
+///    enrichment — it is the record of what happened.
 /// 1. **Slice-D reflection** — the cheap in-process name-detection scan
 ///    (kept as the zero-cost fallback when extraction is disabled or no
 ///    default model is configured; the gate's duplicate-pending rule
@@ -1150,9 +1159,18 @@ async fn drive_streaming_turn(
 fn run_post_turn_hooks(
     conversation_id: &str,
     workspace_id: Option<&str>,
+    model: &str,
     user_message: &str,
     final_message: &str,
 ) {
+    persist_exchange(
+        conversation_id,
+        workspace_id,
+        model,
+        user_message,
+        final_message,
+    );
+
     crate::user_profile::reflection::reflect_after_turn(conversation_id, user_message);
 
     let conv = conversation_id.to_owned();
@@ -1170,6 +1188,67 @@ fn run_post_turn_hooks(
     tokio::spawn(async move {
         crate::chat::search::summary::maybe_refresh(&conv, ws.as_deref()).await;
     });
+}
+
+/// Persist the completed exchange into the conversation's `messages`
+/// (#242) — the write `context_gather::load_history` reads back on the
+/// NEXT turn, which is how the model sees what was already said.
+///
+/// This is the port of the one piece of the Python conversation surface
+/// that was never carried over: `save_conversation` on the chat-turn path
+/// (see the strangler note in [`crate::pipe`]). Without it `messages`
+/// stayed the empty array `conversations.new` minted, `load_history`
+/// returned nothing on every turn, and each turn was answered blind.
+///
+/// **Both surfaces, one call.** The two chat surfaces differ only in what
+/// `workspace_id` the turn carries — `ChatScope::Global` is structurally
+/// unbound (`None`), `ChatScope::Docked` carries the entered workspace —
+/// and both drivers funnel through this one seam on natural completion.
+/// The scoping model's per-chat tier therefore lands in the same flat
+/// store for both, keyed by conversation, with the binding recorded on the
+/// document; a bound turn's *extra* workspace context is gathered fresh
+/// each turn and is deliberately not baked into the persisted history.
+///
+/// **Ordering.** Called before the gather of the next turn can possibly
+/// run, and before this turn's own background hooks are spawned, so the
+/// summary producer counts a document that already includes this exchange.
+///
+/// **What is persisted:** the RAW user message (not the slot-augmented
+/// prompt body — the injected context is rebuilt per turn and must never
+/// accumulate in the record) and the PRE-notice assistant text (the
+/// service-degraded banner is UI chrome, not something the user said or
+/// the model wrote). Tool-round scaffolding is not persisted: intra-turn
+/// tool exchanges are not conversation, and `load_history` skips those
+/// roles on read anyway.
+///
+/// **Fail-soft.** A write failure is logged, never surfaced: the user has
+/// already read the reply, and failing the turn over a disk error would
+/// turn a lost memory into a lost answer.
+fn persist_exchange(
+    conversation_id: &str,
+    workspace_id: Option<&str>,
+    model: &str,
+    user_message: &str,
+    final_message: &str,
+) {
+    match crate::memory::conversations::store::append_exchange(
+        conversation_id,
+        workspace_id,
+        model,
+        user_message,
+        final_message,
+    ) {
+        Ok(len) => tracing::debug!(
+            conversation_id = %conversation_id,
+            messages = len,
+            "turn: persisted the exchange"
+        ),
+        Err(e) => tracing::warn!(
+            conversation_id = %conversation_id,
+            "turn: could not persist the exchange — the next turn will not see \
+             it in history: {e:?}"
+        ),
+    }
 }
 
 /// Driver-side surfacing of the M3 tier-7 degrade flag: a warn log per

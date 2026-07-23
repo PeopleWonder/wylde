@@ -24,20 +24,26 @@
 //! of the same `conversation.py` file (the `working_memory` array inside
 //! each `<conversations_dir>/<id>.json` document). This module ports the
 //! *document-lifecycle* half — minting / listing / reading / deleting the
-//! same files. The two share the on-disk schema and the same id-validation
-//! rules; neither writes a field the other owns, so a `conversations.get`
-//! and a `memory.short_term.append` interleave safely on one file. The
-//! Python `conversation.py` module stays load-bearing for
-//! `memory.reflect`; this port only moves the four pipe verbs off Python.
+//! same files — plus, since #242, the **chat-turn `messages` append**
+//! ([`append_exchange`]). The two share the on-disk schema and the same
+//! id-validation rules, and each preserves the other's fields. The Python
+//! `conversation.py` module stays load-bearing for `memory.reflect`; this
+//! port moves the four pipe verbs — and the turn-path save Python used to
+//! own — off Python.
 //!
 //! ## Why no in-process cache
 //!
 //! Like [`super::super::common`], every path lookup re-reads the env so
 //! tests can swap `WYLDE_DATA_DIR` per-test. List/read are plain file IO;
-//! they don't take a process-wide lock because the only mutation that can
-//! race them — `short_term`'s merge-save — already serialises through its
-//! own atomic temp + rename, so a concurrent reader sees either the old
-//! or the new file, never a torn one.
+//! they don't take a process-wide lock because the atomic temp + rename
+//! means a concurrent reader sees either the old or the new file, never a
+//! torn one.
+//!
+//! **Writers do lock.** Both [`append_exchange`] here and `short_term`'s
+//! merge-save read the whole document, change one array, and write it
+//! back. Atomic rename does not make that read-modify-write cycle safe —
+//! an interleave loses one of the two updates — so both serialise on
+//! [`crate::memory::common::doc_write_guard`] (#242).
 
 use std::path::PathBuf;
 
@@ -189,6 +195,126 @@ pub fn save_conversation(doc: &Map<String, Value>) -> std::io::Result<()> {
         })?;
     validate_id(conv_id).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.0))?;
     write_doc(conv_id, doc)
+}
+
+/// One persisted turn's worth of chat: the user's message and the
+/// assistant's reply, appended to the conversation's `messages` array.
+///
+/// ## Why this exists (#242)
+///
+/// [`crate::turn::context_gather`]'s `load_history` — improvement plan B1,
+/// "the model can finally see the previous turns" — builds its slot by
+/// reading exactly this array. Nothing on the Rust turn path ever wrote to
+/// it: the Python `save_conversation`-on-the-chat-turn-path that owned this
+/// write (see the strangler note in [`crate::pipe`]) was never ported when
+/// Python was deleted. So `load_history` returned `[]` on every turn and
+/// the model answered each one blind. This is the missing write.
+///
+/// ## Scoping
+///
+/// One store serves **both** chat surfaces. Under Route 1 the harness flat
+/// store at `<data_dir>/conversations/` is canonical for live turns, and a
+/// workspace-bound conversation is a document here carrying a non-empty
+/// `workspace_id` — not a document in the workspace bundle (the same
+/// invariant [`delete_by_workspace`] rests on). So the global slot
+/// (`ChatScope::Global`, structurally unbound) and the docked
+/// InferenceBar (`ChatScope::Docked`, bound) both persist and both reload
+/// through this one path; `workspace_id` is what separates them, and the
+/// extra workspace context a bound turn gathers rides the gather, not the
+/// history.
+///
+/// `workspace_id` is only ever **seeded**, never re-written: a document
+/// that already carries the key keeps its value, so this can't clobber an
+/// explicit [`set_workspace`] (re)binding or silently re-bind a chat the
+/// user unbound.
+///
+/// ## Shape + semantics
+///
+/// * Messages are `{"role", "content"}` — the shape `load_history`,
+///   `chat::search::summary`, the `conversations.get` reader in the GUI,
+///   and the exchange import/export all already read.
+/// * Blank content is dropped (an empty assistant reply persists nothing);
+///   both blank ⇒ no write at all, so a degenerate turn can't bump
+///   `updated_at`.
+/// * **Upsert.** The GUI mints a conversation id client-side and the first
+///   turn usually runs before any document exists, so a missing file is
+///   created rather than an error.
+/// * `model` is recorded when non-empty — the field `list_conversations`
+///   surfaces in the switcher and `short_term`'s merge-save has always
+///   preserved but never had a producer for.
+/// * Every sibling field (`working_memory`, `auto_summary`, `topic_tags`,
+///   `embedding`, …) is preserved verbatim.
+///
+/// Returns the resulting `messages` length. Errors on an invalid id or a
+/// failed write; the caller treats persistence as fail-soft (a turn the
+/// user already saw must not be reported as failed because the disk was).
+pub fn append_exchange(
+    conv_id: &str,
+    workspace_id: Option<&str>,
+    model: &str,
+    user_message: &str,
+    assistant_message: &str,
+) -> Result<usize, ReadError> {
+    validate_id(conv_id).map_err(ReadError::InvalidId)?;
+
+    let user = user_message.trim();
+    let assistant = assistant_message.trim();
+    if user.is_empty() && assistant.is_empty() {
+        // Nothing to record — don't touch the file (and don't bump
+        // `updated_at`, which would reorder the switcher for no reason).
+        return Ok(0);
+    }
+
+    // Serialised against `short_term`'s working-memory merge-save, which
+    // rewrites this same document from its own read (see
+    // `common::DOC_WRITE_LOCK`).
+    let _g = crate::memory::common::doc_write_guard();
+
+    let now = now_secs();
+    let mut doc = read_doc(conv_id).unwrap_or_else(|_| {
+        let mut m = Map::new();
+        m.insert("id".into(), Value::String(conv_id.to_owned()));
+        m.insert("title".into(), Value::String("Untitled".to_owned()));
+        m.insert("created_at".into(), json!(now));
+        m.insert("messages".into(), Value::Array(Vec::new()));
+        m.insert("working_memory".into(), Value::Array(Vec::new()));
+        m
+    });
+
+    let mut messages = doc
+        .get("messages")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !user.is_empty() {
+        messages.push(json!({"role": "user", "content": user}));
+    }
+    if !assistant.is_empty() {
+        messages.push(json!({"role": "assistant", "content": assistant}));
+    }
+    let len = messages.len();
+
+    doc.insert("messages".into(), Value::Array(messages));
+    doc.insert("updated_at".into(), json!(now));
+    // Seed-only: an existing binding (including a deliberate empty one)
+    // is authoritative over the turn's ambient workspace.
+    if !doc.contains_key("workspace_id") {
+        let seeded = workspace_id.map(str::trim).filter(|s| !s.is_empty());
+        doc.insert(
+            "workspace_id".into(),
+            Value::String(seeded.unwrap_or("").to_owned()),
+        );
+    }
+    if !model.trim().is_empty() {
+        doc.insert("model".into(), Value::String(model.trim().to_owned()));
+    }
+
+    write_doc(conv_id, &doc).map_err(|e| {
+        ReadError::NotFound(ConversationNotFound(format!(
+            "conversation '{conv_id}' could not be written: {e}"
+        )))
+    })?;
+    Ok(len)
 }
 
 /// Re-assign a conversation's `workspace_id` (Q4 — mutable binding).
@@ -676,6 +802,152 @@ mod tests {
         assert_eq!(doc["title"], "T");
         assert_eq!(doc["messages"].as_array().unwrap().len(), 1);
         assert_eq!(doc["working_memory"].as_array().unwrap().len(), 1);
+    }
+
+    // ── #242: the chat-turn `messages` append ───────────────────────────
+
+    /// Roles + order + accumulation — the shape `load_history` decodes.
+    #[test]
+    fn append_exchange_records_both_roles_in_order() {
+        let _env = TestEnv::new();
+        let n = append_exchange("app1", None, "qwen2.5", "first ask", "first answer").unwrap();
+        assert_eq!(n, 2);
+        append_exchange("app1", None, "qwen2.5", "second ask", "second answer").unwrap();
+
+        let doc = read_conversation("app1").expect("upserted");
+        let msgs = doc["messages"].as_array().unwrap();
+        let pairs: Vec<(&str, &str)> = msgs
+            .iter()
+            .map(|m| (m["role"].as_str().unwrap(), m["content"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("user", "first ask"),
+                ("assistant", "first answer"),
+                ("user", "second ask"),
+                ("assistant", "second answer"),
+            ]
+        );
+        assert_eq!(doc["model"], "qwen2.5", "the switcher's model field");
+    }
+
+    /// The first turn of a chat runs before any document exists — the GUI
+    /// mints the id and never writes. The upsert is the normal path.
+    #[test]
+    fn append_exchange_upserts_a_missing_conversation() {
+        let _env = TestEnv::new();
+        assert!(read_conversation("fresh").is_err(), "nothing on disk yet");
+        append_exchange("fresh", None, "m", "hello", "hi there").unwrap();
+        let doc = read_conversation("fresh").expect("created by the append");
+        assert_eq!(doc["id"], "fresh");
+        assert_eq!(doc["title"], "Untitled");
+        assert!(doc["created_at"].as_i64().unwrap() > 0);
+        assert_eq!(doc["working_memory"].as_array().unwrap().len(), 0);
+        assert_eq!(doc["messages"].as_array().unwrap().len(), 2);
+    }
+
+    /// Every sibling field the M1 summary pipeline and short-term memory
+    /// own must survive a turn's append.
+    #[test]
+    fn append_exchange_preserves_siblings() {
+        let _env = TestEnv::new();
+        seed_conversation(
+            "sib",
+            json!({
+                "id": "sib", "title": "Named by the user", "created_at": 42,
+                "messages": [{"role": "user", "content": "older"}],
+                "working_memory": [{"kind": "decision", "data": "x"}],
+                "auto_summary": "a summary", "summary_msg_count": 1,
+                "topic_tags": ["t"], "embedding": [0.5],
+            }),
+        );
+        append_exchange("sib", None, "m", "new ask", "new answer").unwrap();
+        let doc = read_conversation("sib").unwrap();
+        assert_eq!(doc["title"], "Named by the user", "title is not reset");
+        assert_eq!(doc["created_at"], 42, "created_at is not re-minted");
+        assert_eq!(doc["auto_summary"], "a summary");
+        assert_eq!(doc["summary_msg_count"], 1);
+        assert_eq!(doc["topic_tags"], json!(["t"]));
+        assert_eq!(doc["embedding"], json!([0.5]));
+        assert_eq!(doc["working_memory"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["messages"].as_array().unwrap().len(), 3);
+    }
+
+    /// Scoping: a docked (bound) turn stamps its workspace on a new
+    /// document, a global one records the structurally-unbound empty
+    /// binding — and neither ever rewrites a binding that already exists.
+    #[test]
+    fn append_exchange_seeds_but_never_rewrites_the_workspace_binding() {
+        let _env = TestEnv::new();
+
+        // Docked surface, fresh conversation → the binding is recorded, so
+        // `delete_by_workspace` and the switcher can both find it.
+        append_exchange("bound", Some("ws-alpha"), "m", "q", "a").unwrap();
+        assert_eq!(
+            read_conversation("bound").unwrap()["workspace_id"],
+            "ws-alpha"
+        );
+
+        // Global surface is structurally unbound.
+        append_exchange("global", None, "m", "q", "a").unwrap();
+        assert_eq!(read_conversation("global").unwrap()["workspace_id"], "");
+
+        // An existing binding wins over the turn's ambient workspace —
+        // `set_workspace` is the only thing allowed to (re)bind.
+        seed_conversation(
+            "rebound",
+            json!({"id": "rebound", "messages": [], "workspace_id": "ws-chosen"}),
+        );
+        append_exchange("rebound", Some("ws-other"), "m", "q", "a").unwrap();
+        assert_eq!(
+            read_conversation("rebound").unwrap()["workspace_id"],
+            "ws-chosen",
+            "an append must not silently re-bind a conversation"
+        );
+
+        // A deliberately-cleared binding stays cleared.
+        seed_conversation(
+            "unbound",
+            json!({"id": "unbound", "messages": [], "workspace_id": ""}),
+        );
+        append_exchange("unbound", Some("ws-other"), "m", "q", "a").unwrap();
+        assert_eq!(read_conversation("unbound").unwrap()["workspace_id"], "");
+    }
+
+    /// Blank content never becomes a blank message, and a wholly-empty
+    /// exchange doesn't touch the file at all (no spurious `updated_at`
+    /// bump reordering the switcher).
+    #[test]
+    fn append_exchange_drops_blanks_and_no_ops_on_an_empty_pair() {
+        let _env = TestEnv::new();
+        append_exchange("blank", None, "m", "  a real ask \n", "   ").unwrap();
+        let msgs = read_conversation("blank").unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(msgs.len(), 1, "an empty reply persists nothing");
+        assert_eq!(msgs[0]["role"], "user");
+        assert_eq!(msgs[0]["content"], "a real ask", "trimmed");
+
+        assert_eq!(
+            append_exchange("nothing", None, "m", "", "  ").unwrap(),
+            0,
+            "a wholly-empty exchange writes nothing"
+        );
+        assert!(
+            read_conversation("nothing").is_err(),
+            "and does not conjure a document"
+        );
+    }
+
+    #[test]
+    fn append_exchange_rejects_an_unsafe_id() {
+        let _env = TestEnv::new();
+        match append_exchange("../escape", None, "m", "q", "a") {
+            Err(ReadError::InvalidId(_)) => {}
+            other => panic!("expected InvalidId, got {other:?}"),
+        }
     }
 
     #[test]

@@ -105,6 +105,31 @@ pub fn embed_dim() -> usize {
         .unwrap_or(768)
 }
 
+/// Process-wide mutex serialising **read-modify-write cycles** on a
+/// conversation document (`<conversations_dir>/<id>.json`).
+///
+/// Two independent modules mutate that one file by reading the whole doc,
+/// changing one array, and writing it back:
+///
+/// * [`crate::memory::short_term::store`] owns `working_memory`;
+/// * [`crate::memory::conversations::store::append_exchange`] owns `messages`.
+///
+/// Each preserves the other's field from the copy it read, so an interleave
+/// (`A reads → B reads → A writes → B writes`) silently discards A's write.
+/// The atomic temp+rename only buys torn-*read* safety, not lost-update
+/// safety — that needs the two writers to agree on a lock, which is why this
+/// static lives in `common` rather than in either module.
+///
+/// Held only across one read+write of one small JSON file. Cross-process
+/// safety still rests on the atomic rename, exactly as before (#242).
+pub(crate) static DOC_WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Lock [`DOC_WRITE_LOCK`], recovering from a poisoned mutex (a panicking
+/// writer must not wedge every later turn's persistence).
+pub(crate) fn doc_write_guard() -> std::sync::MutexGuard<'static, ()> {
+    DOC_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// Process-wide mutex guarding `WYLDE_DATA_DIR` mutation in tests.
 ///
 /// Several sub-modules (`workspaces::test_support`, `long_term::test_support`,
