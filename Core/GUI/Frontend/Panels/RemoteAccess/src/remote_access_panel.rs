@@ -20,9 +20,10 @@
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, FontWeight,
-    IntoElement, Render, SharedString, Stateful, Window,
+    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, FontWeight, IntoElement,
+    Render, SharedString, Stateful, Window,
 };
+use wylde_gui_controls::control;
 use wylde_theme::colors::{
     BORDER_DEFAULT, BORDER_EMPHASIS, BORDER_SUBTLE, BRAND, BRAND_LIGHT, SURFACE_800, SURFACE_900,
     TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
@@ -225,9 +226,7 @@ fn header_row(cx: &mut Context<RemoteAccessPanel>) -> gpui::Div {
 }
 
 fn refresh_button(cx: &mut Context<RemoteAccessPanel>) -> Stateful<gpui::Div> {
-    let id: ElementId = ElementId::Name("remote-refresh".into());
-    div()
-        .id(id)
+    control(div(), "remote-refresh")
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -252,8 +251,7 @@ fn jump_button(
     nav_key: &'static str,
     cx: &mut Context<RemoteAccessPanel>,
 ) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name(id_str.into()))
+    control(div(), id_str)
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -425,9 +423,7 @@ fn peer_row(p: &PeerRow, cx: &mut Context<RemoteAccessPanel>) -> Stateful<gpui::
     } else {
         None
     };
-    let id: ElementId = ElementId::Name(format!("remote-peer::{}", p.public_key).into());
-    let mut row = div()
-        .id(id)
+    let mut row = control(div(), format!("remote-peer::{}", p.public_key))
         .border_b_1()
         .border_color(rgb(pack(BORDER_SUBTLE)))
         .pb_2()
@@ -673,8 +669,7 @@ fn placeholder_card_clickable(
     nav_key: &'static str,
     cx: &mut Context<RemoteAccessPanel>,
 ) -> gpui::Div {
-    let body = div()
-        .id(ElementId::Name(id_str.into()))
+    let body = control(div(), id_str)
         .cursor_pointer()
         .font_family(FAMILY_INTER)
         .text_size(px(size::XS))

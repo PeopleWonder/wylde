@@ -38,17 +38,26 @@
 //!
 //! * **backend** — [`ScriptedBackend`] records every call; a click that fires
 //!   IPC moves the count.
+//! * **nav** — `wylde_gui_pipe::request_nav`, the cross-panel navigation
+//!   channel, recorded by the pipe crate's dev-only `nav_probe`.
 //! * **state** — the panel's own [`ControlWalk::fingerprint`] closure. One per
 //!   panel, not one per control.
 //!
-//! A control passes if **either** moved. Deliberately weak per control and
+//! A control passes if **any** of the three moved. Deliberately weak per control and
 //! strong in aggregate: it cannot tell you the button did the *right* thing,
 //! but it cannot be satisfied by a button that does *nothing* — which is the
 //! class #247 is about. Per-control behavioural depth stays in ordinary
 //! windowed tests next to the walk.
 //!
-//! Nav and modal effects fold into the same two channels: nav publishes on a
-//! bus the panel reads back, and a modal opening *is* panel state.
+//! The nav channel is not optional garnish. An earlier version of this harness
+//! had only backend + state, on the assumption that "nav publishes on a bus the
+//! panel reads back". That is false: `request_nav` hands the key to the SHELL,
+//! and the originating panel's own state never moves. Under a two-channel
+//! oracle the Dashboard's fifteen service chips and its empty-state rows — all
+//! of which do nothing but navigate — read as **dead controls**. They are not;
+//! they are the reason this channel exists.
+//!
+//! Modal effects do fold into `state`: a modal opening *is* panel state.
 //!
 //! # Modal-gated controls
 //!
@@ -96,7 +105,7 @@
 
 use std::sync::Arc;
 
-use gpui::{Modifiers, Render, TestAppContext, VisualTestContext, WindowHandle};
+use gpui::{px, size, Modifiers, Render, Size, TestAppContext, VisualTestContext, WindowHandle};
 
 use crate::ScriptedBackend;
 use wylde_gui_controls::scan::literal_control_ids;
@@ -107,6 +116,8 @@ use wylde_gui_controls::scan::literal_control_ids;
 #[derive(Debug, PartialEq, Eq, Clone)]
 struct Effect {
     backend_calls: usize,
+    /// Cross-panel nav requests made so far (`wylde_gui_pipe::request_nav`).
+    nav_requests: usize,
     state: String,
 }
 
@@ -133,10 +144,16 @@ impl Walked {
 type StateFn<V> = Box<dyn Fn(&mut V, &mut gpui::Window, &mut gpui::Context<V>)>;
 
 /// Builder for a control walk over one panel.
+/// Default walk viewport — deliberately far taller than the test display so a
+/// long page lays out in full and every control is inside the window.
+pub const WALK_VIEWPORT: (f32, f32) = (1600.0, 6000.0);
+
 pub struct ControlWalk<'a, V: Render + 'static> {
     window: WindowHandle<V>,
+    viewport: Size<gpui::Pixels>,
     fake: &'a Arc<ScriptedBackend>,
     fingerprint: Option<Box<dyn Fn(&V) -> String>>,
+    reset: Option<StateFn<V>>,
     states: Vec<(String, StateFn<V>)>,
     sources: Vec<&'static str>,
 }
@@ -146,8 +163,10 @@ impl<'a, V: Render + 'static> ControlWalk<'a, V> {
     pub fn new(window: WindowHandle<V>, fake: &'a Arc<ScriptedBackend>) -> Self {
         Self {
             window,
+            viewport: size(px(WALK_VIEWPORT.0), px(WALK_VIEWPORT.1)),
             fake,
             fingerprint: None,
+            reset: None,
             states: Vec::new(),
             sources: Vec::new(),
         }
@@ -160,6 +179,30 @@ impl<'a, V: Render + 'static> ControlWalk<'a, V> {
     /// (a pending set, an expanded flag, a selected id).
     pub fn fingerprint(mut self, f: impl Fn(&V) -> String + 'static) -> Self {
         self.fingerprint = Some(Box::new(f));
+        self
+    }
+
+    /// Return the panel to a known baseline **before every individual click**.
+    ///
+    /// Needed whenever a control can open something that occludes the rest of
+    /// the panel. Wylde's modals are `.absolute().inset_0().occlude()`
+    /// backdrops: once one click opens one, every LATER click in that pass
+    /// lands on the backdrop instead of its target, and a whole tail of
+    /// perfectly live controls reports as dead. Clicks have to be independent,
+    /// and only the panel knows how to close its own modals.
+    ///
+    /// ```ignore
+    /// .reset(|p: &mut SettingsPanel, _w, cx| {
+    ///     p.hf_modal_open = false;
+    ///     p.auto_check_modal_open = false;
+    ///     cx.notify();
+    /// })
+    /// ```
+    pub fn reset(
+        mut self,
+        f: impl Fn(&mut V, &mut gpui::Window, &mut gpui::Context<V>) + 'static,
+    ) -> Self {
+        self.reset = Some(Box::new(f));
         self
     }
 
@@ -188,12 +231,38 @@ impl<'a, V: Render + 'static> ControlWalk<'a, V> {
         self
     }
 
+    /// Override the viewport the walk lays the panel out in.
+    ///
+    /// Defaults to [`WALK_VIEWPORT`]. Raise it if a panel is taller still;
+    /// there is no cost beyond layout, since the test platform has no real
+    /// display.
+    pub fn viewport(mut self, size: Size<gpui::Pixels>) -> Self {
+        self.viewport = size;
+        self
+    }
+
     /// Draw, enumerate, click.
     pub fn run(self, cx: &mut TestAppContext) -> WalkReport {
         let fingerprint = self.fingerprint.expect(
             "ControlWalk::fingerprint is required — without it the oracle has only one channel",
         );
         let mut vcx = VisualTestContext::from_window(self.window.into(), cx);
+
+        // Grow the viewport before drawing. `add_window` sizes to the test
+        // display (1920x1080), and a long page — Settings is ~1300px of
+        // content — lays its lower controls out BELOW that. They still get
+        // painted bounds, so they look walkable, but `simulate_click` at
+        // y > 1080 lands outside the window and hits nothing: every control
+        // past the fold reads as dead. That is the same false-positive shape
+        // as the `open_window` trap, and it is why this is done here once
+        // rather than left for each panel to trip over.
+        //
+        // A real user reaches those controls by scrolling; the walk reaches
+        // them by making the window tall enough that there is nothing to
+        // scroll. Deterministic, and costs only layout on a headless platform.
+        vcx.simulate_resize(self.viewport);
+        vcx.run_until_parked();
+
         let mut walked: Vec<Walked> = Vec::new();
 
         // The default frame, then each declared state.
@@ -203,19 +272,19 @@ impl<'a, V: Render + 'static> ControlWalk<'a, V> {
             self.fake,
             &fingerprint,
             "default",
+            self.reset.as_deref(),
+            None,
             &mut walked,
         );
         for (label, apply) in &self.states {
-            self.window
-                .update(&mut vcx, |panel, window, cx| apply(panel, window, cx))
-                .expect("the panel entity is still alive");
-            vcx.run_until_parked();
             walk_one_state(
                 &mut vcx,
                 self.window,
                 self.fake,
                 &fingerprint,
                 label,
+                self.reset.as_deref(),
+                Some(&**apply),
                 &mut walked,
             );
         }
@@ -242,8 +311,25 @@ fn walk_one_state<V: Render + 'static>(
     fake: &Arc<ScriptedBackend>,
     fingerprint: &dyn Fn(&V) -> String,
     state_label: &str,
+    reset: Option<&dyn Fn(&mut V, &mut gpui::Window, &mut gpui::Context<V>)>,
+    enter: Option<&dyn Fn(&mut V, &mut gpui::Window, &mut gpui::Context<V>)>,
     out: &mut Vec<Walked>,
 ) {
+    // Put the panel in this state's baseline, then find out what it paints.
+    let rebase = |vcx: &mut VisualTestContext| {
+        window
+            .update(vcx, |panel, w, cx| {
+                if let Some(r) = reset {
+                    r(panel, w, cx);
+                }
+                if let Some(e) = enter {
+                    e(panel, w, cx);
+                }
+            })
+            .expect("the panel entity is still alive");
+        vcx.run_until_parked();
+    };
+    rebase(vcx);
     // Fresh frame: gpui clears its own `debug_bounds` at the top of every
     // real frame, so after this the constructed-half and the painted-half
     // describe the same tree.
@@ -251,7 +337,19 @@ fn walk_one_state<V: Render + 'static>(
     vcx.update(|window, _| window.refresh());
     vcx.run_until_parked();
 
-    for id in wylde_gui_controls::registry::constructed() {
+    let ids = wylde_gui_controls::registry::constructed();
+    for id in ids {
+        // Re-establish the baseline before EVERY click, not just once per
+        // state. A click that opened an occluding modal would otherwise sit
+        // over the panel for the rest of the pass and swallow every later
+        // click — see `ControlWalk::reset`.
+        rebase(vcx);
+        let key_probe: &'static str = Box::leak(id.to_string().into_boxed_str());
+        if vcx.debug_bounds(key_probe).is_none() {
+            // The rebase stopped this control painting (it belonged to a state
+            // an earlier click left). Nothing to click.
+            continue;
+        }
         // `debug_bounds` is keyed by `&'static str`; control ids are a small
         // bounded set per test binary, so leaking each once is cheaper than
         // threading a lifetime through the registry.
@@ -266,10 +364,12 @@ fn walk_one_state<V: Render + 'static>(
                 painted: false,
                 before: Effect {
                     backend_calls: 0,
+                    nav_requests: 0,
                     state: String::new(),
                 },
                 after: Effect {
                     backend_calls: 0,
+                    nav_requests: 0,
                     state: String::new(),
                 },
             });
@@ -283,6 +383,7 @@ fn walk_one_state<V: Render + 'static>(
 
         let snap = |vcx: &mut VisualTestContext| Effect {
             backend_calls: fake.calls().len(),
+            nav_requests: wylde_gui_pipe::nav_bus::nav_probe::count(),
             state: window
                 .update(vcx, |panel, _w, _cx| fingerprint(panel))
                 .expect("the panel entity is still alive"),

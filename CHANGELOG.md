@@ -48,6 +48,26 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **The control walk gained a nav channel and a viewport fix, and Dashboard + RemoteAccess are now walked
+  (refs #247, part 2 batch 3).** Ratchet **136 → 127 sites / 24 files**.
+  Dashboard exposed a real hole in the oracle. Its fifteen service chips and its empty-state rows do exactly
+  one thing when clicked: call `wylde_gui_pipe::request_nav(...)`. That is neither a backend call nor a change
+  to the panel's own state, so under the previous two-channel oracle **every one of them read as a dead
+  control**. The harness doc had claimed nav "folds into state" — it does not; `request_nav` hands the key to
+  the Shell and the originating panel never moves. Nav is now a third channel, recorded by a dev-only
+  `nav_probe` in `wylde-gui-pipe`. It is a **thread-local**, not a reader on the existing process-wide
+  `OnceLock` sender: a test that installed a real channel would collect nav requests from every other test in
+  the binary, and that contamination could only ever turn a dead control into a live-looking one — the wrong
+  direction for a gate to be wrong in. Same shape as the scripted backend's thread-local.
+  A second false-positive class turned up with it: a long panel lays its lower controls out *below* the test
+  display (1920×1080), where they still get painted bounds and so look walkable, but a click at y > 1080 lands
+  outside the window and hits nothing. Every control past the fold read as dead. The walk now grows the
+  viewport before drawing, which costs only layout on a headless platform. Same shape as the `open_window`
+  trap, and fixed once in the harness rather than left for each panel to rediscover.
+  The harness also re-establishes a baseline before **every** click (`ControlWalk::reset`), because Wylde's
+  modals are `.absolute().inset_0().occlude()` backdrops: one click opening one would otherwise swallow every
+  later click in the pass and report a whole tail of live controls as dead.
+
 - **Self-expiring tracker docs — a standing tracking issue becomes a doc that garbage-collects itself (closes #253; closes #83).**
   A *tracker* is an issue that holds no open work and exists only to be the home for the next instance of a
   recurring problem. #83 — the self-collision class, tests that assert against production or shared resources —

@@ -32,6 +32,9 @@ wylde-stack.workspace = true
 tokio.workspace = true
 
 # gpui.
+# The one constructor every interactive control routes through (#247).
+wylde-gui-controls = { path = "../../Controls" }
+
 gpui.workspace = true
 
 serde.workspace      = true
@@ -45,6 +48,7 @@ anyhow.workspace     = true
 # cargo tree). These four panels were the zero-coverage gap the L7
 # panel-walk (issue #35) closes.
 [dev-dependencies]
+wylde-gui-controls = { path = "../../Controls", features = ["test-support"] }
 wylde-gui-test-support = { path = "../../test-support" }
 gpui = { workspace = true, features = ["test-support"] }
 wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
