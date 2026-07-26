@@ -536,9 +536,8 @@ impl EditorTab {
 impl Render for EditorTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = div()
-            // wylde-check: control-ok: the tab root is a layout container, not a
-            // click-button — the completion rows, hover-dismiss and the editor
-            // body are the controls.
+            // wylde-check: control-ok: the tab root is a layout container
+            // (completion rows, hover-dismiss, editor body are the controls).
             .id("workspaces-editor-tab")
             .size_full()
             .flex()
@@ -611,9 +610,9 @@ impl Render for EditorTab {
         // Hover strip (F1) — dismissable.
         if let Some(hover) = self.hover.clone() {
             root = root.child(
-                // wylde-check: control-ok: the hover strip is a text container,
-                // not a click-button — the ✕ dismiss inside it is the control.
                 div()
+                    // wylde-check: control-ok: the hover strip is a text
+                    // container (its ✕ dismiss is the control).
                     .id("editor-hover-strip")
                     .flex()
                     .flex_row()

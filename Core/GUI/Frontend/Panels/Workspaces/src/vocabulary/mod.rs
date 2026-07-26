@@ -771,7 +771,10 @@ impl Render for VocabularyTab {
             &self.stale,
         );
 
-        let mut root = control(div(), "workspaces-vocabulary-tab")
+        let mut root = div()
+            // wylde-check: control-ok: the sub-tab root is a keyboard/layout
+            // container (Ctrl+Z/Y undo); the buttons/rows are the controls.
+            .id("workspaces-vocabulary-tab")
             .track_focus(&self.focus)
             // Ctrl+Z / Ctrl+Shift+Z — connection-edit undo/redo (§5.9). Keys
             // the focused child input doesn't claim bubble up to here. The
@@ -1042,7 +1045,10 @@ impl Render for VocabularyTab {
                 let ident_accept = ident.clone();
                 let ident_reject = ident.clone();
                 section = section.child(
-                    control(div(), ("vocab-proposal", i))
+                    div()
+                        // wylde-check: control-ok: the proposal row is a layout
+                        // container (Accept / Reject inside are the controls).
+                        .id(("vocab-proposal", i))
                         .flex()
                         .flex_row()
                         .items_center()
@@ -1536,5 +1542,216 @@ mod tests {
     fn render_signature_compiles() {
         fn assert_render<T: Render>() {}
         assert_render::<VocabularyTab>();
+    }
+}
+
+#[cfg(test)]
+mod control_walk {
+    //! L7 **control**-walk — the Vocabulary sub-tab surface of `VocabularyTab`
+    //! (issue #247; the "Workspaces walk part 2" the panel-level walk defers to).
+    //!
+    //! This drives the Vocabulary tab's OWN controls — the sub-tab switcher, the
+    //! header filters/undo-redo/new, the list rows, the create card, the LLM
+    //! proposal + diff surfaces, the editor card (connections, save/delete/
+    //! promote) and the OI-5 promotion dialog. The Concepts / Relations /
+    //! Hierarchy CHILD views are walked in their own files, so we pin
+    //! `sub_tab = Vocabulary` in the reset and never render a child here.
+    //!
+    //! The active sub-tab pill (`vocab-subtab-vocab`) is the one control this
+    //! walk cannot exercise: a radio group's selected segment is a deliberate
+    //! no-op (clicking "Vocabulary" while on Vocabulary changes nothing), and
+    //! the four pills share one `Self::button` site so it cannot be opted out in
+    //! isolation. It is declared `external_effect` — clicked for panic-safety,
+    //! its no-op not asserted — the same treatment a native-dialog control gets.
+    //!
+    //! Runs in CI via the `panel-walk` alias (lib unit tests included).
+
+    use super::editor::PromotionDialog;
+    use super::ipc::{AnchorScopeTag, AnchorView, ProposalView};
+    use super::list_view::{ScopeFilter, ViewFilter};
+    use super::{RelatedEdit, VocabSubTab, VocabularyTab};
+
+    use gpui::TestAppContext;
+    use serde_json::json;
+    use wylde_anchor_actions::UndoStack;
+    use wylde_gui_test_support::control_walk::ControlWalk;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    /// A workspace-scope concept anchor (serde default fill mirrors the wire
+    /// shape the panel loads).
+    fn anchor(id: &str, related: &[&str], archived: bool) -> AnchorView {
+        serde_json::from_value(json!({
+            "identifier": id,
+            "description": format!("{id} description"),
+            "target": { "type": "concept", "text": id },
+            "related_to": related,
+            "archived": archived,
+            "last_used_at": 0.0,
+        }))
+        .expect("anchor json is valid")
+    }
+
+    #[gpui::test]
+    fn every_vocabulary_control_does_something(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on("workspaces.list_mru", json!({ "active_id": "ws-a" }))
+            .on("workspaces.anchors.list", json!({ "anchors": [] }))
+            .on("anchors.list", json!({ "anchors": [] }))
+            .on(
+                "workspaces.anchors.list_proposals",
+                json!({ "proposals": [] }),
+            )
+            .on("workspaces.symbols.find", json!({ "matches": [] }))
+            .on("workspaces.anchors.create", json!({}))
+            .on("workspaces.anchors.update", json!({}))
+            .on("workspaces.anchors.delete", json!({}))
+            .on("workspaces.anchors.accept_proposal", json!({}))
+            .on("workspaces.anchors.reject_proposal", json!({}))
+            .on("anchors.create", json!({}))
+            .on("anchors.update", json!({}))
+            .on("anchors.delete", json!({}));
+        let _guard = fake.clone().install();
+        let window = cx.add_window(|_w, cx| VocabularyTab::new(cx));
+        cx.run_until_parked();
+
+        ControlWalk::new(window, &fake)
+            .fingerprint(|v: &VocabularyTab| {
+                format!(
+                    "sub={:?} scope={:?} view={:?} tree={} create={} sel={} \
+                     picker={} promo={:?} diff={} props={} rows={} stale={} \
+                     status={} undo={} redo={}",
+                    v.sub_tab,
+                    v.scope_filter,
+                    v.view_filter,
+                    v.tree_view,
+                    v.show_create,
+                    v.selected.is_some(),
+                    v.connect_picker,
+                    v.promotion,
+                    v.diff.is_some(),
+                    v.proposals.len(),
+                    v.ws_anchors.len() + v.global_anchors.len(),
+                    v.stale.len(),
+                    v.status.is_some(),
+                    v.undo.can_undo(),
+                    v.undo.can_redo(),
+                )
+            })
+            .reset(|v: &mut VocabularyTab, _w, cx| {
+                v.sub_tab = VocabSubTab::Vocabulary;
+                v.loading = false;
+                v.error = None;
+                v.status = None;
+                v.workspace_id = Some("ws-a".to_string());
+                v.ws_anchors = vec![
+                    anchor("alpha", &["beta"], false),
+                    anchor("beta", &[], false),
+                    anchor("gamma", &[], false),
+                    anchor("delta", &[], true),
+                ];
+                v.global_anchors = Vec::new();
+                v.scope_filter = ScopeFilter::All;
+                v.view_filter = ViewFilter::Active;
+                v.show_create = false;
+                v.selected = None;
+                v.connect_picker = false;
+                v.promotion = PromotionDialog::Idle;
+                v.diff = None;
+                v.proposals = Vec::new();
+                v.tree_view = false;
+                v.stale.clear();
+
+                let mut undo: UndoStack<RelatedEdit> = UndoStack::default();
+                undo.push(
+                    "Connected {{alpha}} -> {{beta}}",
+                    RelatedEdit {
+                        scope: AnchorScopeTag::Workspace,
+                        identifier: "alpha".to_string(),
+                        before: Vec::new(),
+                        after: vec!["beta".to_string()],
+                    },
+                );
+                undo.push(
+                    "Removed connection {{alpha}} -> {{beta}}",
+                    RelatedEdit {
+                        scope: AnchorScopeTag::Workspace,
+                        identifier: "alpha".to_string(),
+                        before: vec!["beta".to_string()],
+                        after: Vec::new(),
+                    },
+                );
+                undo.undo();
+                v.undo = undo;
+
+                cx.notify();
+            })
+            .state("create-open", |v: &mut VocabularyTab, _w, cx| {
+                v.show_create = true;
+                v.create_id_input
+                    .update(cx, |i, c| i.set_text_silent("new_concept".to_string(), c));
+                v.create_desc_input
+                    .update(cx, |i, c| i.set_text_silent("a definition".to_string(), c));
+                cx.notify();
+            })
+            .state("proposals-open", |v: &mut VocabularyTab, _w, cx| {
+                v.proposals = vec![ProposalView {
+                    anchor: anchor("prop_one", &[], false),
+                    confidence: 0.8,
+                    rationale: "looks useful".to_string(),
+                    proposed_at: 0.0,
+                }];
+                cx.notify();
+            })
+            .state("diff-open", |v: &mut VocabularyTab, _w, cx| {
+                v.diff = Some((
+                    "alpha".to_string(),
+                    "your definition".to_string(),
+                    "llm definition".to_string(),
+                ));
+                cx.notify();
+            })
+            .state("editor-open", |v: &mut VocabularyTab, _w, cx| {
+                v.selected = Some((AnchorScopeTag::Workspace, "alpha".to_string()));
+                cx.notify();
+            })
+            .state("picker-open", |v: &mut VocabularyTab, _w, cx| {
+                v.selected = Some((AnchorScopeTag::Workspace, "alpha".to_string()));
+                v.connect_picker = true;
+                cx.notify();
+            })
+            .state("cleanup-view", |v: &mut VocabularyTab, _w, cx| {
+                v.view_filter = ViewFilter::Cleanup;
+                cx.notify();
+            })
+            .state("archived-view", |v: &mut VocabularyTab, _w, cx| {
+                v.view_filter = ViewFilter::Archived;
+                cx.notify();
+            })
+            .state("promo-collision", |v: &mut VocabularyTab, _w, cx| {
+                v.selected = Some((AnchorScopeTag::Workspace, "alpha".to_string()));
+                v.promotion = PromotionDialog::Collision {
+                    identifier: "alpha".to_string(),
+                    existing_definition: "the existing global definition".to_string(),
+                    rename_to: "alpha_ws".to_string(),
+                };
+                v.rename_input
+                    .update(cx, |i, c| i.set_text_silent("alpha_renamed".to_string(), c));
+                cx.notify();
+            })
+            .state("promo-confirm", |v: &mut VocabularyTab, _w, cx| {
+                v.selected = Some((AnchorScopeTag::Workspace, "alpha".to_string()));
+                v.promotion = PromotionDialog::ConfirmReplace {
+                    identifier: "alpha".to_string(),
+                };
+                cx.notify();
+            })
+            // The active sub-tab radio pill: clicking "Vocabulary" while on the
+            // Vocabulary sub-tab is a deliberate no-op, and the four pills share
+            // one `Self::button` site so it can't be opted out in isolation.
+            .external_effect(&["vocab-subtab-vocab-0"])
+            .sources(&[include_str!("mod.rs")])
+            .run(cx)
+            .assert_every_control_lives()
+            .assert_covers_every_literal_id();
     }
 }

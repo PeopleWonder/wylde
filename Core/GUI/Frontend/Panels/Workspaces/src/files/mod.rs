@@ -639,8 +639,14 @@ mod control_walk {
     #[gpui::test]
     fn every_files_control_does_something(cx: &mut TestAppContext) {
         let fake = ScriptedBackend::new()
-            .on("workspaces.list_mru", serde_json::json!({ "active_id": "ws-a" }))
-            .on("workspaces.fs.list_dir", serde_json::json!({ "entries": [] }));
+            .on(
+                "workspaces.list_mru",
+                serde_json::json!({ "active_id": "ws-a" }),
+            )
+            .on(
+                "workspaces.fs.list_dir",
+                serde_json::json!({ "entries": [] }),
+            );
         let _guard = fake.clone().install();
         let window = cx.add_window(|_w, cx| FilesTab::new(cx));
         cx.run_until_parked();
@@ -666,7 +672,8 @@ mod control_walk {
                 t.loaded_root = true;
                 t.error = None;
                 t.children.clear();
-                t.children.insert(String::new(), vec![dir("src"), dir("lib")]);
+                t.children
+                    .insert(String::new(), vec![dir("src"), dir("lib")]);
                 t.expanded.clear();
                 t.loading.clear();
                 cx.notify();

@@ -402,9 +402,8 @@ impl Render for ConceptsView {
             .unwrap_or_else(|| "no active workspace".to_owned());
 
         let mut root = div()
-            // wylde-check: control-ok: the sub-tab root is a layout container,
-            // not a click-button — Build/Refresh, the cards, the group rows and
-            // "view in graph" are the controls.
+            // wylde-check: control-ok: the sub-tab root is a layout container
+            // (Build/Refresh, cards, group rows, "view in graph" are controls).
             .id("workspaces-concepts-subtab")
             .flex()
             .flex_col()

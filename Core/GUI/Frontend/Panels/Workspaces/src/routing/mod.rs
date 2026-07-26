@@ -588,9 +588,8 @@ impl Render for RelationsView {
             .unwrap_or_else(|| "no active workspace".to_owned());
 
         let mut root = div()
-            // wylde-check: control-ok: the sub-tab root is a layout container,
-            // not a click-button — the header buttons, edges and picker rows
-            // are the controls.
+            // wylde-check: control-ok: the sub-tab root is a layout container
+            // (header buttons, edges and picker rows are the controls).
             .id("workspaces-relations-subtab")
             .flex()
             .flex_col()
@@ -921,10 +920,19 @@ mod control_walk {
             .on("workspaces.list_mru", json!({ "active_id": "ws-a" }))
             .on("workspaces.concepts.search", json!({ "results": [] }))
             .on("workspaces.anchors.list", json!({ "anchors": [] }))
-            .on("workspaces.concepts.relations.graph", json!({ "relations": [] }))
-            .on("workspaces.concepts.relations.list", json!({ "relations": [] }))
+            .on(
+                "workspaces.concepts.relations.graph",
+                json!({ "relations": [] }),
+            )
+            .on(
+                "workspaces.concepts.relations.list",
+                json!({ "relations": [] }),
+            )
             .on("workspaces.concepts.relations.add", json!({ "ok": true }))
-            .on("workspaces.concepts.relations.remove", json!({ "ok": true }));
+            .on(
+                "workspaces.concepts.relations.remove",
+                json!({ "ok": true }),
+            );
         let _guard = fake.clone().install();
         let window = cx.add_window(|_w, cx| RelationsView::new(cx));
         cx.run_until_parked();

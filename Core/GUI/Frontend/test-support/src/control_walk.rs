@@ -190,20 +190,24 @@ impl<'a, V: Render + 'static> ControlWalk<'a, V> {
         }
     }
 
-    /// Declare controls whose effect happens **outside** anything the harness
-    /// can observe — an OS-native dialog (a folder/file picker), a handoff to
-    /// another process — so the walk still *clicks* them (a panic on click is
-    /// still caught) but does not require an observable backend/nav/state
-    /// delta afterward.
+    /// Declare controls whose click has **no observable delta** the harness can
+    /// assert — either the effect happens *outside* what it can see (an
+    /// OS-native dialog like a folder/file picker, a handoff to another
+    /// process), or the click is a *legitimate no-op in the walked
+    /// configuration* (a radio group's already-selected segment, whose click
+    /// deliberately changes nothing). The walk still *clicks* them (a panic on
+    /// click is still caught) but does not require a backend/nav/state delta.
     ///
     /// This is NOT the escape hatch of last resort — it is narrow and honest.
     /// The `control-ok` `wylde_check` marker is for ids that are not clickable
     /// controls at all (scroll handles); this is for genuine controls whose
-    /// only effect is un-observable *in a headless test*. Each id listed here
-    /// must be justified at the call site: the control opens a native dialog
-    /// (`rfd`), not "the fixture is hard to set up". A dead handler must never
-    /// be hidden behind this — prefer widening the fingerprint or adding a
-    /// state first, and reach for this only when the effect is truly external.
+    /// click has no assertable delta *in a headless test*. Each id listed here
+    /// must be justified at the call site (a native dialog, or the specific
+    /// radio segment the fixture leaves active) — never "the fixture is hard to
+    /// set up". A dead handler must never be hidden behind this — prefer
+    /// widening the fingerprint or adding a state first. The stale-declaration
+    /// guard below (every listed id must actually paint) keeps a now-dead
+    /// control from silently slipping under the exemption.
     pub fn external_effect(mut self, ids: &[&'static str]) -> Self {
         self.external_effect.extend_from_slice(ids);
         self
