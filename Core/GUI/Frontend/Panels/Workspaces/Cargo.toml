@@ -27,6 +27,9 @@ wylde-panel-chat = { path = "../Chat" }
 wylde-gui-pipe = { path = "../../Pipe" }
 
 # gpui — every panel imports the same set: div builders, Render, etc.
+# The one constructor every interactive control routes through (#247).
+wylde-gui-controls = { path = "../../Controls" }
+
 gpui.workspace = true
 
 # Shared text-input widget — backs the Settings tab's profile-name and
@@ -64,6 +67,7 @@ anyhow.workspace     = true
 serde_yaml.workspace = true
 
 [dev-dependencies]
+wylde-gui-controls = { path = "../../Controls", features = ["test-support"] }
 # Used by the graph-IPC integration test to stand up a mock `wylde-workspaces`
 # pipe server speaking the same msgpack wire format `wylde_gui_pipe::call` does
 # — exercises the data → panel-state path without a live service or memgraph.

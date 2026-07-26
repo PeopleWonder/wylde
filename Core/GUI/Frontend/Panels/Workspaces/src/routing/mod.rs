@@ -62,6 +62,7 @@ use crate::workspaces_panel::pack;
 
 use ipc::{NodeItem, NodeRefView, RelationView};
 use reducer::{GroupEdge, RelGroup};
+use wylde_gui_controls::control;
 
 /// The accent colour for an authoring group — the second half of the edge-kind
 /// distinction (glyph is the first). Exclusion is `DANGER` red so a `⊘` row
@@ -398,8 +399,7 @@ impl RelationsView {
         F: Fn(&mut Self, &mut Context<Self>) + 'static,
     {
         let bg = if accent { BRAND } else { SURFACE_800 };
-        div()
-            .id(id)
+        control(div(), id)
             .px_2()
             .py_0p5()
             .rounded(px(4.0))
@@ -473,8 +473,7 @@ impl RelationsView {
             let other_for_link = edge.other.clone();
             let edge_for_rm = edge.clone();
             let read_only = !group.is_authorable();
-            let mut row_el = div()
-                .id(("relations-edge", gi * 1000 + ei))
+            let mut row_el = control(div(), ("relations-edge", gi * 1000 + ei))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -588,8 +587,7 @@ impl Render for RelationsView {
             .clone()
             .unwrap_or_else(|| "no active workspace".to_owned());
 
-        let mut root = div()
-            .id("workspaces-relations-subtab")
+        let mut root = control(div(), "workspaces-relations-subtab")
             .flex()
             .flex_col()
             .gap_3()
@@ -739,8 +737,7 @@ impl Render for RelationsView {
                 for (ri, row) in rows.iter().enumerate() {
                     let node_label = reducer::label_for(&row.node, &self.universe);
                     let node_for_link = row.node.clone();
-                    let mut card = div()
-                        .id(("relations-overview", ri))
+                    let mut card = control(div(), ("relations-overview", ri))
                         .flex()
                         .flex_col()
                         .gap_0p5()

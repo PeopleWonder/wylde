@@ -33,6 +33,7 @@ use crate::graph::render::{Camera, Viewport};
 
 use super::ipc::{self, NodeRefView};
 use super::tree::{self, TreeModel};
+use wylde_gui_controls::control;
 
 /// Event the tree emits on a node click so the host can deep-link the editor.
 #[derive(Clone, Debug)]
@@ -335,8 +336,7 @@ impl Render for DependencyTreeView {
         };
 
         let content_id: ElementId = ElementId::Name("routing-tree-canvas".into());
-        let mut content = div()
-            .id(content_id)
+        let mut content = control(div(), content_id)
             .track_focus(&focus)
             .relative()
             .w_full()

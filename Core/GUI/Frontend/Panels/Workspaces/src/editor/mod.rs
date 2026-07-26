@@ -34,6 +34,7 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size, weight, FAMILY_INTER, FAMILY_MONO};
 
 use crate::workspaces_panel::pack;
+use wylde_gui_controls::control;
 
 /// Debounce before (re)highlighting after an edit.
 const HIGHLIGHT_DEBOUNCE_MS: u64 = 250;
@@ -534,8 +535,7 @@ impl EditorTab {
 
 impl Render for EditorTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut root = div()
-            .id("workspaces-editor-tab")
+        let mut root = control(div(), "workspaces-editor-tab")
             .size_full()
             .flex()
             .flex_col()
@@ -607,8 +607,7 @@ impl Render for EditorTab {
         // Hover strip (F1) — dismissable.
         if let Some(hover) = self.hover.clone() {
             root = root.child(
-                div()
-                    .id("editor-hover-strip")
+                control(div(), "editor-hover-strip")
                     .flex()
                     .flex_row()
                     .items_start()
@@ -627,8 +626,7 @@ impl Render for EditorTab {
                             .child(SharedString::from(hover)),
                     )
                     .child(
-                        div()
-                            .id("editor-hover-dismiss")
+                        control(div(), "editor-hover-dismiss")
                             .cursor_pointer()
                             .text_size(px(size::XS))
                             .text_color(rgb(pack(TEXT_MUTED)))
@@ -646,8 +644,7 @@ impl Render for EditorTab {
 
         // Completion list (Ctrl+Space) — click a row to insert it.
         if !self.completions.is_empty() {
-            let mut list = div()
-                .id("editor-completions")
+            let mut list = control(div(), "editor-completions")
                 .flex()
                 .flex_col()
                 .max_h(px(160.0))
@@ -657,8 +654,7 @@ impl Render for EditorTab {
                 .bg(rgb(pack(SURFACE_800)));
             for (i, (label, detail)) in self.completions.clone().into_iter().enumerate() {
                 let insert = label.clone();
-                let mut row = div()
-                    .id(("editor-completion", i))
+                let mut row = control(div(), ("editor-completion", i))
                     .flex()
                     .flex_row()
                     .items_center()

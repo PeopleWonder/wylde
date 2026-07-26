@@ -73,7 +73,7 @@
 //! id would make two controls indistinguishable to both gpui's hit-testing and
 //! the walk.
 
-use gpui::{ElementId, InteractiveElement, SharedString, Stateful};
+use gpui::{ElementId, InteractiveElement, Stateful};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod registry;
@@ -88,30 +88,40 @@ pub mod scan;
 /// Routing through one constructor is what lets a test enumerate the controls
 /// that painted instead of trusting a list someone has to remember to update.
 ///
-/// In a shipped build this is `el.id(ElementId::Name(id.into()))` and nothing
-/// else — see the module docs for why that is exact rather than approximate.
+/// The `id` argument accepts anything gpui's own `.id()` does —
+/// `impl Into<ElementId>` — so `control()` is a drop-in for `.id()` at every
+/// site, including the per-item tuple form `control(row, ("file-row", i))`.
+/// The registry key and the paint-time `debug_selector` are both derived from
+/// the id's `Display` (`ElementId::Name("x")` → `"x"`, `("file-row", 3)` →
+/// `"file-row-3"`), so the constructed-half and the painted-half always agree
+/// on the same string.
+///
+/// In a shipped build this is `el.id(id.into())` and nothing else — see the
+/// module docs for why the extra work is exactly zero there.
 #[inline]
-pub fn control<E: InteractiveElement>(el: E, id: impl Into<SharedString>) -> Stateful<E> {
-    let id: SharedString = id.into();
+pub fn control<E: InteractiveElement>(el: E, id: impl Into<ElementId>) -> Stateful<E> {
+    let id: ElementId = id.into();
 
-    // Constructed-this-frame half. Compiled out entirely without the feature.
+    // Dev/test only: record the id and tag the element so a control walk can
+    // find its painted bounds. Both the registry key and gpui's
+    // `debug_selector` derive from the id's `Display` — `ElementId::Name("x")`
+    // → `"x"`, `("file-row", 3)` → `"file-row-3"` — so the constructed-half
+    // and the painted-half always agree on the same string. A release build
+    // compiles this block out entirely and the line below is just `.id()`.
     #[cfg(any(test, feature = "test-support"))]
-    registry::record(id.clone());
+    let el = {
+        let key: gpui::SharedString = id.to_string().into();
+        registry::record(key.clone());
+        el.debug_selector(move || key.to_string())
+    };
 
-    // Painted-this-frame half. gpui stores the bounds under this key at
-    // prepaint, and `VisualTestContext::debug_bounds` reads them back. Always
-    // called: without gpui's `test-support` this is an `#[inline]` no-op that
-    // never invokes the closure, so the `to_string()` never runs.
-    let id_for_selector = id.clone();
-    let el = el.debug_selector(move || id_for_selector.to_string());
-
-    el.id(ElementId::Name(id))
+    el.id(id)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gpui::div;
+    use gpui::{div, SharedString};
 
     #[test]
     fn control_records_the_id_it_was_given() {
@@ -120,6 +130,19 @@ mod tests {
         assert_eq!(
             registry::constructed(),
             vec![SharedString::from("tools-refresh")]
+        );
+    }
+
+    #[test]
+    fn a_tuple_id_is_recorded_as_its_display_string() {
+        // The per-item form gpui uses for rows. `control()` must accept it (it
+        // is `impl Into<ElementId>`) and key the registry on the same string
+        // gpui's `debug_selector` will — `NamedInteger` renders `"{name}-{i}"`.
+        registry::begin_frame();
+        let _ = control(div(), ("file-row", 3usize));
+        assert_eq!(
+            registry::constructed(),
+            vec![SharedString::from("file-row-3")]
         );
     }
 

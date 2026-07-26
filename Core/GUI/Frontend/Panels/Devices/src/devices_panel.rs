@@ -34,6 +34,7 @@ use crate::ipc::{
     PairingStatus, ALL_TIERS, TIER_DESTRUCTIVE,
 };
 use crate::qr::{pair_uri, render_matrix, QrMatrix};
+use wylde_gui_controls::control;
 
 /// Cadence the paired-device list re-polls at.  Matches the Svelte
 /// page's 10 s timer — `last_seen` advances at most once per minute
@@ -579,8 +580,7 @@ fn header_row(cx: &mut Context<DevicesPanel>) -> gpui::Div {
 
 fn refresh_button(cx: &mut Context<DevicesPanel>) -> Stateful<gpui::Div> {
     let id: ElementId = ElementId::Name("devices-refresh".into());
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -605,8 +605,7 @@ fn jump_button(
     nav_key: &'static str,
     cx: &mut Context<DevicesPanel>,
 ) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name(id_str.into()))
+    control(div(), ElementId::Name(id_str.into()))
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -676,8 +675,7 @@ fn pair_idle_card(cx: &mut Context<DevicesPanel>) -> gpui::Div {
                     ),
             )
             .child(
-                div()
-                    .id(ElementId::Name("devices-pair-start".into()))
+                control(div(), ElementId::Name("devices-pair-start".into()))
                     .px_4()
                     .py_2()
                     .rounded(px(8.0))
@@ -744,8 +742,7 @@ fn pairing_card_view(
                     )
                     .child(
                         div().flex().flex_row().gap_2().child(
-                            div()
-                                .id(ElementId::Name("devices-pair-cancel".into()))
+                            control(div(), ElementId::Name("devices-pair-cancel".into()))
                                 .px_3()
                                 .py_2()
                                 .rounded(px(4.0))
@@ -928,8 +925,7 @@ fn tier_pill_row(d: &DeviceRow, cx: &mut Context<DevicesPanel>) -> gpui::Div {
         let device_owned = d.device_id.clone();
         let id: ElementId =
             ElementId::Name(format!("devices-tier::{}::{tier}", d.device_id).into());
-        let mut pill = div()
-            .id(id)
+        let mut pill = control(div(), id)
             .px_3()
             .py_2()
             .flex_1()
@@ -1011,8 +1007,7 @@ fn rotated_token_strip(token: &str, cx: &mut Context<DevicesPanel>) -> gpui::Div
                 .child(SharedString::from(token.to_owned())),
         )
         .child(
-            div()
-                .id(ElementId::Name("devices-rotate-dismiss".into()))
+            control(div(), ElementId::Name("devices-rotate-dismiss".into()))
                 .self_end()
                 .px_3()
                 .py_1()
@@ -1062,8 +1057,7 @@ where
                 .child(SharedString::from(prompt.to_owned())),
         )
         .child(
-            div()
-                .id(ElementId::Name(confirm_id.into()))
+            control(div(), ElementId::Name(confirm_id.into()))
                 .px_3()
                 .py_1()
                 .rounded(px(4.0))
@@ -1079,8 +1073,7 @@ where
                 .child(SharedString::from(confirm_label)),
         )
         .child(
-            div()
-                .id(ElementId::Name(cancel_id.into()))
+            control(div(), ElementId::Name(cancel_id.into()))
                 .px_3()
                 .py_1()
                 .rounded(px(4.0))
@@ -1096,8 +1089,7 @@ where
 }
 
 fn empty_devices_state(cx: &mut Context<DevicesPanel>) -> gpui::Div {
-    let body = div()
-        .id(ElementId::Name("devices-empty-start".into()))
+    let body = control(div(), ElementId::Name("devices-empty-start".into()))
         .cursor_pointer()
         .flex()
         .flex_col()
@@ -1167,8 +1159,7 @@ fn rotate_button<F>(id: ElementId, listener: F) -> Stateful<gpui::Div>
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(id)
+    control(div(), id)
         .px_2()
         .py_1()
         .rounded(px(4.0))
@@ -1186,8 +1177,7 @@ fn revoke_button<F>(id: ElementId, listener: F) -> Stateful<gpui::Div>
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(id)
+    control(div(), id)
         .px_2()
         .py_1()
         .rounded(px(4.0))

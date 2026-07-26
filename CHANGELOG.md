@@ -48,6 +48,21 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Models + Devices controls are routed through the constructor, and the id scanner now sees the wrapped form (refs #247, part 2 batch 6).** 28 sites across the two panels; ratchet drops accordingly.
+  This batch also fixes a real **coverage-guard hole**. The migration left many sites as
+  `control(div(), ElementId::Name("models-hf-close".into()))` — the id literal nested one level deeper than the
+  scanner looked. `literal_control_ids` only saw bare `control(el, "id")` strings, so **every `ElementId::Name`
+  control silently escaped `assert_covers_every_literal_id`** — a modal control could go unwalked while the walk
+  reported success, which is exactly the false coverage #247 exists to prevent. The scanner now takes a
+  `control()` call's *last argument* and recognises both the bare literal and the `ElementId::Name("…")` wrapper,
+  while still returning nothing for genuinely runtime ids (`format!`, the `("row", i)` tuple whose rendered id is
+  `"row-{i}"`, not `"row"`). Five new scanner tests pin all of this.
+  The **walks for Models and Devices are deferred** to a focused follow-up, not rushed in: each panel has four to
+  seven modal sub-states (Models alone has the pull dialog, delete-confirm, an HF *detail* strip and a separate
+  HF *results* strip, plus a privacy-pref-gated catalog row), and the sub-state fixtures deserve their own PR.
+  Routing is enforced now, so a new unrouted control in either panel reds the build; the follow-up is about
+  walking them.
+
 - **Settings controls are now walked, and the walk distinguishes unreachable from dead (closes the Settings blocker on #247; refs #247, part 2 batch 4).** Ratchet **127 → 120 sites / 23 files**.
   Settings was held back two batches because its voice-section rows didn't respond to a synthetic click. The
   cause was the occluding-modal problem `ControlWalk::reset` already existed for — an earlier click in the pass
@@ -68,6 +83,20 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   point against the viewport and reports an out-of-bounds control as **unreachable**, with a message pointing at
   `.viewport()` — a separate assertion from the dead-handler one. Proven by shrinking the viewport under a live
   panel and confirming the control is named unreachable, not dead.
+- **All Workspaces controls are routed through the constructor, and `control()` now accepts any gpui id (refs #247, part 2 batch 5).** Ratchet **120 → 71 sites / 10 files** (49 sites across Workspaces' 13 files).
+  The migration surfaced a real ergonomic gap: Workspaces builds many per-item rows with the tuple id form
+  `.id(("file-row", i))`, which the old `control(el, impl Into<SharedString>)` could not accept. Rather than
+  churn every such site into a `format!`, `control()` now takes `impl Into<ElementId>` — exactly what gpui's
+  own `.id()` takes — so it is a true drop-in at every site, tuple ids included. The registry key and the
+  paint-time `debug_selector` both derive from the id's `Display` (`ElementId::Name("x")` → `"x"`,
+  `("file-row", 3)` → `"file-row-3"`), so the two halves of the walk still agree on one string, and every
+  existing string id is byte-identical (nothing that names an id breaks). Release builds are unchanged: the id
+  is set with `.id()` and the dev-only recording block compiles out.
+  The Hierarchy sub-view is walked. The other Workspaces surfaces are staged deliberately, not skipped: Concepts,
+  Relations and Vocabulary render a sub-tab switcher whose click switches the *parent* `VocabularyTab`'s tab, so
+  mounted standalone those pills have no parent to act on and can't be exercised in isolation — they are walked
+  through the container in a follow-up. The graph canvas + main panel chrome are walked there too. Every one of
+  the 13 files is routed now, so rule 59 enforces them; the follow-up is about *walking* them, not routing.
 
 - **The control walk gained a nav channel and a viewport fix, and Dashboard + RemoteAccess are now walked
   (refs #247, part 2 batch 3).** Ratchet **136 → 127 sites / 24 files**.
