@@ -94,7 +94,10 @@ impl ChromeHarness {
         Self {
             // Two rows, one selected — so the sidebar has a non-active row to
             // click and slot_state has a real key.
-            rows: vec![nav_row("core/chat", "Chat"), nav_row("core/settings", "Settings")],
+            rows: vec![
+                nav_row("core/chat", "Chat"),
+                nav_row("core/settings", "Settings"),
+            ],
             selected_key: Some("core/chat".to_string()),
             slot_state: SlotState::Mount {
                 key: "core/chat".to_string(),
