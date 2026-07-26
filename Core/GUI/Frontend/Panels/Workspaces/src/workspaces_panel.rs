@@ -410,8 +410,11 @@ impl WorkspacesPanel {
             // executor (no tokio reactor), so a bare `tokio::task::
             // spawn_blocking` panics ("no reactor running").  Hop onto the
             // bridge runtime's blocking pool so the gpui dispatcher doesn't
-            // stall and the await just parks on the join.
-            let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(pick_folder).await;
+            // stall and the await just parks on the join. Routed through
+            // `native_file_dialog` so a control walk records the request
+            // instead of opening a real folder picker on the dev's desktop.
+            let picked: Option<PathBuf> =
+                wylde_gui_pipe::native_file_dialog("workspaces-add", pick_folder).await;
             let Some(path) = picked else {
                 return;
             };
