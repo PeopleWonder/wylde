@@ -178,6 +178,84 @@ where
     f()
 }
 
+/// Run a **native file dialog** (folder/file picker, save-as) on the blocking
+/// pool, via [`bridged_spawn_blocking`].
+///
+/// The important part is the `test-support` behaviour. `bridged_spawn_blocking`
+/// runs its closure *inline* when no runtime is installed — exactly the L7
+/// control-walk case — so a walk clicking a picker control would open a **real
+/// `rfd` OS dialog on the developer's desktop**, once per rebuild+walk cycle
+/// (issue #247). That is a harness defect: a control walk must have zero real
+/// OS side effects. So in any `test-support` build the dialog is **suppressed
+/// by default** — the request is recorded via [`native_dialog`] (so a walk can
+/// still prove "the handler fired and asked for a `{kind}`") and the call
+/// returns `None` instead of opening a window. The shipped Shell has no
+/// `test-support`, so this compiles down to a plain `bridged_spawn_blocking`
+/// and opens the real dialog — production behaviour is unchanged.
+pub async fn native_file_dialog<F>(kind: &'static str, f: F) -> Option<std::path::PathBuf>
+where
+    F: FnOnce() -> Option<std::path::PathBuf> + Send + 'static,
+{
+    #[cfg(feature = "test-support")]
+    if native_dialog::is_suppressed() {
+        native_dialog::record(kind);
+        return None;
+    }
+    #[cfg(not(feature = "test-support"))]
+    let _ = kind; // only recorded in `test-support` builds
+    bridged_spawn_blocking(f).await
+}
+
+/// Dev-only native-dialog suppression + record seam (#247 walk safety).
+///
+/// Compiled out entirely without `test-support` (requested only from the
+/// panels' `[dev-dependencies]`), so the shipped Shell has no thread-local, no
+/// suppression, and no recording branch inside [`native_file_dialog`]. A
+/// thread-local (not a process global), the same shape as [`nav_bus::nav_probe`]
+/// — so a parallel test's dialog can't leak into another's assertions, and the
+/// default is **suppressed** so no test can accidentally open a real OS window.
+#[cfg(feature = "test-support")]
+pub mod native_dialog {
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// Suppressed by default: a headless/dev walk must never open a real
+        /// OS dialog. Flip only from a test that specifically wants the live
+        /// picker (there is none today).
+        static SUPPRESS: RefCell<bool> = const { RefCell::new(true) };
+        static REQUESTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Toggle live native dialogs on this thread (default: suppressed).
+    pub fn set_suppressed(on: bool) {
+        SUPPRESS.with(|s| *s.borrow_mut() = on);
+    }
+
+    /// Whether native file dialogs are suppressed on this thread.
+    pub fn is_suppressed() -> bool {
+        SUPPRESS.with(|s| *s.borrow())
+    }
+
+    pub(super) fn record(kind: &str) {
+        REQUESTS.with(|r| r.borrow_mut().push(kind.to_owned()));
+    }
+
+    /// Every native-dialog request made (and suppressed) on this thread.
+    pub fn requests() -> Vec<String> {
+        REQUESTS.with(|r| r.borrow().clone())
+    }
+
+    /// How many native-dialog requests have been made on this thread.
+    pub fn count() -> usize {
+        REQUESTS.with(|r| r.borrow().len())
+    }
+
+    /// Forget them — call between independent phases of a test.
+    pub fn clear() {
+        REQUESTS.with(|r| r.borrow_mut().clear());
+    }
+}
+
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_FRAME: usize = 64 * 1024 * 1024;
@@ -1009,5 +1087,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #247 regression: a control walk clicks the folder/file-picker controls
+    /// to prove they're wired, and `bridged_spawn_blocking` runs its closure
+    /// inline when no runtime is installed — so without suppression a walk
+    /// would open a REAL `rfd` OS dialog on the developer's desktop, once per
+    /// rebuild+walk cycle. In any `test-support` build the dialog must be
+    /// suppressed: the closure never runs, the request is recorded, and the
+    /// call returns `None`.
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn native_file_dialog_is_suppressed_in_test_builds() {
+        native_dialog::clear();
+        assert!(
+            native_dialog::is_suppressed(),
+            "native dialogs must be suppressed by default in test-support builds"
+        );
+        let got = native_file_dialog("unit-picker", || -> Option<std::path::PathBuf> {
+            panic!("the real native-dialog closure must never run in a test build");
+        })
+        .await;
+        assert!(
+            got.is_none(),
+            "a suppressed dialog returns None (nothing picked)"
+        );
+        assert_eq!(native_dialog::count(), 1, "the request was recorded");
+        assert!(native_dialog::requests().contains(&"unit-picker".to_string()));
     }
 }

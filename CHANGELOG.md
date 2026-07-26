@@ -697,6 +697,7 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Fixed
 
+- **A GUI control-walk no longer opens real OS file dialogs on the developer's desktop (refs #247).** The L7 control walks click the folder/file-picker controls — the Chat workspace picker and conversation import/export, the Workspaces "Add workspace" — to prove they're wired. Those handlers call `rfd` through `wylde_gui_pipe::bridged_spawn_blocking`, which runs its closure *inline* when no tokio runtime is installed (exactly the walk case), so every rebuild+walk cycle popped a real native folder/file dialog on screen. A control walk must have zero real OS side effects. All four picker sites now route through a new `wylde_gui_pipe::native_file_dialog`: in any `test-support` build the dialog is **suppressed by default** — the request is recorded via a `native_dialog` probe (so the picker handler still observably "fires and asks for a folder") and the call returns `None` — while the shipped Shell (no `test-support`) compiles this straight through to `bridged_spawn_blocking` and opens the real dialog, unchanged. A pipe regression test pins it: the dialog closure never runs under suppression.
 - **Your settings live in one place, and an update no longer risks losing half of them (closes #250).**
   Wylde documented a single canonical data root — `WYLDE_DATA_DIR` → `DATA_DIR` → `<WYLDE_ROOT>/.wylde/data`,
   "convention A" — and then kept four stores somewhere else, each somewhere *different*. Model selection

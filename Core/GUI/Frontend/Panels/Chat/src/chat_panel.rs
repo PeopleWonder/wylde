@@ -2146,14 +2146,15 @@ impl ChatPanel {
             let outcome: Result<String, String> = async {
                 let envelope = export_conversation(&id).await?;
                 let default_name = format!("{id}.wylde-conv.json");
-                let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(move || {
-                    rfd::FileDialog::new()
-                        .set_title("Export conversation")
-                        .set_file_name(&default_name)
-                        .add_filter("Wylde conversation export", &["json"])
-                        .save_file()
-                })
-                .await;
+                let picked: Option<PathBuf> =
+                    wylde_gui_pipe::native_file_dialog("chat-conversation-export", move || {
+                        rfd::FileDialog::new()
+                            .set_title("Export conversation")
+                            .set_file_name(&default_name)
+                            .add_filter("Wylde conversation export", &["json"])
+                            .save_file()
+                    })
+                    .await;
                 let Some(path) = picked else {
                     return Ok(String::new()); // cancelled — no status
                 };
@@ -2181,13 +2182,14 @@ impl ChatPanel {
     pub fn spawn_import_conversation(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let outcome: Result<Option<String>, String> = async {
-                let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(|| {
-                    rfd::FileDialog::new()
-                        .set_title("Import conversation")
-                        .add_filter("Wylde conversation export", &["json"])
-                        .pick_file()
-                })
-                .await;
+                let picked: Option<PathBuf> =
+                    wylde_gui_pipe::native_file_dialog("chat-conversation-import", || {
+                        rfd::FileDialog::new()
+                            .set_title("Import conversation")
+                            .add_filter("Wylde conversation export", &["json"])
+                            .pick_file()
+                    })
+                    .await;
                 let Some(path) = picked else { return Ok(None) };
                 let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
                 let envelope: serde_json::Value =
@@ -2218,8 +2220,11 @@ impl ChatPanel {
     pub fn spawn_pick_workspace(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             // Runs on gpui's executor (no tokio reactor) — `tokio::task::
-            // spawn_blocking` would panic. Hop onto the bridge runtime.
-            let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(pick_folder).await;
+            // spawn_blocking` would panic. Hop onto the bridge runtime. Routed
+            // through `native_file_dialog` so a control walk records the request
+            // instead of opening a real folder picker on the dev's desktop.
+            let picked: Option<PathBuf> =
+                wylde_gui_pipe::native_file_dialog("chat-ws-pick", pick_folder).await;
             let Some(path) = picked else {
                 return;
             };
