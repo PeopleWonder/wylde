@@ -43,6 +43,7 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 use crate::workspaces_panel::pack;
 
 use ipc::HierNodeView;
+use wylde_gui_controls::control;
 
 /// Hard caps so a pathological DAG (deep or wide) can't stall the render. A
 /// shared node legitimately appears under each parent; the cycle guard stops
@@ -763,8 +764,7 @@ impl HierarchyView {
         F: Fn(&mut Self, &mut Context<Self>) + 'static,
     {
         let bg = if accent { BRAND } else { SURFACE_800 };
-        div()
-            .id(id)
+        control(div(), id)
             .px_2()
             .py_0p5()
             .rounded(px(4.0))
@@ -871,8 +871,7 @@ impl HierarchyView {
         };
 
         let id_for_click = row.id.clone();
-        div()
-            .id(("hier-row", ri))
+        control(div(), ("hier-row", ri))
             .flex()
             .flex_col()
             .gap_0p5()
@@ -1049,8 +1048,7 @@ impl HierarchyView {
             for (ci, (id, label)) in self.picker_candidates(cx).into_iter().enumerate() {
                 let target = id.clone();
                 picker = picker.child(
-                    div()
-                        .id(("hier-cand", ci))
+                    control(div(), ("hier-cand", ci))
                         .px_2()
                         .py_0p5()
                         .rounded(px(3.0))

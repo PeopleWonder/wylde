@@ -125,6 +125,9 @@ SEVERITY = "error"
 #: recorded at the #247 pilot (140 sites / 28 files) and drained since.
 #: Batch 2 (#247 part 2): Memory + Changelog migrated -> 136 / 26.
 #: Batch 3: Dashboard + RemoteAccess migrated -> 127 / 24.
+#: Batch 5: Workspaces (all 13 files, 49 sites) migrated -> 78 / 11.
+#: (Batch 4, Settings -> 120/23, is in flight as #260; these two are
+#: independent removals of different keys.)
 #:
 #: This is a **ratchet**, not an exemption list.  Findings are emitted when a
 #: file's actual count goes *above* its budget (a new unrouted control — the
@@ -144,19 +147,6 @@ GRANDFATHERED_UNROUTED = {
     "Core/GUI/Frontend/Panels/Devices/src/devices_panel.rs": 11,
     "Core/GUI/Frontend/Panels/Models/src/models_panel.rs": 17,
     "Core/GUI/Frontend/Panels/Settings/src/sections.rs": 7,
-    "Core/GUI/Frontend/Panels/Workspaces/src/editor/mod.rs": 5,
-    "Core/GUI/Frontend/Panels/Workspaces/src/files/mod.rs": 5,
-    "Core/GUI/Frontend/Panels/Workspaces/src/graph/mod.rs": 10,
-    "Core/GUI/Frontend/Panels/Workspaces/src/graph/navigation/breadcrumb.rs": 2,
-    "Core/GUI/Frontend/Panels/Workspaces/src/graph/outline_view.rs": 3,
-    "Core/GUI/Frontend/Panels/Workspaces/src/hierarchy/mod.rs": 3,
-    "Core/GUI/Frontend/Panels/Workspaces/src/routing/curate_menu.rs": 2,
-    "Core/GUI/Frontend/Panels/Workspaces/src/routing/mod.rs": 4,
-    "Core/GUI/Frontend/Panels/Workspaces/src/routing/tree_view.rs": 1,
-    "Core/GUI/Frontend/Panels/Workspaces/src/settings_tab.rs": 1,
-    "Core/GUI/Frontend/Panels/Workspaces/src/vocabulary/concepts_view.rs": 4,
-    "Core/GUI/Frontend/Panels/Workspaces/src/vocabulary/mod.rs": 4,
-    "Core/GUI/Frontend/Panels/Workspaces/src/workspaces_panel.rs": 5,
     "Core/GUI/Shell/src/sidebar.rs": 1,
     "Core/GUI/Shell/src/slot.rs": 1,
     "Core/GUI/Shell/src/update_pill.rs": 5,

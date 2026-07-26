@@ -23,6 +23,7 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::workspaces_panel::pack;
 use ipc::{Entry, Kind};
+use wylde_gui_controls::control;
 
 /// Per-depth indent (px).
 const INDENT: f32 = 14.0;
@@ -182,8 +183,7 @@ impl EventEmitter<FileOpenEvent> for FilesTab {}
 
 impl Render for FilesTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut root = div()
-            .id("workspaces-files-tab")
+        let mut root = control(div(), "workspaces-files-tab")
             .size_full()
             .flex()
             .flex_col()
@@ -211,8 +211,7 @@ impl Render for FilesTab {
                 )
                 .child(div().flex_1())
                 .child(
-                    div()
-                        .id("files-refresh")
+                    control(div(), "files-refresh")
                         .px_2()
                         .py_0p5()
                         .rounded(px(4.0))
@@ -245,8 +244,7 @@ impl Render for FilesTab {
                             .child(SharedString::from(format!("Couldn't list files — {err}"))),
                     )
                     .child(
-                        div()
-                            .id("files-retry")
+                        control(div(), "files-retry")
                             .px_2()
                             .py_0p5()
                             .rounded(px(4.0))
@@ -289,8 +287,7 @@ impl Render for FilesTab {
         }
 
         let rows = self.flatten();
-        let mut list = div()
-            .id("files-list")
+        let mut list = control(div(), "files-list")
             .flex_1()
             .min_h(px(0.0))
             .overflow_y_scroll()
@@ -352,8 +349,7 @@ fn file_row(i: usize, row: Row, cx: &mut Context<FilesTab>) -> impl IntoElement 
     let indent = px(8.0 + INDENT * row.depth as f32);
     let ignored = row.entry.ignored;
 
-    let mut el = div()
-        .id(("file-row", i))
+    let mut el = control(div(), ("file-row", i))
         .flex()
         .flex_row()
         .items_center()

@@ -39,6 +39,7 @@ use concepts_view::ConceptsView;
 use editor::PromotionDialog;
 use ipc::{AnchorScopeTag, AnchorView, ProposalView};
 use list_view::{ScopeFilter, ViewFilter};
+use wylde_gui_controls::control;
 
 /// Which sub-tab of the Vocabulary tab is showing (TBS concept-system §4.1):
 /// the curated user terms, the system-discovered concepts, or the experimental
@@ -718,8 +719,7 @@ impl VocabularyTab {
         F: Fn(&mut Self, &mut Context<Self>) + 'static,
     {
         let bg = if accent { BRAND } else { SURFACE_800 };
-        div()
-            .id(id)
+        control(div(), id)
             .px_2()
             .py_0p5()
             .rounded(px(4.0))
@@ -771,8 +771,7 @@ impl Render for VocabularyTab {
             &self.stale,
         );
 
-        let mut root = div()
-            .id("workspaces-vocabulary-tab")
+        let mut root = control(div(), "workspaces-vocabulary-tab")
             .track_focus(&self.focus)
             // Ctrl+Z / Ctrl+Shift+Z — connection-edit undo/redo (§5.9). Keys
             // the focused child input doesn't claim bubble up to here. The
@@ -1043,8 +1042,7 @@ impl Render for VocabularyTab {
                 let ident_accept = ident.clone();
                 let ident_reject = ident.clone();
                 section = section.child(
-                    div()
-                        .id(("vocab-proposal", i))
+                    control(div(), ("vocab-proposal", i))
                         .flex()
                         .flex_row()
                         .items_center()
@@ -1190,8 +1188,7 @@ impl Render for VocabularyTab {
                 // never a prompt.
                 line.push_str(" · ⚠ stale target");
             }
-            let mut row_el = div()
-                .id(("vocab-row", i))
+            let mut row_el = control(div(), ("vocab-row", i))
                 .flex()
                 .flex_col()
                 .px_2()

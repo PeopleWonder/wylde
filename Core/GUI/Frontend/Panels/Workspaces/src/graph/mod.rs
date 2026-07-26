@@ -73,6 +73,7 @@ use render::render_2d::Renderer2d;
 use render::{Camera, RenderOutput, Renderer, Scene, Theme, Viewport};
 use settings::{persistence, GraphProfile, ProfileLibrary, DEFAULT_PROFILE};
 use transition_driver::ActiveTransition;
+use wylde_gui_controls::control;
 
 /// Lifecycle name of the workspaces backend — target of the graph view's
 /// Start/Restart recovery affordance (decision 7).
@@ -604,8 +605,7 @@ impl Render for GraphView {
         // breadcrumb bar sits above it in normal flow, so mouse handlers live
         // here rather than on the root.
         let content_id: ElementId = ElementId::Name("workspaces-graph-canvas".into());
-        let mut content = div()
-            .id(content_id)
+        let mut content = control(div(), content_id)
             .track_focus(&focus)
             .relative()
             .flex_1()
@@ -662,7 +662,7 @@ impl Render for GraphView {
         // Root: breadcrumb bar (Theme `graph_panel.breadcrumb_bar`) over the
         // graph area.
         let root_id: ElementId = ElementId::Name("workspaces-graph-root".into());
-        let mut root = div().id(root_id).size_full().flex().flex_col().bg(bg);
+        let mut root = control(div(), root_id).size_full().flex().flex_col().bg(bg);
         if let Some(theme) = self.theme.clone() {
             if !self.graph.nodes.is_empty() {
                 root = root.child(self.breadcrumb_bar(&theme, cx));
@@ -701,8 +701,7 @@ impl GraphView {
         let chip_fg = to_rgba(theme.graph_panel.exit_edges.label_text(self.dark));
         let font = theme.graph_panel.exit_edges.label_font_size_px;
         for (i, label) in xe.labels.into_iter().enumerate() {
-            let mut chip = div()
-                .id(("graph-exit-label", i))
+            let mut chip = control(div(), ("graph-exit-label", i))
                 .absolute()
                 .left(px(label.x - self.canvas.ox))
                 .top(px(label.y - self.canvas.oy))
@@ -928,8 +927,7 @@ impl GraphView {
         }
         let theme = self.theme.as_ref()?;
         let m = &theme.ui_chrome.context_menu;
-        let mut menu = div()
-            .id("graph-profile-menu")
+        let mut menu = control(div(), "graph-profile-menu")
             .absolute()
             .top_1()
             .right_2()
@@ -948,8 +946,7 @@ impl GraphView {
             };
             let target = name.clone();
             menu = menu.child(
-                div()
-                    .id(("graph-profile-menu-item", i))
+                control(div(), ("graph-profile-menu-item", i))
                     .h(px(m.item_height_px))
                     .px(px(m.item_padding_px))
                     .flex()
@@ -1049,8 +1046,7 @@ impl GraphView {
         let target = menu.cluster_id.clone();
         let expand = menu.folded;
         Some(
-            div()
-                .id("graph-cluster-menu")
+            control(div(), "graph-cluster-menu")
                 .absolute()
                 .left(px(menu.x - self.canvas.ox))
                 .top(px(menu.y - self.canvas.oy))
@@ -1062,8 +1058,7 @@ impl GraphView {
                 // chrome text pair (breadcrumb bar) is the same palette.
                 .text_color(to_rgba(theme.graph_panel.breadcrumb_bar.text(self.dark)))
                 .child(
-                    div()
-                        .id("graph-cluster-menu-item")
+                    control(div(), "graph-cluster-menu-item")
                         .h(px(m.item_height_px))
                         .px(px(m.item_padding_px))
                         .flex()
@@ -1270,16 +1265,18 @@ impl GraphView {
         // for users who'd rather not hunt for a shortcut. Brings the whole
         // graph back into frame after panning/zooming or a cluster fold.
         col = col.child(
-            overlay_text("⤢ Fit".to_owned(), font_size::MICRO, weight::SEMIBOLD)
-                .id("workspaces-graph-fit")
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this: &mut GraphView, _ev: &MouseDownEvent, _w, cx| {
-                        cx.stop_propagation();
-                        this.fit_to_view(cx);
-                    }),
-                ),
+            control(
+                overlay_text("⤢ Fit".to_owned(), font_size::MICRO, weight::SEMIBOLD),
+                "workspaces-graph-fit",
+            )
+            .cursor_pointer()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this: &mut GraphView, _ev: &MouseDownEvent, _w, cx| {
+                    cx.stop_propagation();
+                    this.fit_to_view(cx);
+                }),
+            ),
         );
 
         if self.cluster_view.is_active() && !self.navigator.is_scoped() {
@@ -1355,27 +1352,29 @@ impl GraphView {
                 ));
                 // The one-click recovery button.
                 col = col.child(
-                    overlay_text(label.to_owned(), font_size::XS, weight::SEMIBOLD)
-                        .id("workspaces-graph-recover")
-                        .cursor_pointer()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(
-                                move |this: &mut GraphView, _ev: &MouseDownEvent, _w, cx| {
-                                    cx.stop_propagation();
-                                    this.spawn_recovery(action, cx);
-                                },
-                            ),
-                        ),
+                    control(
+                        overlay_text(label.to_owned(), font_size::XS, weight::SEMIBOLD),
+                        "workspaces-graph-recover",
+                    )
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this: &mut GraphView, _ev: &MouseDownEvent, _w, cx| {
+                            cx.stop_propagation();
+                            this.spawn_recovery(action, cx);
+                        }),
+                    ),
                 );
                 // Retry once the underlying fix has landed.
                 col = col.child(
-                    overlay_text(
-                        "Click to retry".to_owned(),
-                        font_size::MICRO,
-                        weight::REGULAR,
+                    control(
+                        overlay_text(
+                            "Click to retry".to_owned(),
+                            font_size::MICRO,
+                            weight::REGULAR,
+                        ),
+                        "workspaces-graph-retry",
                     )
-                    .id("workspaces-graph-retry")
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,

@@ -48,6 +48,21 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **All Workspaces controls are routed through the constructor, and `control()` now accepts any gpui id (refs #247, part 2 batch 5).** Ratchet **127 → 78 sites / 11 files** (49 sites across Workspaces' 13 files).
+  The migration surfaced a real ergonomic gap: Workspaces builds many per-item rows with the tuple id form
+  `.id(("file-row", i))`, which the old `control(el, impl Into<SharedString>)` could not accept. Rather than
+  churn every such site into a `format!`, `control()` now takes `impl Into<ElementId>` — exactly what gpui's
+  own `.id()` takes — so it is a true drop-in at every site, tuple ids included. The registry key and the
+  paint-time `debug_selector` both derive from the id's `Display` (`ElementId::Name("x")` → `"x"`,
+  `("file-row", 3)` → `"file-row-3"`), so the two halves of the walk still agree on one string, and every
+  existing string id is byte-identical (nothing that names an id breaks). Release builds are unchanged: the id
+  is set with `.id()` and the dev-only recording block compiles out.
+  The Hierarchy sub-view is walked. The other Workspaces surfaces are staged deliberately, not skipped: Concepts,
+  Relations and Vocabulary render a sub-tab switcher whose click switches the *parent* `VocabularyTab`'s tab, so
+  mounted standalone those pills have no parent to act on and can't be exercised in isolation — they are walked
+  through the container in a follow-up. The graph canvas + main panel chrome are walked there too. Every one of
+  the 13 files is routed now, so rule 59 enforces them; the follow-up is about *walking* them, not routing.
+
 - **The control walk gained a nav channel and a viewport fix, and Dashboard + RemoteAccess are now walked
   (refs #247, part 2 batch 3).** Ratchet **136 → 127 sites / 24 files**.
   Dashboard exposed a real hole in the oracle. Its fifteen service chips and its empty-state rows do exactly

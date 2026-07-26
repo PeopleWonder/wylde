@@ -26,6 +26,7 @@ use crate::graph::layout::LayoutKind;
 use crate::graph::navigation::NavConfig;
 use crate::graph::GraphView;
 use crate::workspaces_panel::pack;
+use wylde_gui_controls::control;
 
 /// The Settings tab view. Holds the graph entity it edits plus the input
 /// widgets; all setting state lives on the [`GraphView`] (single owner).
@@ -184,8 +185,7 @@ impl GraphSettingsTab {
         F: Fn(&mut Self, &mut Context<Self>) + 'static,
     {
         let bg = if accent { BRAND } else { SURFACE_800 };
-        div()
-            .id(id)
+        control(div(), id)
             .px_2()
             .py_0p5()
             .rounded(px(4.0))

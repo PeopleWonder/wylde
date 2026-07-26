@@ -36,6 +36,7 @@ use crate::workspaces_panel::pack;
 
 use super::curate_ipc;
 use super::curate_reducer::{CurateAnnotation, CurateCadence, CurateMenuModel, RowKind};
+use wylde_gui_controls::control;
 
 /// What the composer should do after [`CurateMenuView::load_for_turn`] resolves.
 #[derive(Clone, Debug, PartialEq)]
@@ -285,8 +286,7 @@ impl CurateMenuView {
         F: Fn(&mut Self, &mut Context<Self>) + 'static,
     {
         let bg = if accent { BRAND } else { SURFACE_800 };
-        div()
-            .id(id)
+        control(div(), id)
             .px_2()
             .py_0p5()
             .rounded(px(4.0))
@@ -330,8 +330,7 @@ impl CurateMenuView {
         if injectable {
             let k = key.clone();
             row = row.child(
-                div()
-                    .id(("curate-check", idx))
+                control(div(), ("curate-check", idx))
                     .text_size(px(size::XS))
                     .text_color(rgb(pack(if r.checked { BRAND_LIGHT } else { TEXT_MUTED })))
                     .cursor_pointer()

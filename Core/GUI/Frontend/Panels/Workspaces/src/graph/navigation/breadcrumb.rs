@@ -21,6 +21,7 @@ use super::{display_name, NavAction, ScopeEntry};
 use crate::graph::model::WorkspaceGraph;
 use crate::graph::paint::to_rgba;
 use crate::graph::render::Theme;
+use wylde_gui_controls::control;
 
 /// Where a crumb click takes you.
 #[derive(Clone, Debug, PartialEq)]
@@ -127,9 +128,8 @@ impl GraphView {
                 );
             }
             let clickable = crumb.target == CrumbTarget::Root;
-            let mut el = div()
-                .id(("graph-breadcrumb", i))
-                .child(SharedString::from(crumb.label));
+            let mut el =
+                control(div(), ("graph-breadcrumb", i)).child(SharedString::from(crumb.label));
             if clickable {
                 el = el.cursor_pointer().on_mouse_down(
                     MouseButton::Left,
@@ -148,8 +148,7 @@ impl GraphView {
         // graph area (`GraphView::profile_menu_element`).
         bar = bar.child(div().flex_1());
         bar = bar.child(
-            div()
-                .id("graph-profile-switcher")
+            control(div(), "graph-profile-switcher")
                 .cursor_pointer()
                 .child(SharedString::from(format!(
                     "{} ▾",

@@ -25,6 +25,7 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 use crate::workspaces_panel::pack;
 
 use super::concepts_ipc::{self, ConceptView, ScoredConceptView};
+use wylde_gui_controls::control;
 
 /// The separator the backend inserts between a concept's base label and its
 /// disambiguating token (`Composer · models`). Same-base-name concepts group
@@ -279,8 +280,7 @@ impl ConceptsView {
                 scored.semantic * 100.0
             ));
         }
-        let mut card = div()
-            .id(("concept-card", i))
+        let mut card = control(div(), ("concept-card", i))
             .flex()
             .flex_col()
             .gap_0p5()
@@ -375,8 +375,7 @@ impl ConceptsView {
         F: Fn(&mut Self, &mut Context<Self>) + 'static,
     {
         let bg = if accent { BRAND } else { SURFACE_800 };
-        div()
-            .id(id)
+        control(div(), id)
             .px_2()
             .py_0p5()
             .rounded(px(4.0))
@@ -402,8 +401,7 @@ impl Render for ConceptsView {
             .clone()
             .unwrap_or_else(|| "no active workspace".to_owned());
 
-        let mut root = div()
-            .id("workspaces-concepts-subtab")
+        let mut root = control(div(), "workspaces-concepts-subtab")
             .flex()
             .flex_col()
             .gap_3()
@@ -479,8 +477,7 @@ impl Render for ConceptsView {
             let expanded = self.expanded_groups.contains(&base);
             let chevron = if expanded { "▾" } else { "▸" };
             let base_for_click = base.clone();
-            let parent = div()
-                .id(("concept-group", gi))
+            let parent = control(div(), ("concept-group", gi))
                 .px_2()
                 .py_1()
                 .rounded(px(4.0))
