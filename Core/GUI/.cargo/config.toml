@@ -53,4 +53,4 @@
 # Leaving it out would recreate #56 exactly — a gate whose foundation is
 # enforced by nothing.
 [alias]
-panel-walk = "test -p wylde-gui-controls -p wylde-panel-chat -p wylde-panel-dashboard -p wylde-panel-memory -p wylde-panel-workspaces -p wylde-panel-models -p wylde-panel-tools -p wylde-panel-devices -p wylde-panel-remote-access -p wylde-panel-settings -p wylde-changelog"
+panel-walk = "test -p wylde-gui-controls -p wylde-panel-chat -p wylde-panel-dashboard -p wylde-panel-memory -p wylde-panel-workspaces -p wylde-panel-models -p wylde-panel-tools -p wylde-panel-devices -p wylde-panel-remote-access -p wylde-panel-settings -p wylde-changelog -p wylde-gui-shell-chrome"

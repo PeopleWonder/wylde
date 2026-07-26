@@ -8989,6 +8989,7 @@ dependencies = [
  "wylde-changelog",
  "wylde-gui-controls",
  "wylde-gui-pipe",
+ "wylde-gui-shell-chrome",
  "wylde-panel-registry",
  "wylde-stack",
  "wylde-theme",
@@ -9016,6 +9017,17 @@ dependencies = [
  "wylde-harness",
  "wylde-shared",
  "wylde-updater",
+]
+
+[[package]]
+name = "wylde-gui-shell-chrome"
+version = "0.2.0-beta.1"
+dependencies = [
+ "gpui",
+ "serde_json",
+ "wylde-gui-controls",
+ "wylde-gui-test-support",
+ "wylde-theme",
 ]
 
 [[package]]

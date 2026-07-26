@@ -3,7 +3,7 @@
 //!
 //! The numbers come from the same source the Dashboard's hardware card
 //! reads: the VRAM broker's `system.inventory` action.  We do *not* add
-//! a new IPC verb — the Shell's [`crate::shell_root::Shell::spawn_resource_meter`]
+//! a new IPC verb — the Shell's `spawn_resource_meter`
 //! poll reuses the existing `wylde-vram-broker` envelope and hands the
 //! parsed [`ResourceSnapshot`] to [`render_resource_meter`] each frame.
 //!

@@ -32,10 +32,22 @@ use wylde_theme::colors::{
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
+use crate::host::NavChromeHost;
 use crate::nav::{NavRow, SlotState};
 use crate::pack::pack;
-use crate::shell_root::{IframeHealth, Shell};
 use wylde_gui_controls::control;
+
+/// Health of a mounted iframe panel's WebView, as the slot sees it. Plain data
+/// (no `wry`) — it rode next to the `wry`-owning `IframeState` in the Shell,
+/// which is why importing it forced the whole Shell crate to compile; it lives
+/// here now so the nav chrome is `wry`-free. The Shell keeps the same enum on
+/// its `IframeState` and projects it into [`IframeFrame`] each render.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IframeHealth {
+    Probing,
+    Healthy,
+    Unhealthy(String),
+}
 
 /// Slot-side projection of an iframe panel's state.  The Shell builds
 /// one of these per render for the currently-selected iframe panel;
@@ -68,13 +80,13 @@ pub struct IframeFrame {
 /// strip while the URL probe is in flight.  The Shell synthesises a
 /// `ServiceUnavailable` payload upstream if the probe failed, so the
 /// failure path stays in the existing stub branch.
-pub fn render_slot(
+pub fn render_slot<V: NavChromeHost>(
     state: &SlotState,
     rows: &[NavRow],
     mounted: Option<&AnyView>,
     iframe_frame: Option<&IframeFrame>,
     window: &mut Window,
-    cx: &mut Context<Shell>,
+    cx: &mut Context<V>,
 ) -> Stateful<gpui::Div> {
     let body: gpui::AnyElement = match state {
         SlotState::Empty => render_empty().into_any_element(),
@@ -208,13 +220,13 @@ fn render_mounting(key: &str, rows: &[NavRow]) -> gpui::Div {
         )
 }
 
-fn render_unavailable(
+fn render_unavailable<V: NavChromeHost>(
     key: &str,
     missing: &[String],
     reasons: &[Option<String>],
     rows: &[NavRow],
     _window: &mut Window,
-    cx: &mut Context<Shell>,
+    cx: &mut Context<V>,
 ) -> gpui::Div {
     let title = rows
         .iter()
@@ -281,7 +293,7 @@ fn render_unavailable(
                     .font_weight(FontWeight(weight::SEMIBOLD as f32))
                     .on_mouse_down(
                         gpui::MouseButton::Left,
-                        cx.listener(move |this: &mut Shell, _event, _window, cx| {
+                        cx.listener(move |this: &mut V, _event, _window, cx| {
                             this.on_start_service_click(service_owned.clone(), cx);
                         }),
                     )
