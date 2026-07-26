@@ -123,6 +123,12 @@ struct Effect {
     /// graph" controls, which is neither a backend call, a nav, nor a change to
     /// the clicking panel's own state.
     focus_requests: usize,
+    /// Native file-dialog requests made so far
+    /// (`wylde_gui_pipe::native_file_dialog`) — the effect of the folder/file
+    /// picker controls. In a walk the dialog is suppressed (never opens a real
+    /// OS window) and the *request* is recorded, so "the picker handler fired"
+    /// is an observable effect rather than a real popup on the dev's desktop.
+    dialog_requests: usize,
     state: String,
 }
 
@@ -409,12 +415,14 @@ fn walk_one_state<V: Render + 'static>(
                     backend_calls: 0,
                     nav_requests: 0,
                     focus_requests: 0,
+                    dialog_requests: 0,
                     state: String::new(),
                 },
                 after: Effect {
                     backend_calls: 0,
                     nav_requests: 0,
                     focus_requests: 0,
+                    dialog_requests: 0,
                     state: String::new(),
                 },
             });
@@ -430,6 +438,7 @@ fn walk_one_state<V: Render + 'static>(
             backend_calls: fake.calls().len(),
             nav_requests: wylde_gui_pipe::nav_bus::nav_probe::count(),
             focus_requests: wylde_gui_pipe::focus_bus::focus_probe::count(),
+            dialog_requests: wylde_gui_pipe::native_dialog::count(),
             state: window
                 .update(vcx, |panel, _w, _cx| fingerprint(panel))
                 .expect("the panel entity is still alive"),
@@ -456,12 +465,14 @@ fn walk_one_state<V: Render + 'static>(
                     backend_calls: 0,
                     nav_requests: 0,
                     focus_requests: 0,
+                    dialog_requests: 0,
                     state: String::new(),
                 },
                 after: Effect {
                     backend_calls: 0,
                     nav_requests: 0,
                     focus_requests: 0,
+                    dialog_requests: 0,
                     state: String::new(),
                 },
             });
