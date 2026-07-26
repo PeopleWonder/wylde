@@ -24,6 +24,7 @@ use crate::nav::{NavOrigin, NavRow};
 use crate::pack::pack;
 use crate::resource_meter::{render_resource_meter, ResourceSnapshot};
 use crate::shell_root::Shell;
+use wylde_gui_controls::control;
 
 /// Width of the expanded sidebar.  Matches the Svelte `w-52`
 /// (208 px) — kept slim so the slot has breathing room on the
@@ -155,8 +156,7 @@ fn row_button(
 
     let id: ElementId = ElementId::Name(format!("nav-row::{}", row.key).into());
 
-    let mut button = div()
-        .id(id)
+    let mut button = control(div(), id)
         .flex()
         .flex_row()
         .items_center()

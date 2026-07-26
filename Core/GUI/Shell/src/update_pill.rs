@@ -24,15 +24,14 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::pack::pack;
 use crate::shell_root::Shell;
+use wylde_gui_controls::control;
 
 /// Paint the update pill, anchored bottom-left of the shell's (relative) root.
 /// `version` is the resolved available version, shown as a tag and carried into
 /// the "Ignore" handler so the dismissal is keyed to exactly this release.
 pub fn render_update_pill(version: &str, cx: &mut Context<Shell>) -> impl IntoElement {
     let ignore_version = version.to_string();
-
-    div()
-        .id("wylde-update-pill")
+    control(div(), "wylde-update-pill")
         .absolute()
         .bottom_4()
         .left_4()
@@ -73,8 +72,7 @@ pub fn render_update_pill(version: &str, cx: &mut Context<Shell>) -> impl IntoEl
         )
         // "What's new" → open the changelog pop-up.
         .child(
-            div()
-                .id("wylde-update-pill-changelog")
+            control(div(), "wylde-update-pill-changelog")
                 .font_family(FAMILY_INTER)
                 .text_size(px(size::XS))
                 .text_color(rgb(pack(BRAND_LIGHT)))
@@ -113,8 +111,7 @@ pub fn render_update_pill(version: &str, cx: &mut Context<Shell>) -> impl IntoEl
 /// close button. The card stops mouse-down propagation so interacting with the
 /// changelog never closes it.
 pub fn render_changelog_modal(view: &AnyView, cx: &mut Context<Shell>) -> impl IntoElement {
-    div()
-        .id("wylde-changelog-scrim")
+    control(div(), "wylde-changelog-scrim")
         .absolute()
         .inset_0()
         .occlude()
@@ -129,8 +126,7 @@ pub fn render_changelog_modal(view: &AnyView, cx: &mut Context<Shell>) -> impl I
             cx.listener(|this, _ev, _w, cx| this.close_changelog(cx)),
         )
         .child(
-            div()
-                .id("wylde-changelog-card")
+            control(div(), "wylde-changelog-card")
                 .relative()
                 // Swallow clicks on the card so they don't reach the backdrop's
                 // close handler (same idiom the Chat composer popovers use).
@@ -140,8 +136,7 @@ pub fn render_changelog_modal(view: &AnyView, cx: &mut Context<Shell>) -> impl I
                 )
                 .child(view.clone())
                 .child(
-                    div()
-                        .id("wylde-changelog-close")
+                    control(div(), "wylde-changelog-close")
                         .absolute()
                         .top_2()
                         .right_2()

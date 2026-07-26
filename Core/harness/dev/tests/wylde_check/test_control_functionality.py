@@ -323,27 +323,24 @@ def test_ratchet_tells_you_to_delete_a_fully_migrated_entry(
     assert "delete it" in found[0].message
 
 
-def test_the_real_grandfather_table_has_no_stale_entries() -> None:
-    """Every budgeted path must still exist on disk.
+def test_the_real_grandfather_table_is_drained() -> None:
+    """The migration is complete: nothing is grandfathered.
 
-    The exact TOTAL is deliberately not asserted: it drops with every
-    migration batch, so pinning it would mean a churn edit per batch for no
-    signal. And the number needs no guarding — emptying the table without
-    migrating does not go quiet, it makes every file exceed a budget of zero
-    and reds the rule outright. What a fixed number would NOT catch is this:
-    an entry for a file that was renamed or deleted, which lingers forever
-    granting a budget to nothing and quietly re-arms if the path ever
-    reappears. That is the #101/#116 shape, so that is what is checked here.
+    #247 part 2 drained `GRANDFATHERED_UNROUTED` batch by batch; batch 8 (the
+    Shell) took it to empty. Every interactive site in the GUI is now routed
+    through `control()`, so a non-empty table would mean a regression — a file
+    re-added to the exempt list, or the drain quietly reverted.
 
-    When #247 part 2 finishes, the table is emptied for real and this test
-    goes with it.
+    When the endgame lands (delete the ratchet mechanism + require a
+    control_walk per panel), this test goes with the dict it guards.
+
+    (While the table was draining this asserted instead that every budgeted
+    path still existed on disk — a stale entry granting a budget to a
+    deleted/renamed file is the #101/#116 shape. With the table empty there is
+    nothing left to go stale, so the invariant becomes simply: stays empty.)
     """
-    from pathlib import Path
-
-    root = Path(REAL_ROOT)
-    missing = [p for p in REAL_GRANDFATHERED if not (root / p).is_file()]
-    assert not missing, (
-        f"GRANDFATHERED_UNROUTED budgets paths that no longer exist: {missing}. "
-        "Remove them — a budget for a deleted file is dead weight that re-arms "
-        "silently if the path ever comes back."
+    assert REAL_GRANDFATHERED == {}, (
+        "GRANDFATHERED_UNROUTED is no longer empty — the routing migration was "
+        f"complete, so this is a regression: {REAL_GRANDFATHERED}. A new control "
+        "must use `control()` from the start, not be grandfathered back in."
     )
