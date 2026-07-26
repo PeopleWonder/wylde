@@ -118,6 +118,17 @@ struct Effect {
     backend_calls: usize,
     /// Cross-panel nav requests made so far (`wylde_gui_pipe::request_nav`).
     nav_requests: usize,
+    /// Cross-panel focus deep-links made so far
+    /// (`wylde_gui_pipe::request_workspace_focus`) — the effect of the "view in
+    /// graph" controls, which is neither a backend call, a nav, nor a change to
+    /// the clicking panel's own state.
+    focus_requests: usize,
+    /// Native file-dialog requests made so far
+    /// (`wylde_gui_pipe::native_file_dialog`) — the effect of the folder/file
+    /// picker controls. In a walk the dialog is suppressed (never opens a real
+    /// OS window) and the *request* is recorded, so "the picker handler fired"
+    /// is an observable effect rather than a real popup on the dev's desktop.
+    dialog_requests: usize,
     state: String,
 }
 
@@ -163,7 +174,7 @@ pub struct ControlWalk<'a, V: Render + 'static> {
     window: WindowHandle<V>,
     viewport: Size<gpui::Pixels>,
     fake: &'a Arc<ScriptedBackend>,
-    fingerprint: Option<Box<dyn Fn(&V) -> String>>,
+    fingerprint: Option<Box<dyn Fn(&V, &mut gpui::Context<V>) -> String>>,
     reset: Option<StateFn<V>>,
     states: Vec<(String, StateFn<V>)>,
     sources: Vec<&'static str>,
@@ -185,20 +196,24 @@ impl<'a, V: Render + 'static> ControlWalk<'a, V> {
         }
     }
 
-    /// Declare controls whose effect happens **outside** anything the harness
-    /// can observe — an OS-native dialog (a folder/file picker), a handoff to
-    /// another process — so the walk still *clicks* them (a panic on click is
-    /// still caught) but does not require an observable backend/nav/state
-    /// delta afterward.
+    /// Declare controls whose click has **no observable delta** the harness can
+    /// assert — either the effect happens *outside* what it can see (an
+    /// OS-native dialog like a folder/file picker, a handoff to another
+    /// process), or the click is a *legitimate no-op in the walked
+    /// configuration* (a radio group's already-selected segment, whose click
+    /// deliberately changes nothing). The walk still *clicks* them (a panic on
+    /// click is still caught) but does not require a backend/nav/state delta.
     ///
     /// This is NOT the escape hatch of last resort — it is narrow and honest.
     /// The `control-ok` `wylde_check` marker is for ids that are not clickable
     /// controls at all (scroll handles); this is for genuine controls whose
-    /// only effect is un-observable *in a headless test*. Each id listed here
-    /// must be justified at the call site: the control opens a native dialog
-    /// (`rfd`), not "the fixture is hard to set up". A dead handler must never
-    /// be hidden behind this — prefer widening the fingerprint or adding a
-    /// state first, and reach for this only when the effect is truly external.
+    /// click has no assertable delta *in a headless test*. Each id listed here
+    /// must be justified at the call site (a native dialog, or the specific
+    /// radio segment the fixture leaves active) — never "the fixture is hard to
+    /// set up". A dead handler must never be hidden behind this — prefer
+    /// widening the fingerprint or adding a state first. The stale-declaration
+    /// guard below (every listed id must actually paint) keeps a now-dead
+    /// control from silently slipping under the exemption.
     pub fn external_effect(mut self, ids: &[&'static str]) -> Self {
         self.external_effect.extend_from_slice(ids);
         self
@@ -210,6 +225,23 @@ impl<'a, V: Render + 'static> ControlWalk<'a, V> {
     /// its surface, plus anything a click flips within the same frame
     /// (a pending set, an expanded flag, a selected id).
     pub fn fingerprint(mut self, f: impl Fn(&V) -> String + 'static) -> Self {
+        self.fingerprint = Some(Box::new(move |v, _cx| f(v)));
+        self
+    }
+
+    /// Like [`fingerprint`](Self::fingerprint), but the closure also gets the
+    /// view's `Context`, so it can `read` a **child entity** the view composes.
+    ///
+    /// Needed when a control's only effect lands on a sub-view rather than on
+    /// the panel's own fields — e.g. the graph Settings tab, whose Layout /
+    /// Dark buttons call straight through to the child `GraphView` and change
+    /// nothing on the settings view itself. Reading that child is the only way
+    /// their click has an observable delta. Prefer the plain
+    /// [`fingerprint`](Self::fingerprint) unless you specifically need it.
+    pub fn fingerprint_ctx(
+        mut self,
+        f: impl Fn(&V, &mut gpui::Context<V>) -> String + 'static,
+    ) -> Self {
         self.fingerprint = Some(Box::new(f));
         self
     }
@@ -342,7 +374,7 @@ fn walk_one_state<V: Render + 'static>(
     vcx: &mut VisualTestContext,
     window: WindowHandle<V>,
     fake: &Arc<ScriptedBackend>,
-    fingerprint: &dyn Fn(&V) -> String,
+    fingerprint: &dyn Fn(&V, &mut gpui::Context<V>) -> String,
     state_label: &str,
     reset: Option<&dyn Fn(&mut V, &mut gpui::Window, &mut gpui::Context<V>)>,
     enter: Option<&dyn Fn(&mut V, &mut gpui::Window, &mut gpui::Context<V>)>,
@@ -399,11 +431,15 @@ fn walk_one_state<V: Render + 'static>(
                 before: Effect {
                     backend_calls: 0,
                     nav_requests: 0,
+                    focus_requests: 0,
+                    dialog_requests: 0,
                     state: String::new(),
                 },
                 after: Effect {
                     backend_calls: 0,
                     nav_requests: 0,
+                    focus_requests: 0,
+                    dialog_requests: 0,
                     state: String::new(),
                 },
             });
@@ -418,8 +454,10 @@ fn walk_one_state<V: Render + 'static>(
         let snap = |vcx: &mut VisualTestContext| Effect {
             backend_calls: fake.calls().len(),
             nav_requests: wylde_gui_pipe::nav_bus::nav_probe::count(),
+            focus_requests: wylde_gui_pipe::focus_bus::focus_probe::count(),
+            dialog_requests: wylde_gui_pipe::native_dialog::count(),
             state: window
-                .update(vcx, |panel, _w, _cx| fingerprint(panel))
+                .update(vcx, |panel, _w, cx| fingerprint(panel, cx))
                 .expect("the panel entity is still alive"),
         };
 
@@ -443,11 +481,15 @@ fn walk_one_state<V: Render + 'static>(
                 before: Effect {
                     backend_calls: 0,
                     nav_requests: 0,
+                    focus_requests: 0,
+                    dialog_requests: 0,
                     state: String::new(),
                 },
                 after: Effect {
                     backend_calls: 0,
                     nav_requests: 0,
+                    focus_requests: 0,
+                    dialog_requests: 0,
                     state: String::new(),
                 },
             });

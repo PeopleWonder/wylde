@@ -427,3 +427,69 @@ mod tests {
         assert_render::<GraphSettingsTab>();
     }
 }
+
+#[cfg(test)]
+mod control_walk {
+    //! L7 **control**-walk — the graph Settings tab (issue #247).
+    //!
+    //! In-crate, and the one walk that needs `fingerprint_ctx`: the Layout and
+    //! Dark controls call straight through to the child `GraphView` entity and
+    //! change nothing on the settings view itself, so the oracle can only see
+    //! their effect by `read`ing that child (its `current_layout_kind()` /
+    //! `dark_mode()`). Profiles + Apply-knobs move `self.status`.
+    //!
+    //! The Layout control is a 3-segment radio built in one loop, so its
+    //! *active* segment (ForceDirected, the graph's default) is a deliberate
+    //! no-op that can't be opted out in isolation — it's declared
+    //! `external_effect`; the other two segments switch the layout for real.
+
+    use super::GraphSettingsTab;
+    use crate::graph::layout::LayoutKind;
+    use crate::graph::GraphView;
+    use gpui::prelude::*;
+    use gpui::TestAppContext;
+    use serde_json::json;
+    use wylde_gui_test_support::control_walk::ControlWalk;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    #[gpui::test]
+    fn every_settings_control_does_something(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on("workspaces.list_mru", json!({ "active_id": "ws-a" }))
+            .on(
+                "workspaces.graph",
+                json!({ "nodes": [], "edges": [], "clusters": [] }),
+            );
+        let _guard = fake.clone().install();
+        let window = cx.add_window(|_w, cx: &mut gpui::Context<GraphSettingsTab>| {
+            let graph = cx.new(|_| GraphView::new());
+            GraphSettingsTab::new(graph, cx)
+        });
+        cx.run_until_parked();
+
+        ControlWalk::new(window, &fake)
+            .fingerprint_ctx(|v: &GraphSettingsTab, cx| {
+                let g = v.graph.read(cx);
+                format!(
+                    "status={} dark={} layout={:?}",
+                    v.status.is_some(),
+                    g.dark_mode(),
+                    g.current_layout_kind(),
+                )
+            })
+            .reset(|v: &mut GraphSettingsTab, _w, cx| {
+                v.status = None;
+                // Pin the child to the default layout before every click, so
+                // settings-layout-0 (ForceDirected) is always the active radio
+                // segment and the other two always cause a real change.
+                v.graph
+                    .update(cx, |g, gcx| g.choose_layout(LayoutKind::ForceDirected, gcx));
+                cx.notify();
+            })
+            .external_effect(&["settings-layout-0"])
+            .sources(&[include_str!("settings_tab.rs")])
+            .run(cx)
+            .assert_every_control_lives()
+            .assert_covers_every_literal_id();
+    }
+}

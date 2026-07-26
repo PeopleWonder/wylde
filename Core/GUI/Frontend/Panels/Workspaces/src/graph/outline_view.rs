@@ -124,7 +124,10 @@ impl GraphView {
             .unwrap_or(state.file.as_str())
             .to_owned();
 
-        let mut card = control(div(), "graph-outline-card")
+        let mut card = div()
+            // wylde-check: control-ok: outline panel shell — the ✕
+            // (graph-outline-close) is the affordance; the card just frames it.
+            .id("graph-outline-card")
             .absolute()
             .top_8()
             .right_2()
@@ -184,7 +187,10 @@ impl GraphView {
                 None => format!("({}) · {}", row.kind, row.line),
             };
             card = card.child(
-                control(div(), ("graph-outline-row", i))
+                div()
+                    // wylde-check: control-ok: static outline row — display
+                    // only, no click behaviour (jump-to-line is a later slice).
+                    .id(("graph-outline-row", i))
                     .pl(px(10.0 * row.depth as f32))
                     .child(SharedString::from(label)),
             );
