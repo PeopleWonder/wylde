@@ -15,6 +15,10 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
+# The nav chrome (sidebar, panel slot, update pill + changelog modal) + its
+# view-model, extracted into a `wry`-free crate the L7 walk can build (#247).
+# The Shell renders it (via `NavChromeHost`) and owns the `wry`/tray plumbing.
+wylde-gui-shell-chrome = { path = "../Frontend/ShellChrome" }
 # The one constructor every interactive control routes through (#247).
 wylde-gui-controls = { path = "../Frontend/Controls" }
 wylde-gui-pipe     = { path = "../Frontend/Pipe" }

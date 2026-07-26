@@ -24,6 +24,7 @@ members = [
     "Frontend/Pipe",
     "Frontend/Input",
     "Frontend/Changelog",
+    "Frontend/ShellChrome",
     "Frontend/Code_editor",
     "Frontend/Extension_handlers/WebView",
     "Frontend/Panels/Settings",

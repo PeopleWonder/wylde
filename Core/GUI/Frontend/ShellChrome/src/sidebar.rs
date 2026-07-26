@@ -20,10 +20,10 @@ use gpui::{
 use wylde_theme::colors::{BORDER_SUBTLE, BRAND, BRAND_DIM, SURFACE_950, TEXT_MUTED, TEXT_PRIMARY};
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
+use crate::host::NavChromeHost;
 use crate::nav::{NavOrigin, NavRow};
 use crate::pack::pack;
 use crate::resource_meter::{render_resource_meter, ResourceSnapshot};
-use crate::shell_root::Shell;
 use wylde_gui_controls::control;
 
 /// Width of the expanded sidebar.  Matches the Svelte `w-52`
@@ -33,13 +33,13 @@ pub const SIDEBAR_WIDTH: f32 = 208.0;
 
 /// Build the sidebar `Div`.  Called once per Shell render — the
 /// returned element is consumed by the Shell's outer flex container.
-pub fn render_sidebar(
+pub fn render_sidebar<V: NavChromeHost>(
     rows: &[NavRow],
     selected_key: Option<&str>,
     resources: Option<&ResourceSnapshot>,
     update_available: bool,
     _window: &mut Window,
-    cx: &mut Context<Shell>,
+    cx: &mut Context<V>,
 ) -> Stateful<gpui::Div> {
     let header = brand_header();
     // `flex_1` lets the nav column eat the slack so the resource meter
@@ -138,11 +138,11 @@ pub fn is_settings_row(row: &NavRow) -> bool {
 
 /// Single nav row.  Mouse-down forwards to `Shell::on_nav_click`.
 /// `show_update_dot` paints the slice-3d "update available" hint.
-fn row_button(
+fn row_button<V: NavChromeHost>(
     row: &NavRow,
     is_active: bool,
     show_update_dot: bool,
-    cx: &mut Context<Shell>,
+    cx: &mut Context<V>,
 ) -> Stateful<gpui::Div> {
     let key_owned = row.key.clone();
     let label = SharedString::from(row.title.clone());
@@ -167,7 +167,7 @@ fn row_button(
         .cursor_pointer()
         .on_mouse_down(
             gpui::MouseButton::Left,
-            cx.listener(move |this: &mut Shell, _event, _window, cx| {
+            cx.listener(move |this: &mut V, _event, _window, cx| {
                 this.on_nav_click(&key_owned);
                 cx.notify();
             }),
