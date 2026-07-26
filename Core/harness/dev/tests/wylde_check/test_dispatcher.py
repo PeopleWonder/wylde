@@ -109,6 +109,11 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
         # `src/`-unit-test half of rule 56's #83 class, with no
         # minimum-count carve-out: #246's colliders never named the bus.
         "global_bus_test_isolation",
+        # Rule 61 — rule 59's companion and the other half of #247: a GUI crate
+        # that builds controls must have a control_walk declaring every one of
+        # its control-building sources. Landed with the deletion of rule 59's
+        # (now drained) grandfather ratchet, once every panel was walked.
+        "every_control_building_crate_is_walked",
     }
     assert set(result["data"]["summary"]["by_rule"].keys()) == expected
 
@@ -134,7 +139,7 @@ def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
     #116 was about.  Bump this when a rule is genuinely added or retired.
     """
     wc, _root = isolated_tree
-    assert len(wc._RULES) == 35
+    assert len(wc._RULES) == 36
     result = wc.run_all()
     assert result["ok"] is True
     assert result["data"]["rules_checked"] == len(wc._RULES)

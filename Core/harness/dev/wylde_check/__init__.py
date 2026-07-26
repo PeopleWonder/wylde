@@ -495,6 +495,7 @@ from .rules._global_bus_test_isolation import (  # noqa: E402
 )
 from .rules._control_functionality import (  # noqa: E402
     check_gui_controls_are_wired_and_walkable,
+    check_every_control_building_crate_is_walked,
 )
 from .rules._selfcheck import check_rule_targets_exist  # noqa: E402
 from ._single_file import (  # noqa: E402
@@ -585,6 +586,14 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # Error, with a per-file grandfather ratchet over the 140 pre-existing
     # sites: this job fails on any finding, so WARN would red develop too.
     "gui_controls_are_wired_and_walkable": check_gui_controls_are_wired_and_walkable,
+    # Rule 61 — rule 59's companion and the other half of #247. Rule 59 proves
+    # every control *site* routes through `control()`; this proves the *walk
+    # exists and sees every control-building file*: a GUI crate whose shipped
+    # src builds a control must have a control_walk declaring every such file in
+    # `.sources()`. Together they mean a control can neither bypass the registry
+    # nor sit in a file no walk's coverage assertion inspects. Added with the
+    # deletion of rule 59's grandfather ratchet (the migration is complete).
+    "every_control_building_crate_is_walked": check_every_control_building_crate_is_walked,
     # Rule 60 — a unit test touching a process-global broadcast bus must own
     # its channel or serialize on a test-module guard (#246). The other half
     # of rule 56's #83 self-collision class: same hazard, but in a `src/`
@@ -649,7 +658,12 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # failed ~17% of the time at --test-threads=8 on unrelated PRs.  No
 # minimum-count carve-out, unlike rule 56 — #246 had exactly one
 # bus-touching test and its colliders never named the bus.
-assert len(_RULES) == 35, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 35)"
+# #247 endgame (2026-07-26): +1 (rule 61, every_control_building_crate_is_walked)
+# = 36 active. Rule 59's companion: it makes a control_walk mandatory for every
+# control-building GUI crate (declaring all its control sources), landed together
+# with the deletion of rule 59's now-drained grandfather ratchet. Closes #247 —
+# every panel is walked and the property is structurally enforced going forward.
+assert len(_RULES) == 36, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 36)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
