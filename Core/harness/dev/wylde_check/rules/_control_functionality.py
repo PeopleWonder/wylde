@@ -139,11 +139,6 @@ SEVERITY = "error"
 #: #247 part 2 empties this table file by file; when it is empty, delete it
 #: and the ratchet branch with it — the rule then simply forbids the pattern.
 GRANDFATHERED_UNROUTED = {
-    "Core/GUI/Frontend/Code_editor/src/lib.rs": 1,
-    "Core/GUI/Frontend/Input/src/lib.rs": 1,
-    "Core/GUI/Frontend/Panels/Chat/src/chat_panel.rs": 16,
-    "Core/GUI/Frontend/Panels/Chat/src/composer_ui.rs": 17,
-    "Core/GUI/Frontend/Panels/Chat/src/markdown.rs": 1,
     "Core/GUI/Shell/src/sidebar.rs": 1,
     "Core/GUI/Shell/src/slot.rs": 1,
     "Core/GUI/Shell/src/update_pill.rs": 5,

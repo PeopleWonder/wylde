@@ -19,6 +19,7 @@ use crate::chat_panel::{pack, ChatPanel};
 use crate::composer::bubbles::{self, BubbleKind};
 use crate::composer::highlight::{composer_theme, hex, ComposerTheme};
 use crate::composer::{curation, disambiguator, IgnoreTierTag};
+use wylde_gui_controls::control;
 
 /// Append the composer surfaces to the InferenceBar (between the pill row
 /// and the prompt row). No-ops into the same `bar` when there's nothing to
@@ -96,8 +97,7 @@ fn bubble_strip(
         .clamp(0.0, strip_w);
     let xs = bubbles::slot_xs(n, word_x_rel, BUBBLE_GAP, strip_w);
 
-    let mut strip = div()
-        .id("chat-bubble-strip")
+    let mut strip = control(div(), "chat-bubble-strip")
         .relative()
         .w_full()
         .h(px(BUBBLE_STRIP_H));
@@ -168,8 +168,7 @@ fn bubble_strip(
             BubbleKind::Symbol { .. } => "ƒ",
         };
         let pinned = panel.bubbles.pinned.contains(&bubble.label);
-        let mut b = div()
-            .id(("chat-bubble", i))
+        let mut b = control(div(), ("chat-bubble", i))
             .absolute()
             .left(px(xs.get(i).copied().unwrap_or(0.0)))
             .top(px(BUBBLE_TOP))
@@ -220,8 +219,7 @@ fn bubble_strip(
     // Collapse affordance (Esc also collapses; double-click-outside is a
     // follow-up — needs a global click hook).
     strip = strip.child(
-        div()
-            .id("chat-bubble-collapse")
+        control(div(), "chat-bubble-collapse")
             .absolute()
             .top(px(BUBBLE_TOP))
             .right_2()
@@ -267,8 +265,7 @@ fn bubble_card(
     let left = (xs.get(ix).copied().unwrap_or(0.0) - 140.0).max(0.0);
     let pinned = panel.bubbles.pinned.contains(&bubble.label);
 
-    let mut card = div()
-        .id("chat-bubble-card")
+    let mut card = control(div(), "chat-bubble-card")
         .absolute()
         .left(px(left))
         .top(px(BUBBLE_TOP + BUBBLE_D + 6.0))
@@ -309,8 +306,7 @@ fn bubble_card(
                     .child(SharedString::from(bubble.label.clone())),
             )
             .child(
-                div()
-                    .id("chat-bubble-pin")
+                control(div(), "chat-bubble-pin")
                     .cursor_pointer()
                     .text_color(rgb(if pinned {
                         hex(&theme.tether_line.color_dark)
@@ -328,8 +324,7 @@ fn bubble_card(
                     .child(SharedString::from(pin_label)),
             )
             .child(
-                div()
-                    .id("chat-bubble-exclude")
+                control(div(), "chat-bubble-exclude")
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -356,8 +351,7 @@ fn bubble_card(
             // (buffered by the focus bus) then switches panels.
             let symbol_id = id.clone();
             card = card.child(
-                div()
-                    .id("chat-bubble-view-graph")
+                control(div(), "chat-bubble-view-graph")
                     .cursor_pointer()
                     .text_size(px(size::MICRO))
                     .text_color(rgb(pack(TEXT_PRIMARY)))
@@ -435,8 +429,7 @@ fn bubble_menu(
         pinned: panel.bubbles.pinned.contains(&bubble.label),
     };
 
-    let mut menu = div()
-        .id("chat-bubble-menu")
+    let mut menu = control(div(), "chat-bubble-menu")
         .absolute()
         .left(px((xs.get(ix).copied().unwrap_or(0.0)).max(0.0)))
         .top(px(BUBBLE_TOP + BUBBLE_D + 6.0))
@@ -464,8 +457,7 @@ fn bubble_menu(
     {
         let label = action.label();
         menu = menu.child(
-            div()
-                .id(("chat-bubble-menu-row", row_ix))
+            control(div(), ("chat-bubble-menu-row", row_ix))
                 .px_2()
                 .py_1()
                 .cursor_pointer()
@@ -530,8 +522,7 @@ fn chip_strip(
             w.token.text.clone()
         };
         row = row.child(
-            div()
-                .id(("composer-word-chip", i))
+            control(div(), ("composer-word-chip", i))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -600,8 +591,7 @@ fn chip_strip(
             )
         };
         row = row.child(
-            div()
-                .id("composer-context-chip")
+            control(div(), "composer-context-chip")
                 .h(px(theme.per_word_chip.height_px))
                 .px(px(theme.per_word_chip.horizontal_padding_px))
                 .rounded(px(theme.per_word_chip.border_radius_px))
@@ -649,8 +639,7 @@ fn disambiguation_dropdown(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Op
     for (ri, r) in view.rows.iter().enumerate() {
         let id = r.id.clone();
         card = card.child(
-            div()
-                .id(("composer-disambig-row", ri))
+            control(div(), ("composer-disambig-row", ri))
                 .flex()
                 .flex_col()
                 .px_2()
@@ -727,8 +716,7 @@ fn anchor_offer(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Option<gpui::
                         .child(SharedString::from(label)),
                 )
                 .child(
-                    div()
-                        .id("composer-anchor-create")
+                    control(div(), "composer-anchor-create")
                         .px_2()
                         .py_0p5()
                         .rounded(px(4.0))
@@ -747,8 +735,7 @@ fn anchor_offer(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Option<gpui::
                         ),
                 )
                 .child(
-                    div()
-                        .id("composer-anchor-dismiss")
+                    control(div(), "composer-anchor-dismiss")
                         .px_2()
                         .py_0p5()
                         .rounded(px(4.0))
@@ -800,8 +787,7 @@ fn ignore_menu(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Option<gpui::D
             format!("Ignore in this {}", tier.label())
         };
         card = card.child(
-            div()
-                .id(("composer-ignore-row", ri))
+            control(div(), ("composer-ignore-row", ri))
                 .px_2()
                 .py_1()
                 .rounded(px(4.0))
@@ -844,8 +830,7 @@ fn curation_popover(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Option<gp
         let word_idx = item.word_idx;
         let mark = if item.included { "☑" } else { "☐" };
         card = card.child(
-            div()
-                .id(("composer-curation-row", ri))
+            control(div(), ("composer-curation-row", ri))
                 .flex()
                 .flex_row()
                 .gap_2()
@@ -907,8 +892,7 @@ fn palette_overlay(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Option<gpu
         let selected = ri == palette.selected;
         let bg = if selected { SURFACE_700 } else { SURFACE_800 };
         card = card.child(
-            div()
-                .id(("composer-palette-row", ri))
+            control(div(), ("composer-palette-row", ri))
                 .flex()
                 .flex_row()
                 .gap_2()

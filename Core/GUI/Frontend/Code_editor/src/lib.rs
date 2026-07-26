@@ -521,7 +521,10 @@ impl Render for CodeEditor {
         let body = element::EditorElement {
             editor: cx.entity(),
         };
+        // wylde-check: control-ok: the code editor root is a focus + keyboard
+        // surface, not a click-button — same rationale as the TextInput root.
         div()
+            // wylde-check: control-ok: focus/keyboard surface, not a click-button (see above)
             .id(gpui::ElementId::Name(self.element_key.clone()))
             .size_full()
             .overflow_hidden()

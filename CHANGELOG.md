@@ -48,6 +48,10 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Chat controls are routed through the constructor; only the Shell's 7 sites remain (refs #247, part 2 batch 7).** Chat's 34 sites (chat_panel, composer_ui, markdown) go through `control()`. Ratchet **43 → 7 sites / 3 files** — every remaining site is in the Shell, which needs its nav chrome extracted from the `wry`-linking crate before the headless job can build it.
+  Two shared *widgets* — the `TextInput` and code-editor roots — were flagged by rule 59 (they carry keyboard handlers) but are **not** click-buttons: they are focus/text-entry surfaces. Routing them through `control()` enrolled them in the per-frame registry, so every panel embedding a text input started "walking" its input field and demanding a click effect that focusing a field has no reason to produce — the Memory walk went red on exactly this. They now carry the `// wylde-check: control-ok` opt-out with a reason, which is precisely what that marker is for: a genuinely-interactive id that is not a clickable control.
+  Chat's own control walk joins the deferred stateful-panel follow-up (it is already the most behaviourally-tested panel — `chat_turn_e2e`, `dock_scoping`, `conversations`, `virtualization`, …). Routing is enforced now.
+
 - **Models + Devices controls are routed through the constructor, and the id scanner now sees the wrapped form (refs #247, part 2 batch 6).** 28 sites across the two panels; ratchet drops accordingly.
   This batch also fixes a real **coverage-guard hole**. The migration left many sites as
   `control(div(), ElementId::Name("models-hf-close".into()))` — the id literal nested one level deeper than the
