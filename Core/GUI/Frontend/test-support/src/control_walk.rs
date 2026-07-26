@@ -128,16 +128,27 @@ pub struct Walked {
     pub id: String,
     /// Which named state painted it (`"default"` unless a [`ControlWalk::state`] did).
     pub state: String,
-    /// Whether it was laid out and therefore clickable.
+    /// Whether it was laid out this frame (has painted bounds).
     pub painted: bool,
+    /// Whether the click point actually lies inside the walk viewport.
+    ///
+    /// A control can paint with valid bounds and still be **unreachable** by a
+    /// synthetic click — most simply, when it lays out below the viewport, so
+    /// the click at its centre lands outside the window and hits nothing. That
+    /// is not a dead handler; it is the walk failing to reach a live control,
+    /// and it must be reported as its own thing, or a live-but-off-screen
+    /// button gets slandered as dead. `false` only when `painted` is `true`.
+    pub reachable: bool,
     before: Effect,
     after: Effect,
 }
 
 impl Walked {
-    /// The oracle: a control "did something" if either channel moved.
+    /// The oracle: a control "did something" if any channel moved. Only
+    /// meaningful for a control that both painted and was reachable — an
+    /// unreachable control was never actually clicked.
     pub fn had_effect(&self) -> bool {
-        self.painted && self.before != self.after
+        self.painted && self.reachable && self.before != self.after
     }
 }
 
@@ -362,6 +373,7 @@ fn walk_one_state<V: Render + 'static>(
                 id: id.to_string(),
                 state: state_label.to_string(),
                 painted: false,
+                reachable: false,
                 before: Effect {
                     backend_calls: 0,
                     nav_requests: 0,
@@ -389,11 +401,42 @@ fn walk_one_state<V: Render + 'static>(
                 .expect("the panel entity is still alive"),
         };
 
+        // Reachability: a click only dispatches if the point is inside the
+        // window. A control laid out below the viewport paints valid bounds
+        // but cannot be clicked — record that as unreachable, distinct from a
+        // dead handler, rather than clicking into the void and calling it dead.
+        let viewport = vcx.update(|w, _| w.viewport_size());
+        let center = bounds.center();
+        let reachable = center.x >= gpui::px(0.0)
+            && center.y >= gpui::px(0.0)
+            && center.x <= viewport.width
+            && center.y <= viewport.height;
+
+        if !reachable {
+            out.push(Walked {
+                id: id.to_string(),
+                state: state_label.to_string(),
+                painted: true,
+                reachable: false,
+                before: Effect {
+                    backend_calls: 0,
+                    nav_requests: 0,
+                    state: String::new(),
+                },
+                after: Effect {
+                    backend_calls: 0,
+                    nav_requests: 0,
+                    state: String::new(),
+                },
+            });
+            continue;
+        }
+
         let before = snap(vcx);
         // A real platform mouse event at the control's painted centre, routed
         // through gpui hit-testing to whatever listener the panel attached.
         // A panicking listener kills the test here — the correct outcome.
-        vcx.simulate_click(bounds.center(), Modifiers::none());
+        vcx.simulate_click(center, Modifiers::none());
         vcx.run_until_parked();
         let after = snap(vcx);
 
@@ -401,6 +444,7 @@ fn walk_one_state<V: Render + 'static>(
             id: id.to_string(),
             state: state_label.to_string(),
             painted: true,
+            reachable: true,
             before,
             after,
         });
@@ -428,7 +472,15 @@ impl WalkReport {
             .collect()
     }
 
-    /// **The core assertion.** Every control that painted did something.
+    /// **The core assertion.** Every control that painted was reachable and
+    /// did something.
+    ///
+    /// The two failure modes are reported separately on purpose. A control the
+    /// walk could not *reach* (painted below the viewport) is a walk problem —
+    /// grow `WALK_VIEWPORT` or scroll it in — not a dead control, and saying
+    /// "dead handler" there sends you hunting a bug that isn't in the panel.
+    /// A control that was clicked and produced no observable effect is the real
+    /// #247 finding.
     pub fn assert_every_control_lives(self) -> Self {
         let painted: Vec<&Walked> = self.walked.iter().filter(|w| w.painted).collect();
         assert!(
@@ -437,16 +489,38 @@ impl WalkReport {
              no control through `controls::control()`, or the draw never happened. \
              An empty walk is a disarmed gate, not a pass."
         );
+
+        // Unreachable first: a control that was never actually clicked cannot be
+        // judged dead, so report it as its own problem and stop.
+        let unreachable: Vec<String> = painted
+            .iter()
+            .filter(|w| !w.reachable)
+            .map(|w| format!("{} (state: {})", w.id, w.state))
+            .collect();
+        assert!(
+            unreachable.is_empty(),
+            "these controls painted but their click point fell OUTSIDE the walk \
+             viewport, so the walk never actually clicked them — they are \
+             unreachable, NOT dead: {unreachable:?}\n\
+             The panel is taller than WALK_VIEWPORT ({}x{}). Raise it with \
+             `.viewport(size(px(w), px(h)))`, or scroll the control into view. \
+             Do not read this as a dead handler.",
+            WALK_VIEWPORT.0,
+            WALK_VIEWPORT.1,
+        );
+
         let dead: Vec<String> = painted
             .iter()
-            .filter(|w| !w.had_effect())
+            .filter(|w| w.reachable && !w.had_effect())
             .map(|w| format!("{} (state: {})", w.id, w.state))
             .collect();
         assert!(
             dead.is_empty(),
             "clicked these controls and NOTHING observable happened — no backend \
-             call, no state change. A dead handler, a control with no listener, or \
-             a handler wired to something that no longer runs: {dead:?}"
+             call, no nav, no state change. A dead handler, a control with no \
+             listener, or a handler wired to something that no longer runs — OR a \
+             fixture that doesn't set the precondition under which the effect is \
+             visible (check the fingerprint covers the field it moves): {dead:?}"
         );
         self
     }
