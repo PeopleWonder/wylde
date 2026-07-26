@@ -2411,7 +2411,7 @@ mod control_walk {
                     zoom: 1.0,
                 };
                 v.profiles_path = std::env::temp_dir()
-                    .join("wylde-graphview-control-walk")
+                    .join("gv-control-walk-profiles")
                     .join(format!("cw-{}", std::process::id()))
                     .join("graph_profiles.json");
                 v.active_profile = DEFAULT_PROFILE.to_owned();
