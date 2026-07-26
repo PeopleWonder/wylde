@@ -35,6 +35,7 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 use crate::nav::{NavRow, SlotState};
 use crate::pack::pack;
 use crate::shell_root::{IframeHealth, Shell};
+use wylde_gui_controls::control;
 
 /// Slot-side projection of an iframe panel's state.  The Shell builds
 /// one of these per render for the currently-selected iframe panel;
@@ -266,8 +267,7 @@ fn render_unavailable(
             let id: ElementId = ElementId::Name(format!("svc-start::{key}::{idx}").into());
             let label = SharedString::from(format!("Start {service}"));
             card = card.child(
-                div()
-                    .id(id)
+                control(div(), id)
                     .px_3()
                     .py_2()
                     .rounded(px(4.0))

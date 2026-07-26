@@ -121,28 +121,31 @@ RULE = "gui_controls_are_wired_and_walkable"
 #: reports zero today while making a *new* unrouted control fail immediately.
 SEVERITY = "error"
 
-#: Per-file budget of interactive controls that still bypass the constructor,
-#: recorded at the #247 pilot (140 sites / 28 files) and drained since.
-#: Batch 2 (#247 part 2): Memory + Changelog migrated -> 136 / 26.
-#: Batch 3: Dashboard + RemoteAccess migrated -> 127 / 24.
-#: Batch 4: Settings migrated (incl. per_tool_row, a control rule 59
-#: could not see because its handler is attached by the caller) -> 120 / 23.
-#: Batch 5: Workspaces (all 13 files, 49 sites) migrated -> 71 / 10.
+#: Per-file budget of interactive controls that still bypass the constructor.
 #:
-#: This is a **ratchet**, not an exemption list.  Findings are emitted when a
-#: file's actual count goes *above* its budget (a new unrouted control — the
-#: case #247 is for) and also when it drops *below* (migration progress the
-#: table has not recorded).  Both directions matter: an allowlist nobody is
-#: required to tighten rusts open, which is how a gate ends up protecting
-#: nothing.  Same precedent as rule 20's ``_FILE_SIZE_QUEUED_SPLITS``.
+#: **DRAINED TO EMPTY (#247 part 2, batch 8).** It began at 140 sites / 28 files
+#: at the pilot and came down batch by batch — Memory/Changelog, Dashboard/
+#: RemoteAccess, Settings (incl. `per_tool_row`, a control rule 59 could not see
+#: because its handler is attached by the caller), Workspaces, Models/Devices,
+#: Chat, and finally the Shell — until nothing is grandfathered. **Every
+#: interactive site in the GUI is now routed through `control()`**, and a new
+#: one that bypasses the constructor is an error on the PR that adds it, with no
+#: exempt debt standing behind it.
 #:
-#: #247 part 2 empties this table file by file; when it is empty, delete it
-#: and the ratchet branch with it — the rule then simply forbids the pattern.
-GRANDFATHERED_UNROUTED = {
-    "Core/GUI/Shell/src/sidebar.rs": 1,
-    "Core/GUI/Shell/src/slot.rs": 1,
-    "Core/GUI/Shell/src/update_pill.rs": 5,
-}
+#: The mechanism (this dict + the ratchet branch below) is kept, empty, for one
+#: more step: the endgame that also adds "require a control_walk per panel"
+#: deletes both together, once the deferred stateful-panel walks (Models,
+#: Devices, Chat, the Workspaces sub-views + graph, the Shell chrome) have
+#: landed — the maintainer's "migrated AND walked" condition. Until then the empty
+#: ratchet
+#: with the mechanism intact reads exactly as "every site routed, zero
+#: exemptions", which is the guarantee we want to hold now.
+#:
+#: While non-empty it was a **ratchet**, not an exemption list: a count *above*
+#: budget (a new unrouted control) and a count *below* (unrecorded migration
+#: progress) both flagged, so it could not rust open. Same precedent as rule
+#: 20's ``_FILE_SIZE_QUEUED_SPLITS``.
+GRANDFATHERED_UNROUTED: dict = {}
 
 #: Dead handler bodies are NOT grandfathered.  The tree has zero of them, so
 #: the budget is zero everywhere and any new one is red on arrival.

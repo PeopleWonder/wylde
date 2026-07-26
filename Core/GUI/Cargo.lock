@@ -8987,6 +8987,7 @@ dependencies = [
  "tokio",
  "tray-icon",
  "wylde-changelog",
+ "wylde-gui-controls",
  "wylde-gui-pipe",
  "wylde-panel-registry",
  "wylde-stack",
