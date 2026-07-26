@@ -749,7 +749,13 @@ impl Render for TextInput {
         // shapes under (family/size/line height) and the event handlers.
         let body = element::TextArea { input: cx.entity() };
 
+        // wylde-check: control-ok: the TextInput root is a focus + keyboard
+        // surface (the editable field), not a click-button. Routing it through
+        // `control()` would enrol it in the per-frame registry, so every panel
+        // embedding a text input would "walk" it and demand a click effect it
+        // has no reason to produce (focusing a field moves no backend/nav/state).
         let mut root = div()
+            // wylde-check: control-ok: focus/keyboard surface, not a click-button (see above)
             .id(ElementId::Name(self.element_key.clone()))
             .flex()
             .flex_col()

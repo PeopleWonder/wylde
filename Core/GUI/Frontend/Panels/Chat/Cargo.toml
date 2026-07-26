@@ -31,6 +31,9 @@ wylde-gpui-input = { path = "../../Input" }
 wylde-anchor-actions = { path = "../shared/anchor_actions" }
 
 # gpui — every panel imports the same set: div builders, Render, etc.
+# The one constructor every interactive control routes through (#247).
+wylde-gui-controls = { path = "../../Controls" }
+
 gpui.workspace = true
 
 # Native folder picker.  Workspace MRU's "+" button opens it, then
@@ -62,6 +65,7 @@ opener.workspace = true
 # shipped binary gets `gpui` and `wylde-gui-pipe` WITHOUT `test-support`.
 # Verified via `cargo tree -p wylde-gui` (see docs/gui-testing.md).
 [dev-dependencies]
+wylde-gui-controls = { path = "../../Controls", features = ["test-support"] }
 # The scripted fake IPC backend + RAII install guard.
 wylde-gui-test-support = { path = "../../test-support" }
 # gpui's test harness: `#[gpui::test]`, `TestAppContext`, windows, etc.

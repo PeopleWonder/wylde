@@ -34,6 +34,7 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size as text_size, weight, FAMILY_INTER};
 
 use crate::chat_panel::pack;
+use wylde_gui_controls::control;
 
 /// Block-level markdown element.
 #[derive(Debug, Clone, PartialEq)]
@@ -454,8 +455,7 @@ fn code_span(s: &str) -> gpui::Div {
 fn link_span(text: &str, url: &str, key: &str) -> Stateful<gpui::Div> {
     let target = url.to_owned();
     let id = ElementId::Name(format!("md-link::{key}").into());
-    div()
-        .id(id)
+    control(div(), id)
         .cursor_pointer()
         .text_color(rgb(pack(BRAND_LIGHT)))
         .on_mouse_down(
