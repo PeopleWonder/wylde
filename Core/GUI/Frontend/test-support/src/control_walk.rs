@@ -174,7 +174,7 @@ pub struct ControlWalk<'a, V: Render + 'static> {
     window: WindowHandle<V>,
     viewport: Size<gpui::Pixels>,
     fake: &'a Arc<ScriptedBackend>,
-    fingerprint: Option<Box<dyn Fn(&V) -> String>>,
+    fingerprint: Option<Box<dyn Fn(&V, &mut gpui::Context<V>) -> String>>,
     reset: Option<StateFn<V>>,
     states: Vec<(String, StateFn<V>)>,
     sources: Vec<&'static str>,
@@ -225,6 +225,23 @@ impl<'a, V: Render + 'static> ControlWalk<'a, V> {
     /// its surface, plus anything a click flips within the same frame
     /// (a pending set, an expanded flag, a selected id).
     pub fn fingerprint(mut self, f: impl Fn(&V) -> String + 'static) -> Self {
+        self.fingerprint = Some(Box::new(move |v, _cx| f(v)));
+        self
+    }
+
+    /// Like [`fingerprint`](Self::fingerprint), but the closure also gets the
+    /// view's `Context`, so it can `read` a **child entity** the view composes.
+    ///
+    /// Needed when a control's only effect lands on a sub-view rather than on
+    /// the panel's own fields — e.g. the graph Settings tab, whose Layout /
+    /// Dark buttons call straight through to the child `GraphView` and change
+    /// nothing on the settings view itself. Reading that child is the only way
+    /// their click has an observable delta. Prefer the plain
+    /// [`fingerprint`](Self::fingerprint) unless you specifically need it.
+    pub fn fingerprint_ctx(
+        mut self,
+        f: impl Fn(&V, &mut gpui::Context<V>) -> String + 'static,
+    ) -> Self {
         self.fingerprint = Some(Box::new(f));
         self
     }
@@ -357,7 +374,7 @@ fn walk_one_state<V: Render + 'static>(
     vcx: &mut VisualTestContext,
     window: WindowHandle<V>,
     fake: &Arc<ScriptedBackend>,
-    fingerprint: &dyn Fn(&V) -> String,
+    fingerprint: &dyn Fn(&V, &mut gpui::Context<V>) -> String,
     state_label: &str,
     reset: Option<&dyn Fn(&mut V, &mut gpui::Window, &mut gpui::Context<V>)>,
     enter: Option<&dyn Fn(&mut V, &mut gpui::Window, &mut gpui::Context<V>)>,
@@ -440,7 +457,7 @@ fn walk_one_state<V: Render + 'static>(
             focus_requests: wylde_gui_pipe::focus_bus::focus_probe::count(),
             dialog_requests: wylde_gui_pipe::native_dialog::count(),
             state: window
-                .update(vcx, |panel, _w, _cx| fingerprint(panel))
+                .update(vcx, |panel, _w, cx| fingerprint(panel, cx))
                 .expect("the panel entity is still alive"),
         };
 

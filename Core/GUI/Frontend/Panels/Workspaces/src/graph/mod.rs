@@ -662,7 +662,9 @@ impl Render for GraphView {
         // Root: breadcrumb bar (Theme `graph_panel.breadcrumb_bar`) over the
         // graph area.
         let root_id: ElementId = ElementId::Name("workspaces-graph-root".into());
-        let mut root = control(div(), root_id).size_full().flex().flex_col().bg(bg);
+        // wylde-check: control-ok: layout shell — the canvas child holds the
+        // mouse handlers; this root only stacks the breadcrumb above it.
+        let mut root = div().id(root_id).size_full().flex().flex_col().bg(bg);
         if let Some(theme) = self.theme.clone() {
             if !self.graph.nodes.is_empty() {
                 root = root.child(self.breadcrumb_bar(&theme, cx));
@@ -927,7 +929,10 @@ impl GraphView {
         }
         let theme = self.theme.as_ref()?;
         let m = &theme.ui_chrome.context_menu;
-        let mut menu = control(div(), "graph-profile-menu")
+        let mut menu = div()
+            // wylde-check: control-ok: dropdown shell — each profile row
+            // (graph-profile-menu-item) carries the click, not this container.
+            .id("graph-profile-menu")
             .absolute()
             .top_1()
             .right_2()
@@ -1046,7 +1051,10 @@ impl GraphView {
         let target = menu.cluster_id.clone();
         let expand = menu.folded;
         Some(
-            control(div(), "graph-cluster-menu")
+            div()
+                // wylde-check: control-ok: menu shell — the single
+                // graph-cluster-menu-item child carries the click handler.
+                .id("graph-cluster-menu")
                 .absolute()
                 .left(px(menu.x - self.canvas.ox))
                 .top(px(menu.y - self.canvas.oy))
@@ -2212,5 +2220,244 @@ mod tests {
                 assert!(!gv.fitted, "fit latch cleared so next paint re-fits zoom");
             })
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod control_walk {
+    //! L7 walk over the knowledge-graph canvas panel (`GraphView`, issue #247).
+    //!
+    //! The hardest surface in the crate: most of its affordances only paint once
+    //! the view is in a specific condition (an open menu, an outline card, a
+    //! recoverable error) and several live on the raw gpui canvas rather than a
+    //! button. The walk drives each condition as a named state and pins the
+    //! observable delta of every reachable affordance.
+    //!
+    //! Canvas seam: a left click on `workspaces-graph-canvas` hit-tests a node
+    //! at the click's painted CENTRE (proven by the in-file
+    //! `click_hit_test_resolves_a_node_at_its_centre`). The fixture parks one
+    //! node at the model point that maps to the canvas centre under the fixture
+    //! camera, so the centre click selects it (`last_clicked`) and opens its
+    //! file outline (a `treesitter.outline` backend call). Placing that node at
+    //! `-pan` lets the frame keep a non-zero camera pan, so Fit has a pan to
+    //! recentre — both live in one baseline.
+    //!
+    //! Not walked live (each covered by a windowed test): scoped exit chips
+    //! (`graph-exit-label`, runtime tuple, never painted here) and the inert
+    //! unscoped breadcrumb crumb (`graph-breadcrumb-0`, declared external-effect;
+    //! the clickable Root crumb only exists when scoped).
+
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use super::cluster::ClusterView;
+    use super::ipc::GraphFetchError;
+    use super::layout::LayoutKind;
+    use super::model::{
+        self, Cluster, Edge, Layout, Node, NodeKind, Position, RelType, WorkspaceGraph,
+    };
+    use super::outline_view::{OutlineRow, OutlineState};
+    use super::render::Camera;
+    use super::settings::DEFAULT_PROFILE;
+    use super::{ClusterMenu, GraphView};
+
+    use gpui::TestAppContext;
+    use serde_json::json;
+    use wylde_gui_test_support::control_walk::ControlWalk;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    const PAN_X: f32 = 250.0;
+    const PAN_Y: f32 = -130.0;
+
+    fn node(id: &str, file: &str) -> Node {
+        Node {
+            id: id.to_owned(),
+            kind: NodeKind::Function,
+            name: id.to_owned(),
+            file: file.to_owned(),
+            line: 0,
+            position: Position::default(),
+            style: Default::default(),
+        }
+    }
+
+    fn fixture_graph() -> WorkspaceGraph {
+        WorkspaceGraph {
+            nodes: vec![
+                node("a", "ws/alpha/a.rs"),
+                node("b", "ws/alpha/b.rs"),
+                node("c", "ws/beta/c.rs"),
+            ],
+            edges: vec![
+                Edge {
+                    src: "a".to_owned(),
+                    dst: "b".to_owned(),
+                    rel_type: RelType::Calls,
+                    weight: 1.0,
+                },
+                Edge {
+                    src: "a".to_owned(),
+                    dst: "c".to_owned(),
+                    rel_type: RelType::Calls,
+                    weight: 1.0,
+                },
+            ],
+            clusters: vec![
+                Cluster {
+                    id: "ws/alpha".to_owned(),
+                    member_ids: vec!["a".to_owned(), "b".to_owned()],
+                    parent_breadcrumb: vec!["ws".to_owned()],
+                    zoom_threshold: 1.0,
+                },
+                Cluster {
+                    id: "ws/beta".to_owned(),
+                    member_ids: vec!["c".to_owned()],
+                    parent_breadcrumb: vec!["ws".to_owned()],
+                    zoom_threshold: 1.0,
+                },
+            ],
+        }
+    }
+
+    /// Node "a" at `-pan` so it maps to the canvas centre under the fixture
+    /// camera (pan = (PAN_X, PAN_Y), zoom 1); b and c far from centre so the
+    /// centre click resolves "a" alone.
+    fn fixture_layout() -> Layout {
+        let mut p: HashMap<String, Position> = HashMap::new();
+        p.insert(
+            "a".to_owned(),
+            Position {
+                x: -PAN_X,
+                y: -PAN_Y,
+                z: 0.0,
+            },
+        );
+        p.insert(
+            "b".to_owned(),
+            Position {
+                x: 60.0,
+                y: 60.0,
+                z: 0.0,
+            },
+        );
+        p.insert(
+            "c".to_owned(),
+            Position {
+                x: 120.0,
+                y: -60.0,
+                z: 0.0,
+            },
+        );
+        Layout::from_positions(p)
+    }
+
+    #[gpui::test]
+    fn every_graph_control_does_something(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on("workspaces.list_mru", json!({ "active_id": "ws-a" }))
+            .on(
+                "workspaces.graph",
+                json!({ "nodes": [], "edges": [], "clusters": [] }),
+            )
+            .on("treesitter.outline", json!({ "tree": [] }))
+            .on("workspaces.anchors.list", json!({ "anchors": [] }))
+            .on("anchors.list", json!({ "anchors": [] }));
+        let _guard = fake.clone().install();
+
+        let window = cx.add_window(|_w, _cx| GraphView::new());
+        cx.run_until_parked();
+
+        ControlWalk::new(window, &fake)
+            .fingerprint(|v: &GraphView| {
+                format!(
+                    "clicked={:?} pan=({:.1},{:.1}) pmenu={} profile={} \
+                     cmenu={} err={} outline={}",
+                    v.last_clicked,
+                    v.camera.pan_x,
+                    v.camera.pan_y,
+                    v.profile_menu_open,
+                    v.active_profile,
+                    v.cluster_menu.is_some(),
+                    v.error.is_some(),
+                    v.outline.is_some(),
+                )
+            })
+            .reset(|v: &mut GraphView, _w, cx| {
+                v.loading = false;
+                v.error = None;
+                v.theme_error = None;
+                v.workspace_id = Some("demo".to_owned());
+                v.graph = Rc::new(fixture_graph());
+                v.layout = Rc::new(fixture_layout());
+                v.physics = None;
+                v.current_layout = LayoutKind::default();
+                v.transition = None;
+                v.camera_transition = None;
+                v.pending_enter = None;
+                v.drag = None;
+                v.navigator.reset();
+                v.cluster_view = ClusterView::default();
+                v.cluster_menu = None;
+                v.profile_menu_open = false;
+                v.outline = None;
+                v.last_clicked = None;
+                v.view_mode = model::ViewMode::default();
+                v.vocab_anchors.clear();
+                v.layout_cache.clear();
+                v.fitted = true;
+                v.camera = Camera {
+                    pan_x: PAN_X,
+                    pan_y: PAN_Y,
+                    zoom: 1.0,
+                };
+                v.profiles_path = std::env::temp_dir()
+                    .join("wylde-graphview-control-walk")
+                    .join(format!("cw-{}", std::process::id()))
+                    .join("graph_profiles.json");
+                v.active_profile = DEFAULT_PROFILE.to_owned();
+                cx.notify();
+            })
+            .state("profile-menu-open", |v: &mut GraphView, _w, cx| {
+                v.profile_menu_open = true;
+                cx.notify();
+            })
+            .state("cluster-menu-open", |v: &mut GraphView, _w, cx| {
+                v.cluster_menu = Some(ClusterMenu {
+                    x: 200.0,
+                    y: 120.0,
+                    cluster_id: "ws/alpha".to_owned(),
+                    folded: true,
+                });
+                cx.notify();
+            })
+            .state("outline-open", |v: &mut GraphView, _w, cx| {
+                v.outline = Some(OutlineState {
+                    file: "ws/alpha/a.rs".to_owned(),
+                    rows: vec![OutlineRow {
+                        depth: 0,
+                        kind: "function".to_owned(),
+                        name: Some("foo".to_owned()),
+                        line: 1,
+                    }],
+                    loading: false,
+                    error: None,
+                });
+                cx.notify();
+            })
+            .state("error-recoverable", |v: &mut GraphView, _w, cx| {
+                v.error = Some(GraphFetchError::ServiceUnavailable(
+                    "workspaces service unavailable".to_owned(),
+                ));
+                cx.notify();
+            })
+            .external_effect(&["graph-breadcrumb-0"])
+            .sources(&[
+                include_str!("mod.rs"),
+                include_str!("navigation/breadcrumb.rs"),
+                include_str!("outline_view.rs"),
+            ])
+            .run(cx)
+            .assert_every_control_lives()
+            .assert_covers_every_literal_id();
     }
 }
