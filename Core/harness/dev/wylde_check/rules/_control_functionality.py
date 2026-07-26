@@ -144,8 +144,6 @@ GRANDFATHERED_UNROUTED = {
     "Core/GUI/Frontend/Panels/Chat/src/chat_panel.rs": 16,
     "Core/GUI/Frontend/Panels/Chat/src/composer_ui.rs": 17,
     "Core/GUI/Frontend/Panels/Chat/src/markdown.rs": 1,
-    "Core/GUI/Frontend/Panels/Devices/src/devices_panel.rs": 11,
-    "Core/GUI/Frontend/Panels/Models/src/models_panel.rs": 17,
     "Core/GUI/Shell/src/sidebar.rs": 1,
     "Core/GUI/Shell/src/slot.rs": 1,
     "Core/GUI/Shell/src/update_pill.rs": 5,

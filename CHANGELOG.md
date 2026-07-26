@@ -48,6 +48,21 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Models + Devices controls are routed through the constructor, and the id scanner now sees the wrapped form (refs #247, part 2 batch 6).** 28 sites across the two panels; ratchet drops accordingly.
+  This batch also fixes a real **coverage-guard hole**. The migration left many sites as
+  `control(div(), ElementId::Name("models-hf-close".into()))` — the id literal nested one level deeper than the
+  scanner looked. `literal_control_ids` only saw bare `control(el, "id")` strings, so **every `ElementId::Name`
+  control silently escaped `assert_covers_every_literal_id`** — a modal control could go unwalked while the walk
+  reported success, which is exactly the false coverage #247 exists to prevent. The scanner now takes a
+  `control()` call's *last argument* and recognises both the bare literal and the `ElementId::Name("…")` wrapper,
+  while still returning nothing for genuinely runtime ids (`format!`, the `("row", i)` tuple whose rendered id is
+  `"row-{i}"`, not `"row"`). Five new scanner tests pin all of this.
+  The **walks for Models and Devices are deferred** to a focused follow-up, not rushed in: each panel has four to
+  seven modal sub-states (Models alone has the pull dialog, delete-confirm, an HF *detail* strip and a separate
+  HF *results* strip, plus a privacy-pref-gated catalog row), and the sub-state fixtures deserve their own PR.
+  Routing is enforced now, so a new unrouted control in either panel reds the build; the follow-up is about
+  walking them.
+
 - **Settings controls are now walked, and the walk distinguishes unreachable from dead (closes the Settings blocker on #247; refs #247, part 2 batch 4).** Ratchet **127 → 120 sites / 23 files**.
   Settings was held back two batches because its voice-section rows didn't respond to a synthetic click. The
   cause was the occluding-modal problem `ControlWalk::reset` already existed for — an earlier click in the pass
