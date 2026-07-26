@@ -587,7 +587,11 @@ impl Render for RelationsView {
             .clone()
             .unwrap_or_else(|| "no active workspace".to_owned());
 
-        let mut root = control(div(), "workspaces-relations-subtab")
+        let mut root = div()
+            // wylde-check: control-ok: the sub-tab root is a layout container,
+            // not a click-button — the header buttons, edges and picker rows
+            // are the controls.
+            .id("workspaces-relations-subtab")
             .flex()
             .flex_col()
             .gap_3()
@@ -813,5 +817,172 @@ mod tests {
             group_color(RelGroup::DependsOn)
         );
         assert_eq!(group_color(RelGroup::IsNot), DANGER);
+    }
+}
+
+#[cfg(test)]
+mod control_walk {
+    //! L7 **control**-walk — the Relations sub-tab (issue #247).
+    //!
+    //! In-crate: the header buttons paint always, but the back button, the
+    //! per-group `[+ add]`, the edge rows + their `✕`, and the picker
+    //! candidates only paint over a focused node with a populated `touching`
+    //! set and an open picker; the focus-picker rows and the overview cards
+    //! only paint with no focus and a populated `universe` / `overview_rels`.
+    //! The two branches are mutually exclusive, so they need separate states.
+    //! Runs in CI via the `panel-walk` alias (lib unit tests included).
+
+    use super::ipc::{NodeItem, NodeRefView, RelationKindView, RelationView};
+    use super::reducer::RelGroup;
+    use super::RelationsView;
+    use gpui::TestAppContext;
+    use serde_json::json;
+    use wylde_gui_test_support::control_walk::ControlWalk;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    fn item(node: NodeRefView, label: &str) -> NodeItem {
+        NodeItem {
+            node,
+            label: label.to_string(),
+        }
+    }
+
+    fn rel(from: NodeRefView, to: NodeRefView, kind: RelationKindView) -> RelationView {
+        RelationView {
+            from,
+            to,
+            kind,
+            note: None,
+            created_at: 0.0,
+            dangling: false,
+        }
+    }
+
+    /// The node universe: the focus node + candidates for the pickers + label
+    /// resolution. Concepts and one vocab anchor, none equal to each other.
+    fn universe() -> Vec<NodeItem> {
+        vec![
+            item(NodeRefView::concept("focus"), "Focus"),
+            item(NodeRefView::concept("a"), "Alpha"),
+            item(NodeRefView::concept("b"), "Bravo"),
+            item(NodeRefView::concept("c"), "Charlie"),
+            item(NodeRefView::vocab("delta"), "{{delta}}"),
+            item(NodeRefView::concept("echo"), "Echo"),
+        ]
+    }
+
+    /// One edge in each of the four groups touching "focus", so every group
+    /// section paints: DEPENDS ON (focus→a), DEPENDED ON BY (b→focus,
+    /// read-only), RELATES TO (focus↔c), IS NOT (focus⊘delta).
+    fn touching() -> Vec<RelationView> {
+        vec![
+            rel(
+                NodeRefView::concept("focus"),
+                NodeRefView::concept("a"),
+                RelationKindView::Dependency,
+            ),
+            rel(
+                NodeRefView::concept("b"),
+                NodeRefView::concept("focus"),
+                RelationKindView::Dependency,
+            ),
+            rel(
+                NodeRefView::concept("focus"),
+                NodeRefView::concept("c"),
+                RelationKindView::Positive,
+            ),
+            rel(
+                NodeRefView::concept("focus"),
+                NodeRefView::vocab("delta"),
+                RelationKindView::Negative,
+            ),
+        ]
+    }
+
+    /// The whole-graph overview: two distinct from-nodes → two overview rows.
+    fn overview_rels() -> Vec<RelationView> {
+        vec![
+            rel(
+                NodeRefView::concept("p"),
+                NodeRefView::concept("q"),
+                RelationKindView::Dependency,
+            ),
+            rel(
+                NodeRefView::concept("r"),
+                NodeRefView::concept("s"),
+                RelationKindView::Positive,
+            ),
+        ]
+    }
+
+    #[gpui::test]
+    fn every_relations_control_does_something(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on("workspaces.list_mru", json!({ "active_id": "ws-a" }))
+            .on("workspaces.concepts.search", json!({ "results": [] }))
+            .on("workspaces.anchors.list", json!({ "anchors": [] }))
+            .on("workspaces.concepts.relations.graph", json!({ "relations": [] }))
+            .on("workspaces.concepts.relations.list", json!({ "relations": [] }))
+            .on("workspaces.concepts.relations.add", json!({ "ok": true }))
+            .on("workspaces.concepts.relations.remove", json!({ "ok": true }));
+        let _guard = fake.clone().install();
+        let window = cx.add_window(|_w, cx| RelationsView::new(cx));
+        cx.run_until_parked();
+
+        ControlWalk::new(window, &fake)
+            .fingerprint(|v: &RelationsView| {
+                format!(
+                    "focus={:?} picker={:?} uni={} touch={} over={} tree={} status={} loading={} err={}",
+                    v.focus,
+                    v.picker_open,
+                    v.universe.len(),
+                    v.touching.len(),
+                    v.overview_rels.len(),
+                    v.show_tree,
+                    v.status.is_some(),
+                    v.loading,
+                    v.error.is_some(),
+                )
+            })
+            .reset(|v: &mut RelationsView, _w, cx| {
+                // Clean baseline before the default frame AND before every
+                // individual click: not loading/error, a known workspace, the
+                // authoring editor (not the tree), and no focus/picker so each
+                // state closure sets its own branch from scratch.
+                v.loading = false;
+                v.error = None;
+                v.status = None;
+                v.workspace_id = Some("ws-a".to_string());
+                v.show_tree = false;
+                v.focus = None;
+                v.picker_open = None;
+                v.universe = Vec::new();
+                v.touching = Vec::new();
+                v.overview_rels = Vec::new();
+                cx.notify();
+            })
+            // Focused branch: the four groups, an edge per group (so the edge
+            // deep-link + `✕` paint), and the DEPENDS ON picker open (so the
+            // candidate buttons paint — universe has nodes not yet related in
+            // that kind).
+            .state("focused", |v: &mut RelationsView, _w, cx| {
+                v.focus = Some(NodeRefView::concept("focus"));
+                v.universe = universe();
+                v.touching = touching();
+                v.picker_open = Some(RelGroup::DependsOn);
+                cx.notify();
+            })
+            // No-focus branch: the focus-node picker rows (from `universe`) and
+            // the overview cards (from `overview_rels`).
+            .state("no-focus", |v: &mut RelationsView, _w, cx| {
+                v.focus = None;
+                v.universe = universe();
+                v.overview_rels = overview_rels();
+                cx.notify();
+            })
+            .sources(&[include_str!("mod.rs")])
+            .run(cx)
+            .assert_every_control_lives()
+            .assert_covers_every_literal_id();
     }
 }
