@@ -26,6 +26,7 @@ use crate::ipc::{
     ConsentSnapshot, OllamaSettings, UpdateCheck, UpdatePrefs, VoiceSettings, VoiceTest,
 };
 use crate::SettingsPanel;
+use wylde_gui_controls::control;
 
 /// Shorthand for the panel render context the section builders thread
 /// through to attach `on_mouse_down` listeners.
@@ -262,13 +263,12 @@ fn check_button_label(check: &UpdateCheck) -> &'static str {
 /// A `(label, pill)` row that cycles a value on click. Shared by the
 /// Frequency and Channel pickers.
 fn labeled_pill_row(
-    id: impl Into<ElementId>,
+    id: impl Into<SharedString>,
     label: &str,
     value: &str,
     on_click: impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 ) -> Stateful<gpui::Div> {
-    div()
-        .id(id.into())
+    control(div(), id)
         .cursor_pointer()
         .flex()
         .flex_row()
@@ -311,8 +311,7 @@ fn hotkey_capture_row(
     } else {
         value
     };
-    let mut pill = div()
-        .id("settings-voice-hotkey")
+    let mut pill = control(div(), "settings-voice-hotkey")
         .cursor_pointer()
         .rounded(px(4.0))
         .border_1()
@@ -742,8 +741,7 @@ fn ollama_empty_state(cx: &mut Cx) -> gpui::Div {
                 .child("No Model Currently Loaded"),
         )
         .child(
-            div()
-                .id("settings-ollama-goto-models")
+            control(div(), "settings-ollama-goto-models")
                 .cursor_pointer()
                 .font_family(FAMILY_INTER)
                 .text_size(px(size::XS))
@@ -760,8 +758,7 @@ fn ollama_empty_state(cx: &mut Cx) -> gpui::Div {
 /// stored for `key`. Clicking clears that override so the field falls
 /// back to its placeholder.
 fn ollama_reset_button(key: &'static str, cx: &mut Cx) -> Stateful<gpui::Div> {
-    div()
-        .id(SharedString::from(format!("ollama-reset-{key}")))
+    control(div(), format!("ollama-reset-{key}"))
         .cursor_pointer()
         .font_family(FAMILY_INTER)
         .text_size(px(size::MICRO))
@@ -1109,8 +1106,7 @@ pub fn consent_section(snap: &ConsentSnapshot, cx: &mut Cx) -> gpui::Div {
             ));
         }
         c = c.child(
-            div()
-                .id("settings-consent-reset")
+            control(div(), "settings-consent-reset")
                 .cursor_pointer()
                 .self_start()
                 .rounded(px(4.0))
@@ -1141,8 +1137,7 @@ fn per_tool_row(tool_id: &str, decision: &str) -> Stateful<gpui::Div> {
     };
     let bg = if on { BRAND_LIGHT } else { SURFACE_900 };
     let fg = if on { TEXT_PRIMARY } else { TEXT_MUTED };
-    div()
-        .id(ElementId::Name(format!("settings-tool::{tool_id}").into()))
+    control(div(), format!("settings-tool::{tool_id}"))
         .cursor_pointer()
         .flex()
         .flex_row()
@@ -1290,8 +1285,7 @@ pub fn privacy_section(
             ),
         )
         .child(
-            div()
-                .id("settings-privacy-reset")
+            control(div(), "settings-privacy-reset")
                 .cursor_pointer()
                 .self_start()
                 .rounded(px(4.0))
@@ -1391,8 +1385,7 @@ fn modal_checkbox_row(checked: bool, cx: &mut Cx) -> Stateful<gpui::Div> {
     } else {
         ("", SURFACE_900, BORDER_DEFAULT)
     };
-    div()
-        .id("settings-hf-modal-dontshow")
+    control(div(), "settings-hf-modal-dontshow")
         .cursor_pointer()
         .flex()
         .flex_row()

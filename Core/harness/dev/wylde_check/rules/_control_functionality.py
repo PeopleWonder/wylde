@@ -125,9 +125,9 @@ SEVERITY = "error"
 #: recorded at the #247 pilot (140 sites / 28 files) and drained since.
 #: Batch 2 (#247 part 2): Memory + Changelog migrated -> 136 / 26.
 #: Batch 3: Dashboard + RemoteAccess migrated -> 127 / 24.
-#: Batch 5: Workspaces (all 13 files, 49 sites) migrated -> 78 / 11.
-#: (Batch 4, Settings -> 120/23, is in flight as #260; these two are
-#: independent removals of different keys.)
+#: Batch 4: Settings migrated (incl. per_tool_row, a control rule 59
+#: could not see because its handler is attached by the caller) -> 120 / 23.
+#: Batch 5: Workspaces (all 13 files, 49 sites) migrated -> 71 / 10.
 #:
 #: This is a **ratchet**, not an exemption list.  Findings are emitted when a
 #: file's actual count goes *above* its budget (a new unrouted control — the
@@ -146,7 +146,6 @@ GRANDFATHERED_UNROUTED = {
     "Core/GUI/Frontend/Panels/Chat/src/markdown.rs": 1,
     "Core/GUI/Frontend/Panels/Devices/src/devices_panel.rs": 11,
     "Core/GUI/Frontend/Panels/Models/src/models_panel.rs": 17,
-    "Core/GUI/Frontend/Panels/Settings/src/sections.rs": 7,
     "Core/GUI/Shell/src/sidebar.rs": 1,
     "Core/GUI/Shell/src/slot.rs": 1,
     "Core/GUI/Shell/src/update_pill.rs": 5,
