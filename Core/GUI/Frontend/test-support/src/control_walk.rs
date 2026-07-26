@@ -167,6 +167,7 @@ pub struct ControlWalk<'a, V: Render + 'static> {
     reset: Option<StateFn<V>>,
     states: Vec<(String, StateFn<V>)>,
     sources: Vec<&'static str>,
+    external_effect: Vec<&'static str>,
 }
 
 impl<'a, V: Render + 'static> ControlWalk<'a, V> {
@@ -180,7 +181,27 @@ impl<'a, V: Render + 'static> ControlWalk<'a, V> {
             reset: None,
             states: Vec::new(),
             sources: Vec::new(),
+            external_effect: Vec::new(),
         }
+    }
+
+    /// Declare controls whose effect happens **outside** anything the harness
+    /// can observe — an OS-native dialog (a folder/file picker), a handoff to
+    /// another process — so the walk still *clicks* them (a panic on click is
+    /// still caught) but does not require an observable backend/nav/state
+    /// delta afterward.
+    ///
+    /// This is NOT the escape hatch of last resort — it is narrow and honest.
+    /// The `control-ok` `wylde_check` marker is for ids that are not clickable
+    /// controls at all (scroll handles); this is for genuine controls whose
+    /// only effect is un-observable *in a headless test*. Each id listed here
+    /// must be justified at the call site: the control opens a native dialog
+    /// (`rfd`), not "the fixture is hard to set up". A dead handler must never
+    /// be hidden behind this — prefer widening the fingerprint or adding a
+    /// state first, and reach for this only when the effect is truly external.
+    pub fn external_effect(mut self, ids: &[&'static str]) -> Self {
+        self.external_effect.extend_from_slice(ids);
+        self
     }
 
     /// The panel's observable-state snapshot — one closure per panel.
@@ -312,6 +333,7 @@ impl<'a, V: Render + 'static> ControlWalk<'a, V> {
             walked,
             literal_ids,
             declared_sources: self.sources.len(),
+            external_effect: self.external_effect,
         }
     }
 }
@@ -460,6 +482,7 @@ pub struct WalkReport {
     /// Literal control ids found in the declared sources.
     pub literal_ids: Vec<String>,
     declared_sources: usize,
+    external_effect: Vec<&'static str>,
 }
 
 impl WalkReport {
@@ -509,9 +532,29 @@ impl WalkReport {
             WALK_VIEWPORT.1,
         );
 
+        // An `external_effect` control was clicked (so a panic on click is still
+        // caught), but its effect is un-observable in a headless test — an
+        // OS-native dialog, a process handoff — so no delta is required. Every
+        // id declared must actually have painted, or the declaration is stale
+        // and could be hiding a control that has since become genuinely dead.
+        let stale_external: Vec<&str> = self
+            .external_effect
+            .iter()
+            .filter(|id| !painted.iter().any(|w| w.id == **id))
+            .copied()
+            .collect();
+        assert!(
+            stale_external.is_empty(),
+            "these ids are declared `external_effect` but never painted, so the \
+             declaration is stale — remove them (or fix the state that should \
+             paint them, so a now-dead control isn't hidden behind the exemption): \
+             {stale_external:?}"
+        );
+
         let dead: Vec<String> = painted
             .iter()
             .filter(|w| w.reachable && !w.had_effect())
+            .filter(|w| !self.external_effect.contains(&w.id.as_str()))
             .map(|w| format!("{} (state: {})", w.id, w.state))
             .collect();
         assert!(
@@ -520,7 +563,9 @@ impl WalkReport {
              call, no nav, no state change. A dead handler, a control with no \
              listener, or a handler wired to something that no longer runs — OR a \
              fixture that doesn't set the precondition under which the effect is \
-             visible (check the fingerprint covers the field it moves): {dead:?}"
+             visible (check the fingerprint covers the field it moves). If a \
+             control genuinely triggers only an OS-native dialog, declare it via \
+             `.external_effect(&[..])` with a reason: {dead:?}"
         );
         self
     }

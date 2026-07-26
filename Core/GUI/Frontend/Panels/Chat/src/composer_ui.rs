@@ -97,7 +97,15 @@ fn bubble_strip(
         .clamp(0.0, strip_w);
     let xs = bubbles::slot_xs(n, word_x_rel, BUBBLE_GAP, strip_w);
 
-    let mut strip = control(div(), "chat-bubble-strip")
+    // The strip is the floating bubble *layer* — a tether canvas plus
+    // absolutely-positioned bubbles/collapse. It needs a stable id so the canvas
+    // can capture the layer's window origin, but the container has no click
+    // handler: the bubbles, the collapse ✕, the card and the menu inside it are
+    // the controls.
+    let mut strip = div()
+        // wylde-check: control-ok: bubble-layer container for the tether canvas,
+        // not a click-button (the bubbles/collapse/card/menu inside are).
+        .id("chat-bubble-strip")
         .relative()
         .w_full()
         .h(px(BUBBLE_STRIP_H));
@@ -265,7 +273,13 @@ fn bubble_card(
     let left = (xs.get(ix).copied().unwrap_or(0.0) - 140.0).max(0.0);
     let pinned = panel.bubbles.pinned.contains(&bubble.label);
 
-    let mut card = control(div(), "chat-bubble-card")
+    // The drill-in card is a positioned panel, not a click-button. Its
+    // interactive parts — 📌 pin, ✕/↺ exclude, "view in graph" — are the
+    // controls; the card body only needs a stable id for its absolute placement.
+    let mut card = div()
+        // wylde-check: control-ok: positioned drill-in panel, not a click-button
+        // (its pin/exclude/view-graph children are the controls).
+        .id("chat-bubble-card")
         .absolute()
         .left(px(left))
         .top(px(BUBBLE_TOP + BUBBLE_D + 6.0))
