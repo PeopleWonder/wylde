@@ -9190,6 +9190,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "wylde-gpui-input",
+ "wylde-gui-controls",
  "wylde-gui-pipe",
  "wylde-gui-test-support",
  "wylde-theme",

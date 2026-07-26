@@ -48,6 +48,27 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Settings controls are now walked, and the walk distinguishes unreachable from dead (closes the Settings blocker on #247; refs #247, part 2 batch 4).** Ratchet **127 → 120 sites / 23 files**.
+  Settings was held back two batches because its voice-section rows didn't respond to a synthetic click. The
+  cause was the occluding-modal problem `ControlWalk::reset` already existed for — an earlier click in the pass
+  opened a modal whose `.absolute().inset_0().occlude()` backdrop then swallowed every later click. The walk was
+  reverted before it ever ran *with* a reset closure, so the combination was simply untested. With
+  `.reset(|p, _w, cx| { /* close all modals */ })` the seven controls walk green.
+  Two of them then surfaced as fixture gaps, not dead controls: the modal "don't show again" checkbox toggles
+  `hf_dont_show_again` (which the fingerprint didn't cover), and the privacy-reset button clears a flag that the
+  fixture left unset (so the reset was a visible no-op). Both fixed in the test — the reset closure now also arms
+  the precondition, so the button always has something to reset.
+  **One genuine find:** `per_tool_row` built its consent-decision control with a bare `.id(...)` while its click
+  handler was attached by the *caller*. That is invisible to `wylde_check` rule 59 (function-scoped — the helper
+  has no handler in its own body) *and* to the walk (unregistered, so never enumerated). It is the exact residue
+  case rule 59's docs acknowledge, and the control walk is what caught it. Now routed through `control()`.
+  **New harness capability — unreachable vs dead.** A control can paint valid bounds and still be unclickable
+  (it laid out below the viewport, so the click lands outside the window). That is a walk problem, not a dead
+  handler, and calling it "dead" sends you hunting a bug that isn't in the panel. The walk now checks the click
+  point against the viewport and reports an out-of-bounds control as **unreachable**, with a message pointing at
+  `.viewport()` — a separate assertion from the dead-handler one. Proven by shrinking the viewport under a live
+  panel and confirming the control is named unreachable, not dead.
+
 - **The control walk gained a nav channel and a viewport fix, and Dashboard + RemoteAccess are now walked
   (refs #247, part 2 batch 3).** Ratchet **136 → 127 sites / 24 files**.
   Dashboard exposed a real hole in the oracle. Its fifteen service chips and its empty-state rows do exactly
