@@ -44,17 +44,22 @@ on **any** finding, error or warning alike (``.github/workflows/ci.yml``
 merely documentation).  A WARN-only rule would red ``develop`` exactly as
 hard as an error one, just less legibly.
 
-So the rule ships at **error** with a per-file grandfather budget,
-:data:`GRANDFATHERED_UNROUTED` — the 140 sites that existed at the pilot.
-It reports zero on today's tree, and a **new** control that bypasses the
-constructor fails the build on the PR that adds it.  That is the actual
-goal of #247, delivered now rather than after the migration.
+So the rule shipped at **error** with a per-file grandfather budget,
+``GRANDFATHERED_UNROUTED`` — the 140 sites that existed at the pilot — that
+reported zero on today's tree while failing the build on any *new* bypass.
+It was a ratchet, not an exemption list: a count *below* budget also flagged,
+so an allowlist nobody tightens could not rust open (rule 20's
+``_FILE_SIZE_QUEUED_SPLITS`` precedent). Batch by batch it drained to empty.
 
-It is a ratchet, not an exemption list: a count *below* budget is also a
-finding, telling you to lower the entry.  An allowlist nobody is required
-to tighten rusts open.  Same precedent as rule 20's
-``_FILE_SIZE_QUEUED_SPLITS``.  Dead handler bodies get no budget at all —
-the tree has zero, so any new one is red on arrival.
+**The ratchet is now removed (#247 endgame).** Every interactive site is
+routed, and the deferred stateful-panel walks have all landed, so the budget
+served its purpose and is gone: any bypass is a finding, full stop, with the
+per-site ``control-ok`` marker as the only escape hatch. Its companion, rule
+61 (:func:`check_every_control_building_crate_is_walked`), added in the same
+change, closes the other half — it makes a *walk itself* mandatory for every
+control-building crate, so a panel can neither ship an unrouted control nor
+ship routed-but-unwalked. Dead handler bodies never had a budget — the tree
+has zero, so any new one is red on arrival.
 
 Granularity, stated honestly
 ----------------------------
@@ -103,8 +108,11 @@ Like the rest of the suite this walks the active tree read-only and emits
 
 from __future__ import annotations
 
+import os
 import re
-from typing import List, Optional, Tuple
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Set, Tuple
 
 from .. import Finding
 from .._walkers import _read_text, _to_rel, _walk
@@ -121,31 +129,25 @@ RULE = "gui_controls_are_wired_and_walkable"
 #: reports zero today while making a *new* unrouted control fail immediately.
 SEVERITY = "error"
 
-#: Per-file budget of interactive controls that still bypass the constructor.
+#: The grandfather ratchet is GONE (#247 endgame).
 #:
-#: **DRAINED TO EMPTY (#247 part 2, batch 8).** It began at 140 sites / 28 files
-#: at the pilot and came down batch by batch — Memory/Changelog, Dashboard/
-#: RemoteAccess, Settings (incl. `per_tool_row`, a control rule 59 could not see
-#: because its handler is attached by the caller), Workspaces, Models/Devices,
-#: Chat, and finally the Shell — until nothing is grandfathered. **Every
-#: interactive site in the GUI is now routed through `control()`**, and a new
-#: one that bypasses the constructor is an error on the PR that adds it, with no
-#: exempt debt standing behind it.
+#: It began at 140 sites / 28 files at the pilot and came down batch by batch —
+#: Memory/Changelog, Dashboard/RemoteAccess, Settings (incl. `per_tool_row`, a
+#: control rule 59 could not see because its handler is attached by the caller),
+#: Workspaces, Models/Devices, Chat, and finally the Shell — until it was
+#: drained to empty (part 2 batch 8). The mechanism was then kept, empty, only
+#: until the deferred stateful-panel walks landed (the maintainer's "migrated
+#: AND walked" condition). They have (Models, Devices, Chat, the Workspaces
+#: sub-views + graph, the Shell chrome), so the budget and its ratchet branch
+#: are deleted here together with the addition of rule 61
+#: (:func:`check_every_control_building_crate_is_walked`).
 #:
-#: The mechanism (this dict + the ratchet branch below) is kept, empty, for one
-#: more step: the endgame that also adds "require a control_walk per panel"
-#: deletes both together, once the deferred stateful-panel walks (Models,
-#: Devices, Chat, the Workspaces sub-views + graph, the Shell chrome) have
-#: landed — the maintainer's "migrated AND walked" condition. Until then the empty
-#: ratchet
-#: with the mechanism intact reads exactly as "every site routed, zero
-#: exemptions", which is the guarantee we want to hold now.
-#:
-#: While non-empty it was a **ratchet**, not an exemption list: a count *above*
-#: budget (a new unrouted control) and a count *below* (unrecorded migration
-#: progress) both flagged, so it could not rust open. Same precedent as rule
-#: 20's ``_FILE_SIZE_QUEUED_SPLITS``.
-GRANDFATHERED_UNROUTED: dict = {}
+#: There is now **no budget**: every interactive `.id(` that bypasses the
+#: constructor is a finding, full stop, on the PR that adds it. A control that
+#: does not route through `control()` never enters the per-frame registry the
+#: walk enumerates, so it would ship unproven — which is exactly what #247
+#: prevents. The escape hatch for a genuinely non-interactive id is the
+#: per-site ``wylde-check: control-ok`` marker, not a file budget.
 
 #: Dead handler bodies are NOT grandfathered.  The tree has zero of them, so
 #: the budget is zero everywhere and any new one is red on arrival.
@@ -343,52 +345,34 @@ def check_gui_controls_are_wired_and_walkable() -> List[Finding]:
                 window = raw_lines[max(0, line - 3) : line]
                 if any(_OPT_OUT in ln for ln in window):
                     continue
-                unrouted.setdefault(rel, []).append(line)
+                ctx = raw_lines[line - 1].strip() if line - 1 < len(raw_lines) else ""
+                unrouted.setdefault(rel, []).append((line, ctx))
 
-    # ── The ratchet ──
+    # ── Every unrouted interactive site is a finding ──
     #
-    # Compare what was found against the grandfathered budget, per file. Over
-    # budget = a NEW unrouted control (red, on the PR that adds it). Under
-    # budget = migration progress the table has not recorded (also red, but a
-    # one-line edit) — a ratchet nobody is required to tighten rusts open.
-    for rel in sorted(set(unrouted) | set(GRANDFATHERED_UNROUTED)):
-        lines = unrouted.get(rel, [])
-        budget = GRANDFATHERED_UNROUTED.get(rel, 0)
-        if len(lines) > budget:
+    # No budget (the grandfather ratchet is gone — see GRANDFATHERED_UNROUTED's
+    # removal note above). Any interactive `.id(` that bypassed the constructor
+    # is reported on the PR that adds it: it never enters the per-frame registry
+    # the walk enumerates, so it would ship unproven. One finding per site.
+    for rel in sorted(unrouted):
+        for line, ctx in unrouted[rel]:
             findings.append(
                 Finding(
                     rule=RULE,
                     severity=SEVERITY,
                     file=rel,
-                    line=lines[budget] if budget < len(lines) else lines[0],
+                    line=line,
                     message=(
-                        f"{len(lines) - budget} new interactive control(s) here get an id "
-                        'from a bare `.id(...)` instead of `wylde_gui_controls::control(el, '
-                        '"id")` '
-                        f"(found {len(lines)} at lines {lines}, grandfathered budget "
-                        f"{budget}). A control that does not route through the constructor "
-                        "never enters the per-frame registry, so `tests/control_walk.rs` "
-                        "never enumerates it and never clicks it — it ships unproven while "
-                        "the suite stays green (#247). Replace `div().id(x)` with "
-                        "`control(div(), x)`; if this id is not a clickable control, mark "
-                        f"it `// {_OPT_OUT}: <reason>`. Do NOT raise the budget."
+                        "this interactive control gets its id from a bare `.id(...)` "
+                        'instead of `wylde_gui_controls::control(el, "id")`. A control '
+                        "that does not route through the constructor never enters the "
+                        "per-frame registry, so `tests/control_walk.rs` never enumerates "
+                        "it and never clicks it — it ships unproven while the suite stays "
+                        "green (#247). Replace `div().id(x)` with `control(div(), x)`; if "
+                        f"this id is not a clickable control, mark it `// {_OPT_OUT}: "
+                        "<reason>`."
                     ),
-                )
-            )
-        elif len(lines) < budget:
-            findings.append(
-                Finding(
-                    rule=RULE,
-                    severity=SEVERITY,
-                    file=rel,
-                    line=0,
-                    message=(
-                        f"GRANDFATHERED_UNROUTED is stale for this file: budget {budget}, "
-                        f"actually {len(lines)} unrouted control(s). Lower the entry to "
-                        f"{len(lines)}"
-                        + (" (or delete it — this file is fully migrated)." if not lines else ".")
-                        + " The ratchet only holds while it is tightened as migration lands."
-                    ),
+                    context=ctx,
                 )
             )
 
@@ -409,5 +393,221 @@ def check_gui_controls_are_wired_and_walkable() -> List[Finding]:
                 ),
             )
         )
+
+    return findings
+
+
+# ── Rule 61: every control-building GUI crate is control-walked ──────────
+
+RULE61 = "every_control_building_crate_is_walked"
+
+#: An ``include_str!("path")`` — how a `control_walk` declares a source whose
+#: literal control ids the walk must all paint (`.sources(&[include_str!(…)])`).
+_INCLUDE_STR_RE = re.compile(r'include_str!\s*\(\s*"([^"]+)"\s*\)')
+
+#: The two textual fingerprints of a control walk: the constructor call and its
+#: living-controls assertion. A crate file carrying either is walk code.
+_WALK_MARKER_RE = re.compile(r"\bControlWalk::new\b|\bassert_every_control_lives\b")
+
+#: The gate attribute whose item never ships. A `control()` call inside a
+#: ``#[cfg(test)]`` block is a walk *fixture*, not a shipped control, so those
+#: blocks are cut before the shipped-control scan.
+_CFG_TEST_RE = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
+
+#: The two infrastructure crates that are NOT panels and so require no walk: the
+#: `control()` constructor + its static scanner, and the control-walk harness.
+#: The scanner necessarily carries the literal string ``control(`` as scan
+#: data, and the harness demonstrates the constructor in shipped helper code —
+#: neither is a user-facing control a content heuristic can distinguish from a
+#: real call, and neither renders UI, so both are excluded by path. Matched as a
+#: repo-relative suffix of the crate root.
+_RULE61_NON_PANEL_CRATES: Tuple[str, ...] = (
+    "Core/GUI/Frontend/Controls",
+    "Core/GUI/Frontend/test-support",
+)
+
+
+def _strip_cfg_test(code: str) -> str:
+    """Remove ``#[cfg(test)]``-annotated braced items from ``code``.
+
+    A `control()` call in a test module (e.g. an in-crate ``#[cfg(test)] mod
+    control_walk``) builds a fixture, not a user-facing control, so it must not
+    make the file count as control-building. Brace-matched from the attribute's
+    following ``{``; a non-braced gated item (``#[cfg(test)] use …``) just has
+    its attribute dropped. A lexical cut, like the rest of this suite — good
+    enough for the well-formed tree, and a false *keep* only ever over-counts
+    (a louder, safer failure than under-counting).
+    """
+    result = code
+    while True:
+        m = _CFG_TEST_RE.search(result)
+        if not m:
+            return result
+        brace = result.find("{", m.end())
+        if brace == -1:
+            result = result[: m.start()] + result[m.end() :]
+            continue
+        depth = 0
+        end = None
+        for j in range(brace, len(result)):
+            if result[j] == "{":
+                depth += 1
+            elif result[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = j
+                    break
+        if end is None:
+            return result[: m.start()]
+        result = result[: m.start()] + result[end + 1 :]
+
+
+def _gui_crate_roots() -> List[Path]:
+    """Every GUI crate root (a directory with a ``Cargo.toml``) under the GUI
+    source roots."""
+    return [p.parent for p in _walk((".toml",), GUI_ROOTS) if p.name == "Cargo.toml"]
+
+
+def check_every_control_building_crate_is_walked() -> List[Finding]:
+    """Rule 61 — a crate that builds interactive controls must control-walk them.
+
+    Rule 59's companion, and the other half of the #247 guarantee. Rule 59
+    proves every *site* routes through ``control()`` (so it enters the per-frame
+    registry a walk enumerates). This proves the *walk exists and sees every
+    control-building file*: for each GUI crate whose shipped ``src/`` builds a
+    control, there must be a ``control_walk`` (an in-crate ``#[cfg(test)] mod``
+    or a ``tests/control_walk.rs``) that declares **every** such file in a
+    ``.sources(&[include_str!(…)])``.
+
+    Without this, a panel could route all its controls correctly and still ship
+    with no walk at all — or with a walk that silently omits one of its files —
+    and both halves would read green. Together the two rules mean a control can
+    neither bypass the registry nor sit in a file no walk's literal-id coverage
+    assertion ever inspects.
+
+    A crate that builds no shipped control is not required to have a walk (the
+    ``control()`` constructor crate, the test-support harness, and the
+    focus-surface widget crates like the text input / code editor, whose roots
+    are ``.id()`` + ``control-ok`` rather than ``control()``, all fall out here
+    for free — no name-based exclusion needed).
+    """
+    findings: List[Finding] = []
+
+    crate_roots = _gui_crate_roots()
+    if not crate_roots:
+        return [
+            Finding(
+                rule=RULE61,
+                severity="error",
+                file="Core/GUI",
+                line=0,
+                message=(
+                    "rule 61 found no GUI crates (no Cargo.toml under "
+                    f"{GUI_ROOTS!r}). If the GUI tree moved, repoint GUI_ROOTS; do "
+                    "not leave the rule inspecting nothing."
+                ),
+            )
+        ]
+
+    # Longest root first, so a file is assigned to its NEAREST enclosing crate
+    # (a nested crate wins over its parent directory).
+    roots_by_depth = sorted(crate_roots, key=lambda r: len(str(r)), reverse=True)
+
+    def crate_of(path: Path) -> Optional[Path]:
+        for r in roots_by_depth:
+            try:
+                path.relative_to(r)
+                return r
+            except ValueError:
+                continue
+        return None
+
+    control_files: Dict[Path, Set[str]] = defaultdict(set)
+    walk_sources: Dict[Path, Set[str]] = defaultdict(set)
+    has_walk: Dict[Path, bool] = defaultdict(bool)
+
+    for f in _walk((".rs",), GUI_ROOTS):
+        cr = crate_of(f)
+        if cr is None:
+            continue
+        rel_to_crate = str(f.relative_to(cr)).replace("\\", "/")
+        raw = _read_text(f)
+        if not raw:
+            continue
+        code = _strip_comments(raw)
+
+        # Walk code — collect the `.rs` sources it declares (resolved relative
+        # to the file holding the `include_str!`, then made crate-relative).
+        if _WALK_MARKER_RE.search(code):
+            has_walk[cr] = True
+            for m in _INCLUDE_STR_RE.finditer(code):
+                target = m.group(1)
+                if not target.endswith(".rs"):
+                    continue
+                resolved = os.path.normpath(
+                    os.path.join(os.path.dirname(str(f)), target)
+                )
+                rel = os.path.relpath(resolved, str(cr)).replace("\\", "/")
+                if rel.startswith(".."):
+                    continue  # points outside this crate — not one of its files
+                walk_sources[cr].add(rel)
+
+        # Shipped control-building file — a `control()` call in `src/`, outside
+        # any `#[cfg(test)]` fixture block.
+        if rel_to_crate.startswith("src/"):
+            if _CONTROL_CALL_RE.search(_strip_cfg_test(code)):
+                control_files[cr].add(rel_to_crate)
+
+    for cr in sorted(crate_roots, key=lambda r: _to_rel(r)):
+        cfiles = control_files.get(cr, set())
+        if not cfiles:
+            continue  # builds no controls — no walk required
+        crate_rel = _to_rel(cr)
+        if crate_rel in _RULE61_NON_PANEL_CRATES:
+            continue  # constructor/scanner + walk harness — not panels
+
+        if not has_walk.get(cr, False):
+            findings.append(
+                Finding(
+                    rule=RULE61,
+                    severity="error",
+                    file=crate_rel,
+                    line=0,
+                    message=(
+                        "this GUI crate builds interactive controls (in "
+                        f"{sorted(cfiles)}) but has no control_walk. Add a "
+                        "`tests/control_walk.rs` (or an in-crate `#[cfg(test)] mod "
+                        "control_walk`) that mounts the panel, walks it with "
+                        "`ControlWalk`, and asserts every control lives — otherwise "
+                        "nothing proves a control in it does anything when clicked "
+                        "(#247). If the crate is `wry`/tray-linked and the headless "
+                        "job cannot build it, extract its renderers into a "
+                        "walkable crate first, as the Shell chrome was."
+                    ),
+                )
+            )
+            continue
+
+        declared = walk_sources.get(cr, set())
+        for cf in sorted(cfiles):
+            if cf not in declared:
+                findings.append(
+                    Finding(
+                        rule=RULE61,
+                        severity="error",
+                        file=f"{crate_rel}/{cf}",
+                        line=0,
+                        message=(
+                            "this file builds interactive controls but no "
+                            "control_walk in the crate declares it in "
+                            "`.sources(&[include_str!(…)])`. A walk only "
+                            "coverage-checks the sources it is handed, so a control "
+                            "id built here escapes `assert_covers_every_literal_id` "
+                            "and could be added, or go dead, unseen (#247). Add "
+                            f'`include_str!("…/{cf.split("/")[-1]}")` to the walk\'s '
+                            "`.sources(&[…])`."
+                        ),
+                    )
+                )
 
     return findings

@@ -1,43 +1,32 @@
-"""Tests for rule 59 (``gui_controls_are_wired_and_walkable``) — mirrors
-prod-side ``wylde_check/rules/_control_functionality.py``.
+"""Tests for the two #247 control rules, mirroring prod-side
+``wylde_check/rules/_control_functionality.py``:
 
-The failure the rule exists to catch is a GUI control that ships doing
-nothing: an empty handler, or a control that bypasses
-``wylde_gui_controls::control()`` and so is never enumerated by
-``tests/control_walk.rs`` (#247).
+* **rule 59** (``gui_controls_are_wired_and_walkable``) — the static half: a
+  dead handler body, or an interactive site that bypasses
+  ``wylde_gui_controls::control()`` and so is never enumerated by
+  ``tests/control_walk.rs``.
+* **rule 61** (``every_control_building_crate_is_walked``) — the companion: a
+  GUI crate that builds controls must have a ``control_walk`` that declares
+  every one of its control-building sources.
 
-Both enforcement halves are exercised here — dead handler bodies and
-not-routed-through-the-constructor — plus the empty-scan guards, because a
-rule that inspects nothing reports a pass rather than going red
-(#101/#114/#116).
+The grandfather ratchet rule 59 shipped with was drained to empty and then
+removed in the #247 endgame (the routing migration is complete and every panel
+is now walked), so there is no per-file budget any more: any bypass is a
+finding, full stop. These tests pin that, plus the empty-scan guards — a rule
+that inspects nothing must go red, not report a pass (#101/#114/#116).
 
 The dead-body half gets the most cases on purpose. During development it
 silently found nothing on a deliberately-emptied handler, because an empty
 closure body and an unparsable one were both falsy and got the same
-``continue``. The real tree's zero dead handlers looked like a clean tree
-and was actually a broken detector. These tests pin the distinction.
+``continue``. These tests pin the distinction.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-import pytest
+from .conftest import _write
 
-from .conftest import _import_check, _write
-
-#: The shipped grandfather table, captured at import time — i.e. before the
-#: autouse fixture below empties it for each test. Reading the module
-#: attribute inside a test would see the emptied copy, since monkeypatch
-#: rebinds the attribute on the one real module object.
-REAL_GRANDFATHERED = dict(
-    _import_check().rules._control_functionality.GRANDFATHERED_UNROUTED
-)
-
-#: The real checkout root, captured before `isolated_tree` repoints
-#: `WYLDE_ROOT` at a `tmp_path`. Tests that assert against the SHIPPED tree
-#: (rather than a synthetic one) need this.
-REAL_ROOT = _import_check().WYLDE_ROOT
 
 PANEL_SRC = ("Core", "GUI", "Frontend", "Panels", "Tools", "src")
 PANEL_REL = "Core/GUI/Frontend/Panels/Tools/src/tools_panel.rs"
@@ -74,22 +63,6 @@ def _rule_module(wc: Any) -> Any:
     return wc.rules._control_functionality
 
 
-@pytest.fixture(autouse=True)
-def _no_grandfathered(isolated_tree: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Empty the grandfather ratchet for the synthetic tree.
-
-    ``GRANDFATHERED_UNROUTED`` records the 140 real sites that existed at the
-    #247 pilot. None of those files exist under ``tmp_path``, so leaving the
-    table populated would make every test see 28 "budget is stale" findings
-    about files it never wrote. Clearing it states the intent directly: a
-    synthetic tree is grandfathered for nothing, so these tests exercise the
-    rule's judgement rather than the ratchet's bookkeeping. The ratchet gets
-    its own tests below, with an explicit table.
-    """
-    wc, _root = isolated_tree
-    monkeypatch.setattr(_rule_module(wc), "GRANDFATHERED_UNROUTED", {})
-
-
 def _findings(wc: Any) -> list:
     return wc.check_gui_controls_are_wired_and_walkable()
 
@@ -98,7 +71,7 @@ def _messages(wc: Any) -> str:
     return " ".join(f.message for f in _findings(wc))
 
 
-# ── The passing shape ────────────────────────────────────────────────
+# ── Rule 59, the passing shape ───────────────────────────────────────
 
 
 def test_pass_control_routed_through_constructor_with_a_live_handler(
@@ -141,7 +114,7 @@ def test_pass_handler_mentioned_only_in_a_comment(isolated_tree: Any) -> None:
     assert _findings(wc) == []
 
 
-# ── Half 1: dead handler bodies ──────────────────────────────────────
+# ── Rule 59, half 1: dead handler bodies ─────────────────────────────
 
 
 def test_flags_an_empty_handler_body(isolated_tree: Any) -> None:
@@ -175,11 +148,14 @@ def test_pass_a_handler_that_does_real_work(isolated_tree: Any) -> None:
 def test_pass_a_handler_that_notifies_after_doing_work(isolated_tree: Any) -> None:
     """`cx.notify()` is only damning when it is the *whole* body."""
     wc, root = isolated_tree
-    _panel(root, _wired(handler_body="this.expanded = !this.expanded;\n                cx.notify();"))
+    _panel(
+        root,
+        _wired(handler_body="this.expanded = !this.expanded;\n                cx.notify();"),
+    )
     assert _findings(wc) == []
 
 
-# ── Half 2: bypassing the constructor ────────────────────────────────
+# ── Rule 59, half 2: bypassing the constructor (no budget) ───────────
 
 
 def test_flags_an_interactive_site_with_a_bare_id(isolated_tree: Any) -> None:
@@ -239,17 +215,12 @@ def test_pass_opt_out_marker_suppresses_a_non_interactive_id(
     assert _findings(wc) == []
 
 
-# ── Severity and the grandfather ratchet ─────────────────────────────
-
-
 def test_findings_are_errors(isolated_tree: Any) -> None:
     """Error, not warning.
 
     A warning is not advisory in this repo: the `wylde_check (full rule set)`
     CI job fails on ANY finding. Shipping at WARNING to be gentle on an
-    unmigrated tree would red `develop` exactly as hard, just less legibly —
-    which is why the unmigrated sites are handled by the ratchet below
-    instead.
+    unmigrated tree would red `develop` exactly as hard, just less legibly.
     """
     wc, root = isolated_tree
     _panel(root, _wired(handler_body=""))
@@ -272,75 +243,162 @@ def _unrouted_panel(root: Any, n: int) -> None:
     _panel(root, "\n".join(lines) + "\n")
 
 
-def test_ratchet_passes_a_file_exactly_at_its_budget(isolated_tree: Any) -> None:
-    """The 140 sites that existed at the pilot must not red the build — the
-    whole point of grandfathering rather than blocking on the migration."""
+def test_every_unrouted_site_is_flagged_with_no_budget(isolated_tree: Any) -> None:
+    """The ratchet is gone: N unrouted controls in a file are N findings.
+
+    While the grandfather budget existed, a file could carry its pilot-era
+    sites without failing; now every bypass is reported on the PR that adds it,
+    with the per-site ``control-ok`` marker as the only escape hatch.
+    """
     wc, root = isolated_tree
     _unrouted_panel(root, 3)
-    _rule_module(wc).GRANDFATHERED_UNROUTED[PANEL_REL] = 3
-    assert _findings(wc) == []
-
-
-def test_ratchet_flags_a_new_control_in_a_grandfathered_file(
-    isolated_tree: Any,
-) -> None:
-    """The case #247 exists for, and the reason the budget is per-file rather
-    than a blanket file exemption: a NEW dead button in an already-dirty file
-    would otherwise ship unnoticed."""
-    wc, root = isolated_tree
-    _unrouted_panel(root, 4)
-    _rule_module(wc).GRANDFATHERED_UNROUTED[PANEL_REL] = 3
     found = _findings(wc)
+    assert len(found) == 3
+    assert all("does not route through the constructor" in f.message for f in found)
+    assert all(f.severity == "error" for f in found)
+
+
+def test_the_grandfather_ratchet_mechanism_is_gone(isolated_tree: Any) -> None:
+    """The #247 endgame deleted the ratchet. The module must not carry
+    ``GRANDFATHERED_UNROUTED`` any more, so a per-file budget cannot be
+    re-introduced (a control silently grandfathered back in) without this
+    test — and rule 61 — noticing.
+    """
+    wc, _root = isolated_tree
+    assert not hasattr(_rule_module(wc), "GRANDFATHERED_UNROUTED")
+
+
+# ── Rule 61: every control-building crate is control-walked ───────────
+
+R61_CRATE = ("Core", "GUI", "Frontend", "Panels", "Widget")
+R61_CRATE_REL = "Core/GUI/Frontend/Panels/Widget"
+
+
+def _r61(wc: Any) -> list:
+    return wc.check_every_control_building_crate_is_walked()
+
+
+def _make_crate(root: Any, *, src: dict, extra_files: dict = None) -> None:
+    """A synthetic GUI crate at ``Panels/Widget``: a ``Cargo.toml``, the given
+    ``src/`` files (rel path -> content), and any ``extra_files`` (crate-rel
+    path -> content, e.g. a ``tests/control_walk.rs``)."""
+    base = root
+    for part in R61_CRATE:
+        base = base / part
+    _write(base / "Cargo.toml", '[package]\nname = "wylde-panel-widget"\n')
+    for rel, content in src.items():
+        _write(base / "src" / rel, content)
+    for rel, content in (extra_files or {}).items():
+        _write(base / rel, content)
+
+
+_A_CONTROL = 'fn button() -> Div { control(div(), "widget-go") }\n'
+
+
+def _walk_declaring(*rel_sources: str) -> str:
+    """A minimal control-walk that declares the given crate-relative sources."""
+    includes = "".join(f'        include_str!("{s}"),\n' for s in rel_sources)
+    return (
+        "#[gpui::test]\n"
+        "fn every_widget_control_does_something(cx: &mut TestAppContext) {\n"
+        "    ControlWalk::new(window, &fake)\n"
+        "        .sources(&[\n" + includes + "        ])\n"
+        "        .run(cx)\n"
+        "        .assert_every_control_lives();\n"
+        "}\n"
+    )
+
+
+def test_r61_pass_crate_walk_declares_its_control_source(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _make_crate(
+        root,
+        src={"panel.rs": _A_CONTROL},
+        extra_files={"tests/control_walk.rs": _walk_declaring("../src/panel.rs")},
+    )
+    assert _r61(wc) == []
+
+
+def test_r61_flags_a_control_building_crate_with_no_walk(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _make_crate(root, src={"panel.rs": _A_CONTROL})
+    found = _r61(wc)
     assert len(found) == 1
-    assert "1 new interactive control" in found[0].message
+    assert "has no control_walk" in found[0].message
+    assert found[0].file == R61_CRATE_REL
     assert found[0].severity == "error"
 
 
-def test_ratchet_flags_a_stale_budget_after_migration(isolated_tree: Any) -> None:
-    """Migration progress must tighten the ratchet.
-
-    An allowlist nobody is required to lower rusts open: it would keep
-    accepting N sites long after the file has none, and a regression back up
-    to N would pass. Under-budget is a one-line edit, so making it red is
-    cheap and keeps the number honest.
-    """
+def test_r61_flags_a_control_source_the_walk_omits(isolated_tree: Any) -> None:
+    """A walk that declares one control file but not a sibling that also builds
+    controls leaves that sibling's ids outside the coverage assertion."""
     wc, root = isolated_tree
-    _unrouted_panel(root, 1)
-    _rule_module(wc).GRANDFATHERED_UNROUTED[PANEL_REL] = 3
-    found = _findings(wc)
-    assert len(found) == 1
-    assert "stale" in found[0].message and "Lower the entry to 1" in found[0].message
-
-
-def test_ratchet_tells_you_to_delete_a_fully_migrated_entry(
-    isolated_tree: Any,
-) -> None:
-    wc, root = isolated_tree
-    _panel(root, _wired())  # fully routed through control()
-    _rule_module(wc).GRANDFATHERED_UNROUTED[PANEL_REL] = 2
-    found = _findings(wc)
-    assert len(found) == 1
-    assert "delete it" in found[0].message
-
-
-def test_the_real_grandfather_table_is_drained() -> None:
-    """The migration is complete: nothing is grandfathered.
-
-    #247 part 2 drained `GRANDFATHERED_UNROUTED` batch by batch; batch 8 (the
-    Shell) took it to empty. Every interactive site in the GUI is now routed
-    through `control()`, so a non-empty table would mean a regression — a file
-    re-added to the exempt list, or the drain quietly reverted.
-
-    When the endgame lands (delete the ratchet mechanism + require a
-    control_walk per panel), this test goes with the dict it guards.
-
-    (While the table was draining this asserted instead that every budgeted
-    path still existed on disk — a stale entry granting a budget to a
-    deleted/renamed file is the #101/#116 shape. With the table empty there is
-    nothing left to go stale, so the invariant becomes simply: stays empty.)
-    """
-    assert REAL_GRANDFATHERED == {}, (
-        "GRANDFATHERED_UNROUTED is no longer empty — the routing migration was "
-        f"complete, so this is a regression: {REAL_GRANDFATHERED}. A new control "
-        "must use `control()` from the start, not be grandfathered back in."
+    _make_crate(
+        root,
+        src={"panel.rs": _A_CONTROL, "extra.rs": _A_CONTROL},
+        extra_files={"tests/control_walk.rs": _walk_declaring("../src/panel.rs")},
     )
+    found = _r61(wc)
+    assert len(found) == 1
+    assert "no control_walk in the crate declares it" in found[0].message
+    assert found[0].file.endswith("src/extra.rs")
+
+
+def test_r61_pass_crate_that_builds_no_controls(isolated_tree: Any) -> None:
+    """A crate whose src builds no ``control()`` (e.g. a focus-surface widget
+    routed through ``.id()`` + ``control-ok``) needs no walk."""
+    wc, root = isolated_tree
+    _make_crate(root, src={"panel.rs": "fn root() -> Div { div().id(\"x\") }\n"})
+    assert _r61(wc) == []
+
+
+def test_r61_a_cfg_test_control_is_not_a_shipped_control(isolated_tree: Any) -> None:
+    """A ``control()`` inside a ``#[cfg(test)]`` block is a walk fixture, not a
+    shipped control, so it neither requires nor satisfies a walk requirement."""
+    wc, root = isolated_tree
+    _make_crate(
+        root,
+        src={
+            "panel.rs": (
+                "fn root() -> Div { div() }\n"
+                "#[cfg(test)]\n"
+                "mod control_walk {\n"
+                '    fn fixture() { control(div(), "only-in-test"); }\n'
+                "}\n"
+            )
+        },
+    )
+    assert _r61(wc) == []
+
+
+def test_r61_in_crate_walk_satisfies_the_requirement(isolated_tree: Any) -> None:
+    """The walk can live in-crate (a ``#[cfg(test)] mod`` in the same src file),
+    declaring the file via a relative ``include_str!``."""
+    wc, root = isolated_tree
+    _make_crate(
+        root,
+        src={
+            "panel.rs": (
+                _A_CONTROL
+                + "#[cfg(test)]\n"
+                "mod control_walk {\n"
+                "    #[gpui::test]\n"
+                "    fn every_widget_control_does_something(cx: &mut TestAppContext) {\n"
+                "        ControlWalk::new(window, &fake)\n"
+                '            .sources(&[include_str!("panel.rs")])\n'
+                "            .run(cx)\n"
+                "            .assert_every_control_lives();\n"
+                "    }\n"
+                "}\n"
+            )
+        },
+    )
+    assert _r61(wc) == []
+
+
+def test_r61_empty_scan_guard_no_gui_crates_is_a_finding(isolated_tree: Any) -> None:
+    """A rule that inspects nothing must go red, not pass (#114/#116)."""
+    wc, _root = isolated_tree  # tmp_path has no GUI crates at all
+    found = _r61(wc)
+    assert len(found) == 1
+    assert "no GUI crates" in found[0].message

@@ -359,6 +359,14 @@ fn walk(
         .sources(&[
             include_str!("../src/chat_panel.rs"),
             include_str!("../src/composer_ui.rs"),
+            // markdown.rs builds one control — a rendered link (`link_span`).
+            // Its id is runtime (`md-link::{key}`), so it declares no literal id
+            // for the coverage assertion to demand, and its click is an external
+            // handoff (`opener::open`) with no observable delta — so it is not
+            // painted by this fixture. Declared here so the file is under the
+            // literal-id coverage net going forward (rule 61): a future *literal*
+            // -id control added to it would then have to be walked.
+            include_str!("../src/markdown.rs"),
         ])
         .run(cx)
 }
