@@ -51,7 +51,54 @@ fn channel() -> &'static Channel {
 /// Push a focus request (e.g. the composer's "view in graph" affordance).
 /// Buffered until the Workspaces panel drains it; always succeeds.
 pub fn request_workspace_focus(focus: WorkspaceFocus) {
+    // Dev-only observation seam (#247), the exact analogue of
+    // `nav_bus::nav_probe`. A cross-panel focus deep-link is a real, observable
+    // effect of clicking a "view in graph" control — but it is neither a
+    // backend call, a `request_nav`, nor a change to the clicking panel's own
+    // state, so a control walk cannot see it otherwise. A thread-local (not a
+    // reader on the process-wide channel) so a parallel test's focus can't leak
+    // in and make a dead control look live. Compiled out without `test-support`
+    // (requested only from the panels' `[dev-dependencies]`), so the shipped
+    // Shell has no probe.
+    #[cfg(feature = "test-support")]
+    focus_probe::record(&focus);
+
     let _ = channel().tx.send(focus);
+}
+
+/// Dev-only record of the workspace-focus requests made on this thread. The
+/// focus-bus companion to [`nav_bus::nav_probe`](crate::nav_bus::nav_probe):
+/// gives a control walk a channel to observe the "view in graph" deep-links
+/// (Concepts, the composer's bubbles, the graph's exit labels) whose only
+/// effect is a cross-panel focus.
+#[cfg(feature = "test-support")]
+pub mod focus_probe {
+    use std::cell::RefCell;
+
+    use super::WorkspaceFocus;
+
+    thread_local! {
+        static FOCUS: RefCell<Vec<WorkspaceFocus>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn record(focus: &WorkspaceFocus) {
+        FOCUS.with(|f| f.borrow_mut().push(focus.clone()));
+    }
+
+    /// Every focus request made on this thread so far, in order.
+    pub fn requests() -> Vec<WorkspaceFocus> {
+        FOCUS.with(|f| f.borrow().clone())
+    }
+
+    /// How many focus requests have been made on this thread.
+    pub fn count() -> usize {
+        FOCUS.with(|f| f.borrow().len())
+    }
+
+    /// Forget them — call between independent phases of a test.
+    pub fn clear() {
+        FOCUS.with(|f| f.borrow_mut().clear());
+    }
 }
 
 /// Take the receiver — the Workspaces panel calls this **once** on mount and

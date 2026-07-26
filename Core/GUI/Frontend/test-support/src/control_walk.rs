@@ -118,6 +118,11 @@ struct Effect {
     backend_calls: usize,
     /// Cross-panel nav requests made so far (`wylde_gui_pipe::request_nav`).
     nav_requests: usize,
+    /// Cross-panel focus deep-links made so far
+    /// (`wylde_gui_pipe::request_workspace_focus`) — the effect of the "view in
+    /// graph" controls, which is neither a backend call, a nav, nor a change to
+    /// the clicking panel's own state.
+    focus_requests: usize,
     state: String,
 }
 
@@ -399,11 +404,13 @@ fn walk_one_state<V: Render + 'static>(
                 before: Effect {
                     backend_calls: 0,
                     nav_requests: 0,
+                    focus_requests: 0,
                     state: String::new(),
                 },
                 after: Effect {
                     backend_calls: 0,
                     nav_requests: 0,
+                    focus_requests: 0,
                     state: String::new(),
                 },
             });
@@ -418,6 +425,7 @@ fn walk_one_state<V: Render + 'static>(
         let snap = |vcx: &mut VisualTestContext| Effect {
             backend_calls: fake.calls().len(),
             nav_requests: wylde_gui_pipe::nav_bus::nav_probe::count(),
+            focus_requests: wylde_gui_pipe::focus_bus::focus_probe::count(),
             state: window
                 .update(vcx, |panel, _w, _cx| fingerprint(panel))
                 .expect("the panel entity is still alive"),
@@ -443,11 +451,13 @@ fn walk_one_state<V: Render + 'static>(
                 before: Effect {
                     backend_calls: 0,
                     nav_requests: 0,
+                    focus_requests: 0,
                     state: String::new(),
                 },
                 after: Effect {
                     backend_calls: 0,
                     nav_requests: 0,
+                    focus_requests: 0,
                     state: String::new(),
                 },
             });
