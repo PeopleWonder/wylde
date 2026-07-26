@@ -16,11 +16,26 @@
 //! run is the #56 shape — enforcement enforced by nothing. Here it rides
 //! `cargo panel-walk`, which builds and tests this crate.
 
-/// Every string literal that appears as the id argument of a `control(` call.
+/// Every static string id that a `control(` call in `source` builds.
 ///
-/// Ids built at runtime (`format!("row::{}", id)`) are invisible here and are
-/// covered by the per-item rows the fixture actually renders — see
-/// [`WalkReport::assert_covers_every_literal_id`].
+/// The id is a `control()` call's **last argument**. This recognises the two
+/// static shapes the codebase uses:
+///
+/// * a bare string literal — `control(div(), "models-refresh")`; and
+/// * the wrapped form the migration left behind —
+///   `control(div(), ElementId::Name("models-hf-close".into()))`.
+///
+/// Both yield the same rendered id (`ElementId::Name` renders to its inner
+/// string), so both must be extracted — an earlier version only saw the bare
+/// form and let every `ElementId::Name("…")` control escape the coverage
+/// guard, which is how a modal control could go unwalked while the walk
+/// reported success.
+///
+/// Runtime ids carry no static string and are deliberately NOT returned:
+/// `format!("row::{}", id)` and the tuple form `("row", i)` (which renders to
+/// `"row-{i}"`, not `"row"`). Those are covered by the per-item rows the
+/// fixture actually renders — see
+/// `crate`'s downstream `assert_covers_every_literal_id`.
 pub fn literal_control_ids(source: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let bytes = source.as_bytes();
@@ -33,47 +48,63 @@ pub fn literal_control_ids(source: &str) -> Vec<String> {
             let c = bytes[start - 1] as char;
             !(c.is_alphanumeric() || c == '_')
         };
+        let open = start + "control(".len() - 1; // index of the '('
         i = start + "control(".len();
         if !ok_prefix {
             continue;
         }
-        // Walk the argument list to its closing paren, capturing string
-        // literals at depth 1. The id is the last one before the call closes.
-        let mut depth = 1usize;
-        let mut j = i;
-        let mut last_literal: Option<String> = None;
-        while j < bytes.len() && depth > 0 {
+        // Find the matching close paren and the last top-level comma, so the
+        // id argument is `source[last_comma+1 .. close]`.
+        let mut depth = 0usize;
+        let mut j = open;
+        let mut last_comma: Option<usize> = None;
+        let mut close = None;
+        while j < bytes.len() {
             match bytes[j] as char {
-                '(' => depth += 1,
-                ')' => depth -= 1,
                 '"' => {
-                    let mut k = j + 1;
-                    let mut lit = String::new();
-                    while k < bytes.len() && bytes[k] as char != '"' {
-                        if bytes[k] as char == '\\' {
-                            k += 1;
+                    j += 1;
+                    while j < bytes.len() && bytes[j] as char != '"' {
+                        if bytes[j] as char == '\\' {
+                            j += 1;
                         }
-                        if k < bytes.len() {
-                            lit.push(bytes[k] as char);
-                        }
-                        k += 1;
+                        j += 1;
                     }
-                    if depth == 1 {
-                        last_literal = Some(lit);
-                    }
-                    j = k;
                 }
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(j);
+                        break;
+                    }
+                }
+                ',' if depth == 1 => last_comma = Some(j),
                 _ => {}
             }
             j += 1;
         }
-        if let Some(lit) = last_literal {
-            if !out.contains(&lit) {
-                out.push(lit);
+        let Some(close) = close else { continue };
+        let arg_start = last_comma.map(|c| c + 1).unwrap_or(open + 1);
+        if let Some(id) = static_id(source[arg_start..close].trim()) {
+            if !out.contains(&id) {
+                out.push(id);
             }
         }
     }
     out
+}
+
+/// The static string id of a `control()` last-argument expression, if it has
+/// one. `"x"` and `ElementId::Name("x".into())` both yield `x`; anything else
+/// (a tuple, a `format!`, a bound variable) yields `None`.
+fn static_id(arg: &str) -> Option<String> {
+    let inner = arg
+        .strip_prefix("ElementId::Name(")
+        .map(|s| s.trim())
+        .unwrap_or(arg);
+    let inner = inner.strip_prefix('"')?;
+    let end = inner.find('"')?;
+    Some(inner[..end].to_string())
 }
 
 #[cfg(test)]
@@ -101,10 +132,39 @@ mod tests {
     }
 
     #[test]
+    fn finds_the_wrapped_element_id_name_form() {
+        // The shape the migration left behind. The id literal sits at depth 2,
+        // inside `ElementId::Name(...)`; an earlier scanner only saw depth-1
+        // literals and let every one of these escape the coverage guard.
+        assert_eq!(
+            literal_control_ids(r#"control(div(), ElementId::Name("models-hf-close".into()))"#),
+            vec!["models-hf-close".to_string()]
+        );
+    }
+
+    #[test]
+    fn takes_the_id_arg_not_a_child_label() {
+        // The id is the LAST argument. A string literal in an earlier argument
+        // (a child label) must not be mistaken for the id.
+        assert_eq!(
+            literal_control_ids(r#"control(div().child("Save"), "settings-save")"#),
+            vec!["settings-save".to_string()]
+        );
+    }
+
+    #[test]
     fn a_runtime_built_id_yields_no_literal() {
         // The row-per-item shape. Nothing to assert statically, so the scan
         // must report nothing rather than guess at a prefix.
         assert!(literal_control_ids(r#"control(div(), format!("ext::{}", n))"#).is_empty());
+    }
+
+    #[test]
+    fn a_tuple_id_yields_no_literal() {
+        // `("row", i)` renders to `"row-{i}"`, a runtime id — NOT "row". The
+        // scan must not capture the tuple's name part, or it would demand
+        // coverage of an id that never exists.
+        assert!(literal_control_ids(r#"control(div(), ("row", i))"#).is_empty());
     }
 
     #[test]
