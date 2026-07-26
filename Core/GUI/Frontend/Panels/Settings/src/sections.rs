@@ -263,7 +263,7 @@ fn check_button_label(check: &UpdateCheck) -> &'static str {
 /// A `(label, pill)` row that cycles a value on click. Shared by the
 /// Frequency and Channel pickers.
 fn labeled_pill_row(
-    id: impl Into<SharedString>,
+    id: impl Into<gpui::ElementId>,
     label: &str,
     value: &str,
     on_click: impl Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
