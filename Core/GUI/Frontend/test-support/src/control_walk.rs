@@ -129,6 +129,14 @@ struct Effect {
     /// OS window) and the *request* is recorded, so "the picker handler fired"
     /// is an observable effect rather than a real popup on the dev's desktop.
     dialog_requests: usize,
+    /// Fire-and-forget handoffs made so far (`wylde_gui_pipe::note_emit` /
+    /// `open_url`, recorded by the pipe crate's dev-only `emit_probe`) — the
+    /// effect of a control whose only signal is a `cx.emit(..)` to a parent the
+    /// walk never mounted (the dependency-tree canvas' `TreeEvent::Selected`) or
+    /// an external OS open (the Chat markdown link). Neither is a backend call,
+    /// a nav, a focus, a dialog, nor a change to the clicking panel's own state,
+    /// so without this channel such a control reads dead though its handler fired.
+    emit_requests: usize,
     state: String,
 }
 
@@ -433,6 +441,7 @@ fn walk_one_state<V: Render + 'static>(
                     nav_requests: 0,
                     focus_requests: 0,
                     dialog_requests: 0,
+                    emit_requests: 0,
                     state: String::new(),
                 },
                 after: Effect {
@@ -440,6 +449,7 @@ fn walk_one_state<V: Render + 'static>(
                     nav_requests: 0,
                     focus_requests: 0,
                     dialog_requests: 0,
+                    emit_requests: 0,
                     state: String::new(),
                 },
             });
@@ -456,6 +466,7 @@ fn walk_one_state<V: Render + 'static>(
             nav_requests: wylde_gui_pipe::nav_bus::nav_probe::count(),
             focus_requests: wylde_gui_pipe::focus_bus::focus_probe::count(),
             dialog_requests: wylde_gui_pipe::native_dialog::count(),
+            emit_requests: wylde_gui_pipe::emit_probe::count(),
             state: window
                 .update(vcx, |panel, _w, cx| fingerprint(panel, cx))
                 .expect("the panel entity is still alive"),
@@ -483,6 +494,7 @@ fn walk_one_state<V: Render + 'static>(
                     nav_requests: 0,
                     focus_requests: 0,
                     dialog_requests: 0,
+                    emit_requests: 0,
                     state: String::new(),
                 },
                 after: Effect {
@@ -490,6 +502,7 @@ fn walk_one_state<V: Render + 'static>(
                     nav_requests: 0,
                     focus_requests: 0,
                     dialog_requests: 0,
+                    emit_requests: 0,
                     state: String::new(),
                 },
             });

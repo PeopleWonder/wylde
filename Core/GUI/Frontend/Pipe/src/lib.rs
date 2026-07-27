@@ -256,6 +256,79 @@ pub mod native_dialog {
     }
 }
 
+/// Note a **fire-and-forget handoff** for the control walk (#247).
+///
+/// Some live controls neither call the backend, request a nav/focus, open a
+/// dialog, nor change their own panel's state — their whole effect is a
+/// `cx.emit(..)` event handed to a parent the walk didn't mount, or a similar
+/// out-of-band signal. The oracle has no channel for a gpui event emit, so such
+/// a control would read *dead* (clicked, no observable delta) even though its
+/// handler fired correctly. A panel calls this right before the emit; the label
+/// (e.g. `"tree-selected::<node>"`) is recorded via [`emit_probe`] under
+/// `test-support` so the walk can prove the handler fired — and with what — and
+/// compiles to nothing in the shipped build.
+pub fn note_emit(label: &str) {
+    #[cfg(feature = "test-support")]
+    emit_probe::record(label);
+    #[cfg(not(feature = "test-support"))]
+    let _ = label;
+}
+
+/// Open a URL in the OS default handler — the Chat markdown link path (#247).
+///
+/// The same walk-safety concern as [`native_file_dialog`]: `opener::open` spawns
+/// a **real browser** on the developer's desktop, which a control walk clicking
+/// a rendered link must never do. So in a `test-support` build this records the
+/// target (via [`emit_probe`], the fire-and-forget-handoff channel) and returns
+/// without opening anything; the walk asserts `open-url::<url>` was requested.
+/// The shipped build has no `test-support`, so this compiles down to a plain
+/// `opener::open` — production behaviour is unchanged.
+pub fn open_url(url: &str) {
+    #[cfg(feature = "test-support")]
+    emit_probe::record(&format!("open-url::{url}"));
+    #[cfg(not(feature = "test-support"))]
+    let _ = opener::open(url);
+}
+
+/// Dev-only fire-and-forget-handoff record seam (#247 walk coverage).
+///
+/// Records the out-of-band signals ([`note_emit`] gpui event emits, [`open_url`]
+/// external opens) a control makes that leave no other observable trace, so the
+/// walk's oracle can prove the handler fired. Compiled out entirely without
+/// `test-support` (requested only from the panels' `[dev-dependencies]`), so the
+/// shipped Shell carries no thread-local and no recording branch. A thread-local
+/// (not a process global), the same shape as [`native_dialog`] / [`nav_bus::nav_probe`],
+/// so a parallel test's handoff can't leak into another's assertions. No
+/// suppression flag: an emit is inert in a standalone-mounted view, and
+/// [`open_url`]'s real open is gated by the `cfg` itself.
+#[cfg(feature = "test-support")]
+pub mod emit_probe {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static REQUESTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn record(label: &str) {
+        REQUESTS.with(|r| r.borrow_mut().push(label.to_owned()));
+    }
+
+    /// Every fire-and-forget handoff noted on this thread.
+    pub fn requests() -> Vec<String> {
+        REQUESTS.with(|r| r.borrow().clone())
+    }
+
+    /// How many handoffs have been noted on this thread.
+    pub fn count() -> usize {
+        REQUESTS.with(|r| r.borrow().len())
+    }
+
+    /// Forget them — call between independent phases of a test.
+    pub fn clear() {
+        REQUESTS.with(|r| r.borrow_mut().clear());
+    }
+}
+
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_FRAME: usize = 64 * 1024 * 1024;
@@ -1114,5 +1187,28 @@ mod tests {
         );
         assert_eq!(native_dialog::count(), 1, "the request was recorded");
         assert!(native_dialog::requests().contains(&"unit-picker".to_string()));
+    }
+
+    /// `open_url` must never spawn a real browser in a test build: it records the
+    /// target via `emit_probe` and returns, so a control walk clicking a markdown
+    /// link asserts the handoff without a real OS side effect (#247).
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn open_url_is_recorded_and_suppressed_in_test_builds() {
+        emit_probe::clear();
+        open_url("https://example.com/x");
+        assert_eq!(emit_probe::count(), 1, "the open was recorded");
+        assert!(emit_probe::requests().contains(&"open-url::https://example.com/x".to_string()));
+    }
+
+    /// `note_emit` records the fire-and-forget label so the walk's emit-probe
+    /// channel can observe a control whose only effect is a `cx.emit(..)`.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn note_emit_records_the_handoff_label() {
+        emit_probe::clear();
+        note_emit("tree-selected::concept:a");
+        assert_eq!(emit_probe::count(), 1);
+        assert!(emit_probe::requests().contains(&"tree-selected::concept:a".to_string()));
     }
 }
