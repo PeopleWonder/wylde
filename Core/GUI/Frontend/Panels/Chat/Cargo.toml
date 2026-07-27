@@ -55,9 +55,9 @@ uuid.workspace       = true
 # embedded style asset the graph panel uses.
 serde_yaml.workspace = true
 
-# Open a URL in the OS default handler — for markdown link clicks in
-# the message log.  cross-platform; the Windows backend uses ShellExecute.
-opener.workspace = true
+# Markdown link clicks open in the OS default handler via
+# `wylde_gui_pipe::open_url` (the walk-suppressible seam, #247) — so `opener`
+# is now a Pipe dep, not a direct one here.
 
 # ── DEV-ONLY (windowed gpui tests) ───────────────────────────────────
 # These are `dev-dependencies`, so with resolver = "2" their features are

@@ -221,6 +221,10 @@ impl DependencyTreeView {
         if let Some(token) = out.hit_test(sx, sy).map(str::to_owned) {
             if let Some(node) = self.model.node_for_token(&token).cloned() {
                 self.center_on(&token);
+                // The selection is a fire-and-forget `cx.emit` to the host editor
+                // — no backend/nav/focus/dialog/state trace of its own, so the
+                // control walk observes it through the emit probe (#247).
+                wylde_gui_pipe::note_emit(&format!("tree-selected::{token}"));
                 cx.emit(TreeEvent::Selected(node));
                 cx.notify();
             }
@@ -397,5 +401,78 @@ mod tests {
     fn render_signature_compiles() {
         fn assert_render<T: Render>() {}
         assert_render::<DependencyTreeView>();
+    }
+}
+
+#[cfg(test)]
+mod control_walk {
+    //! L7 **control**-walk over the dependency-tree canvas (`DependencyTreeView`,
+    //! issue #247).
+    //!
+    //! One control: the canvas (`routing-tree-canvas`). A left click hit-tests a
+    //! node, re-centres the camera on it (a no-op when it is already centred), and
+    //! fires `TreeEvent::Selected` — a fire-and-forget handoff to the host editor
+    //! with no backend / nav / focus / dialog / state trace of its own. So this
+    //! parks a real node at the canvas centre (via `center_on`, keeping the fitted
+    //! zoom) so the centre click hit-tests it, and observes the emit through the
+    //! walk's `emit_probe` channel. It lives **in-crate** (not `tests/`) because
+    //! parking the node needs `center_on` + the private `camera`/`fitted`/`model`,
+    //! and it runs in CI via `cargo panel-walk` (which tests this crate's lib).
+    use super::DependencyTreeView;
+    use gpui::TestAppContext;
+    use serde_json::json;
+    use wylde_gui_test_support::control_walk::ControlWalk;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    #[gpui::test]
+    fn every_dependency_tree_control_does_something(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on("workspaces.list_mru", json!({ "active_id": "ws-a" }))
+            .on("workspaces.concepts.search", json!({ "results": [] }))
+            .on("workspaces.anchors.list", json!({ "anchors": [] }))
+            .on(
+                "workspaces.concepts.relations.graph",
+                json!({ "relations": [
+                    { "from": {"node":"concept","id":"a"}, "to": {"node":"concept","id":"b"}, "kind": "dependency" }
+                ]}),
+            );
+        let _guard = fake.clone().install();
+        let window = cx.add_window(|_w, cx| DependencyTreeView::new(cx));
+        cx.run_until_parked();
+
+        ControlWalk::new(window, &fake)
+            .fingerprint(|v: &DependencyTreeView| {
+                format!(
+                    "loading={} nodes={} edges={} ws={:?}",
+                    v.is_loading(),
+                    v.node_count(),
+                    v.edge_count(),
+                    v.workspace_id(),
+                )
+            })
+            .reset(|v: &mut DependencyTreeView, _w, cx| {
+                // Park a real node under the canvas centre so the centre click
+                // hit-tests it. `fitted = true` keeps our camera (the render
+                // re-fits only while `!fitted`), and `center_on` pans that node
+                // to the canvas centre at the already-fitted zoom.
+                v.fitted = true;
+                if let Some(token) = v.model.nodes.first().map(|n| n.token.clone()) {
+                    v.center_on(&token);
+                }
+                cx.notify();
+            })
+            .sources(&[include_str!("tree_view.rs")])
+            .run(cx)
+            .assert_every_control_lives()
+            .assert_covers_every_literal_id();
+
+        // The canvas click's whole effect is the `TreeEvent::Selected` emit — a
+        // green walk already proves the emit-probe channel moved, but assert the
+        // specific handoff too, so "clicked a real node and selected it" is pinned.
+        let handoffs = wylde_gui_pipe::emit_probe::requests();
+        assert!(
+            handoffs.iter().any(|h| h.starts_with("tree-selected::")),
+            "the tree canvas click should emit a node selection; emit_probe saw {handoffs:?}",
+        );
     }
 }
