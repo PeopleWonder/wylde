@@ -26,7 +26,6 @@ use wylde_gui_test_support::control_walk::ControlWalk;
 use wylde_gui_test_support::ScriptedBackend;
 use wylde_panel_workspaces::hierarchy::HierarchyView;
 use wylde_panel_workspaces::ipc::WorkspaceSummary;
-use wylde_panel_workspaces::routing::DependencyTreeView;
 use wylde_panel_workspaces::tabs::WorkspacesTab;
 use wylde_panel_workspaces::workspaces_panel::{ModelPull, PullPhase};
 use wylde_panel_workspaces::WorkspacesPanel;
@@ -71,47 +70,10 @@ fn every_hierarchy_control_does_something(cx: &mut TestAppContext) {
         .assert_covers_every_literal_id();
 }
 
-/// The dependency-tree canvas (`routing-tree-canvas`, the R3b typed-edge tree).
-///
-/// Its one control is the canvas: a click hit-tests a node, re-centres the
-/// camera on it (a no-op when the clicked node is already centred), and emits
-/// `TreeEvent::Selected` — a handoff to the host that deep-links the editor.
-/// Mounted standalone there is no host to observe the emit, so the canvas is
-/// declared `external_effect` (clicked for panic-safety over a loaded tree; the
-/// emit + re-centre have no delta this isolated view can assert). It runs in CI
-/// via the `panel-walk` alias.
-#[gpui::test]
-fn every_dependency_tree_control_does_something(cx: &mut TestAppContext) {
-    let fake = ScriptedBackend::new()
-        .on("workspaces.list_mru", json!({ "active_id": "ws-a" }))
-        .on("workspaces.concepts.search", json!({ "results": [] }))
-        .on("workspaces.anchors.list", json!({ "anchors": [] }))
-        .on(
-            "workspaces.concepts.relations.graph",
-            json!({ "relations": [
-                { "from": {"node":"concept","id":"a"}, "to": {"node":"concept","id":"b"}, "kind": "dependency" }
-            ]}),
-        );
-    let _guard = fake.clone().install();
-    let window = cx.add_window(|_w, cx| DependencyTreeView::new(cx));
-    cx.run_until_parked();
-
-    ControlWalk::new(window, &fake)
-        .fingerprint(|v: &DependencyTreeView| {
-            format!(
-                "loading={} nodes={} edges={} ws={:?}",
-                v.is_loading(),
-                v.node_count(),
-                v.edge_count(),
-                v.workspace_id(),
-            )
-        })
-        .external_effect(&["routing-tree-canvas"])
-        .sources(&[include_str!("../src/routing/tree_view.rs")])
-        .run(cx)
-        .assert_every_control_lives()
-        .assert_covers_every_literal_id();
-}
+// The dependency-tree canvas walk moved IN-CRATE (routing/tree_view.rs) at the
+// #247 zero-unasserted-controls follow-up: asserting its `TreeEvent::Selected`
+// emit needs the private `center_on` + camera to park a node under the click,
+// so it can no longer live out-of-crate here.
 
 /// One MRU registry row. `WorkspaceSummary` derives `Default` and is all-`pub`.
 fn ws_summary(id: &str, path: &str) -> WorkspaceSummary {

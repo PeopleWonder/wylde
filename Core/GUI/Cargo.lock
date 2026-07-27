@@ -9008,6 +9008,7 @@ name = "wylde-gui-pipe"
 version = "0.2.0-beta.1"
 dependencies = [
  "async-trait",
+ "opener",
  "rmp-serde",
  "serde",
  "serde_json",
@@ -9077,7 +9078,6 @@ version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "gpui",
- "opener",
  "rfd",
  "serde",
  "serde_json",

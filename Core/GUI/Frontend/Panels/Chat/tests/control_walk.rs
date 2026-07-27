@@ -346,26 +346,39 @@ fn walk(
             p.bubbles.menu = Some(0);
             cx.notify();
         })
-        // Native-dialog controls: the workspace folder picker and the
-        // conversation import/export file dialogs (`rfd`). A headless test
-        // cannot open or drive an OS dialog, so these clicks produce no
-        // observable delta — live controls with an external effect, not dead
-        // ones. Clicked for panic-safety, not asserted.
-        .external_effect(&[
-            "chat-ws-pick",
-            "chat-conversation-import",
-            "chat-conversation-export::c1",
-        ])
+        // A message carrying a markdown link, installed as the visible tail (the
+        // same virtualized-`list` handling the processing indicator needs) —
+        // paints the `md-link` control. Clicking it opens the URL through
+        // `wylde_gui_pipe::open_url`, which a walk records + suppresses (never a
+        // real browser, #247), so the emit-probe channel moves. The specific
+        // target is asserted in the test body below.
+        .state("markdown-link", |p: &mut ChatPanel, _w, cx| {
+            p.messages = vec![ChatMessage {
+                id: "mlink".to_string(),
+                role: MessageRole::Assistant,
+                content: "see [the docs](https://example.com/wylde) for more".to_string(),
+                thinking: None,
+                streaming: false,
+                activity: None,
+                activity_expanded: false,
+            }];
+            p.message_list.reset(1);
+            p.message_list.set_follow_mode(gpui::FollowMode::Tail);
+            cx.notify();
+        })
+        // No `external_effect`: every control here is asserted. The three native
+        // file dialogs (workspace folder picker, conversation import/export) go
+        // through `wylde_gui_pipe::native_file_dialog`, suppressed-and-recorded in
+        // a walk, so clicking them moves the dialog-request channel — a real
+        // observable delta, not a live-but-unassertable handoff.
         .sources(&[
             include_str!("../src/chat_panel.rs"),
             include_str!("../src/composer_ui.rs"),
-            // markdown.rs builds one control — a rendered link (`link_span`).
-            // Its id is runtime (`md-link::{key}`), so it declares no literal id
-            // for the coverage assertion to demand, and its click is an external
-            // handoff (`opener::open`) with no observable delta — so it is not
-            // painted by this fixture. Declared here so the file is under the
-            // literal-id coverage net going forward (rule 61): a future *literal*
-            // -id control added to it would then have to be walked.
+            // markdown.rs builds one control — a rendered link (`link_span`),
+            // painted by the `markdown-link` state above. Its runtime id
+            // (`md-link::{key}`) declares no literal for the coverage assertion,
+            // but its click is asserted through the emit-probe channel (the
+            // recorded `open-url::<url>` handoff), so it is a walked control now.
             include_str!("../src/markdown.rs"),
         ])
         .run(cx)
@@ -380,4 +393,15 @@ fn every_chat_control_does_something_when_clicked(cx: &mut TestAppContext) {
     walk(cx, window, &fake)
         .assert_every_control_lives()
         .assert_covers_every_literal_id();
+
+    // The markdown link's whole effect is a fire-and-forget `open_url`; a green
+    // walk already proves the emit-probe channel moved, but assert the exact
+    // target too, so "clicked the link and opened its URL" is pinned.
+    let handoffs = wylde_gui_pipe::emit_probe::requests();
+    assert!(
+        handoffs
+            .iter()
+            .any(|h| h == "open-url::https://example.com/wylde"),
+        "the markdown link click should open its URL; emit_probe saw {handoffs:?}",
+    );
 }
