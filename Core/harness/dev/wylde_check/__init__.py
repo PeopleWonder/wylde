@@ -501,6 +501,9 @@ from .rules._selfcheck import check_rule_targets_exist  # noqa: E402
 from .rules._dependency_spread import (  # noqa: E402
     check_dependency_spread_ratchet,
 )
+from .rules._axum_public_api import (  # noqa: E402
+    check_no_axum_types_in_public_api,
+)
 from ._single_file import (  # noqa: E402
     _check_dead_refs_lines,
     _check_pipe_name_convention_lines,
@@ -611,6 +614,11 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # 3) can't silently re-accumulate. Contained deps (rand, cpal) pinned to
     # their adapter's owning crate; reqwest (12) is the named watch target.
     "dependency_spread_ratchet": check_dependency_spread_ratchet,
+    # Rule 63 — no axum types in a non-gateway crate's public API (#290 axum
+    # containment enforcement). Companion to #293's `router()` → `pub(crate)`
+    # fix: locks in that axum (an HTTP framework, housed in wylde-gateway) can
+    # never bleed across a crate's public boundary into a shared API.
+    "no_axum_types_in_public_api": check_no_axum_types_in_public_api,
 }
 
 # Asserting the count at import time so a future rule add/drop trips the
@@ -677,7 +685,11 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # crate-spread at today's baseline so unwrapped shotgun-risk (rand → 2 crates,
 # axum → 3, before they were contained) cannot silently re-accumulate. reqwest
 # (12 crates) is the named watch target.
-assert len(_RULES) == 37, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 37)"
+# Axum-containment enforcement (#290, 2026-07-28): +1 (rule 63,
+# no_axum_types_in_public_api) = 38 active. Companion to #293's router() ->
+# pub(crate) fix: no fully-pub item outside wylde-gateway may name an axum type,
+# so an HTTP-framework bump can never bleed across a crate's public boundary.
+assert len(_RULES) == 38, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 38)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -820,6 +832,7 @@ __all__ = [
     "check_no_panic_in_panel_render",
     "check_rule_targets_exist",
     "check_dependency_spread_ratchet",
+    "check_no_axum_types_in_public_api",
     "check_silent_skip_in_service_start",
     "check_no_hardcoded_prompts_rust",
     "check_graph_test_serialized_on_db_lock",
