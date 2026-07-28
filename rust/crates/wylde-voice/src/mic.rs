@@ -30,10 +30,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::SampleFormat;
 use thiserror::Error;
 use tokio::sync::broadcast;
+
+use crate::audio_device::{self, AudioError};
 
 /// Sample rate every downstream consumer (Whisper, openWakeWord) expects.
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
@@ -67,6 +67,17 @@ pub enum MicError {
     Play(String),
 }
 
+impl From<AudioError> for MicError {
+    fn from(e: AudioError) -> Self {
+        match e {
+            AudioError::NoDevice => MicError::NoDevice,
+            AudioError::NoSupportedConfig(m) => MicError::NoSupportedConfig(m),
+            AudioError::Build(m) | AudioError::UnsupportedFormat(m) => MicError::Build(m),
+            AudioError::Play(m) => MicError::Play(m),
+        }
+    }
+}
+
 /// Owning handle for an active capture session. Dropping the handle
 /// signals the worker thread to stop and `drop()`s the underlying
 /// `cpal::Stream`. The worker thread joins synchronously on drop —
@@ -89,15 +100,11 @@ impl MicCapture {
             return Err(MicError::Build("chunk_samples must be > 0".to_owned()));
         }
 
-        let host = cpal::default_host();
-        let device = host.default_input_device().ok_or(MicError::NoDevice)?;
-        let supported = device
-            .default_input_config()
-            .map_err(|e| MicError::NoSupportedConfig(e.to_string()))?;
-
-        let sample_format = supported.sample_format();
-        let input_sample_rate = supported.sample_rate().0;
-        let input_channels = supported.channels();
+        // Open the device on this thread to read its negotiated format, then
+        // move it into the worker — the `cpal::Stream` it builds is `!Send` and
+        // must be built and dropped on the same (worker) thread.
+        let device = audio_device::open_default_input()?;
+        let format = device.format();
 
         let (chunks_tx, _) = broadcast::channel::<Arc<Vec<i16>>>(BROADCAST_BUFFER);
         let stop = Arc::new(AtomicBool::new(false));
@@ -108,15 +115,9 @@ impl MicCapture {
         let worker = thread::Builder::new()
             .name("wylde-voice-mic".to_owned())
             .spawn(move || {
-                if let Err(e) = run_capture_thread(
-                    device,
-                    sample_format,
-                    input_sample_rate,
-                    input_channels,
-                    chunk_samples,
-                    chunks_for_worker,
-                    stop_for_worker,
-                ) {
+                if let Err(e) =
+                    run_capture_thread(device, chunk_samples, chunks_for_worker, stop_for_worker)
+                {
                     tracing::error!("wylde-voice: mic capture thread failed: {e}");
                 }
             })
@@ -127,8 +128,8 @@ impl MicCapture {
             stop,
             worker: Some(worker),
             chunk_samples,
-            actual_input_sample_rate: input_sample_rate,
-            actual_input_channels: input_channels,
+            actual_input_sample_rate: format.sample_rate,
+            actual_input_channels: format.channels,
         })
     }
 
@@ -193,125 +194,41 @@ impl Drop for MicCapture {
 /// default input device (a headless box); the list may legitimately be
 /// empty in that case too.
 pub fn list_input_device_names() -> Result<(Option<String>, Vec<String>), MicError> {
-    let host = cpal::default_host();
-    let default_name = host.default_input_device().and_then(|d| d.name().ok());
-    let mut names = Vec::new();
-    let devices = host
-        .input_devices()
-        .map_err(|e| MicError::NoSupportedConfig(e.to_string()))?;
-    for device in devices {
-        if let Ok(name) = device.name() {
-            names.push(name);
-        }
-    }
-    names.sort();
-    names.dedup();
-    Ok((default_name, names))
+    audio_device::input_device_names().map_err(MicError::from)
 }
 
 fn run_capture_thread(
-    device: cpal::Device,
-    sample_format: SampleFormat,
-    input_sample_rate: u32,
-    input_channels: u16,
+    device: audio_device::InputDevice,
     chunk_samples: usize,
     chunks_tx: broadcast::Sender<Arc<Vec<i16>>>,
     stop: Arc<AtomicBool>,
 ) -> Result<(), MicError> {
-    let config = cpal::StreamConfig {
-        channels: input_channels,
-        sample_rate: cpal::SampleRate(input_sample_rate),
-        buffer_size: cpal::BufferSize::Default,
-    };
+    let format = device.format();
+    let device_name = device.name();
 
-    let mut accumulator: Vec<f32> = Vec::with_capacity(chunk_samples * 4);
-
-    let make_err = |e: cpal::StreamError| {
-        tracing::warn!("wylde-voice: cpal stream error: {e}");
-    };
-
-    let stream = match sample_format {
-        SampleFormat::F32 => device
-            .build_input_stream(
-                &config,
-                {
-                    let chunks_tx = chunks_tx.clone();
-                    move |data: &[f32], _info: &cpal::InputCallbackInfo| {
-                        ingest_samples(
-                            data,
-                            input_channels,
-                            input_sample_rate,
-                            chunk_samples,
-                            &mut accumulator,
-                            &chunks_tx,
-                        );
-                    }
-                },
-                make_err,
-                None,
-            )
-            .map_err(|e| MicError::Build(e.to_string()))?,
-        SampleFormat::I16 => device
-            .build_input_stream(
-                &config,
-                {
-                    let chunks_tx = chunks_tx.clone();
-                    move |data: &[i16], _info: &cpal::InputCallbackInfo| {
-                        let buf: Vec<f32> =
-                            data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
-                        ingest_samples(
-                            &buf,
-                            input_channels,
-                            input_sample_rate,
-                            chunk_samples,
-                            &mut accumulator,
-                            &chunks_tx,
-                        );
-                    }
-                },
-                make_err,
-                None,
-            )
-            .map_err(|e| MicError::Build(e.to_string()))?,
-        SampleFormat::U16 => device
-            .build_input_stream(
-                &config,
-                {
-                    let chunks_tx = chunks_tx.clone();
-                    move |data: &[u16], _info: &cpal::InputCallbackInfo| {
-                        let buf: Vec<f32> = data
-                            .iter()
-                            .map(|&s| (s as f32 - i16::MAX as f32) / i16::MAX as f32)
-                            .collect();
-                        ingest_samples(
-                            &buf,
-                            input_channels,
-                            input_sample_rate,
-                            chunk_samples,
-                            &mut accumulator,
-                            &chunks_tx,
-                        );
-                    }
-                },
-                make_err,
-                None,
-            )
-            .map_err(|e| MicError::Build(e.to_string()))?,
-        other => {
-            return Err(MicError::Build(format!(
-                "unsupported cpal sample format: {other:?}"
-            )));
+    // The adapter hands us each driver buffer already downmixed to interleaved
+    // f32; the downmix-to-mono / resample-to-16k / chunking stays here.
+    let stream = device.run({
+        let chunks_tx = chunks_tx.clone();
+        let mut accumulator: Vec<f32> = Vec::with_capacity(chunk_samples * 4);
+        move |data: &[f32]| {
+            ingest_samples(
+                data,
+                format.channels,
+                format.sample_rate,
+                chunk_samples,
+                &mut accumulator,
+                &chunks_tx,
+            );
         }
-    };
+    })?;
 
-    stream.play().map_err(|e| MicError::Play(e.to_string()))?;
     tracing::info!(
-        "wylde-voice: mic capture running on {:?} ({} Hz, {} ch, fmt {:?}) → 16 kHz mono i16 \
+        "wylde-voice: mic capture running on {:?} ({} Hz, {} ch) → 16 kHz mono i16 \
          in {}-sample chunks",
-        device.name().ok(),
-        input_sample_rate,
-        input_channels,
-        sample_format,
+        device_name,
+        format.sample_rate,
+        format.channels,
         chunk_samples,
     );
 

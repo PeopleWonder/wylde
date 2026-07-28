@@ -165,6 +165,7 @@
 //! * [`service::reset_for_tests`] — clear singletons; for tests only.
 
 pub mod actions;
+pub mod audio_device;
 pub mod bench;
 pub mod config;
 pub mod config_persist;
