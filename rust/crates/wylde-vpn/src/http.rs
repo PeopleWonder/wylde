@@ -45,7 +45,12 @@ use crate::actions::{
 
 /// Build the axum router. Pulled out from `serve` so unit tests can
 /// exercise the routes with `tower::Service` without binding a port.
-pub fn router() -> Router {
+///
+/// `pub(crate)`, not `pub`: `axum::Router` is an HTTP-framework type and must
+/// not appear in this crate's public API. The only cross-crate entrypoint is
+/// [`serve`], which returns `anyhow::Result<()>` — so axum stays contained to
+/// this module (see #290 axum containment).
+pub(crate) fn router() -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/vpn/status", get(vpn_status_route))
