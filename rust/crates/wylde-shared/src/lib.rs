@@ -13,4 +13,5 @@ pub mod logging;
 pub mod manifest;
 pub mod manifest_status;
 pub mod paths;
+pub mod rng;
 pub mod secure_file;

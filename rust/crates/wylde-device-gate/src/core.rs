@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
@@ -587,14 +586,13 @@ pub fn reset_service() {
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
-/// Six-digit pairing code. Uses `rand::thread_rng` (seeded from the OS CSPRNG
-/// on first use) so codes are cryptographically unguessable within the
+/// Six-digit pairing code. Draws from the shared `rng` adapter (OS-CSPRNG-
+/// seeded on first use) so codes are cryptographically unguessable within the
 /// 5-minute window — matches Python's `secrets.choice` semantics.
 fn mint_code() -> String {
-    let mut rng = rand::thread_rng();
     (0..PAIRING_CODE_LENGTH)
         .map(|_| {
-            let idx = rng.gen_range(0..PAIRING_CODE_ALPHABET.len());
+            let idx = wylde_shared::rng::index_below(PAIRING_CODE_ALPHABET.len());
             PAIRING_CODE_ALPHABET[idx] as char
         })
         .collect()
@@ -609,8 +607,7 @@ fn mint_token() -> String {
 /// `f"dev_{int(time.time())}_{secrets.token_hex(3)}"`.
 fn mint_device_id() -> String {
     let ts = now_secs() as i64;
-    let mut rng = rand::thread_rng();
-    let suffix: [u8; 3] = rng.gen();
+    let suffix: [u8; 3] = wylde_shared::rng::byte_array();
     format!(
         "dev_{ts}_{}",
         suffix
