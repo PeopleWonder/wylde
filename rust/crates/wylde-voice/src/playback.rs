@@ -37,9 +37,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::SampleFormat;
 use thiserror::Error;
+
+use crate::audio_device::{self, AudioError};
 
 /// Reasonable safety cap on a single playback call (60 s of 24 kHz
 /// mono i16 = 2.88 MB; we cap at twice that). The orchestrator's TTS
@@ -69,6 +69,17 @@ pub enum PlaybackError {
 
     #[error("audio buffer exceeds safety cap ({0:.1}s > {1:.1}s)")]
     BufferTooLarge(f32, f32),
+}
+
+impl From<AudioError> for PlaybackError {
+    fn from(e: AudioError) -> Self {
+        match e {
+            AudioError::NoDevice => PlaybackError::NoDevice,
+            AudioError::NoSupportedConfig(m) => PlaybackError::NoSupportedConfig(m),
+            AudioError::Build(m) | AudioError::UnsupportedFormat(m) => PlaybackError::Build(m),
+            AudioError::Play(m) => PlaybackError::Play(m),
+        }
+    }
 }
 
 /// Play `pcm_i16` mono PCM at `sample_rate` Hz to the default output
@@ -132,17 +143,11 @@ fn open_and_play(
     done: Arc<AtomicBool>,
     total_samples: usize,
 ) -> Result<(), PlaybackError> {
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .ok_or(PlaybackError::NoDevice)?;
-    let supported = device
-        .default_output_config()
-        .map_err(|e| PlaybackError::NoSupportedConfig(e.to_string()))?;
-
-    let device_rate = supported.sample_rate().0;
-    let device_channels = supported.channels();
-    let sample_format = supported.sample_format();
+    let device = audio_device::open_default_output()?;
+    let format = device.format();
+    let device_rate = format.sample_rate;
+    let device_channels = format.channels;
+    let device_name = device.name();
 
     // Naive linear resample if device rate differs from the caller's
     // sample rate. Output side is the symmetric counterpart of
@@ -161,69 +166,24 @@ fn open_and_play(
         upmix_mono_to_channels(&resampled, device_channels)
     };
 
-    let config = cpal::StreamConfig {
-        channels: device_channels,
-        sample_rate: cpal::SampleRate(device_rate),
-        buffer_size: cpal::BufferSize::Default,
-    };
-
     let buffer = Arc::new(interleaved);
     let cursor = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let cursor_for_cb = Arc::clone(&cursor);
-    let buffer_for_cb = Arc::clone(&buffer);
-    let done_for_cb = Arc::clone(&done);
 
-    let err_cb = |e: cpal::StreamError| {
-        tracing::warn!("wylde-voice: playback cpal stream error: {e}");
-    };
+    // The adapter hands the callback an f32 output slice and converts to the
+    // device's native sample format; the cursor / silence-pad / done
+    // bookkeeping stays here as a single f32 writer.
+    let stream = device.run({
+        let buffer = Arc::clone(&buffer);
+        let cursor = Arc::clone(&cursor);
+        let done = Arc::clone(&done);
+        move |out: &mut [f32]| write_chunk_f32(out, &buffer, &cursor, &done)
+    })?;
 
-    let stream = match sample_format {
-        SampleFormat::F32 => device
-            .build_output_stream(
-                &config,
-                move |out: &mut [f32], _info: &cpal::OutputCallbackInfo| {
-                    write_chunk_f32(out, &buffer_for_cb, &cursor_for_cb, &done_for_cb);
-                },
-                err_cb,
-                None,
-            )
-            .map_err(|e| PlaybackError::Build(e.to_string()))?,
-        SampleFormat::I16 => device
-            .build_output_stream(
-                &config,
-                move |out: &mut [i16], _info: &cpal::OutputCallbackInfo| {
-                    write_chunk_i16(out, &buffer_for_cb, &cursor_for_cb, &done_for_cb);
-                },
-                err_cb,
-                None,
-            )
-            .map_err(|e| PlaybackError::Build(e.to_string()))?,
-        SampleFormat::U16 => device
-            .build_output_stream(
-                &config,
-                move |out: &mut [u16], _info: &cpal::OutputCallbackInfo| {
-                    write_chunk_u16(out, &buffer_for_cb, &cursor_for_cb, &done_for_cb);
-                },
-                err_cb,
-                None,
-            )
-            .map_err(|e| PlaybackError::Build(e.to_string()))?,
-        other => {
-            return Err(PlaybackError::Build(format!(
-                "unsupported cpal sample format: {other:?}"
-            )));
-        }
-    };
-
-    stream
-        .play()
-        .map_err(|e| PlaybackError::Play(e.to_string()))?;
     tracing::info!(
-        "wylde-voice: playback running on {:?} ({} Hz, {} ch, fmt {:?}) — {} input samples @ {} Hz",
-        device.name().ok(),
+        "wylde-voice: playback running on {:?} ({} Hz, {} ch) — {} input samples @ {} Hz",
+        device_name,
         device_rate,
         device_channels,
-        sample_format,
         total_samples,
         requested_rate,
     );
@@ -263,56 +223,6 @@ fn write_chunk_f32(
             *s = 0.0;
         }
     }
-    if pos + take >= buffer.len() {
-        done.store(true, Ordering::SeqCst);
-    }
-}
-
-fn write_chunk_i16(
-    out: &mut [i16],
-    buffer: &Arc<Vec<f32>>,
-    cursor: &Arc<std::sync::atomic::AtomicUsize>,
-    done: &Arc<AtomicBool>,
-) {
-    let pos = cursor.load(Ordering::Relaxed);
-    let remaining = buffer.len().saturating_sub(pos);
-    let take = remaining.min(out.len());
-    for (i, dst) in out.iter_mut().enumerate().take(take) {
-        let clamped = buffer[pos + i].clamp(-1.0, 1.0);
-        *dst = (clamped * i16::MAX as f32) as i16;
-    }
-    if take < out.len() {
-        for s in &mut out[take..] {
-            *s = 0;
-        }
-    }
-    cursor.store(pos + take, Ordering::Relaxed);
-    if pos + take >= buffer.len() {
-        done.store(true, Ordering::SeqCst);
-    }
-}
-
-fn write_chunk_u16(
-    out: &mut [u16],
-    buffer: &Arc<Vec<f32>>,
-    cursor: &Arc<std::sync::atomic::AtomicUsize>,
-    done: &Arc<AtomicBool>,
-) {
-    let pos = cursor.load(Ordering::Relaxed);
-    let remaining = buffer.len().saturating_sub(pos);
-    let take = remaining.min(out.len());
-    for (i, dst) in out.iter_mut().enumerate().take(take) {
-        let clamped = buffer[pos + i].clamp(-1.0, 1.0);
-        // u16 zero = i16::MAX (centred). Mirrors mic.rs's u16 ingest.
-        let scaled = (clamped * i16::MAX as f32) as i32 + i16::MAX as i32;
-        *dst = scaled.clamp(0, u16::MAX as i32) as u16;
-    }
-    if take < out.len() {
-        for s in &mut out[take..] {
-            *s = i16::MAX as u16;
-        }
-    }
-    cursor.store(pos + take, Ordering::Relaxed);
     if pos + take >= buffer.len() {
         done.store(true, Ordering::SeqCst);
     }
