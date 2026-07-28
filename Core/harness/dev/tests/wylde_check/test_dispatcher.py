@@ -114,6 +114,10 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
         # its control-building sources. Landed with the deletion of rule 59's
         # (now drained) grandfather ratchet, once every panel was walked.
         "every_control_building_crate_is_walked",
+        # Rule 62 — dependency-spread ratchet (#290 dependency isolation). The
+        # forward-looking half of #290: freezes each external dep's crate-spread
+        # at a baseline so unwrapped shotgun-risk can't silently re-accumulate.
+        "dependency_spread_ratchet",
     }
     assert set(result["data"]["summary"]["by_rule"].keys()) == expected
 
@@ -139,7 +143,7 @@ def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
     #116 was about.  Bump this when a rule is genuinely added or retired.
     """
     wc, _root = isolated_tree
-    assert len(wc._RULES) == 36
+    assert len(wc._RULES) == 37
     result = wc.run_all()
     assert result["ok"] is True
     assert result["data"]["rules_checked"] == len(wc._RULES)
