@@ -498,6 +498,9 @@ from .rules._control_functionality import (  # noqa: E402
     check_every_control_building_crate_is_walked,
 )
 from .rules._selfcheck import check_rule_targets_exist  # noqa: E402
+from .rules._dependency_spread import (  # noqa: E402
+    check_dependency_spread_ratchet,
+)
 from ._single_file import (  # noqa: E402
     _check_dead_refs_lines,
     _check_pipe_name_convention_lines,
@@ -602,6 +605,12 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # its colliders never mentioned the bus at all.
     "global_bus_test_isolation": check_global_bus_test_isolation,
     "rule_targets_exist": check_rule_targets_exist,
+    # Rule 59 — dependency-spread ratchet (#290 dependency isolation). The
+    # forward-looking half of #290: freezes each external dep's crate-spread
+    # at today's baseline so unwrapped shotgun-risk (rand → 2 crates, axum →
+    # 3) can't silently re-accumulate. Contained deps (rand, cpal) pinned to
+    # their adapter's owning crate; reqwest (12) is the named watch target.
+    "dependency_spread_ratchet": check_dependency_spread_ratchet,
 }
 
 # Asserting the count at import time so a future rule add/drop trips the
@@ -663,7 +672,12 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # control-building GUI crate (declaring all its control sources), landed together
 # with the deletion of rule 59's now-drained grandfather ratchet. Closes #247 —
 # every panel is walked and the property is structurally enforced going forward.
-assert len(_RULES) == 36, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 36)"
+# Dependency isolation (#290, 2026-07-28): +1 (rule 62, dependency_spread_ratchet)
+# = 37 active. The forward-looking half of #290: freezes each external dep's
+# crate-spread at today's baseline so unwrapped shotgun-risk (rand → 2 crates,
+# axum → 3, before they were contained) cannot silently re-accumulate. reqwest
+# (12 crates) is the named watch target.
+assert len(_RULES) == 37, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 37)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -805,6 +819,7 @@ __all__ = [
     "check_no_bare_tokio_in_panel_src",
     "check_no_panic_in_panel_render",
     "check_rule_targets_exist",
+    "check_dependency_spread_ratchet",
     "check_silent_skip_in_service_start",
     "check_no_hardcoded_prompts_rust",
     "check_graph_test_serialized_on_db_lock",
