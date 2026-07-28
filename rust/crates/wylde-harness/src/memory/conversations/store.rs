@@ -47,7 +47,6 @@
 
 use std::path::PathBuf;
 
-use rand::RngCore;
 use serde_json::{json, Map, Value};
 
 use crate::memory::common::{conversations_dir, data_dir, ensure_dir};
@@ -114,7 +113,7 @@ fn active_path() -> PathBuf {
 pub fn new_conversation_id() -> String {
     let stamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S-%6fZ");
     let mut buf = [0u8; 3];
-    rand::thread_rng().fill_bytes(&mut buf);
+    wylde_shared::rng::fill_bytes(&mut buf);
     let suffix: String = buf.iter().map(|b| format!("{b:02x}")).collect();
     format!("{stamp}-{suffix}")
 }

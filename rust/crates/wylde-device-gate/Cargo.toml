@@ -35,8 +35,8 @@ bcrypt = "0.15"
 sha-crypt = "0.5"
 md-5 = "0.10"
 
-# Token + pairing code generation.
-rand = "0.8"
+# Token + pairing code generation route through `wylde_shared::rng` (the
+# workspace's single direct `rand` dep) — see #290.
 uuid = { version = "1", features = ["v4"] }
 
 # Constant-time comparison for pairing codes / tokens.

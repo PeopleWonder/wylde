@@ -18,6 +18,11 @@ chrono.workspace = true
 windows.workspace = true
 uuid = { version = "1", features = ["v4"] }
 futures = "0.3"
+# The workspace's single direct `rand` dependency. All random-byte / bounded-
+# index needs across Wylde route through `rng.rs` so the next breaking `rand`
+# bump is a one-file change (see #290). Do not add a direct `rand` dep to
+# another crate — extend `wylde_shared::rng` instead.
+rand = "0.8"
 
 # Win32 security API (GetNamedSecurityInfoW / SetNamedSecurityInfoW +
 # the DACL builders) for secure_file's owner-only ACL hardening. Layered

@@ -87,7 +87,6 @@ pub mod store;
 
 use std::collections::HashSet;
 
-use rand::RngCore;
 use serde_json::{json, Value};
 
 use crate::memory::long_term::reflection::ReflectionChat;
@@ -425,7 +424,7 @@ fn string_or(v: Option<&Value>, default: &str) -> String {
 /// `secrets.token_hex(8)` (used for tombstone ids).
 fn token_hex8() -> String {
     let mut buf = [0u8; 8];
-    rand::thread_rng().fill_bytes(&mut buf);
+    wylde_shared::rng::fill_bytes(&mut buf);
     hex::encode(buf)
 }
 
