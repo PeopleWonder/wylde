@@ -7,14 +7,15 @@
 //! `rand`'s thread-local generator, which is seeded from the OS CSPRNG on first
 //! use — suitable for the unguessable pairing codes / ids the callers mint.
 //!
-//! When `rand` next breaks (it is a 0.x crate and the 0.8→0.9 bump already
-//! changed `thread_rng`/`gen`/`gen_range`), this module is the only edit site.
+//! `rand` is a 0.x crate that breaks freely: the 0.8→0.9 bump renamed
+//! `thread_rng`→`rng` and `gen_range`→`random_range` (migrated here in one
+//! edit, #290). When it next breaks, this module remains the only edit site.
 
 use rand::{Rng, RngCore};
 
 /// Fill `buf` with random bytes from the thread-local CSPRNG-seeded generator.
 pub fn fill_bytes(buf: &mut [u8]) {
-    rand::thread_rng().fill_bytes(buf);
+    rand::rng().fill_bytes(buf);
 }
 
 /// Return `N` random bytes.
@@ -31,10 +32,10 @@ pub fn byte_array<const N: usize>() -> [u8; N] {
 ///
 /// # Panics
 /// Panics if `len == 0` — an empty range has no valid index. This mirrors the
-/// behaviour of the underlying `gen_range(0..len)` on an empty range, so the
+/// behaviour of the underlying `random_range(0..len)` on an empty range, so the
 /// contract is unchanged from the direct call sites this replaced.
 pub fn index_below(len: usize) -> usize {
-    rand::thread_rng().gen_range(0..len)
+    rand::rng().random_range(0..len)
 }
 
 #[cfg(test)]
