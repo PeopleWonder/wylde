@@ -28,7 +28,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 
-# rmcp 2.x is Anthropic's Rust MCP SDK (was pinned at 1.7 by Q-E1, master
+# rmcp 3.x is Anthropic's Rust MCP SDK (was pinned at 1.7 by Q-E1, master
 # plan §11; kept current here). We carry it as a dep so the workspace
 # Cargo.lock pins it and the dep is visible to wylde_check / dependency
 # auditing.
@@ -38,7 +38,7 @@ chrono.workspace = true
 # capability negotiation + version policy (N/N-1/N+1) without taking a
 # hard dependency on the Tier-2 SDK's evolving surface. Migration to
 # rmcp's client API is tracked as a follow-up if its surface stabilises.
-rmcp = "2"
+rmcp = "3"
 
 [dev-dependencies]
 tempfile = "3"
