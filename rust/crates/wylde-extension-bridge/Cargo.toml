@@ -37,7 +37,7 @@ chrono.workspace = true
 # capability negotiation + version policy (N/N-1/N+1) without taking a
 # hard dependency on the Tier-2 SDK's evolving surface. Migration to
 # rmcp's client API is tracked as a follow-up if its surface stabilises.
-rmcp = "1.7"
+rmcp = "3.0"
 
 [dev-dependencies]
 tempfile = "3"
