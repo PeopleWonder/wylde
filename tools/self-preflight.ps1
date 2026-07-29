@@ -94,7 +94,13 @@
     this (no GPU / Ollama / Memgraph in CI), so it runs on the release rig; the
     GREEN receipt is the deliverable, not a per-PR check.
 
-    ASCII-only so it parses under Windows PowerShell 5.1 regardless of encoding.
+    Windows PowerShell 5.1-safe, not just pwsh 7: ASCII-only so it parses
+    regardless of encoding, AND free of pwsh-7-only inline if/switch
+    expressions. An inline (if ...) as a command argument parses under 5.1 but
+    throws at runtime there (5.1 treats it as a call to a command named 'if'),
+    so status values are computed in preceding if-assignments instead; the
+    switch uses here are '$x = switch' assignments, which are valid in 5.1. See
+    issue #305 -- an earlier version false-REDed on the rig for exactly this.
 #>
 [CmdletBinding()]
 param(
@@ -223,10 +229,21 @@ try {
     # 4. Read + summarise the receipt -----------------------------------------
     if (Test-Path -LiteralPath $Receipt) {
         $r = Get-Content -LiteralPath $Receipt -Raw | ConvertFrom-Json
-        Add-Step 'receipt.commit'    (if ($r.commit -like "$CommitSha*") { 'OK' } else { 'WARN' }) $r.commit
-        Add-Step 'receipt.dirty'     (if (-not $r.git_dirty) { 'OK' } else { 'WARN' }) ("git_dirty=" + $r.git_dirty)
-        Add-Step 'all_green'         (if ($r.all_green) { 'OK' } else { 'FAIL' }) ''
-        Add-Step 'launch_verified'   (if ($r.launch_verified) { 'OK' } else { 'FAIL' }) ''
+        # Each status is computed in a preceding `if` assignment, NOT passed
+        # inline as an `(if ...)` argument. An inline if-expression is pwsh-7
+        # only: under Windows PowerShell 5.1 it PARSES but throws at RUNTIME
+        # (5.1 evaluates `(if ...)` as a call to a command named `if` and errors
+        # "The term 'if' is not recognized ..."), which the try/catch below would
+        # swallow into a false RED. Assignment-from-if is valid in both 5.1 and
+        # pwsh 7 (#305).
+        $commitStatus = if ($r.commit -like "$CommitSha*") { 'OK' } else { 'WARN' }
+        Add-Step 'receipt.commit' $commitStatus $r.commit
+        $dirtyStatus = if (-not $r.git_dirty) { 'OK' } else { 'WARN' }
+        Add-Step 'receipt.dirty' $dirtyStatus ("git_dirty=" + $r.git_dirty)
+        $allGreenStatus = if ($r.all_green) { 'OK' } else { 'FAIL' }
+        Add-Step 'all_green' $allGreenStatus ''
+        $launchStatus = if ($r.launch_verified) { 'OK' } else { 'FAIL' }
+        Add-Step 'launch_verified' $launchStatus ''
         if ($r.gates) {
             foreach ($g in $r.gates.PSObject.Properties) {
                 $st = switch ("$($g.Value)") { 'Pass' { 'OK' } 'Skipped' { 'WARN' } default { 'FAIL' } }
