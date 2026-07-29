@@ -91,7 +91,7 @@ ndarray = "0.16"
 # (WASAPI/CoreAudio/ALSA) — see `mic::start_capture` and
 # `playback::run_playback` for the dedicated-worker-thread pattern that
 # wraps that around the async action handlers.
-cpal = "0.15"
+cpal = "0.18"
 
 # Slice 11.E orchestrator port. Async trait objects for the three
 # behaviours the orchestrator depends on (capture, playback, harness
