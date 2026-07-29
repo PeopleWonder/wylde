@@ -75,7 +75,7 @@ rustfft = "6"
 # under the hood, so BPE merges round-trip bit-exact with the Python
 # Whisper pipeline. Loads from the `tokenizer.json` shipped in every
 # onnx-community Whisper snapshot.
-tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 
 # n-dim array views for the encoder/decoder tensor plumbing. The `ort` crate
 # already pulls `ndarray` (matched version in workspace lockfile via the
