@@ -27,6 +27,12 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::SampleFormat;
 
+/// A device's human-readable name, if the host exposes one (for logs). cpal
+/// 0.18 moved this off `Device` onto a structured `DeviceDescription`.
+fn device_name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_string())
+}
+
 /// Error opening a device or building a stream. String-valued so the cpal
 /// error types don't leak past this module.
 #[derive(Debug, Clone)]
@@ -109,7 +115,7 @@ impl InputDevice {
 
     /// The device's human-readable name, if the host exposes one (for logs).
     pub fn name(&self) -> Option<String> {
-        self.device.name().ok()
+        device_name(&self.device)
     }
 
     /// Build and start the input stream. `on_samples` receives each driver
@@ -123,10 +129,10 @@ impl InputDevice {
     {
         let config = cpal::StreamConfig {
             channels: self.format.channels,
-            sample_rate: cpal::SampleRate(self.format.sample_rate),
+            sample_rate: self.format.sample_rate,
             buffer_size: cpal::BufferSize::Default,
         };
-        let on_err = |e: cpal::StreamError| {
+        let on_err = |e: cpal::Error| {
             tracing::warn!("wylde-voice: input cpal stream error: {e}");
         };
         let device = self.device;
@@ -134,7 +140,7 @@ impl InputDevice {
         let stream = match self.sample_format {
             SampleFormat::F32 => device
                 .build_input_stream(
-                    &config,
+                    config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| on_samples(data),
                     on_err,
                     None,
@@ -142,7 +148,7 @@ impl InputDevice {
                 .map_err(|e| AudioError::Build(e.to_string()))?,
             SampleFormat::I16 => device
                 .build_input_stream(
-                    &config,
+                    config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         let buf: Vec<f32> = data.iter().copied().map(i16_to_f32).collect();
                         on_samples(&buf);
@@ -153,7 +159,7 @@ impl InputDevice {
                 .map_err(|e| AudioError::Build(e.to_string()))?,
             SampleFormat::U16 => device
                 .build_input_stream(
-                    &config,
+                    config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
                         let buf: Vec<f32> = data.iter().copied().map(u16_to_f32).collect();
                         on_samples(&buf);
@@ -186,7 +192,7 @@ pub fn open_default_input() -> Result<InputDevice, AudioError> {
     Ok(InputDevice {
         sample_format: supported.sample_format(),
         format: DeviceFormat {
-            sample_rate: supported.sample_rate().0,
+            sample_rate: supported.sample_rate(),
             channels: supported.channels(),
         },
         device,
@@ -197,13 +203,13 @@ pub fn open_default_input() -> Result<InputDevice, AudioError> {
 /// query — does not open a stream. Names are de-duplicated and sorted.
 pub fn input_device_names() -> Result<(Option<String>, Vec<String>), AudioError> {
     let host = cpal::default_host();
-    let default_name = host.default_input_device().and_then(|d| d.name().ok());
+    let default_name = host.default_input_device().and_then(|d| device_name(&d));
     let mut names = Vec::new();
     let devices = host
         .input_devices()
         .map_err(|e| AudioError::NoSupportedConfig(e.to_string()))?;
     for device in devices {
-        if let Ok(name) = device.name() {
+        if let Some(name) = device_name(&device) {
             names.push(name);
         }
     }
@@ -228,7 +234,7 @@ impl OutputDevice {
 
     /// The device's human-readable name, if the host exposes one (for logs).
     pub fn name(&self) -> Option<String> {
-        self.device.name().ok()
+        device_name(&self.device)
     }
 
     /// Build and start the output stream. `fill` is handed each driver buffer
@@ -243,10 +249,10 @@ impl OutputDevice {
     {
         let config = cpal::StreamConfig {
             channels: self.format.channels,
-            sample_rate: cpal::SampleRate(self.format.sample_rate),
+            sample_rate: self.format.sample_rate,
             buffer_size: cpal::BufferSize::Default,
         };
-        let on_err = |e: cpal::StreamError| {
+        let on_err = |e: cpal::Error| {
             tracing::warn!("wylde-voice: output cpal stream error: {e}");
         };
         let device = self.device;
@@ -254,7 +260,7 @@ impl OutputDevice {
         let stream = match self.sample_format {
             SampleFormat::F32 => device
                 .build_output_stream(
-                    &config,
+                    config,
                     move |out: &mut [f32], _: &cpal::OutputCallbackInfo| fill(out),
                     on_err,
                     None,
@@ -262,7 +268,7 @@ impl OutputDevice {
                 .map_err(|e| AudioError::Build(e.to_string()))?,
             SampleFormat::I16 => device
                 .build_output_stream(
-                    &config,
+                    config,
                     move |out: &mut [i16], _: &cpal::OutputCallbackInfo| {
                         let mut scratch = vec![0.0_f32; out.len()];
                         fill(&mut scratch);
@@ -276,7 +282,7 @@ impl OutputDevice {
                 .map_err(|e| AudioError::Build(e.to_string()))?,
             SampleFormat::U16 => device
                 .build_output_stream(
-                    &config,
+                    config,
                     move |out: &mut [u16], _: &cpal::OutputCallbackInfo| {
                         let mut scratch = vec![0.0_f32; out.len()];
                         fill(&mut scratch);
@@ -311,7 +317,7 @@ pub fn open_default_output() -> Result<OutputDevice, AudioError> {
     Ok(OutputDevice {
         sample_format: supported.sample_format(),
         format: DeviceFormat {
-            sample_rate: supported.sample_rate().0,
+            sample_rate: supported.sample_rate(),
             channels: supported.channels(),
         },
         device,
