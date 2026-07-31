@@ -663,6 +663,15 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   `false` mapped to. This is a macOS-only launch knob, inert on the Windows target the GUI ships to, so
   behaviour is byte-for-byte unchanged. (#148)
 
+- **`bcrypt` 0.15 → 0.19 (no code change; stored-hash compatibility verified).** The device-gate
+  htpasswd verifier (`wylde-device-gate/src/auth.rs`) calls `bcrypt::verify`, whose signature is
+  unchanged across the span; the 0.16–0.19 releases moved internals (blowfish 0.9→0.10, getrandom
+  0.2→0.4) with no API break on our one call-site. As the security-gated bump in #301, stored-hash
+  compatibility was verified before merge: `$2b$` hashes minted by 0.15 verify under 0.19, the
+  `$2a$`/`$2y$` prefix variants verify, and wrong passwords are rejected — so existing bcrypt
+  htpasswd entries keep authenticating byte-for-byte. Consolidates and supersedes Dependabot #286.
+  (#301)
+
 - **The NSIS installer has been removed from this repository.** It never produced a
   working install — the "Quick install" route documented in the README, and the
   `WyldeSetup-<version>.exe` asset attached to `v0.1.0-alpha.1`, do not work and
