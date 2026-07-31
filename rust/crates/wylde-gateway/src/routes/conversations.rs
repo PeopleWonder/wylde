@@ -43,7 +43,7 @@ pub async fn new_conversation(headers: HeaderMap) -> Response {
     harness_dispatch("conversations.new", Value::Null).await
 }
 
-/// `GET /api/conversations/:id` — read one conversation by id.
+/// `GET /api/conversations/{id}` — read one conversation by id.
 pub async fn get_conversation(headers: HeaderMap, Path(id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
@@ -54,7 +54,7 @@ pub async fn get_conversation(headers: HeaderMap, Path(id): Path<String>) -> Res
     harness_dispatch("conversations.get", json!({ "id": id })).await
 }
 
-/// `DELETE /api/conversations/:id` — drop one conversation by id.
+/// `DELETE /api/conversations/{id}` — drop one conversation by id.
 pub async fn delete_conversation(headers: HeaderMap, Path(id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
@@ -70,8 +70,8 @@ pub fn router() -> Router {
     Router::new()
         .route("/api/conversations", get(list_conversations))
         .route("/api/conversations", post(new_conversation))
-        .route("/api/conversations/:id", get(get_conversation))
-        .route("/api/conversations/:id", delete(delete_conversation))
+        .route("/api/conversations/{id}", get(get_conversation))
+        .route("/api/conversations/{id}", delete(delete_conversation))
 }
 
 #[cfg(test)]

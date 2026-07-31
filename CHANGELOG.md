@@ -694,6 +694,17 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   Single call-site, no new adapter (per #290). Consolidates and supersedes Dependabot #288 (/rust)
   and #289 (/tools). (#301)
 
+- **`axum` 0.7 → 0.8 (breaking; required code changes).** The 0.8 release switched the path-parameter
+  capture syntax from the colon form (`/:id`, matchit 0.7) to the brace form (`/{id}`, matchit 0.8);
+  a `:`-style path now panics at router build. Rewrote every parameterised route across the three
+  axum consumers — the gateway (`wylde-gateway`, all `routes/*` modules), `wylde-vpn`
+  (`/api/link/qr/{token}`), and `wylde-treesitter` — and updated the matching route-table doc
+  comments so the docs stay truthful. No handler signatures changed: `Path`/`Option<Json<_>>`
+  extractors are source-compatible (0.8 keeps the `OptionalFromRequest` blanket for `Json`), and the
+  gateway's `#[debug_handler]`/`macros` usage is unchanged. Routing behaviour is otherwise
+  byte-for-byte identical — the capture names and shapes are the same, only the delimiter moved.
+  Consolidates and supersedes Dependabot #284. (#301)
+
 - **The NSIS installer has been removed from this repository.** It never produced a
   working install — the "Quick install" route documented in the README, and the
   `WyldeSetup-<version>.exe` asset attached to `v0.1.0-alpha.1`, do not work and

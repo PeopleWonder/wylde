@@ -69,7 +69,7 @@ streaming-iterator = "0.1"
 # HTTP front door (`http.rs`) for N8N's HTTP Request node — it can't open a
 # Windows named pipe, so the sidecar also serves `/chunk` over a loopback TCP
 # port. Same axum/tower stack `wylde-vpn` uses for its control plane.
-axum = "0.7"
+axum = "0.8"
 tower = "0.5"
 
 [dev-dependencies]
