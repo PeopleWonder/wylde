@@ -20,7 +20,7 @@
 //!
 //! * `/status`, `/peers`, `/peers/remove`, `/stun` — HTTP loopback via
 //!   [`proxy_core::http_call`].
-//! * `/qr/:token` — raw byte passthrough via [`reqwest::Client`]
+//! * `/qr/{token}` — raw byte passthrough via [`reqwest::Client`]
 //!   directly (the QR endpoint returns `image/svg+xml`; `http_call`
 //!   would JSON-decode it and lose the SVG).
 //! * `/pair` — named pipe via
@@ -37,7 +37,7 @@
 //! Failure responses use the canonical nested envelope (same
 //! cross-wave convention picked by wave 2c).
 //!
-//! **Deliberate envelope bypass:** `/qr/:token` returns a raw
+//! **Deliberate envelope bypass:** `/qr/{token}` returns a raw
 //! `image/svg+xml` body with no `{ok, data}` wrapper — the QR image is a
 //! binary payload, not JSON, so wrapping it would be meaningless. This
 //! is intentional and was confirmed during the Bucket-A IPC cleanup;
@@ -155,7 +155,7 @@ pub async fn pair(body: Option<Json<Value>>) -> Response {
     }
 }
 
-/// `GET /api/link/qr/:token` — raw SVG passthrough.
+/// `GET /api/link/qr/{token}` — raw SVG passthrough.
 ///
 /// Bypasses [`http_call`] because the body isn't JSON; the upstream
 /// content type is preserved on the response.
@@ -252,7 +252,7 @@ pub fn router() -> Router {
         )
         .route("/api/link/pair", post(pair))
         .route(
-            "/api/link/qr/:token",
+            "/api/link/qr/{token}",
             get(qr).route_layer(from_fn(require_local)),
         )
 }

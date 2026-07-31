@@ -143,7 +143,7 @@ pub async fn generate(body: Option<Json<Value>>) -> Response {
     .await
 }
 
-/// `DELETE /api/models/:name` — drop a locally-installed model.
+/// `DELETE /api/models/{name}` — drop a locally-installed model.
 ///
 /// Mirrors the Python `delete_model` handler. Ollama's delete endpoint
 /// takes the model name in the JSON body rather than on the path, so
@@ -216,7 +216,7 @@ pub fn router() -> Router {
             post(generate).route_layer(from_fn(require_local)),
         )
         .route(
-            "/api/models/:name",
+            "/api/models/{name}",
             delete(delete_model).route_layer(from_fn(require_local)),
         )
 }

@@ -36,7 +36,7 @@ chrono.workspace = true
 # HTTP server stack — axum is the framework, tower-http supplies the
 # middleware (CORS, trace, request-id, body limit). hyper is the
 # underlying server we bind manually for graceful-shutdown control.
-axum = { version = "0.7", features = ["macros"] }
+axum = { version = "0.8", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors", "limit", "request-id", "util"] }
 hyper = { version = "1", features = ["full"] }

@@ -217,7 +217,7 @@ pub fn router() -> Router {
             get(list_all).route_layer(from_fn(require_local)),
         )
         .route(
-            "/api/tools/:tool_id",
+            "/api/tools/{tool_id}",
             get(get_one).route_layer(from_fn(require_local)),
         )
 }

@@ -64,7 +64,7 @@ pub(crate) fn router() -> Router {
         .route("/api/link/peers", get(link_peers_route))
         .route("/api/link/peers/remove", post(link_peers_remove_route))
         .route("/api/link/connect", post(link_connect_route))
-        .route("/api/link/qr/:token", get(link_qr_route))
+        .route("/api/link/qr/{token}", get(link_qr_route))
         .route("/api/link/config", get(link_config_get_route))
         .route("/api/link/config", patch(link_config_patch_route))
         .route("/api/link/services", get(link_services_route))

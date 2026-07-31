@@ -18,7 +18,7 @@
 //! | `POST   /api/prompts`                     | `prompts.save`          |
 //! | `POST   /api/prompts/presets`             | `prompts.save_preset`   |
 //! | `PUT    /api/prompts/active`              | `prompts.set_active`    |
-//! | `DELETE /api/prompts/presets/:name`       | `prompts.delete_preset` |
+//! | `DELETE /api/prompts/presets/{name}`       | `prompts.delete_preset` |
 //!
 //! Request bodies are forwarded as the action payload verbatim — the
 //! harness handlers do their own shape validation and emit
@@ -80,7 +80,7 @@ pub async fn set_active_preset(headers: HeaderMap, body: Option<Json<Value>>) ->
     harness_dispatch("prompts.set_active", payload).await
 }
 
-/// `DELETE /api/prompts/presets/:name` — drop a saved preset.
+/// `DELETE /api/prompts/presets/{name}` — drop a saved preset.
 pub async fn delete_preset(headers: HeaderMap, Path(name): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
@@ -98,7 +98,7 @@ pub fn router() -> Router {
         .route("/api/prompts", post(save_prompt))
         .route("/api/prompts/presets", post(save_preset))
         .route("/api/prompts/active", put(set_active_preset))
-        .route("/api/prompts/presets/:name", delete(delete_preset))
+        .route("/api/prompts/presets/{name}", delete(delete_preset))
 }
 
 #[cfg(test)]
