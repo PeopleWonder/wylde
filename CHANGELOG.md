@@ -672,6 +672,17 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   htpasswd entries keep authenticating byte-for-byte. Consolidates and supersedes Dependabot #286.
   (#301)
 
+- **`sha-crypt` 0.5 → 0.6 (required a code edit).** The 0.6 release removed the free
+  `sha512_check` / `sha256_check` verify helpers in favour of the RustCrypto `password-hash`
+  `PasswordVerifier` trait. Repointed the two htpasswd verify call sites in
+  `wylde-device-gate/src/auth.rs` to `ShaCrypt::default().verify_password(…)`, which reads the
+  algorithm and rounds from the stored `$6$`/`$5$` MCF string itself, so one default verifier
+  covers both SHA-512 and SHA-256 crypt. **Stored-hash compatibility was verified before merge**
+  (the security-gated concern in #301): the pinned passlib `$5$`/`$6$` fixtures still verify, and a
+  0.5-generated-hash → 0.6-verify roundtrip (default *and* explicit-rounds) passes, so existing
+  htpasswd entries keep authenticating unchanged. Single call-site, no new adapter (per #290).
+  Consolidates and supersedes Dependabot #283. (#301)
+
 - **The NSIS installer has been removed from this repository.** It never produced a
   working install — the "Quick install" route documented in the README, and the
   `WyldeSetup-<version>.exe` asset attached to `v0.1.0-alpha.1`, do not work and
