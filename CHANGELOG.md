@@ -683,6 +683,17 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   htpasswd entries keep authenticating unchanged. Single call-site, no new adapter (per #290).
   Consolidates and supersedes Dependabot #283. (#301)
 
+- **`ureq` 2 → 3 (required a code edit).** The 3.0 release reshaped the request/response API:
+  `RequestBuilder::set(k, v)` became `.header(k, v)`, `.call()` now yields an `http::Response<Body>`,
+  and the body is drained through the new `Body` type rather than the old response inherents.
+  Repointed the single consumer — `wylde-updater/src/lib.rs`'s `http_get_text` / `http_get_bytes` —
+  to `resp.body_mut().read_to_string()` (bounded, for the GitHub releases JSON) and
+  `resp.body_mut().as_reader().read_to_end(…)` (unbounded, for release-binary downloads), preserving
+  the previous read semantics exactly. `tools/wylde-release` carries `ureq` only transitively via
+  `wylde-updater`, so its lockfile moves 2.12.1 → 3.3.0 with no manifest or code change there.
+  Single call-site, no new adapter (per #290). Consolidates and supersedes Dependabot #288 (/rust)
+  and #289 (/tools). (#301)
+
 - **The NSIS installer has been removed from this repository.** It never produced a
   working install — the "Quick install" route documented in the README, and the
   `WyldeSetup-<version>.exe` asset attached to `v0.1.0-alpha.1`, do not work and
