@@ -423,22 +423,24 @@ fn stage_stack_in(dir: &Path, release: &DownloadedRelease) -> Result<(), UpdateE
 }
 
 fn http_get_text(url: &str) -> Result<String, UpdateError> {
-    let resp = ureq::get(url)
-        .set("User-Agent", USER_AGENT)
-        .set("Accept", "application/vnd.github+json")
+    let mut resp = ureq::get(url)
+        .header("User-Agent", USER_AGENT)
+        .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|e| UpdateError::Http(e.to_string()))?;
-    resp.into_string()
+    resp.body_mut()
+        .read_to_string()
         .map_err(|e| UpdateError::Http(format!("reading response body: {e}")))
 }
 
 fn http_get_bytes(url: &str) -> Result<Vec<u8>, UpdateError> {
-    let resp = ureq::get(url)
-        .set("User-Agent", USER_AGENT)
+    let mut resp = ureq::get(url)
+        .header("User-Agent", USER_AGENT)
         .call()
         .map_err(|e| UpdateError::Http(e.to_string()))?;
     let mut buf = Vec::new();
-    resp.into_reader()
+    resp.body_mut()
+        .as_reader()
         .read_to_end(&mut buf)
         .map_err(|e| UpdateError::Http(format!("reading response body: {e}")))?;
     Ok(buf)
