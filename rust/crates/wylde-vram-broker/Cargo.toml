@@ -34,7 +34,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 # (CPU model, disk kind/space). The `system` feature carries CPU + memory;
 # `disk` adds the volume probe used by `system.inventory`. Network +
 # component probes stay off — we don't need them.
-sysinfo = { version = "0.32", default-features = false, features = ["system", "disk"] }
+sysinfo = { version = "0.39", default-features = false, features = ["system", "disk"] }
 
 # DXGI adapter enumeration (Phase 12.4) — surfaces Intel iGPU / Arc and AMD
 # GPU/APU into `system.inventory` so the first-run LLM can pick a model
