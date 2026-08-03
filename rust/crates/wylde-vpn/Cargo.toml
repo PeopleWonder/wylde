@@ -65,7 +65,7 @@ axum = { version = "0.8", features = ["macros"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 http = "1"
-x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
+x25519-dalek = { version = "3", features = ["static_secrets", "getrandom"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 base64 = "0.22"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
