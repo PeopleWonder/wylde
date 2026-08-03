@@ -5959,7 +5959,7 @@ name = "wylde-shared"
 version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.0",
  "chrono",
  "futures",
  "rand 0.9.4",
@@ -6040,7 +6040,7 @@ version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.0",
  "chrono",
  "cpal",
  "hex",
@@ -6070,7 +6070,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.0",
  "boringtun",
  "chrono",
  "hmac",

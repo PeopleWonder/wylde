@@ -67,7 +67,7 @@ tower-http = { version = "0.6", features = ["trace"] }
 http = "1"
 x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
-base64 = "0.22"
+base64 = "0.23"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 uuid = { version = "1", features = ["v4"] }
 boringtun = { version = "0.7", default-features = false }
