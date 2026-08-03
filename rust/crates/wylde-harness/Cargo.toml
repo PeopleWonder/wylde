@@ -86,7 +86,7 @@ sha2 = "0.10"
 # format is just `len + repeated (id, embedding bytes)` — trivially
 # documentable and deterministic across runs. If scale balloons, swap
 # the inner `query_topk` for HNSW behind the same trait.
-bincode = "1.3"
+bincode = "3.0"
 # Random bytes for the per-record id route through `wylde_shared::rng` (the
 # workspace's single direct `rand` dep) — see #290.
 # Hex encoding for the per-record id — mirrors Python's
