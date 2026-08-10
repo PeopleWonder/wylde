@@ -53,7 +53,7 @@ jobs:
       - name: Install Rust (stable, honoring rust-toolchain.toml)
         run: rustup show
         working-directory: rust
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "rust -> target"
       - name: cargo build
@@ -97,7 +97,7 @@ jobs:
       - name: Install Rust (stable, honoring rust-toolchain.toml)
         run: rustup show
         working-directory: rust
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "rust -> target"
       - name: Install vendored Neo4j + JDK (checksum-pinned)
@@ -204,7 +204,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup component add rustfmt
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "Core/GUI -> target"
       - name: cargo build
@@ -250,7 +250,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (stable)
         run: rustup toolchain install stable --profile minimal
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "Core/GUI -> target"
       - name: cargo panel-walk (panel-walk + behavioural, headless windowed gpui tests)
@@ -405,7 +405,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install clippy + rustfmt (stable)
         run: rustup component add clippy rustfmt
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
             rust -> target
@@ -438,7 +438,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (stable)
         run: rustup toolchain install stable --profile minimal
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: |
             tools/xtask -> target
