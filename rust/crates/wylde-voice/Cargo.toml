@@ -59,7 +59,7 @@ uuid = { version = "1", features = ["v4"] }
 # §"Versions actually used"). `load-dynamic` + `api-24` is the
 # spike-verified feature set; the OpenVINO EP itself is gated behind
 # the `openvino` cargo feature so non-NPU build hosts can compile.
-ort = { version = "=2.0.0-rc.12", default-features = false,
+ort = { version = "=2.0.0-rc.13", default-features = false,
         features = ["ndarray", "std", "load-dynamic", "api-24"] }
 
 # WAV decoder for `voice.transcribe` input audio. Lightweight pure-Rust
