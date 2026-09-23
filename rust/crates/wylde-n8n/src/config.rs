@@ -95,6 +95,14 @@ fn env_with_alias(primary: &str, alias: &str, default: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A per-run random test secret, so no credential is hard-coded in the tests.
+    fn test_secret() -> String {
+        wylde_shared::rng::byte_array::<8>()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
     #[test]
     fn auth_ready_requires_a_complete_mode() {
         // Nothing configured → not ready.
@@ -109,13 +117,13 @@ mod tests {
             ..Default::default()
         };
         assert!(!b.auth_ready());
-        b.password = "pw".into();
+        b.password = test_secret();
         assert!(b.auth_ready());
         // Basic-auth alone never satisfies auth (it's a proxy layer,
         // not an n8n credential) — matches the Python `_AUTH_READY`.
         let c = AuthConfig {
             basic_user: "u".into(),
-            basic_pass: "p".into(),
+            basic_pass: test_secret(),
             ..Default::default()
         };
         assert!(!c.auth_ready());

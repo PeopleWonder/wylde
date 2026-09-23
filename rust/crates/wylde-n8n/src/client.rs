@@ -686,6 +686,14 @@ pub(crate) fn build_edit_body(payload: &Value) -> Result<Value, Value> {
 mod tests {
     use super::*;
 
+    /// A per-run random test secret, so no credential is hard-coded in the tests.
+    fn test_secret() -> String {
+        wylde_shared::rng::byte_array::<8>()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
     fn api_key_auth(url: &str) -> AuthConfig {
         AuthConfig {
             url: url.trim_end_matches('/').to_owned(),
@@ -953,7 +961,7 @@ mod tests {
         let client = N8nClient::new(AuthConfig {
             url: server.uri().trim_end_matches('/').to_owned(),
             email: "a@b.c".into(),
-            password: "pw".into(),
+            password: test_secret(),
             ..Default::default()
         });
         let out = client.list_workflows().await;

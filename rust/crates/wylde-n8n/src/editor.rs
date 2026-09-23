@@ -150,14 +150,23 @@ pub fn build_login_script(base_url: &str, email: &str, password: &str) -> String
 mod tests {
     use super::*;
 
+    /// A per-run random test secret, so no credential is hard-coded in the tests.
+    fn test_secret() -> String {
+        wylde_shared::rng::byte_array::<8>()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
     #[test]
     fn login_script_embeds_credentials_and_browser_id() {
-        let js = build_login_script("http://127.0.0.1:5678", "wylde-owner@wylde.local", "Wq7abc");
+        let pw = test_secret();
+        let js = build_login_script("http://127.0.0.1:5678", "wylde-owner@wylde.local", &pw);
         assert!(js.contains("n8n-browserId"));
         assert!(js.contains("wylde-embedded-editor"));
         assert!(js.contains("/rest/login"));
         assert!(js.contains("wylde-owner@wylde.local"));
-        assert!(js.contains("Wq7abc"));
+        assert!(js.contains(&pw));
         assert!(js.contains("emailOrLdapLoginId"));
         // Guards a reload loop.
         assert!(js.contains("wylde_n8n_reloaded"));
@@ -167,9 +176,11 @@ mod tests {
     fn login_script_escapes_quote_in_password() {
         // A pathological password with a quote must not break out of the
         // JS string literal.
-        let js = build_login_script("http://x", "a@b.c", "p\"; alert(1);//");
+        let prefix = test_secret();
+        let pw = format!("{prefix}\"; alert(1);//");
+        let js = build_login_script("http://x", "a@b.c", &pw);
         assert!(
-            !js.contains("p\"; alert(1)"),
+            !js.contains(&format!("{prefix}\"; alert(1)")),
             "raw injection must be escaped"
         );
         assert!(

@@ -10,13 +10,23 @@ use wylde_n8n::editor::{self, EditorContext};
 use wylde_n8n::secret::N8nIdentity;
 use wylde_shared::ipc::dispatch_action;
 
+/// A per-run random test secret, so no credential is hard-coded in the test.
+fn test_secret() -> String {
+    wylde_shared::rng::byte_array::<8>()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 #[tokio::test]
 async fn editor_bootstrap_returns_managed_payload_with_login_script() {
-    // Install a managed context with a known identity.
+    // Install a managed context with a per-run random identity.
+    let key = test_secret();
+    let pw = test_secret();
     let identity: N8nIdentity = serde_json::from_value(json!({
-        "encryption_key": "deadbeef",
+        "encryption_key": key,
         "owner_email": "wylde-owner@wylde.local",
-        "owner_password": "Wq7feedface",
+        "owner_password": pw,
     }))
     .unwrap();
     editor::set_context(EditorContext {
@@ -42,7 +52,7 @@ async fn editor_bootstrap_returns_managed_payload_with_login_script() {
     // The script carries the Wylde-owned credentials + browser-id pin so
     // the embedded editor authenticates with no login screen.
     assert!(js.contains("wylde-owner@wylde.local"));
-    assert!(js.contains("Wq7feedface"));
+    assert!(js.contains(&pw));
     assert!(js.contains("n8n-browserId"));
     assert!(js.contains("/rest/login"));
 }
