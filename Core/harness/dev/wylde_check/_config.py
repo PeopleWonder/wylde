@@ -226,6 +226,7 @@ RUST_SHARED_SURFACE_CRATES: Tuple[str, ...] = (
     "wylde_concept_routing",  # pure concept-routing algorithms + value types, no pipe
     "wylde_concept_hierarchy",  # pure concept-hierarchy types, no pipe
     "wylde_reasoning_plan",  # pure plan/DAG value types (evaluate/predicates), no pipe
+    "wylde_fswalk",  # pure detector lib extracted from wylde-workspaces; shared by workspaces + wylde-organize
 )
 
 
@@ -438,30 +439,30 @@ DEPENDENCY_SPREAD_NEW_MAX: int = 2
 # wrap-trigger is its first breaking bump. Raising a number is a deliberate,
 # reviewed act; lowering one after a cleanup ratchets the gate tighter.
 DEPENDENCY_SPREAD_BASELINE: Dict[str, int] = {
-    "anyhow": 30,
+    "anyhow": 32,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
     "async-trait": 6,
     "auto-launch": 3,
     "axum": 3,
     "base64": 3,
     "chrono": 12,
     "futures": 4,
-    "gpui": 20,
-    "hex": 3,
+    "gpui": 22,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
+    "hex": 4,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
     "qrcode": 3,
     "reqwest": 12,  # watch target — biggest 0.x shotgun risk; wrap on first break
     "rfd": 3,
     "rmp-serde": 5,
-    "serde": 38,
-    "serde_json": 41,
+    "serde": 40,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
+    "serde_json": 43,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
     "serde_yaml": 4,
     "serial_test": 9,
-    "sha2": 3,
-    "tempfile": 19,
+    "sha2": 4,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
+    "tempfile": 20,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
     "thiserror": 18,
     "tokio": 31,
     "tokio-test": 5,
     "tower": 3,
-    "tracing": 22,
+    "tracing": 23,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
     "tracing-subscriber": 4,
     "uuid": 12,
     "windows": 4,
