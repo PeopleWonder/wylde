@@ -48,35 +48,6 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
-- **Tabulate panel.** A native gpui cockpit (`Frontend/Panels/Tabulate`) over
-  the out-of-tree `wylde-tabulate` Service: pick a file, **Probe** its structure
-  (PHI-safe — file type, table shape, per-column header + inferred type, never a
-  cell value, with the redaction-review gate), and **Extract** it to a `.xlsx` /
-  `.csv`, showing the absolute output path. A subtle safety chip surfaces the
-  HIPAA posture (local-only / encrypted-at-rest / audit on) from
-  `tabulate.capabilities`. Greys out via `required_services` when the service is
-  absent. (Built on the `feat/tabulate-panel` branch for a live feel-test; not
-  merged.)
-- **File organizer — `wylde-organize` Service + Organize panel (v1).** An
-  autonomous whole-PC file organizer: scan a chosen scope → propose a read-only
-  plan (group loose files into typed folders + junk/duplicate/stale/temp removal
-  candidates) → review/edit → apply reversibly → undo. Safety is the spine:
-  narrow default scope (`user_data`; whole-profile opt-in; whole-drive opt-in +
-  typed confirmation), a hard non-overridable protected-path denylist
-  (OS dirs / Program Files / AppData / credentials / Wylde footprint / system
-  files / drive roots) re-asserted at apply, removals to the OS recycle bin
-  (never hard delete), dry-run-always, no silent overwrite, and an append-only
-  undo journal. Ambiguous-file grouping uses the brokered `wylde-ollama` pipe
-  only. A first-party native gpui Organize panel drives it (greys out when the
-  service is absent). The maintenance watcher is deferred to phase 1.1; the
-  service ships `enabled:false` (opt-in for a whole-PC-capable tool).
-- **`wylde-fswalk` shared detector crate.** The walk-time `ExclusionMatcher`,
-  the metadata walk, the sha256 content-hash, and a new content-hash duplicate
-  grouper were extracted out of `wylde-workspaces`' RAG indexer into a shared
-  crate so the organizer reuses the identical detection logic without
-  cross-importing workspaces internals (`wylde_check` rule 26). Pure logic, no
-  storage; the indexer keeps its chunker and depends on the new crate.
-=======
 - **Every clicked live-handler GUI control is now *asserted*, not just clicked (refs #247, closes #276).** The #247 gate proved each control *does something*; a handful of controls whose whole effect was a fire-and-forget handoff were only clicked (declared `external_effect`) because the walk's oracle had no channel for that kind of effect. Two seams close the gap. A new **`emit_probe`** oracle channel (mirroring `nav_probe` / `focus_probe`) records a `cx.emit(..)` a control hands to a parent the walk never mounted; and a walk-suppressible **`open_url`** seam (mirroring `native_file_dialog`) records-and-suppresses a browser open instead of spawning one. With them: the **dependency-tree canvas** now asserts its `TreeEvent::Selected` emit (the fixture parks a real node under the click so there is a genuine selection to observe — its walk moved in-crate to reach the private camera); the **Chat markdown link** routes through `open_url` and asserts the exact target URL; and the **three Chat native file dialogs** dropped their `external_effect` and now assert on the recorded dialog-request channel (they were assertable all along, only conservatively suppressed). The only controls left non-asserted are declared true-no-ops — a `stop_propagation` swallow, the already-selected segment of a radio group (its siblings assert the real switch), and an inert breadcrumb crumb — each kept with a reason. Result: **zero clicked-but-unasserted live-handler controls** in the GUI.
 
 - **The Devices panel is now control-walked (refs #247, part 2 — deferred-walk follow-up 1).** The first of the deferred stateful-panel walks. Devices carries four occluding cards (pairing, revoke-confirm, tier-escalation-confirm, rotated-token) plus a mutually-exclusive empty state, driven with one `.state()` each; the pairing card is opened through the real `start_pairing` flow.
@@ -1604,6 +1575,34 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Tabulate panel.** A native gpui cockpit (`Frontend/Panels/Tabulate`) over
+  the out-of-tree `wylde-tabulate` Service: pick a file, **Probe** its structure
+  (PHI-safe — file type, table shape, per-column header + inferred type, never a
+  cell value, with the redaction-review gate), and **Extract** it to a `.xlsx` /
+  `.csv`, showing the absolute output path. A subtle safety chip surfaces the
+  HIPAA posture (local-only / encrypted-at-rest / audit on) from
+  `tabulate.capabilities`. Greys out via `required_services` when the service is
+  absent. (Built on the `feat/tabulate-panel` branch for a live feel-test; not
+  merged.)
+- **File organizer — `wylde-organize` Service + Organize panel (v1).** An
+  autonomous whole-PC file organizer: scan a chosen scope → propose a read-only
+  plan (group loose files into typed folders + junk/duplicate/stale/temp removal
+  candidates) → review/edit → apply reversibly → undo. Safety is the spine:
+  narrow default scope (`user_data`; whole-profile opt-in; whole-drive opt-in +
+  typed confirmation), a hard non-overridable protected-path denylist
+  (OS dirs / Program Files / AppData / credentials / Wylde footprint / system
+  files / drive roots) re-asserted at apply, removals to the OS recycle bin
+  (never hard delete), dry-run-always, no silent overwrite, and an append-only
+  undo journal. Ambiguous-file grouping uses the brokered `wylde-ollama` pipe
+  only. A first-party native gpui Organize panel drives it (greys out when the
+  service is absent). The maintenance watcher is deferred to phase 1.1; the
+  service ships `enabled:false` (opt-in for a whole-PC-capable tool).
+- **`wylde-fswalk` shared detector crate.** The walk-time `ExclusionMatcher`,
+  the metadata walk, the sha256 content-hash, and a new content-hash duplicate
+  grouper were extracted out of `wylde-workspaces`' RAG indexer into a shared
+  crate so the organizer reuses the identical detection logic without
+  cross-importing workspaces internals (`wylde_check` rule 26). Pure logic, no
+  storage; the indexer keeps its chunker and depends on the new crate.
 - **A one-click Stop control on the Dashboard service console.** The GUI could start and restart
   backend services from anywhere (decision 7) but had no way to *stop* one — the lifecycle
   `service.stop` verb existed and nothing drove it. Each running service chip now offers a Stop
@@ -1734,6 +1733,7 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   then switches to the determinate bar + ETA once counting is done. A dev
   bench (`examples/index_bench.rs`, isolated index dir, graph-write disabled)
   calibrates the ETA against measured throughput on the real repo.
+
 - **Thought Bubble System — structural awareness for chat.** A floating
   Thought-Bubble composer layer over the chat input, with a unified
   `Ctrl+Z` undo timeline spanning both typed text and bubbles. The composer is
