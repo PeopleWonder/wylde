@@ -28,7 +28,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
 /// File name under the data dir holding the Wylde-owned n8n identity.
@@ -110,7 +109,7 @@ impl N8nIdentity {
 /// 32 random bytes (OS CSPRNG) as 64 lowercase hex chars.
 fn random_hex_32() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    wylde_shared::rng::fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -120,7 +119,7 @@ fn random_hex_32() -> String {
 /// 8..=64 bound. The randomness, not the prefix, carries the entropy.
 fn random_password() -> String {
     let mut bytes = [0u8; 24];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    wylde_shared::rng::fill_bytes(&mut bytes);
     let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
     format!("Wq7{hex}")
 }

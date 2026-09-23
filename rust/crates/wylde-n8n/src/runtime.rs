@@ -2,7 +2,7 @@
 //!
 //! Before this module, `wylde-n8n` was a pipe proxy in front of an
 //! *external, user-managed* n8n the user had to install AND start AND
-//! point credentials at by hand. That left all three of Aaron's
+//! point credentials at by hand. That left all three of the maintainer's
 //! requirements unmet: nothing embedded the editor, nothing shared
 //! auth, and persistence was wherever the user happened to run n8n.
 //!
@@ -110,11 +110,15 @@ pub fn resolve_launch() -> Result<LaunchSpec> {
     };
     let entry = match std::env::var_os("WYLDE_N8N_ENTRY") {
         Some(e) => PathBuf::from(e),
-        None => find_n8n_entry()
-            .ok_or_else(|| anyhow!("n8n CLI not found — install it (`npm install -g n8n`) or set WYLDE_N8N_ENTRY"))?,
+        None => find_n8n_entry().ok_or_else(|| {
+            anyhow!("n8n CLI not found — install it (`npm install -g n8n`) or set WYLDE_N8N_ENTRY")
+        })?,
     };
     if !entry.exists() {
-        return Err(anyhow!("n8n entry script does not exist: {}", entry.display()));
+        return Err(anyhow!(
+            "n8n entry script does not exist: {}",
+            entry.display()
+        ));
     }
     Ok(LaunchSpec { node, entry })
 }
@@ -143,9 +147,17 @@ fn find_n8n_entry() -> Option<PathBuf> {
         }
     }
     // npm prefix-relative (Unix global, and Windows custom prefixes).
-    if let Some(prefix) = std::env::var_os("NPM_CONFIG_PREFIX").or_else(|| std::env::var_os("npm_config_prefix")) {
+    if let Some(prefix) =
+        std::env::var_os("NPM_CONFIG_PREFIX").or_else(|| std::env::var_os("npm_config_prefix"))
+    {
         let p = PathBuf::from(&prefix);
-        candidates.push(p.join("lib").join("node_modules").join("n8n").join("bin").join("n8n"));
+        candidates.push(
+            p.join("lib")
+                .join("node_modules")
+                .join("n8n")
+                .join("bin")
+                .join("n8n"),
+        );
         candidates.push(p.join("node_modules").join("n8n").join("bin").join("n8n"));
     }
     #[cfg(not(windows))]
@@ -208,10 +220,7 @@ pub fn spawn(cfg: &RuntimeConfig, identity: &N8nIdentity, spec: &LaunchSpec) -> 
         .env("N8N_PERSONALIZATION_ENABLED", "false")
         .env("N8N_HIRING_BANNER_ENABLED", "false")
         .env("N8N_TEMPLATES_ENABLED", "false")
-        .env(
-            "N8N_USER_MANAGEMENT_EMAIL_NOTIFICATIONS",
-            "false",
-        )
+        .env("N8N_USER_MANAGEMENT_EMAIL_NOTIFICATIONS", "false")
         .kill_on_drop(true)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

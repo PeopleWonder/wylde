@@ -42,10 +42,7 @@ pub async fn ensure_ready(
     identity: &N8nIdentity,
     deadline: Duration,
 ) -> Provisioned {
-    let http = match reqwest::Client::builder()
-        .cookie_store(true)
-        .build()
-    {
+    let http = match reqwest::Client::builder().cookie_store(true).build() {
         Ok(c) => c,
         Err(e) => return Provisioned::SetupFailed(format!("client build: {e}")),
     };

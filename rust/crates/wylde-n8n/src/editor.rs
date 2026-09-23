@@ -168,8 +168,14 @@ mod tests {
         // A pathological password with a quote must not break out of the
         // JS string literal.
         let js = build_login_script("http://x", "a@b.c", "p\"; alert(1);//");
-        assert!(!js.contains("p\"; alert(1)"), "raw injection must be escaped");
-        assert!(js.contains("alert(1)"), "value still present, but quoted/escaped");
+        assert!(
+            !js.contains("p\"; alert(1)"),
+            "raw injection must be escaped"
+        );
+        assert!(
+            js.contains("alert(1)"),
+            "value still present, but quoted/escaped"
+        );
     }
 
     #[tokio::test]

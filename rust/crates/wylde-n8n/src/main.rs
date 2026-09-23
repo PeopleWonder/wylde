@@ -1,7 +1,7 @@
 //! wylde-n8n service entry point.
 //!
 //! In **managed mode** (the default) this process *owns* the local n8n
-//! workflow engine end-to-end, delivering Aaron's three requirements:
+//! workflow engine end-to-end, delivering the maintainer's three requirements:
 //!
 //!   1. **Embed** — n8n binds loopback-only at `http://127.0.0.1:5678`,
 //!      the URL the Wylde GUI mounts in a `wry` WebView panel.
@@ -118,8 +118,12 @@ async fn main() -> Result<()> {
     // path on a clean exit.
     if let Some(child) = n8n_child.as_mut() {
         tracing::info!("wylde-n8n: stopping managed n8n daemon");
-        let _ = child.start_kill();
-        let _ = child.wait().await;
+        if let Err(e) = child.start_kill() {
+            tracing::warn!("wylde-n8n: could not signal the managed n8n daemon to stop: {e}");
+        }
+        if let Err(e) = child.wait().await {
+            tracing::warn!("wylde-n8n: waiting for the managed n8n daemon to exit failed: {e}");
+        }
     }
 
     wylde_n8n::service::stop();
@@ -142,9 +146,7 @@ async fn bring_up_managed_n8n() -> Option<tokio::process::Child> {
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let rt = RuntimeConfig::from_env(&wylde_root);
     if !rt.managed {
-        tracing::info!(
-            "wylde-n8n: WYLDE_N8N_MANAGED=0 — legacy proxy mode, not launching n8n"
-        );
+        tracing::info!("wylde-n8n: WYLDE_N8N_MANAGED=0 — legacy proxy mode, not launching n8n");
         return None;
     }
 

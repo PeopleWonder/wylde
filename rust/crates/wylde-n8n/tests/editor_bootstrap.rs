@@ -36,7 +36,9 @@ async fn editor_bootstrap_returns_managed_payload_with_login_script() {
     let data = reply.data;
     assert_eq!(data["managed"], true, "managed mode payload");
     assert_eq!(data["url"], "http://127.0.0.1:5678");
-    let js = data["init_js"].as_str().expect("init_js present in managed mode");
+    let js = data["init_js"]
+        .as_str()
+        .expect("init_js present in managed mode");
     // The script carries the Wylde-owned credentials + browser-id pin so
     // the embedded editor authenticates with no login screen.
     assert!(js.contains("wylde-owner@wylde.local"));
