@@ -50,6 +50,7 @@ use wylde_shared::ipc::{IpcError, Reply};
 
 use super::cypher;
 use super::schema as rel_schema;
+use super::temporal;
 
 /// Default Bolt URL — matches Python's `_BOLT_URL` default.
 pub const DEFAULT_BOLT_URL: &str = "bolt://127.0.0.1:7687";
@@ -546,6 +547,12 @@ impl BoltClient {
             return Reply::ok(json!({"ok": true, "written": 0}));
         }
         let count = edges.len();
+        // Temporal toggle (default OFF ⇒ byte-identical): when ON, route
+        // to the bi-temporal supersede-and-insert path. The OFF body
+        // below is left untouched.
+        if temporal::temporal_memory_enabled() {
+            return self.relate_temporal(&rel_type, &edges).await;
+        }
         let stmt = cypher::relate_typed(&rel_type);
         let payload = BoltType::List(pairs_to_boltlist(&edges));
         let timeout = self.config.connect_timeout;
@@ -600,6 +607,12 @@ impl BoltClient {
             return Reply::ok(json!({"ok": true, "deleted": 0}));
         }
         let count = edges.len();
+        // Temporal toggle (default OFF ⇒ byte-identical): when ON, a hard
+        // DELETE becomes a logical delete — close the open edge's
+        // valid_to, preserving history. OFF leaves the DELETE below intact.
+        if temporal::temporal_memory_enabled() {
+            return self.unrelate_temporal(&rel_type, &edges).await;
+        }
         let stmt = cypher::unrelate_typed(&rel_type);
         let payload = BoltType::List(pairs_to_boltlist(&edges));
         let timeout = self.config.connect_timeout;
@@ -636,6 +649,14 @@ impl BoltClient {
         if label.is_empty() || !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Reply::err_msg("bad_request", format!("invalid edge label {label:?}"));
         }
+        // Temporal toggle (default OFF ⇒ byte-identical): when ON, the
+        // weight bump becomes supersede-and-insert so the weight timeline
+        // is reconstructable. OFF leaves the in-place MERGE below intact.
+        if temporal::temporal_memory_enabled() {
+            return self
+                .upsert_edge_temporal(&label, source, target, weight_delta)
+                .await;
+        }
         let stmt = cypher::upsert_edge(&label);
         let source = source.to_owned();
         let target = target.to_owned();
@@ -656,6 +677,430 @@ impl BoltClient {
             })
         })
         .await
+    }
+
+    // ── Bi-temporal edge path (gated by WYLDE_TEMPORAL_MEMORY) ──────────
+    //
+    // These run ONLY when the temporal toggle is ON; the relational
+    // verbs above early-return into them. The OFF path never reaches
+    // here, preserving byte-identical relational behavior. See
+    // `super::temporal` for the model + Cypher.
+
+    /// Temporal `relate`: each pair is a **guarded insert** — a fresh
+    /// open edge (`[valid_from, OPEN)` on both axes) is CREATE'd only
+    /// when no open edge already exists. Weightless facts don't
+    /// supersede; they are created or (P1) retracted. Returns
+    /// `{"ok": true, "written": N, "temporal": true}`.
+    async fn relate_temporal(&self, rel_type: &str, edges: &[EntityEdge]) -> Reply {
+        let stmt = temporal::temporal_relate_guarded(rel_type);
+        let at = temporal::now_ms();
+        let count = edges.len();
+        let edges = edges.to_vec();
+        let timeout = self.config.connect_timeout;
+        let fut = async {
+            let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
+            for e in &edges {
+                graph
+                    .run(
+                        neo4rs::query(&stmt)
+                            .param("source", BoltType::from(e.source.clone()))
+                            .param("target", BoltType::from(e.target.clone()))
+                            .param("at", BoltType::from(at))
+                            .param("open", BoltType::from(temporal::OPEN)),
+                    )
+                    .await
+                    .map_err(|err| {
+                        (
+                            error_codes::QUERY.to_owned(),
+                            format!("relate_temporal: {err}"),
+                        )
+                    })?;
+            }
+            Ok::<_, (String, String)>(())
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(())) => Reply::ok(json!({"ok": true, "written": count, "temporal": true})),
+            Ok(Err((code, message))) => Reply::err_msg(code, message),
+            Err(_) => Reply::err_msg(
+                error_codes::QUERY,
+                format!("relate_temporal timed out after {timeout:?}"),
+            ),
+        }
+    }
+
+    /// Temporal `upsert_edge`: supersede the open weighted edge (close
+    /// its `valid_to`) and CREATE a fresh open edge carrying the
+    /// cumulative weight, so the weight timeline is reconstructable. A
+    /// first write (no open edge) degrades to a plain create. Returns
+    /// `{"ok": true}` (via `run_void`).
+    async fn upsert_edge_temporal(
+        &self,
+        label: &str,
+        source: &str,
+        target: &str,
+        weight_delta: f64,
+    ) -> Reply {
+        let stmt = temporal::temporal_upsert_edge(label);
+        let at = temporal::now_ms();
+        let source = source.to_owned();
+        let target = target.to_owned();
+        self.run_void(&format!("upsert_edge_temporal({label})"), move |graph| {
+            let stmt = stmt.clone();
+            let source = source.clone();
+            let target = target.clone();
+            Box::pin(async move {
+                graph
+                    .run(
+                        neo4rs::query(&stmt)
+                            .param("source", BoltType::from(source))
+                            .param("target", BoltType::from(target))
+                            .param("at", BoltType::from(at))
+                            .param("open", BoltType::from(temporal::OPEN))
+                            .param("weight_delta", BoltType::from(weight_delta)),
+                    )
+                    .await
+                    .map_err(|e| {
+                        (
+                            error_codes::QUERY.to_owned(),
+                            format!("upsert_edge_temporal: {e}"),
+                        )
+                    })
+            })
+        })
+        .await
+    }
+
+    /// As-of read (P0): typed edges of `rel_type` **valid at** event
+    /// time `at_ms` under current belief (`tx_to = OPEN`). Gated — with
+    /// the toggle OFF, edges carry no temporal properties so a
+    /// point-in-time read is not meaningful and this returns a
+    /// `temporal_disabled` envelope. `rel_type` is validated against the
+    /// relation vocabulary. Returns
+    /// `{"ok": true, "as_of": at_ms, "edges": [...]}`.
+    pub async fn relations_as_of(&self, rel_type: &str, at_ms: i64) -> Reply {
+        if !temporal::temporal_memory_enabled() {
+            return Reply::err_msg(
+                "temporal_disabled",
+                "WYLDE_TEMPORAL_MEMORY is off; as-of reads require the temporal edge model",
+            );
+        }
+        let rel_type = rel_type.trim().to_uppercase();
+        if !rel_schema::relation_type_is_valid(&rel_type) {
+            return Reply::err_msg(
+                "bad_request",
+                format!("rel_type {rel_type:?} not in vocabulary"),
+            );
+        }
+        let stmt = temporal::as_of_match(&rel_type);
+        let timeout = self.config.connect_timeout;
+        let fut = async {
+            let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
+            let mut rows = graph
+                .execute(
+                    neo4rs::query(&stmt)
+                        .param("t", BoltType::from(at_ms))
+                        .param("open", BoltType::from(temporal::OPEN)),
+                )
+                .await
+                .map_err(|e| (error_codes::QUERY.to_owned(), format!("as_of: {e}")))?;
+            let mut edges: Vec<Value> = Vec::new();
+            while let Ok(Some(row)) = rows.next().await {
+                let source: String = row.get("source").unwrap_or_default();
+                let target: String = row.get("target").unwrap_or_default();
+                let valid_from: i64 = row.get("valid_from").unwrap_or(0);
+                let valid_to: i64 = row.get("valid_to").unwrap_or(0);
+                let tx_from: i64 = row.get("tx_from").unwrap_or(0);
+                let tx_to: i64 = row.get("tx_to").unwrap_or(0);
+                edges.push(json!({
+                    "source": source,
+                    "target": target,
+                    "valid_from": valid_from,
+                    "valid_to": valid_to,
+                    "tx_from": tx_from,
+                    "tx_to": tx_to,
+                }));
+            }
+            Ok::<_, (String, String)>(edges)
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(edges)) => Reply::ok(json!({"ok": true, "as_of": at_ms, "edges": edges})),
+            Ok(Err((code, message))) => Reply::err_msg(code, message),
+            Err(_) => Reply::err_msg(
+                error_codes::QUERY,
+                format!("as_of timed out after {timeout:?}"),
+            ),
+        }
+    }
+
+    /// Temporal `unrelate` (P1): **logical delete** — close each open
+    /// edge's `valid_to` at now instead of hard-`DELETE`ing it, so the
+    /// history stays queryable and as-of reads of the fact's window keep
+    /// working (`tx_to` left OPEN — §3.2). Returns
+    /// `{"ok": true, "deleted": N, "temporal": true}` (`deleted` counts
+    /// pairs requested, mirroring the relational envelope's shape).
+    async fn unrelate_temporal(&self, rel_type: &str, edges: &[EntityEdge]) -> Reply {
+        let stmt = temporal::temporal_retract(rel_type);
+        let at = temporal::now_ms();
+        let count = edges.len();
+        let edges = edges.to_vec();
+        let timeout = self.config.connect_timeout;
+        let fut = async {
+            let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
+            for e in &edges {
+                graph
+                    .run(
+                        neo4rs::query(&stmt)
+                            .param("source", BoltType::from(e.source.clone()))
+                            .param("target", BoltType::from(e.target.clone()))
+                            .param("at", BoltType::from(at))
+                            .param("open", BoltType::from(temporal::OPEN)),
+                    )
+                    .await
+                    .map_err(|err| {
+                        (
+                            error_codes::QUERY.to_owned(),
+                            format!("unrelate_temporal: {err}"),
+                        )
+                    })?;
+            }
+            Ok::<_, (String, String)>(())
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(())) => Reply::ok(json!({"ok": true, "deleted": count, "temporal": true})),
+            Ok(Err((code, message))) => Reply::err_msg(code, message),
+            Err(_) => Reply::err_msg(
+                error_codes::QUERY,
+                format!("unrelate_temporal timed out after {timeout:?}"),
+            ),
+        }
+    }
+
+    /// Transaction-time **correction** (P1): "we recorded the wrong
+    /// value." Retire our belief in the currently-open weighted edge
+    /// (close its `tx_to` at now) and CREATE a corrected-belief edge with
+    /// the same real-world valid window but a fresh transaction interval
+    /// and `weight`. After this, an as-of read under current belief sees
+    /// the corrected weight while an "as believed at <before-now>" read
+    /// still sees the original. Gated; a `temporal_disabled` envelope
+    /// when OFF (a correction is meaningless without temporal edges).
+    /// Returns `{"ok": true, "temporal": true}` (via `run_void`-style).
+    pub async fn correct_edge(
+        &self,
+        label: &str,
+        source: &str,
+        target: &str,
+        weight: f64,
+    ) -> Reply {
+        if !temporal::temporal_memory_enabled() {
+            return Reply::err_msg(
+                "temporal_disabled",
+                "WYLDE_TEMPORAL_MEMORY is off; corrections require the temporal edge model",
+            );
+        }
+        let label = label.trim().to_uppercase();
+        if label.is_empty() || !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Reply::err_msg("bad_request", format!("invalid edge label {label:?}"));
+        }
+        let stmt = temporal::temporal_correct(&label);
+        let tt = temporal::now_ms();
+        let source = source.to_owned();
+        let target = target.to_owned();
+        self.run_void(&format!("correct_edge({label})"), move |graph| {
+            let stmt = stmt.clone();
+            let source = source.clone();
+            let target = target.clone();
+            Box::pin(async move {
+                graph
+                    .run(
+                        neo4rs::query(&stmt)
+                            .param("source", BoltType::from(source))
+                            .param("target", BoltType::from(target))
+                            .param("tt", BoltType::from(tt))
+                            .param("open", BoltType::from(temporal::OPEN))
+                            .param("weight", BoltType::from(weight)),
+                    )
+                    .await
+                    .map_err(|e| (error_codes::QUERY.to_owned(), format!("correct_edge: {e}")))
+            })
+        })
+        .await
+    }
+
+    /// Dual-axis "as believed at" read (P1): typed edges of `rel_type`
+    /// **valid at** event time `at_ms` **and believed at** transaction
+    /// time `believed_at_ms`. Transaction-time travel: pass a past
+    /// `believed_at_ms` to see what the store believed then, before any
+    /// later correction. Gated (`temporal_disabled` when OFF). Returns
+    /// `{"ok": true, "as_of": at_ms, "believed_at": believed_at_ms, "edges": [...]}`.
+    pub async fn relations_as_believed_at(
+        &self,
+        rel_type: &str,
+        at_ms: i64,
+        believed_at_ms: i64,
+    ) -> Reply {
+        if !temporal::temporal_memory_enabled() {
+            return Reply::err_msg(
+                "temporal_disabled",
+                "WYLDE_TEMPORAL_MEMORY is off; as-believed-at reads require the temporal edge model",
+            );
+        }
+        let rel_type = rel_type.trim().to_uppercase();
+        if !rel_schema::relation_type_is_valid(&rel_type) {
+            return Reply::err_msg(
+                "bad_request",
+                format!("rel_type {rel_type:?} not in vocabulary"),
+            );
+        }
+        let stmt = temporal::as_believed_at_match(&rel_type);
+        let timeout = self.config.connect_timeout;
+        let fut = async {
+            let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
+            let mut rows = graph
+                .execute(
+                    neo4rs::query(&stmt)
+                        .param("t", BoltType::from(at_ms))
+                        .param("tt", BoltType::from(believed_at_ms)),
+                )
+                .await
+                .map_err(|e| {
+                    (
+                        error_codes::QUERY.to_owned(),
+                        format!("as_believed_at: {e}"),
+                    )
+                })?;
+            let mut edges: Vec<Value> = Vec::new();
+            while let Ok(Some(row)) = rows.next().await {
+                let source: String = row.get("source").unwrap_or_default();
+                let target: String = row.get("target").unwrap_or_default();
+                let valid_from: i64 = row.get("valid_from").unwrap_or(0);
+                let valid_to: i64 = row.get("valid_to").unwrap_or(0);
+                let tx_from: i64 = row.get("tx_from").unwrap_or(0);
+                let tx_to: i64 = row.get("tx_to").unwrap_or(0);
+                edges.push(json!({
+                    "source": source,
+                    "target": target,
+                    "valid_from": valid_from,
+                    "valid_to": valid_to,
+                    "tx_from": tx_from,
+                    "tx_to": tx_to,
+                }));
+            }
+            Ok::<_, (String, String)>(edges)
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(edges)) => Reply::ok(json!({
+                "ok": true,
+                "as_of": at_ms,
+                "believed_at": believed_at_ms,
+                "edges": edges,
+            })),
+            Ok(Err((code, message))) => Reply::err_msg(code, message),
+            Err(_) => Reply::err_msg(
+                error_codes::QUERY,
+                format!("as_believed_at timed out after {timeout:?}"),
+            ),
+        }
+    }
+
+    /// Gated temporal edge-property index setup (P1). Creates one
+    /// relationship RANGE index per (typed relation × temporal prop) —
+    /// only when the toggle is ON, so an OFF deployment's schema is
+    /// byte-identical to today's [`Self::ensure_schema`]. Idempotent
+    /// (`IF NOT EXISTS`), each stmt debug-logged-and-continued on error
+    /// exactly like `ensure_schema`. No-op (returns `{"ok": true,
+    /// "temporal": false}`) when OFF. Returns
+    /// `{"ok": true, "temporal": true, "indexes": N}` when ON.
+    pub async fn ensure_temporal_schema(&self) -> Reply {
+        if !temporal::temporal_memory_enabled() {
+            return Reply::ok(json!({"ok": true, "temporal": false}));
+        }
+        // One budget per DDL statement, not one for the whole batch: each
+        // `CREATE INDEX` is a separate schema transaction, and ten of them
+        // against a freshly booted database can outlast a single
+        // connect-sized budget (seen on the CI live-graph runner).
+        let statements =
+            temporal::TEMPORAL_RELATIONS.len() * temporal::TEMPORAL_INDEXED_PROPS.len();
+        let timeout = self.config.connect_timeout * statements.max(1) as u32;
+        let mut planned = 0usize;
+        let fut = async {
+            let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
+            for rel in temporal::TEMPORAL_RELATIONS {
+                for prop in temporal::TEMPORAL_INDEXED_PROPS {
+                    let stmt = temporal::temporal_index(rel, prop);
+                    planned += 1;
+                    if let Err(e) = graph.run(neo4rs::query(&stmt)).await {
+                        tracing::debug!(stmt = %stmt, error = %e, "ensure_temporal_schema stmt skipped");
+                    }
+                }
+            }
+            Ok::<_, (String, String)>(())
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(())) => Reply::ok(json!({"ok": true, "temporal": true, "indexes": planned})),
+            Ok(Err((code, message))) => Reply::err_msg(code, message),
+            Err(_) => Reply::err_msg(
+                error_codes::QUERY,
+                format!("ensure_temporal_schema timed out after {timeout:?}"),
+            ),
+        }
+    }
+
+    /// One-shot idempotent migration of legacy (non-temporal) edges (P1
+    /// run of the P0 [`temporal::backfill_temporal`] builder). For each
+    /// typed relation, backfills `valid_from`/`tx_from` from any existing
+    /// `created_at` (else [`temporal::EPOCH_DEFAULT_FLOOR`]) and opens
+    /// `valid_to`/`tx_to`. The `WHERE r.valid_from IS NULL` guard makes
+    /// re-runs skip already-migrated edges (safe every boot under the
+    /// toggle). Gated (`temporal_disabled` when OFF). Returns
+    /// `{"ok": true, "temporal": true, "migrated": N}` where N is the
+    /// count of edges touched this run (0 on a fully-migrated graph).
+    pub async fn backfill_temporal_edges(&self) -> Reply {
+        if !temporal::temporal_memory_enabled() {
+            return Reply::err_msg(
+                "temporal_disabled",
+                "WYLDE_TEMPORAL_MEMORY is off; migration requires the temporal edge model",
+            );
+        }
+        let timeout = self.config.connect_timeout;
+        let fut = async {
+            let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
+            let mut migrated: i64 = 0;
+            for rel in temporal::TEMPORAL_RELATIONS {
+                // Append a RETURN so we can count edges actually touched;
+                // the builder body is the idempotent SET guarded on NULL.
+                let stmt = format!("{}\nRETURN count(r) AS n", temporal::backfill_temporal(rel));
+                let mut rows = graph
+                    .execute(
+                        neo4rs::query(&stmt)
+                            .param("open", BoltType::from(temporal::OPEN))
+                            .param(
+                                "epoch_default",
+                                BoltType::from(temporal::EPOCH_DEFAULT_FLOOR),
+                            ),
+                    )
+                    .await
+                    .map_err(|e| {
+                        (
+                            error_codes::QUERY.to_owned(),
+                            format!("backfill {rel}: {e}"),
+                        )
+                    })?;
+                if let Ok(Some(row)) = rows.next().await {
+                    migrated += row.get::<i64>("n").unwrap_or(0);
+                }
+            }
+            Ok::<_, (String, String)>(migrated)
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(migrated)) => {
+                Reply::ok(json!({"ok": true, "temporal": true, "migrated": migrated}))
+            }
+            Ok(Err((code, message))) => Reply::err_msg(code, message),
+            Err(_) => Reply::err_msg(
+                error_codes::QUERY,
+                format!("backfill_temporal_edges timed out after {timeout:?}"),
+            ),
+        }
     }
 
     /// `stats` — five counts: entities, chunks, mentions, communities,
@@ -881,14 +1326,31 @@ async fn traverse_impl(
     let names: Vec<String> = req.entities.clone();
     let mut merged: BTreeMap<String, Value> = BTreeMap::new();
 
+    // Temporal-aware traverse (P1): only when the toggle is ON *and* an
+    // `as_of` timestamp is requested does the walk switch to the as-of
+    // bucket Cypher (typed-edge expansion time-filtered to `at`). OFF, or
+    // ON-without-as_of, runs the relational `cypher::traverse_bucket`
+    // byte-for-byte — preserving the OFF ⇒ byte-identical invariant.
+    let as_of: Option<i64> = if temporal::temporal_memory_enabled() {
+        req.as_of
+    } else {
+        None
+    };
+    let bucket_cypher = |rel: &str, depth: u32| -> String {
+        match as_of {
+            Some(_) => temporal::traverse_bucket_as_of(rel, depth, workspace.is_some()),
+            None => cypher::traverse_bucket(rel, depth, workspace.is_some()),
+        }
+    };
+
     for (cypher_text, bucket_name, depth) in [
         (
-            cypher::traverse_bucket(cypher::REL_ALT_CALLS, depth_calls, workspace.is_some()),
+            bucket_cypher(cypher::REL_ALT_CALLS, depth_calls),
             "calls_imports",
             depth_calls,
         ),
         (
-            cypher::traverse_bucket(cypher::REL_ALT_CFG, depth_cfg, workspace.is_some()),
+            bucket_cypher(cypher::REL_ALT_CFG, depth_cfg),
             "configures_exposes",
             depth_cfg,
         ),
@@ -900,6 +1362,11 @@ async fn traverse_impl(
             neo4rs::query(&cypher_text).param("names", BoltType::List(strings_to_boltlist(&names)));
         if let Some(ws) = workspace {
             q = q.param("ws", BoltType::from(ws.to_owned()));
+        }
+        if let Some(at) = as_of {
+            q = q
+                .param("t", BoltType::from(at))
+                .param("open", BoltType::from(temporal::OPEN));
         }
         let mut rows = match graph.execute(q).await {
             Ok(r) => r,
@@ -1161,6 +1628,79 @@ mod tests {
         assert_send_sync::<BoltClient>();
     }
 
+    /// Toggle-OFF gating of the as-of read is observable without a live
+    /// Neo4j: it short-circuits before any connect. Pins that the
+    /// default (toggle unset) deployment rejects point-in-time reads
+    /// rather than reaching the graph — the OFF path stays relational.
+    #[tokio::test]
+    async fn relations_as_of_off_returns_temporal_disabled_without_touching_db() {
+        // Hold the env lock + toggle-removal across the await via a
+        // struct field so `clippy::await_holding_lock` (which flags only
+        // bare `MutexGuard` locals) stays quiet — same idiom as
+        // `actions.rs::EmbedOffGuard`. Lock first, THEN mutate env.
+        struct Hold {
+            _t: EnvGuard,                           // dropped first: restores env...
+            _g: std::sync::MutexGuard<'static, ()>, // ...then releases lock
+        }
+        let g = env_lock();
+        let t = EnvGuard::remove(temporal::TOGGLE_ENV);
+        let _hold = Hold { _t: t, _g: g };
+        // Unreachable URI: if the gate leaked, we'd get a bolt_* error
+        // instead of the clean temporal_disabled short-circuit.
+        let client = BoltClient::for_uri("bolt://127.0.0.1:1");
+        let reply = client.relations_as_of("CALLS", 123).await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.expect("error").code, "temporal_disabled");
+    }
+
+    /// Same gating for the P1 dual-axis read, correction, and migration:
+    /// with the toggle OFF they short-circuit to `temporal_disabled`
+    /// before any connect (unreachable URI would otherwise surface a
+    /// `bolt_*` error). This is the OFF-path invariant for the new verbs.
+    #[tokio::test]
+    async fn as_believed_at_correct_and_backfill_off_return_temporal_disabled() {
+        struct Hold {
+            _t: EnvGuard,
+            _g: std::sync::MutexGuard<'static, ()>,
+        }
+        let g = env_lock();
+        let t = EnvGuard::remove(temporal::TOGGLE_ENV);
+        let _hold = Hold { _t: t, _g: g };
+        let client = BoltClient::for_uri("bolt://127.0.0.1:1");
+
+        let believed = client.relations_as_believed_at("CALLS", 10, 5).await;
+        assert!(!believed.ok);
+        assert_eq!(believed.error.expect("error").code, "temporal_disabled");
+
+        let corrected = client.correct_edge("MENTIONS", "a", "b", 1.0).await;
+        assert!(!corrected.ok);
+        assert_eq!(corrected.error.expect("error").code, "temporal_disabled");
+
+        let migrated = client.backfill_temporal_edges().await;
+        assert!(!migrated.ok);
+        assert_eq!(migrated.error.expect("error").code, "temporal_disabled");
+    }
+
+    /// `ensure_temporal_schema` with the toggle OFF is a clean no-op —
+    /// it must NOT touch the DB (returns `temporal:false` without any
+    /// connect), so an OFF deployment's schema stays byte-identical to
+    /// [`BoltClient::ensure_schema`].
+    #[tokio::test]
+    async fn ensure_temporal_schema_off_is_a_noop_without_touching_db() {
+        struct Hold {
+            _t: EnvGuard,
+            _g: std::sync::MutexGuard<'static, ()>,
+        }
+        let g = env_lock();
+        let t = EnvGuard::remove(temporal::TOGGLE_ENV);
+        let _hold = Hold { _t: t, _g: g };
+        // Unreachable URI: if the gate leaked we'd get a bolt_* error.
+        let client = BoltClient::for_uri("bolt://127.0.0.1:1");
+        let reply = client.ensure_temporal_schema().await;
+        assert!(reply.ok, "OFF ensure_temporal_schema must be ok no-op");
+        assert_eq!(reply.data["temporal"], false);
+    }
+
     // ── coerce_upsert_batch (pure, no Neo4j needed) ─────────────────
 
     #[test]
@@ -1238,6 +1778,7 @@ mod tests {
             workspace: None,
             decay_alpha: None,
             rel_depths: depths.map(|d| d.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()),
+            as_of: None,
         }
     }
 

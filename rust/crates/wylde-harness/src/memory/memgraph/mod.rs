@@ -78,6 +78,7 @@ pub mod cypher;
 pub mod fusion;
 pub mod graph_retrieval;
 pub mod schema;
+pub mod temporal;
 pub mod transport;
 
 pub use bolt::{BoltClient, BoltConfig, DEFAULT_BOLT_URL, DRIVER_ERROR_TTL};
@@ -90,6 +91,7 @@ pub use schema::{
     NODE_ENTITY, REL_CALLS, REL_CONFIGURES, REL_EXPOSES, REL_IMPORTS, REL_INHERITS,
     REL_MENTIONED_IN,
 };
+pub use temporal::{temporal_memory_enabled, TemporalEdge, TemporalEdgeLog, OPEN};
 pub use transport::MemgraphTraversal;
 
 /// Pick the right traversal transport for the active strangler-fig

@@ -137,6 +137,7 @@ async fn upsert_then_traverse_round_trip_returns_seeded_chunks() {
         workspace: Some(ws.clone()),
         decay_alpha: None,
         rel_depths: None,
+        as_of: None,
     };
     let trv = client.traverse(req).await;
     assert!(trv.ok, "traverse must succeed; got {:?}", trv.error);
@@ -206,6 +207,7 @@ async fn traverse_workspace_filter_excludes_other_workspaces() {
             workspace: Some(ws_keep.clone()),
             decay_alpha: None,
             rel_depths: None,
+            as_of: None,
         })
         .await;
     assert!(trv.ok);
