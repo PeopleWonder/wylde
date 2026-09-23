@@ -32,6 +32,7 @@
 pub mod active_file_bus;
 pub mod chat;
 pub mod conversation_bus;
+pub mod embed_bus;
 pub mod focus_bus;
 pub mod memory_long_term;
 pub mod model_bus;

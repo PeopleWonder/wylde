@@ -43,11 +43,15 @@ pub const SVC_OLLAMA: &str = "wylde-ollama";
 ///   (`wylde_lifecycle::control::memgraph_health`), a signal the operator
 ///   needs. It is a `Role::Standard` `DAEMON_MANAGED` row with a stop hook, so
 ///   it also offers Stop — hence [`StripService::manageable`] is `true` for it.
+/// * `wylde-n8n-engine` — the n8n Node runtime (no Wylde image). Its liveness
+///   is "is anything accepting on the n8n port?"
+///   (`wylde_lifecycle::control::n8n_engine_health`); likewise a
+///   `Role::Standard` row with a stop hook, so it offers Stop too.
 ///
 /// `wylde-memory-scheduler` is *not* here: it is a `Role::BootOnlyNoop`
 /// in-process tokio task inside `wylde-harness` with no subprocess and nothing
 /// to probe or stop, so it correctly never appears on the strip.
-const NON_ROSTER_MONITORED: &[&str] = &["wylde-memgraph"];
+const NON_ROSTER_MONITORED: &[&str] = &["wylde-memgraph", "wylde-n8n-engine"];
 
 /// One row of the service-health strip: a service name plus whether the
 /// console may offer it a Stop.
@@ -690,6 +694,15 @@ mod tests {
         assert!(
             memgraph.manageable,
             "memgraph is daemon-managed → offers Stop"
+        );
+        // Same for the n8n engine: a Node runtime with no Wylde image.
+        let engine = strip
+            .iter()
+            .find(|s| s.name == "wylde-n8n-engine")
+            .expect("the n8n engine stays on the strip via the carve-out");
+        assert!(
+            engine.manageable,
+            "the n8n engine is daemon-managed → offers Stop"
         );
     }
 

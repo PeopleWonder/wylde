@@ -54,7 +54,7 @@ use crate::state::{
 /// don't need a `windows` cfg-gated import every callsite — the value
 /// is documented and stable.
 #[cfg(windows)]
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+pub(super) const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImplLang {
@@ -304,7 +304,7 @@ fn spawn_rust_binary(service_name: &str, rust_bin: &Path) -> Result<Child> {
     })
 }
 
-fn apply_kill_on_drop(cmd: &mut Command) {
+pub(super) fn apply_kill_on_drop(cmd: &mut Command) {
     // If the daemon exits abnormally (panic) and we haven't called
     // `stop_<service>`, the kernel will drop the Child and tokio
     // signals SIGKILL. That's safer than leaking orphan children.
@@ -369,7 +369,7 @@ fn send_ctrl_break(pid: u32) -> Result<()> {
 /// (rather than calling this directly
 /// from `control.rs`) preserves the `pub async fn stop_<service>()`
 /// public API the daemon dispatches by name.
-async fn stop_service(name: &str, grace: Duration) -> Result<()> {
+pub(super) async fn stop_service(name: &str, grace: Duration) -> Result<()> {
     forget_spawn(name);
     // Intended stop is sacrosanct: drop any crash-restart bookkeeping so a
     // service the operator stopped is never auto-restarted (and a later
@@ -1253,8 +1253,9 @@ pub async fn stop_workspaces() -> Result<()> {
 // Python service to strangle). The strangler-fig env var pattern is kept
 // for shape consistency (`WYLDE_WYLDE_N8N_IMPL`) but the python branch
 // only warns. This start supervises the Wylde-side pipe service ONLY —
-// the n8n daemon itself is external and user-managed; `wylde-n8n`
-// degrades every call to a structured error envelope while it's down.
+// the n8n engine is its own row (`wylde-n8n-engine`, below), and
+// `wylde-n8n` degrades every call to a structured error envelope while
+// the engine is down.
 // Optional/non-fatal by contract: a missing binary leaves the service
 // dark with a loud build hint and core boots fine (the
 // `wylde-workspaces` precedent — every consumer fail-softs).
@@ -1305,6 +1306,20 @@ pub async fn start_n8n() -> Result<()> {
 
 pub async fn stop_n8n() -> Result<()> {
     stop_service(service_name::N8N, Duration::from_secs(10)).await
+}
+
+// ── wylde-n8n-engine ────────────────────────────────────────────────────
+//
+// The n8n engine itself — a Node runtime Wylde launches but does not own,
+// the same third-party-process shape as `ollama serve` and the Neo4j JVM.
+// Booted just before `wylde-n8n`, which attaches to it. The launcher lives
+// in `state::n8n_engine`; these are the table-facing hooks.
+pub async fn start_n8n_engine() -> Result<()> {
+    super::n8n_engine::start().await
+}
+
+pub async fn stop_n8n_engine() -> Result<()> {
+    super::n8n_engine::stop().await
 }
 
 // ── wylde-harness ─────────────────────────────────────────────────────

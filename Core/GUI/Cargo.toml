@@ -37,6 +37,7 @@ members = [
     "Frontend/Panels/Dashboard",
     "Frontend/Panels/Devices",
     "Frontend/Panels/RemoteAccess",
+    "Frontend/Panels/N8n",
     "Frontend/Panels/Organize",
     "Frontend/Panels/Tabulate",
     "Manifest/Extension_handlers",

@@ -60,19 +60,45 @@ pub struct IframeState {
     pub sandbox: Option<String>,
     pub health: IframeHealth,
     pub host: IframeHost,
+    /// Shared-auth hook from the manifest (`"service:action"`). When set,
+    /// the Shell fetches a WebView init script from that action before
+    /// mounting so the embedded app lands authenticated.
+    pub auth_bootstrap: Option<String>,
+    /// True while an `auth_bootstrap` fetch is still outstanding. Mount
+    /// is gated on this being false so the login script is baked into the
+    /// WebView at creation (wry can't add scripts after the fact). A
+    /// panel with no `auth_bootstrap` starts ready.
+    pub auth_pending: bool,
 }
 
 impl IframeState {
-    pub fn new(url: impl Into<String>, sandbox: Option<String>) -> Self {
+    pub fn new(
+        url: impl Into<String>,
+        sandbox: Option<String>,
+        auth_bootstrap: Option<String>,
+    ) -> Self {
         let url = url.into();
         let host = IframeHost::new(url.clone(), sandbox.clone());
+        let auth_pending = auth_bootstrap.is_some();
         Self {
             url,
             sandbox,
             health: IframeHealth::Probing,
             host,
+            auth_bootstrap,
+            auth_pending,
         }
     }
+}
+
+/// Which hosted frame an async probe or shared-auth fetch belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameRef {
+    /// An `iframe` panel's frame, keyed by registry key.
+    Iframe(String),
+    /// A `gpui_view` panel's web embed, keyed by registry key and pinned
+    /// to the embed generation it was issued for.
+    Embed { key: String, generation: u64 },
 }
 
 /// One frame of the Shell's render state.  The struct is small — gpui
@@ -84,6 +110,11 @@ pub struct Shell {
     /// iframe panel; kept across selections so a flip back to a
     /// previously-mounted iframe is instant.
     pub iframes: BTreeMap<String, IframeState>,
+    /// Per-key web embeds a `gpui_view` panel requested through
+    /// `wylde_gui_pipe::embed_bus` (see [`crate::embed_host`]). Separate
+    /// from `iframes` because the panel, not the slot, owns the chrome and
+    /// the failure display.
+    pub embeds: BTreeMap<String, crate::embed_host::EmbedState>,
     /// Last hardware snapshot from the VRAM broker, rendered in the
     /// sidebar footer.  `None` until the first `system.inventory` reply
     /// lands (cold start) — the footer shows em-dashes meanwhile.
@@ -123,6 +154,7 @@ impl Shell {
             nav: NavModel::new(rows, None),
             mounted: BTreeMap::new(),
             iframes: BTreeMap::new(),
+            embeds: BTreeMap::new(),
             resources: None,
             update_available: false,
             dismissed_version: None,
@@ -405,37 +437,111 @@ impl Shell {
                 let view = (factory)(window, cx);
                 self.mounted.insert(key, view);
             }
-            PanelSource::Iframe { url, sandbox, .. } => {
+            PanelSource::Iframe {
+                url,
+                sandbox,
+                auth_bootstrap,
+                ..
+            } => {
                 if self.iframes.contains_key(&key) {
                     return;
                 }
-                self.iframes
-                    .insert(key.clone(), IframeState::new(url.clone(), sandbox.clone()));
-                self.spawn_iframe_probe(key, cx);
+                self.iframes.insert(
+                    key.clone(),
+                    IframeState::new(url.clone(), sandbox.clone(), auth_bootstrap.clone()),
+                );
+                self.spawn_frame_probe(FrameRef::Iframe(key.clone()), cx);
+                // Shared-auth: fetch the login script before mount so the
+                // embedded app authenticates with no login screen.
+                if auth_bootstrap.is_some() {
+                    self.spawn_frame_auth(FrameRef::Iframe(key), cx);
+                }
             }
         }
     }
 
-    /// Probe an iframe's URL once and write the result back into
-    /// `self.iframes[key].health`.  Same one-shot pattern the service
-    /// health probes use; a future slice can wire a "Reconnect"
-    /// button to re-fire this.  3-second budget mirrors the Svelte
-    /// alpha's iframe probe.
-    pub fn spawn_iframe_probe(&self, key: String, cx: &mut Context<Self>) {
-        let url = match self.iframes.get(&key) {
-            Some(state) => state.url.clone(),
-            None => return,
+    /// The hosted frame `r` points at, if it still exists. An embed ref
+    /// only matches the generation it was issued for, so a result from
+    /// before a Reload never lands on the rebuilt frame.
+    pub(crate) fn frame_mut(&mut self, r: &FrameRef) -> Option<&mut IframeState> {
+        match r {
+            FrameRef::Iframe(key) => self.iframes.get_mut(key),
+            FrameRef::Embed { key, generation } => self
+                .embeds
+                .get_mut(key)
+                .filter(|e| e.generation == *generation)
+                .map(|e| &mut e.frame),
+        }
+    }
+
+    fn frame(&self, r: &FrameRef) -> Option<&IframeState> {
+        match r {
+            FrameRef::Iframe(key) => self.iframes.get(key),
+            FrameRef::Embed { key, generation } => self
+                .embeds
+                .get(key)
+                .filter(|e| e.generation == *generation)
+                .map(|e| &e.frame),
+        }
+    }
+
+    /// Probe a hosted frame's URL once and write the result back into its
+    /// `health`.  Same one-shot pattern the service health probes use.
+    /// 3-second budget mirrors the Svelte alpha's iframe probe.
+    pub fn spawn_frame_probe(&self, r: FrameRef, cx: &mut Context<Self>) {
+        let Some(url) = self.frame(&r).map(|s| s.url.clone()) else {
+            return;
         };
         const PROBE_TIMEOUT_MS: u64 = 3_000;
-        let key_for_async = key.clone();
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let outcome = wylde_webview::probe_url(&url, PROBE_TIMEOUT_MS).await;
             let _ = this.update(app_cx, |this, cx| {
-                if let Some(state) = this.iframes.get_mut(&key_for_async) {
+                if let Some(state) = this.frame_mut(&r) {
                     state.health = match outcome {
                         Ok(()) => IframeHealth::Healthy,
                         Err(e) => IframeHealth::Unhealthy(e),
                     };
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Fetch the shared-auth init script for a hosted frame that declares
+    /// an `auth_bootstrap` (`"service:action"`) and install it on the host
+    /// before mount.  The action returns `{managed, init_js?}`: in managed
+    /// mode `init_js` is a WebView script that logs the embedded editor in
+    /// as the Wylde-owned owner (n8n shared auth).  Any failure clears
+    /// `auth_pending` so the frame still mounts — just without injection
+    /// (fail-soft: the embedded app falls back to its own login).
+    pub fn spawn_frame_auth(&self, r: FrameRef, cx: &mut Context<Self>) {
+        let Some((service, action)) = self
+            .frame(&r)
+            .and_then(|s| s.auth_bootstrap.clone())
+            .and_then(|b| split_auth_bootstrap(&b))
+        else {
+            return;
+        };
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = wylde_gui_pipe::call(
+                &service,
+                "POST",
+                "/__action__",
+                Some(serde_json::json!({ "action": action, "payload": {} })),
+            )
+            .await;
+            let init_js = outcome
+                .ok()
+                .and_then(|v| v.get("init_js").and_then(|j| j.as_str()).map(str::to_owned));
+            let _ = this.update(app_cx, |this, cx| {
+                if let Some(state) = this.frame_mut(&r) {
+                    if let Some(js) = init_js {
+                        state.host.set_init_script(js);
+                    }
+                    // Ready to mount either way — with the script if we got
+                    // one, or bare if the service was down / unmanaged.
+                    state.auth_pending = false;
                 }
                 cx.notify();
             });
@@ -472,6 +578,13 @@ impl Shell {
         // Refuse to mount until the URL probe has confirmed the server
         // is reachable.  Same gate the Svelte alpha uses.
         if !matches!(state.health, IframeHealth::Healthy) {
+            return;
+        }
+        // And until the shared-auth init script has been fetched — wry
+        // bakes initialization scripts in at WebView creation, so mounting
+        // early would lose the auto-login and drop the user on n8n's login
+        // screen.
+        if state.auth_pending {
             return;
         }
         let bounds = slot_bounds(window);
@@ -552,6 +665,9 @@ impl Render for Shell {
         // bounds, mount the WebView and resize it.  No-op for non-
         // iframe selections.
         self.mount_active_iframe(window);
+        // Same for a web embed a gpui panel asked for through `embed_bus`:
+        // host it over the region the panel reported, or drop it.
+        self.sync_embeds(window, cx);
 
         let slot_state = self.nav.slot_state();
         let rows = self.nav.rows.clone();
@@ -701,8 +817,23 @@ fn nav_row_from_entry(origin: &PanelOrigin, entry: &PanelEntry) -> NavRow {
     }
 }
 
+/// Split an `auth_bootstrap` value (`"service:action"`) into its parts.
+/// Returns `None` if it isn't well-formed (no colon, empty halves) so a
+/// manifest typo fails closed (no fetch) rather than calling a bogus
+/// service. Only the first colon splits — action names contain dots, not
+/// colons (`wylde-n8n:n8n.editor_bootstrap`).
+fn split_auth_bootstrap(spec: &str) -> Option<(String, String)> {
+    let (service, action) = spec.split_once(':')?;
+    let service = service.trim();
+    let action = action.trim();
+    if service.is_empty() || action.is_empty() {
+        return None;
+    }
+    Some((service.to_owned(), action.to_owned()))
+}
+
 /// Match a registry row's origin+id against a `service/id`-shaped key.
-fn registry_key_matches(origin: &PanelOrigin, id: &str, target: &str) -> bool {
+pub(crate) fn registry_key_matches(origin: &PanelOrigin, id: &str, target: &str) -> bool {
     match origin {
         PanelOrigin::FirstParty { service } => target == format!("{service}/{id}"),
         PanelOrigin::Extension { extension_id } => target == format!("ext:{extension_id}/{id}"),
@@ -820,6 +951,23 @@ mod tests {
             unique_required_services(&rows),
             vec!["wylde-harness".to_string(), "wylde-lifecycle".into()],
         );
+    }
+
+    #[test]
+    fn split_auth_bootstrap_parses_service_and_dotted_action() {
+        assert_eq!(
+            split_auth_bootstrap("wylde-n8n:n8n.editor_bootstrap"),
+            Some(("wylde-n8n".into(), "n8n.editor_bootstrap".into()))
+        );
+        // Only the first colon splits — dotted action survives intact.
+        assert_eq!(
+            split_auth_bootstrap("svc:a.b.c"),
+            Some(("svc".into(), "a.b.c".into()))
+        );
+        // Malformed → None (fail closed).
+        assert_eq!(split_auth_bootstrap("noColon"), None);
+        assert_eq!(split_auth_bootstrap(":action"), None);
+        assert_eq!(split_auth_bootstrap("service:"), None);
     }
 
     #[test]

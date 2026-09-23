@@ -446,14 +446,14 @@ DEPENDENCY_SPREAD_BASELINE: Dict[str, int] = {
     "base64": 3,
     "chrono": 12,
     "futures": 4,
-    "gpui": 22,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
+    "gpui": 23,  # raised for #39 (+organize, +tabulate, +fswalk) and #338 (+wylde-panel-n8n)
     "hex": 4,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
     "qrcode": 3,
     "reqwest": 12,  # watch target — biggest 0.x shotgun risk; wrap on first break
     "rfd": 3,
     "rmp-serde": 5,
     "serde": 40,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
-    "serde_json": 43,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk
+    "serde_json": 44,  # raised for #39 (+organize, +tabulate, +fswalk) and #338 (+wylde-panel-n8n)
     "serde_yaml": 4,
     "serial_test": 9,
     "sha2": 4,  # raised for #39: +wylde-panel-organize, +wylde-panel-tabulate, +wylde-fswalk

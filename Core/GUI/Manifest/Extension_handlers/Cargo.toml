@@ -39,6 +39,7 @@ wylde-panel-models     = { path = "../../Frontend/Panels/Models" }
 wylde-panel-dashboard  = { path = "../../Frontend/Panels/Dashboard" }
 wylde-panel-devices    = { path = "../../Frontend/Panels/Devices" }
 wylde-panel-remote-access = { path = "../../Frontend/Panels/RemoteAccess" }
+wylde-panel-n8n        = { path = "../../Frontend/Panels/N8n" }
 wylde-panel-organize   = { path = "../../Frontend/Panels/Organize" }
 wylde-panel-tabulate   = { path = "../../Frontend/Panels/Tabulate" }
 # (wylde-panel-images removed — Images is now the out-of-tree wylde-images

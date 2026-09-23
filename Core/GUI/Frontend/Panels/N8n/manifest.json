@@ -1,0 +1,18 @@
+{
+  "schema_version": 2,
+  "service": "core",
+  "panels": [
+    {
+      "id": "n8n",
+      "title": "Workflows",
+      "icon": "workflow",
+      "order": 55,
+      "version": "0.1.0",
+      "required_services": ["wylde-n8n"],
+      "source": {
+        "kind": "gpui_view",
+        "factory": "wylde_panel_n8n::N8nPanel::view"
+      }
+    }
+  ]
+}

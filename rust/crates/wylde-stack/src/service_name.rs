@@ -25,8 +25,11 @@ pub const HARNESS: &str = "wylde-harness";
 pub const TREESITTER: &str = "wylde-treesitter";
 /// Workspace-scoped service — registry, persona, RAG indexer, code graph.
 pub const WORKSPACES: &str = "wylde-workspaces";
-/// Pipe surface over the external, user-managed n8n daemon.
+/// Pipe surface over the local n8n engine.
 pub const N8N: &str = "wylde-n8n";
+/// The n8n engine itself — a Node runtime the daemon launches. No
+/// standalone Wylde image.
+pub const N8N_ENGINE: &str = "wylde-n8n-engine";
 
 /// The lifecycle daemon itself. Not a *managed* service (it is the thing
 /// doing the managing), but very much part of the shipped stack — and the

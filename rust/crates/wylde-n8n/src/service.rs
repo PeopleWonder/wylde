@@ -8,7 +8,7 @@ use wylde_shared::ipc::{register_action_with_meta, unregister_action};
 
 use crate::actions;
 
-const ALL_ACTIONS: [&str; 8] = [
+const ALL_ACTIONS: [&str; 9] = [
     "n8n.health",
     "n8n.list_workflows",
     "n8n.get_workflow",
@@ -17,6 +17,7 @@ const ALL_ACTIONS: [&str; 8] = [
     "n8n.create_workflow",
     "n8n.edit_workflow",
     "n8n.delete_workflow",
+    "n8n.editor_bootstrap",
 ];
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -91,6 +92,15 @@ pub fn install() {
         "Archive-then-delete sequence (POST …/archive, then DELETE) — n8n \
          requires archiving first. Reply {deleted: true, workflow_id}.",
         "wylde_n8n::actions",
+    );
+    register_action_with_meta(
+        "n8n.editor_bootstrap",
+        |payload: Value| async move { crate::editor::handle_editor_bootstrap(payload).await },
+        "Shared-auth bridge for the embedded editor. Reply {url, managed, \
+         init_js?} — in managed mode init_js is a WebView init script that \
+         logs the editor in as the Wylde-owned owner so the user never sees \
+         an n8n login screen. No secret values are ever logged.",
+        "wylde_n8n::editor",
     );
 
     tracing::info!("wylde-n8n: registered {} actions", ALL_ACTIONS.len());

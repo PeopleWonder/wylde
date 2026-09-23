@@ -9,6 +9,7 @@
 //!   - Core/GUI/Frontend/Panels/Devices/manifest.json
 //!   - Core/GUI/Frontend/Panels/Memory/manifest.json
 //!   - Core/GUI/Frontend/Panels/Models/manifest.json
+//!   - Core/GUI/Frontend/Panels/N8n/manifest.json
 //!   - Core/GUI/Frontend/Panels/Organize/manifest.json
 //!   - Core/GUI/Frontend/Panels/RemoteAccess/manifest.json
 //!   - Core/GUI/Frontend/Panels/Settings/manifest.json
@@ -160,6 +161,31 @@ pub fn register_all(
                     "wylde-vram-broker".into(),
                     "wylde-harness".into(),
                 ],
+                source: PanelSource::GpuiView {
+                    factory: factory_key.into(),
+                },
+            },
+            factory: Some(factory),
+        })?;
+    }
+
+    // ── core / n8n  (from Core/GUI/Frontend/Panels/N8n/manifest.json) ──
+    {
+        let factory_key = "wylde_panel_n8n::N8nPanel::view";
+        let factory = factories
+            .take(factory_key)
+            .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
+        registry.register_internal(RegistryRow {
+            origin: PanelOrigin::FirstParty {
+                service: "core".into(),
+            },
+            entry: PanelEntry {
+                id: "n8n".into(),
+                title: "Workflows".into(),
+                icon: Some("workflow".into()),
+                order: 55,
+                version: "0.1.0".into(),
+                required_services: vec!["wylde-n8n".into()],
                 source: PanelSource::GpuiView {
                     factory: factory_key.into(),
                 },

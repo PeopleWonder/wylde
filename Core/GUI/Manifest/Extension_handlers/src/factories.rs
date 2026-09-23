@@ -132,6 +132,13 @@ pub fn default_first_party() -> FactoryMap {
         Box::new(wylde_panel_remote_access::RemoteAccessPanel::view),
     );
 
+    // Workflows panel — the embedded n8n editor (refs #338). A gpui header
+    // over a region the Shell hosts the editor in via `embed_bus`.
+    m.register(
+        "wylde_panel_n8n::N8nPanel::view",
+        Box::new(wylde_panel_n8n::N8nPanel::view),
+    );
+
     // (There is no Images factory. The panel was extracted to a standalone
     // Service in 2026-06 and surfaced as a loopback iframe; that Service was
     // then parked when ComfyUI was removed from Wylde — see #234. Nothing
@@ -174,6 +181,12 @@ mod tests {
     fn default_map_contains_tools_panel() {
         let m = default_first_party();
         assert!(m.contains("wylde_panel_tools::ToolsPanel::view"));
+    }
+
+    #[test]
+    fn default_map_contains_n8n_panel() {
+        let m = default_first_party();
+        assert!(m.contains("wylde_panel_n8n::N8nPanel::view"));
     }
 
     #[test]

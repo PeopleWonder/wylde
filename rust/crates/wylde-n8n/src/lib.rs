@@ -5,8 +5,9 @@
 //! wylde-workspaces / wylde-voice — and Core must work with or without
 //! it. This crate is the Rust port of the dead-since-the-Python-cutover
 //! `N8N/client.py` REST client, fronted by eight `n8n.*` actions on
-//! `\\.\pipe\wylde-n8n`. The n8n daemon itself stays an **external,
-//! user-managed runtime** (default `http://127.0.0.1:5678`); this
+//! `\\.\pipe\wylde-n8n`. The n8n engine itself (default
+//! `http://127.0.0.1:5678`) is launched by the lifecycle daemon as
+//! `wylde-n8n-engine`, or user-managed when `WYLDE_N8N_MANAGED=0`; this
 //! service only owns the Wylde-side surface, exactly the way
 //! wylde-ollama fronts the external Ollama daemon.
 //!
@@ -23,6 +24,10 @@
 pub mod actions;
 pub mod client;
 pub mod config;
+pub mod editor;
+pub mod provision;
+pub mod runtime;
+pub mod secret;
 pub mod service;
 
 pub use service::{install, reset_for_tests, stop};

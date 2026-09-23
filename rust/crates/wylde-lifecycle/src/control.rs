@@ -829,6 +829,11 @@ async fn service_health_action(payload: Value) -> Reply {
     if name == service_name::MEMGRAPH {
         return memgraph_health().await;
     }
+    // n8n engine special-case: a Node runtime with no Wylde pipe, so the
+    // honest liveness signal is its loopback HTTP port, not `/__ping__`.
+    if name == service_name::N8N_ENGINE {
+        return n8n_engine_health().await;
+    }
     // Ollama special-case: a plain `/__ping__` only proves the wrapper's
     // pipe is up — it says nothing about whether the upstream Ollama
     // daemon on `127.0.0.1:11434` is actually reachable. That gap let the
@@ -910,6 +915,26 @@ async fn memgraph_health() -> Reply {
         Reply::err(IpcError::new(
             "probe_failed",
             format!("memgraph bolt probe failed: nothing accepting on 127.0.0.1:{port}"),
+        ))
+    }
+}
+
+/// Liveness for the n8n engine: is anything accepting on its loopback
+/// port? Same `{pong: true, ...}` envelope as [`memgraph_health`].
+async fn n8n_engine_health() -> Reply {
+    let port = wylde_shared::n8n::port_from_env();
+    let alive = tokio::task::spawn_blocking(move || crate::state::n8n_engine::port_ready(port))
+        .await
+        .unwrap_or(false);
+    if alive {
+        Reply::ok(json!({
+            "name": service_name::N8N_ENGINE,
+            "reply": { "pong": true, "transport": "http", "port": port },
+        }))
+    } else {
+        Reply::err(IpcError::new(
+            "probe_failed",
+            format!("n8n engine probe failed: nothing accepting on 127.0.0.1:{port}"),
         ))
     }
 }
@@ -1423,16 +1448,21 @@ mod tests {
         // daemon-managed set so `service.start` / `service.wake` accept it
         // (rather than `not_registered`) and the no-spawn parity surface
         // reports it. The count is the dashboard's expected-running-services
-        // tally — TX S3 added wylde-n8n, bumping it from 11 → 12 (N+1).
+        // tally — TX S3 added wylde-n8n, bumping it from 11 → 12 (N+1), and
+        // the lifecycle-launched n8n engine (#338) bumped it to 13.
         // The core-managed set is now derived from the single
         // `DAEMON_MANAGED` table (issue #101): Standard + UserStarted =
-        // 12 (excludes the BootOnlyNoop memory scheduler). Out-of-tree
+        // 13 (excludes the BootOnlyNoop memory scheduler). Out-of-tree
         // siblings are accepted via is_manageable, not this set.
         let core = crate::daemon_managed::core_service_names();
         assert_eq!(
             core.len(),
-            12,
-            "expected 12 core daemon-managed services after registering wylde-n8n"
+            13,
+            "expected 13 core daemon-managed services after registering wylde-n8n-engine"
+        );
+        assert!(
+            core.contains(&service_name::N8N_ENGINE),
+            "wylde-n8n-engine must be daemon-managed (#338)"
         );
         assert!(
             core.contains(&service_name::WORKSPACES),

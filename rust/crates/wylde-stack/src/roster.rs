@@ -14,7 +14,8 @@
 //!    both consumers pick it up with no code edit anywhere.
 //!
 //! Services with no standalone Wylde binary (Memgraph is JVM-supervised, the
-//! memory scheduler runs in-process inside the harness) carry `image: None`
+//! memory scheduler runs in-process inside the harness, the n8n engine is a
+//! Node runtime) carry `image: None`
 //! and are correctly absent from the roster — there is nothing to ship for
 //! them. That is a typed exclusion, not an oversight, so the coverage gate
 //! can tell the two apart.
@@ -106,6 +107,10 @@ pub const CORE_STACK: &[CoreEntry] = &[
     CoreEntry {
         name: sn::WORKSPACES,
         image: Some("wylde-workspaces.exe"),
+    },
+    CoreEntry {
+        name: sn::N8N_ENGINE,
+        image: None, // Node runtime (`node <n8n>/bin/n8n`) — no Wylde image.
     },
     CoreEntry {
         name: sn::N8N,
@@ -335,7 +340,8 @@ mod tests {
         assert!(!names.contains(&sn::MEMORY_SCHEDULER.to_string()));
         // ...and the exclusion is declared, so the gate can distinguish it
         // from a service someone simply forgot.
-        for name in [sn::MEMGRAPH, sn::MEMORY_SCHEDULER] {
+        assert!(!names.contains(&sn::N8N_ENGINE.to_string()));
+        for name in [sn::MEMGRAPH, sn::MEMORY_SCHEDULER, sn::N8N_ENGINE] {
             let entry = CORE_STACK.iter().find(|e| e.name == name).unwrap();
             assert!(entry.image.is_none());
         }

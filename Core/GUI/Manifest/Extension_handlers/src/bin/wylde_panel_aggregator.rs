@@ -362,9 +362,11 @@ fn render_panel_block(
             url,
             sandbox,
             health_check,
+            auth_bootstrap,
         } => {
             let sandbox_lit = optional_str(sandbox);
             let health_lit = optional_str(health_check);
+            let auth_lit = optional_str(auth_bootstrap);
             out.push_str("        registry.register_internal(RegistryRow {\n");
             out.push_str(&format!(
                 "            origin: PanelOrigin::FirstParty {{ service: {svc}.into() }},\n",
@@ -390,10 +392,11 @@ fn render_panel_block(
             ));
             out.push_str(&format!("                required_services: {required},\n"));
             out.push_str(&format!(
-                "                source: PanelSource::Iframe {{\n                    url: {u}.into(),\n                    sandbox: {sb},\n                    health_check: {hc},\n                }},\n",
+                "                source: PanelSource::Iframe {{\n                    url: {u}.into(),\n                    sandbox: {sb},\n                    health_check: {hc},\n                    auth_bootstrap: {ab},\n                }},\n",
                 u = rust_str(url),
                 sb = sandbox_lit,
                 hc = health_lit,
+                ab = auth_lit,
             ));
             out.push_str("            },\n");
             out.push_str("            factory: None,\n");
