@@ -94,8 +94,7 @@ impl OrganizePanel {
                 .with_placeholder("Optional: comma-separated folders (required for Whole drive)")
         });
         let confirm_input = cx.new(|input_cx| {
-            TextInput::single_line(input_cx)
-                .with_placeholder("Type: organize my whole drive")
+            TextInput::single_line(input_cx).with_placeholder("Type: organize my whole drive")
         });
         Self {
             tier: TierUi::UserData,
@@ -175,7 +174,10 @@ impl OrganizePanel {
                         let s = &p.view.stats;
                         panel.status = Some(format!(
                             "Scanned {} files · {} moves · {} removals · {} protected skipped",
-                            s.files_scanned, s.ops_proposed, s.removals_proposed, s.skipped_protected
+                            s.files_scanned,
+                            s.ops_proposed,
+                            s.removals_proposed,
+                            s.skipped_protected
                         ));
                         panel.proposal = Some(p);
                     }
@@ -203,7 +205,9 @@ impl OrganizePanel {
 
     /// Apply the curated plan (accepted ops + accepted removals only).
     pub fn apply(&mut self, cx: &mut Context<Self>) {
-        let Some(proposal) = &self.proposal else { return };
+        let Some(proposal) = &self.proposal else {
+            return;
+        };
         let curated = ipc::curate(&proposal.raw, &self.rejected_ops, &self.rejected_removals);
         self.loading = true;
         self.error = None;
@@ -238,7 +242,10 @@ impl OrganizePanel {
 
     /// Undo the most recent applied plan.
     pub fn undo(&mut self, cx: &mut Context<Self>) {
-        let token = self.last_undo_token.clone().unwrap_or_else(|| "latest".to_owned());
+        let token = self
+            .last_undo_token
+            .clone()
+            .unwrap_or_else(|| "latest".to_owned());
         self.loading = true;
         self.error = None;
         self.status = None;
@@ -346,11 +353,17 @@ impl OrganizePanel {
                     .items_center()
                     .child(button(
                         "organize-optin",
-                        if on { "✓ Opted in (broad scope)" } else { "Enable broader scope" },
+                        if on {
+                            "✓ Opted in (broad scope)"
+                        } else {
+                            "Enable broader scope"
+                        },
                         if on { BRAND } else { BORDER_DEFAULT },
                         cx.listener(|this: &mut OrganizePanel, _ev, _w, cx| this.toggle_opt_in(cx)),
                     ))
-                    .child(hint("Broader than your user-data folders — explicit opt-in required.")),
+                    .child(hint(
+                        "Broader than your user-data folders — explicit opt-in required.",
+                    )),
             );
         }
 
@@ -358,7 +371,9 @@ impl OrganizePanel {
 
         if self.tier.needs_confirmation() {
             col = col
-                .child(hint("Whole-drive scans need the typed phrase below to confirm."))
+                .child(hint(
+                    "Whole-drive scans need the typed phrase below to confirm.",
+                ))
                 .child(self.confirm_input.clone());
         }
 
@@ -396,7 +411,9 @@ impl OrganizePanel {
             let rejected = self.rejected_ops.contains(&op.id);
             let id = op.id;
             let line = match (&op.from, op.kind.as_str()) {
-                (Some(from), _) => format!("{} → {}  ({})", short(from), short(&op.to), op.rationale),
+                (Some(from), _) => {
+                    format!("{} → {}  ({})", short(from), short(&op.to), op.rationale)
+                }
                 (None, _) => format!("mkdir {}  ({})", short(&op.to), op.rationale),
             };
             col = col.child(review_row(
@@ -502,7 +519,11 @@ fn review_row(
         .child(
             div()
                 .text_size(px(size::SM))
-                .text_color(rgb(pack(if rejected { TEXT_MUTED } else { TEXT_SECONDARY })))
+                .text_color(rgb(pack(if rejected {
+                    TEXT_MUTED
+                } else {
+                    TEXT_SECONDARY
+                })))
                 .child(SharedString::from(line.to_owned())),
         )
         .child(

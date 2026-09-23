@@ -282,7 +282,10 @@ mod tests {
         std::fs::write(&b, "identical bytes").unwrap();
         let (ha, _, _) = hash_file(&a.to_string_lossy()).unwrap();
         let (hb, _, _) = hash_file(&b.to_string_lossy()).unwrap();
-        assert_eq!(ha, hb, "same content hashes the same regardless of path/mtime");
+        assert_eq!(
+            ha, hb,
+            "same content hashes the same regardless of path/mtime"
+        );
         assert_eq!(ha.len(), 16, "16-hex-char truncation");
         std::fs::write(&b, "different bytes!").unwrap();
         let (hb2, _, _) = hash_file(&b.to_string_lossy()).unwrap();

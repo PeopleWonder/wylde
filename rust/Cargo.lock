@@ -5798,11 +5798,11 @@ dependencies = [
 
 [[package]]
 name = "wylde-fswalk"
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 dependencies = [
  "hex",
  "ignore",
- "sha2",
+ "sha2 0.10.9",
  "tempfile",
  "tracing",
 ]

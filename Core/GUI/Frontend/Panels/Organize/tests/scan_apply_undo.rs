@@ -82,14 +82,23 @@ fn apply_sends_only_the_accepted_ops_and_removals(cx: &mut TestAppContext) {
         .last_call_for("organize.apply")
         .expect("Apply dispatched organize.apply");
     let ops = call.payload["plan"]["ops"].as_array().expect("ops array");
-    assert_eq!(ops.len(), 1, "the rejected op was dropped from the curated plan");
+    assert_eq!(
+        ops.len(),
+        1,
+        "the rejected op was dropped from the curated plan"
+    );
     assert_eq!(ops[0]["id"], 1, "only the accepted mkdir survived");
-    let rems = call.payload["plan"]["removals"].as_array().expect("removals array");
+    let rems = call.payload["plan"]["removals"]
+        .as_array()
+        .expect("removals array");
     assert!(rems.is_empty(), "the rejected removal was dropped");
 
     window
         .update(cx, |p, _w, _cx| {
-            assert!(p.proposal.is_none(), "the review surface clears after apply");
+            assert!(
+                p.proposal.is_none(),
+                "the review surface clears after apply"
+            );
             assert_eq!(p.last_undo_token.as_deref(), Some("plan-1"));
             assert!(p.status.is_some());
         })

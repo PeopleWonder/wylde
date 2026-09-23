@@ -31,7 +31,8 @@ impl DuplicateGroup {
     /// Bytes that could be reclaimed by keeping one copy and removing the rest:
     /// `size * (count - 1)`.
     pub fn reclaimable_bytes(&self) -> u64 {
-        self.size.saturating_mul((self.paths.len() as u64).saturating_sub(1))
+        self.size
+            .saturating_mul((self.paths.len() as u64).saturating_sub(1))
     }
 }
 
@@ -139,7 +140,10 @@ mod tests {
         std::fs::write(root.join("a.bin"), "AAAAAAAA").unwrap();
         std::fs::write(root.join("b.bin"), "BBBBBBBB").unwrap();
         let groups = find_duplicates_under(&root.to_string_lossy());
-        assert!(groups.is_empty(), "same size but different bytes is not a dup");
+        assert!(
+            groups.is_empty(),
+            "same size but different bytes is not a dup"
+        );
     }
 
     #[test]
@@ -164,7 +168,10 @@ mod tests {
         let b = root.join("b");
         std::fs::write(&a, "same").unwrap();
         std::fs::write(&b, "same").unwrap();
-        let paths = vec![a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()];
+        let paths = vec![
+            a.to_string_lossy().into_owned(),
+            b.to_string_lossy().into_owned(),
+        ];
         let groups = group_duplicates(&paths);
         assert_eq!(groups.len(), 1);
     }

@@ -72,9 +72,8 @@ pub struct TabulatePanel {
 impl TabulatePanel {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let input_path = cx.new(|input_cx| {
-            TextInput::single_line(input_cx).with_placeholder(
-                "Path to a file (e.g. a .csv / .xlsx / .json intake export)",
-            )
+            TextInput::single_line(input_cx)
+                .with_placeholder("Path to a file (e.g. a .csv / .xlsx / .json intake export)")
         });
         Self {
             input_path,
@@ -277,7 +276,12 @@ impl TabulatePanel {
 
     fn input_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         // Output-format toggle.
-        let mut fmt_row = div().flex().flex_row().gap_2().items_center().child(label("Output"));
+        let mut fmt_row = div()
+            .flex()
+            .flex_row()
+            .gap_2()
+            .items_center()
+            .child(label("Output"));
         for f in [OutputFormat::Xlsx, OutputFormat::Csv] {
             fmt_row = fmt_row.child(format_button(f, self.output_format == f, cx));
         }
@@ -350,11 +354,19 @@ impl TabulatePanel {
                         i + 1,
                         t.rows,
                         t.cols,
-                        if t.header_inferred { " · header detected" } else { "" }
+                        if t.header_inferred {
+                            " · header detected"
+                        } else {
+                            ""
+                        }
                     ))),
             );
             for c in &t.columns {
-                let header = if c.header.is_empty() { "(unnamed)" } else { c.header.as_str() };
+                let header = if c.header.is_empty() {
+                    "(unnamed)"
+                } else {
+                    c.header.as_str()
+                };
                 col = col.child(
                     div()
                         .text_size(px(size::XS))
@@ -455,7 +467,11 @@ fn button(
         .child(SharedString::from(text.to_owned()))
 }
 
-fn format_button(f: OutputFormat, selected: bool, cx: &mut Context<TabulatePanel>) -> impl IntoElement {
+fn format_button(
+    f: OutputFormat,
+    selected: bool,
+    cx: &mut Context<TabulatePanel>,
+) -> impl IntoElement {
     div()
         .id(ElementId::Name(format!("fmt-{}", f.wire()).into()))
         .px_3()
