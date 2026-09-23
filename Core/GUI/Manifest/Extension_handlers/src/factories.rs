@@ -132,9 +132,10 @@ pub fn default_first_party() -> FactoryMap {
         Box::new(wylde_panel_remote_access::RemoteAccessPanel::view),
     );
 
-    // (The Images panel was extracted to the standalone `wylde-images`
-    // Service — it now surfaces as a loopback iframe via the
-    // Extensions/wylde-images stub, so there is no compiled-in factory.)
+    // (There is no Images factory. The panel was extracted to a standalone
+    // Service in 2026-06 and surfaced as a loopback iframe; that Service was
+    // then parked when ComfyUI was removed from Wylde — see #234. Nothing
+    // registers here, and nothing is expected to.)
 
     m
 }

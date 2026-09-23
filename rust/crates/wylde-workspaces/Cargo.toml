@@ -53,7 +53,7 @@ neo4rs = "0.8"
 # (Slice I — watcher/). Windows uses ReadDirectoryChangesW under the hood. We
 # drive our OWN debouncer (watcher/debouncer.rs) over the raw events rather
 # than pull in a debouncer crate, so the coalescing window is one knob we own.
-notify = "6"
+notify = "8"
 # High-quality fuzzy matcher (Helix's engine) for `workspaces.symbols.find`
 # (Slice F-data). Purpose-built for interactive, per-keystroke symbol matching;
 # reuses memchr + unicode-segmentation already in the tree, so it adds only

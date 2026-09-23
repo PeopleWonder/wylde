@@ -43,6 +43,7 @@ use crate::ipc::{
 use crate::settings_tab::GraphSettingsTab;
 use crate::tabs::WorkspacesTab;
 use crate::vocabulary::VocabularyTab;
+use wylde_gui_controls::control;
 
 /// Root Workspaces panel. Hosts a minimal tab system (Registry + Graph);
 /// the active tab's body is rendered below a tab bar.
@@ -409,8 +410,11 @@ impl WorkspacesPanel {
             // executor (no tokio reactor), so a bare `tokio::task::
             // spawn_blocking` panics ("no reactor running").  Hop onto the
             // bridge runtime's blocking pool so the gpui dispatcher doesn't
-            // stall and the await just parks on the join.
-            let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(pick_folder).await;
+            // stall and the await just parks on the join. Routed through
+            // `native_file_dialog` so a control walk records the request
+            // instead of opening a real folder picker on the dev's desktop.
+            let picked: Option<PathBuf> =
+                wylde_gui_pipe::native_file_dialog("workspaces-add", pick_folder).await;
             let Some(path) = picked else {
                 return;
             };
@@ -901,8 +905,7 @@ fn tab_button(
     } else {
         (TEXT_SECONDARY, None)
     };
-    let mut btn = div()
-        .id(id)
+    let mut btn = control(div(), id)
         .px_3()
         .py_1()
         .rounded(px(4.0))
@@ -934,8 +937,7 @@ fn tab_button(
 /// The back arrow at the top-left of the in-workspace view — returns to the
 /// Registry landing (clears `entered`).
 fn back_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("ws-back".into()))
+    control(div(), ElementId::Name("ws-back".into()))
         .flex_shrink_0()
         .px_2()
         .py_1()
@@ -1022,8 +1024,7 @@ fn header_row(cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
 
 fn add_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
     let id: ElementId = ElementId::Name("workspaces-add".into());
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -1089,8 +1090,7 @@ fn workspace_card(
     }
 
     // The whole card is clickable → ENTER the workspace (UX rework decision 2).
-    let mut row = div()
-        .id(ElementId::Name(format!("ws-card::{}", ws.id).into()))
+    let mut row = control(div(), ElementId::Name(format!("ws-card::{}", ws.id).into()))
         .bg(rgb(pack(SURFACE_800)))
         .border_1()
         .border_color(rgb(pack(border)))
@@ -1179,8 +1179,7 @@ where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
     let label_owned = SharedString::from(label.to_owned());
-    div()
-        .id(id)
+    control(div(), id)
         // Never let the button shrink/wrap when it shares a row with a long
         // wrapping label — it keeps its intrinsic size; the text takes the rest.
         .flex_shrink_0()

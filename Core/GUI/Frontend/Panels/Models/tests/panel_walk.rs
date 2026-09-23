@@ -50,7 +50,11 @@ fn models_healthy_mounts_and_loads(cx: &mut TestAppContext) {
             json!({ "cpu_brand": "Test CPU", "cpu_cores": 8 }),
         )
         .on("ollama.list_loaded", json!({ "models": [] }))
-        .on("models.get_default", json!({ "model": "llama3:8b" }));
+        .on(
+            "models.resolve_default",
+            json!({ "model": "llama3:8b", "source": "default",
+                    "stale_default": null, "recommendation": null }),
+        );
     let _guard = fake.clone().install();
 
     let window = mount(cx);
@@ -79,7 +83,7 @@ fn models_survives_backend_down(cx: &mut TestAppContext) {
         )
         .on_err("ollama.list_loaded", "pipe_unavailable: ollama not running")
         .on_err(
-            "models.get_default",
+            "models.resolve_default",
             "pipe_unavailable: harness not running",
         );
     let _guard = fake.clone().install();
@@ -281,6 +285,203 @@ fn models_label_reference_slots(cx: &mut TestAppContext) {
                 false,
                 false
             ));
+        })
+        .unwrap();
+}
+
+// ── #235: the persistent default and its fallbacks ───────────────────
+//
+// Arm 1 stars a row, arm 2 stars nothing and explains itself, arm 3
+// renders a recommendation with warnings. The panel reads
+// `models.resolve_default` (not the raw `models.get_default`) precisely
+// so a star that outlived its model can't light up a row that isn't
+// there.
+
+/// Arm 1 — a persisted default that is still installed resolves as the
+/// star, and pre-checks its row.
+#[gpui::test]
+fn models_persisted_default_stars_its_row(cx: &mut TestAppContext) {
+    let fake = ScriptedBackend::new()
+        .on(
+            "ollama.list_models",
+            json!({ "models": [ { "name": "qwen3.5:9b" }, { "name": "llama3.2:3b" } ]}),
+        )
+        .on("ollama.list_loaded", json!({ "models": [] }))
+        .on(
+            "models.resolve_default",
+            json!({ "model": "llama3.2:3b", "source": "default",
+                    "stale_default": null, "recommendation": null,
+                    "inventory_count": 2 }),
+        );
+    let _guard = fake.clone().install();
+
+    let window = mount(cx);
+
+    window
+        .update(cx, |panel, _w, _cx| {
+            assert_eq!(
+                panel.session_default.as_deref(),
+                Some("llama3.2:3b"),
+                "the star pre-checks its row — and beats the first entry"
+            );
+            let r = panel
+                .default_resolution
+                .as_ref()
+                .expect("the resolution landed");
+            assert_eq!(r.source, "default");
+            assert!(r.stale_default.is_none());
+            assert!(r.recommendation.is_none());
+        })
+        .unwrap();
+    assert_eq!(fake.count_for("models.resolve_default"), 1);
+}
+
+/// Arm 2 — a default whose model was deleted falls through to
+/// first-available. No error, no star on a row that isn't there, and the
+/// dangling name is reported so the panel can explain itself.
+#[gpui::test]
+fn models_deleted_default_falls_through_to_first_available(cx: &mut TestAppContext) {
+    let fake = ScriptedBackend::new()
+        .on(
+            "ollama.list_models",
+            json!({ "models": [ { "name": "qwen3.5:9b" }, { "name": "llama3.2:3b" } ]}),
+        )
+        .on("ollama.list_loaded", json!({ "models": [] }))
+        .on(
+            "models.resolve_default",
+            json!({ "model": "qwen3.5:9b", "source": "first_available",
+                    "stale_default": "deepseek-r1:14b", "recommendation": null,
+                    "inventory_count": 2 }),
+        );
+    let _guard = fake.install();
+
+    let window = mount(cx);
+
+    window
+        .update(cx, |panel, _w, _cx| {
+            assert!(
+                panel.error.is_none(),
+                "a dangling star is an ordinary event, never an error strip"
+            );
+            assert_eq!(
+                panel.session_default, None,
+                "first-available is what the picker LANDS on, not a preference \
+                 the user expressed — starring it would invent a choice"
+            );
+            let r = panel
+                .default_resolution
+                .as_ref()
+                .expect("the resolution landed");
+            assert_eq!(r.source, "first_available");
+            assert_eq!(r.model.as_deref(), Some("qwen3.5:9b"));
+            assert_eq!(
+                r.stale_default.as_deref(),
+                Some("deepseek-r1:14b"),
+                "the deleted default is surfaced, not silently dropped"
+            );
+        })
+        .unwrap();
+}
+
+/// Arm 3 — an empty store yields the recommend state: qwen3.5:9b, its
+/// size, and the warnings, all carried from the harness rather than
+/// invented panel-side.
+#[gpui::test]
+fn models_empty_store_recommends_with_warnings(cx: &mut TestAppContext) {
+    let fake = ScriptedBackend::new()
+        .on("ollama.list_models", json!({ "models": [] }))
+        .on("ollama.list_loaded", json!({ "models": [] }))
+        .on(
+            "models.resolve_default",
+            json!({ "model": null, "source": "recommend",
+            "stale_default": null, "inventory_count": 0,
+            "recommendation": {
+                "model": "qwen3.5:9b",
+                "size": "6.6 GB",
+                "warnings": [
+                    "Download is 6.6 GB.",
+                    "Needs roughly 8 GB of VRAM at default context.",
+                    "The first message after a pull is slower.",
+                    "Nothing is downloaded until you choose to pull it.",
+                ],
+            }}),
+        );
+    let _guard = fake.install();
+
+    let window = mount(cx);
+
+    window
+        .update(cx, |panel, _w, _cx| {
+            // Reachable + genuinely empty is the Empty arm, never
+            // Unreachable (#132's distinction still holds).
+            assert_eq!(
+                classify_installed_section(
+                    panel.loading_installed,
+                    panel.installed_reachable,
+                    panel.installed.is_empty(),
+                ),
+                InstalledSection::Empty
+            );
+            let rec = panel
+                .default_resolution
+                .as_ref()
+                .expect("the resolution landed")
+                .recommendation
+                .as_ref()
+                .expect("an empty store carries a recommendation");
+            assert_eq!(rec.model, "qwen3.5:9b", "the real ~9B Qwen, not qwen3.6:9b");
+            assert_eq!(rec.size, "6.6 GB");
+            assert!(
+                rec.warnings.len() >= 3,
+                "hardware fit, download size and first-run cost all travel with it"
+            );
+            assert!(
+                rec.warnings
+                    .iter()
+                    .any(|w| w.contains("Nothing is downloaded")),
+                "the recommendation is explicitly not an auto-download"
+            );
+            assert_eq!(
+                panel.session_default, None,
+                "a recommendation is not a selection — nothing is starred"
+            );
+        })
+        .unwrap();
+}
+
+/// A harness that can't be reached must NOT read as "nothing installed"
+/// (#132, applied to resolution): the panel keeps no recommendation and
+/// invents no default rather than proposing a 6.6 GB download to someone
+/// whose models are sitting on disk.
+#[gpui::test]
+fn models_unreachable_harness_yields_no_recommendation(cx: &mut TestAppContext) {
+    let fake = ScriptedBackend::new()
+        .on(
+            "ollama.list_models",
+            json!({ "models": [ { "name": "qwen3.5:9b" } ]}),
+        )
+        .on("ollama.list_loaded", json!({ "models": [] }))
+        .on_err(
+            "models.resolve_default",
+            "unavailable: the model store is unreachable",
+        );
+    let _guard = fake.install();
+
+    let window = mount(cx);
+
+    window
+        .update(cx, |panel, _w, _cx| {
+            assert!(
+                panel.default_resolution.is_none(),
+                "a failed resolve leaves the prior state alone — it never \
+                 fabricates an empty store"
+            );
+            assert_eq!(panel.session_default, None);
+            assert_eq!(
+                panel.installed.len(),
+                1,
+                "the installed list still rendered"
+            );
         })
         .unwrap();
 }

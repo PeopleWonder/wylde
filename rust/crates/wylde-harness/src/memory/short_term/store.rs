@@ -35,18 +35,20 @@
 //! so a `get` racing an `append` in the same process can't observe a
 //! torn read — holds are short (one small JSON file). Cross-process
 //! safety still rests on the atomic temp-write + rename, same as Python.
+//!
+//! **#242:** that mutex is now the *shared* [`crate::memory::common`] doc
+//! lock rather than a private one. [`merge_save`] below rewrites the whole
+//! document — including the `messages` array it does not own — from the
+//! copy it read, so it must serialise against the turn path's
+//! `messages` append (`conversations::store::append_exchange`) or one of
+//! the two writes is silently lost.
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Map, Value};
 
-use crate::memory::common::conversations_dir;
-
-/// Serialises in-process working-memory reads/writes. Cross-process
-/// torn-write protection still comes from the atomic temp + rename.
-static STORE_LOCK: Mutex<()> = Mutex::new(());
+use crate::memory::common::{conversations_dir, doc_write_guard};
 
 /// Mirrors Python's `_MAX_ID_LEN`.
 const MAX_ID_LEN: usize = 128;
@@ -147,33 +149,44 @@ fn strip_system_messages(messages: &Value) -> Vec<Value> {
 /// `save_conversation`: `created_at` is preserved (minted to now for a
 /// new doc), `updated_at` bumped, system messages stripped, `model`
 /// written only when non-empty.
+///
+/// **#242 — "every sibling field" now means every field.** This used to
+/// rebuild the document from a fixed six-key list, which silently dropped
+/// any key outside it: `auto_summary`, `summary_msg_count`, `topic_tags`,
+/// `embedding` (the M1 summary pipeline's output, written through
+/// `conversations::store::merge_fields`). That was invisible while the
+/// turn path never persisted `messages` — with no messages, `needs_regen`
+/// returned `false` and no summary ever existed to drop. The moment the
+/// turn path started persisting the exchange, a working-memory append
+/// would have wiped each freshly-written summary and forced a re-summarise
+/// every turn. Start from `prior` and overwrite only the keys this module
+/// actually owns.
 fn merge_save(
     conv_id: &str,
     existing: Option<Map<String, Value>>,
     working: Vec<Value>,
 ) -> std::io::Result<()> {
     let now = now_secs();
-    let prior = existing.unwrap_or_default();
+    let mut doc = existing.unwrap_or_default();
 
-    let created_at = prior
+    let created_at = doc
         .get("created_at")
         .and_then(Value::as_i64)
         .filter(|v| *v > 0)
         .unwrap_or(now);
-    let title = prior
+    let title = doc
         .get("title")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .unwrap_or("Untitled")
         .to_owned();
-    let messages = strip_system_messages(prior.get("messages").unwrap_or(&Value::Null));
-    let workspace_id = prior
+    let messages = strip_system_messages(doc.get("messages").unwrap_or(&Value::Null));
+    let workspace_id = doc
         .get("workspace_id")
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned();
 
-    let mut doc = Map::new();
     doc.insert("id".into(), Value::String(conv_id.to_owned()));
     doc.insert("title".into(), Value::String(title));
     doc.insert("created_at".into(), json!(created_at));
@@ -183,12 +196,14 @@ fn merge_save(
     doc.insert("working_memory".into(), Value::Array(working));
     // `save_conversation` only writes `model` when it resolves to a
     // non-empty value — keep that so the JSON shape stays byte-faithful.
-    if let Some(model) = prior
+    // (A blank/absent `model` on the prior doc is left absent rather than
+    // written as `""`.)
+    if doc
         .get("model")
         .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
+        .is_some_and(|s| s.is_empty())
     {
-        doc.insert("model".into(), Value::String(model.to_owned()));
+        doc.remove("model");
     }
 
     let body = serde_json::to_string_pretty(&Value::Object(doc))
@@ -208,7 +223,7 @@ fn merge_save(
 /// doesn't exist / has none. Mirrors Python's `get_working_memory`
 /// (which swallows `ConversationNotFound` as `[]`).
 pub fn get_working_memory(conv_id: &str) -> Result<Vec<Value>, InvalidConversationId> {
-    let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = doc_write_guard();
     let Some(doc) = read_doc(conv_id)? else {
         return Ok(Vec::new());
     };
@@ -225,7 +240,7 @@ pub fn get_working_memory(conv_id: &str) -> Result<Vec<Value>, InvalidConversati
 /// `{kind: "raw", at, data: <str>}`, and `setdefault`s the `at`
 /// timestamp on object entries.
 pub fn append_working_memory(conv_id: &str, entry: Value) -> Result<Vec<Value>, AppendError> {
-    let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = doc_write_guard();
     let existing = read_doc(conv_id).map_err(AppendError::InvalidId)?;
     let mut working: Vec<Value> = existing
         .as_ref()
@@ -267,7 +282,7 @@ pub fn append_working_memory(conv_id: &str, entry: Value) -> Result<Vec<Value>, 
 /// reflection caller never hits that branch — it only rewrites lists
 /// it just read).
 pub fn replace_working_memory(conv_id: &str, working: Vec<Value>) -> Result<(), AppendError> {
-    let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = doc_write_guard();
     let existing = read_doc(conv_id).map_err(AppendError::InvalidId)?;
     merge_save(conv_id, existing, working).map_err(AppendError::Io)
 }
@@ -276,7 +291,7 @@ pub fn replace_working_memory(conv_id: &str, working: Vec<Value>) -> Result<(), 
 /// cleared. Mirrors Python's `clear_working_memory`: `false` when the
 /// conversation doesn't exist OR already has an empty buffer.
 pub fn clear_working_memory(conv_id: &str) -> Result<bool, InvalidConversationId> {
-    let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let _g = doc_write_guard();
     let Some(doc) = read_doc(conv_id)? else {
         return Ok(false);
     };
@@ -442,6 +457,95 @@ mod tests {
         assert_eq!(msgs[0]["role"], "user");
         // updated_at advanced past created_at.
         assert!(raw["updated_at"].as_i64().unwrap() >= 1000);
+    }
+
+    /// **#242** — the working-memory merge-save must not eat the M1
+    /// summary fields, which it did while rebuilding the document from a
+    /// fixed key list.
+    ///
+    /// This was dormant, not harmless: with `messages` never persisted,
+    /// `needs_regen` always saw a zero count and no summary was ever
+    /// written for the merge-save to drop. The turn path's `messages`
+    /// append switches the summariser on, and the same turn spawns a
+    /// working-memory append — so without this preservation every fresh
+    /// `auto_summary` would be wiped by its own turn and re-generated
+    /// (one extra LLM pass) on every subsequent turn, forever.
+    #[test]
+    fn merge_save_preserves_fields_it_does_not_own() {
+        let _env = TestEnv::new();
+        let cid = "summary_survives";
+        let path = path_for(cid);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "id": cid,
+                "messages": [{"role": "user", "content": "hi"}],
+                "working_memory": [],
+                // Written by `conversations::store::merge_fields`, owned by
+                // the M1 summary pipeline — invisible to this module.
+                "auto_summary": "the user greeted the assistant",
+                "summary_msg_count": 2,
+                "topic_tags": ["greeting"],
+                "embedding": [0.1, 0.2],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        append_working_memory(cid, json!({"kind": "fact", "data": "x"})).unwrap();
+
+        let raw: Value =
+            serde_json::from_str(&wylde_shared::encryption::read_to_string_at_rest(&path).unwrap())
+                .unwrap();
+        assert_eq!(raw["auto_summary"], "the user greeted the assistant");
+        assert_eq!(raw["summary_msg_count"], 2);
+        assert_eq!(raw["topic_tags"], json!(["greeting"]));
+        assert_eq!(raw["embedding"], json!([0.1, 0.2]));
+        assert_eq!(raw["working_memory"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            raw["messages"].as_array().unwrap().len(),
+            1,
+            "and the turn path's messages are still there"
+        );
+    }
+
+    /// The two writers of one document interleave without losing an
+    /// update: the turn path appends `messages`, the extractor appends
+    /// `working_memory`, and both survive (#242, `DOC_WRITE_LOCK`).
+    #[test]
+    fn messages_and_working_memory_appends_do_not_lose_each_other() {
+        let _env = TestEnv::new();
+        let cid = "twowriters";
+        crate::memory::conversations::store::append_exchange(
+            cid,
+            None,
+            "m",
+            "turn one",
+            "reply one",
+        )
+        .unwrap();
+        append_working_memory(cid, json!({"kind": "fact", "data": "extracted"})).unwrap();
+        crate::memory::conversations::store::append_exchange(
+            cid,
+            None,
+            "m",
+            "turn two",
+            "reply two",
+        )
+        .unwrap();
+
+        let doc = crate::memory::conversations::store::read_conversation(cid).unwrap();
+        assert_eq!(
+            doc["messages"].as_array().unwrap().len(),
+            4,
+            "the extractor's write must not roll back the turn's messages"
+        );
+        assert_eq!(
+            doc["working_memory"].as_array().unwrap().len(),
+            1,
+            "and the turn's write must not roll back the extractor's entry"
+        );
     }
 
     #[test]

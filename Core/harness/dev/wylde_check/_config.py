@@ -8,7 +8,7 @@ import only the constants they need.
 from __future__ import annotations
 
 import re
-from typing import Tuple
+from typing import Dict, Tuple
 
 
 # Walk-time exclusions.  These never get inspected by any rule.
@@ -412,3 +412,58 @@ RUST_HARDCODED_SERVICE_ARRAY_RE = re.compile(
 # wylde_stack::shutdown_targets) and the counting gate is a Rust test:
 # rust/crates/wylde-stack/tests/shutdown_target_coverage.rs.
 GPUI_SHUTDOWN_DELEGATE_TOKEN: str = "lifecycle.shutdown_all"
+
+
+# ── Rule 62: dependency-spread ratchet (#290 dependency isolation) ────────
+#
+# The forward-looking half of #290. See rules/_dependency_spread.py for the
+# full rationale. Three tiers: contained deps pinned to one owning crate;
+# baselined deps frozen at today's crate-spread (fail on growth); everything
+# else capped at DEPENDENCY_SPREAD_NEW_MAX crates before it needs a decision.
+
+# Deps #290 routed through a single owning crate's adapter. Must stay there —
+# a direct dep in any other crate means the adapter was bypassed.
+DEPENDENCY_CONTAINED: Dict[str, str] = {
+    "rand": "wylde-shared",  # via wylde_shared::rng      (#290)
+    "cpal": "wylde-voice",   # via voice::audio_device    (#290)
+}
+
+# A brand-new external dep (not contained, not baselined) may span at most this
+# many crates before the rule forces a conscious wrap-or-baseline decision.
+DEPENDENCY_SPREAD_NEW_MAX: int = 2
+
+# Grandfathered crate-spread, seeded from develop @ 2026-07-28 using the rule's
+# own walk (ACTIVE_ROOTS). The rule fails only when a dep grows PAST its number.
+# `reqwest` (12) is the named watch target — the biggest 0.x shotgun risk;
+# wrap-trigger is its first breaking bump. Raising a number is a deliberate,
+# reviewed act; lowering one after a cleanup ratchets the gate tighter.
+DEPENDENCY_SPREAD_BASELINE: Dict[str, int] = {
+    "anyhow": 30,
+    "async-trait": 6,
+    "auto-launch": 3,
+    "axum": 3,
+    "base64": 3,
+    "chrono": 12,
+    "futures": 4,
+    "gpui": 20,
+    "hex": 3,
+    "qrcode": 3,
+    "reqwest": 12,  # watch target — biggest 0.x shotgun risk; wrap on first break
+    "rfd": 3,
+    "rmp-serde": 5,
+    "serde": 38,
+    "serde_json": 41,
+    "serde_yaml": 4,
+    "serial_test": 9,
+    "sha2": 3,
+    "tempfile": 19,
+    "thiserror": 18,
+    "tokio": 31,
+    "tokio-test": 5,
+    "tower": 3,
+    "tracing": 22,
+    "tracing-subscriber": 4,
+    "uuid": 12,
+    "windows": 4,
+    "wiremock": 3,
+}

@@ -24,7 +24,7 @@ tracing = { workspace = true }
 # carries no async runtime of its own — the GUI hops it onto the shared
 # tokio blocking pool via `bridged_spawn_blocking`, and unit tests need no
 # reactor. Default features carry rustls TLS (no OpenSSL/system dep).
-ureq = "2"
+ureq = "3"
 # Semver comparison for "is the latest tag newer than what we run".
 semver = "1"
 # Zero-dependency minisign signature verifier — the entire trusted

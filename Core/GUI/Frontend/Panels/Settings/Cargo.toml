@@ -23,6 +23,9 @@ wylde-gui-pipe = { path = "../../Pipe" }
 
 # gpui — every panel imports the same set: div builders, Render, etc.
 # Pinned through the workspace dep so a rev bump touches one place.
+# The one constructor every interactive control routes through (#247).
+wylde-gui-controls = { path = "../../Controls" }
+
 gpui.workspace = true
 
 # Shared text-input widget — backs the editable Ollama inference fields
@@ -54,6 +57,7 @@ tokio.workspace = true
 # dev-dependencies only, so resolver = "2" never unifies `test-support` into
 # the shipped Shell's normal lib (verified via cargo tree).
 [dev-dependencies]
+wylde-gui-controls = { path = "../../Controls", features = ["test-support"] }
 wylde-gui-test-support = { path = "../../test-support" }
 gpui = { workspace = true, features = ["test-support"] }
 wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }

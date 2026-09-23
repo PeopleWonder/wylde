@@ -60,7 +60,7 @@ pub async fn pairing_status() -> Response {
     finish(svc::get_pairing_status().await)
 }
 
-/// `POST /api/devices/:device_id/tier` — change a device's tier.
+/// `POST /api/devices/{device_id}/tier` — change a device's tier.
 pub async fn set_tier(Path(device_id): Path<String>, body: Option<Json<Value>>) -> Response {
     let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
     let tier = payload
@@ -75,12 +75,12 @@ pub async fn set_tier(Path(device_id): Path<String>, body: Option<Json<Value>>) 
     finish(svc::set_tier(&device_id, &tier).await)
 }
 
-/// `POST /api/devices/:device_id/rotate` — rotate a device token.
+/// `POST /api/devices/{device_id}/rotate` — rotate a device token.
 pub async fn rotate_token(Path(device_id): Path<String>) -> Response {
     finish(svc::rotate_token(&device_id).await)
 }
 
-/// `DELETE /api/devices/:device_id` — revoke a device.
+/// `DELETE /api/devices/{device_id}` — revoke a device.
 pub async fn revoke(Path(device_id): Path<String>) -> Response {
     finish(svc::revoke(&device_id).await)
 }
@@ -143,15 +143,15 @@ pub fn router() -> Router {
                 .route_layer(from_fn(require_device)),
         )
         .route(
-            "/api/devices/:device_id/tier",
+            "/api/devices/{device_id}/tier",
             post(set_tier).route_layer(from_fn(require_local)),
         )
         .route(
-            "/api/devices/:device_id/rotate",
+            "/api/devices/{device_id}/rotate",
             post(rotate_token).route_layer(from_fn(require_local)),
         )
         .route(
-            "/api/devices/:device_id",
+            "/api/devices/{device_id}",
             delete(revoke).route_layer(from_fn(require_local)),
         )
 }

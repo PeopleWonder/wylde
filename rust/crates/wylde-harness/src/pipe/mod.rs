@@ -130,6 +130,8 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "models.set_default",
     "models.get_default",
     "models.get_effective",
+    // #235 — the star resolved against the live on-disk inventory.
+    "models.resolve_default",
     // settings.ollama.* — per-model inference override store (4 verbs)
     "settings.ollama.get_overrides",
     "settings.ollama.set_overrides",

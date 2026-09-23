@@ -34,8 +34,12 @@ Core/GUI/target/
 # Cargo build artifacts (backend Rust workspace at rust/)
 rust/target/
 
-# Release staging output
-release-artifacts/
+# Release staging output (built binaries, installers, signatures) stays ignored;
+# the human-readable release notes are TRACKED here so the release checklist's
+# "refresh release-artifacts/RELEASE_NOTES.md" step has a versioned file to edit.
+release-artifacts/*
+!release-artifacts/RELEASE_NOTES.md
+!release-artifacts/RELEASE_NOTES-*.md
 
 # Any other Cargo target dirs (catch-all)
 target/

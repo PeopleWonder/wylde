@@ -39,9 +39,11 @@ use crate::catalog::{self, CatalogEntry};
 use crate::hf::{self, HfModel};
 use crate::ipc::{
     delete_installed_model, list_installed_models, list_loaded_model_names, pull_model,
-    read_hardware, HardwareSnapshot, InstalledModel, PullProgress, ReferenceSet,
+    read_hardware, DefaultResolution, HardwareSnapshot, InstalledModel, PullProgress, Recommended,
+    ReferenceSet,
 };
 use crate::recommend::{pick as pick_recommendations, Recommendation};
+use wylde_gui_controls::control;
 
 /// Max catalog suggestions shown in the autocomplete dropdown.
 const CATALOG_SUGGESTION_LIMIT: usize = 10;
@@ -78,6 +80,16 @@ pub struct ModelsPanel {
     pub active_pull: Option<PullState>,
     pub confirm_delete: Option<String>,
     pub session_default: Option<String>,
+    /// The #235 resolution the panel last read from
+    /// `models.resolve_default` — the star checked against the live
+    /// inventory, with its fallbacks. `None` until the first reply lands
+    /// (or if the harness is down; a failure deliberately leaves the
+    /// prior value rather than reading as "nothing installed").
+    ///
+    /// Drives two things the raw star can't: the *recommend card* on an
+    /// empty store, and the "your default was deleted" note when a star
+    /// falls through.
+    pub default_resolution: Option<DefaultResolution>,
     pub hardware: HardwareSnapshot,
     /// State of an opt-in HuggingFace online search (privacy-gated). Stays
     /// `Idle` unless the user explicitly triggers a search.
@@ -224,6 +236,7 @@ impl ModelsPanel {
             active_pull: None,
             confirm_delete: None,
             session_default: None,
+            default_resolution: None,
             hardware: HardwareSnapshot::default(),
             hf_search: HfSearch::Idle,
             hf_selected: None,
@@ -623,19 +636,30 @@ impl ModelsPanel {
         .detach();
     }
 
-    /// Read the persisted default-model star on panel open and pre-check
-    /// the matching row.  Soft-fails: a down harness leaves the star
-    /// un-filled rather than surfacing an error toast.
+    /// Resolve the default model on panel open and pre-check the matching
+    /// row (#235).
+    ///
+    /// Reads `models.resolve_default`, not the raw star: the star is only
+    /// arm 1 of the resolution, and a star whose model was deleted must
+    /// light up *nothing* rather than a row that isn't there. The reply
+    /// also carries the recommend arm, which the empty-store card renders.
+    ///
+    /// Soft-fails: a down harness leaves the star un-filled and
+    /// `default_resolution` untouched rather than surfacing an error
+    /// toast — and, per #132, never reads as "nothing installed".
     pub fn spawn_load_default(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
-            if let Ok(Some(model)) = crate::ipc::get_default().await {
+            if let Ok(resolution) = crate::ipc::resolve_default().await {
                 let _ = this.update(app_cx, |panel, cx| {
-                    // Don't clobber an explicit in-session choice the user
-                    // made before the reply landed.
-                    if panel.session_default.is_none() {
-                        panel.session_default = Some(model);
-                        cx.notify();
+                    // Only the *starred* arm pre-checks a row. A
+                    // first-available pick is what the picker would land
+                    // on, not a choice the user made — filling the star
+                    // for it would silently invent a preference.
+                    if panel.session_default.is_none() && resolution.source == "default" {
+                        panel.session_default = resolution.model.clone();
                     }
+                    panel.default_resolution = Some(resolution);
+                    cx.notify();
                 });
             }
         })
@@ -659,6 +683,19 @@ impl Render for ModelsPanel {
         if let Some(status) = &self.status {
             column = column.child(status_strip(status));
         }
+        // A star that outlived its model explains itself once, at the top
+        // — the fallback already happened, so this is a note, not an error.
+        if let Some(stale) = self
+            .default_resolution
+            .as_ref()
+            .and_then(|r| r.stale_default.as_deref())
+        {
+            let fell_back_to = self
+                .default_resolution
+                .as_ref()
+                .and_then(|r| r.model.as_deref());
+            column = column.child(stale_default_note(stale, fell_back_to));
+        }
 
         column = column.child(section_title("Pull a model"));
         column = column.child(pull_section(self, cx));
@@ -676,7 +713,11 @@ impl Render for ModelsPanel {
                 column = column.child(unreachable_state(cx));
             }
             InstalledSection::Empty => {
-                column = column.child(empty_installed_state());
+                let rec = self
+                    .default_resolution
+                    .as_ref()
+                    .and_then(|r| r.recommendation.clone());
+                column = column.child(empty_installed_state(rec.as_ref(), cx));
             }
             InstalledSection::List => {
                 column = column.child(search_strip(self, cx));
@@ -735,8 +776,7 @@ fn header_row(cx: &mut Context<ModelsPanel>) -> gpui::Div {
 
 fn refresh_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let id: ElementId = ElementId::Name("models-refresh".into());
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -886,9 +926,7 @@ fn catalog_row(entry: &CatalogEntry, cx: &mut Context<ModelsPanel>) -> Stateful<
     if let Some(lic) = &entry.license {
         meta_bits.push(lic.clone());
     }
-
-    div()
-        .id(id)
+    control(div(), id)
         .flex()
         .flex_row()
         .items_center()
@@ -984,8 +1022,7 @@ fn size_badge(label: String) -> gpui::Div {
 fn pull_anyway_row(query: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let tag = query.to_owned();
     let tag_for_click = tag.clone();
-    div()
-        .id(ElementId::Name("models-pull-anyway".into()))
+    control(div(), ElementId::Name("models-pull-anyway".into()))
         .flex()
         .flex_row()
         .items_center()
@@ -1104,8 +1141,7 @@ fn catalog_detail_strip(entry: &CatalogEntry) -> gpui::Div {
 fn hf_search_row(query: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let q = query.to_owned();
     let q_for_click = q.clone();
-    div()
-        .id(ElementId::Name("models-hf-search".into()))
+    control(div(), ElementId::Name("models-hf-search".into()))
         .flex()
         .flex_row()
         .items_center()
@@ -1216,9 +1252,7 @@ fn hf_result_row(m: &HfModel, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::D
     if !m.last_modified.is_empty() {
         meta_bits.push(format!("updated {}", m.last_modified));
     }
-
-    div()
-        .id(id)
+    control(div(), id)
         .flex()
         .flex_row()
         .items_center()
@@ -1319,8 +1353,7 @@ fn hf_detail_strip(sel: &HfSelection, cx: &mut Context<ModelsPanel>) -> gpui::Di
 /// Clickable quant pill for the HF detail strip — cycles the quant on
 /// click. Brand-filled to read as the one interactive choice on the strip.
 fn hf_quant_pill(quant: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-hf-quant".into()))
+    control(div(), ElementId::Name("models-hf-quant".into()))
         .cursor_pointer()
         .rounded(px(999.0))
         .border_1()
@@ -1343,8 +1376,7 @@ fn hf_quant_pill(quant: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::D
 
 /// The ✕ close button on the HF results strip header.
 fn hf_close_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-hf-close".into()))
+    control(div(), ElementId::Name("models-hf-close".into()))
         .w(px(24.0))
         .h(px(24.0))
         .flex()
@@ -1400,8 +1432,7 @@ fn pull_submit_button(
     cx: &mut Context<ModelsPanel>,
 ) -> Stateful<gpui::Div> {
     let listener_input = input.clone();
-    div()
-        .id(ElementId::Name("models-pull-submit".into()))
+    control(div(), ElementId::Name("models-pull-submit".into()))
         .px_4()
         .py_2()
         .rounded(px(8.0))
@@ -1425,8 +1456,7 @@ fn pull_submit_button(
 }
 
 fn cancel_pull_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-pull-cancel".into()))
+    control(div(), ElementId::Name("models-pull-cancel".into()))
         .px_4()
         .py_2()
         .rounded(px(8.0))
@@ -1541,8 +1571,7 @@ fn recommendations_strip(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> 
 fn recommendation_chip(rec: Recommendation, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let name_for_click = rec.name.clone();
     let id: ElementId = ElementId::Name(format!("models-rec::{}", rec.name).into());
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_1()
         .rounded(px(999.0))
@@ -1718,8 +1747,7 @@ fn confirm_strip(cx: &mut Context<ModelsPanel>) -> gpui::Div {
                 )),
         )
         .child(
-            div()
-                .id(ElementId::Name("models-confirm-yes".into()))
+            control(div(), ElementId::Name("models-confirm-yes".into()))
                 .px_3()
                 .py_1()
                 .rounded(px(4.0))
@@ -1740,8 +1768,7 @@ fn confirm_strip(cx: &mut Context<ModelsPanel>) -> gpui::Div {
                 .child(SharedString::from("Yes, delete")),
         )
         .child(
-            div()
-                .id(ElementId::Name("models-confirm-no".into()))
+            control(div(), ElementId::Name("models-confirm-no".into()))
                 .px_3()
                 .py_1()
                 .rounded(px(4.0))
@@ -1770,8 +1797,7 @@ where
     } else {
         ("☆", TEXT_MUTED)
     };
-    div()
-        .id(id)
+    control(div(), id)
         .w(px(24.0))
         .h(px(24.0))
         .flex()
@@ -1886,8 +1912,7 @@ fn unreachable_state(cx: &mut Context<ModelsPanel>) -> gpui::Div {
 }
 
 fn retry_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-retry".into()))
+    control(div(), ElementId::Name("models-retry".into()))
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -1911,8 +1936,7 @@ fn delete_button<F>(id: ElementId, listener: F) -> Stateful<gpui::Div>
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(id)
+    control(div(), id)
         .px_2()
         .py_1()
         .rounded(px(4.0))
@@ -1956,8 +1980,7 @@ fn search_strip(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> Stateful<
 }
 
 fn clear_search_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-search-clear".into()))
+    control(div(), ElementId::Name("models-search-clear".into()))
         .w(px(28.0))
         .h(px(28.0))
         .flex()
@@ -2003,8 +2026,17 @@ fn no_match_state(query: &str) -> gpui::Div {
         )
 }
 
-fn empty_installed_state() -> gpui::Div {
-    div()
+/// The genuinely-empty store (#235 arm 3): a *recommendation* with its
+/// warnings, and a button that pulls it — never an auto-download.
+///
+/// `rec` is the harness's recommend payload (`models.resolve_default`).
+/// When it hasn't landed yet — a down harness, or the reply still in
+/// flight — the card degrades to the pre-#235 copy rather than inventing
+/// a model name locally: the recommendation and its warnings have one
+/// owner, and a GUI-side guess could name a model the backend never
+/// vetted.
+fn empty_installed_state(rec: Option<&Recommended>, cx: &mut Context<ModelsPanel>) -> gpui::Div {
+    let card = div()
         .bg(rgb(pack(SURFACE_800)))
         .border_1()
         .border_color(rgb(pack(BORDER_SUBTLE)))
@@ -2021,8 +2053,10 @@ fn empty_installed_state() -> gpui::Div {
                 .text_color(rgb(pack(TEXT_PRIMARY)))
                 .font_weight(FontWeight(weight::SEMIBOLD as f32))
                 .child(SharedString::from("No models installed yet")),
-        )
-        .child(
+        );
+
+    let Some(rec) = rec else {
+        return card.child(
             div()
                 .font_family(FAMILY_INTER)
                 .text_size(px(size::XS))
@@ -2030,7 +2064,82 @@ fn empty_installed_state() -> gpui::Div {
                 .child(SharedString::from(
                     "Pull one of the recommendations above to get started.",
                 )),
+        );
+    };
+
+    let mut card = card.child(
+        div()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::XS))
+            .text_color(rgb(pack(TEXT_SECONDARY)))
+            .child(SharedString::from(format!(
+                "Recommended: {} ({})",
+                rec.model, rec.size
+            ))),
+    );
+
+    // Every warning, verbatim, before the button that acts on them.
+    for w in &rec.warnings {
+        card = card.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(w.clone())),
+        );
+    }
+
+    card.child(pull_recommended_button(&rec.model, cx))
+}
+
+/// The recommend card's action. Labelled with what it will do — pull a
+/// named model of a stated size — so the click is informed, not implied.
+fn pull_recommended_button(model: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
+    let name_for_click = model.to_owned();
+    control(div(), ElementId::Name("models-pull-recommended".into()))
+        .px_3()
+        .py_2()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_DEFAULT)))
+        .cursor_pointer()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::SM))
+        .text_color(rgb(pack(TEXT_PRIMARY)))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut ModelsPanel, _ev, _window, cx| {
+                this.start_pull(name_for_click.clone(), cx);
+            }),
         )
+        .child(SharedString::from(format!("Pull {model}")))
+}
+
+/// The note shown when a starred default no longer resolves — its model
+/// was deleted, and the picker fell through to first-available (#235).
+/// Explanatory, not an error: the fallback already succeeded.
+fn stale_default_note(stale: &str, fell_back_to: Option<&str>) -> gpui::Div {
+    let copy = match fell_back_to {
+        Some(m) => format!(
+            "Your default model “{stale}” is no longer installed — using “{m}” instead. \
+             Star another model to set a new default."
+        ),
+        None => format!(
+            "Your default model “{stale}” is no longer installed, and nothing else is \
+             either. Pull a model below to get started."
+        ),
+    };
+    div()
+        .bg(rgb(pack(SURFACE_800)))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .rounded(px(4.0))
+        .px_3()
+        .py_2()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .child(SharedString::from(copy))
 }
 
 fn loading_row() -> gpui::Div {

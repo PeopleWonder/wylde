@@ -20,10 +20,17 @@
 //! see `recommend::pick`.
 //!
 //! Default-model star: persisted via the harness `models.set_default` /
-//! `models.get_default` pipe verbs (wired 2026-05-30).  The panel reads
-//! `get_default` on load to pre-check the star and writes `set_default`
-//! when the user toggles it; `session_default` stays as the optimistic
-//! mirror so the star updates instantly without waiting on the reply.
+//! `models.get_default` pipe verbs (wired 2026-05-30).  The panel writes
+//! `set_default` when the user toggles the star; `session_default` stays
+//! as the optimistic mirror so the star updates instantly without
+//! waiting on the reply.
+//!
+//! On load the panel reads `models.resolve_default` rather than the raw
+//! `get_default` (#235): the star is only the *first* arm of a
+//! three-step resolution (star-still-installed → first available →
+//! recommend `qwen3.5:9b` with warnings), and pre-checking an
+//! unvalidated star lights up a row for a model the user already
+//! deleted.
 
 use serde_json::{json, Value};
 
@@ -358,6 +365,93 @@ pub async fn get_default() -> Result<Option<String>, String> {
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
         .map(str::to_owned))
+}
+
+/// The resolved default (`models.resolve_default`, #235) — the star
+/// checked against the live on-disk inventory, with the first-available
+/// and recommend fallbacks.  Distinct from [`get_default`], which
+/// reports the *raw* star without validating it: this is what a picker
+/// should select right now.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DefaultResolution {
+    /// The model to select.  `None` only in the recommend arm, where
+    /// nothing is installed to select.
+    pub model: Option<String>,
+    /// `"default"` | `"first_available"` | `"recommend"`.
+    pub source: String,
+    /// A star that was set but no longer resolves (its model was
+    /// deleted).  Explanatory only — the fallback already happened.
+    pub stale_default: Option<String>,
+    /// Present only in the recommend arm.
+    pub recommendation: Option<Recommended>,
+}
+
+/// The recommend arm's payload — what to pull, and every warning that
+/// must be shown with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Recommended {
+    pub model: String,
+    /// Human-readable download size, e.g. `"6.6 GB"`.
+    pub size: String,
+    /// Rendered verbatim.  The harness owns this copy so a second
+    /// surface can't drift from it.
+    pub warnings: Vec<String>,
+}
+
+impl DefaultResolution {
+    pub fn from_value(v: &Value) -> Self {
+        let str_field = |k: &str| {
+            v.get(k)
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        let recommendation = v.get("recommendation").filter(|r| !r.is_null()).map(|r| {
+            let s = |k: &str| {
+                r.get(k)
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            Recommended {
+                model: s("model"),
+                size: s("size"),
+                warnings: r
+                    .get("warnings")
+                    .and_then(|w| w.as_array())
+                    .map(|w| {
+                        w.iter()
+                            .filter_map(|x| x.as_str())
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            }
+        });
+        Self {
+            model: str_field("model"),
+            source: str_field("source").unwrap_or_default(),
+            stale_default: str_field("stale_default"),
+            recommendation,
+        }
+    }
+}
+
+/// Resolve the default model against the live inventory (#235).
+///
+/// Soft-fails like the other read verbs: an `Err` here means the harness
+/// or the model store was unreachable, and the caller must keep whatever
+/// selection it already had rather than treating the failure as "nothing
+/// installed" (#132 — unreachable is not empty).
+pub async fn resolve_default() -> Result<DefaultResolution, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "models.resolve_default", "payload": {} })),
+    )
+    .await?;
+    Ok(DefaultResolution::from_value(&v))
 }
 
 /// Persist the default-model star.  `Some(name)` stars it; `None` clears

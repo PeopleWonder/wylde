@@ -320,6 +320,52 @@ The rules:
                             seven weeks, with nothing failing in between.
                             Opt out with
                             ``wylde-check: personal-identifier-ok``.
+56. ``graph_test_serialized_on_db_lock`` — every Rust integration-test
+                            binary (``rust/crates/**/tests/*.rs``) with two or
+                            more *live-graph* tests (a ``#[test]`` /
+                            ``#[tokio::test]`` that is also ``#[ignore]``d with
+                            a reason naming ``bolt://`` / Neo4j / Memgraph)
+                            must (a) acquire a per-test ``DB_LOCK`` in every
+                            such test body — directly
+                            (``DB_LOCK.lock().await``) or via a same-file
+                            ``db_guard()`` helper — and (b) be run in the
+                            live-graph leg of ``.github/workflows/ci.yml`` (a
+                            ``--test <stem> … --ignored`` invocation).  The
+                            self-collision class (#83) recurred three times
+                            (#216/#227) because the lock was a convention a
+                            reviewer had to remember and CI ran these
+                            ``#[ignore]``d tests only in a dedicated job; a
+                            binary added later without the lock — or one that
+                            holds the lock but isn't in the leg — now turns the
+                            build red.  Every live-graph binary in the tree
+                            reaches the graph over Bolt, which the leg stands up.
+                            Single-test live-graph binaries can't self-collide
+                            and are out of scope.  Findings carry a pointer to
+                            the #83 class's diagnosis home,
+                            docs/trackers/self-collision-class.md, when that
+                            doc is present — a SELF-EXPIRING tracker, so the
+                            pointer is presence-gated via
+                            ``rules._tracker_ref.tracker_pointer`` and simply
+                            goes quiet once the doc is auto-deleted (#253).
+                            Details in docs/wylde_check_rules.md.
+58. ``chat_surfaces_are_e2e_covered`` — every GUI chat entry point must be
+                            driven by the all-surfaces chat-turn e2e
+                            (``Core/GUI/Frontend/Panels/Chat/tests/
+                            chat_turn_e2e.rs``, #236).  Two checks the Rust
+                            compiler cannot make: (a) every ``ChatScope``
+                            variant appears in the test's ``COVERED`` list —
+                            an arm can be added to the exhaustive ``spec()``
+                            match without ever being driven; and (b) every
+                            *send-capable chat composer* in the GUI tree (a
+                            ``SubmitMode::EnterSubmits`` input in a file that
+                            also reaches the turn path) is declared in
+                            ``COVERED_COMPOSER_FILES`` — a new panel growing
+                            its own chat bar adds no ``ChatScope`` variant, so
+                            the match is blind to it.  Chat is the product's
+                            primary path; a new place to type into it must be
+                            proven end-to-end before it ships, not covered by
+                            a percentage that quietly drops.  Details in
+                            docs/wylde_check_rules.md.
 
 All rules are advisory.  The checker returns an envelope; nothing here
 mutates state.
@@ -408,6 +454,9 @@ from .rules._gpui_contract import (  # noqa: E402
     check_panel_verbs_exist_in_harness_registry,
     check_required_services_includes_called_services,
 )
+from .rules._gpui_availability import (  # noqa: E402
+    check_service_backed_surface_declares_availability,
+)
 from .rules._gpui_nav import (  # noqa: E402
     check_nav_targets_exist,
 )
@@ -435,7 +484,26 @@ from .rules._silent_skip_in_service_start import (  # noqa: E402
 from .rules._personal_identifiers import (  # noqa: E402
     check_no_personal_identifiers,
 )
+from .rules._graph_test_isolation import (  # noqa: E402
+    check_graph_test_serialized_on_db_lock,
+)
+from .rules._chat_surface_coverage import (  # noqa: E402
+    check_chat_surfaces_are_e2e_covered,
+)
+from .rules._global_bus_test_isolation import (  # noqa: E402
+    check_global_bus_test_isolation,
+)
+from .rules._control_functionality import (  # noqa: E402
+    check_gui_controls_are_wired_and_walkable,
+    check_every_control_building_crate_is_walked,
+)
 from .rules._selfcheck import check_rule_targets_exist  # noqa: E402
+from .rules._dependency_spread import (  # noqa: E402
+    check_dependency_spread_ratchet,
+)
+from .rules._axum_public_api import (  # noqa: E402
+    check_no_axum_types_in_public_api,
+)
 from ._single_file import (  # noqa: E402
     _check_dead_refs_lines,
     _check_pipe_name_convention_lines,
@@ -469,6 +537,9 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     "panel_verbs_exist_in_harness_registry": check_panel_verbs_exist_in_harness_registry,
     "nav_targets_exist": check_nav_targets_exist,
     "required_services_includes_called_services": check_required_services_includes_called_services,
+    "service_backed_surface_declares_availability": (
+        check_service_backed_surface_declares_availability
+    ),
     "manifest_factory_resolves": check_manifest_factory_resolves,
     "stream_call_must_handle_cancel": check_stream_call_must_handle_cancel,
     # Rules 44-45 — launcher / shutdown correctness (slice-11 cutover).
@@ -504,7 +575,50 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # because nothing failed in between. Name tokens are matched as
     # salted digests so this rule is not itself the leak.
     "no_personal_identifiers": check_no_personal_identifiers,
+    # Rule 56 — multi-test bolt:// binaries must serialize each test on a
+    # DB_LOCK and be run in the live-graph CI leg (0.2 Stability, #226). The
+    # #83 self-collision class recurred three times because the lock was an
+    # unenforced convention; this makes it structural.
+    "graph_test_serialized_on_db_lock": check_graph_test_serialized_on_db_lock,
+    # Rule 57 — every GUI chat entry point is driven by the all-surfaces
+    # chat-turn e2e (#236). The exhaustive ChatScope match in that test is
+    # the compile-time half; this catches the two cases it cannot see —
+    # an arm added but never driven, and a brand-new chat bar elsewhere.
+    "chat_surfaces_are_e2e_covered": check_chat_surfaces_are_e2e_covered,
+    # Rule 59 — every interactive GUI control is wired and walkable (#247).
+    # The static half of the control-functionality gate: a dead handler
+    # body, and an interactive site that bypasses `controls::control()` and
+    # so never enters the per-frame registry the control walk enumerates.
+    # Error, with a per-file grandfather ratchet over the 140 pre-existing
+    # sites: this job fails on any finding, so WARN would red develop too.
+    "gui_controls_are_wired_and_walkable": check_gui_controls_are_wired_and_walkable,
+    # Rule 61 — rule 59's companion and the other half of #247. Rule 59 proves
+    # every control *site* routes through `control()`; this proves the *walk
+    # exists and sees every control-building file*: a GUI crate whose shipped
+    # src builds a control must have a control_walk declaring every such file in
+    # `.sources()`. Together they mean a control can neither bypass the registry
+    # nor sit in a file no walk's coverage assertion inspects. Added with the
+    # deletion of rule 59's grandfather ratchet (the migration is complete).
+    "every_control_building_crate_is_walked": check_every_control_building_crate_is_walked,
+    # Rule 60 — a unit test touching a process-global broadcast bus must own
+    # its channel or serialize on a test-module guard (#246). The other half
+    # of rule 56's #83 self-collision class: same hazard, but in a `src/`
+    # unit-test module rather than a `tests/` binary, and with no
+    # minimum-count carve-out — #246 had exactly ONE bus-touching test, and
+    # its colliders never mentioned the bus at all.
+    "global_bus_test_isolation": check_global_bus_test_isolation,
     "rule_targets_exist": check_rule_targets_exist,
+    # Rule 59 — dependency-spread ratchet (#290 dependency isolation). The
+    # forward-looking half of #290: freezes each external dep's crate-spread
+    # at today's baseline so unwrapped shotgun-risk (rand → 2 crates, axum →
+    # 3) can't silently re-accumulate. Contained deps (rand, cpal) pinned to
+    # their adapter's owning crate; reqwest (12) is the named watch target.
+    "dependency_spread_ratchet": check_dependency_spread_ratchet,
+    # Rule 63 — no axum types in a non-gateway crate's public API (#290 axum
+    # containment enforcement). Companion to #293's `router()` → `pub(crate)`
+    # fix: locks in that axum (an HTTP framework, housed in wylde-gateway) can
+    # never bleed across a crate's public boundary into a shared API.
+    "no_axum_types_in_public_api": check_no_axum_types_in_public_api,
 }
 
 # Asserting the count at import time so a future rule add/drop trips the
@@ -532,7 +646,50 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # structurally dead (target tree deleted in the Rust cutover — they
 # walked nothing and could only report a pass) and seven were Python-only
 # rules with no production Python left.  52 - 22 = 30.
-assert len(_RULES) == 30, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 30)"
+# 0.2 Stability enforcement (#226, 2026-07-22): +1 (rule 56,
+# graph_test_serialized_on_db_lock) = 31 active.  Makes the shared-Neo4j
+# per-test DB_LOCK + live-graph CI coverage a structural gate, so the #83
+# self-collision class (which recurred three times) cannot recur silently.
+# 0.2 Stability enforcement (#239, 2026-07-22): +1 (rule 57,
+# service_backed_surface_declares_availability) = 32 active. Rule 40 gates a
+# panel's dependence on services, but the unit that can be dead is the *item*,
+# not the panel — Tools declared its bridge correctly and still rendered a card
+# per extension pointing at a service nothing checked. This makes the per-item
+# state a structural gate on both sides of the wire.
+# All-surfaces chat-turn e2e (#236, 2026-07-22): +1 (rule 58,
+# chat_surfaces_are_e2e_covered) = 33 active.  Chat is the primary path
+# and has more than one entry point; this keeps a newly-added surface
+# from shipping with no end-to-end proof that typing in it does anything.
+# (Numbered 58, not 57: #239 landed its own rule 57 on develop first.)
+# GUI control-functionality enforcement (#247, 2026-07-23): +1 (rule 59,
+# gui_controls_are_wired_and_walkable) = 34 active.  Panel-walk proves a
+# panel LOADS; nothing proved a control in it DOES anything.  Ships at
+# Ships at error with a grandfather ratchet rather than at WARNING: the CI
+# gate fails on any finding, warning included, so "warn for now" would red
+# develop just as hard.  (Numbered 59, not 58: #236 landed 58 first.)
+# Global-bus test isolation (#246, 2026-07-23): +1 (rule 60,
+# global_bus_test_isolation) = 35 active.  The `src/`-unit-test half of the
+# #83 self-collision class rule 56 covers for `tests/` binaries: a watcher
+# test asserting on the first event off a process-global broadcast bus was
+# really asserting that no sibling test published during its window, and
+# failed ~17% of the time at --test-threads=8 on unrelated PRs.  No
+# minimum-count carve-out, unlike rule 56 — #246 had exactly one
+# bus-touching test and its colliders never named the bus.
+# #247 endgame (2026-07-26): +1 (rule 61, every_control_building_crate_is_walked)
+# = 36 active. Rule 59's companion: it makes a control_walk mandatory for every
+# control-building GUI crate (declaring all its control sources), landed together
+# with the deletion of rule 59's now-drained grandfather ratchet. Closes #247 —
+# every panel is walked and the property is structurally enforced going forward.
+# Dependency isolation (#290, 2026-07-28): +1 (rule 62, dependency_spread_ratchet)
+# = 37 active. The forward-looking half of #290: freezes each external dep's
+# crate-spread at today's baseline so unwrapped shotgun-risk (rand → 2 crates,
+# axum → 3, before they were contained) cannot silently re-accumulate. reqwest
+# (12 crates) is the named watch target.
+# Axum-containment enforcement (#290, 2026-07-28): +1 (rule 63,
+# no_axum_types_in_public_api) = 38 active. Companion to #293's router() ->
+# pub(crate) fix: no fully-pub item outside wylde-gateway may name an axum type,
+# so an HTTP-framework bump can never bleed across a crate's public boundary.
+assert len(_RULES) == 38, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 38)"
 
 
 def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -665,6 +822,7 @@ __all__ = [
     "check_panel_verbs_exist_in_harness_registry",
     "check_nav_targets_exist",
     "check_required_services_includes_called_services",
+    "check_service_backed_surface_declares_availability",
     "check_manifest_factory_resolves",
     "check_stream_call_must_handle_cancel",
     "check_launcher_enumerates_services_from_manifests",
@@ -673,6 +831,11 @@ __all__ = [
     "check_no_bare_tokio_in_panel_src",
     "check_no_panic_in_panel_render",
     "check_rule_targets_exist",
+    "check_dependency_spread_ratchet",
+    "check_no_axum_types_in_public_api",
     "check_silent_skip_in_service_start",
     "check_no_hardcoded_prompts_rust",
+    "check_graph_test_serialized_on_db_lock",
+    "check_chat_surfaces_are_e2e_covered",
+    "check_global_bus_test_isolation",
 ]

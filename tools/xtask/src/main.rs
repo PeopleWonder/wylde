@@ -353,14 +353,14 @@ mod tests {
 
     #[test]
     fn staged_candidates_strip_and_suffix() {
-        let cands = staged_binary_candidates("wylde-images");
+        let cands = staged_binary_candidates("wylde-example");
         let suffix = std::env::consts::EXE_SUFFIX;
-        assert_eq!(cands[0], format!("wylde-images{suffix}"));
-        assert_eq!(cands[1], format!("images{suffix}"));
+        assert_eq!(cands[0], format!("wylde-example{suffix}"));
+        assert_eq!(cands[1], format!("example{suffix}"));
         // No prefix ⇒ used as-is for both forms.
         assert_eq!(
-            staged_binary_candidates("images")[0],
-            format!("wylde-images{suffix}")
+            staged_binary_candidates("example")[0],
+            format!("wylde-example{suffix}")
         );
     }
 
@@ -372,20 +372,20 @@ mod tests {
         touch(
             &root
                 .join("Services")
-                .join("wylde-images")
+                .join("wylde-example")
                 .join("Cargo.toml"),
         );
         touch(
             &root
                 .join("Services")
-                .join("wylde-images")
+                .join("wylde-example")
                 .join("manifest.json"),
         );
         fs::write(
             root.join("Services")
-                .join("wylde-images")
+                .join("wylde-example")
                 .join("manifest.json"),
-            br#"{"name":"wylde-images"}"#,
+            br#"{"name":"wylde-example"}"#,
         )
         .unwrap();
         // A sourceless item (iframe-only extension) — no Cargo.toml.
@@ -395,8 +395,8 @@ mod tests {
 
         let repos = discover_bucket_repos(root);
         let labels: Vec<&str> = repos.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, vec!["Services/wylde-images"]);
-        assert_eq!(repos[0].service_name.as_deref(), Some("wylde-images"));
+        assert_eq!(labels, vec!["Services/wylde-example"]);
+        assert_eq!(repos[0].service_name.as_deref(), Some("wylde-example"));
         assert!(repos[0].stage_into.is_some());
     }
 
@@ -420,26 +420,26 @@ mod tests {
     #[test]
     fn stage_artifact_copies_beside_manifest() {
         let tmp = TempDir::new().unwrap();
-        let repo = tmp.path().join("Services").join("wylde-images");
+        let repo = tmp.path().join("Services").join("wylde-example");
         let suffix = std::env::consts::EXE_SUFFIX;
         let built = repo
             .join("target")
             .join("release")
-            .join(format!("wylde-images{suffix}"));
+            .join(format!("wylde-example{suffix}"));
         touch(&built);
-        let dest = stage_artifact(&repo, &repo, "wylde-images", "release")
+        let dest = stage_artifact(&repo, &repo, "wylde-example", "release")
             .unwrap()
             .expect("a binary was staged");
-        assert_eq!(dest, repo.join(format!("wylde-images{suffix}")));
+        assert_eq!(dest, repo.join(format!("wylde-example{suffix}")));
         assert!(dest.is_file());
     }
 
     #[test]
     fn stage_artifact_returns_none_when_no_binary() {
         let tmp = TempDir::new().unwrap();
-        let repo = tmp.path().join("Services").join("wylde-images");
+        let repo = tmp.path().join("Services").join("wylde-example");
         fs::create_dir_all(repo.join("target").join("release")).unwrap();
-        let got = stage_artifact(&repo, &repo, "wylde-images", "release").unwrap();
+        let got = stage_artifact(&repo, &repo, "wylde-example", "release").unwrap();
         assert!(got.is_none());
     }
 

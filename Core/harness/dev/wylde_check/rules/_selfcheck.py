@@ -122,6 +122,21 @@ RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
         None,
         "panel_crate_must_be_workspace_member",
     ),
+    (
+        ".github/workflows/ci.yml",
+        None,
+        "graph_test_serialized_on_db_lock",
+    ),
+    (
+        "Core/GUI/Frontend/Panels/Chat/src/chat_panel.rs",
+        None,
+        "chat_surfaces_are_e2e_covered",
+    ),
+    (
+        "Core/GUI/Frontend/Panels/Chat/tests/chat_turn_e2e.rs",
+        None,
+        "chat_surfaces_are_e2e_covered",
+    ),
     # ── walk roots (cardinality: at least one matching file) ──
     (
         "rust/crates",
@@ -129,7 +144,8 @@ RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
         "import_paths_rust, no_silent_error_swallow_rust, "
         "logging_setup_only_rust, no_external_process_spawn_rust, "
         "no_hardcoded_prompts_rust, no_unbounded_log_sink_rust, "
-        "service_owns_its_state, file_size_limit",
+        "service_owns_its_state, file_size_limit, "
+        "graph_test_serialized_on_db_lock",
     ),
     (
         "rust/crates/wylde-gateway/src",
@@ -143,6 +159,14 @@ RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
         "nav_targets_exist, file_size_limit",
     ),
     (
+        # Rule 59's corpus, listed separately from "Core/GUI" above because
+        # it walks the Shell as well as the Frontend — the Shell owns the nav
+        # chrome, and a control gate blind to it would be half a gate.
+        "Core/GUI/Shell/src",
+        (".rs",),
+        "gui_controls_are_wired_and_walkable",
+    ),
+    (
         "Core/GUI/Frontend/Panels",
         (".rs",),
         "no_legacy_gui_imports_in_panels, no_bare_tokio_in_panel_src, "
@@ -152,7 +176,17 @@ RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
         "Core/GUI/Frontend/Panels",
         (".json",),
         "first_party_manifest_must_be_gpui_view, "
-        "required_services_includes_called_services, manifest_factory_resolves",
+        "required_services_includes_called_services, manifest_factory_resolves, "
+        "service_backed_surface_declares_availability",
+    ),
+    (
+        # The producer half of rule 57's corpus. Wholesale, because exactly
+        # one file in `rust/` models a GUI-rendered remote surface — if it
+        # moves, rule 57 silently stops policing the side that mints the
+        # availability verdict.
+        "rust/crates/wylde-extension-bridge/src/host.rs",
+        None,
+        "service_backed_surface_declares_availability",
     ),
     (
         "Core/GUI/Frontend/Panels",

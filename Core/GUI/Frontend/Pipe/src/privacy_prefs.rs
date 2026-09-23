@@ -133,6 +133,22 @@ pub fn persist(next: PrivacyPrefs) -> Result<(), String> {
     write_to_path(&prefs_path(), &next)
 }
 
+/// Dev-only: seed the in-memory cache directly, with no disk write.
+///
+/// A control walk (#247) needs to exercise the privacy-gated affordances —
+/// the Models panel's "Search HuggingFace" catalog row only paints when
+/// `hf_search_enabled`. It cannot use [`persist`], which writes to
+/// `$WYLDE_ROOT/data/settings/privacy.json` — a stray file (and, via the
+/// `WYLDE_ROOT` default of `.`, a write into the repo/CWD under CI). This
+/// touches only the process-global cache, exactly like the tests that need it.
+///
+/// Behind `test-support`, requested only from `[dev-dependencies]`, so the
+/// shipped Shell has no cache-seed path at all.
+#[cfg(feature = "test-support")]
+pub fn set_cache_for_test(prefs: PrivacyPrefs) {
+    *cache().lock().unwrap_or_else(|e| e.into_inner()) = prefs;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

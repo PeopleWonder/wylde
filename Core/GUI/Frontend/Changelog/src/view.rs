@@ -14,6 +14,7 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::{bundled, parse_changelog, ChangelogSection};
+use wylde_gui_controls::control;
 
 /// How many version sections one "page" reveals. Small enough that the first
 /// paint is a couple of versions, not the whole file; scrolling (or the
@@ -302,8 +303,7 @@ fn load_more_row(remaining: usize, cx: &mut Context<ChangelogView>) -> gpui::Sta
     } else {
         format!("Show older versions ▾  ({remaining} more)")
     };
-    div()
-        .id("wylde-changelog-load-more")
+    control(div(), "wylde-changelog-load-more")
         .mt_4()
         .py_2()
         .flex()

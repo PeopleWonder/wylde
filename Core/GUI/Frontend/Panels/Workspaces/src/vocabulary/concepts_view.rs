@@ -25,6 +25,7 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 use crate::workspaces_panel::pack;
 
 use super::concepts_ipc::{self, ConceptView, ScoredConceptView};
+use wylde_gui_controls::control;
 
 /// The separator the backend inserts between a concept's base label and its
 /// disambiguating token (`Composer · models`). Same-base-name concepts group
@@ -279,8 +280,7 @@ impl ConceptsView {
                 scored.semantic * 100.0
             ));
         }
-        let mut card = div()
-            .id(("concept-card", i))
+        let mut card = control(div(), ("concept-card", i))
             .flex()
             .flex_col()
             .gap_0p5()
@@ -375,8 +375,7 @@ impl ConceptsView {
         F: Fn(&mut Self, &mut Context<Self>) + 'static,
     {
         let bg = if accent { BRAND } else { SURFACE_800 };
-        div()
-            .id(id)
+        control(div(), id)
             .px_2()
             .py_0p5()
             .rounded(px(4.0))
@@ -403,6 +402,8 @@ impl Render for ConceptsView {
             .unwrap_or_else(|| "no active workspace".to_owned());
 
         let mut root = div()
+            // wylde-check: control-ok: the sub-tab root is a layout container
+            // (Build/Refresh, cards, group rows, "view in graph" are controls).
             .id("workspaces-concepts-subtab")
             .flex()
             .flex_col()
@@ -479,8 +480,7 @@ impl Render for ConceptsView {
             let expanded = self.expanded_groups.contains(&base);
             let chevron = if expanded { "▾" } else { "▸" };
             let base_for_click = base.clone();
-            let parent = div()
-                .id(("concept-group", gi))
+            let parent = control(div(), ("concept-group", gi))
                 .px_2()
                 .py_1()
                 .rounded(px(4.0))
@@ -577,5 +577,81 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(dir_file_signal(&one), "1 dir · 1 file");
+    }
+}
+
+#[cfg(test)]
+mod control_walk {
+    //! L7 **control**-walk — the Concepts sub-tab (issue #247).
+    //!
+    //! In-crate: the cards, group rows and "view in graph" only paint over a
+    //! populated `results` set (a workspace scan), and only the private
+    //! `results` / `expanded` / `expanded_groups` fields reach those frames.
+    //! Runs in CI via the `panel-walk` alias (lib unit tests included).
+
+    use super::{ConceptView, ConceptsView, ScoredConceptView};
+    use gpui::TestAppContext;
+    use serde_json::json;
+    use wylde_gui_test_support::control_walk::ControlWalk;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    fn scored(id: &str, label: &str, member: &str) -> ScoredConceptView {
+        ScoredConceptView {
+            concept: ConceptView {
+                id: id.to_string(),
+                label: label.to_string(),
+                members: vec![member.to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[gpui::test]
+    fn every_concepts_control_does_something(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on("workspaces.list_mru", json!({ "active_id": "ws-a" }))
+            .on("workspaces.concepts.search", json!({ "results": [] }))
+            .on("workspaces.concepts.build", json!({ "built": 0 }));
+        let _guard = fake.clone().install();
+        let window = cx.add_window(|_w, cx| ConceptsView::new(cx));
+        cx.run_until_parked();
+
+        ControlWalk::new(window, &fake)
+            .fingerprint(|v: &ConceptsView| {
+                format!(
+                    "res={} exp={} grp={} loading={} building={} err={}",
+                    v.results.len(),
+                    v.expanded.len(),
+                    v.expanded_groups.len(),
+                    v.loading,
+                    v.building,
+                    v.error.is_some(),
+                )
+            })
+            .reset(|v: &mut ConceptsView, _w, cx| {
+                // One single-item group (a plain card) and one multi-item group
+                // (a "Composer" parent row + its children), with the card and
+                // the group pre-expanded so the "view in graph" deep-link and
+                // the child cards paint. `base_label` groups on " · ".
+                v.loading = false;
+                v.building = false;
+                v.error = None;
+                v.workspace_id = Some("ws-a".to_string());
+                v.results = vec![
+                    scored("c1", "Auth", "auth::login"),
+                    scored("c2", "Composer · one", "composer::a"),
+                    scored("c3", "Composer · two", "composer::b"),
+                ];
+                v.expanded.clear();
+                v.expanded.insert("c1".to_string());
+                v.expanded_groups.clear();
+                v.expanded_groups.insert("Composer".to_string());
+                cx.notify();
+            })
+            .sources(&[include_str!("concepts_view.rs")])
+            .run(cx)
+            .assert_every_control_lives()
+            .assert_covers_every_literal_id();
     }
 }

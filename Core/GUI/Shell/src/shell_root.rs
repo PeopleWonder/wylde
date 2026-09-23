@@ -24,10 +24,10 @@ use gpui::{div, prelude::*, AnyView, AsyncApp, Context, IntoElement, Render, Win
 use wylde_panel_registry::{PanelEntry, PanelOrigin, PanelRegistry, PanelSource};
 use wylde_webview::IframeHost;
 
-use crate::nav::{NavModel, NavOrigin, NavRow, SlotState};
-use crate::resource_meter::{ResourceSnapshot, SVC_BROKER};
-use crate::sidebar::render_sidebar;
-use crate::slot::{render_slot, start_service_action, IframeFrame};
+use wylde_gui_shell_chrome::{
+    render_sidebar, render_slot, start_service_action, IframeFrame, IframeHealth, NavChromeHost,
+    NavModel, NavOrigin, NavRow, ResourceSnapshot, SlotState, SVC_BROKER,
+};
 
 /// How often [`Shell::spawn_health_probes`] re-probes each required
 /// service.  Chosen to recover the Chat panel's gate within a few
@@ -43,21 +43,11 @@ const HEALTH_POLL_INTERVAL: Duration = Duration::from_secs(3);
 /// lock-step and never disagree by more than one interval.
 const RESOURCE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Where the iframe's URL-reachability probe lives in its lifecycle.
-///
-/// The lifecycle is:
-///   `Probing` → `Healthy` (slot mounts the WebView)
-///   `Probing` → `Unhealthy(msg)` (slot renders the existing
-///                ServiceUnavailable stub)
-///
-/// A `Healthy` result can flip back to `Unhealthy` when the user hits
-/// the slot's "Reconnect" affordance (lands in a follow-on slice).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IframeHealth {
-    Probing,
-    Healthy,
-    Unhealthy(String),
-}
+// `IframeHealth` (the iframe URL-reachability probe's lifecycle:
+// `Probing` → `Healthy` mounts the WebView, `Probing`/`Healthy` → `Unhealthy`
+// renders the ServiceUnavailable stub) now lives in `wylde-gui-shell-chrome`
+// beside the slot renderer that reads it — plain data, no `wry`, so the
+// nav-chrome crate the L7 walk builds is webview-free (#247).
 
 /// Per-iframe-panel runtime state owned by the Shell.
 ///
@@ -199,8 +189,8 @@ impl Shell {
                 // the Ollama daemon is down, so gate readiness on the body.
                 let (healthy, reason) = match wylde_gui_pipe::service_health(&svc).await {
                     Ok(body) => (
-                        crate::nav::service_health_body_is_ready(&svc, &body),
-                        crate::nav::service_health_reason(&body),
+                        wylde_gui_shell_chrome::service_health_body_is_ready(&svc, &body),
+                        wylde_gui_shell_chrome::service_health_reason(&body),
                     ),
                     Err(_) => (false, None),
                 };
@@ -512,8 +502,8 @@ impl Shell {
             // pipe answering ok isn't enough; the upstream daemon must be up.
             let (healthy, reason) = match wylde_gui_pipe::service_health(&service_for_async).await {
                 Ok(body) => (
-                    crate::nav::service_health_body_is_ready(&service_for_async, &body),
-                    crate::nav::service_health_reason(&body),
+                    wylde_gui_shell_chrome::service_health_body_is_ready(&service_for_async, &body),
+                    wylde_gui_shell_chrome::service_health_reason(&body),
                 ),
                 Err(_) => (false, None),
             };
@@ -522,6 +512,32 @@ impl Shell {
             });
         });
         task.detach();
+    }
+}
+
+/// The nav chrome ([`wylde_gui_shell_chrome`]) renders against this trait rather
+/// than the concrete `Shell`, so it lives in a `wry`-free crate the L7 walk can
+/// build. Pure delegation to the inherent methods above — each `self.method(…)`
+/// call resolves to the inherent method (which shadows the same-named trait
+/// method in method-call syntax), so there is no recursion.
+impl NavChromeHost for Shell {
+    fn on_nav_click(&mut self, key: &str) -> bool {
+        self.on_nav_click(key)
+    }
+    fn on_start_service_click(&mut self, service: Arc<str>, cx: &mut Context<Self>) {
+        self.on_start_service_click(service, cx)
+    }
+    fn open_changelog(&mut self, cx: &mut Context<Self>) {
+        self.open_changelog(cx)
+    }
+    fn on_update_click(&mut self, cx: &mut Context<Self>) {
+        self.on_update_click(cx)
+    }
+    fn on_ignore_click(&mut self, version: String, cx: &mut Context<Self>) {
+        self.on_ignore_click(version, cx)
+    }
+    fn close_changelog(&mut self, cx: &mut Context<Self>) {
+        self.close_changelog(cx)
     }
 }
 
@@ -610,13 +626,13 @@ impl Render for Shell {
 
         if show_pill {
             if let Some(version) = available_version {
-                root = root.child(crate::update_pill::render_update_pill(&version, cx));
+                root = root.child(wylde_gui_shell_chrome::render_update_pill(&version, cx));
             }
         }
 
         // The changelog pop-up, layered above everything while open.
         if let Some(view) = self.changelog.as_ref() {
-            root = root.child(crate::update_pill::render_changelog_modal(view, cx));
+            root = root.child(wylde_gui_shell_chrome::render_changelog_modal(view, cx));
         }
 
         root
@@ -699,9 +715,9 @@ fn registry_key_matches(origin: &PanelOrigin, id: &str, target: &str) -> bool {
 /// `LogicalSize`.
 pub fn slot_bounds(window: &Window) -> wylde_webview::Bounds {
     let viewport = window.viewport_size();
-    let w = (viewport.width.to_f64() - crate::sidebar::SIDEBAR_WIDTH as f64).max(1.0);
+    let w = (viewport.width.to_f64() - wylde_gui_shell_chrome::SIDEBAR_WIDTH as f64).max(1.0);
     let h = viewport.height.to_f64().max(1.0);
-    wylde_webview::Bounds::new(crate::sidebar::SIDEBAR_WIDTH as f64, 0.0, w, h)
+    wylde_webview::Bounds::new(wylde_gui_shell_chrome::SIDEBAR_WIDTH as f64, 0.0, w, h)
 }
 
 /// Suppress the dead-code lint until the panel-registry import is
