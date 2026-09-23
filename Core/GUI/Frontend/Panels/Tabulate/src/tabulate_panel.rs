@@ -18,6 +18,7 @@ use gpui::{
     FontWeight, IntoElement, Render, SharedString, Window,
 };
 use wylde_gpui_input::TextInput;
+use wylde_gui_controls::control;
 use wylde_theme::colors::{
     BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_DIM, DANGER, SURFACE_700, SURFACE_800, SURFACE_900,
     TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY, WARNING,
@@ -452,8 +453,7 @@ fn button(
     border: gpui::Rgba,
     on_click: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(ElementId::Name(id.into()))
+    control(div(), ElementId::Name(id.into()))
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -472,8 +472,7 @@ fn format_button(
     selected: bool,
     cx: &mut Context<TabulatePanel>,
 ) -> impl IntoElement {
-    div()
-        .id(ElementId::Name(format!("fmt-{}", f.wire()).into()))
+    control(div(), ElementId::Name(format!("fmt-{}", f.wire()).into()))
         .px_3()
         .py_1()
         .rounded(px(4.0))

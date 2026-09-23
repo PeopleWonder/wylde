@@ -18,9 +18,23 @@ wylde-gui-pipe = { path = "../../Pipe" }
 # Single-line text input for the input-file path field.
 wylde-gpui-input = { path = "../../Input" }
 
+# Control constructor: every clickable id routes through `control()` so the L7
+# control walk enumerates and clicks it (#247, wylde_check rules 59/61).
+wylde-gui-controls = { path = "../../Controls" }
+
 # gpui — every panel imports the same set: div builders, Render, etc.
 gpui.workspace = true
 
 serde.workspace      = true
 serde_json.workspace = true
 anyhow.workspace     = true
+
+# ── DEV-ONLY (windowed gpui tests: the L7 control walk) ──────────────
+# dev-dependencies only, so resolver = "2" never unifies `test-support` into
+# the shipped Shell's normal lib (docs/gui-testing.md).
+[dev-dependencies]
+wylde-gui-controls = { path = "../../Controls", features = ["test-support"] }
+wylde-gui-test-support = { path = "../../test-support" }
+gpui = { workspace = true, features = ["test-support"] }
+wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
+serde_json.workspace = true

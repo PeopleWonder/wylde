@@ -20,6 +20,10 @@ wylde-gui-pipe = { path = "../../Pipe" }
 # confirmation phrase.
 wylde-gpui-input = { path = "../../Input" }
 
+# Control constructor: every clickable id routes through `control()` so the L7
+# control walk enumerates and clicks it (#247, wylde_check rules 59/61).
+wylde-gui-controls = { path = "../../Controls" }
+
 # gpui — every panel imports the same set: div builders, Render, etc.
 gpui.workspace = true
 
@@ -32,6 +36,7 @@ anyhow.workspace     = true
 # dev-dependencies only, so resolver = "2" never unifies `test-support` into
 # the shipped Shell's normal lib.
 [dev-dependencies]
+wylde-gui-controls = { path = "../../Controls", features = ["test-support"] }
 wylde-gui-test-support = { path = "../../test-support" }
 gpui = { workspace = true, features = ["test-support"] }
 wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }

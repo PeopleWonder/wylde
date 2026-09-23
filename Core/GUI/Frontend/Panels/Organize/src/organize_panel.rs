@@ -21,6 +21,7 @@ use gpui::{
     FontWeight, IntoElement, Render, SharedString, Window,
 };
 use wylde_gpui_input::TextInput;
+use wylde_gui_controls::control;
 use wylde_theme::colors::{
     BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_DIM, SURFACE_700, SURFACE_800, SURFACE_900,
     TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
@@ -114,7 +115,7 @@ impl OrganizePanel {
     /// Factory entry — matches the manifest factory string
     /// (`wylde_panel_organize::OrganizePanel::view`).
     pub fn view(_window: &mut Window, cx: &mut App) -> AnyView {
-        cx.new(|cx| Self::new(cx)).into()
+        cx.new(Self::new).into()
     }
 
     pub fn set_tier(&mut self, tier: TierUi, cx: &mut Context<Self>) {
@@ -464,8 +465,7 @@ fn button(
     border: gpui::Rgba,
     on_click: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(ElementId::Name(id.into()))
+    control(div(), ElementId::Name(id.into()))
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -480,8 +480,7 @@ fn button(
 }
 
 fn tier_button(t: TierUi, selected: bool, cx: &mut Context<OrganizePanel>) -> impl IntoElement {
-    div()
-        .id(ElementId::Name(format!("tier-{}", t.wire()).into()))
+    control(div(), ElementId::Name(format!("tier-{}", t.wire()).into()))
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -527,8 +526,7 @@ fn review_row(
                 .child(SharedString::from(line.to_owned())),
         )
         .child(
-            div()
-                .id(id)
+            control(div(), id)
                 .px_2()
                 .py_1()
                 .rounded(px(4.0))

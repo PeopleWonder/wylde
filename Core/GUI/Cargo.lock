@@ -9188,6 +9188,7 @@ dependencies = [
  "serde",
  "serde_json",
  "wylde-gpui-input",
+ "wylde-gui-controls",
  "wylde-gui-pipe",
  "wylde-gui-test-support",
  "wylde-theme",
@@ -9256,7 +9257,9 @@ dependencies = [
  "serde",
  "serde_json",
  "wylde-gpui-input",
+ "wylde-gui-controls",
  "wylde-gui-pipe",
+ "wylde-gui-test-support",
  "wylde-theme",
 ]
 
