@@ -361,3 +361,142 @@ jobs:
       - name: wylde_check self-tests (the gate must fail when a rule itself breaks)
         shell: bash
         run: python -m pytest Core/harness/dev/tests/wylde_check -q
+      # The self-expiring tracker mechanism (#253) — the date logic that decides when a
+      # docs/trackers/*.md is renewed and when it is DELETED. Run here rather than in a
+      # job of its own because it is the same bare-python setup, and because a scheduled
+      # workflow that quietly deletes committed files must not be the one thing in the
+      # tree with no gate. `.github/workflows/tracker-expiry.yml` is the consumer.
+      - name: tracker-expiry date logic (renew-on-touch, delete-past-expiry)
+        shell: bash
+        run: python -m pytest Core/harness/dev/tests/test_tracker_expiry.py -q
+      - name: wylde_check full sweep against the tree (must report zero findings)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, ".")
+          from Core.harness.dev import wylde_check as wc
+
+          res = wc.run_all()
+          findings = res["data"]["findings"]
+          # Rule 55 (no_personal_identifiers) leaves `context` empty on purpose so
+          # a name never lands in a public CI log; every message below is log-safe.
+          for f in findings:
+              print(f'{f["severity"]}: {f["file"]}:{f["line"]}: [{f["rule"]}] {f["message"]}')
+          if findings:
+              by_sev = res["data"]["summary"]["by_severity"]
+              print(f'\n{len(findings)} wylde_check finding(s): {by_sev}')
+              sys.exit(1)
+          print(f'clean: wylde_check reports zero findings across {res["data"]["rules_checked"]} rules')
+          PY
+
+  # --- G4 (clippy, warnings-as-errors) + G6 (fmt --check) — ARMED (was staged).
+  # The tree is now clippy- and fmt-clean across every CI-built workspace
+  # (issue #32), so these steps FAIL the build on the first warning or
+  # unformatted file — a staged gate that can't be turned on protects nothing.
+  # Scope: the four workspaces CI actually builds — rust/, Core/GUI/, and the
+  # two tools/ crates. The rust/spikes/voice-npu-spike workspace is NOT CI-built
+  # (no build/test job), so it is fmt'd for hygiene but deliberately not gated
+  # here. See docs/enforcement-matrix.md rows 10 (G4) + 11 (G6).
+  lint:
+    name: clippy (G4) + fmt (G6)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install clippy + rustfmt (stable)
+        run: rustup component add clippy rustfmt
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            rust -> target
+            Core/GUI -> target
+            tools/xtask -> target
+            tools/wylde-release -> target
+      - name: cargo fmt --check (G6)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ws in rust Core/GUI tools/xtask tools/wylde-release; do
+            echo "== fmt --check $ws =="
+            cargo fmt --all --manifest-path "$ws/Cargo.toml" -- --check
+          done
+      - name: cargo clippy -D warnings (G4)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for ws in rust Core/GUI tools/xtask tools/wylde-release; do
+            echo "== clippy $ws =="
+            cargo clippy --manifest-path "$ws/Cargo.toml" --workspace --all-targets --locked -- -D warnings
+          done
+
+  # --- Dev tooling workspaces (xtask, wylde-release) — cheap compile check so a
+  # bump that breaks the build orchestrator or the release tool is caught too.
+  tools:
+    name: tools build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install Rust (stable)
+        run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: |
+            tools/xtask -> target
+            tools/wylde-release -> target
+      - name: build xtask
+        working-directory: tools/xtask
+        run: cargo build --locked
+      - name: build wylde-release
+        working-directory: tools/wylde-release
+        run: cargo build --locked
+
+  # --- Manifest coverage (#122) — the meta-gate that keeps every dependency /
+  # version enumeration in lockstep with the discovered workspace set. Adding a
+  # `[workspace]` root and forgetting to scan/version/track/require it turns THIS
+  # red with an actionable message, instead of shipping a release tool with an
+  # unscanned vulnerable or copyleft-incompatible dependency (all other checks
+  # green). Pure bash/grep, no toolchain — cheap on ubuntu.
+  manifest-coverage:
+    name: manifest coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: discovery self-test (a new workspace root must be found)
+        shell: bash
+        run: bash tools/check-manifest-coverage.sh --selftest
+      - name: every gated workspace is scanned, versioned, tracked, and required
+        shell: bash
+        run: bash tools/check-manifest-coverage.sh
+
+  # --- Action pinning (#127) — every third-party `uses:` must be pinned to a
+  # full commit SHA, not a mutable tag. A repointed tag on a write-scoped job
+  # (dependabot-automerge.yml holds contents+pull-requests write) is direct repo
+  # write access with no review in the path. Adding a tag-pinned action turns
+  # THIS red with the tag→SHA command to fix it. Pure bash/grep, cheap on ubuntu.
+  actions-pinned:
+    name: actions pinned to SHA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: validator self-test (a tag/branch/short-SHA ref must be rejected)
+        shell: bash
+        run: bash tools/check-actions-pinned.sh --selftest
+      - name: every third-party action is pinned to a commit SHA
+        shell: bash
+        run: bash tools/check-actions-pinned.sh
+
+  # --- Voice preset mirror (#129) — the four voice value-domain lists in the
+  # GUI Settings panel are copies of wylde-voice canonical consts across the
+  # cargo-workspace boundary (the GUI can't import wylde-voice: its audio stack
+  # segfaults headless in panel-walk). A drifted copy offers a picker value the
+  # service validator rejects. This turns THAT red, deriving the pairing from
+  # the `/// Mirrors` comments the code already carries. Pure Python stdlib.
+  voice-presets-mirror:
+    name: voice presets mirror
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: validator self-test (appended / reordered lists must be caught)
+        run: python3 tools/check-voice-presets-mirror.py --selftest
+      - name: each GUI voice preset list equals its wylde-voice canonical const
+        run: python3 tools/check-voice-presets-mirror.py

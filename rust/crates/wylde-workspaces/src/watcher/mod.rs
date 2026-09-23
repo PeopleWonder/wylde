@@ -510,3 +510,4 @@ pub fn resume() -> Option<String> {
 }
 
 #[cfg(test)]
+mod tests;
