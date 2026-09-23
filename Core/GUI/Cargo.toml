@@ -38,6 +38,8 @@ members = [
     "Frontend/Panels/Devices",
     "Frontend/Panels/RemoteAccess",
     "Frontend/Panels/N8n",
+    "Frontend/Panels/Organize",
+    "Frontend/Panels/Tabulate",
     "Manifest/Extension_handlers",
 ]
 # `src-tauri` + `src` are gone (slice-11 cutover) and the orphaned
