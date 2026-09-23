@@ -30,7 +30,7 @@ use crate::envelopes::failure;
 /// `GET /api/conversations` — list every saved conversation, newest-first.
 pub async fn list_conversations(headers: HeaderMap) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     harness_dispatch("conversations.list", Value::Null).await
 }
@@ -38,7 +38,7 @@ pub async fn list_conversations(headers: HeaderMap) -> Response {
 /// `POST /api/conversations` — mint a fresh conversation id.
 pub async fn new_conversation(headers: HeaderMap) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     harness_dispatch("conversations.new", Value::Null).await
 }
@@ -46,7 +46,7 @@ pub async fn new_conversation(headers: HeaderMap) -> Response {
 /// `GET /api/conversations/{id}` — read one conversation by id.
 pub async fn get_conversation(headers: HeaderMap, Path(id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if id.trim().is_empty() {
         return failure("bad_request", "id is required", StatusCode::BAD_REQUEST);
@@ -57,7 +57,7 @@ pub async fn get_conversation(headers: HeaderMap, Path(id): Path<String>) -> Res
 /// `DELETE /api/conversations/{id}` — drop one conversation by id.
 pub async fn delete_conversation(headers: HeaderMap, Path(id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if id.trim().is_empty() {
         return failure("bad_request", "id is required", StatusCode::BAD_REQUEST);

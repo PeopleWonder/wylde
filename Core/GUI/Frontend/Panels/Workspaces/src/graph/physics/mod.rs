@@ -277,12 +277,8 @@ impl PhysicsEngine {
         }
 
         self.equilibrium.reset();
-        for f in &mut self.force_x {
-            *f = 0.0;
-        }
-        for f in &mut self.force_y {
-            *f = 0.0;
-        }
+        self.force_x.fill(0.0);
+        self.force_y.fill(0.0);
 
         // Barnes-Hut over ALL bodies (off-screen nodes still repel visible
         // ones at the boundary).
