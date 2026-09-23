@@ -162,7 +162,12 @@ pub fn build_semantic_concepts_stable(
         drafts.push(concept);
     }
 
-    let next_ordinal = assign_stable_ids(&mut drafts, prior, params.carry_over_threshold, next_ordinal);
+    let next_ordinal = assign_stable_ids(
+        &mut drafts,
+        prior,
+        params.carry_over_threshold,
+        next_ordinal,
+    );
 
     drafts.sort_by(|a, b| a.id.cmp(&b.id));
     disambiguate_labels(&mut drafts);
@@ -632,11 +637,13 @@ mod tests {
         );
         let mut prior = first.concepts.clone();
         prior[0].centroid = Some(drifted_centroid);
-        let second =
-            build_semantic_concepts_stable(&corpus(), &params, &prior, first.next_ordinal);
+        let second = build_semantic_concepts_stable(&corpus(), &params, &prior, first.next_ordinal);
         let ids: std::collections::HashSet<&str> =
             second.concepts.iter().map(|c| c.id.as_str()).collect();
-        assert!(ids.contains(target.id.as_str()), "drifted theme keeps its id");
+        assert!(
+            ids.contains(target.id.as_str()),
+            "drifted theme keeps its id"
+        );
     }
 
     #[test]

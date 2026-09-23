@@ -49,6 +49,7 @@ use crate::state::{self, TurnHandle};
 use crate::turn::chat_options;
 use crate::turn::context_gather;
 use crate::turn::prompt;
+use crate::turn::reasoning;
 use crate::turn::salvage::{self, RecoveredCall, SalvageResult};
 use crate::turn::tool_round::{self, ToolCall, ToolRoundState};
 use crate::turn::workspace_context;
@@ -152,12 +153,20 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     } else {
         Some(device_tier.as_str())
     });
+    // Agentic-reasoning S1: depth rides the payload (payload → config →
+    // Fast). v1 scopes Deep to the STREAMING driver only (plan §1) — the
+    // unary path always runs Fast; a Deep request is honestly flagged in
+    // the reply via `depth_ignored` so extension/N8N callers aren't
+    // silently degraded. Fast (the only value today's callers produce) is
+    // a no-op: no reply field, byte-identical.
+    let depth = reasoning::resolve_depth(&payload);
 
     tracing::debug!(
         turn_id = %turn_id,
         conversation_id = %conversation_id,
         model = %model,
         device_tier = %normalised_tier,
+        depth = depth.as_str(),
         "harness: run_turn entered"
     );
 
@@ -188,6 +197,20 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     )
     .await;
     log_tier7_degrade(&gathered, &conversation_id, slot_budget);
+    // Replay the honest gather activity log (chat-processing-indicator, full
+    // visibility): each retrieval / routing / injection / memory step the
+    // gather actually performed, as ordered `Step` events the GUI dropdown
+    // surfaces. Empty on a plain turn that gathered nothing.
+    for step in &gathered.steps {
+        handle
+            .push_turn_event(TurnEvent::Step {
+                turn_id: turn_id.clone(),
+                stage: step.stage,
+                summary: step.summary.clone(),
+                detail: step.detail.clone(),
+            })
+            .await;
+    }
     let mut messages = initial_messages(
         base_prompt,
         &gathered.history,
@@ -289,6 +312,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
         run_post_turn_hooks(
             &conversation_id,
             workspace_id.as_deref(),
+            &model,
             &user_message,
             &final_text,
         );
@@ -298,7 +322,7 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
     // was requested but unreachable (scope v2 §7.5).
     let final_text = workspace_context::apply_degraded_notice(final_text, gathered.degraded);
 
-    Reply::ok(json!({
+    let mut reply = json!({
         "turn_id": turn_id,
         "conversation_id": conversation_id,
         "final_message": final_text,
@@ -308,7 +332,13 @@ pub async fn handle_run_turn(payload: Value) -> Reply {
             .map(|r| serde_json::to_value(r).unwrap_or(Value::Null))
             .unwrap_or(Value::Null),
         "abort_error": abort_error.map(Value::String).unwrap_or(Value::Null),
-    }))
+    });
+    // Only a planning-tier request grows the reply — the everyday Fast
+    // reply shape is untouched (identity guard).
+    if depth.plans() {
+        reply["depth_ignored"] = json!(true);
+    }
+    Reply::ok(reply)
 }
 
 /// `chat.complete` — single-shot, narrow completion endpoint for
@@ -431,6 +461,18 @@ pub async fn handle_start_turn(payload: Value) -> Reply {
 
     let turn_id = optional_string(&payload, "turn_id").unwrap_or_else(state::new_turn_id);
     let workspace_id = optional_string(&payload, "workspace_id");
+    // Agentic-reasoning: the GUI's fast/deep pill rides the wire as
+    // `depth`; resolved payload → config → Fast. Since S3 the streaming
+    // driver ACTS on it — a Deep turn with the master toggle on runs the
+    // PLAN phase before the ReAct loop. With the toggle off (default) or
+    // depth Fast the gate stays closed and the turn is byte-identical.
+    let depth = reasoning::resolve_depth(&payload);
+    tracing::debug!(
+        turn_id = %turn_id,
+        depth = depth.as_str(),
+        gate_open = reasoning::deep_gate_open(depth),
+        "harness: start_turn depth resolved"
+    );
     let handle = state::register_turn(turn_id.clone(), conversation_id.clone());
 
     let drive_handle = Arc::clone(&handle);
@@ -452,6 +494,7 @@ pub async fn handle_start_turn(payload: Value) -> Reply {
             drive_tier,
             workspace_id,
             drive_overrides,
+            depth,
         )
         .await;
     });
@@ -564,6 +607,12 @@ async fn stream_events(handle: Arc<TurnHandle>, sender: StreamSender, source: So
     }
 }
 
+/// How many newly-streamed tokens accrue before the driver emits a
+/// running [`TurnEvent::Usage`] tick (chat-processing-indicator). Coalesces
+/// Ollama's per-token frames into a few UI updates per turn rather than one
+/// IPC event per token.
+const USAGE_TICK_EVERY: u64 = 16;
+
 /// Streaming turn driver — the spawned task `chat.start_turn` kicks
 /// off. Each round opens a fresh `ollama.chat_stream`, accumulates
 /// assistant text silently (Option A), salvages tool calls at
@@ -572,7 +621,7 @@ async fn stream_events(handle: Arc<TurnHandle>, sender: StreamSender, source: So
 /// when there are no more tool calls.
 #[allow(clippy::too_many_arguments)] // turn-driver fan-out; grouping into a
                                      // struct would only move the noise. Slice G added `conversation_id`; Slice M
-                                     // added the composer's per-message token overrides.
+                                     // added the composer's per-message token overrides; reasoning S3 added `depth`.
 async fn drive_streaming_turn(
     cfg: &'static Config,
     handle: Arc<TurnHandle>,
@@ -583,7 +632,19 @@ async fn drive_streaming_turn(
     device_tier: String,
     workspace_id: Option<String>,
     overrides: context_gather::TokenOverrides,
+    depth: reasoning::Depth,
 ) {
+    // Status line (chat-processing-indicator): the gather below does RAG
+    // retrieval + concept routing/injection and can take a beat, so flag
+    // the phase before it starts. Purely informational; the GUI animates a
+    // Claude-style status from these and degrades gracefully if absent.
+    handle
+        .push_turn_event(TurnEvent::Phase {
+            turn_id: turn_id.clone(),
+            phase: crate::events::TurnPhase::GatheringContext,
+        })
+        .await;
+
     // Gather the turn's context (Slice G) — see `handle_run_turn` for the flow.
     let base_prompt = base_system_prompt(&model);
     let slot_budget = chat_options::slot_budget(&model, &base_prompt, &user_message).await;
@@ -596,6 +657,50 @@ async fn drive_streaming_turn(
     )
     .await;
     log_tier7_degrade(&gathered, &conversation_id, slot_budget);
+    // Replay the honest gather activity log (chat-processing-indicator, full
+    // visibility): each retrieval / routing / injection / memory step the
+    // gather actually performed, as ordered `Step` events the GUI dropdown
+    // surfaces. Empty on a plain turn that gathered nothing.
+    for step in &gathered.steps {
+        handle
+            .push_turn_event(TurnEvent::Step {
+                turn_id: turn_id.clone(),
+                stage: step.stage,
+                summary: step.summary.clone(),
+                detail: step.detail.clone(),
+            })
+            .await;
+    }
+    // Built before the plan seam so the planner validates tool names
+    // against the exact alias map the executor dispatches with (a pure
+    // registry read — order is behaviour-neutral).
+    let alias_map = build_alias_map();
+
+    // Agentic-reasoning S3, seam 1 (post-gather): on a Deep turn with the
+    // master toggle on, run the PLAN phase — one reasoner call grounded in
+    // the turn's own routed concepts / IS-NOT exclusions / lessons. Every
+    // skip or failure path yields `None` and the loop below runs verbatim
+    // (gate closed ⇒ byte-identical fast path; planner failure ⇒ visible
+    // notice + plain ReAct).
+    let mut reasoning_state = reasoning::maybe_plan(
+        cfg,
+        &handle,
+        &turn_id,
+        depth,
+        workspace_id.as_deref(),
+        &user_message,
+        &gathered,
+        &alias_map,
+    )
+    .await;
+
+    // Agentic-reasoning S4b: on a FAST turn with reasoning enabled +
+    // auto_escalate, arm the hard-tool-failure watch (the maintainer's narrowed
+    // identity contract: byte-identical EXCEPT after ≥2 hard failures).
+    // Pure counting — below the threshold nothing is emitted or changed;
+    // toggle off ⇒ `None` and the fast path carries no watch at all.
+    let mut escalation_watch = reasoning::arm_escalation(depth);
+
     let mut messages = initial_messages(
         base_prompt,
         &gathered.history,
@@ -606,13 +711,25 @@ async fn drive_streaming_turn(
     // Per-model inference overrides ride every round's request (B5).
     let options = chat_options::chat_options(&model);
     let mut round_state = ToolRoundState::new();
-    let alias_map = build_alias_map();
 
     let normalised_tier = tool_round::normalise_device_tier(if device_tier.is_empty() {
         None
     } else {
         Some(device_tier.as_str())
     });
+
+    // Turn-level token meter (chat-processing-indicator). Folds each
+    // round's exact Ollama counts so a multi-round (tool-using) turn shows
+    // its cumulative usage. `turn_prompt` sums input tokens processed
+    // across rounds (the context is re-sent each round); `turn_completion`
+    // sums generated tokens. A Deep turn's PLAN call is part of the turn's
+    // honest cost, so its counts seed the meter.
+    let mut turn_prompt: u64 = 0;
+    let mut turn_completion: u64 = 0;
+    if let Some(rs) = &reasoning_state {
+        turn_prompt += rs.plan_prompt_tokens;
+        turn_completion += rs.plan_completion_tokens;
+    }
 
     for round in 0..tool_round::MAX_TOOL_LOOPS {
         round_state.rounds = round + 1;
@@ -622,6 +739,25 @@ async fn drive_streaming_turn(
             handle.mark_done();
             schedule_eviction(turn_id.clone());
             return;
+        }
+
+        // The LLM is about to generate this round.
+        handle
+            .push_turn_event(TurnEvent::Phase {
+                turn_id: turn_id.clone(),
+                phase: crate::events::TurnPhase::Generating,
+            })
+            .await;
+
+        // Agentic-reasoning S3, seam 2 (round-entry): when a plan exists,
+        // the next ready step's guidance rides the MESSAGE TAIL as a user
+        // message (append-only — the KV prefix over system + history
+        // survives, plan §9 R5). The model still emits the actual tool
+        // call; dispatch authority is unchanged.
+        if let Some(rs) = &mut reasoning_state {
+            if let Some(guidance) = rs.begin_round() {
+                messages.push(guidance);
+            }
         }
 
         let mut body = json!({
@@ -638,12 +774,26 @@ async fn drive_streaming_turn(
 
         let mut stream = ipc::send_action_stream(&cfg.ollama_service, "ollama.chat_stream", body);
         let mut accumulated = String::new();
+        // Peels inline `<think>…</think>` reasoning (DeepSeek-R1-style
+        // reasoners) out of the streamed content so the trace goes to the
+        // Thinking dropdown, not the answer. Fast models emit no `<think>`
+        // ⇒ pure pass-through, byte-identical to the pre-P1 path.
+        let mut think_splitter = super::think_stream::ThinkSplitter::new();
         // Native `message.tool_calls` may arrive on any chunk (Ollama
         // typically emits them whole on the final chunk); accumulate
         // across the stream and decode after it completes.
         let mut native_raw: Vec<Value> = Vec::new();
         let mut errored: Option<String> = None;
         let mut cancelled_mid_round = false;
+
+        // Live token tick (chat-processing-indicator). Ollama streams ≈ one
+        // content frame per generated token, so a running frame count is a
+        // good-enough live meter; the final `done` frame's `eval_count` /
+        // `prompt_eval_count` then give the authoritative totals.
+        let mut frame_tokens: u64 = 0;
+        let mut emitted_at: u64 = 0;
+        let mut round_prompt: Option<u64> = None;
+        let mut round_completion: Option<u64> = None;
 
         loop {
             tokio::select! {
@@ -660,15 +810,83 @@ async fn drive_streaming_turn(
                         }
                         Some(Ok(chunk)) => {
                             if let Some(piece) = extract_chunk_content(&chunk) {
-                                accumulated.push_str(&piece);
+                                // Frame count keys off the RAW content piece,
+                                // exactly as before — the token meter is
+                                // unchanged for the fast path. The splitter then
+                                // routes inline `<think>` to the Thinking stream
+                                // and keeps only the answer body in `accumulated`.
+                                if !piece.is_empty() {
+                                    frame_tokens += 1;
+                                }
+                                let split = think_splitter.push(&piece);
+                                accumulated.push_str(&split.answer);
+                                if !split.thinking.is_empty() {
+                                    handle
+                                        .push_turn_event(TurnEvent::Thinking {
+                                            turn_id: turn_id.clone(),
+                                            text: split.thinking,
+                                        })
+                                        .await;
+                                }
+                            }
+                            // Forward any reasoning delta (native thinking-API
+                            // models expose it on `message.thinking`, separate
+                            // from the inline `<think>` handled above).
+                            if let Some(thought) = extract_chunk_thinking(&chunk) {
+                                handle
+                                    .push_turn_event(TurnEvent::Thinking {
+                                        turn_id: turn_id.clone(),
+                                        text: thought,
+                                    })
+                                    .await;
                             }
                             native_raw.extend(extract_native_tool_calls(&chunk));
+                            // The final `done` frame carries the exact counts.
+                            if let Some(p) = chunk.get("prompt_eval_count").and_then(Value::as_u64) {
+                                round_prompt = Some(p);
+                            }
+                            if let Some(c) = chunk.get("eval_count").and_then(Value::as_u64) {
+                                round_completion = Some(c);
+                            }
+                            // Throttled running tick — coalesces hundreds of
+                            // per-token frames into a handful of UI updates.
+                            if frame_tokens - emitted_at >= USAGE_TICK_EVERY {
+                                emitted_at = frame_tokens;
+                                handle
+                                    .push_turn_event(TurnEvent::Usage {
+                                        turn_id: turn_id.clone(),
+                                        prompt_tokens: round_prompt.map(|p| turn_prompt + p),
+                                        completion_tokens: turn_completion + frame_tokens,
+                                        done: false,
+                                    })
+                                    .await;
+                            }
                         }
                     }
                 }
             }
         }
         drop(stream);
+
+        // Flush any bytes the splitter held back (a marker fragment or an
+        // unterminated `<think>`). On the fast path this is at most a trailing
+        // `<`-prefixed fragment, flushed verbatim into `accumulated` — so the
+        // reassembled answer is byte-identical to the raw content.
+        let tail = think_splitter.finish();
+        accumulated.push_str(&tail.answer);
+        if !tail.thinking.is_empty() {
+            handle
+                .push_turn_event(TurnEvent::Thinking {
+                    turn_id: turn_id.clone(),
+                    text: tail.thinking,
+                })
+                .await;
+        }
+
+        // Fold this round's authoritative counts into the turn meter
+        // (falling back to the live frame count if Ollama omitted them).
+        turn_prompt += round_prompt.unwrap_or(0);
+        turn_completion += round_completion.unwrap_or(frame_tokens);
 
         if cancelled_mid_round || handle.is_cancelled() {
             emit_aborted(&handle, &turn_id, AbortReason::Cancelled, None).await;
@@ -697,6 +915,40 @@ async fn drive_streaming_turn(
         calls.extend(recovered_to_calls(&salvage_result));
 
         if calls.is_empty() {
+            // Agentic-reasoning S5, seam 4 (pre-finalize): on a
+            // plan-guided turn's natural completion, run the REFLECT
+            // critique — gate-checked, at most once per turn, entirely
+            // fail-soft (any reflection failure finalizes verbatim). A
+            // critique that finds gaps buys ONE extra EXECUTE round: the
+            // draft joins the tail as an assistant message, the gaps as a
+            // user message, and the loop continues — only when rounds
+            // remain, so the loop cap stays authoritative. The draft is
+            // never emitted to the user; the gap round's answer replaces
+            // it. Fast turns never construct the state, so this block is
+            // unreachable on the fast path (identity).
+            if let Some(rs) = &mut reasoning_state {
+                let flow = reasoning::maybe_reflect(
+                    cfg,
+                    &handle,
+                    &turn_id,
+                    rs,
+                    round_state.dispatched_hashes.len(),
+                    &final_text,
+                    round + 1 < tool_round::MAX_TOOL_LOOPS,
+                )
+                .await;
+                // The critique call is part of the turn's honest cost.
+                turn_prompt += flow.prompt_tokens;
+                turn_completion += flow.completion_tokens;
+                if let Some(gap_message) = flow.gap_message {
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": final_text.clone(),
+                    }));
+                    messages.push(gap_message);
+                    continue;
+                }
+            }
             // No tool calls — emit the cleaned text as a single Token
             // event (bulk emit; mirrors Python's no-stream-token path
             // in `_driver.py:416-419`) and finish. Prefix the graceful-
@@ -711,6 +963,7 @@ async fn drive_streaming_turn(
             run_post_turn_hooks(
                 &conversation_id,
                 workspace_id.as_deref(),
+                &model,
                 &user_message,
                 &final_text,
             );
@@ -724,6 +977,8 @@ async fn drive_streaming_turn(
                     })
                     .await;
             }
+            // Authoritative end-of-turn token totals.
+            emit_final_usage(&handle, &turn_id, turn_prompt, turn_completion).await;
             handle
                 .push_turn_event(TurnEvent::TurnComplete {
                     turn_id: turn_id.clone(),
@@ -735,8 +990,16 @@ async fn drive_streaming_turn(
             return;
         }
 
-        // Tool calls present — emit any pre-call text (the "let me
-        // look that up" mid-stream), then dispatch each call.
+        // Tool calls present — the model wants to act before answering.
+        handle
+            .push_turn_event(TurnEvent::Phase {
+                turn_id: turn_id.clone(),
+                phase: crate::events::TurnPhase::RunningTools,
+            })
+            .await;
+
+        // Emit any pre-call text (the "let me look that up" mid-stream),
+        // then dispatch each call.
         if !final_text.is_empty() {
             handle
                 .push_turn_event(TurnEvent::Token {
@@ -752,6 +1015,10 @@ async fn drive_streaming_turn(
             "tool_calls": tool_calls_wire(&calls),
         }));
 
+        // Collected only on a planned (Deep) turn — feeds the plan's
+        // `${step.output…}` placeholder resolution (seam 3) and the S4
+        // outcome check below.
+        let mut round_results: Vec<(String, String)> = Vec::new();
         for call in &calls {
             if handle.is_cancelled() {
                 emit_aborted(&handle, &turn_id, AbortReason::Cancelled, None).await;
@@ -771,7 +1038,83 @@ async fn drive_streaming_turn(
                 call,
             )
             .await;
+            if reasoning_state.is_some() {
+                if let Some(content) = tool_msg.get("content").and_then(Value::as_str) {
+                    // Record the CANONICAL tool id so the plan step's
+                    // outcome check binds to a dispatch of the step's own
+                    // tool (the plan stores canonical ids; the model emits
+                    // dotted/aliased names). Without this, `finish_round`'s
+                    // tool-match would never fire and every step would look
+                    // un-executed. Falls back to the raw name for a tool the
+                    // alias map doesn't know.
+                    let canonical = alias_map
+                        .get(&call.name)
+                        .cloned()
+                        .unwrap_or_else(|| call.name.clone());
+                    round_results.push((canonical, content.to_owned()));
+                }
+            } else if let Some(watch) = &mut escalation_watch {
+                // S4b: pure hard-failure counting on a watched Fast turn
+                // — no events, no behaviour change below the threshold.
+                if let Some(content) = tool_msg.get("content").and_then(Value::as_str) {
+                    watch.observe(&call.name, &call.args, content);
+                }
+            }
             messages.push(tool_msg);
+        }
+        if let Some(rs) = &mut reasoning_state {
+            // Agentic-reasoning S4, seam 3b (post-dispatch): record the
+            // round's results, then CHECK the realised outcome against the
+            // step's declared expectation — L0/L1 pure, L2 gated, replan
+            // budget-gated (cheap detect / expensive respond). Everything
+            // in the check is fail-soft except a planner-declared `abort`
+            // action, which ends the turn cleanly. Replans run at the
+            // state's tier (the turn's depth, or the escalation tier on
+            // an S4b-escalated Fast turn).
+            let completion = rs.finish_round(&round_results);
+            let flow = reasoning::surprise::check_and_maybe_replan(
+                cfg, &handle, &turn_id, rs.tier, &model, &alias_map, rs, completion,
+            )
+            .await;
+            // The L2 / replan calls are part of the turn's honest cost.
+            turn_prompt += flow.prompt_tokens;
+            turn_completion += flow.completion_tokens;
+            if let Some(detail) = flow.abort {
+                emit_aborted(
+                    &handle,
+                    &turn_id,
+                    AbortReason::PlanPrecondition,
+                    Some(detail),
+                )
+                .await;
+                handle.mark_done();
+                schedule_eviction(turn_id);
+                return;
+            }
+        } else if let Some(watch) = &mut escalation_watch {
+            // Agentic-reasoning S4b: the 2nd hard tool failure escalates
+            // this Fast turn to planning (the maintainer's narrowed identity
+            // contract). One-shot — the watch is disarmed whether the
+            // escalated PLAN succeeds or fail-softs to plain ReAct.
+            if watch.should_escalate() {
+                reasoning_state = reasoning::maybe_escalate(
+                    cfg,
+                    &handle,
+                    &turn_id,
+                    workspace_id.as_deref(),
+                    &user_message,
+                    &gathered,
+                    &alias_map,
+                    watch,
+                )
+                .await;
+                if let Some(rs) = &reasoning_state {
+                    // The escalated PLAN call is part of the turn's cost.
+                    turn_prompt += rs.plan_prompt_tokens;
+                    turn_completion += rs.plan_completion_tokens;
+                }
+                escalation_watch = None;
+            }
         }
     }
 
@@ -792,6 +1135,13 @@ async fn drive_streaming_turn(
 
 /// Post-turn hooks, run only on natural completion:
 ///
+/// 0. **The exchange itself** ([`persist_exchange`], #242) — the user
+///    message and the model's reply appended to the conversation's
+///    persisted `messages`. Synchronous and FIRST, for two reasons: it is
+///    the input the other two hooks read (the summary producer counts
+///    `messages`; the extractor's working-memory merge-save rewrites the
+///    document from its own read), and unlike them it is not an
+///    enrichment — it is the record of what happened.
 /// 1. **Slice-D reflection** — the cheap in-process name-detection scan
 ///    (kept as the zero-cost fallback when extraction is disabled or no
 ///    default model is configured; the gate's duplicate-pending rule
@@ -809,9 +1159,18 @@ async fn drive_streaming_turn(
 fn run_post_turn_hooks(
     conversation_id: &str,
     workspace_id: Option<&str>,
+    model: &str,
     user_message: &str,
     final_message: &str,
 ) {
+    persist_exchange(
+        conversation_id,
+        workspace_id,
+        model,
+        user_message,
+        final_message,
+    );
+
     crate::user_profile::reflection::reflect_after_turn(conversation_id, user_message);
 
     let conv = conversation_id.to_owned();
@@ -829,6 +1188,67 @@ fn run_post_turn_hooks(
     tokio::spawn(async move {
         crate::chat::search::summary::maybe_refresh(&conv, ws.as_deref()).await;
     });
+}
+
+/// Persist the completed exchange into the conversation's `messages`
+/// (#242) — the write `context_gather::load_history` reads back on the
+/// NEXT turn, which is how the model sees what was already said.
+///
+/// This is the port of the one piece of the Python conversation surface
+/// that was never carried over: `save_conversation` on the chat-turn path
+/// (see the strangler note in [`crate::pipe`]). Without it `messages`
+/// stayed the empty array `conversations.new` minted, `load_history`
+/// returned nothing on every turn, and each turn was answered blind.
+///
+/// **Both surfaces, one call.** The two chat surfaces differ only in what
+/// `workspace_id` the turn carries — `ChatScope::Global` is structurally
+/// unbound (`None`), `ChatScope::Docked` carries the entered workspace —
+/// and both drivers funnel through this one seam on natural completion.
+/// The scoping model's per-chat tier therefore lands in the same flat
+/// store for both, keyed by conversation, with the binding recorded on the
+/// document; a bound turn's *extra* workspace context is gathered fresh
+/// each turn and is deliberately not baked into the persisted history.
+///
+/// **Ordering.** Called before the gather of the next turn can possibly
+/// run, and before this turn's own background hooks are spawned, so the
+/// summary producer counts a document that already includes this exchange.
+///
+/// **What is persisted:** the RAW user message (not the slot-augmented
+/// prompt body — the injected context is rebuilt per turn and must never
+/// accumulate in the record) and the PRE-notice assistant text (the
+/// service-degraded banner is UI chrome, not something the user said or
+/// the model wrote). Tool-round scaffolding is not persisted: intra-turn
+/// tool exchanges are not conversation, and `load_history` skips those
+/// roles on read anyway.
+///
+/// **Fail-soft.** A write failure is logged, never surfaced: the user has
+/// already read the reply, and failing the turn over a disk error would
+/// turn a lost memory into a lost answer.
+fn persist_exchange(
+    conversation_id: &str,
+    workspace_id: Option<&str>,
+    model: &str,
+    user_message: &str,
+    final_message: &str,
+) {
+    match crate::memory::conversations::store::append_exchange(
+        conversation_id,
+        workspace_id,
+        model,
+        user_message,
+        final_message,
+    ) {
+        Ok(len) => tracing::debug!(
+            conversation_id = %conversation_id,
+            messages = len,
+            "turn: persisted the exchange"
+        ),
+        Err(e) => tracing::warn!(
+            conversation_id = %conversation_id,
+            "turn: could not persist the exchange — the next turn will not see \
+             it in history: {e:?}"
+        ),
+    }
 }
 
 /// Driver-side surfacing of the M3 tier-7 degrade flag: a warn log per
@@ -858,6 +1278,29 @@ async fn emit_aborted(
             turn_id: turn_id.to_owned(),
             reason,
             error,
+        })
+        .await;
+}
+
+/// Emit the authoritative end-of-turn token meter (chat-processing-indicator).
+/// Skipped entirely when both counts are zero (e.g. an Ollama build that
+/// omits the eval fields and produced no content) so the GUI never shows a
+/// bogus `0` — it just keeps the live tick or hides the meter.
+async fn emit_final_usage(
+    handle: &Arc<TurnHandle>,
+    turn_id: &str,
+    prompt_tokens: u64,
+    completion_tokens: u64,
+) {
+    if prompt_tokens == 0 && completion_tokens == 0 {
+        return;
+    }
+    handle
+        .push_turn_event(TurnEvent::Usage {
+            turn_id: turn_id.to_owned(),
+            prompt_tokens: (prompt_tokens > 0).then_some(prompt_tokens),
+            completion_tokens,
+            done: true,
         })
         .await;
 }
@@ -1113,6 +1556,22 @@ fn extract_chunk_content(chunk: &Value) -> Option<String> {
         .get("message")
         .and_then(|m| m.get("content"))
         .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+/// Pull a thinking/reasoning delta off an `ollama.chat_stream` chunk
+/// (chat-processing-indicator). Thinking-capable models (run with
+/// `think: true`) stream their reasoning on `message.thinking` separate from
+/// `message.content`; we forward it as [`TurnEvent::Thinking`] so the GUI's
+/// activity dropdown can show it. Absent for non-thinking models / configs →
+/// `None`, so nothing is emitted (graceful). We do NOT parse `<think>` out of
+/// `content` — that would alter the displayed reply.
+fn extract_chunk_thinking(chunk: &Value) -> Option<String> {
+    chunk
+        .get("message")
+        .and_then(|m| m.get("thinking"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
 
@@ -1482,7 +1941,7 @@ mod tests {
     async fn gathered_slots_ride_the_user_message_not_the_system_prompt() {
         // B12: the system message stays byte-stable across turns; volatile
         // gathered slots ride at the head of the current user message.
-        let slots = "\n\n### User profile\nName: Aaron";
+        let slots = "\n\n### User profile\nName: Sam";
         let with_slots = initial_messages(base_system_prompt("stub-model"), &[], "hello", slots);
         let plain = initial_messages(base_system_prompt("stub-model"), &[], "hello", "");
 
@@ -1505,7 +1964,7 @@ mod tests {
             !native.contains("respond with a single JSON object"),
             "no salvage instruction for native-capable models"
         );
-        assert!(native.contains("You are Wylde"));
+        assert!(native.contains("You are Wylde")); // assertion on prompt text in a test, not a shipped prompt (wylde-check: prompt-literal-ok)
         assert!(native.contains("Available tools:"));
 
         let salvage = base_system_prompt("totally-custom-model");

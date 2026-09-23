@@ -5,7 +5,7 @@
 # backend workspace (`rust/Cargo.toml`) or the GUI workspace
 # (`Core/GUI/Cargo.toml`):
 #
-#   * It only ever runs on Aaron's release machine — it has no place in
+#   * It only ever runs on the maintainer's release machine — it has no place in
 #     the shipped dependency graph, and pulling `clap` into the backend
 #     lock file for a tool no user ever runs would be noise.
 #   * It shells out to `rsign` and `gh` via `std::process::Command`.  The
@@ -23,7 +23,7 @@
 [package]
 name = "wylde-release"
 description = "Dev-machine CLI to sign and publish Wylde GUI builds to GitHub Releases for the Phase 12.5 self-updater. Wraps `rsign` (minisign signing) and `gh` (release upload); not shipped to users."
-version = "0.1.0"
+version = "0.2.0-beta.1"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-or-later"
@@ -39,9 +39,30 @@ clap = { version = "4", features = ["derive"] }
 # Coarse error type; every subcommand bubbles up `anyhow::Result` and
 # `main` prints the chain.
 anyhow = "1"
+# Baseline / receipt (de)serialization for the benchmark regression gate and
+# the preflight receipt. `serde_json` reads the machine-readable output the
+# eval harnesses already emit and writes the committed baseline + the receipt.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # The updater crate, by path, purely so `verify-public-key` can compare a
 # candidate against the key actually baked into the shipped binary
 # (`wylde_updater::PUBLIC_KEY`). Resolves its own workspace inheritance
 # against `rust/Cargo.toml` regardless of this crate's standalone status —
 # the GUI workspace depends on it the same way.
 wylde-updater = { path = "../../rust/crates/wylde-updater" }
+# msgpack framing for the L2/L3 launch-and-verify gate's minimal pipe client.
+# The lifecycle daemon + vram-broker speak `[u32 BE len][rmp-serde named]` over
+# `\\.\pipe\wylde-*` (see `wylde_shared::ipc::wire`); rather than pull the whole
+# async `wylde-shared` IPC stack (tokio named pipes, futures, uuid) into this
+# standalone dev tool, `smoke::pipe` hand-rolls the handshake + one request over
+# blocking std pipe I/O, encoding/decoding the frames with rmp-serde — kept
+# wire-compatible by matching the server's exact field names.
+rmp-serde = "1"
+# The L3 "Memgraph has REAL data" check queries Bolt directly and asserts node
+# counts > 0 — the empty-graph bug a port-liveness ping cannot catch. `neo4rs`
+# is the same Bolt driver the product uses (`wylde-harness` / `wylde-workspaces`
+# pin neo4rs 0.8), so the gate speaks to the graph exactly as the app does. It
+# is tokio-async; `tokio` (current-thread) drives a single query under a hard
+# timeout so a hung DB fails the gate closed rather than hanging it.
+neo4rs = "0.8"
+tokio = { version = "1", features = ["rt", "macros", "time"] }

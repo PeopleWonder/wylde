@@ -559,7 +559,11 @@ mod tests {
         // Zoom out into the clusters-first band (≤ 0.35): the galaxy view folds
         // EVERY cluster, not just the auto-selected one.
         cv.snap_to(0.2);
-        assert_eq!(cv.folded_count(), 2, "every cluster folds in the galaxy view");
+        assert_eq!(
+            cv.folded_count(),
+            2,
+            "every cluster folds in the galaxy view"
+        );
         assert!(cv.is_folded("ws/cold") && cv.is_folded("ws/hot"));
 
         // Zooming back to a mid zoom restores the selective tier (cold only).

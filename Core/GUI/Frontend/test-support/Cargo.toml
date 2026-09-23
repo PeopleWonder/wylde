@@ -6,7 +6,7 @@ description = "DEV-ONLY gpui-test helpers for the Wylde GUI: a scripted fake IPC
 # can never feature-unify `wylde-gui-pipe/test-support` into the Shell.
 # Excluded crates can't inherit `[workspace.package]`, so the fields below
 # are spelled out to match it.
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 edition = "2021"
 rust-version = "1.85"
 license = "GPL-3.0-or-later"
@@ -22,5 +22,13 @@ path = "src/lib.rs"
 # `dev-dependency` of the panels, resolver = "2" never unifies that feature
 # into a normal Shell build.
 wylde-gui-pipe = { path = "../Pipe", features = ["test-support"] }
+
+# The control-walk harness (#247). `gpui/test-support` gives it
+# `VisualTestContext` (draw + simulate_click + debug_bounds);
+# `wylde-gui-controls/test-support` gives it the per-frame registry of what
+# actually painted. Both features live behind the same excluded-crate wall as
+# the Pipe seam above, so neither can reach the shipped Shell.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "b3d93d44", default-features = false, features = ["test-support"] }
+wylde-gui-controls = { path = "../Controls", features = ["test-support"] }
 
 serde_json = "1"

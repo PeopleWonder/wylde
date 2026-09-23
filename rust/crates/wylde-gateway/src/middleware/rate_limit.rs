@@ -143,10 +143,7 @@ pub async fn rate_limit(State(limiter): State<RateLimiter>, req: Request, next: 
     } else {
         failure(
             "rate_limited",
-            &format!(
-                "more than {} requests/min for key '{key}'",
-                limiter.limit()
-            ),
+            &format!("more than {} requests/min for key '{key}'", limiter.limit()),
             StatusCode::TOO_MANY_REQUESTS,
         )
     }
@@ -233,10 +230,7 @@ pub async fn per_device_rate_limit(
     } else {
         failure(
             "rate_limited",
-            &format!(
-                "more than {} requests/min for key '{key}'",
-                limiter.limit()
-            ),
+            &format!("more than {} requests/min for key '{key}'", limiter.limit()),
             StatusCode::TOO_MANY_REQUESTS,
         )
     }
@@ -397,7 +391,10 @@ mod tests {
     async fn per_device_one_device_does_not_starve_another() {
         let app = Router::new()
             .route("/x", get(ok_handler))
-            .route_layer(from_fn_with_state(RateLimiter::new(1), per_device_rate_limit));
+            .route_layer(from_fn_with_state(
+                RateLimiter::new(1),
+                per_device_rate_limit,
+            ));
 
         // Device A: the single slot is consumed by the first request.
         let first = app.clone().oneshot(device_req("phone-a")).await.unwrap();
@@ -430,7 +427,10 @@ mod tests {
     async fn per_device_layer_is_a_noop_without_a_device_extension() {
         let app = Router::new()
             .route("/x", get(ok_handler))
-            .route_layer(from_fn_with_state(RateLimiter::new(1), per_device_rate_limit));
+            .route_layer(from_fn_with_state(
+                RateLimiter::new(1),
+                per_device_rate_limit,
+            ));
         for _ in 0..5 {
             let resp = app.clone().oneshot(req("/x")).await.unwrap();
             assert_eq!(resp.status(), StatusCode::OK);
@@ -446,8 +446,10 @@ mod tests {
             .route("/health", get(ok_handler))
             .route(
                 "/api/chat/run_turn",
-                get(ok_handler)
-                    .route_layer(from_fn_with_state(RateLimiter::new(60), per_device_rate_limit)),
+                get(ok_handler).route_layer(from_fn_with_state(
+                    RateLimiter::new(60),
+                    per_device_rate_limit,
+                )),
             )
             .layer(from_fn_with_state(RateLimiter::new(1), rate_limit));
 
@@ -460,7 +462,11 @@ mod tests {
         // The non-exempt route still hits the global IP cap: no device
         // extension, so the per-device layer no-ops and the global layer
         // keys `ip:unknown` — first request passes, the second is 429.
-        let first = app.clone().oneshot(req("/api/chat/run_turn")).await.unwrap();
+        let first = app
+            .clone()
+            .oneshot(req("/api/chat/run_turn"))
+            .await
+            .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
         let denied = app.oneshot(req("/api/chat/run_turn")).await.unwrap();
         assert_eq!(denied.status(), StatusCode::TOO_MANY_REQUESTS);

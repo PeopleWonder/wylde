@@ -233,6 +233,60 @@ pub(crate) struct GatheredContext {
     /// markers; this flag is for logging/UI annotation (the B8 Settings
     /// surface, when it lands).
     pub tier7_degraded: bool,
+    /// Honest, ordered log of what the gather actually did (chat-processing-
+    /// indicator, full visibility): retrieval / routing / injection / memory
+    /// steps with real counts + names. The driver replays these as
+    /// [`TurnEvent::Step`](crate::events::TurnEvent::Step) so the GUI's
+    /// activity dropdown shows the pipeline, not just "thinking…". Empty on a
+    /// plain unbound turn that gathered nothing.
+    pub steps: Vec<GatherStep>,
+    /// The turn's routed concept candidate set (agentic-reasoning S3 /
+    /// concept-routing R1). Until S3 this died inside [`gather_with`] —
+    /// logged and dropped; now it rides out so the Deep-turn PLAN phase can
+    /// ground itself in the turn's OWN routing (activation scores,
+    /// provenance, inhibitions) **without a second embed or route call**.
+    /// `None` when routing is off, the conversation is unbound, or the
+    /// service didn't route — the fast path never populates or reads it.
+    pub route_candidates: Option<wylde_concept_routing::CandidateSet>,
+}
+
+/// One line in the gather activity log (chat-processing-indicator). A
+/// human-readable `summary` (e.g. "Retrieved 8 workspace snippets") plus an
+/// optional `detail` (concept names, a degraded reason). Built from the real
+/// gathered data, not stubbed.
+pub(crate) struct GatherStep {
+    pub stage: crate::events::StepStage,
+    pub summary: String,
+    pub detail: Option<String>,
+}
+
+impl GatherStep {
+    fn new(
+        stage: crate::events::StepStage,
+        summary: impl Into<String>,
+        detail: Option<String>,
+    ) -> Self {
+        Self {
+            stage,
+            summary: summary.into(),
+            detail,
+        }
+    }
+}
+
+/// Join up to `n` names into a "a, b, c (+k more)" detail string, or `None`
+/// when the list is empty. Keeps the activity detail readable when a turn
+/// routes to many concepts.
+fn name_detail(names: &[String], n: usize) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+    let shown: Vec<&str> = names.iter().take(n).map(String::as_str).collect();
+    let mut s = shown.join(", ");
+    if names.len() > n {
+        s.push_str(&format!(" (+{} more)", names.len() - n));
+    }
+    Some(s)
 }
 
 // ── workspace data source (real + mockable) ──────────────────────────────
@@ -475,7 +529,7 @@ pub(crate) struct TokenOverrides {
     /// Concept-routing **R2** (plan §4): the user-curated concept ids carried by
     /// `chat.run_turn` after the curate-before-inject menu. `Some` (even empty)
     /// ⇒ the menu ran and these are the concepts to Augment-inject (empty ⇒
-    /// inject nothing — Aaron's lock); `None` ⇒ no curation this turn ⇒ no
+    /// inject nothing — the maintainer's lock); `None` ⇒ no curation this turn ⇒ no
     /// injection (R1 behaviour). Only honoured when the master toggle is ON, so
     /// a stale list can never inject while routing is OFF.
     pub curated_concepts: Option<Vec<String>>,
@@ -595,6 +649,14 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         ..ChatContext::default()
     };
     let mut degraded = false;
+    // Captured for the activity log (chat-processing-indicator): the routed
+    // concept set + the curated names actually injected this turn. The full
+    // candidate set also rides out on `GatheredContext.route_candidates`
+    // (agentic-reasoning S3) so a Deep turn's PLAN phase reuses this turn's
+    // routing instead of re-embedding.
+    let mut routed: Option<(usize, Vec<String>)> = None;
+    let mut route_candidates: Option<wylde_concept_routing::CandidateSet> = None;
+    let mut curated_names: Vec<String> = Vec::new();
 
     if let Some(ws) = active_ws {
         // Bare candidate tokens from the live message, then the Slice M / F
@@ -686,13 +748,14 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         // when the master toggle is ON** — so with routing OFF a stale curated
         // list can never inject, keeping OFF byte-identical to today. `Some([])`
         // (curated to nothing) injects nothing; `None` (no menu this turn) keeps
-        // R1 behaviour. Aaron's lock: never inject silently — injection requires
+        // R1 behaviour. The maintainer's lock: never inject silently — injection requires
         // an explicit curated set from the menu.
         let curated = if route {
             overrides.curated_concepts.as_deref()
         } else {
             None
         };
+        curated_names = curated.map(<[String]>::to_vec).unwrap_or_default();
 
         // The workspace prompt parts (persona / notes / RAG — B6 split) plus,
         // when routing is on, the routed candidate set (logged) and the R2
@@ -703,9 +766,13 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
             .await
         {
             Ok(Some(block)) => {
-                // R1: log the routed candidate set (calibration data).
+                // R1: log the routed candidate set (calibration data) + capture
+                // it for the activity log.
                 if let Some(set) = &block.route_candidates {
                     tracing::info!(target: "concept_routing", "[harness] {}", set.log_line());
+                    let names: Vec<String> = set.activated().map(|c| c.label.clone()).collect();
+                    routed = Some((set.activated_count, names));
+                    route_candidates = Some(set.clone());
                 }
                 ctx.workspace_persona = block.persona;
                 ctx.workspace_notes = block.notes;
@@ -736,11 +803,114 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         ctx.symbol_contexts = gather_symbol_contexts(source, ws, &symbol_ids).await;
     }
 
+    // Build the honest activity log from what was actually gathered (pre-
+    // eviction counts — they reflect the retrieval work, not the trim). Each
+    // entry is gated on having something, so a plain turn that gathered
+    // nothing emits no steps (no broken/empty sections).
+    use crate::events::StepStage;
+    let mut steps: Vec<GatherStep> = Vec::new();
+    if !ctx.history.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Memory,
+            format!("Loaded {} prior turn(s)", ctx.history.len()),
+            None,
+        ));
+    }
+    if !ctx.long_term.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Memory,
+            format!("Recalled {} long-term memory line(s)", ctx.long_term.len()),
+            None,
+        ));
+    }
+    if !ctx.conversation_short_term.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Memory,
+            format!(
+                "Working memory: {} entr(ies)",
+                ctx.conversation_short_term.len()
+            ),
+            None,
+        ));
+    }
+    if !ctx.vocabulary_anchors.is_empty() {
+        let names: Vec<String> = ctx
+            .vocabulary_anchors
+            .iter()
+            .map(|a| a.identifier.clone())
+            .collect();
+        steps.push(GatherStep::new(
+            StepStage::Symbol,
+            format!("Resolved {} anchor(s)", names.len()),
+            name_detail(&names, 6),
+        ));
+    }
+    let snippet_count = ctx.workspace_rag.len() + ctx.workspace_notes.len();
+    if snippet_count > 0 || ctx.workspace_persona.is_some() {
+        let detail = ctx
+            .workspace_persona
+            .as_ref()
+            .map(|_| "incl. workspace persona".to_owned());
+        steps.push(GatherStep::new(
+            StepStage::Retrieval,
+            format!("Retrieved {snippet_count} workspace snippet(s)"),
+            detail,
+        ));
+    }
+    if let Some((count, names)) = &routed {
+        steps.push(GatherStep::new(
+            StepStage::Routing,
+            format!("Routed to {count} concept(s)"),
+            name_detail(names, 8),
+        ));
+    }
+    if !ctx.concept_context.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Injection,
+            format!(
+                "Injected {} concept definition(s)",
+                curated_names.len().max(1)
+            ),
+            name_detail(&curated_names, 8),
+        ));
+    }
+    if !ctx.workspace_memory.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Memory,
+            format!("Workspace memory: {} record(s)", ctx.workspace_memory.len()),
+            None,
+        ));
+    }
+    if !ctx.symbol_contexts.is_empty() {
+        steps.push(GatherStep::new(
+            StepStage::Symbol,
+            format!(
+                "Loaded {} code-symbol context(s)",
+                ctx.symbol_contexts.len()
+            ),
+            None,
+        ));
+    }
+    if degraded {
+        steps.push(GatherStep::new(
+            StepStage::Notice,
+            "Workspace unreachable — answering from base context",
+            None,
+        ));
+    }
+
     // Trim to the model's budget (OI-8), then render the named slots.
     // When the never-drop tier alone still exceeds the budget, evict's
     // M3 degrade pass shrinks tier-7 content rather than shipping an
     // over-window prompt Ollama would front-truncate.
     let tier7_degraded = token_budget::evict(&mut ctx, slot_budget);
+    if tier7_degraded {
+        steps.push(GatherStep::new(
+            StepStage::Notice,
+            "Context trimmed to fit the model's window",
+            None,
+        ));
+    }
     let system_slots = prompt_assembly::render(&ctx);
     let history = ctx
         .history
@@ -753,6 +923,8 @@ pub(crate) async fn gather_with<S: WorkspaceSource + Sync>(
         history,
         degraded,
         tier7_degraded,
+        steps,
+        route_candidates,
     }
 }
 
@@ -1009,7 +1181,7 @@ fn workspace_memory_slot_enabled() -> bool {
 }
 
 /// Select this turn's workspace memory record lines (memory plan M2,
-/// option B — Aaron's call: the harness workspace store, with its
+/// option B — the maintainer's call: the harness workspace store, with its
 /// importance + supersession semantics, is the canonical middle tier
 /// and must reach prompts).
 ///
@@ -2143,7 +2315,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn r2_empty_curated_set_injects_nothing() {
-        // Aaron's lock: a curated-empty menu injects nothing. The empty set is
+        // The maintainer's lock: a curated-empty menu injects nothing. The empty set is
         // still forwarded (Some([]) — explicit "curated to nothing"), but the
         // server injects nothing for it, so no slot renders.
         let _env = crate::user_profile::test_support::TestEnv::new();
@@ -2633,6 +2805,81 @@ mod tests {
         assert!(!picked.is_empty(), "the newest message still loads");
     }
 
+    /// **#242 — the writer and the reader must be the same store.**
+    ///
+    /// Every other history test seeds `messages` by hand, so all of them
+    /// stayed green while the product shipped an empty history: they proved
+    /// `load_history` reads a well-formed document, never that anything
+    /// writes one. This one seeds through the ONLY producer on the turn
+    /// path — `append_exchange`, the call `run_post_turn_hooks` makes — and
+    /// asserts the next turn's gather sees it.
+    ///
+    /// If the turn path's persistence is removed, re-routed to another
+    /// store, or changes the message shape `load_history` decodes, this
+    /// goes red. Hand-seeded tests cannot catch any of those.
+    #[test]
+    fn history_loads_what_the_turn_path_actually_persisted() {
+        let _env = crate::user_profile::test_support::TestEnv::new();
+        use crate::memory::conversations::store::append_exchange;
+
+        // Turn 1 completes and the driver persists the exchange. No
+        // document exists yet — the id was minted by `conversations.new`
+        // and the GUI has not saved anything, which is the real first-turn
+        // state (the upsert is load-bearing, not a convenience).
+        append_exchange(
+            "conv-242-roundtrip",
+            None,
+            "stub-model",
+            "what is the capital of France?",
+            "Paris.",
+        )
+        .expect("the turn path persists the exchange");
+
+        // Turn 2 gathers. THIS is the assertion the product failed: the
+        // model must be able to see what was already said.
+        let picked = load_history(
+            "conv-242-roundtrip",
+            "and its population?",
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        );
+        let pairs: Vec<(&str, &str)> = picked
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("user", "what is the capital of France?"),
+                ("assistant", "Paris."),
+            ],
+            "the prior exchange must reach the next turn's history, in order \
+             and with both roles — an empty vec here is #242 itself"
+        );
+
+        // And it accumulates: turn 2's own exchange joins the record
+        // without displacing turn 1's.
+        append_exchange(
+            "conv-242-roundtrip",
+            None,
+            "stub-model",
+            "and its population?",
+            "About 2.1 million.",
+        )
+        .expect("second exchange persists");
+        let picked = load_history(
+            "conv-242-roundtrip",
+            "thanks",
+            token_budget::DEFAULT_TOKEN_BUDGET,
+        );
+        assert_eq!(
+            picked.len(),
+            4,
+            "each turn appends; history is cumulative, not last-turn-only"
+        );
+        assert_eq!(picked[0].content, "what is the capital of France?");
+        assert_eq!(picked[3].content, "About 2.1 million.");
+    }
+
     // ── B3: long-term memory injection ──────────────────────────────────
 
     #[tokio::test]
@@ -2682,9 +2929,17 @@ mod tests {
         // importance-sorted five self-reinforcing; only similarity
         // hits touch now — see `core_block_fillers_are_not_touched_by_injection`).
         let injected = entries::get(&saved[6].id).unwrap();
-        assert_eq!(
-            injected.last_used_at, saved[6].last_used_at,
-            "core filler must NOT be re-warmed by injection (M5)"
+        // The stored timestamp round-trips f64 → JSON → f64, which can drift
+        // by up to a ULP (serde_json's default parser isn't bit-exact; see
+        // the round-trip check in `entries::tests`). Compare with a small
+        // tolerance rather than exact identity — a real re-warm would push
+        // last_used_at forward by the >=25ms slept above, dwarfing any
+        // round-trip noise.
+        assert!(
+            (injected.last_used_at - saved[6].last_used_at).abs() < 1e-3,
+            "core filler must NOT be re-warmed by injection (M5): {} vs {}",
+            injected.last_used_at,
+            saved[6].last_used_at,
         );
     }
 
@@ -2920,7 +3175,7 @@ mod tests {
         let _env = crate::user_profile::test_support::TestEnv::new();
         // Seed a profile so the in-process slot is non-empty.
         crate::user_profile::store::with_store(|s| {
-            s.profile.name = Some("Aaron".into());
+            s.profile.name = Some("Sam".into());
         })
         .unwrap();
 
@@ -2941,7 +3196,7 @@ mod tests {
         .await;
         assert!(out.degraded, "an unreachable workspace prompt must degrade");
         assert!(
-            out.system_slots.contains("Aaron"),
+            out.system_slots.contains("Sam"),
             "the in-process profile survives a full workspace outage: {}",
             out.system_slots
         );

@@ -225,6 +225,7 @@ fn provenance_via(prov: &Provenance) -> Option<String> {
         Provenance::SeedLift { from } => Some(from.label()),
         Provenance::Dependency { from, .. } => Some(from.label()),
         Provenance::Positive { from } => Some(from.label()),
+        Provenance::Containment { from, .. } => Some(from.label()),
         Provenance::Inhibited { by, .. } => Some(by.label()),
     }
 }

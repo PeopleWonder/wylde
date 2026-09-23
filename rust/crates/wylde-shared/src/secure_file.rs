@@ -113,15 +113,18 @@ fn harden_windows(path: &Path) {
                     name,
                     SE_FILE_OBJECT,
                     DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                    PSID::default(),
-                    PSID::default(),
+                    // owner/group unchanged: the security-info flags request
+                    // only the DACL, so these are ignored. windows 0.62 models
+                    // the old null-PSID sentinel as `None`.
+                    None,
+                    None,
                     Some(acl.cast_const()),
                     None,
                 )
                 .ok(),
             };
             // Free the descriptor GetNamedSecurityInfoW allocated for us.
-            let _ = LocalFree(HLOCAL(psd.0));
+            let _ = LocalFree(Some(HLOCAL(psd.0)));
             result
         }
     };
@@ -220,7 +223,7 @@ mod tests {
                 AclSizeInformation,
             )
             .expect("acl info");
-            let _ = LocalFree(HLOCAL(psd.0));
+            let _ = LocalFree(Some(HLOCAL(psd.0)));
             info.AceCount
         };
         assert_eq!(ace_count, 1, "DACL must carry exactly one ACE");

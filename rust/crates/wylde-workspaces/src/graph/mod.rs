@@ -8,6 +8,7 @@
 //! two are independent per-service clients reaching the same Neo4j over Bolt.
 
 pub mod bolt;
+pub mod cleanup;
 pub mod cypher;
 pub mod schema;
 

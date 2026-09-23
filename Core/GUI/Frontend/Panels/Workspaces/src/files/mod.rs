@@ -16,11 +16,14 @@ use gpui::{
     div, prelude::*, px, rgb, svg, Context, EventEmitter, FontWeight, IntoElement, MouseButton,
     MouseDownEvent, Render, SharedString, Window,
 };
-use wylde_theme::colors::{BORDER_SUBTLE, BRAND, SURFACE_800, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY};
+use wylde_theme::colors::{
+    BORDER_SUBTLE, BRAND, SURFACE_800, TEXT_MUTED, TEXT_PRIMARY, TEXT_SECONDARY,
+};
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::workspaces_panel::pack;
 use ipc::{Entry, Kind};
+use wylde_gui_controls::control;
 
 /// Per-depth indent (px).
 const INDENT: f32 = 14.0;
@@ -181,6 +184,8 @@ impl EventEmitter<FileOpenEvent> for FilesTab {}
 impl Render for FilesTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = div()
+            // wylde-check: control-ok: the tab root is a layout container, not a
+            // click-button — Refresh, Retry and the file rows are the controls.
             .id("workspaces-files-tab")
             .size_full()
             .flex()
@@ -209,8 +214,7 @@ impl Render for FilesTab {
                 )
                 .child(div().flex_1())
                 .child(
-                    div()
-                        .id("files-refresh")
+                    control(div(), "files-refresh")
                         .px_2()
                         .py_0p5()
                         .rounded(px(4.0))
@@ -240,13 +244,10 @@ impl Render for FilesTab {
                         div()
                             .text_size(px(size::XS))
                             .text_color(rgb(0xE5_73_73))
-                            .child(SharedString::from(format!(
-                                "Couldn't list files — {err}"
-                            ))),
+                            .child(SharedString::from(format!("Couldn't list files — {err}"))),
                     )
                     .child(
-                        div()
-                            .id("files-retry")
+                        control(div(), "files-retry")
                             .px_2()
                             .py_0p5()
                             .rounded(px(4.0))
@@ -290,6 +291,8 @@ impl Render for FilesTab {
 
         let rows = self.flatten();
         let mut list = div()
+            // wylde-check: control-ok: the scroll viewport wrapping the file
+            // rows, not a click-button — the rows are the controls.
             .id("files-list")
             .flex_1()
             .min_h(px(0.0))
@@ -342,15 +345,17 @@ fn file_row(i: usize, row: Row, cx: &mut Context<FilesTab>) -> impl IntoElement 
     // An explicit config tint wins; otherwise the icon inherits the row's
     // colour so it tracks the white-font hierarchy + the W2 ignored dimming.
     let spec = icon_map::config().resolve(&row.entry, row.expanded);
-    let icon_color = spec.tint.map(|t| rgb(pack(t))).unwrap_or_else(|| rgb(pack(color)));
+    let icon_color = spec
+        .tint
+        .map(|t| rgb(pack(t)))
+        .unwrap_or_else(|| rgb(pack(color)));
     let icon_path = SharedString::from(spec.asset_path());
 
     let rel = row.entry.rel_path.clone();
     let indent = px(8.0 + INDENT * row.depth as f32);
     let ignored = row.entry.ignored;
 
-    let mut el = div()
-        .id(("file-row", i))
+    let mut el = control(div(), ("file-row", i))
         .flex()
         .flex_row()
         .items_center()
@@ -429,7 +434,10 @@ mod tests {
     #[gpui::test]
     fn reload_loads_root_then_expand_lazily_fetches_and_caches(cx: &mut TestAppContext) {
         let fake = ScriptedBackend::new()
-            .on("workspaces.list_mru", serde_json::json!({ "active_id": "ws-a" }))
+            .on(
+                "workspaces.list_mru",
+                serde_json::json!({ "active_id": "ws-a" }),
+            )
             .on(
                 "workspaces.fs.list_dir",
                 serde_json::json!({ "entries": [
@@ -445,10 +453,20 @@ mod tests {
 
         window
             .update(cx, |t, _w, _cx| {
-                assert_eq!(t.workspace_id.as_deref(), Some("ws-a"), "re-roots on the active workspace");
+                assert_eq!(
+                    t.workspace_id.as_deref(),
+                    Some("ws-a"),
+                    "re-roots on the active workspace"
+                );
                 assert!(t.loaded_root, "the root listing came back");
-                assert!(t.children.contains_key(""), "root children are cached under the empty key");
-                assert!(!t.expanded.contains("src"), "nothing is expanded on first load");
+                assert!(
+                    t.children.contains_key(""),
+                    "root children are cached under the empty key"
+                );
+                assert!(
+                    !t.expanded.contains("src"),
+                    "nothing is expanded on first load"
+                );
             })
             .unwrap();
         assert_eq!(
@@ -458,12 +476,17 @@ mod tests {
         );
 
         // Expand "src": ONE lazy fetch, carrying path="src".
-        window.update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx)).unwrap();
+        window
+            .update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx))
+            .unwrap();
         cx.run_until_parked();
         window
             .update(cx, |t, _w, _cx| {
                 assert!(t.expanded.contains("src"));
-                assert!(t.children.contains_key("src"), "expand fetched the dir's children");
+                assert!(
+                    t.children.contains_key("src"),
+                    "expand fetched the dir's children"
+                );
             })
             .unwrap();
         assert_eq!(
@@ -473,15 +496,23 @@ mod tests {
         );
 
         // Collapse: no fetch.
-        window.update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx)).unwrap();
+        window
+            .update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx))
+            .unwrap();
         cx.run_until_parked();
         window
             .update(cx, |t, _w, _cx| assert!(!t.expanded.contains("src")))
             .unwrap();
-        assert_eq!(fake.count_for("workspaces.fs.list_dir"), 2, "collapse fetches nothing");
+        assert_eq!(
+            fake.count_for("workspaces.fs.list_dir"),
+            2,
+            "collapse fetches nothing"
+        );
 
         // Re-expand: served from cache, still no new fetch.
-        window.update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx)).unwrap();
+        window
+            .update(cx, |t, _w, cx| t.toggle_dir("src".into(), cx))
+            .unwrap();
         cx.run_until_parked();
         window
             .update(cx, |t, _w, _cx| assert!(t.expanded.contains("src")))
@@ -497,8 +528,10 @@ mod tests {
     fn no_active_workspace_shows_no_tree_and_lists_nothing(cx: &mut TestAppContext) {
         // Blank active_id → no active workspace → the tree stays empty and no
         // directory listing is ever issued.
-        let fake = ScriptedBackend::new()
-            .on("workspaces.list_mru", serde_json::json!({ "active_id": "" }));
+        let fake = ScriptedBackend::new().on(
+            "workspaces.list_mru",
+            serde_json::json!({ "active_id": "" }),
+        );
         let _guard = fake.clone().install();
 
         let window = cx.add_window(|_w, cx| FilesTab::new(cx));
@@ -506,7 +539,10 @@ mod tests {
         window
             .update(cx, |t, _w, _cx| {
                 assert!(t.workspace_id.is_none(), "no active workspace");
-                assert!(t.loaded_root, "the empty state is settled (not stuck Loading)");
+                assert!(
+                    t.loaded_root,
+                    "the empty state is settled (not stuck Loading)"
+                );
                 assert!(t.children.is_empty());
             })
             .unwrap();
@@ -529,7 +565,10 @@ mod tests {
     #[gpui::test]
     fn rows_with_ignored_and_typed_entries_render(cx: &mut TestAppContext) {
         let fake = ScriptedBackend::new()
-            .on("workspaces.list_mru", serde_json::json!({ "active_id": "ws-a" }))
+            .on(
+                "workspaces.list_mru",
+                serde_json::json!({ "active_id": "ws-a" }),
+            )
             .on(
                 "workspaces.fs.list_dir",
                 serde_json::json!({ "entries": [
@@ -569,5 +608,85 @@ mod tests {
         assert_eq!(spec("target", Kind::Dir, false), "package");
         assert_eq!(spec("src", Kind::Dir, false), "folder");
         assert_eq!(spec("main.rs", Kind::File, false), "rust");
+    }
+}
+
+#[cfg(test)]
+mod control_walk {
+    //! L7 **control**-walk — the Files tab (issue #247).
+    //!
+    //! In-crate, not a `tests/` file, because the gated frame (the error
+    //! strip's Retry) is reached by setting private fields (`error`,
+    //! `children`, `expanded`) that no public seam exposes. It still runs in
+    //! CI: the `panel-walk` cargo alias is `cargo test -p wylde-panel-workspaces`,
+    //! which executes this crate's lib unit tests alongside its `tests/`.
+
+    use super::ipc::{Entry, Kind};
+    use super::FilesTab;
+    use gpui::TestAppContext;
+    use wylde_gui_test_support::control_walk::ControlWalk;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    fn dir(name: &str) -> Entry {
+        Entry {
+            name: name.to_string(),
+            kind: Kind::Dir,
+            rel_path: name.to_string(),
+            ignored: false,
+        }
+    }
+
+    #[gpui::test]
+    fn every_files_control_does_something(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on(
+                "workspaces.list_mru",
+                serde_json::json!({ "active_id": "ws-a" }),
+            )
+            .on(
+                "workspaces.fs.list_dir",
+                serde_json::json!({ "entries": [] }),
+            );
+        let _guard = fake.clone().install();
+        let window = cx.add_window(|_w, cx| FilesTab::new(cx));
+        cx.run_until_parked();
+
+        ControlWalk::new(window, &fake)
+            .fingerprint(|t: &FilesTab| {
+                format!(
+                    "ws={:?} err={} loaded={} rootrows={} expanded={}",
+                    t.workspace_id,
+                    t.error.is_some(),
+                    t.loaded_root,
+                    t.children.get("").map(Vec::len).unwrap_or(0),
+                    t.expanded.len(),
+                )
+            })
+            .reset(|t: &mut FilesTab, _w, cx| {
+                // A loaded root with two *directory* rows: a file row's only
+                // effect is an emitted `FileOpenEvent` the standalone view can't
+                // observe, whereas a dir row toggles observable `expanded` (and
+                // lazily fetches). Children are set directly — in-crate — so
+                // every rebase re-establishes the same frame synchronously.
+                t.workspace_id = Some("ws-a".to_string());
+                t.loaded_root = true;
+                t.error = None;
+                t.children.clear();
+                t.children
+                    .insert(String::new(), vec![dir("src"), dir("lib")]);
+                t.expanded.clear();
+                t.loading.clear();
+                cx.notify();
+            })
+            // The error body and its Retry button (an early-return frame — the
+            // rows and list don't paint here).
+            .state("error", |t: &mut FilesTab, _w, cx| {
+                t.error = Some("couldn't reach the workspace".to_string());
+                cx.notify();
+            })
+            .sources(&[include_str!("mod.rs")])
+            .run(cx)
+            .assert_every_control_lives()
+            .assert_covers_every_literal_id();
     }
 }

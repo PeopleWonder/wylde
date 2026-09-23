@@ -43,6 +43,7 @@ use crate::ipc::{
 use crate::settings_tab::GraphSettingsTab;
 use crate::tabs::WorkspacesTab;
 use crate::vocabulary::VocabularyTab;
+use wylde_gui_controls::control;
 
 /// Root Workspaces panel. Hosts a minimal tab system (Registry + Graph);
 /// the active tab's body is rendered below a tab bar.
@@ -409,8 +410,11 @@ impl WorkspacesPanel {
             // executor (no tokio reactor), so a bare `tokio::task::
             // spawn_blocking` panics ("no reactor running").  Hop onto the
             // bridge runtime's blocking pool so the gpui dispatcher doesn't
-            // stall and the await just parks on the join.
-            let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(pick_folder).await;
+            // stall and the await just parks on the join. Routed through
+            // `native_file_dialog` so a control walk records the request
+            // instead of opening a real folder picker on the dev's desktop.
+            let picked: Option<PathBuf> =
+                wylde_gui_pipe::native_file_dialog("workspaces-add", pick_folder).await;
             let Some(path) = picked else {
                 return;
             };
@@ -481,12 +485,75 @@ impl WorkspacesPanel {
     /// "Indexing…" flag the click set. Re-index never changes the MRU set,
     /// so we skip the refresh and update the clicked row in place.
     pub fn spawn_reindex(id: String, cx: &mut Context<Self>) {
+        // Shared completion flag: the reindex task sets it when the (long) verb
+        // returns so the progress poller stops. The poller keeps the card's
+        // live progress fresh meanwhile — `workspaces.reindex` is one blocking
+        // call that carries no intermediate frames, so without this the bar
+        // would never move until the very end.
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Self::spawn_progress_poller(id.clone(), done.clone(), cx);
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let outcome = reindex_workspace(&id).await;
+            done.store(true, std::sync::atomic::Ordering::Relaxed);
             let _ = this.update(app_cx, |panel, cx| {
                 panel.apply_reindex_outcome(&id, &outcome);
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    /// Poll `list_mru` every ~600ms while a reindex runs and fold the in-flight
+    /// workspace's live progress snapshot into its row, so the card shows a
+    /// moving bar + ETA. The backend service handles `list_mru` on its own
+    /// connection task (concurrent with the embed loop, which yields on every
+    /// paced batch), so the poll returns the freshly-written `RagState`
+    /// progress promptly. Stops on the `done` flag (set when the reindex verb
+    /// returns) or after a generous safety cap.
+    fn spawn_progress_poller(
+        id: String,
+        done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        cx: &mut Context<Self>,
+    ) {
+        use std::sync::atomic::Ordering;
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            // ~10 min ceiling (1000 × 600ms) — a backstop in case the done flag
+            // is never observed; the reindex deadline is itself 300s.
+            for _ in 0..1000 {
+                if done.load(Ordering::Relaxed) {
+                    break;
+                }
+                app_cx
+                    .background_executor()
+                    .timer(std::time::Duration::from_millis(600))
+                    .await;
+                if done.load(Ordering::Relaxed) {
+                    break;
+                }
+                let Ok(rows) = list_workspaces().await else {
+                    continue;
+                };
+                let fresh = rows.into_iter().find(|w| w.id == id).map(|w| w.progress);
+                let _ = this.update(app_cx, |panel, cx| {
+                    // The reindex task may have completed between the poll and
+                    // this update — don't resurrect the cleared state.
+                    if done.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    if let Some(progress) = fresh {
+                        if let Some(w) = panel.workspaces.iter_mut().find(|w| w.id == id) {
+                            // Keep the optimistic in-progress flag; adopt the
+                            // live snapshot (and surface its file total).
+                            w.indexing = true;
+                            if let Some(p) = &progress {
+                                w.file_count = Some(p.files_total.max(w.file_count.unwrap_or(0)));
+                            }
+                            w.progress = progress;
+                            cx.notify();
+                        }
+                    }
+                });
+            }
         })
         .detach();
     }
@@ -509,6 +576,9 @@ impl WorkspacesPanel {
         };
         if let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == id) {
             ws.indexing = false;
+            // The pass is over — drop the live progress snapshot so the card
+            // reverts to its static file-count / last-indexed strip.
+            ws.progress = None;
             if let Ok(file_count) = &result {
                 ws.file_count = *file_count;
                 ws.last_indexed_at = Some("just now".to_owned());
@@ -530,12 +600,11 @@ impl WorkspacesPanel {
                     Some(p) if matches!(p.phase, PullPhase::Downloading(_))
                 );
                 if !already_pulling {
-                    self.pull =
-                        wylde_gui_pipe::parse_pullable_model(&e).map(|model| ModelPull {
-                            model,
-                            retry_id: id.to_owned(),
-                            phase: PullPhase::Offered,
-                        });
+                    self.pull = wylde_gui_pipe::parse_pullable_model(&e).map(|model| ModelPull {
+                        model,
+                        retry_id: id.to_owned(),
+                        phase: PullPhase::Offered,
+                    });
                 }
                 self.error = Some(e);
             }
@@ -666,11 +735,19 @@ impl Render for WorkspacesPanel {
         // UX rework state machine: the Registry landing (a list of workspace
         // cards you land on) ⇄ the in-workspace view (back arrow + scoped tab
         // bar + body), keyed off `entered`.
-        let root = div().size_full().bg(rgb(pack(SURFACE_900))).flex().flex_col();
+        let root = div()
+            .size_full()
+            .bg(rgb(pack(SURFACE_900)))
+            .flex()
+            .flex_col();
         match &self.entered {
-            None => root.child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(
-                self.registry_body(cx),
-            )),
+            None => root.child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(self.registry_body(cx)),
+            ),
             Some(_) => {
                 let body: AnyElement = match self.tab {
                     WorkspacesTab::Editor => match self.editor.clone() {
@@ -828,8 +905,7 @@ fn tab_button(
     } else {
         (TEXT_SECONDARY, None)
     };
-    let mut btn = div()
-        .id(id)
+    let mut btn = control(div(), id)
         .px_3()
         .py_1()
         .rounded(px(4.0))
@@ -861,8 +937,7 @@ fn tab_button(
 /// The back arrow at the top-left of the in-workspace view — returns to the
 /// Registry landing (clears `entered`).
 fn back_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("ws-back".into()))
+    control(div(), ElementId::Name("ws-back".into()))
         .flex_shrink_0()
         .px_2()
         .py_1()
@@ -883,7 +958,7 @@ fn back_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
 
 /// The readiness chip (decision 5): a small coloured dot + short label in the
 /// in-workspace tab bar. Conveys service-up/indexed state at a glance from any
-/// tab — itself meaningful status, per Aaron's no-decoration principle.
+/// tab — itself meaningful status, per the maintainer's no-decoration principle.
 fn readiness_chip(readiness: Readiness) -> gpui::Div {
     let (colour, label) = readiness.chip();
     div()
@@ -949,8 +1024,7 @@ fn header_row(cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
 
 fn add_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
     let id: ElementId = ElementId::Name("workspaces-add".into());
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -1016,8 +1090,7 @@ fn workspace_card(
     }
 
     // The whole card is clickable → ENTER the workspace (UX rework decision 2).
-    let mut row = div()
-        .id(ElementId::Name(format!("ws-card::{}", ws.id).into()))
+    let mut row = control(div(), ElementId::Name(format!("ws-card::{}", ws.id).into()))
         .bg(rgb(pack(SURFACE_800)))
         .border_1()
         .border_color(rgb(pack(border)))
@@ -1064,13 +1137,21 @@ fn workspace_card(
     // ENTERS the workspace, which activates it, so a separate Switch was
     // redundant.) Each button calls `stop_propagation` so it acts without
     // also entering the card underneath it.
+    // Button label tracks live progress: a determinate pass shows the percent
+    // ("Indexing 46%"), the indeterminate walk shows "Indexing…", idle shows
+    // "Re-index".
+    let reindex_label = if ws.indexing {
+        ws.progress
+            .as_ref()
+            .and_then(|p| p.percent())
+            .map(|pct| format!("Indexing {pct}%"))
+            .unwrap_or_else(|| "Indexing…".to_owned())
+    } else {
+        "Re-index".to_owned()
+    };
     row = row.child(action_button(
         ElementId::Name(format!("ws-reindex::{}", ws.id).into()),
-        if ws.indexing {
-            "Indexing…"
-        } else {
-            "Re-index"
-        },
+        &reindex_label,
         cx.listener(move |this: &mut WorkspacesPanel, _ev, _window, cx| {
             cx.stop_propagation();
             // Optimistic in-progress flip so the button reads "Indexing…"
@@ -1098,8 +1179,7 @@ where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
     let label_owned = SharedString::from(label.to_owned());
-    div()
-        .id(id)
+    control(div(), id)
         // Never let the button shrink/wrap when it shares a row with a long
         // wrapping label — it keeps its intrinsic size; the text takes the rest.
         .flex_shrink_0()
@@ -1121,35 +1201,100 @@ where
 /// `list_mru` (F4 joined RagState into it), so this survives a reload instead
 /// of reverting to "never". Every token here is real status — no decoration.
 fn meta_strip(ws: &WorkspaceSummary) -> gpui::Div {
+    // While a re-index runs, the strip becomes a live progress affordance
+    // (status line + bar + percent + "X / Y files" + ETA) instead of the static
+    // file-count / last-indexed row.
+    if ws.indexing {
+        return index_progress_block(ws);
+    }
     let chunks = ws
         .file_count
         .map(|n| format!("{n} files"))
         .unwrap_or_else(|| "—".into());
     let last = ws.last_indexed_at.clone().unwrap_or_else(|| "never".into());
-    let mut strip = div()
+    div()
         .flex()
         .flex_row()
         .items_center()
         .gap_3()
         .font_family(FAMILY_INTER)
         .text_size(px(size::MICRO))
-        .text_color(rgb(pack(TEXT_MUTED)));
-    // A live indexing indicator leads the strip when a re-index is running, so
-    // the card's status reflects the in-progress work (the Re-index button also
-    // reads "Indexing…", but the card status must stand on its own).
-    if ws.indexing {
-        strip = strip.child(
-            div()
-                .px_1()
-                .rounded(px(3.0))
-                .bg(rgb(pack(BRAND_DIM)))
-                .text_color(rgb(pack(TEXT_PRIMARY)))
-                .child(SharedString::from("Indexing…")),
-        );
-    }
-    strip
+        .text_color(rgb(pack(TEXT_MUTED)))
         .child(SharedString::from(chunks))
         .child(SharedString::from(format!("Last index: {last}")))
+}
+
+/// Live re-index progress for a card: a status line ("Embedding · 46% · 120 /
+/// 287 files · ~2m 30s remaining") above a thin progress bar. Before the total
+/// is known (the walk phase) it shows an indeterminate state — a "Scanning
+/// files…" label and a static partial-fill bar — then switches to the
+/// determinate bar + ETA once counting is done. Matches the model-download
+/// bar's track/fill styling (`SURFACE_900` track, `BRAND` fill, `relative`
+/// width) so it reads as the same family.
+fn index_progress_block(ws: &WorkspaceSummary) -> gpui::Div {
+    let progress = ws.progress.as_ref();
+    // Compose the status line + the bar fill ratio from the snapshot.
+    let (status, ratio): (String, Option<f64>) = match progress {
+        Some(p) => match p.percent() {
+            Some(pct) => {
+                // Determinate: label · percent · files · ETA.
+                let mut parts = vec![format!("{} · {pct}%", p.phase_label())];
+                if p.files_total > 0 {
+                    parts.push(format!(
+                        "{} / {} files",
+                        p.files_done.min(p.files_total),
+                        p.files_total
+                    ));
+                }
+                if let Some(eta) = p.eta_label() {
+                    parts.push(eta);
+                }
+                (parts.join("  ·  "), p.ratio())
+            }
+            // Indeterminate (walk/chunk): no total yet, so no percent/ETA.
+            None => (format!("{}…", p.phase_label()), None),
+        },
+        // Indexing flag set but no snapshot yet (the optimistic click instant).
+        None => ("Indexing…".to_owned(), None),
+    };
+
+    let bar_fill = match ratio {
+        // Determinate fill: brand bar to the exact ratio.
+        Some(r) => div()
+            .h(px(4.0))
+            .w(relative(r.clamp(0.0, 1.0) as f32))
+            .bg(rgb(pack(BRAND)))
+            .rounded(px(2.0)),
+        // Indeterminate: a static dim partial fill (gpui's static render has no
+        // marquee), signalling "working, total unknown" without a fake percent.
+        None => div()
+            .h(px(4.0))
+            .w(relative(0.4))
+            .bg(rgb(pack(BRAND_DIM)))
+            .rounded(px(2.0)),
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .w_full()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(SharedString::from(status)),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(4.0))
+                .bg(rgb(pack(SURFACE_900)))
+                .rounded(px(2.0))
+                .overflow_hidden()
+                .child(bar_fill),
+        )
 }
 
 fn empty_state() -> gpui::Div {
@@ -1416,10 +1561,11 @@ fn download_strip(pull: &ModelPull, cx: &mut Context<WorkspacesPanel>) -> gpui::
                     format!("Embedding model '{model}' isn't installed."),
                     "Download model",
                 ),
-                PullPhase::Failed(msg) => {
-                    (format!("Download of '{model}' failed: {msg}"), "Retry download")
-                }
-                PullPhase::Downloading(_) => unreachable!(),
+                PullPhase::Failed(msg) => (
+                    format!("Download of '{model}' failed: {msg}"),
+                    "Retry download",
+                ),
+                PullPhase::Downloading(_) => unreachable!(), // INVARIANT: enclosing `Offered | Failed` arm guarantees phase is not Downloading. wylde-check: panel-panic-allowed
             };
             strip = strip.child(
                 div()
@@ -1572,14 +1718,26 @@ mod tests {
 
     #[test]
     fn readiness_reflects_index_state_when_service_ok() {
-        let indexing = WorkspaceSummary { indexing: true, ..Default::default() };
-        assert_eq!(Readiness::compute(None, Some(&indexing)), Readiness::Indexing);
+        let indexing = WorkspaceSummary {
+            indexing: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            Readiness::compute(None, Some(&indexing)),
+            Readiness::Indexing
+        );
 
-        let fresh = WorkspaceSummary { file_count: Some(3), ..Default::default() };
+        let fresh = WorkspaceSummary {
+            file_count: Some(3),
+            ..Default::default()
+        };
         assert_eq!(Readiness::compute(None, Some(&fresh)), Readiness::Ready);
 
         let never = WorkspaceSummary::default();
-        assert_eq!(Readiness::compute(None, Some(&never)), Readiness::NotIndexed);
+        assert_eq!(
+            Readiness::compute(None, Some(&never)),
+            Readiness::NotIndexed
+        );
         // No summary loaded yet ⇒ not indexed.
         assert_eq!(Readiness::compute(None, None), Readiness::NotIndexed);
     }
@@ -1647,7 +1805,7 @@ mod tests {
 
     #[test]
     fn reindex_missing_model_offers_download_with_retry_id() {
-        // The real error Aaron hit: the embed step fails because the model
+        // The real error the maintainer hit: the embed step fails because the model
         // isn't installed. The panel must offer an inline download tied to
         // the workspace that failed (for auto-retry).
         let mut p = panel_with_one_indexing_row();
@@ -1658,9 +1816,15 @@ mod tests {
                 (model \"nomic-embed-text\" not installed in Ollama)",
         });
         p.apply_reindex_outcome("ws-a", &Ok(reply));
-        let pull = p.pull.as_ref().expect("a missing-model error must offer a download");
+        let pull = p
+            .pull
+            .as_ref()
+            .expect("a missing-model error must offer a download");
         assert_eq!(pull.model, "nomic-embed-text");
-        assert_eq!(pull.retry_id, "ws-a", "auto-retry must target the failed workspace");
+        assert_eq!(
+            pull.retry_id, "ws-a",
+            "auto-retry must target the failed workspace"
+        );
         assert!(matches!(pull.phase, PullPhase::Offered));
         // The raw error still shows in the strip above the offer.
         assert!(p.error.as_deref().unwrap().contains("nomic-embed-text"));
@@ -1670,7 +1834,10 @@ mod tests {
     fn reindex_non_model_error_offers_no_download() {
         let mut p = panel_with_one_indexing_row();
         p.apply_reindex_outcome("ws-a", &Err("ollama_unreachable: upstream down".to_owned()));
-        assert!(p.pull.is_none(), "non-model errors must not offer a download");
+        assert!(
+            p.pull.is_none(),
+            "non-model errors must not offer a download"
+        );
     }
 
     #[test]
@@ -1683,7 +1850,10 @@ mod tests {
         });
         let reply = serde_json::json!({ "ok": true, "file_count": 7, "last_error": null });
         p.apply_reindex_outcome("ws-a", &Ok(reply));
-        assert!(p.pull.is_none(), "a clean reindex retires the download offer");
+        assert!(
+            p.pull.is_none(),
+            "a clean reindex retires the download offer"
+        );
         assert!(p.error.is_none());
     }
 
@@ -1730,7 +1900,9 @@ mod tests {
 
         // Enter the indexed workspace → Ready (green).
         window
-            .update(cx, |p, _w, cx| p.enter_workspace("ws-indexed".to_owned(), cx))
+            .update(cx, |p, _w, cx| {
+                p.enter_workspace("ws-indexed".to_owned(), cx)
+            })
             .unwrap();
         cx.run_until_parked();
         window
@@ -1785,7 +1957,11 @@ mod tests {
         window
             .update(cx, |p, _w, _cx| {
                 p.error = Some("no_action: unknown action workspaces.x".to_owned());
-                assert_eq!(p.readiness(), Readiness::OutOfDate, "no_action ⇒ out of date");
+                assert_eq!(
+                    p.readiness(),
+                    Readiness::OutOfDate,
+                    "no_action ⇒ out of date"
+                );
             })
             .unwrap();
     }

@@ -60,8 +60,7 @@ async fn tools_run_dispatches_active_tool_and_returns_ok_envelope() {
     // here under the shared serial guard so the existing
     // tools.run semantics keep being pinned. New consent
     // integration tests live in `tooling::runner::tests`.
-    let _g = crate::tooling::consent::serial_test_guard().await;
-    crate::tooling::consent::set_bypass_for_tests(true);
+    let _g = crate::tooling::consent::bypass_scope(true).await;
     let api = DefaultHarnessApi;
     let reply = api.tools_run(json!({"name": "time.now"})).await;
     assert!(reply.ok, "outer envelope is ok");
@@ -91,8 +90,7 @@ async fn tools_run_returns_not_found_for_unknown_tool() {
 
 #[tokio::test]
 async fn tools_run_dispatches_wylde_describe_through_full_pipeline() {
-    let _g = crate::tooling::consent::serial_test_guard().await;
-    crate::tooling::consent::set_bypass_for_tests(true);
+    let _g = crate::tooling::consent::bypass_scope(true).await;
     let api = DefaultHarnessApi;
     let reply = api.tools_run(json!({"name": "wylde_describe"})).await;
     assert!(reply.ok, "outer envelope is ok");
@@ -109,13 +107,11 @@ async fn tools_run_dispatches_wylde_describe_through_full_pipeline() {
         reply.data["data"]["count"].as_u64().unwrap(),
         rows.len() as u64
     );
-    crate::tooling::consent::set_bypass_for_tests(false);
 }
 
 #[tokio::test]
 async fn tools_run_wylde_list_unknown_resource_is_clean_not_found() {
-    let _g = crate::tooling::consent::serial_test_guard().await;
-    crate::tooling::consent::set_bypass_for_tests(true);
+    let _g = crate::tooling::consent::bypass_scope(true).await;
     let api = DefaultHarnessApi;
     let reply = api
         .tools_run(json!({"name": "wylde_list", "args": {"resource_type": "nope"}}))
@@ -126,15 +122,13 @@ async fn tools_run_wylde_list_unknown_resource_is_clean_not_found() {
     assert_eq!(reply.data["ok"], true);
     assert_eq!(reply.data["data"]["status"], "not_found");
     assert_eq!(reply.data["data"]["op"], "list");
-    crate::tooling::consent::set_bypass_for_tests(false);
 }
 
 #[tokio::test]
 async fn tools_run_wylde_create_then_get_memory_full_pipeline() {
     // Slice 2: the memory verb path end-to-end through the runner —
     // `wylde_create` (destructive, consent-gated) then `wylde_get`.
-    let _g = crate::tooling::consent::serial_test_guard().await;
-    crate::tooling::consent::set_bypass_for_tests(true);
+    let _g = crate::tooling::consent::bypass_scope(true).await;
     let _env = TestEnv::new();
     std::env::set_var("WYLDE_EMBED_DIM", "3");
     let api = DefaultHarnessApi;
@@ -163,5 +157,4 @@ async fn tools_run_wylde_create_then_get_memory_full_pipeline() {
     assert!(got.ok);
     assert_eq!(got.data["data"]["status"], "success");
     assert_eq!(got.data["data"]["memory"]["body"], "pipeline memory");
-    crate::tooling::consent::set_bypass_for_tests(false);
 }

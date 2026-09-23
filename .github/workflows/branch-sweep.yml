@@ -1,0 +1,158 @@
+# Branch sweep — delete stale branches whose work has fully landed on develop.
+#
+# WHY THIS EXISTS. GitHub's `delete_branch_on_merge` removes a PR's head branch
+# when THAT PR merges, but it misses branches whose content reached `develop`
+# another way: a squash-merge whose auto-delete GitHub occasionally skips (seen
+# in the 2026-07-27 manual cleanup — nine merged `feat/247-*` branches lingered),
+# or work that landed via a different PR. This is the scheduled backstop.
+#
+# THE SQUASH-SAFE TEST — and why NOT `git cherry`. A squash-merge lands the
+# branch's changes as ONE new commit on develop, so the branch's own commits
+# never appear in develop by hash. `git cherry develop <branch>` (patch-id
+# equivalence) therefore reports every commit as "unmerged" — a false positive
+# that would keep every squash-merged branch forever. Instead a branch counts as
+# fully merged if EITHER, evaluated by SHA (not patch):
+#
+#   * CONTAINED — the branch has zero commits develop lacks. GitHub's compare
+#     API `develop...<sha>` reports `ahead_by == 0` (identical or behind). Catches
+#     fast-forward / merge-commit landings.
+#   * SQUASH-MERGED — the branch tip SHA is the merged head of a PR that targeted
+#     develop. `GET /commits/{sha}/pulls` returns a PR with `merged_at != null`
+#     and `base.ref == develop`. Catches squash landings (the exact SHA was what
+#     that PR merged) — this is the test the manual sweep used.
+#
+# Neither can be spoofed by an in-flight branch: an unmerged branch is `ahead`,
+# and its tip has no *merged* develop PR. If neither proves merged, the branch is
+# KEPT — conservative by construction; a false keep costs a stale branch, a false
+# delete costs work (recoverable via the merged PR, but not worth risking).
+#
+# SAFETY.
+#   * Protected branches (`develop`, `main`, anything GitHub flags `protected`)
+#     and `dependabot/*` are never even considered.
+#   * A branch with an OPEN PR is kept, even if it also looks merged.
+#   * Deletes go through the refs API; nothing is force-pushed, and develop/main
+#     are never written.
+#   * OBSERVE-FIRST DEFAULT: with the `BRANCH_SWEEP_MODE` repo variable unset the
+#     run is a **dry-run** — it logs every KEEP/DELETE decision with its reason
+#     and deletes nothing. Set the variable to `delete` to arm real deletion, or
+#     `off` to pause. A manual run picks its own mode from the dispatch input.
+#
+# TOKEN. Branches live in THIS repo, so the built-in GITHUB_TOKEN with
+# `contents: write` deletes refs; no PAT needed. Degrades gracefully if absent.
+name: Branch sweep
+
+on:
+  schedule:
+    # Daily at 05:23 UTC — an off-peak minute clear of the other crons.
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Sweep mode for this manual run"
+        type: choice
+        default: dry-run
+        options: [dry-run, delete, off]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: branch-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: sweep merged branches
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'PeopleWonder'
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      DEFAULT_BRANCH: develop
+      # Manual run: honour the dispatch input. Scheduled run: the repo variable
+      # `BRANCH_SWEEP_MODE`, defaulting to `dry-run` when unset (observe-first).
+      MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || vars.BRANCH_SWEEP_MODE || 'dry-run' }}
+    steps:
+      - name: Sweep
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::notice::No token available — skipping branch sweep."
+            exit 0
+          fi
+          OWNER="${REPO%/*}"; NAME="${REPO#*/}"
+          BASE="$DEFAULT_BRANCH"
+          echo "Repo: $OWNER/$NAME   base: $BASE   mode: $MODE"
+          if [ "$MODE" = "off" ]; then
+            echo "::notice::BRANCH_SWEEP_MODE=off — nothing swept."
+            exit 0
+          fi
+          if [ "$MODE" != "delete" ] && [ "$MODE" != "dry-run" ]; then
+            echo "::warning::unknown mode '$MODE' — treating as dry-run."
+            MODE="dry-run"
+          fi
+
+          # Enumerate non-protected branches (name<TAB>tip-sha). `protected:false`
+          # drops branch-protected refs at the source; the name filter below drops
+          # develop/main/dependabot even if protection is ever misconfigured.
+          branches="$(gh api "repos/$OWNER/$NAME/branches?per_page=100" --paginate \
+                        --jq '.[] | select(.protected==false) | "\(.name)\t\(.commit.sha)"')"
+
+          deleted=0; would=0; kept=0; considered=0
+          while IFS=$'\t' read -r name sha; do
+            [ -z "${name:-}" ] && continue
+            case "$name" in
+              "$BASE"|main|dependabot/*)
+                continue ;;
+            esac
+            considered=$((considered+1))
+
+            # An open PR from this branch means it is under active review — keep it.
+            open_prs="$(gh pr list --repo "$OWNER/$NAME" --head "$name" --state open \
+                          --json number --jq 'length' 2>/dev/null || echo "err")"
+            if [ "$open_prs" != "0" ]; then
+              echo "KEEP  $name — has open PR(s) or PR lookup failed ($open_prs)"
+              kept=$((kept+1)); continue
+            fi
+
+            reason=""
+            # CONTAINED: zero commits develop lacks (compare by SHA to avoid any
+            # ambiguity from a '/' in the branch name).
+            ahead="$(gh api "repos/$OWNER/$NAME/compare/$BASE...$sha" --jq '.ahead_by' 2>/dev/null || echo "err")"
+            if [ "$ahead" = "0" ]; then
+              reason="contained in $BASE (ahead_by=0)"
+            else
+              # SQUASH-MERGED: the tip SHA is the merged head of a PR into develop.
+              pr="$(gh api "repos/$OWNER/$NAME/commits/$sha/pulls" \
+                      --jq "[.[] | select(.merged_at != null and .base.ref==\"$BASE\")] | .[0].number // empty" \
+                      2>/dev/null || echo "")"
+              if [ -n "${pr:-}" ]; then
+                reason="tip ${sha:0:7} is the merged head of PR #$pr into $BASE (squash-safe)"
+              fi
+            fi
+
+            if [ -z "$reason" ]; then
+              echo "KEEP  $name — not provably merged (ahead_by=$ahead, no merged $BASE PR for tip ${sha:0:7})"
+              kept=$((kept+1)); continue
+            fi
+
+            if [ "$MODE" = "delete" ]; then
+              if gh api -X DELETE "repos/$OWNER/$NAME/git/refs/heads/$name" >/dev/null 2>&1; then
+                echo "DELETE $name — $reason"
+                deleted=$((deleted+1))
+              else
+                echo "::warning::failed to delete $name — leaving it"
+                kept=$((kept+1))
+              fi
+            else
+              echo "WOULD-DELETE $name — $reason"
+              would=$((would+1))
+            fi
+          done <<< "$branches"
+
+          echo "----"
+          if [ "$MODE" = "delete" ]; then
+            echo "Summary (mode=delete): considered=$considered deleted=$deleted kept=$kept"
+          else
+            echo "Summary (mode=dry-run): considered=$considered would-delete=$would kept=$kept — set repo variable BRANCH_SWEEP_MODE=delete to arm."
+          fi

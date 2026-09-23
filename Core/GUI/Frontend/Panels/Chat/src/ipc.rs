@@ -183,6 +183,34 @@ pub enum TurnChunk {
         turn_id: String,
         text: String,
     },
+    /// Coarse turn-phase transition (chat-processing-indicator). Drives the
+    /// animated status line. `phase` is the raw wire string
+    /// (`gathering_context` / `generating` / `running_tools`); an
+    /// unrecognised value maps to [`ProcessingPhase::Working`] downstream so
+    /// a future backend phase never breaks the indicator.
+    Phase {
+        turn_id: String,
+        phase: String,
+    },
+    /// Token-usage progress (chat-processing-indicator). `done == false` is
+    /// a throttled running tick; `done == true` is the authoritative
+    /// end-of-turn total. `prompt_tokens` is `None` until known.
+    Usage {
+        turn_id: String,
+        prompt_tokens: Option<u64>,
+        completion_tokens: u64,
+        done: bool,
+    },
+    /// One granular context-gather step (full-visibility activity log). `stage`
+    /// is the raw wire string (`retrieval`/`routing`/`injection`/`memory`/
+    /// `symbol`/`notice`); `detail` is optional supporting text (concept names,
+    /// a degraded reason).
+    Step {
+        turn_id: String,
+        stage: String,
+        summary: String,
+        detail: Option<String>,
+    },
     TurnComplete {
         turn_id: String,
         final_message: String,
@@ -221,6 +249,37 @@ impl TurnChunk {
                     .and_then(|x| x.as_str())
                     .unwrap_or_default()
                     .to_owned(),
+            },
+            "phase" => Self::Phase {
+                turn_id,
+                phase: v
+                    .get("phase")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+            },
+            "usage" => Self::Usage {
+                turn_id,
+                prompt_tokens: v.get("prompt_tokens").and_then(Value::as_u64),
+                completion_tokens: v
+                    .get("completion_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                done: v.get("done").and_then(Value::as_bool).unwrap_or(false),
+            },
+            "step" => Self::Step {
+                turn_id,
+                stage: v
+                    .get("stage")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                summary: v
+                    .get("summary")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_owned(),
+                detail: v.get("detail").and_then(|x| x.as_str()).map(str::to_owned),
             },
             "turn_complete" => Self::TurnComplete {
                 turn_id,
@@ -264,6 +323,7 @@ pub async fn start_turn(
         &[],
         &[],
         None,
+        "fast",
     )
     .await
 }
@@ -275,6 +335,14 @@ pub async fn start_turn(
 /// `active_file` (2.5): the workspace-relative path of the file open in the
 /// editor, which biases RAG toward the user's current focus (`None` on the
 /// Global slot / when no file is open).
+///
+/// `depth` is the InferenceBar thinking-tier pill's wire token (`"fast"` /
+/// `"think"` / `"think_harder"` / `"ultrathink"`; the pre-tier `"deep"`
+/// still parses harness-side as `think_harder`). Always sent when
+/// non-empty so the explicit per-turn pill beats the harness config's
+/// `default_depth` in the payload → config → Fast resolution chain.
+/// `"fast"` is behaviourally inert on the harness (the everyday
+/// byte-identical path).
 #[allow(clippy::too_many_arguments)] // turn-start payload fan-out; each arg is a
                                      // distinct optional payload field.
 pub async fn start_turn_with_model(
@@ -285,6 +353,7 @@ pub async fn start_turn_with_model(
     excluded_tokens: &[String],
     reactivated_tokens: &[String],
     active_file: Option<&str>,
+    depth: &str,
 ) -> Result<StartTurnReply, String> {
     let mut payload = serde_json::Map::new();
     payload.insert(
@@ -300,6 +369,9 @@ pub async fn start_turn_with_model(
     }
     if let Some(m) = model.filter(|s| !s.is_empty()) {
         payload.insert("model".into(), Value::String(m.to_owned()));
+    }
+    if !depth.is_empty() {
+        payload.insert("depth".into(), Value::String(depth.to_owned()));
     }
     if !excluded_tokens.is_empty() {
         payload.insert("excluded_tokens".into(), json!(excluded_tokens));
@@ -321,6 +393,56 @@ pub async fn start_turn_with_model(
     )
     .await?;
     Ok(StartTurnReply::from_value(&v))
+}
+
+// ── Agentic-reasoning settings (S1) ─────────────────────────────────
+
+/// `settings.reasoning.get {}` — the harness-owned reasoning config
+/// (master toggle, model slots, split/single mode). Returns the raw JSON;
+/// the panel reads `enabled` + `mode`.
+pub async fn reasoning_settings() -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "settings.reasoning.get",
+            "payload": {},
+        })),
+    )
+    .await
+}
+
+/// `settings.reasoning.set {mode}` — persist just the Split/Single mode
+/// (partial patch; every other field keeps its value). Returns the
+/// persisted config.
+pub async fn set_reasoning_mode(mode: &str) -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "settings.reasoning.set",
+            "payload": { "mode": mode },
+        })),
+    )
+    .await
+}
+
+/// `reasoning.fit_check {}` — price the configured slots against the live
+/// VRAM budget. Returns the SlotFit JSON (`warnings` feeds the inline fit
+/// chip). Advisory only — an error here is soft-failed by the caller.
+pub async fn reasoning_fit_check() -> Result<Value, String> {
+    wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({
+            "action": "reasoning.fit_check",
+            "payload": {},
+        })),
+    )
+    .await
 }
 
 /// `chat.export` (TBS Slice J) — one conversation as a portable envelope.
@@ -581,27 +703,31 @@ pub fn stream_consent_pending() -> Result<wylde_gui_pipe::PipeStream, String> {
 
 /// One streaming chunk on the tool-activity channel
 /// (`chat.stream_tools`).  Mirror of `wylde_harness::events::ToolEvent`.
-/// We only project the fields the activity strip actually renders;
-/// fields like `args`, `output`, `duration_ms` are discarded at parse
-/// time so the strip doesn't accidentally surface a tool's input args
-/// to the user.
+/// As of the chat-processing-indicator full-visibility pass we carry the
+/// tool's `args` / `output` / `duration_ms` too (the maintainer reversed the old
+/// "tool calls invisible to the chat UI" decision) so the activity dropdown
+/// can show the honest tool log; the GUI truncates them for display.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolChunk {
     Dispatched {
         turn_id: String,
         call_id: String,
         name: String,
+        args: Value,
     },
     Result {
         turn_id: String,
         call_id: String,
         name: String,
+        output: Value,
+        duration_ms: f64,
     },
     Error {
         turn_id: String,
         call_id: String,
         name: String,
         message: String,
+        duration_ms: f64,
     },
     /// Memory-write side effect — used to surface a brief "remembered:
     /// …" pulse when the strip wants to acknowledge it.  Slice 5.1 just
@@ -631,16 +757,20 @@ impl ToolChunk {
             .and_then(|x| x.as_str())
             .unwrap_or_default()
             .to_owned();
+        let duration_ms = v.get("duration_ms").and_then(Value::as_f64).unwrap_or(0.0);
         match t {
             "tool_dispatched" => Self::Dispatched {
                 turn_id,
                 call_id,
                 name,
+                args: v.get("args").cloned().unwrap_or(Value::Null),
             },
             "tool_result" => Self::Result {
                 turn_id,
                 call_id,
                 name,
+                output: v.get("output").cloned().unwrap_or(Value::Null),
+                duration_ms,
             },
             "tool_error" => Self::Error {
                 turn_id,
@@ -651,6 +781,7 @@ impl ToolChunk {
                     .and_then(|x| x.as_str())
                     .unwrap_or_default()
                     .to_owned(),
+                duration_ms,
             },
             "memory_written" => Self::MemoryWritten,
             "tool_warning" => Self::Warning,
@@ -1139,6 +1270,119 @@ mod tests {
             "text": "hello",
         }));
         assert!(matches!(c, TurnChunk::Token { ref text, .. } if text == "hello"));
+    }
+
+    #[test]
+    fn turn_chunk_parses_phase() {
+        let c = TurnChunk::from_value(&json!({
+            "type": "phase",
+            "turn_id": "t",
+            "phase": "gathering_context",
+        }));
+        assert!(matches!(c, TurnChunk::Phase { ref phase, .. } if phase == "gathering_context"));
+    }
+
+    #[test]
+    fn turn_chunk_parses_step_with_and_without_detail() {
+        let c = TurnChunk::from_value(&json!({
+            "type": "step",
+            "turn_id": "t",
+            "stage": "routing",
+            "summary": "Routed to 3 concepts",
+            "detail": "nextcloud, ddns",
+        }));
+        match c {
+            TurnChunk::Step {
+                stage,
+                summary,
+                detail,
+                ..
+            } => {
+                assert_eq!(stage, "routing");
+                assert_eq!(summary, "Routed to 3 concepts");
+                assert_eq!(detail.as_deref(), Some("nextcloud, ddns"));
+            }
+            _ => panic!("expected Step"),
+        }
+        // Missing detail → None.
+        let c = TurnChunk::from_value(&json!({
+            "type": "step", "turn_id": "t", "stage": "memory", "summary": "Loaded 2 turns",
+        }));
+        assert!(matches!(c, TurnChunk::Step { detail: None, .. }));
+    }
+
+    #[test]
+    fn tool_chunk_carries_args_output_and_duration() {
+        let d = ToolChunk::from_value(&json!({
+            "type": "tool_dispatched", "turn_id": "t", "call_id": "c1",
+            "name": "memory.search", "args": {"query": "vpn"},
+        }));
+        match d {
+            ToolChunk::Dispatched { name, args, .. } => {
+                assert_eq!(name, "memory.search");
+                assert_eq!(args["query"], "vpn");
+            }
+            _ => panic!("expected Dispatched"),
+        }
+        let r = ToolChunk::from_value(&json!({
+            "type": "tool_result", "turn_id": "t", "call_id": "c1",
+            "name": "memory.search", "output": {"hits": 3}, "duration_ms": 42.0,
+        }));
+        match r {
+            ToolChunk::Result {
+                output,
+                duration_ms,
+                ..
+            } => {
+                assert_eq!(output["hits"], 3);
+                assert_eq!(duration_ms, 42.0);
+            }
+            _ => panic!("expected Result"),
+        }
+    }
+
+    #[test]
+    fn turn_chunk_parses_usage_tick_and_final() {
+        let tick = TurnChunk::from_value(&json!({
+            "type": "usage",
+            "turn_id": "t",
+            "completion_tokens": 12,
+            "done": false,
+        }));
+        match tick {
+            TurnChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                done,
+                ..
+            } => {
+                assert_eq!(prompt_tokens, None);
+                assert_eq!(completion_tokens, 12);
+                assert!(!done);
+            }
+            _ => panic!("expected Usage"),
+        }
+
+        let done = TurnChunk::from_value(&json!({
+            "type": "usage",
+            "turn_id": "t",
+            "prompt_tokens": 40,
+            "completion_tokens": 18,
+            "done": true,
+        }));
+        match done {
+            TurnChunk::Usage {
+                prompt_tokens,
+                completion_tokens,
+                done,
+                ..
+            } => {
+                assert_eq!(prompt_tokens, Some(40));
+                assert_eq!(completion_tokens, 18);
+                assert!(done);
+            }
+            _ => panic!("expected Usage"),
+        }
     }
 
     #[test]

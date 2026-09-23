@@ -57,7 +57,13 @@ mod tests {
         let ws = "ws-ident-0000";
         assert_eq!(load(ws), ConceptIdentity::default());
         assert_eq!(load(ws).next_sem_ordinal, 0);
-        save(ws, &ConceptIdentity { next_sem_ordinal: 42 }).unwrap();
+        save(
+            ws,
+            &ConceptIdentity {
+                next_sem_ordinal: 42,
+            },
+        )
+        .unwrap();
         assert_eq!(load(ws).next_sem_ordinal, 42);
     }
 }

@@ -78,6 +78,21 @@ pub struct RelationParams {
     /// `0.15`.
     #[serde(default = "default_inhibition_floor")]
     pub inhibition_floor: f32,
+    /// Per-hop multiplier on **containment spread UP** (child → parent) — the
+    /// hierarchy's separate propagation channel (definitional-hierarchy H6,
+    /// OQ-5 default: asymmetric, *up-strong*). A specific leaf strongly implies
+    /// its category, so the up direction matches `dep_decay`. Default `0.5`.
+    /// **Inert until containment edges are supplied** (an empty containment
+    /// adjacency ⇒ the step is a no-op ⇒ identity), so an older file behaves
+    /// exactly as pre-H6.
+    #[serde(default = "default_containment_up_decay")]
+    pub containment_up_decay: f32,
+    /// Per-hop multiplier on **containment spread DOWN** (parent → child) —
+    /// deliberately *weak* (OQ-5): a category only weakly implies any one of its
+    /// children. Default `0.15`, well below the up direction. **Inert until
+    /// containment edges are supplied.**
+    #[serde(default = "default_containment_down_decay")]
+    pub containment_down_decay: f32,
 }
 
 fn default_seed_weight() -> f32 {
@@ -104,6 +119,12 @@ fn default_inhibition_strength() -> f32 {
 fn default_inhibition_floor() -> f32 {
     0.15
 }
+fn default_containment_up_decay() -> f32 {
+    0.5
+}
+fn default_containment_down_decay() -> f32 {
+    0.15
+}
 
 impl Default for RelationParams {
     fn default() -> Self {
@@ -116,6 +137,8 @@ impl Default for RelationParams {
             positive_decay: default_positive_decay(),
             inhibition_strength: default_inhibition_strength(),
             inhibition_floor: default_inhibition_floor(),
+            containment_up_decay: default_containment_up_decay(),
+            containment_down_decay: default_containment_down_decay(),
         }
     }
 }
@@ -131,7 +154,7 @@ pub struct RoutingConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Never inject silently (Aaron's lock): show the candidate menu before
+    /// Never inject silently (the maintainer's lock): show the candidate menu before
     /// any injection. Default `true`. **Inert until R2** (no injection yet).
     #[serde(default = "default_true")]
     pub curate_before_inject: bool,
@@ -229,22 +252,10 @@ impl RoutingConfig {
     }
 }
 
-/// `<data_dir>` resolved exactly the way every other service + the shared
-/// encryption store does (`WYLDE_DATA_DIR` → `DATA_DIR` →
-/// `<WYLDE_ROOT>/.wylde/data`). Read on every call so tests can point the env
-/// at a scratch dir per-case.
-fn data_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os("WYLDE_DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    if let Some(v) = std::env::var_os("DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    let root = std::env::var_os("WYLDE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    root.join(".wylde").join("data")
-}
+// `<data_dir>` (convention A: `WYLDE_DATA_DIR` → `DATA_DIR` →
+// `<WYLDE_ROOT>/.wylde/data`) from the ONE canonical resolver (#138) — this was
+// a verbatim copy of that body.
+use wylde_shared::paths::data_dir;
 
 /// `<data_dir>/settings/concept_routing.json` — alongside the other settings
 /// stores (`privacy.json`, `ollama.json`, `encryption_at_rest.json`).
@@ -325,7 +336,10 @@ mod tests {
         assert!(c.curate_before_inject, "never silent by default");
         assert_eq!(c.mode, InjectionMode::Augment);
         assert_eq!(c.max_concepts, 3);
-        assert!((c.abs_threshold - 0.62).abs() < 1e-6, "R4-calibrated abs floor");
+        assert!(
+            (c.abs_threshold - 0.62).abs() < 1e-6,
+            "R4-calibrated abs floor"
+        );
         assert!((c.relative_floor - 0.6).abs() < 1e-6);
         assert!(c.scope_to_active_region);
         assert_eq!(c.inject_token_budget, 1500);
@@ -339,6 +353,14 @@ mod tests {
         assert!((p.positive_decay - 0.3).abs() < 1e-6);
         assert!((p.spread_floor - 0.05).abs() < 1e-6);
         assert!((p.seed_weight - 1.0).abs() < 1e-6);
+        // H6 containment knobs: asymmetric, up-strong (OQ-5), inert when no
+        // containment adjacency is supplied.
+        assert!((p.containment_up_decay - 0.5).abs() < 1e-6);
+        assert!((p.containment_down_decay - 0.15).abs() < 1e-6);
+        assert!(
+            p.containment_up_decay > p.containment_down_decay,
+            "child→parent is stronger than parent→child"
+        );
     }
 
     #[test]

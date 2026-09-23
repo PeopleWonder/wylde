@@ -33,9 +33,7 @@ use crate::actions::error::{invalid_request, model_not_loaded};
 use crate::config::Config;
 use crate::mic::{MicCapture, WAKEWORD_FRAME_SAMPLES};
 use crate::state;
-use crate::wakeword::{
-    WakeWordConfig, WakeWordListener, WakeWordLoadError, WakeWordPipeline,
-};
+use crate::wakeword::{WakeWordConfig, WakeWordListener, WakeWordLoadError, WakeWordPipeline};
 
 /// `voice.wakeword.start` — load the openWakeWord ONNX bundle, open the
 /// default mic, spin up the listener thread. Idempotent.
@@ -239,7 +237,11 @@ fn read_cooldown_ms(payload: &Value) -> Option<Result<u64, IpcError>> {
     }
     let n = match v.as_u64() {
         Some(n) => n,
-        None => return Some(Err(invalid_request("cooldown_ms must be a non-negative integer"))),
+        None => {
+            return Some(Err(invalid_request(
+                "cooldown_ms must be a non-negative integer",
+            )))
+        }
     };
     if n > 60_000 {
         return Some(Err(invalid_request("cooldown_ms must be ≤ 60000 (60 s)")));
@@ -290,21 +292,42 @@ mod tests {
     fn read_threshold_validates_range() {
         assert!(read_threshold(&json!({})).is_none());
         assert!(read_threshold(&json!({"threshold": null})).is_none());
-        assert_eq!(read_threshold(&json!({"threshold": 0.5})).unwrap().unwrap(), 0.5);
-        let err = read_threshold(&json!({"threshold": 1.5})).unwrap().unwrap_err();
+        assert_eq!(
+            read_threshold(&json!({"threshold": 0.5})).unwrap().unwrap(),
+            0.5
+        );
+        let err = read_threshold(&json!({"threshold": 1.5}))
+            .unwrap()
+            .unwrap_err();
         assert_eq!(err.code, "invalid_request");
-        let err = read_threshold(&json!({"threshold": -0.1})).unwrap().unwrap_err();
+        let err = read_threshold(&json!({"threshold": -0.1}))
+            .unwrap()
+            .unwrap_err();
         assert_eq!(err.code, "invalid_request");
-        let err = read_threshold(&json!({"threshold": "high"})).unwrap().unwrap_err();
+        let err = read_threshold(&json!({"threshold": "high"}))
+            .unwrap()
+            .unwrap_err();
         assert_eq!(err.code, "invalid_request");
     }
 
     #[test]
     fn read_cooldown_validates_bounds() {
         assert!(read_cooldown_ms(&json!({})).is_none());
-        assert_eq!(read_cooldown_ms(&json!({"cooldown_ms": 0})).unwrap().unwrap(), 0);
-        assert_eq!(read_cooldown_ms(&json!({"cooldown_ms": 1_500})).unwrap().unwrap(), 1_500);
-        let err = read_cooldown_ms(&json!({"cooldown_ms": 99_999})).unwrap().unwrap_err();
+        assert_eq!(
+            read_cooldown_ms(&json!({"cooldown_ms": 0}))
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            read_cooldown_ms(&json!({"cooldown_ms": 1_500}))
+                .unwrap()
+                .unwrap(),
+            1_500
+        );
+        let err = read_cooldown_ms(&json!({"cooldown_ms": 99_999}))
+            .unwrap()
+            .unwrap_err();
         assert_eq!(err.code, "invalid_request");
     }
 }

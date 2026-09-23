@@ -39,7 +39,10 @@ use serde_json::{json, Value};
 
 /// Cap on the number of tools listed in the catalog block. Mirrors
 /// Python's `tools_catalog[:60]` — bounded to keep the prompt small.
-const MAX_CATALOG_TOOLS: usize = 60;
+///
+/// `pub(crate)` so the reasoning planner applies the SAME cap as the
+/// executor — see [`advertise`].
+pub(crate) const MAX_CATALOG_TOOLS: usize = 60;
 
 /// Canonical ids of the named tools that remain advertised after the
 /// Slice-6 verb cutover, *alongside* the eight `wylde_*` verb tools.
@@ -78,7 +81,15 @@ const SURVIVING_NAMED_TOOLS: &[&str] = &[
 /// tools have no resource equivalent to be reached through, so retiring
 /// them would make them unreachable), plus the [`SURVIVING_NAMED_TOOLS`]
 /// tail. The caller has already filtered to `status == "active"`.
-fn advertise(tool: &Value, verb_mode: bool) -> bool {
+///
+/// **This is the single definition of "what the model may name", and the
+/// reasoning planner MUST use it too** (`reasoning::inputs::render_tool_catalog`).
+/// It is `pub(crate)` for exactly that reason: when the planner filtered
+/// differently, it planned `read_file` while the executor could only dispatch
+/// `wylde_get`, so no plan step ever matched a dispatched call and the whole
+/// expectation/surprise machinery went inert (issue #25). Two catalogs is the
+/// bug; one filter is the fix. Do not re-implement this predicate anywhere.
+pub(crate) fn advertise(tool: &Value, verb_mode: bool) -> bool {
     if !verb_mode {
         return true;
     }

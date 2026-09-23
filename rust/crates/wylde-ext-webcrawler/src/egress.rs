@@ -82,10 +82,7 @@ async fn gateway_forward(url: &str, timeout_secs: f64) -> Result<FetchOutcome, G
         Ok(data) => {
             let status = data.get("status").and_then(Value::as_u64).unwrap_or(0) as u16;
             let content = body_to_string(data.get("body").unwrap_or(&Value::Null));
-            let headers = data
-                .get("headers")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
+            let headers = data.get("headers").cloned().unwrap_or_else(|| json!({}));
             Ok(FetchOutcome {
                 ok: (200..300).contains(&status),
                 status,
@@ -165,9 +162,18 @@ mod tests {
 
     #[test]
     fn classify_transport_codes_are_transport() {
-        for code in ["pipe_connect", "pipe_unavailable", "pipe_timeout", "decode", "unknown"] {
+        for code in [
+            "pipe_connect",
+            "pipe_unavailable",
+            "pipe_timeout",
+            "decode",
+            "unknown",
+        ] {
             assert!(
-                matches!(classify_ipc_error(code, "x"), GatewayCallError::Transport(_)),
+                matches!(
+                    classify_ipc_error(code, "x"),
+                    GatewayCallError::Transport(_)
+                ),
                 "{code} should classify as transport"
             );
         }

@@ -1,0 +1,107 @@
+# Ruleset parity — fail if a committed `.github/rulesets/*.json` record drifts from
+# the LIVE branch-protection ruleset it mirrors.
+#
+# WHY. The committed records are the documented source of truth; a restore/bootstrap
+# re-applies them. If they silently drift *below* live — e.g. dropping
+# `personal-info scrub (G8)` or `linked issue` — a restore would UNDER-PROTECT the
+# branch and nobody would notice. That exact drift happened (#204). This gate
+# re-reads each live ruleset every run and diffs the meaningful writable fields —
+# the required-check `context` set, `strict_required_status_checks_policy`,
+# `bypass_actors`, and `enforcement` — against the committed file, failing on any
+# mismatch and printing the diff (`-` = committed, `+` = live).
+#
+# Tracking issue: #128 (the required-check list is hand-kept and applied by hand;
+# this is the advisory-by-default CI job that enforces it). The drift it prevents
+# was #204.
+#
+# WHY A DEDICATED TOKEN, NOT GITHUB_TOKEN. Reading a ruleset
+# (`GET /repos/{o}/{r}/rulesets/{id}`) requires the `Administration: read`
+# permission. That permission CANNOT be granted to the default GITHUB_TOKEN — it is
+# not among the permissions a workflow may request for GITHUB_TOKEN — so the read
+# must use a separate credential: RULESET_AUDIT_TOKEN, a fine-grained PAT with
+# Repository permissions -> Administration: Read-only on this repo.
+#
+# GRACEFUL DEGRADATION (mirrors the PROJECT_TOKEN board automation, add-to-project.yml).
+# When RULESET_AUDIT_TOKEN is absent — the secret is unset, OR the event is a fork /
+# Dependabot PR that cannot read secrets — the job reports GREEN with an explicit
+# ::notice::, never a red X. So it lives safely in the tree before the secret exists,
+# and it always REPORTS a status (no job-level skip), which is what lets it later be
+# promoted to a required check without the never-reported-context deadlock.
+name: Ruleset parity
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+  # Weekly, independent of any PR: catches drift introduced on the LIVE side
+  # (someone edits a ruleset in the UI) even when no file changed.
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+# Least privilege: the ruleset read goes through RULESET_AUDIT_TOKEN, not
+# GITHUB_TOKEN, so the workflow's own token only needs to read the checked-out files.
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: committed rulesets match live
+    runs-on: ubuntu-latest
+    # NOTE: deliberately NO job-level `if:` guard. The job must ALWAYS run and report
+    # a status (green) so it can be made a required check later without deadlocking
+    # PRs on a context that never reports. Absence of the token is handled INSIDE the
+    # step, green-with-notice — including fork/Dependabot events where the secret is
+    # empty by construction.
+    env:
+      RULESET_AUDIT_TOKEN: ${{ secrets.RULESET_AUDIT_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Compare committed records to live rulesets
+        env:
+          GH_TOKEN: ${{ env.RULESET_AUDIT_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::notice title=Ruleset parity skipped::RULESET_AUDIT_TOKEN is not available (secret unset, or a fork/Dependabot event that cannot read secrets), so the live rulesets cannot be read (needs Administration:read). Reporting GREEN without checking. To make this gate enforcing, add a repo Actions secret RULESET_AUDIT_TOKEN — a fine-grained PAT with Repository permissions -> Administration: Read-only."
+            exit 0
+          fi
+
+          # Canonicalize the meaningful writable fields from a ruleset JSON on stdin.
+          # Same projection for live and committed, so extra live-only fields (id,
+          # timestamps, _links, current_user_can_bypass, ...) are ignored by design.
+          norm() {
+            jq -S '{
+              enforcement: .enforcement,
+              strict: ([.rules[]? | select(.type=="required_status_checks") | .parameters.strict_required_status_checks_policy] | first),
+              checks: ([.rules[]? | select(.type=="required_status_checks") | .parameters.required_status_checks[]?.context] | sort),
+              bypass_actors: ([.bypass_actors[]? | {actor_id, actor_type, bypass_mode}] | sort_by([.actor_type, (.actor_id|tostring)]))
+            }'
+          }
+
+          fail=0
+          compare() {
+            name="$1"; id="$2"; file=".github/rulesets/${name}.json"
+            echo "== ${name} (id ${id}) =="
+            if [ ! -f "$file" ]; then
+              echo "::error title=Missing record::committed record ${file} does not exist"
+              fail=1; return
+            fi
+            if ! gh api "repos/${GH_REPO}/rulesets/${id}" > live.json 2> live.err; then
+              echo "::error title=Ruleset read failed::could not GET ruleset ${id} — RULESET_AUDIT_TOKEN may lack Administration:read. $(cat live.err)"
+              fail=1; return
+            fi
+            norm < live.json  > live.norm.json
+            norm < "$file"    > committed.norm.json
+            if diff -u committed.norm.json live.norm.json; then
+              echo "OK: ${name} committed record matches live"
+            else
+              echo "::error title=Ruleset drift::${name} committed record (${file}) does not match the live ruleset (id ${id}). Diff above ('-' = committed, '+' = live). Reconcile the committed file from a fresh GET of the live ruleset."
+              fail=1
+            fi
+          }
+
+          compare protect-develop 19015304
+          compare protect-main    19015305
+          exit $fail

@@ -363,7 +363,7 @@ pub fn extract_tool_calls_from_content(
     }
 
     // Strip right-to-left so earlier offsets stay valid.
-    spans_to_remove.sort_by(|a, b| b.0.cmp(&a.0));
+    spans_to_remove.sort_by_key(|b| std::cmp::Reverse(b.0));
     let mut cleaned = working;
     for (start, end) in spans_to_remove {
         cleaned.replace_range(start..end, "");

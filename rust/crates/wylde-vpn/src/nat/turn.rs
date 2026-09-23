@@ -62,13 +62,8 @@ pub trait Transport: Send + Sync {
     /// Send `request` to `host:port`, return the response bytes or `None`
     /// on timeout / network error. Implementations are responsible for
     /// applying the supplied read timeout.
-    fn exchange(
-        &self,
-        host: &str,
-        port: u16,
-        request: &[u8],
-        timeout: Duration,
-    ) -> Option<Vec<u8>>;
+    fn exchange(&self, host: &str, port: u16, request: &[u8], timeout: Duration)
+        -> Option<Vec<u8>>;
 }
 
 pub struct UdpTransport;
@@ -137,10 +132,7 @@ pub fn allocate_with(
 
     let parsed = if parsed1.class == CLASS_ERROR {
         let nonce = parsed1.nonce.clone()?;
-        let srv_realm = parsed1
-            .realm
-            .clone()
-            .unwrap_or_else(|| realm.to_string());
+        let srv_realm = parsed1.realm.clone().unwrap_or_else(|| realm.to_string());
 
         // Step 2 — authenticated Allocate.
         let key = ltc_key(username, &srv_realm, password);
@@ -218,11 +210,7 @@ fn ltc_key(username: &str, realm: &str, password: &str) -> [u8; 16] {
     arr
 }
 
-fn build_allocate(
-    txn: [u8; 12],
-    lifetime: u32,
-    auth: Option<AuthAttrs<'_>>,
-) -> Vec<u8> {
+fn build_allocate(txn: [u8; 12], lifetime: u32, auth: Option<AuthAttrs<'_>>) -> Vec<u8> {
     let mut attrs: Vec<u8> = Vec::new();
 
     // REQUESTED-TRANSPORT = UDP (17), padded to 4 bytes.
@@ -247,16 +235,14 @@ fn build_allocate(
         let header_len = attrs.len() + 24;
         let header = build_header(txn, METHOD_ALLOCATE | CLASS_REQUEST, header_len);
 
-        let mut mac = Hmac::<Sha1>::new_from_slice(a.key)
-            .expect("HMAC accepts any key length");
+        let mut mac = Hmac::<Sha1>::new_from_slice(a.key).expect("HMAC accepts any key length");
         mac.update(&header);
         mac.update(&attrs);
         let tag = mac.finalize().into_bytes();
         encode_attr(&mut attrs, ATTR_MESSAGE_INTEGRITY, &tag);
     }
 
-    let mut out =
-        build_header(txn, METHOD_ALLOCATE | CLASS_REQUEST, attrs.len());
+    let mut out = build_header(txn, METHOD_ALLOCATE | CLASS_REQUEST, attrs.len());
     out.extend(attrs);
     out
 }
@@ -338,10 +324,8 @@ fn decode_xor_addr(value: &[u8]) -> Option<(String, u16)> {
     if family != 0x01 {
         return None;
     }
-    let port = u16::from_be_bytes([value[2], value[3]])
-        ^ ((MAGIC_COOKIE >> 16) & 0xFFFF) as u16;
-    let ip_int = u32::from_be_bytes([value[4], value[5], value[6], value[7]])
-        ^ MAGIC_COOKIE;
+    let port = u16::from_be_bytes([value[2], value[3]]) ^ ((MAGIC_COOKIE >> 16) & 0xFFFF) as u16;
+    let ip_int = u32::from_be_bytes([value[4], value[5], value[6], value[7]]) ^ MAGIC_COOKIE;
     let ip = std::net::Ipv4Addr::from(ip_int.to_be_bytes());
     Some((ip.to_string(), port))
 }
@@ -387,17 +371,12 @@ mod tests {
         }
     }
 
-    fn build_response(
-        txn: [u8; 12],
-        class: u16,
-        attrs: Vec<(u16, Vec<u8>)>,
-    ) -> Vec<u8> {
+    fn build_response(txn: [u8; 12], class: u16, attrs: Vec<(u16, Vec<u8>)>) -> Vec<u8> {
         let mut attr_bytes = Vec::new();
         for (t, v) in attrs {
             encode_attr(&mut attr_bytes, t, &v);
         }
-        let mut out =
-            build_header(txn, METHOD_ALLOCATE | class, attr_bytes.len());
+        let mut out = build_header(txn, METHOD_ALLOCATE | class, attr_bytes.len());
         out.extend(attr_bytes);
         out
     }
@@ -417,14 +396,8 @@ mod tests {
     #[test]
     fn allocate_short_circuits_when_host_or_password_blank() {
         let t = ScriptTransport::new(Vec::new());
-        assert!(
-            allocate_with(&t, "", 3478, "u", "p", "r", 600, Duration::from_secs(1))
-                .is_none()
-        );
-        assert!(
-            allocate_with(&t, "h", 3478, "u", "", "r", 600, Duration::from_secs(1))
-                .is_none()
-        );
+        assert!(allocate_with(&t, "", 3478, "u", "p", "r", 600, Duration::from_secs(1)).is_none());
+        assert!(allocate_with(&t, "h", 3478, "u", "", "r", 600, Duration::from_secs(1)).is_none());
         assert_eq!(t.requests().len(), 0); // never hit the network
     }
 
@@ -444,7 +417,10 @@ mod tests {
     fn build_allocate_includes_requested_transport_and_lifetime() {
         let req = build_allocate([0u8; 12], 600, None);
         // After header (20 bytes), first attr should be REQUESTED-TRANSPORT.
-        assert_eq!(u16::from_be_bytes([req[20], req[21]]), ATTR_REQUESTED_TRANSPORT);
+        assert_eq!(
+            u16::from_be_bytes([req[20], req[21]]),
+            ATTR_REQUESTED_TRANSPORT
+        );
         assert_eq!(u16::from_be_bytes([req[22], req[23]]), 4);
         assert_eq!(req[24], REQUESTED_TRANSPORT_UDP);
         // Second attr — LIFETIME.
@@ -470,13 +446,7 @@ mod tests {
             captured: Mutex<Vec<[u8; 12]>>,
         }
         impl Transport for ScriptedExchange {
-            fn exchange(
-                &self,
-                _h: &str,
-                _p: u16,
-                req: &[u8],
-                _t: Duration,
-            ) -> Option<Vec<u8>> {
+            fn exchange(&self, _h: &str, _p: u16, req: &[u8], _t: Duration) -> Option<Vec<u8>> {
                 let mut txid = [0u8; 12];
                 txid.copy_from_slice(&req[8..20]);
                 self.captured.lock().unwrap().push(txid);
@@ -497,14 +467,8 @@ mod tests {
                         txid,
                         CLASS_SUCCESS,
                         vec![
-                            (
-                                ATTR_XOR_RELAYED,
-                                xor_addr_value([10, 0, 0, 1], 49152),
-                            ),
-                            (
-                                ATTR_XOR_MAPPED,
-                                xor_addr_value([1, 2, 3, 4], 51820),
-                            ),
+                            (ATTR_XOR_RELAYED, xor_addr_value([10, 0, 0, 1], 49152)),
+                            (ATTR_XOR_MAPPED, xor_addr_value([1, 2, 3, 4], 51820)),
                         ],
                     ))
                 }
@@ -544,13 +508,7 @@ mod tests {
             phase: Mutex<u8>,
         }
         impl Transport for Auth401Then500 {
-            fn exchange(
-                &self,
-                _h: &str,
-                _p: u16,
-                req: &[u8],
-                _t: Duration,
-            ) -> Option<Vec<u8>> {
+            fn exchange(&self, _h: &str, _p: u16, req: &[u8], _t: Duration) -> Option<Vec<u8>> {
                 let mut txid = [0u8; 12];
                 txid.copy_from_slice(&req[8..20]);
                 let mut phase = self.phase.lock().unwrap();

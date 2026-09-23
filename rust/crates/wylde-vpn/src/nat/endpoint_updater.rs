@@ -132,12 +132,7 @@ impl EndpointUpdater {
         // STUN probe synchronously inside a blocking task — the
         // hand-rolled udp_probe is plain std::net::UdpSocket.
         let probe = tokio::task::spawn_blocking(move || {
-            stun::discover_endpoint_with(
-                transport.as_ref(),
-                &servers,
-                0,
-                Duration::from_secs(3),
-            )
+            stun::discover_endpoint_with(transport.as_ref(), &servers, 0, Duration::from_secs(3))
         })
         .await
         .ok()
@@ -196,9 +191,7 @@ impl EndpointUpdater {
                     return;
                 }
                 if let Err(e) = std::fs::rename(&tmp, history_path) {
-                    tracing::warn!(
-                        "endpoint-updater: history rename failed: {e}"
-                    );
+                    tracing::warn!("endpoint-updater: history rename failed: {e}");
                 }
             }
             Err(e) => tracing::warn!("endpoint-updater: history serialize failed: {e}"),
@@ -280,8 +273,7 @@ mod tests {
         let (_dir, history) = tmp_history();
         let calls = Arc::new(AtomicU32::new(0));
         type Captured = Vec<(Option<String>, String)>;
-        let captured: Arc<StdMutex<Captured>> =
-            Arc::new(StdMutex::new(Vec::new()));
+        let captured: Arc<StdMutex<Captured>> = Arc::new(StdMutex::new(Vec::new()));
         let captured_cb = Arc::clone(&captured);
         let calls_cb = Arc::clone(&calls);
         let cb: OnChange = Arc::new(move |prev, curr| {
@@ -380,9 +372,7 @@ mod tests {
     async fn start_and_stop_round_trip() {
         let (_dir, history) = tmp_history();
         let cb: OnChange = Arc::new(|_, _| {});
-        let scripted = Arc::new(ScriptedStun::new(vec![
-            Some(make_result("1.1.1.1", 100)),
-        ]));
+        let scripted = Arc::new(ScriptedStun::new(vec![Some(make_result("1.1.1.1", 100))]));
         let updater = EndpointUpdater::with_transport(
             vec!["s:3478".to_string()],
             Duration::from_secs(3600),

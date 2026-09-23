@@ -112,7 +112,7 @@ impl StdioConn {
         // Timeout-Elapsed is the "child didn't exit cleanly" path we
         // fall through to start_kill on — not an error.
         let _ = tokio::time::timeout(kill_window, waiter).await; // wylde-check: discard-result-ok
-        // start_kill errors only if the child already exited.
+                                                                 // start_kill errors only if the child already exited.
         let _ = self.child.start_kill(); // wylde-check: discard-result-ok
         self.reader_handle.abort();
         // Final reap; failure here just means the child was already

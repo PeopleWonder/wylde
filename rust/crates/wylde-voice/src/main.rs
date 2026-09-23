@@ -120,9 +120,7 @@ async fn main() -> Result<()> {
         );
     }
 
-    tracing::info!(
-        "wylde-voice: actions registered; opening pipe at \\\\.\\pipe\\wylde-voice"
-    );
+    tracing::info!("wylde-voice: actions registered; opening pipe at \\\\.\\pipe\\wylde-voice");
 
     let serve_fut = ipc::serve(SERVICE_NAME, None);
     tokio::select! {

@@ -53,9 +53,7 @@ pub async fn handle_chat(payload: Value, up: Arc<Upstream>) -> Reply {
     let messages = match payload.get("messages") {
         Some(v) if v.is_array() => v.clone(),
         _ => {
-            return Reply::err(invalid_request(
-                "payload.messages is required (array)",
-            ));
+            return Reply::err(invalid_request("payload.messages is required (array)"));
         }
     };
 
@@ -224,7 +222,7 @@ pub async fn handle_chat_stream(payload: Value, sender: StreamSender, up: Arc<Up
         Ok(r) => r,
         Err(e) => {
             let _ = sender.send(Err(ollama_unreachable_err(&e))).await; // wylde-check: discard-result-ok
-            // Lease drop on guard going out of scope.
+                                                                        // Lease drop on guard going out of scope.
             drop(lease_guard);
             return;
         }
@@ -399,6 +397,40 @@ mod tests {
         // proceeds without a lease and returns the upstream payload.
         assert!(r.ok, "expected ok, got {r:?}");
         assert_eq!(r.data, envelope);
+    }
+
+    /// The pass-through contract the harness's constrained-decoding
+    /// plumbing (`turn/reasoning/constrained.rs`) relies on: an Ollama
+    /// `format` schema on the IPC payload reaches POST /api/chat
+    /// unmodified (while pipe-only knobs like `priority` are stripped).
+    /// The mock only matches when the upstream body carries the schema —
+    /// an `ok` reply proves the field survived the hop.
+    #[tokio::test]
+    async fn chat_forwards_format_schema_upstream() {
+        let (server, up) = fake_upstream().await;
+        let schema = json!({"type": "object", "required": ["goal"]});
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"format": schema}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "message": {"role": "assistant", "content": "{}"},
+                "done": true
+            })))
+            .mount(&server)
+            .await;
+        let r = handle_chat(
+            json!({
+                "model": "qwen",
+                "messages": [{"role": "user", "content": "hi"}],
+                "format": schema,
+                "priority": "high"
+            }),
+            up,
+        )
+        .await;
+        assert!(r.ok, "format-bearing body must match upstream: {r:?}");
     }
 
     #[tokio::test]

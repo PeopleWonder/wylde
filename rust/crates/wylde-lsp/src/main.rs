@@ -48,9 +48,7 @@ async fn main() -> Result<()> {
         tracing::warn!("wylde-lsp: action contract write failed: {e}");
     }
 
-    tracing::info!(
-        "wylde-lsp: actions registered; opening pipe at \\\\.\\pipe\\wylde-lsp"
-    );
+    tracing::info!("wylde-lsp: actions registered; opening pipe at \\\\.\\pipe\\wylde-lsp");
 
     if let Err(e) = ipc::serve(SERVICE_NAME, None).await {
         tracing::error!("wylde-lsp: serve() exited with error: {e}");

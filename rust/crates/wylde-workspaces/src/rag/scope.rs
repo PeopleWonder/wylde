@@ -103,8 +103,8 @@ fn relativize(folder: &str, path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::registry::WorkspaceDefinition;
     use super::*;
+    use crate::registry::WorkspaceDefinition;
     use crate::test_support::TestEnv;
 
     #[test]
@@ -166,6 +166,8 @@ mod tests {
             content: "  body text  ".into(),
             score: 0.5,
             chunk_idx: 0,
+            lexical_score: None,
+            fused_score: None,
         };
         let s = render_hit(&scope, &hit);
         assert!(s.contains("`notes.md`"));

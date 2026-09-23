@@ -31,11 +31,21 @@
 //!
 //! ```text
 //! StoreOnDisk {
-//!     version: u32,          // currently 2
+//!     version: u32,          // currently 3
 //!     dim: u32,
+//!     embed_model: String,   // v3 (#136)
 //!     records: Vec<Record>,  // (id: String, q: Vec<i8>, scale: f32)
 //! }
 //! ```
+//!
+//! **Version 3 (#136):** the envelope stamps the embedder that produced
+//! the vectors, so a model swap at the same width is detected instead of
+//! silently mixing incomparable vectors. An incompatible mirror (wrong
+//! width or wrong model) is moved aside to `<path>.incompatible` rather
+//! than left to be overwritten by the next write, and
+//! [`rebuild`] regenerates it from the tier's authoritative JSON.
+//! Version-2 files (no stamp) load transparently and adopt the current
+//! model on the next persist.
 //!
 //! **Version 2 (improvement plan B13):** vectors are stored int8
 //! scalar-quantised with a per-vector scale — `real[i] ≈ q[i] * scale` —
@@ -53,9 +63,35 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub mod rebuild;
+
+pub use rebuild::{rebuild, RebuildError, RebuildReport};
+
 /// On-disk envelope. Versioned so a format bump can read prior shapes.
+///
+/// **Version 3 (#136)** adds `embed_model`. Without it a mirror carried no
+/// record of *which embedder produced its vectors*, so swapping
+/// `WYLDE_EMBED_MODEL` at the same width left every prior vector in place,
+/// silently incomparable with the new ones — search quality degrading with no
+/// signal anywhere. The workspaces RAG index already stamped its model in
+/// `manifest.rs` and rebuilt on mismatch; the memory tiers did not, and that
+/// asymmetry was the bug.
 #[derive(Debug, Serialize, Deserialize)]
 struct StoreOnDisk {
+    version: u32,
+    dim: u32,
+    /// The embedder that produced these vectors (`embed_model()` at write
+    /// time). A mismatch on load means the mirror is incomparable, not merely
+    /// stale.
+    embed_model: String,
+    records: Vec<Record>,
+}
+
+/// The v2 envelope — model-less. Read transparently so existing mirrors
+/// migrate instead of being discarded.
+#[derive(Debug, Serialize, Deserialize)]
+struct StoreOnDiskV2 {
+    #[allow(dead_code)] // peeked before deserialisation; kept for shape parity
     version: u32,
     dim: u32,
     records: Vec<Record>,
@@ -128,6 +164,8 @@ pub enum VectorStoreError {
     EmptyVector,
     #[error("on-disk store dim {on_disk} does not match expected {expected}")]
     LoadedDimMismatch { expected: usize, on_disk: usize },
+    #[error("on-disk store was written by embedder {on_disk:?}, expected {expected:?}")]
+    LoadedModelMismatch { expected: String, on_disk: String },
     #[error("unsupported on-disk version {0}")]
     UnsupportedVersion(u32),
     #[error("io error: {0}")]
@@ -137,24 +175,41 @@ pub enum VectorStoreError {
 }
 
 /// Format version. Bump on any change that breaks reading prior bytes.
-/// v2 = int8 quantised records (B13); v1 (raw f32) still loads.
-const FORMAT_VERSION: u32 = 2;
+/// v3 = `embed_model` stamped in the envelope (#136); v2 = int8 quantised
+/// records (B13); v1 (raw f32) still loads.
+const FORMAT_VERSION: u32 = 3;
 
 /// Pure-Rust vector store. Owns the records; dim is fixed at
 /// construction.
 #[derive(Debug, Clone)]
 pub struct VectorStore {
     dim: usize,
+    /// Embedder that produced these vectors; stamped on persist (#136).
+    embed_model: String,
     records: Vec<Record>,
 }
 
 impl VectorStore {
-    /// New empty store with embedding dim `dim`.
+    /// New empty store with embedding dim `dim`, stamped with the currently
+    /// configured embedder.
     pub fn new(dim: usize) -> Self {
+        Self::new_with_model(dim, crate::memory::common::embed_model())
+    }
+
+    /// New empty store with an explicit embedder stamp. Test seam, and the
+    /// entry point a rebuild uses when it wants to pin the model it embedded
+    /// under rather than re-resolving it mid-pass.
+    pub fn new_with_model(dim: usize, embed_model: String) -> Self {
         Self {
             dim,
+            embed_model,
             records: Vec::new(),
         }
+    }
+
+    /// The embedder this store's vectors were produced by.
+    pub fn embed_model(&self) -> &str {
+        &self.embed_model
     }
 
     /// Embedding dim. All vectors passed to [`insert`] / [`query_topk`]
@@ -271,6 +326,7 @@ impl VectorStore {
         let envelope = StoreOnDisk {
             version: FORMAT_VERSION,
             dim: self.dim as u32,
+            embed_model: self.embed_model.clone(),
             records: self.records.clone(),
         };
         let bytes = bincode::serialize(&envelope)?;
@@ -288,6 +344,17 @@ impl VectorStore {
     /// is quantised in memory (B13) and the next [`Self::persist`] writes
     /// the v2 shape — a lazy, lossless-enough migration.
     pub fn load(path: &Path, expected_dim: usize) -> Result<Self, VectorStoreError> {
+        Self::load_expecting(path, expected_dim, &crate::memory::common::embed_model())
+    }
+
+    /// [`Self::load`] with the expected embedder passed explicitly rather than
+    /// resolved from config. Lets a caller (and the tests) reason about a
+    /// specific model without mutating process-wide state.
+    pub fn load_expecting(
+        path: &Path,
+        expected_dim: usize,
+        expected_model: &str,
+    ) -> Result<Self, VectorStoreError> {
         let bytes = std::fs::read(path)?;
         // Bincode is not self-describing: peek the version (first u32,
         // little-endian fixed-int) before choosing the record shape.
@@ -295,10 +362,20 @@ impl VectorStore {
             .get(0..4)
             .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
             .unwrap_or(0);
-        let (dim, records): (u32, Vec<Record>) = match version {
+        let (dim, on_disk_model, records): (u32, Option<String>, Vec<Record>) = match version {
             FORMAT_VERSION => {
                 let envelope: StoreOnDisk = bincode::deserialize(&bytes)?;
-                (envelope.dim, envelope.records)
+                (envelope.dim, Some(envelope.embed_model), envelope.records)
+            }
+            2 => {
+                // Pre-#136: no model stamp. We cannot know which embedder
+                // produced these vectors, so we do NOT guess — an unstamped
+                // mirror is accepted as-is and re-stamped with the current
+                // model on the next persist. This is the one unavoidable
+                // blind spot; it exists once, for stores written before the
+                // field existed.
+                let envelope: StoreOnDiskV2 = bincode::deserialize(&bytes)?;
+                (envelope.dim, None, envelope.records)
             }
             1 => {
                 let envelope: StoreOnDiskV1 = bincode::deserialize(&bytes)?;
@@ -311,7 +388,7 @@ impl VectorStore {
                         Record { id: r.id, q, scale }
                     })
                     .collect();
-                (envelope.dim, migrated)
+                (envelope.dim, None, migrated)
             }
             other => return Err(VectorStoreError::UnsupportedVersion(other)),
         };
@@ -321,8 +398,17 @@ impl VectorStore {
                 on_disk: dim as usize,
             });
         }
+        if let Some(found) = &on_disk_model {
+            if found != expected_model {
+                return Err(VectorStoreError::LoadedModelMismatch {
+                    expected: expected_model.to_owned(),
+                    on_disk: found.clone(),
+                });
+            }
+        }
         Ok(Self {
             dim: expected_dim,
+            embed_model: expected_model.to_owned(),
             records,
         })
     }
@@ -331,26 +417,71 @@ impl VectorStore {
     /// `expected_dim` arg drives the empty-store dim too, so a brand
     /// new long-term layer comes up at the configured embedding width.
     ///
-    /// If the file exists but its dim doesn't match, returns a fresh
-    /// empty store and logs — matches Python's "JSON unreadable, treat
-    /// as empty" recovery. The JSON authoritative list is canonical;
-    /// the vector mirror is rebuildable.
+    /// If the file exists but is incompatible — a different embedding width
+    /// or a different embedder (#136) — the existing file is **preserved**,
+    /// moved aside to `<path>.incompatible`, and a fresh empty store is
+    /// returned for the rebuild to fill.
+    ///
+    /// # Why it moves the file instead of ignoring it
+    ///
+    /// This used to return an empty store and leave the old file in place,
+    /// which sounds harmless but wasn't: the very next `vector_upsert`
+    /// persists the empty-plus-one store straight over it, so every stored
+    /// vector was destroyed by the first write after a dim change. One
+    /// `warn!` in a log nobody reads was the only trace.
+    ///
+    /// The destruction was justified in this module's own comments by the
+    /// claim that "the vector mirror is rebuildable" via a `reindex` — a
+    /// function that did not exist. It exists now
+    /// ([`crate::memory::vector::rebuild`] and the `*.reindex` verbs), so the
+    /// mirror genuinely is rebuildable from the authoritative JSON; but a
+    /// rebuild needs a working embedder, so the old vectors are kept aside
+    /// rather than dropped on the floor in the meantime.
+    ///
+    /// A pre-existing `.incompatible` sidecar is overwritten: it is itself a
+    /// derived artifact, and keeping an unbounded chain of them would trade
+    /// one disk-growth bug for another.
     pub fn load_or_empty(path: &Path, expected_dim: usize) -> Self {
+        Self::load_or_empty_expecting(path, expected_dim, &crate::memory::common::embed_model())
+    }
+
+    /// [`Self::load_or_empty`] with the expected embedder passed explicitly.
+    pub fn load_or_empty_expecting(path: &Path, expected_dim: usize, expected_model: &str) -> Self {
         if !path.exists() {
-            return Self::new(expected_dim);
+            return Self::new_with_model(expected_dim, expected_model.to_owned());
         }
-        match Self::load(path, expected_dim) {
+        match Self::load_expecting(path, expected_dim, expected_model) {
             Ok(s) => s,
             Err(e) => {
-                tracing::warn!(
-                    "vector_store: load failed for {} ({}), starting empty",
-                    path.display(),
-                    e
-                );
-                Self::new(expected_dim)
+                let aside = quarantine_path(path);
+                match std::fs::rename(path, &aside) {
+                    Ok(()) => tracing::error!(
+                        "vector_store: {} is incompatible ({}); moved to {} and starting \
+                         empty — run the tier's reindex verb to rebuild the mirror from \
+                         the authoritative JSON",
+                        path.display(),
+                        e,
+                        aside.display(),
+                    ),
+                    Err(rename_err) => tracing::error!(
+                        "vector_store: {} is incompatible ({}) and could NOT be preserved \
+                         ({}); starting empty — the next write will overwrite it",
+                        path.display(),
+                        e,
+                        rename_err,
+                    ),
+                }
+                Self::new_with_model(expected_dim, expected_model.to_owned())
             }
         }
     }
+}
+
+/// Where [`VectorStore::load_or_empty`] moves an incompatible mirror.
+fn quarantine_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".incompatible");
+    PathBuf::from(s)
 }
 
 fn with_tmp_suffix(path: &Path) -> PathBuf {
@@ -588,12 +719,14 @@ mod tests {
         assert_eq!(hits[0].id, "a");
         assert!(approx(hits[0].similarity, 1.0));
 
-        // Persisting writes v2; a reload still works and v1 is gone.
+        // Persisting writes the current format; a reload still works and v1
+        // is gone. Pinned to the constant, not a literal, so a future version
+        // bump doesn't need this assertion rewritten again.
         s.persist(&path).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(
             u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-            2
+            FORMAT_VERSION
         );
         assert_eq!(VectorStore::load(&path, 3).unwrap().len(), 2);
     }
@@ -626,18 +759,113 @@ mod tests {
     }
 
     #[test]
-    fn load_or_empty_returns_empty_when_dim_mismatch_on_disk() {
-        // JSON authoritative; if vector mirror is wrong-dim we silently
-        // start empty and the next save() will rebuild it.
+    fn load_or_empty_preserves_an_incompatible_mirror_instead_of_letting_it_be_overwritten() {
+        // This test previously asserted the wipe was fine, on the reasoning
+        // that "the next save() will rebuild it". It did not: the next save
+        // persisted the empty-plus-one store straight over the file, and the
+        // `reindex` the comment leaned on did not exist. A dim change
+        // therefore destroyed every stored vector (#136).
         let td = tempdir().unwrap();
         let path = td.path().join("vec.bin");
         let mut original = VectorStore::new(4);
         original.insert("a", vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        original.insert("b", vec![4.0, 3.0, 2.0, 1.0]).unwrap();
         original.persist(&path).unwrap();
+        let original_bytes = std::fs::read(&path).unwrap();
 
+        // Reload at a different width — the config change that used to wipe.
         let fresh = VectorStore::load_or_empty(&path, 8);
         assert!(fresh.is_empty());
         assert_eq!(fresh.dim(), 8);
+
+        // Now do the thing that used to destroy the data.
+        fresh.persist(&path).unwrap();
+
+        // The original vectors survive, moved aside rather than overwritten.
+        let aside = quarantine_path(&path);
+        assert!(
+            aside.exists(),
+            "the incompatible mirror must be preserved, not destroyed"
+        );
+        assert_eq!(
+            std::fs::read(&aside).unwrap(),
+            original_bytes,
+            "the preserved mirror must be byte-identical to what was written"
+        );
+        // ...and it is still a loadable store at its original width.
+        let recovered = VectorStore::load(&aside, 4).unwrap();
+        assert_eq!(recovered.len(), 2);
+    }
+
+    /// #136 — a mirror must record which embedder produced it, so a model
+    /// swap at the SAME width can be detected. Without the stamp, prior
+    /// vectors stayed in place and were silently compared against vectors
+    /// from a different model forever.
+    #[test]
+    fn a_model_swap_at_the_same_dim_is_detected_rather_than_silently_mixed() {
+        let td = tempdir().unwrap();
+        let path = td.path().join("vec.bin");
+
+        let mut original = VectorStore::new_with_model(4, "model-a".to_owned());
+        original.insert("a", vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        original.persist(&path).unwrap();
+        let original_bytes = std::fs::read(&path).unwrap();
+
+        // Same embedder reloads cleanly.
+        assert_eq!(
+            VectorStore::load_expecting(&path, 4, "model-a")
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // A different embedder at the same width — the case that used to be
+        // completely invisible.
+        let err = VectorStore::load_expecting(&path, 4, "model-b")
+            .expect_err("a mirror from another embedder must not load silently");
+        assert!(
+            matches!(err, VectorStoreError::LoadedModelMismatch { .. }),
+            "expected LoadedModelMismatch, got {err:?}"
+        );
+
+        // The incompatible mirror is preserved, not left to be overwritten.
+        let fresh = VectorStore::load_or_empty_expecting(&path, 4, "model-b");
+        assert!(fresh.is_empty());
+        assert_eq!(fresh.embed_model(), "model-b");
+        let aside = quarantine_path(&path);
+        assert!(aside.exists(), "the mismatched mirror must be preserved");
+        assert_eq!(std::fs::read(&aside).unwrap(), original_bytes);
+    }
+
+    /// A pre-#136 (v2) mirror has no model stamp. It must still load — we
+    /// migrate rather than discard — and get stamped on the next persist.
+    #[test]
+    fn a_pre_stamp_v2_mirror_loads_and_is_stamped_on_the_next_persist() {
+        let td = tempdir().unwrap();
+        let path = td.path().join("vec.bin");
+
+        // Mint a v2 (model-less) envelope by hand.
+        let mut store = VectorStore::new_with_model(4, "model-a".to_owned());
+        store.insert("a", vec![1.0, 2.0, 3.0, 4.0]).unwrap();
+        let v2 = StoreOnDiskV2 {
+            version: 2,
+            dim: 4,
+            records: store.records.clone(),
+        };
+        std::fs::write(&path, bincode::serialize(&v2).unwrap()).unwrap();
+
+        // An unstamped mirror loads under ANY expected model — we cannot know
+        // which embedder wrote it, so we adopt the current one rather than
+        // discarding vectors on a guess. This blind spot exists exactly once,
+        // for stores written before the field existed.
+        let loaded =
+            VectorStore::load_expecting(&path, 4, "model-b").expect("a v2 mirror must still load");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.embed_model(), "model-b");
+
+        // Once re-persisted it IS stamped, so the next swap is detectable.
+        loaded.persist(&path).unwrap();
+        assert!(VectorStore::load_expecting(&path, 4, "model-c").is_err());
     }
 
     #[test]

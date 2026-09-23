@@ -172,8 +172,8 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|| default_ov_cache_dir(&wylde_root));
 
-        let tts_voice = std::env::var("WYLDE_VOICE_TTS_VOICE")
-            .unwrap_or_else(|_| "af_heart".to_owned());
+        let tts_voice =
+            std::env::var("WYLDE_VOICE_TTS_VOICE").unwrap_or_else(|_| "af_heart".to_owned());
 
         let tts_speed: f32 = std::env::var("WYLDE_VOICE_TTS_SPEED")
             .ok()
@@ -203,10 +203,7 @@ impl Config {
             wakeword_model: std::env::var("WYLDE_VOICE_WAKEWORD_MODEL")
                 .unwrap_or_else(|_| "openWakeWord/hey-jarvis".to_owned()),
             wakeword_models_dir,
-            vad_threshold: env_f32(
-                "WYLDE_VOICE_VAD_THRESHOLD",
-                crate::vad::DEFAULT_THRESHOLD,
-            ),
+            vad_threshold: env_f32("WYLDE_VOICE_VAD_THRESHOLD", crate::vad::DEFAULT_THRESHOLD),
             vad_silence_timeout_ms: env_u32(
                 "WYLDE_VOICE_VAD_SILENCE_TIMEOUT_MS",
                 crate::vad::DEFAULT_SILENCE_TIMEOUT_MS,
@@ -223,7 +220,10 @@ impl Config {
 fn default_ov_cache_dir(wylde_root: &std::path::Path) -> PathBuf {
     if cfg!(windows) {
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local).join("Wylde").join("voice").join("ov_cache");
+            return PathBuf::from(local)
+                .join("Wylde")
+                .join("voice")
+                .join("ov_cache");
         }
     }
     wylde_root.join("cache").join("voice").join("ov_cache")
@@ -232,7 +232,10 @@ fn default_ov_cache_dir(wylde_root: &std::path::Path) -> PathBuf {
 fn default_wakeword_models_dir(wylde_root: &std::path::Path) -> PathBuf {
     if cfg!(windows) {
         if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(local).join("Wylde").join("voice").join("wakeword");
+            return PathBuf::from(local)
+                .join("Wylde")
+                .join("voice")
+                .join("wakeword");
         }
     }
     wylde_root.join("cache").join("voice").join("wakeword")

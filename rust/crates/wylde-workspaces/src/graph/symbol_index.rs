@@ -488,7 +488,7 @@ pub fn on_active_changed() {
     if !is_enabled() {
         return;
     }
-    match registry::state::load().active_id {
+    match registry::state::load_or_default().active_id {
         Some(id) => {
             // Already holding this workspace's index? The watcher keeps it
             // fresh — don't pay for a redundant rebuild.

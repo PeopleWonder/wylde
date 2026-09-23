@@ -33,6 +33,42 @@ pub enum TurnEvent {
         turn_id: String,
         text: String,
     },
+    /// Coarse turn-phase transition (chat-processing-indicator). Purely
+    /// informational — the GUI animates a Claude-style status line from
+    /// these. Additive: older GUIs (whose `TurnChunk` mirror lacks the
+    /// variant) decode it to `Unknown` and noop, so the stream stays
+    /// backward-compatible. The driver emits at most a handful per turn
+    /// (one per boundary), never per token.
+    Phase {
+        turn_id: String,
+        phase: TurnPhase,
+    },
+    /// Token-usage progress (chat-processing-indicator). `done = false`
+    /// is a throttled *running* completion-token tick read from the
+    /// streamed Ollama frames (≈ one frame per generated token); `done =
+    /// true` is the authoritative end-of-stream count taken from Ollama's
+    /// `prompt_eval_count` / `eval_count`. `prompt_tokens` is `None` until
+    /// the final frame carries it. Additive — see [`TurnEvent::Phase`].
+    Usage {
+        turn_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_tokens: Option<u64>,
+        completion_tokens: u64,
+        done: bool,
+    },
+    /// One granular context-gather step (chat-processing-indicator, full
+    /// visibility). Surfaces the retrieval / concept-routing / injection /
+    /// memory pipeline activity as an honest, ordered log — each carries a
+    /// human `summary` and an optional `detail` (counts, concept names, a
+    /// degraded reason). Emitted between the `gathering_context` and
+    /// `generating` phases. Additive — see [`TurnEvent::Phase`].
+    Step {
+        turn_id: String,
+        stage: StepStage,
+        summary: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
     TurnComplete {
         turn_id: String,
         final_message: String,
@@ -43,6 +79,59 @@ pub enum TurnEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+}
+
+/// Coarse, ordered phases a streaming turn passes through. Maps to real
+/// boundaries in the turn driver: context gather (retrieval + concept
+/// routing/injection) → LLM generation → tool dispatch between rounds.
+/// Finer-grained tool phases come off the disjoint tool-activity stream
+/// ([`ToolEvent`]); these are the turn-level milestones the user-facing
+/// status line shows.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnPhase {
+    /// Gathering the turn's context — RAG retrieval, concept routing and
+    /// injection. Emitted before the first LLM round.
+    GatheringContext,
+    /// The LLM is generating (an `ollama.chat_stream` round is open).
+    Generating,
+    /// Recovered tool calls are being dispatched between generation rounds.
+    RunningTools,
+    /// Agentic reasoning tier — the reasoner is drafting the step plan for a
+    /// Deep turn (PLAN phase). Emitted only behind `ReasoningConfig.enabled`
+    /// on a `Deep` turn; **inert until the reasoning tier lands** (scope P4).
+    /// Additive — older GUIs decode it to their `Unknown`/`Working` fallback.
+    Planning,
+    /// Agentic reasoning tier — the reasoner is critiquing the answer before
+    /// finalize (REFLECT phase). Inert until the reasoning tier lands (P6).
+    Reflecting,
+    /// Agentic reasoning tier — a surprising tool result is being handed back
+    /// to the reasoner (replan-on-surprise). Inert until the surprise
+    /// detector lands (P5).
+    Replanning,
+}
+
+/// Which slice of the context-gather pipeline a [`TurnEvent::Step`] reports.
+/// The GUI groups the activity log by these (Claude-style sections).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StepStage {
+    /// RAG / workspace retrieval (snippets, notes, persona, active-file boost).
+    Retrieval,
+    /// Concept routing — the candidate concepts the query mapped to.
+    Routing,
+    /// Concept injection — the curated concept definitions folded into context.
+    Injection,
+    /// Memory slots — prior-turn history, long-term, working, workspace memory.
+    Memory,
+    /// Resolved code-symbol / anchor context.
+    Symbol,
+    /// A degrade / fallback notice (workspace unreachable, tier-7 shrink).
+    Notice,
+    /// Agentic reasoning tier — a PLAN / REFLECT beat (grounded-input
+    /// gather, step drafting, critique). Inert until the reasoning tier
+    /// wires PLAN/REFLECT (scope P4+). Additive.
+    Reasoning,
 }
 
 /// Discriminator for the tool-activity stream.
@@ -107,6 +196,12 @@ pub enum AbortReason {
     Cancelled,
     Error,
     ToolLoopLimit,
+    /// Agentic reasoning S4 — a plan step whose declared `on_surprise` is
+    /// `abort` failed its expected outcome: the planner marked the step an
+    /// unrecoverable precondition, so the turn ends cleanly rather than
+    /// executing on a premise known to be broken. Additive — the GUI decodes
+    /// the reason as a raw string, so older builds render it verbatim.
+    PlanPrecondition,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -184,6 +279,73 @@ mod tests {
         let v = serde_json::to_value(&ev).unwrap();
         assert_eq!(v["type"], "tool_dispatched");
         assert_eq!(v["args"]["path"], "foo.txt");
+    }
+
+    #[test]
+    fn phase_event_serialises_with_snake_case_phase() {
+        // Chat-processing-indicator: the GUI reads `{type:"phase",
+        // turn_id, phase}` to drive the animated status line.
+        let ev = TurnEvent::Phase {
+            turn_id: "t".into(),
+            phase: TurnPhase::GatheringContext,
+        };
+        let v = serde_json::to_value(&ev).unwrap();
+        assert_eq!(v["type"], "phase");
+        assert_eq!(v["turn_id"], "t");
+        assert_eq!(v["phase"], "gathering_context");
+        assert_eq!(v.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn usage_event_omits_prompt_tokens_until_known() {
+        // Running tick: completion count only, prompt unknown mid-stream.
+        let tick = TurnEvent::Usage {
+            turn_id: "t".into(),
+            prompt_tokens: None,
+            completion_tokens: 12,
+            done: false,
+        };
+        let v = serde_json::to_value(&tick).unwrap();
+        assert_eq!(v["type"], "usage");
+        assert_eq!(v["completion_tokens"], 12);
+        assert_eq!(v["done"], false);
+        assert!(!v.as_object().unwrap().contains_key("prompt_tokens"));
+
+        // Final frame: authoritative counts from Ollama's eval fields.
+        let done = TurnEvent::Usage {
+            turn_id: "t".into(),
+            prompt_tokens: Some(40),
+            completion_tokens: 18,
+            done: true,
+        };
+        let v = serde_json::to_value(&done).unwrap();
+        assert_eq!(v["prompt_tokens"], 40);
+        assert_eq!(v["completion_tokens"], 18);
+        assert_eq!(v["done"], true);
+    }
+
+    #[test]
+    fn step_event_serialises_and_omits_absent_detail() {
+        let with = TurnEvent::Step {
+            turn_id: "t".into(),
+            stage: StepStage::Routing,
+            summary: "Routed to 3 concepts".into(),
+            detail: Some("nextcloud, ddns, vpn".into()),
+        };
+        let v = serde_json::to_value(&with).unwrap();
+        assert_eq!(v["type"], "step");
+        assert_eq!(v["stage"], "routing");
+        assert_eq!(v["summary"], "Routed to 3 concepts");
+        assert_eq!(v["detail"], "nextcloud, ddns, vpn");
+
+        let without = TurnEvent::Step {
+            turn_id: "t".into(),
+            stage: StepStage::Retrieval,
+            summary: "Retrieved 8 snippets".into(),
+            detail: None,
+        };
+        let v = serde_json::to_value(&without).unwrap();
+        assert!(!v.as_object().unwrap().contains_key("detail"));
     }
 
     #[test]

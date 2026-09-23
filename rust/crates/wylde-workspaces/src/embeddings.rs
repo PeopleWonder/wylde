@@ -163,13 +163,33 @@ pub enum EmbedError {
 /// arrays — see [`EMBED_MAX_BATCH`]) and the per-batch vectors are
 /// concatenated back in input order.
 pub async fn embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, EmbedError> {
+    embed_with_progress(texts, |_done, _total| {}).await
+}
+
+/// [`embed`] with a per-batch progress callback. `on_batch(done, total)` is
+/// invoked after each `ollama.embed` round-trip completes (and once, with
+/// `done == total`, for the single-batch fast path), reporting cumulative
+/// inputs embedded so far. The callback is synchronous and runs between batch
+/// awaits, so a cheap sink (e.g. throttled `RagState` write) adds no measurable
+/// latency to the paced embed loop. Used by the indexer to surface live
+/// progress + an ETA over the existing status channel.
+pub async fn embed_with_progress<F>(
+    texts: Vec<String>,
+    mut on_batch: F,
+) -> Result<Vec<Vec<f32>>, EmbedError>
+where
+    F: FnMut(usize, usize),
+{
     if texts.is_empty() {
         return Ok(Vec::new());
     }
     let max = embed_max_batch();
-    if texts.len() <= max {
+    let total = texts.len();
+    if total <= max {
         // Single batch (the RAG-query embed path lands here too): no pacing.
-        return embed_batch(texts).await;
+        let out = embed_batch(texts).await?;
+        on_batch(total, total);
+        return Ok(out);
     }
     // Multi-batch indexing. A LARGE index (see [`large_index_min_inputs`])
     // paces each batch to a minimum wall-clock period so Ollama's per-input
@@ -178,7 +198,6 @@ pub async fn embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, EmbedError> {
     // matters, so they run unthrottled. We sleep only the remainder after the
     // batch's own latency, so a slow embedder is never delayed further — the
     // cap only bites when embeds come back fast.
-    let total = texts.len();
     let min_period = if total > large_index_min_inputs() {
         embed_batch_min_period()
     } else {
@@ -192,6 +211,9 @@ pub async fn embed(texts: Vec<String>) -> Result<Vec<Vec<f32>>, EmbedError> {
         let mut vectors = embed_batch(batch.to_vec()).await?;
         out.append(&mut vectors);
         done += n;
+        // Report cumulative progress as soon as the batch lands — before any
+        // pacing sleep — so the GUI advances the bar the instant work completes.
+        on_batch(done, total);
         // Pace between batches only — never after the final one.
         if done < total && !min_period.is_zero() {
             if let Some(rem) = min_period.checked_sub(started.elapsed()) {

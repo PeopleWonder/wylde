@@ -142,7 +142,7 @@ async fn index_query_then_delta_reindex_surfaces_new_content() {
     .unwrap();
 
     // ── full index ──────────────────────────────────────────────────
-    let def = registry::create(&root.to_string_lossy(), Some("RagTest"));
+    let def = registry::create(&root.to_string_lossy(), Some("RagTest")).unwrap();
     let outcome = indexer::reindex_full(&def).await;
     assert!(outcome.error.is_none(), "index failed: {:?}", outcome.error);
     assert_eq!(outcome.file_count, 5, "all 5 files indexed");
@@ -234,7 +234,7 @@ async fn live_index_and_query_round_trip() {
     )
     .unwrap();
 
-    let def = registry::create(&folder.path().to_string_lossy(), None);
+    let def = registry::create(&folder.path().to_string_lossy(), None).unwrap();
     let outcome = indexer::reindex_full(&def).await;
     assert!(
         outcome.error.is_none(),

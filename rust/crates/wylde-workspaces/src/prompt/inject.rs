@@ -403,7 +403,7 @@ mod tests {
     #[tokio::test]
     async fn gather_includes_persona_when_enabled() {
         let _env = TestEnv::new();
-        let def = registry::create("/tmp/gather-persona", None);
+        let def = registry::create("/tmp/gather-persona", None).unwrap();
         registry::update(&def.id, None, Some(true), Some(false)).unwrap();
         persona::save(&def.id, "Answer in haiku.").unwrap();
         let ctx = gather(&def.id, "hello", false, None).await;
@@ -422,7 +422,7 @@ mod tests {
         // shared); RAG-disabled means no shared embed, so routing is skipped
         // even with the flag on — and the rendered output is unchanged.
         let _env = TestEnv::new();
-        let def = registry::create("/tmp/gather-route-no-rag", None);
+        let def = registry::create("/tmp/gather-route-no-rag", None).unwrap();
         registry::update(&def.id, None, Some(true), Some(false)).unwrap();
         persona::save(&def.id, "Hi.").unwrap();
         let ctx = gather(&def.id, "hello", true, None).await;
@@ -439,7 +439,7 @@ mod tests {
         // With RAG off, a curated set injects nothing — concept_context stays
         // empty — so the rendered output is byte-identical to base.
         let _env = TestEnv::new();
-        let def = registry::create("/tmp/gather-curate-no-rag", None);
+        let def = registry::create("/tmp/gather-curate-no-rag", None).unwrap();
         registry::update(&def.id, None, Some(true), Some(false)).unwrap();
         persona::save(&def.id, "Hi.").unwrap();
         let ctx = gather(&def.id, "hello", false, Some(&["some-concept".to_owned()])).await;

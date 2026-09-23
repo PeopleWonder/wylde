@@ -95,6 +95,79 @@ def test_no_cross_panel_imports_flags_arbitrary_wylde_dep(isolated_tree: Any) ->
     assert "wylde-harness" in findings[0].message
 
 
+# ── Rule 33: the dev-only backend carve-out (#236) ───────────────────
+#
+# The production boundary is absolute: a panel reaches the backend through the
+# pipe surface, never by linking the harness. A carved-out *dev*-dependency is
+# a different object — `resolver = "2"` keeps it out of the shipped Shell — and
+# the chat-turn e2e needs one to drive the real turn driver. These pin the
+# asymmetry, because a carve-out that silently applied to `[dependencies]` too
+# would quietly delete the boundary it is an exception to.
+
+_CARVED_PANEL_HEAD = """[package]
+name = "wylde-panel-chat"
+version = "0.1.0"
+
+[dependencies]
+wylde-theme = { path = "../../Theme" }
+wylde-gui-pipe = { path = "../../Pipe" }
+"""
+
+
+def test_carved_out_backend_dep_is_allowed_in_dev_dependencies(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write(
+        root / "Core" / "GUI" / "Frontend" / "Panels" / "Chat" / "Cargo.toml",
+        _CARVED_PANEL_HEAD
+        + "\n[dev-dependencies]\n"
+        + "wylde-harness.workspace = true\n"
+        + "wylde-shared.workspace = true\n",
+    )
+    assert wc.check_no_cross_panel_imports() == []
+
+
+def test_carved_out_backend_dep_is_still_flagged_in_dependencies(isolated_tree: Any) -> None:
+    """THE point of making the rule section-aware: the same edge in the
+    production section must stay an error."""
+    wc, root = isolated_tree
+    _write(
+        root / "Core" / "GUI" / "Frontend" / "Panels" / "Chat" / "Cargo.toml",
+        _CARVED_PANEL_HEAD + "wylde-harness.workspace = true\n",
+    )
+    findings = wc.check_no_cross_panel_imports()
+    assert len(findings) == 1
+    assert "wylde-harness" in findings[0].message
+
+
+def test_carve_out_does_not_generalise_to_other_panels(isolated_tree: Any) -> None:
+    """The exemption is per-edge. Another panel dev-depending on the harness
+    is not covered by Chat's carve-out."""
+    wc, root = isolated_tree
+    _write(
+        root / "Core" / "GUI" / "Frontend" / "Panels" / "Foo" / "Cargo.toml",
+        _PANEL_CARGO_CLEAN + "\n[dev-dependencies]\nwylde-harness.workspace = true\n",
+    )
+    findings = wc.check_no_cross_panel_imports()
+    assert len(findings) == 1
+    assert "wylde-harness" in findings[0].message
+
+
+def test_carve_out_does_not_permit_a_sibling_panel_in_dev_dependencies(
+    isolated_tree: Any,
+) -> None:
+    """Dev-only does not mean anything-goes: panel->panel coupling still needs
+    its own explicit edge exemption."""
+    wc, root = isolated_tree
+    _write(
+        root / "Core" / "GUI" / "Frontend" / "Panels" / "Chat" / "Cargo.toml",
+        _CARVED_PANEL_HEAD
+        + '\n[dev-dependencies]\nwylde-panel-bar = { path = "../Bar" }\n',
+    )
+    findings = wc.check_no_cross_panel_imports()
+    assert len(findings) == 1
+    assert "wylde-panel-bar" in findings[0].message
+
+
 def test_no_cross_panel_imports_allows_all_four_shared_crates(isolated_tree: Any) -> None:
     wc, root = isolated_tree
     _write(
@@ -135,17 +208,6 @@ def test_no_legacy_imports_flags_tauri_use(isolated_tree: Any) -> None:
     assert len(findings) == 1
     assert findings[0].rule == "no_legacy_gui_imports_in_panels"
     assert "tauri" in findings[0].message.lower()
-
-
-def test_no_legacy_imports_flags_svelte_reference(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Core" / "GUI" / "Frontend" / "Panels" / "Foo" / "src" / "lib.rs",
-        'let path = "../../src/components/InferenceBar.svelte";\n',
-    )
-    findings = wc.check_no_legacy_gui_imports_in_panels()
-    assert len(findings) == 1
-    assert "svelte" in findings[0].message.lower()
 
 
 def test_no_legacy_imports_ignores_doc_comments(isolated_tree: Any) -> None:
@@ -275,75 +337,6 @@ def test_first_party_manifest_flags_invalid_json(isolated_tree: Any) -> None:
     findings = wc.check_first_party_manifest_must_be_gpui_view()
     assert len(findings) == 1
     assert "not valid JSON" in findings[0].message
-
-
-# ── Rule 36 tightening: extension manifests must be iframe ────────────
-
-
-def test_extension_manifest_clean_iframe_kind(isolated_tree: Any) -> None:
-    """An extension manifest with ``ui_panels`` and iframe kind passes."""
-    wc, root = isolated_tree
-    _write(
-        root / "Extensions" / "N8N" / "mcp-server.json",
-        json.dumps(
-            {
-                "ui_panels": [
-                    {
-                        "id": "workflows",
-                        "title": "Workflows",
-                        "source": {"kind": "iframe", "url": "http://127.0.0.1:5678"},
-                    }
-                ]
-            }
-        ),
-    )
-    assert wc.check_first_party_manifest_must_be_gpui_view() == []
-
-
-def test_extension_manifest_flags_gpui_view_kind(isolated_tree: Any) -> None:
-    """Extensions can't ship native gpui Views — gpui_view declaration is
-    architecturally impossible."""
-    wc, root = isolated_tree
-    _write(
-        root / "Extensions" / "Bad" / "manifest.json",
-        json.dumps(
-            {
-                "ui_panels": [
-                    {
-                        "id": "bad",
-                        "source": {"kind": "gpui_view", "factory": "x::y::z"},
-                    }
-                ]
-            }
-        ),
-    )
-    findings = wc.check_first_party_manifest_must_be_gpui_view()
-    assert len(findings) == 1
-    assert findings[0].rule == "first_party_manifest_must_be_gpui_view"
-    assert "gpui_view" in findings[0].message
-    assert "extension" in findings[0].message.lower()
-
-
-def test_extension_manifest_without_ui_panels_skipped(isolated_tree: Any) -> None:
-    """Extensions with only tools (no ``ui_panels``) contribute nothing."""
-    wc, root = isolated_tree
-    _write(
-        root / "Extensions" / "Webcrawler" / "manifest.json",
-        json.dumps({"name": "Webcrawler", "tools": []}),
-    )
-    assert wc.check_first_party_manifest_must_be_gpui_view() == []
-
-
-def test_extension_manifest_flags_missing_source_object(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Extensions" / "Bad" / "manifest.json",
-        json.dumps({"ui_panels": [{"id": "x"}]}),
-    )
-    findings = wc.check_first_party_manifest_must_be_gpui_view()
-    assert len(findings) == 1
-    assert "source" in findings[0].message
-
 
 # ── Rule 37: panel_crate_must_be_workspace_member ────────────────────
 

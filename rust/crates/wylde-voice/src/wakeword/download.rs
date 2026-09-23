@@ -103,8 +103,7 @@ fn new_job_id() -> String {
 /// openWakeWord's naming convention (`hey-jarvis` → `hey_jarvis.onnx`).
 pub(crate) fn resolve_layout(model_id: &str) -> Option<(String, String, Vec<String>)> {
     let (_, name) = split_model_id(model_id)?;
-    let mut files: Vec<String> =
-        BASE_FILES.iter().map(|s| (*s).to_owned()).collect();
+    let mut files: Vec<String> = BASE_FILES.iter().map(|s| (*s).to_owned()).collect();
     let classifier = std::env::var("WYLDE_VOICE_WAKEWORD_CLASSIFIER_FILE")
         .ok()
         .filter(|s| !s.is_empty())
@@ -240,9 +239,10 @@ async fn run_pull(
         }
         let url = format!("{}/{}", base_url.trim_end_matches('/'), file);
         tracing::info!("wylde-voice: wake-word fetch {} → {}", url, dest.display());
-        let bytes = fetcher.fetch(&url).await.map_err(|e| {
-            format!("fetch {} ({}): {e}", file, url)
-        })?;
+        let bytes = fetcher
+            .fetch(&url)
+            .await
+            .map_err(|e| format!("fetch {} ({}): {e}", file, url))?;
         // Atomic-write via a `.tmp` sibling so a half-downloaded file
         // never tricks the scanner into thinking the bundle is ready.
         let tmp = dest.with_extension("onnx.tmp");
@@ -383,10 +383,7 @@ mod tests {
         let _g = fresh_layout_env();
         let td = TempDir::new().unwrap();
         let dir = bundle_dir_for("openWakeWord/hey-jarvis", td.path()).unwrap();
-        assert_eq!(
-            dir,
-            td.path().join("openWakeWord").join("hey-jarvis")
-        );
+        assert_eq!(dir, td.path().join("openWakeWord").join("hey-jarvis"));
     }
 
     #[tokio::test]
@@ -398,14 +395,8 @@ mod tests {
             "https://example.test/models",
         );
         let fetcher = InMemoryFetcher::new();
-        fetcher.install(
-            "https://example.test/models/melspectrogram.onnx",
-            b"MEL",
-        );
-        fetcher.install(
-            "https://example.test/models/embedding_model.onnx",
-            b"EMB",
-        );
+        fetcher.install("https://example.test/models/melspectrogram.onnx", b"MEL");
+        fetcher.install("https://example.test/models/embedding_model.onnx", b"EMB");
         fetcher.install("https://example.test/models/hey_jarvis.onnx", b"CLS");
         let bundle = run_pull("openWakeWord/hey-jarvis", td.path(), &fetcher)
             .await
@@ -437,10 +428,7 @@ mod tests {
         std::fs::write(bundle.join("melspectrogram.onnx"), b"OLD").unwrap();
 
         let fetcher = InMemoryFetcher::new();
-        fetcher.install(
-            "https://example.test/models/embedding_model.onnx",
-            b"EMB",
-        );
+        fetcher.install("https://example.test/models/embedding_model.onnx", b"EMB");
         fetcher.install("https://example.test/models/hey_jarvis.onnx", b"CLS");
         let _ = run_pull("openWakeWord/hey-jarvis", td.path(), &fetcher)
             .await
@@ -479,14 +467,8 @@ mod tests {
             "https://example.test/models",
         );
         let fetcher = Arc::new(InMemoryFetcher::new());
-        fetcher.install(
-            "https://example.test/models/melspectrogram.onnx",
-            b"MEL",
-        );
-        fetcher.install(
-            "https://example.test/models/embedding_model.onnx",
-            b"EMB",
-        );
+        fetcher.install("https://example.test/models/melspectrogram.onnx", b"MEL");
+        fetcher.install("https://example.test/models/embedding_model.onnx", b"EMB");
         fetcher.install("https://example.test/models/hey_jarvis.onnx", b"CLS");
         let job = spawn_pull_job_with(
             "openWakeWord/hey-jarvis".to_owned(),
@@ -495,12 +477,9 @@ mod tests {
         );
         // Wait for completion — bounded; the in-memory fetcher returns
         // immediately so the task should land well within 2 s.
-        let deadline =
-            tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            if let Some(PullStatus::Done { bundle_dir }) =
-                PullJobs::global().status(&job).await
-            {
+            if let Some(PullStatus::Done { bundle_dir }) = PullJobs::global().status(&job).await {
                 assert!(bundle_dir.join("hey_jarvis.onnx").is_file());
                 break;
             }

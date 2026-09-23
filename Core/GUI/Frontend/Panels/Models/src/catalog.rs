@@ -145,6 +145,7 @@ fn load_catalog() -> Vec<CatalogEntry> {
     }
     parse_catalog(BUNDLED_CATALOG_JSON)
         .expect("bundled models.json is valid (checked by catalog_parses test)")
+    // INVARIANT: BUNDLED_CATALOG_JSON is compile-time-embedded and validated by the catalog_parses test. wylde-check: panel-panic-allowed
 }
 
 /// Resolve and read an override value into a parsed catalog.  Accepts a

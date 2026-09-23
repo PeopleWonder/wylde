@@ -296,10 +296,15 @@ Two clients today (pipe, Bolt). A third (remote gRPC, say):
 * [index.md](./index.md) — memory subsystem overview.
 * [rag.md](./rag.md) — the hybrid retrieval path that fuses
   `expand_by_graph` results with vector hits.
-* `Core/Memgraph/graph_service/_driver.py` — the Python source of
-  truth for Cypher templates.
-* `Core/Memgraph/run.py` — the Python supervisor for the bundled
-  Neo4j JVM (stays Python; the harness only talks Bolt directly).
+* `rust/crates/wylde-harness/src/memory/memgraph/cypher.rs` — the
+  source of truth for Cypher templates (with `bolt.rs`/`client.rs` for
+  the direct-Bolt transport). *(Superseded the deleted Python
+  `Core/Memgraph/graph_service/_driver.py` in the full-Rust cutover,
+  R6 commit `2f5aa82`.)*
+* The bundled graph DB is launched/supervised from Rust (see the
+  workspaces graph layer, `rust/crates/wylde-workspaces/src/graph/`);
+  the harness talks Bolt directly. *(Superseded the deleted Python
+  `Core/Memgraph/run.py` supervisor in the same cutover.)*
 * `~/.claude/projects/.../memory/wylde_memgraph_direct_bolt.md` — the
   direct-Bolt architecture memo.
 * `~/.claude/projects/.../memory/wylde_phase7b_memgraph_direct_bolt_shipped.md`

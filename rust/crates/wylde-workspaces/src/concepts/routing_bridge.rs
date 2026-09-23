@@ -57,12 +57,14 @@ pub fn route_with_vec(
         .into_iter()
         .filter_map(|c| {
             let described_by = c.described_by.clone();
-            c.centroid.filter(|v| !v.is_empty()).map(|centroid| ConceptCentroid {
-                id: c.id,
-                label: c.label,
-                centroid,
-                described_by,
-            })
+            c.centroid
+                .filter(|v| !v.is_empty())
+                .map(|centroid| ConceptCentroid {
+                    id: c.id,
+                    label: c.label,
+                    centroid,
+                    described_by,
+                })
         })
         .collect();
     if concepts.is_empty() {
@@ -77,11 +79,19 @@ pub fn route_with_vec(
     // this stays byte-equivalent to R1 until the user authors relations.
     let graph = super::relations_bridge::load(workspace_id);
 
+    // H6 — the hierarchy's containment adjacency, a SEPARATE decayed propagation
+    // channel (definitional-hierarchy OQ-6). Toggle-gated at its source: when the
+    // master hierarchy toggle is OFF (the default) this is an empty `Vec` built
+    // without touching the hierarchy stores, so the spread step is byte-identical
+    // to today; ON-but-no-edges is likewise empty ⇒ identity.
+    let containment = super::hierarchy_bridge::containment_adjacency(workspace_id);
+
     Some(route(
         clean,
         query_vec,
         &concepts,
         vocab,
+        &containment,
         &graph,
         &RoutingConfig::current(),
     ))
@@ -196,7 +206,10 @@ mod tests {
             "dependency pulled DDNS above its cosine"
         );
         // …and the RANK FLIPPED — DDNS now outranks the excluded Wylde.
-        assert!(ddns.score > wylde.score, "the gap the raw cosine couldn't make");
+        assert!(
+            ddns.score > wylde.score,
+            "the gap the raw cosine couldn't make"
+        );
 
         // Provenance proves WHY (the explainable payload).
         assert!(matches!(
@@ -215,7 +228,74 @@ mod tests {
         // And it's all visible in the before→after proof log.
         let line = set.relation_log_line();
         assert!(line.contains("⊘Wylde"), "log marks Wylde inhibited: {line}");
-        assert!(line.contains("↳DDNS"), "log marks DDNS dependency-pulled: {line}");
+        assert!(
+            line.contains("↳DDNS"),
+            "log marks DDNS dependency-pulled: {line}"
+        );
+    }
+
+    /// **H6 end-to-end wiring proof** (through the REAL `route_with_vec` path):
+    /// a child concept whose own cosine is flat is lifted by its parent's
+    /// activation along the hierarchy containment edge — but ONLY when the master
+    /// hierarchy toggle is ON. Toggle OFF ⇒ byte-identical to today (the child's
+    /// settled score equals its seed cosine, provenance `Seed`).
+    #[tokio::test]
+    async fn containment_lifts_a_flat_child_only_when_toggle_on() {
+        use wylde_concept_hierarchy::HierarchyConfig;
+        let _env = TestEnv::new();
+        let ws = "cont-route-0000";
+        // Auth fires (≈0.9); Token's own cosine is flat (≈0.05). Token is a child
+        // of Auth (parent_concepts), so the projection draws an Auth⊃Token
+        // containment edge.
+        let mut token = concept_with_centroid("token", "Token", centroid_for_cosine(0.05));
+        token.parent_concepts = vec!["auth".into()];
+        super::store::save(
+            ws,
+            &[
+                concept_with_centroid("auth", "Auth", centroid_for_cosine(0.9)),
+                token,
+            ],
+        )
+        .unwrap();
+        let q = vec![1.0, 0.0, 0.0];
+
+        // Toggle OFF (default): the containment channel is empty ⇒ Token keeps its
+        // flat seed, provenance Seed (identity-when-off, proven end-to-end).
+        let _ = HierarchyConfig::persist(HierarchyConfig { enabled: false });
+        let off = route_with_vec(ws, &q, "auth").expect("routes");
+        let t_off = off.concepts.iter().find(|c| c.id == "token").unwrap();
+        assert!(
+            (t_off.score - t_off.seed_score).abs() < 1e-6,
+            "OFF ⇒ Token unreshaped ({} vs {})",
+            t_off.score,
+            t_off.seed_score
+        );
+        assert!(matches!(
+            t_off.provenance,
+            wylde_concept_routing::Provenance::Seed
+        ));
+        assert!(
+            !off.reshaped_by_relations(),
+            "OFF ⇒ routing identical to today"
+        );
+
+        // Toggle ON: Auth (≈0.9) flows DOWN the containment edge (weak) to Token,
+        // lifting its settled score above its flat cosine, with Containment prov.
+        HierarchyConfig::persist(HierarchyConfig { enabled: true }).unwrap();
+        let on = route_with_vec(ws, &q, "auth").expect("routes");
+        let t_on = on.concepts.iter().find(|c| c.id == "token").unwrap();
+        assert!(
+            t_on.score > t_on.seed_score + 1e-6,
+            "ON ⇒ containment lifts the flat child ({} > {})",
+            t_on.score,
+            t_on.seed_score
+        );
+        assert!(matches!(
+            t_on.provenance,
+            wylde_concept_routing::Provenance::Containment { .. }
+        ));
+        // Restore the OFF default for any later test in the binary.
+        let _ = HierarchyConfig::persist(HierarchyConfig { enabled: false });
     }
 
     #[test]
@@ -236,7 +316,12 @@ mod tests {
         // A directory stand-in (no centroid) must not make routing engage.
         store::save(
             ws,
-            &[Concept::new("dir:x", "X", "d", ConceptSource::DirectoryCluster)],
+            &[Concept::new(
+                "dir:x",
+                "X",
+                "d",
+                ConceptSource::DirectoryCluster,
+            )],
         )
         .unwrap();
         assert!(route_with_vec(ws, &[1.0, 0.0], "q").is_none());

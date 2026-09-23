@@ -30,9 +30,12 @@
 
 pub mod delta;
 pub mod exclude;
+pub mod fuse;
 pub mod graph_writer;
+pub mod lexical;
 pub mod lock;
 pub mod manifest;
+pub mod progress;
 pub mod purge;
 pub mod search;
 pub mod store;
@@ -40,8 +43,11 @@ pub mod walk;
 
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
+use crate::rag::LexicalConfig;
 use crate::registry::{self, WorkspaceDefinition};
+use progress::{IndexProgress, Phase, RateTracker};
 use store::{IndexedChunk, RagState};
 
 /// Result of an index pass.
@@ -81,15 +87,29 @@ pub async fn reindex(def: &WorkspaceDefinition) -> IndexOutcome {
 /// Drop the existing index and re-embed every file in the folder, then write a
 /// fresh content-hash [`manifest`] so subsequent passes go incremental.
 pub async fn reindex_full(def: &WorkspaceDefinition) -> IndexOutcome {
-    set_indexing(&def.id, true);
+    // Live progress rides `RagState` (the channel `list_mru` already joins for
+    // the GUI). The walk+graph pass is indeterminate (no total yet); once the
+    // folder is chunked the total is known and we switch to a determinate
+    // embed phase with a rolling-rate ETA.
+    let mut reporter = Reporter::new(&def.id);
+    reporter.begin_indeterminate(Phase::Walk);
     let raw = walk::walk_and_chunk(&def.folder);
     // Graph-ingest alongside the vector embed: extract structural entities
     // and write Chunk/Entity nodes + typed edges. Fail-soft and fully
     // independent of the embed below (see `graph_writer`), so a sidecar or
-    // graph-backend outage never blocks RAG.
-    log_graph(&def.id, &graph_writer::write_graph(def, &raw).await);
-    let outcome = match embed_chunks(raw).await {
+    // graph-backend outage never blocks RAG. Replace-by-construction (#99):
+    // the full path DELETEs the workspace's prior chunk nodes before writing,
+    // so a re-index (which re-keys mtime-bearing chunk ids) supersedes the old
+    // set instead of accumulating orphans — while preserving authored
+    // relations (no orphan-entity prune). The delta path clears per changed
+    // file (see `apply_graph_delta`); this is the whole-workspace analogue.
+    log_graph(&def.id, &graph_writer::write_graph_replace(def, &raw).await);
+    // Counting done — flip to the determinate embed phase with known totals.
+    let (chunk_file_idx, files_total) = chunk_file_ordinals(&raw);
+    reporter.begin_embed(chunk_file_idx, files_total);
+    let outcome = match embed_chunks(raw, Some(&mut reporter)).await {
         Ok(chunks) => {
+            reporter.begin_persist();
             let stats = persist_full(&def.id, &chunks).await;
             tracing::info!(
                 "workspaces.rag: full index of {} — {} chunks across {} files",
@@ -123,7 +143,10 @@ pub async fn reindex_full(def: &WorkspaceDefinition) -> IndexOutcome {
 /// A pre-P3 index (no manifest yet) upgrades in place via the diff's mtime
 /// fallback — no mass re-embed.
 pub async fn reindex_delta(def: &WorkspaceDefinition) -> IndexOutcome {
-    set_indexing(&def.id, true);
+    let mut reporter = Reporter::new(&def.id);
+    // Diffing + re-chunking the changed files is the indeterminate prelude; the
+    // embed total isn't known until `fresh` is built below.
+    reporter.begin_indeterminate(Phase::Chunk);
 
     let existing = store::load_chunks(&def.id);
     let existing_files = distinct_paths(&existing);
@@ -153,7 +176,10 @@ pub async fn reindex_delta(def: &WorkspaceDefinition) -> IndexOutcome {
     // also prunes deletions the mtime-era delta left behind.
     apply_graph_delta(def, &fresh, &changed_paths, &plan.deleted).await;
 
-    let reembedded = match embed_chunks(fresh).await {
+    // Total now known — switch to the determinate embed phase.
+    let (chunk_file_idx, files_total) = chunk_file_ordinals(&fresh);
+    reporter.begin_embed(chunk_file_idx, files_total);
+    let reembedded = match embed_chunks(fresh, Some(&mut reporter)).await {
         Ok(v) => v,
         Err(e) => {
             // Leave the prior on-disk index + manifest untouched (don't persist
@@ -176,6 +202,7 @@ pub async fn reindex_delta(def: &WorkspaceDefinition) -> IndexOutcome {
         .collect();
     merged.extend(reembedded);
 
+    reporter.begin_persist();
     let outcome = persist_delta(&def.id, &merged, &plan.file_meta).await;
     tracing::info!(
         "workspaces.rag: delta index of {} — {} chunks across {} files \
@@ -249,14 +276,23 @@ pub fn spawn_background_index(workspace_id: String) {
 /// Embed a batch of walked chunks. Returns an error string (rather than
 /// partial writes) so a transient embedder outage leaves the prior index
 /// intact. An empty input embeds to an empty vec without an IPC round-trip.
-async fn embed_chunks(raw: Vec<walk::Chunk>) -> Result<Vec<IndexedChunk>, String> {
+async fn embed_chunks(
+    raw: Vec<walk::Chunk>,
+    mut reporter: Option<&mut Reporter>,
+) -> Result<Vec<IndexedChunk>, String> {
     if raw.is_empty() {
         return Ok(Vec::new());
     }
     let texts: Vec<String> = raw.iter().map(|c| c.content.clone()).collect();
-    let vectors = crate::embeddings::embed(texts)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Forward each batch's cumulative count to the live progress reporter (a
+    // no-op for the watcher's per-file delta, which passes `None`).
+    let vectors = crate::embeddings::embed_with_progress(texts, |done, _total| {
+        if let Some(r) = reporter.as_deref_mut() {
+            r.on_embed_progress(done as u32);
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
     if vectors.len() != raw.len() {
         return Err(format!(
             "embedder returned {} vectors for {} chunks",
@@ -303,6 +339,11 @@ async fn persist_full(workspace_id: &str, chunks: &[IndexedChunk]) -> IndexOutco
                 if let Err(e) = manifest::save(workspace_id, &manifest::build_full(chunks)) {
                     tracing::warn!("workspaces.rag: write manifest failed for {workspace_id}: {e}");
                 }
+                // Lexical half (best-effort, gated on the master toggle): rebuild
+                // the BM25 index from the SAME chunk slice so it can never drift
+                // from chunks.jsonl. Under the index lock alongside the vector
+                // pair. OFF ⇒ no-op (no lexical dir created), identity preserved.
+                sync_lexical_full(workspace_id, chunks);
             }
             Err(e) => tracing::warn!("workspaces.rag: write chunks failed for {workspace_id}: {e}"),
         }
@@ -312,6 +353,48 @@ async fn persist_full(workspace_id: &str, chunks: &[IndexedChunk]) -> IndexOutco
         chunk_count: chunks.len() as u32,
         error: None,
     }
+}
+
+/// Rebuild the lexical (BM25) index from a chunk slice — gated on the
+/// [`LexicalConfig`] master toggle, best-effort (a tantivy failure is logged,
+/// never fatal to the vector index, mirroring the graph half). **OFF ⇒ no-op**,
+/// so the lexical dir is never even created and retrieval stays byte-identical
+/// to today. Built from the post-`ExclusionMatcher` chunk set, never a fresh
+/// walk, so it inherits the index hygiene and can't drift (§2.4).
+fn sync_lexical_full(workspace_id: &str, chunks: &[IndexedChunk]) {
+    if !LexicalConfig::current().enabled {
+        return;
+    }
+    if let Err(e) = lexical::build_from_chunks(workspace_id, chunks) {
+        tracing::warn!("workspaces.rag.lexical: full build failed for {workspace_id}: {e}");
+    }
+}
+
+/// One-time backfill (§2.5): when the toggle is ON and a workspace has chunks
+/// but no `lexical/` index yet (it was indexed before lexical existed, or the
+/// toggle was just flipped on), build the BM25 index once from the persisted
+/// chunks — **no embedder, no Ollama** (BM25 is local), so even a 16k-chunk
+/// index backfills in seconds. No-op when OFF, when the index already exists, or
+/// when there are no chunks. This is what makes turning the toggle ON a true
+/// switch and not a "re-index everything" event.
+///
+/// Best-effort + idempotent: a concurrent backfill loses the tantivy writer lock
+/// and is skipped (logged), the winner builds the index. Called lazily from the
+/// search path (L4) so a flip-on without a reindex still works on first query.
+pub fn ensure_lexical_backfill(workspace_id: &str) {
+    if !LexicalConfig::current().enabled || lexical::has_lexical_index(workspace_id) {
+        return;
+    }
+    let chunks = store::load_chunks(workspace_id);
+    if chunks.is_empty() {
+        return;
+    }
+    tracing::info!(
+        "workspaces.rag.lexical: backfilling BM25 index for {workspace_id} \
+         ({} chunks, no re-embed)",
+        chunks.len()
+    );
+    sync_lexical_full(workspace_id, &chunks);
 }
 
 /// Persist a **delta** pass: write the merged chunks, then the manifest built
@@ -332,6 +415,13 @@ async fn persist_delta(
                 if let Err(e) = manifest::save(workspace_id, &manifest::build(file_meta, chunks)) {
                     tracing::warn!("workspaces.rag: write manifest failed for {workspace_id}: {e}");
                 }
+                // Rebuild the lexical index from the merged chunk set. A folder
+                // delta is not the <500ms watcher path, so a clean rebuild from
+                // the authoritative merged set is the simplest convergence
+                // guarantee (delta == full: both feed build_from_chunks the same
+                // final chunks.jsonl). The watcher's *per-file* path stays
+                // incremental (delta.rs). Gated + best-effort; OFF ⇒ no-op.
+                sync_lexical_full(workspace_id, chunks);
             }
             Err(e) => tracing::warn!("workspaces.rag: write chunks failed for {workspace_id}: {e}"),
         }
@@ -363,24 +453,41 @@ fn log_graph(workspace_id: &str, g: &graph_writer::GraphOutcome) {
     }
 }
 
-/// Flip the indexing flag, existence-guarded.
-fn set_indexing(workspace_id: &str, indexing: bool) {
-    if registry::get(workspace_id).is_none() {
-        return;
+/// Assign each chunk the 0-based ordinal of the file it belongs to. The walk
+/// yields a file's chunks consecutively, so this is a single linear pass that
+/// also returns the distinct-file total. Used to derive the GUI's "X / Y files"
+/// count from a cumulative per-chunk embed position (see
+/// [`progress::files_done_for`]).
+fn chunk_file_ordinals(chunks: &[walk::Chunk]) -> (Vec<u32>, u32) {
+    let mut idx = Vec::with_capacity(chunks.len());
+    let mut last: Option<&str> = None;
+    let mut ord: u32 = 0;
+    for c in chunks {
+        match last {
+            Some(p) if p == c.path => {}
+            _ => {
+                if last.is_some() {
+                    ord += 1;
+                }
+                last = Some(c.path.as_str());
+            }
+        }
+        idx.push(ord);
     }
-    let mut state = store::load_state(workspace_id);
-    state.indexing = indexing;
-    let _ = store::save_state(workspace_id, &state);
+    let files_total = if chunks.is_empty() { 0 } else { ord + 1 };
+    (idx, files_total)
 }
 
 /// Record the final index status (counts + last_indexed_at + error),
-/// existence-guarded, and clear the indexing flag.
+/// existence-guarded; clears the indexing flag AND the live progress snapshot
+/// (the pass is over — no bar/ETA to show).
 fn finish(workspace_id: &str, outcome: &IndexOutcome) {
     if registry::get(workspace_id).is_none() {
         return;
     }
     let mut state = store::load_state(workspace_id);
     state.indexing = false;
+    state.progress = None;
     state.last_error = outcome.error.clone();
     if outcome.error.is_none() {
         state.last_indexed_at = registry::epoch_now();
@@ -388,6 +495,117 @@ fn finish(workspace_id: &str, outcome: &IndexOutcome) {
         state.chunk_count = outcome.chunk_count;
     }
     let _ = store::save_state(workspace_id, &state);
+}
+
+/// Rolling rate window for the embed-phase ETA. 30s smooths the per-batch
+/// pacing (a large index embeds a batch only every few seconds) without lagging
+/// far behind a real throughput change.
+const RATE_WINDOW_SECS: f64 = 30.0;
+
+/// Floor between per-batch progress writes. Phase transitions bypass this
+/// (they `force`); only the embed ticks are throttled, so a fast medium index
+/// (unpaced) can't spam `rag_state.json`. A paced large index already spaces
+/// its batches well past this, so it flushes every batch.
+const MIN_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Drives live progress for one index pass: owns the rolling-rate tracker and
+/// the chunk→file ordinal map, computes an [`IndexProgress`] snapshot, and
+/// writes it (throttled) to the workspace's [`RagState`] — the very channel
+/// `list_mru` joins for the GUI, so no parallel progress channel is invented.
+/// Every write is existence-guarded, so a workspace deleted mid-index never
+/// recreates its bundle.
+struct Reporter {
+    workspace_id: String,
+    /// Marks the embed phase start, so the rate reflects embed throughput only
+    /// (the walk/graph prelude is excluded).
+    start: Instant,
+    tracker: RateTracker,
+    chunk_file_idx: Vec<u32>,
+    files_total: u32,
+    chunks_total: u32,
+    last_flush: Option<Instant>,
+}
+
+impl Reporter {
+    fn new(workspace_id: &str) -> Self {
+        Reporter {
+            workspace_id: workspace_id.to_owned(),
+            start: Instant::now(),
+            tracker: RateTracker::new(RATE_WINDOW_SECS),
+            chunk_file_idx: Vec::new(),
+            files_total: 0,
+            chunks_total: 0,
+            last_flush: None,
+        }
+    }
+
+    /// Enter an indeterminate phase (walk/chunk) — no total yet, so the GUI
+    /// shows a scanning state. Flushes immediately so `indexing` flips true and
+    /// the status swaps the instant the pass begins.
+    fn begin_indeterminate(&mut self, phase: Phase) {
+        self.write(IndexProgress::indeterminate(phase), true);
+    }
+
+    /// Counting done: switch to the determinate embed phase with the known
+    /// totals + chunk→file map. Resets the rate clock to the embed start and
+    /// flushes immediately so the bar appears at 0%.
+    fn begin_embed(&mut self, chunk_file_idx: Vec<u32>, files_total: u32) {
+        self.chunks_total = chunk_file_idx.len() as u32;
+        self.files_total = files_total;
+        self.chunk_file_idx = chunk_file_idx;
+        self.start = Instant::now();
+        self.tracker = RateTracker::new(RATE_WINDOW_SECS);
+        self.tracker.observe(0.0, 0);
+        let snap = self.snapshot(Phase::Embed, 0);
+        self.write(snap, true);
+    }
+
+    /// A batch landed — `done` cumulative chunks embedded. Updates the rolling
+    /// rate + ETA; throttled flush.
+    fn on_embed_progress(&mut self, done: u32) {
+        let t = self.start.elapsed().as_secs_f64();
+        self.tracker.observe(t, done as u64);
+        let snap = self.snapshot(Phase::Embed, done);
+        self.write(snap, false);
+    }
+
+    /// All chunks embedded — entering the brief disk-write phase (100%).
+    fn begin_persist(&mut self) {
+        let snap = self.snapshot(Phase::Persist, self.chunks_total);
+        self.write(snap, true);
+    }
+
+    fn snapshot(&self, phase: Phase, done: u32) -> IndexProgress {
+        let done = done.min(self.chunks_total);
+        IndexProgress {
+            phase,
+            determinate: true,
+            files_done: progress::files_done_for(&self.chunk_file_idx, done as usize),
+            files_total: self.files_total,
+            chunks_done: done,
+            chunks_total: self.chunks_total,
+            items_per_sec: self.tracker.rate(),
+            eta_secs: self.tracker.eta_secs(done as u64, self.chunks_total as u64),
+        }
+    }
+
+    fn write(&mut self, snap: IndexProgress, force: bool) {
+        if !force {
+            if let Some(last) = self.last_flush {
+                if last.elapsed() < MIN_FLUSH_INTERVAL {
+                    return;
+                }
+            }
+        }
+        if registry::get(&self.workspace_id).is_none() {
+            return;
+        }
+        let mut state = store::load_state(&self.workspace_id);
+        state.indexing = true;
+        state.progress = Some(snap);
+        let _ = store::save_state(&self.workspace_id, &state);
+        self.last_flush = Some(Instant::now());
+    }
 }
 
 #[cfg(test)]
@@ -409,6 +627,94 @@ mod tests {
         assert_ne!(a, chunk_id("/b.md", 0, 1.5));
     }
 
+    fn raw_chunk(path: &str, chunk_idx: u32) -> walk::Chunk {
+        walk::Chunk {
+            path: path.to_owned(),
+            chunk_idx,
+            content: "x".to_owned(),
+            mtime: 1.0,
+            start_line: 1,
+            end_line: 1,
+        }
+    }
+
+    #[test]
+    fn chunk_file_ordinals_groups_consecutive_files() {
+        // file a → chunks 0,1 ; file b → chunk 0 ; file c → chunks 0,1.
+        let chunks = vec![
+            raw_chunk("/a.rs", 0),
+            raw_chunk("/a.rs", 1),
+            raw_chunk("/b.rs", 0),
+            raw_chunk("/c.rs", 0),
+            raw_chunk("/c.rs", 1),
+        ];
+        let (idx, total) = chunk_file_ordinals(&chunks);
+        assert_eq!(idx, vec![0, 0, 1, 2, 2]);
+        assert_eq!(total, 3, "three distinct files");
+        // Empty input is degenerate-safe (no panic, zero total).
+        let (eidx, etotal) = chunk_file_ordinals(&[]);
+        assert!(eidx.is_empty());
+        assert_eq!(etotal, 0);
+    }
+
+    #[tokio::test]
+    async fn reporter_drives_indeterminate_then_determinate_then_clears() {
+        let env = crate::test_support::TestEnv::new();
+        let def = registry::create(&env.ws_path("prog"), None).unwrap();
+
+        let mut reporter = Reporter::new(&def.id);
+        // Walk phase: indexing flips true, progress is indeterminate (no total).
+        reporter.begin_indeterminate(Phase::Walk);
+        let st = status(&def.id);
+        assert!(st.indexing, "indexing flag set on pass start");
+        let p = st.progress.expect("indeterminate progress present");
+        assert_eq!(p.phase, Phase::Walk);
+        assert!(!p.determinate);
+        assert_eq!(p.chunks_total, 0);
+        assert_eq!(p.ratio(), None, "no percent before the total is known");
+
+        // Counting done → determinate embed phase with a known total.
+        let chunks = vec![
+            raw_chunk("/a.rs", 0),
+            raw_chunk("/a.rs", 1),
+            raw_chunk("/b.rs", 0),
+            raw_chunk("/c.rs", 0),
+        ];
+        let (cfi, files_total) = chunk_file_ordinals(&chunks);
+        reporter.begin_embed(cfi, files_total);
+        let p = status(&def.id).progress.expect("determinate progress");
+        assert!(p.determinate);
+        assert_eq!(p.phase, Phase::Embed);
+        assert_eq!(p.chunks_total, 4);
+        assert_eq!(p.files_total, 3);
+        assert_eq!(p.chunks_done, 0);
+        assert_eq!(p.percent(), Some(0));
+
+        // A batch lands — force a flush past the throttle and assert advance.
+        reporter.last_flush = None;
+        reporter.on_embed_progress(2);
+        let p = status(&def.id).progress.expect("progress after a batch");
+        assert_eq!(p.chunks_done, 2);
+        assert_eq!(p.percent(), Some(50));
+        assert!(p.files_done >= 1, "at least the first file is in flight");
+
+        // finish() clears both the flag and the snapshot.
+        finish(
+            &def.id,
+            &IndexOutcome {
+                file_count: 3,
+                chunk_count: 4,
+                error: None,
+            },
+        );
+        let st = status(&def.id);
+        assert!(!st.indexing, "flag cleared");
+        assert!(
+            st.progress.is_none(),
+            "progress snapshot cleared after the pass"
+        );
+    }
+
     fn idx(path: &str, idx: u32, mtime: f64) -> IndexedChunk {
         IndexedChunk {
             id: chunk_id(path, idx, mtime),
@@ -425,8 +731,12 @@ mod tests {
     #[tokio::test]
     async fn persist_delta_writes_chunks_then_a_matching_manifest() {
         let env = crate::test_support::TestEnv::new();
-        let def = registry::create(&env.ws_path("p3"), None);
-        let chunks = vec![idx("/a.rs", 0, 100.0), idx("/a.rs", 1, 100.0), idx("/b.rs", 0, 200.0)];
+        let def = registry::create(&env.ws_path("p3"), None).unwrap();
+        let chunks = vec![
+            idx("/a.rs", 0, 100.0),
+            idx("/a.rs", 1, 100.0),
+            idx("/b.rs", 0, 200.0),
+        ];
         let mut meta: std::collections::BTreeMap<String, (String, u64, f64)> =
             std::collections::BTreeMap::new();
         meta.insert("/a.rs".into(), ("hA".into(), 10, 100.0));
@@ -440,7 +750,11 @@ mod tests {
         assert!(store::has_index(&def.id), "chunks.jsonl written");
         let m = manifest::load(&def.id).expect("manifest written second");
         assert!(m.is_compatible());
-        assert_eq!(m.files["/a.rs"].chunk_ids.len(), 2, "two chunk ids for a.rs");
+        assert_eq!(
+            m.files["/a.rs"].chunk_ids.len(),
+            2,
+            "two chunk ids for a.rs"
+        );
         assert_eq!(m.files["/a.rs"].hash, "hA");
         assert_eq!(m.files["/b.rs"].chunk_count, 1);
     }
@@ -451,10 +765,13 @@ mod tests {
         // chunks are present, the manifest is stale/absent. The next diff must
         // converge — re-embed the lagging files, never skip them (§3.3).
         let env = crate::test_support::TestEnv::new();
-        let def = registry::create(&env.ws_path("crash"), None);
+        let def = registry::create(&env.ws_path("crash"), None).unwrap();
         // Chunks landed for a.rs, but the manifest never advanced (absent).
         store::save_chunks(&def.id, &[idx("/a.rs", 0, 100.0)]).unwrap();
-        assert!(manifest::load(&def.id).is_none(), "no manifest yet (crash sim)");
+        assert!(
+            manifest::load(&def.id).is_none(),
+            "no manifest yet (crash sim)"
+        );
 
         // A diff with the (absent ⇒ env) manifest + the chunk's legacy mtime:
         // the unchanged file is *kept* (legacy fallback), never silently
@@ -462,9 +779,124 @@ mod tests {
         let prior = manifest::load(&def.id).unwrap_or_else(manifest::Manifest::current_env);
         let existing = store::load_chunks(&def.id);
         let legacy = manifest::legacy_mtimes(&existing);
-        let stats = vec![walk::FileStat { path: "/a.rs".into(), mtime: 100.0, size: 10 }];
+        let stats = vec![walk::FileStat {
+            path: "/a.rs".into(),
+            mtime: 100.0,
+            size: 10,
+        }];
         let plan = manifest::diff(&prior, &stats, &legacy, |_| Some("h".into()));
-        assert!(plan.keep_paths.contains("/a.rs"), "lagging chunk kept, not lost");
+        assert!(
+            plan.keep_paths.contains("/a.rs"),
+            "lagging chunk kept, not lost"
+        );
         assert!(plan.to_embed.is_empty());
+    }
+
+    // ── L2: lexical full-build + backfill (gated on the master toggle) ───────
+
+    /// Build a content-bearing chunk (the lexical index needs real tokens to
+    /// score, unlike the vector-only `idx` helper above).
+    fn lex_chunk(id: &str, path: &str, content: &str) -> IndexedChunk {
+        IndexedChunk {
+            id: id.to_owned(),
+            path: path.to_owned(),
+            chunk_idx: 0,
+            content: content.to_owned(),
+            mtime: 100.0,
+            start_line: 1,
+            end_line: 1,
+            vector: vec![0.1, 0.2],
+        }
+    }
+
+    /// Flip the process-global lexical toggle ON for the body of a test, then
+    /// reset it OFF on drop so sibling tests (which share the cache) aren't left
+    /// seeing it enabled. Call only inside a `TestEnv` (which holds the env lock
+    /// and points `WYLDE_DATA_DIR` at a scratch dir).
+    struct LexicalOn;
+    impl LexicalOn {
+        fn enable() -> Self {
+            LexicalConfig::persist(LexicalConfig {
+                enabled: true,
+                ..LexicalConfig::default()
+            })
+            .expect("enable lexical");
+            LexicalOn
+        }
+    }
+    impl Drop for LexicalOn {
+        fn drop(&mut self) {
+            let _ = LexicalConfig::persist(LexicalConfig::default());
+        }
+    }
+
+    #[tokio::test]
+    async fn persist_full_builds_lexical_when_enabled() {
+        let env = crate::test_support::TestEnv::new();
+        let _on = LexicalOn::enable();
+        let def = registry::create(&env.ws_path("lx-full"), None).unwrap();
+        let chunks = vec![
+            lex_chunk(
+                "c0",
+                "/src/search.rs",
+                "const ANCHOR_BOOST_CAP: f64 = 0.30;",
+            ),
+            lex_chunk("c1", "/src/notes.md", "prose about boosting things"),
+        ];
+        persist_full(&def.id, &chunks).await;
+        // The lexical index was built alongside the vectors and is queryable.
+        assert!(
+            lexical::has_lexical_index(&def.id),
+            "lexical/ built when ON"
+        );
+        let hits = lexical::search(&def.id, "ANCHOR_BOOST_CAP", 5);
+        assert_eq!(hits[0].0, "c0", "BM25 finds the exact token");
+    }
+
+    #[tokio::test]
+    async fn persist_full_skips_lexical_when_disabled() {
+        let env = crate::test_support::TestEnv::new();
+        // Toggle OFF (the default) — ensure the cache is OFF for this test.
+        LexicalConfig::persist(LexicalConfig::default()).unwrap();
+        let def = registry::create(&env.ws_path("lx-off"), None).unwrap();
+        persist_full(&def.id, &[lex_chunk("c0", "/a.rs", "hello world")]).await;
+        // No lexical dir is created when OFF — identity with today.
+        assert!(
+            !lexical::has_lexical_index(&def.id),
+            "OFF ⇒ no lexical index (byte-identical to today)"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_backfill_builds_from_existing_chunks_without_reembed() {
+        let env = crate::test_support::TestEnv::new();
+        let def = registry::create(&env.ws_path("lx-backfill"), None).unwrap();
+        // A pre-lexical index: chunks on disk, no lexical/ yet.
+        store::save_chunks(
+            &def.id,
+            &[lex_chunk(
+                "c0",
+                "/src/run_it_handler.rs",
+                "fn run_it_handler() {}",
+            )],
+        )
+        .unwrap();
+        assert!(!lexical::has_lexical_index(&def.id));
+
+        // OFF ⇒ backfill is a no-op.
+        LexicalConfig::persist(LexicalConfig::default()).unwrap();
+        ensure_lexical_backfill(&def.id);
+        assert!(!lexical::has_lexical_index(&def.id), "no backfill when OFF");
+
+        // Flip ON ⇒ the one-time backfill builds the index from the chunks
+        // already on disk (no embedder involved).
+        let _on = LexicalOn::enable();
+        ensure_lexical_backfill(&def.id);
+        assert!(lexical::has_lexical_index(&def.id), "backfilled when ON");
+        assert_eq!(lexical::search(&def.id, "run_it_handler", 5)[0].0, "c0");
+
+        // Idempotent: a second backfill is a no-op (index already present).
+        ensure_lexical_backfill(&def.id);
+        assert!(lexical::has_lexical_index(&def.id));
     }
 }

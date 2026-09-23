@@ -60,7 +60,9 @@ pub fn diagnostics_to_decorations(text: &str, reply: &Value) -> Vec<Decoration> 
     };
     let mut out = Vec::with_capacity(diags.len());
     for d in diags {
-        let Some(range) = d.get("range") else { continue };
+        let Some(range) = d.get("range") else {
+            continue;
+        };
         let (Some(s), Some(e)) = (range.get("start"), range.get("end")) else {
             continue;
         };
@@ -87,7 +89,10 @@ pub fn diagnostics_to_decorations(text: &str, reply: &Value) -> Vec<Decoration> 
             continue;
         }
         let severity = d.get("severity").and_then(Value::as_u64).unwrap_or(1);
-        out.push(Decoration::underline_only(start..end, severity_color(severity)));
+        out.push(Decoration::underline_only(
+            start..end,
+            severity_color(severity),
+        ));
     }
     out
 }
@@ -104,7 +109,7 @@ mod tests {
         assert_eq!(byte_offset(t, 0, 3), 3); // "fn "
         assert_eq!(byte_offset(t, 1, 0), 13); // start of line 1 (after the \n)
         assert_eq!(byte_offset(t, 1, 4), 17); // "let "
-        // Past EOF clamps.
+                                              // Past EOF clamps.
         assert_eq!(byte_offset(t, 99, 0), t.len());
         // Past end of line clamps to the newline.
         assert_eq!(byte_offset(t, 0, 999), 12);
@@ -129,7 +134,9 @@ mod tests {
         let decos = diagnostics_to_decorations(text, &reply);
         assert_eq!(decos.len(), 2);
         // Each is an underline-only decoration (no fill colour).
-        assert!(decos.iter().all(|d| d.color.is_none() && d.underline.is_some()));
+        assert!(decos
+            .iter()
+            .all(|d| d.color.is_none() && d.underline.is_some()));
     }
 
     #[test]

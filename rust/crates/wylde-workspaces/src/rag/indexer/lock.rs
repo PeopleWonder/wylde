@@ -53,7 +53,10 @@ mod tests {
         let lock = for_workspace("ws-lock-serial");
         let g = lock.clone().lock_owned().await;
         // A second acquire can't proceed while the first guard is held.
-        assert!(lock.try_lock().is_err(), "held lock blocks a second acquire");
+        assert!(
+            lock.try_lock().is_err(),
+            "held lock blocks a second acquire"
+        );
         drop(g);
         assert!(lock.try_lock().is_ok(), "released lock is acquirable again");
     }

@@ -33,12 +33,17 @@ pub const UPDATE: &str = "workspaces.update";
 pub const DELETE: &str = "workspaces.delete";
 pub const SET_PERSONA: &str = "workspaces.set_persona";
 pub const LIST_MRU: &str = "workspaces.list_mru";
+pub const LIST_ALL: &str = "workspaces.list_all";
 pub const RAG_QUERY: &str = "workspaces.rag_query";
 pub const REINDEX: &str = "workspaces.reindex";
 
 // ── Index hygiene (P1) — exclusion purge + dry-run preview ───────────────
 pub const REINDEX_PURGE: &str = "workspaces.reindex_purge";
 pub const WALK_PREVIEW: &str = "workspaces.rag.walk_preview";
+
+// ── Lexical/BM25 + RRF master toggle (lexical-bm25 plan L0) ───────────────
+pub const LEXICAL_GET: &str = "settings.lexical.get";
+pub const LEXICAL_SET: &str = "settings.lexical.set";
 
 // ── Chat-turn prompt context (Slice 0d — relocated from the harness) ─────
 pub const GATHER_PROMPT: &str = "workspaces.gather_prompt";
@@ -78,6 +83,18 @@ pub const CONCEPTS_RELATIONS_LIST: &str = "workspaces.concepts.relations.list";
 pub const CONCEPTS_RELATIONS_GRAPH: &str = "workspaces.concepts.relations.graph";
 pub const CONCEPTS_RELATIONS_ADD: &str = "workspaces.concepts.relations.add";
 pub const CONCEPTS_RELATIONS_REMOVE: &str = "workspaces.concepts.relations.remove";
+
+// Definitional concept hierarchy H1 — the deletable overlay verbs (hierarchy_bridge)
+pub const HIERARCHY_GET_TREE: &str = "workspaces.hierarchy.get_tree";
+pub const HIERARCHY_GET_NODE: &str = "workspaces.hierarchy.get_node";
+pub const HIERARCHY_SET_DEFINITION: &str = "workspaces.hierarchy.set_definition";
+pub const HIERARCHY_ADD_EDGE: &str = "workspaces.hierarchy.add_edge";
+pub const HIERARCHY_REMOVE_EDGE: &str = "workspaces.hierarchy.remove_edge";
+pub const HIERARCHY_MERGE_NODES: &str = "workspaces.hierarchy.merge_nodes";
+pub const HIERARCHY_REMOVE_MERGE: &str = "workspaces.hierarchy.remove_merge";
+pub const HIERARCHY_GET_CONFIG: &str = "workspaces.hierarchy.get_config";
+pub const HIERARCHY_SET_ENABLED: &str = "workspaces.hierarchy.set_enabled";
+pub const HIERARCHY_GET_OVERLAY: &str = "workspaces.hierarchy.get_overlay";
 
 // ── File I/O — jailed editor/file-tree surface (S1 / IDE plan P0.2) ──────
 pub const FS_READ: &str = "workspaces.fs.read";
@@ -137,11 +154,15 @@ pub const ALL_ACTIONS: &[&str] = &[
     DELETE,
     SET_PERSONA,
     LIST_MRU,
+    LIST_ALL,
     RAG_QUERY,
     REINDEX,
     // Index hygiene (P1)
     REINDEX_PURGE,
     WALK_PREVIEW,
+    // lexical-bm25 plan L0 — lexical/RRF master toggle
+    LEXICAL_GET,
+    LEXICAL_SET,
     // Slice 0d — chat-turn prompt context
     GATHER_PROMPT,
     // Slice B — code graph read API
@@ -188,6 +209,23 @@ pub const ALL_ACTIONS: &[&str] = &[
     CONVERSATIONS_LIST,
     CONVERSATIONS_GET,
     CONVERSATIONS_DELETE,
+    // Registered and handled since Slice 0c but absent from this table until
+    // #130 — the reverse-direction gate caught it. Without the entry it leaked
+    // past reset_for_tests and the gpui-contract lint would flag its callers.
+    CONVERSATIONS_REFRESH_SUMMARY,
+    // Concept-hierarchy overlay — registered in install() but absent from this
+    // table until #130 (all ten leaked past reset_for_tests and were invisible
+    // to the gpui-contract lint).
+    HIERARCHY_GET_TREE,
+    HIERARCHY_GET_NODE,
+    HIERARCHY_SET_DEFINITION,
+    HIERARCHY_ADD_EDGE,
+    HIERARCHY_REMOVE_EDGE,
+    HIERARCHY_MERGE_NODES,
+    HIERARCHY_REMOVE_MERGE,
+    HIERARCHY_GET_CONFIG,
+    HIERARCHY_SET_ENABLED,
+    HIERARCHY_GET_OVERLAY,
     // Slice I — file watcher control
     WATCHER_STATUS,
     WATCHER_PAUSE,
@@ -278,6 +316,15 @@ pub fn install() {
         META_MODULE,
     );
     register_action_with_meta(
+        LIST_ALL,
+        |p: Value| async move { api::handle_list_all(p).await },
+        "Every workspace on disk (disk-walk, not just the MRU-5 window); \
+         surfaces bundles the index lost or never knew about and reconciles \
+         stale entries (#134). No payload. Reply: {workspaces: \
+         [WorkspaceDefinition]}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
         RAG_QUERY,
         |p: Value| async move { api::handle_rag_query(p).await },
         "k-NN search over a workspace's file index. Payload: \
@@ -310,6 +357,24 @@ pub fn install() {
          (de-risks a purge). Payload: {workspace_id, sample?=20}. Reply: \
          {workspace_id, would_index, would_exclude, sample_excluded:[paths]}. \
          No embed, no persist.",
+        META_MODULE,
+    );
+
+    register_action_with_meta(
+        LEXICAL_GET,
+        |p: Value| async move { api::handle_lexical_get(p).await },
+        "Read the lexical/BM25 + RRF master toggle + fusion knobs. Payload: {}. \
+         Reply: {enabled, rrf_k, w_dense, w_lex, min_bm25, fused_relative_floor, \
+         active_file_focus_boost, active_file_dir_focus_boost}. Default-off.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        LEXICAL_SET,
+        |p: Value| async move { api::handle_lexical_set(p).await },
+        "Persist the lexical/RRF config (partial patch — omitted fields keep \
+         their current value). Payload: any subset of the get-reply keys. Reply: \
+         the persisted config. Master toggle defaults off; only an explicit \
+         opt-in here turns the lexical arm on.",
         META_MODULE,
     );
 
@@ -548,6 +613,98 @@ pub fn install() {
         "Delete one relation edge by (from,to,kind); symmetric kinds match \
          either orientation. Payload: {workspace_id, from, to, kind}. Reply: \
          {removed: bool}.",
+        META_MODULE,
+    );
+
+    // ── Definitional concept hierarchy H1 — overlay store + verbs ─────────
+    register_action_with_meta(
+        HIERARCHY_GET_TREE,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_get_tree(p).await },
+        "The whole projected+overlaid concept-hierarchy DAG (definitional \
+         hierarchy plan H1). Payload: {workspace_id}. Reply: {enabled, count, \
+         roots, leaves, nodes:[{id,label,definition,kind,parents,children,\
+         is_leaf}], xrefs, dangling_count}. Master-toggle OFF ⇒ \
+         {enabled:false, nodes:[]} (inert). Read-only; fail-soft to the bare \
+         projection when no overlay exists.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_GET_NODE,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_get_node(p).await },
+        "One hierarchy node with its parents, children, the definitional \
+         ancestor-chain (nearest-first, each resolved to its definition), and \
+         the cross-references touching it. Payload: {workspace_id, id}. \
+         not_found on an unknown id; OFF ⇒ {enabled:false, node:null}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_SET_DEFINITION,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_set_definition(p).await },
+        "Author/override a node's definition (and optional label), or mint a \
+         brand-new authored node. Payload: {workspace_id, id?, definition?, \
+         source?=authored|llm_draft, label?}. With id: empty definition CLEARS \
+         the override (reverts to inherited) and prunes the record. Without id: \
+         mints a never-reused node:<n> id (a non-empty definition is required). \
+         Reply: {id, node}. OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_ADD_EDGE,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_add_edge(p).await },
+        "Author one containment edge (parent contains child). Payload: \
+         {workspace_id, parent, child}. Re-adding a dangling edge clears its \
+         flag. bad_request on a self-edge / unknown endpoint; already_exists on \
+         a live duplicate. OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_REMOVE_EDGE,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_remove_edge(p).await },
+        "Delete one authored containment edge. Payload: {workspace_id, parent, \
+         child}. Reply: {removed: bool}. Only overlay edges are removable (the \
+         projection's own edges live in the concept store). OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_MERGE_NODES,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_merge_nodes(p).await },
+        "Declare two nodes are one (OQ-2): the alias folds into the primary on \
+         apply. Payload: {workspace_id, primary, alias}. bad_request on a \
+         self-merge / unknown endpoint; already_exists on a live duplicate; \
+         re-adding a dangling merge clears its flag. OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_REMOVE_MERGE,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_remove_merge(p).await },
+        "Undo a merge by (primary, alias) so the alias re-appears as its own \
+         node — authoring stays reversible. Payload: {workspace_id, primary, \
+         alias}. Reply: {removed: bool}. OFF ⇒ disabled.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_GET_CONFIG,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_get_config(p).await },
+        "The hierarchy master-toggle state. Payload: {}. Reply: {enabled}. \
+         Ungated (must be readable while the feature is off).",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_SET_ENABLED,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_set_enabled(p).await },
+        "Flip the hierarchy master toggle. Payload: {enabled: bool}. Reply: \
+         {enabled}. Ungated; persists to <data_dir>/settings/hierarchy.json \
+         (fail-closed OFF). Off ⇒ all hierarchy verbs go inert.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        HIERARCHY_GET_OVERLAY,
+        |p: Value| async move { crate::concepts::hierarchy_bridge::handle_get_overlay(p).await },
+        "The RAW authored overlay (authored nodes + containment edges + merges) \
+         WITH dangling flags, for the authoring UI's re-point/remove affordances \
+         — unlike get_tree, which folds + excludes dangling. Payload: \
+         {workspace_id}. Reply: {enabled, nodes, edges:[{parent,child,dangling}], \
+         merges:[{primary,alias,dangling}]}. OFF ⇒ {enabled:false, edges:[]}.",
         META_MODULE,
     );
 
@@ -877,7 +1034,7 @@ pub fn reset_for_tests() {
 mod tests {
     use super::*;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-    use wylde_shared::ipc::{dispatch_action, list_actions};
+    use wylde_shared::ipc::{assert_action_table_matches_registry, dispatch_action, list_actions};
 
     // The action registry is process-wide; serialize the tests that
     // install/reset it so parallel threads don't clobber each other's
@@ -895,6 +1052,24 @@ mod tests {
         assert_eq!(reply.data["ok"], json!(true));
         assert_eq!(reply.data["service"], "wylde-workspaces");
         assert_eq!(reply.data["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn install_registers_all_actions_both_directions() {
+        // #130: workspaces has the largest table (~80 verbs) and was previously
+        // guarded only for PING and SYMBOL_CONTEXT. Assert ALL_ACTIONS and the
+        // live registry AGREE in both directions across every namespace this
+        // service owns — a registered verb missing from the table (which drives
+        // reset_for_tests, so it would leak across tests) now fails here and
+        // names itself.
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+        assert_action_table_matches_registry(
+            &["ping", "workspaces.", "settings.lexical.", "chat."],
+            ALL_ACTIONS,
+        );
+        reset_for_tests();
     }
 
     #[tokio::test]
@@ -974,7 +1149,10 @@ mod tests {
         assert!(!reply.ok, "blank id must be rejected by the handler");
         let code = reply.error.unwrap().code;
         assert_eq!(code, "bad_request", "served by the handler, got {code:?}");
-        assert_ne!(code, "no_action", "must NOT be the unknown-action fallthrough");
+        assert_ne!(
+            code, "no_action",
+            "must NOT be the unknown-action fallthrough"
+        );
 
         reset_for_tests();
     }
@@ -1003,8 +1181,14 @@ mod tests {
             let reply = dispatch_action(json!({"action": verb, "payload": {}})).await;
             assert!(!reply.ok, "{verb}: blank payload must be rejected");
             let code = reply.error.unwrap().code;
-            assert_eq!(code, "bad_request", "{verb} served by handler, got {code:?}");
-            assert_ne!(code, "no_action", "{verb} must NOT be the unknown-action fallthrough");
+            assert_eq!(
+                code, "bad_request",
+                "{verb} served by handler, got {code:?}"
+            );
+            assert_ne!(
+                code, "no_action",
+                "{verb} must NOT be the unknown-action fallthrough"
+            );
         }
 
         reset_for_tests();

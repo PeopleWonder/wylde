@@ -65,6 +65,7 @@
 
 pub mod common;
 pub mod conversations;
+pub mod embed_write;
 pub mod embeddings;
 pub mod long_term;
 pub mod memgraph;

@@ -549,7 +549,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_one_tool_now_routes_through_registry_with_ok_summary() {
-        let _g = crate::tooling::consent::serial_test_guard().await;
+        // Dispatch crosses the Phase-12.2 consent gate; pin bypass=on
+        // for this test's scope instead of inheriting whatever the
+        // previous guard-holder leaked (the old order-dependence).
+        let _g = crate::tooling::consent::bypass_scope(true).await;
         let cfg: &'static Config = Box::leak(Box::new(Config::default_for_tests()));
         let id = crate::state::new_turn_id();
         let handle = register_turn(id.clone(), "c1".into());
@@ -631,26 +634,29 @@ mod tests {
 
     #[tokio::test]
     async fn run_one_tool_returns_phase_deferred_for_stub_entries() {
-        let _g = crate::tooling::consent::serial_test_guard().await;
+        // The consent gate runs BEFORE the deferred-stub check, so this
+        // dispatch needs bypass=on too or it sees `consent_required`
+        // instead of the phase_11_deferred error it asserts on.
+        let _g = crate::tooling::consent::bypass_scope(true).await;
         let cfg: &'static Config = Box::leak(Box::new(Config::default_for_tests()));
         let id = crate::state::new_turn_id();
         let handle = register_turn(id.clone(), "c1".into());
         let mut state = ToolRoundState::new();
         let reg = Registry::default();
-        // Pick a tool still on the deferred list. After Phase 7.B
-        // moved the long_term memory tools and Phase 7.B-3 moved the
-        // rag.* tools to active, `memory.workspace.save` is the
-        // simplest still-deferred Phase 7 entry to assert against.
+        // Pick a tool still on the deferred list. The memory tools
+        // (long_term + workspace) and rag.* tools are all active now, so
+        // the remaining deferred entries are the Phase-11 voice streaming
+        // subscriptions — `voice.mic.chunks` is the simplest to assert.
         let call = ToolCall {
             id: "call_1".into(),
-            name: "memory.workspace.save".into(),
-            args: json!({"body": "x"}),
+            name: "voice.mic.chunks".into(),
+            args: json!({}),
         };
         let msg = run_one_tool(cfg, &handle, &mut state, TIER_DESTRUCTIVE, &reg, &call).await;
         assert!(msg["content"]
             .as_str()
             .unwrap()
-            .contains("phase_7_deferred"));
+            .contains("phase_11_deferred"));
         crate::state::remove_turn(&id);
     }
 

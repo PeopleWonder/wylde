@@ -38,6 +38,4 @@ pub mod listener;
 pub mod pipeline;
 
 pub use listener::{WakeWordEvent, WakeWordListener};
-pub use pipeline::{
-    WakeWordConfig, WakeWordInferError, WakeWordLoadError, WakeWordPipeline,
-};
+pub use pipeline::{WakeWordConfig, WakeWordInferError, WakeWordLoadError, WakeWordPipeline};

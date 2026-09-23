@@ -48,7 +48,12 @@ const BROKER_ACTIONS: &[&str] = &["system.inventory"];
 /// Tools the doc explicitly calls out as "deferred" so the LLM
 /// knows the dispatch will return a `phase_<n>_deferred` error.
 /// Listed here so future deferred-mentions don't quietly drop off.
-const KNOWN_DEFERRED_REFERENCES: &[&str] = &["memory_workspace_save"];
+///
+/// Empty as of the memory-gaps slice: the workspace-memory tier
+/// (`memory_workspace_save` et al.) moved from deferred to active, and
+/// the only remaining deferred entries (the Phase-11 voice streaming
+/// subscriptions) are dotted names the bootstrap appendix doesn't cite.
+const KNOWN_DEFERRED_REFERENCES: &[&str] = &[];
 
 fn bootstrap_doc_path() -> PathBuf {
     // Walk up from CARGO_MANIFEST_DIR (`rust/crates/wylde-harness`)

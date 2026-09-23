@@ -17,6 +17,12 @@ use crate::proxy_core::{pipe_action, validate_token, ProxyResult};
 /// all dispatch into `\\.\pipe\wylde-harness`.
 pub(super) const HARNESS_SERVICE: &str = "wylde-harness";
 
+/// Workspaces pipe service name. The `workspaces.*` verbs live on their
+/// own service pipe (`\\.\pipe\wylde-workspaces`) — the harness RETIRED
+/// them (Thought Bubble System Slice 0d), so dispatching them to
+/// `wylde-harness` returns `no_action`.
+pub(super) const WORKSPACES_SERVICE: &str = "wylde-workspaces";
+
 /// Translate the `(status, envelope)` tuple `proxy_core` returns on its
 /// error path into an axum [`Response`] carrying the canonical
 /// `{ok: false, error: {code, message}}` body.
@@ -64,6 +70,18 @@ pub(super) async fn authorize(headers: &HeaderMap) -> Result<Value, Response> {
 /// tuple from [`pipe_action`] is converted via [`envelope_to_response`].
 pub(super) async fn harness_dispatch(action: &str, payload: Value) -> Response {
     match pipe_action(HARNESS_SERVICE, action, payload).await {
+        Ok(data) => crate::envelopes::success(data),
+        Err(env) => envelope_to_response(env),
+    }
+}
+
+/// Fire an action on `wylde-workspaces` and shape the [`Response`].
+///
+/// The workspace CRUD/MRU/persona verbs (`workspaces.*`) are served by the
+/// wylde-workspaces service pipe, not the harness — see
+/// [`WORKSPACES_SERVICE`]. Otherwise identical to [`harness_dispatch`].
+pub(super) async fn workspaces_dispatch(action: &str, payload: Value) -> Response {
+    match pipe_action(WORKSPACES_SERVICE, action, payload).await {
         Ok(data) => crate::envelopes::success(data),
         Err(env) => envelope_to_response(env),
     }

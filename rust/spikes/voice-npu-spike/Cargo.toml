@@ -3,6 +3,9 @@ name = "voice-npu-spike"
 version = "0.0.0"
 edition = "2024"
 publish = false
+# First-party Wylde crate; carries Core's copyleft. Explicit (not
+# `license.workspace`) because this crate has its own `[workspace]` below.
+license = "GPL-3.0-or-later"
 
 # Out-of-workspace. The top-level rust/Cargo.toml must NOT list this path.
 [workspace]

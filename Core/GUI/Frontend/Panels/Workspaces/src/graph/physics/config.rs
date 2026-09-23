@@ -91,7 +91,7 @@ pub struct PhysicsConfig {
     /// Use the radial-by-depth force (concentric rings around the origin,
     /// [`Self::radial_strength`]) instead of the y-only bounded gravity
     /// (top-down depth bands, [`Self::gravity_strength`]). Default `true` — the
-    /// center-anchor layout Aaron's directive calls for. Set `false` for the
+    /// center-anchor layout the maintainer's directive calls for. Set `false` for the
     /// legacy banded layout.
     pub use_radial: bool,
 
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn center_anchor_layout_is_the_default() {
         let c = PhysicsConfig::default();
-        // Radial-by-depth is the default layout (Aaron's center-anchor
+        // Radial-by-depth is the default layout (the maintainer's center-anchor
         // directive); the centering + radial pulls are both armed.
         assert!(c.use_radial);
         assert!(c.center_strength > 0.0, "centering force armed");

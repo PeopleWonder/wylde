@@ -67,7 +67,11 @@ async fn hello_world_synthesises_to_valid_wav() {
     let snapshot = kokoro_snapshot().expect("Kokoro not in HF cache; run Voice/download_models.py");
     let onnx = snapshot.join("onnx").join("model.onnx");
     let voices = snapshot.join("voices.npz");
-    assert!(onnx.exists(), "Kokoro model.onnx missing: {}", onnx.display());
+    assert!(
+        onnx.exists(),
+        "Kokoro model.onnx missing: {}",
+        onnx.display()
+    );
     assert!(
         voices.exists(),
         "voices.npz missing (Voice/download_models.py builds it): {}",
@@ -141,8 +145,11 @@ async fn hello_world_synthesises_to_valid_wav() {
     assert_eq!(&wav_bytes[8..12], b"WAVE");
     let header_sr =
         u32::from_le_bytes(wav_bytes[24..28].try_into().expect("WAV sample-rate slice"));
-    let header_bps =
-        u16::from_le_bytes(wav_bytes[34..36].try_into().expect("WAV bits-per-sample slice"));
+    let header_bps = u16::from_le_bytes(
+        wav_bytes[34..36]
+            .try_into()
+            .expect("WAV bits-per-sample slice"),
+    );
     let header_channels =
         u16::from_le_bytes(wav_bytes[22..24].try_into().expect("WAV channels slice"));
     assert_eq!(header_sr, 24_000);

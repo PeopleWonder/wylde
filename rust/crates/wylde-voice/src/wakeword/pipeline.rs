@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use ort::inputs;
-use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
+use ort::session::Session;
 use ort::value::TensorRef;
 use thiserror::Error;
 
@@ -168,10 +168,7 @@ impl WakeWordPipeline {
         if rolling.len() < CLASSIFIER_WINDOW {
             return Ok(None);
         }
-        let stack: Vec<f32> = rolling
-            .iter()
-            .flat_map(|e| e.iter().copied())
-            .collect();
+        let stack: Vec<f32> = rolling.iter().flat_map(|e| e.iter().copied()).collect();
         drop(rolling);
 
         let score = self.run_classifier(&stack)?;
@@ -253,9 +250,9 @@ impl WakeWordPipeline {
         let (out_shape, data) = first
             .try_extract_tensor::<f32>()
             .map_err(|e| WakeWordInferError::OutputShape(format!("embedding: {e}")))?;
-        let last = *out_shape.last().ok_or_else(|| {
-            WakeWordInferError::OutputShape("embedding shape rank 0".to_owned())
-        })?;
+        let last = *out_shape
+            .last()
+            .ok_or_else(|| WakeWordInferError::OutputShape("embedding shape rank 0".to_owned()))?;
         if last as usize != EMBEDDING_DIM {
             return Err(WakeWordInferError::OutputShape(format!(
                 "embedding last dim = {last}, want {EMBEDDING_DIM}"
@@ -272,10 +269,7 @@ impl WakeWordPipeline {
         Ok(out)
     }
 
-    fn push_embedding(
-        &self,
-        embedding: [f32; EMBEDDING_DIM],
-    ) -> Result<(), WakeWordInferError> {
+    fn push_embedding(&self, embedding: [f32; EMBEDDING_DIM]) -> Result<(), WakeWordInferError> {
         let mut rolling = self
             .rolling
             .lock()

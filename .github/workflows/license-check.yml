@@ -1,0 +1,78 @@
+# License compliance — cargo-deny GPLv3 copyleft gate.
+#
+# Wylde Core is `GPL-3.0-or-later`. Copyleft INHERITS: every crate compiled or
+# linked into a Wylde binary is bound to GPLv3, so every dependency's license
+# must be GPLv3-COMPATIBLE. A single incompatible dep (SSPL/BUSL/CDDL, or a
+# GPL-2.0-ONLY crate) is a real legal defect. This gate enforces the allow-list
+# policy that lives in the two deny.toml `[licenses]` sections.
+#
+# Kept as a SEPARATE workflow from security-audit.yml on purpose: the advisory
+# gate (security) and the license gate (legal) fail for different reasons, want
+# distinct status-check names, and are owned by different reviews. Both share the
+# SAME "run on every PR, never path-filter" mechanism — see the note below.
+name: License compliance
+
+on:
+  # Runs on EVERY PR — deliberately NOT path-filtered, exactly like
+  # security-audit.yml. The `cargo-deny (licenses)` matrix legs are REQUIRED
+  # status checks (protect-develop / protect-main). A required check on a
+  # path-filtered workflow never reports on a PR that touches no Cargo/deny
+  # files, and GitHub then blocks that PR forever waiting for a status that never
+  # arrives. Unfiltered = the check always runs = it can safely be required.
+  # (This inherits the same fix landed for the advisory gate in #49 / commit
+  # 3c38025; do not re-add a `paths:` filter here.)
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+  # Weekly, an hour after Dependabot — a dependency bump merged elsewhere can
+  # shift a transitive license; catch it even without an open PR.
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: license-check-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege GITHUB_TOKEN. The single cargo-deny job only checks out and
+# resolves the dependency graph — it never writes back. Read-only at the top
+# level satisfies the CodeQL `actions/missing-workflow-permissions` check.
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo-deny (licenses)
+    runs-on: ubuntu-latest
+    # cargo-deny resolves the graph from each lockfile; the GUI deny.toml pins
+    # both targets (windows + linux) explicitly, so the runner OS does not change
+    # the result — ubuntu is just the cheapest runner.
+    strategy:
+      fail-fast: false
+      matrix:
+        # This list MUST equal the gated set from tools/list-workspaces.sh.
+        # tools/check-manifest-coverage.sh (the `manifest coverage` CI job) fails
+        # red if it drifts — so a new workspace cannot go unscanned silently (#122).
+        manifest:
+          - rust/Cargo.toml
+          - Core/GUI/Cargo.toml
+          - tools/xtask/Cargo.toml
+          - tools/wylde-release/Cargo.toml
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The two tools/ workspaces share one tools/deny.toml (resolved by walking
+      # up from the manifest); rust/ and Core/GUI/ each have their own.
+      - name: resolve deny.toml
+        id: cfg
+        shell: bash
+        run: echo "config=$(bash tools/list-workspaces.sh --deny-config '${{ matrix.manifest }}')" >> "$GITHUB_OUTPUT"
+      - name: cargo-deny check licenses
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          manifest-path: ${{ matrix.manifest }}
+          command: check licenses
+          # Preserve the action's default `--all-features`; add the resolved
+          # config (both are cargo-deny global flags).
+          arguments: --all-features --config ${{ steps.cfg.outputs.config }}

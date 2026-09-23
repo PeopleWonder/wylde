@@ -48,31 +48,49 @@ pub(super) const FALLBACK_DAYS: i64 = 14;
 /// Same shape as Python's `_lock = threading.Lock()`.
 pub(super) static STORE_LOCK: Mutex<()> = Mutex::new(());
 
-/// Resolve the on-disk store root for profile / swap files.
-/// Honours `MODEL_DATA_DIR` (Python parity) → defaults to
-/// `data/model_registry` relative to cwd. Mirrors Python's
-/// `DATA_DIR = Path(os.getenv("MODEL_DATA_DIR", "data/model_registry"))`.
-pub fn data_dir() -> PathBuf {
+/// Subdirectory of the canonical data root holding the registry's files.
+const STORE_SUBDIR: &str = "model_registry";
+
+/// Resolve the on-disk store root for profile / swap files:
+/// `MODEL_DATA_DIR` → `<data_dir>/model_registry`, where `<data_dir>` is
+/// [`wylde_shared::paths::data_dir`] (convention A).
+///
+/// Before #250 the fallback was a **cwd-relative** `data/model_registry`,
+/// honouring neither `WYLDE_DATA_DIR` nor `WYLDE_ROOT` — so which routing
+/// profiles a process saw was a property of its working directory, stable
+/// only because lifecycle pins that to `wylde_root()`. The pre-#250
+/// location `<WYLDE_ROOT>/data/model_registry` is adopted on first touch;
+/// this store holds the largest data volume of the four #250 moved, and
+/// re-benchmarking from scratch is the visible cost of losing it.
+///
+/// Named `store_root`, not `data_dir`: the `single_data_dir_resolver` gate
+/// requires that no crate but `wylde-shared/src/paths.rs` define one.
+pub fn store_root() -> PathBuf {
     if let Some(v) = std::env::var_os("MODEL_DATA_DIR") {
         return PathBuf::from(v);
     }
-    PathBuf::from("data").join("model_registry")
+    let canonical = wylde_shared::paths::data_dir().join(STORE_SUBDIR);
+    wylde_shared::data_migration::adopt_legacy_tree(
+        &wylde_shared::paths::legacy_data_dir().join(STORE_SUBDIR),
+        &canonical,
+    );
+    canonical
 }
 
 pub(super) fn profiles_file() -> PathBuf {
-    data_dir().join("profiles.json")
+    store_root().join("profiles.json")
 }
 
 pub(super) fn swaps_file() -> PathBuf {
-    data_dir().join("swaps.json")
+    store_root().join("swaps.json")
 }
 
 pub(super) fn discovery_file() -> PathBuf {
-    data_dir().join("discovery.json")
+    store_root().join("discovery.json")
 }
 
 pub(super) fn pending_swaps_file() -> PathBuf {
-    data_dir().join("pending_swaps.json")
+    store_root().join("pending_swaps.json")
 }
 
 /// Read JSON from `path`, returning `default` if the file is missing,
@@ -118,29 +136,114 @@ mod tests {
     use crate::memory::common::TEST_ENV_LOCK;
     use tempfile::tempdir;
 
-    #[test]
-    fn data_dir_honours_env_override() {
-        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let td = tempdir().unwrap();
-        let prior = std::env::var_os("MODEL_DATA_DIR");
-        std::env::set_var("MODEL_DATA_DIR", td.path());
-        assert_eq!(data_dir(), td.path());
-        match prior {
-            Some(v) => std::env::set_var("MODEL_DATA_DIR", v),
-            None => std::env::remove_var("MODEL_DATA_DIR"),
+    /// Restore every root-affecting env var on drop, and pin `WYLDE_ROOT`
+    /// at `root` with no `MODEL_DATA_DIR`/`WYLDE_DATA_DIR`/`DATA_DIR` — the
+    /// convention-A fallback arm, which is the one #250 changed.
+    struct EnvSandbox {
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvSandbox {
+        fn rooted_at(root: &std::path::Path) -> Self {
+            const VARS: [&str; 4] = ["WYLDE_ROOT", "WYLDE_DATA_DIR", "DATA_DIR", "MODEL_DATA_DIR"];
+            let saved = VARS
+                .iter()
+                .map(|k| (*k, std::env::var_os(k)))
+                .collect::<Vec<_>>();
+            for (k, _) in &saved {
+                std::env::remove_var(k);
+            }
+            std::env::set_var("WYLDE_ROOT", root);
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvSandbox {
+        fn drop(&mut self) {
+            for (k, v) in &self.saved {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
         }
     }
 
     #[test]
-    fn data_dir_falls_back_to_relative_default_when_unset() {
+    fn store_root_honours_env_override() {
         let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let prior = std::env::var_os("MODEL_DATA_DIR");
-        std::env::remove_var("MODEL_DATA_DIR");
-        let p = data_dir();
-        assert_eq!(p, PathBuf::from("data").join("model_registry"));
-        if let Some(v) = prior {
-            std::env::set_var("MODEL_DATA_DIR", v);
+        let td = tempdir().unwrap();
+        let _env = EnvSandbox::rooted_at(td.path());
+        std::env::set_var("MODEL_DATA_DIR", td.path());
+        assert_eq!(store_root(), td.path());
+    }
+
+    /// #250: the fallback is root-anchored, not cwd-relative. This test
+    /// replaces one that asserted the exact opposite — that `store_root()`
+    /// equalled a bare relative `data/model_registry` — which is the
+    /// property the issue calls hazard 1.
+    #[test]
+    fn store_root_falls_back_under_convention_a_not_the_cwd() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let td = tempdir().unwrap();
+        let _env = EnvSandbox::rooted_at(td.path());
+
+        let p = store_root();
+        assert_eq!(
+            p,
+            td.path().join(".wylde").join("data").join("model_registry")
+        );
+        assert!(
+            p.is_absolute(),
+            "a cwd-relative store root makes the profile set a property of \
+             the working directory: {}",
+            p.display()
+        );
+    }
+
+    /// THE upgrade guarantee for the largest of the four stores: routing
+    /// profiles present only under the legacy root still read after the
+    /// move, and the legacy tree is preserved.
+    #[test]
+    fn a_legacy_only_profile_store_is_adopted_once_and_never_clobbered() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let td = tempdir().unwrap();
+        let _env = EnvSandbox::rooted_at(td.path());
+
+        // The pre-#250 layout, as a cwd-pinned launch left it.
+        let legacy = td.path().join("data").join("model_registry");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("profiles.json"), r#"{"chat":{"model":"a"}}"#).unwrap();
+
+        let profiles = profiles_file();
+        assert!(
+            profiles.starts_with(td.path().join(".wylde")),
+            "resolved outside convention A: {}",
+            profiles.display()
+        );
+        assert_eq!(
+            load_json(&profiles, serde_json::json!(null))["chat"]["model"],
+            "a",
+            "an upgrade must not reset the user's routing profiles"
+        );
+
+        // One-way: the legacy tree survives for a downgrade.
+        assert!(legacy.join("profiles.json").is_file());
+
+        // Idempotent: a value written since the move outranks the legacy one,
+        // however many times resolution re-runs adoption.
+        save_json(&profiles, &serde_json::json!({"chat": {"model": "b"}})).unwrap();
+        for _ in 0..3 {
+            assert_eq!(
+                load_json(&profiles_file(), serde_json::json!(null))["chat"]["model"],
+                "b"
+            );
         }
+        assert_eq!(
+            std::fs::read_to_string(legacy.join("profiles.json")).unwrap(),
+            r#"{"chat":{"model":"a"}}"#,
+            "the legacy tree is read-only to this migration"
+        );
     }
 
     #[test]
