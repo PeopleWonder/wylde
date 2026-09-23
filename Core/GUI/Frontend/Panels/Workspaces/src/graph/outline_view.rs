@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 
 use super::GraphView;
 use crate::graph::paint::to_rgba;
+use wylde_gui_controls::control;
 
 const SVC_TREESITTER: &str = "wylde-treesitter";
 
@@ -124,6 +125,8 @@ impl GraphView {
             .to_owned();
 
         let mut card = div()
+            // wylde-check: control-ok: outline panel shell — the ✕
+            // (graph-outline-close) is the affordance; the card just frames it.
             .id("graph-outline-card")
             .absolute()
             .top_8()
@@ -155,8 +158,7 @@ impl GraphView {
                         .child(SharedString::from(format!("Outline — {file_label}"))),
                 )
                 .child(
-                    div()
-                        .id("graph-outline-close")
+                    control(div(), "graph-outline-close")
                         .px_1()
                         .cursor_pointer()
                         .child(SharedString::from("✕"))
@@ -186,6 +188,8 @@ impl GraphView {
             };
             card = card.child(
                 div()
+                    // wylde-check: control-ok: static outline row — display
+                    // only, no click behaviour (jump-to-line is a later slice).
                     .id(("graph-outline-row", i))
                     .pl(px(10.0 * row.depth as f32))
                     .child(SharedString::from(label)),

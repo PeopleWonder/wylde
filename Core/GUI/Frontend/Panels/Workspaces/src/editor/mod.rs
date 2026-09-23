@@ -34,6 +34,7 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size, weight, FAMILY_INTER, FAMILY_MONO};
 
 use crate::workspaces_panel::pack;
+use wylde_gui_controls::control;
 
 /// Debounce before (re)highlighting after an edit.
 const HIGHLIGHT_DEBOUNCE_MS: u64 = 250;
@@ -535,6 +536,8 @@ impl EditorTab {
 impl Render for EditorTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = div()
+            // wylde-check: control-ok: the tab root is a layout container
+            // (completion rows, hover-dismiss, editor body are the controls).
             .id("workspaces-editor-tab")
             .size_full()
             .flex()
@@ -608,6 +611,8 @@ impl Render for EditorTab {
         if let Some(hover) = self.hover.clone() {
             root = root.child(
                 div()
+                    // wylde-check: control-ok: the hover strip is a text
+                    // container (its ✕ dismiss is the control).
                     .id("editor-hover-strip")
                     .flex()
                     .flex_row()
@@ -627,8 +632,7 @@ impl Render for EditorTab {
                             .child(SharedString::from(hover)),
                     )
                     .child(
-                        div()
-                            .id("editor-hover-dismiss")
+                        control(div(), "editor-hover-dismiss")
                             .cursor_pointer()
                             .text_size(px(size::XS))
                             .text_color(rgb(pack(TEXT_MUTED)))
@@ -646,8 +650,7 @@ impl Render for EditorTab {
 
         // Completion list (Ctrl+Space) — click a row to insert it.
         if !self.completions.is_empty() {
-            let mut list = div()
-                .id("editor-completions")
+            let mut list = control(div(), "editor-completions")
                 .flex()
                 .flex_col()
                 .max_h(px(160.0))
@@ -657,8 +660,7 @@ impl Render for EditorTab {
                 .bg(rgb(pack(SURFACE_800)));
             for (i, (label, detail)) in self.completions.clone().into_iter().enumerate() {
                 let insert = label.clone();
-                let mut row = div()
-                    .id(("editor-completion", i))
+                let mut row = control(div(), ("editor-completion", i))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -946,5 +948,55 @@ mod tests {
                 );
             })
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod control_walk {
+    //! L7 **control**-walk — the Editor tab (issue #247).
+    //!
+    //! In-crate: the completion list and the hover strip are populated by
+    //! private fields (`completions`, `hover`) that only the LSP round-trip
+    //! sets, with no public seam — so the walk drives them directly. Runs in
+    //! CI via the `panel-walk` alias (`cargo test -p wylde-panel-workspaces`,
+    //! which runs the lib unit tests too).
+
+    use super::EditorTab;
+    use gpui::TestAppContext;
+    use wylde_gui_test_support::control_walk::ControlWalk;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    #[gpui::test]
+    fn every_editor_control_does_something(cx: &mut TestAppContext) {
+        // No backend traffic: the completion/hover frames are seeded directly.
+        let fake = ScriptedBackend::new();
+        let _guard = fake.clone().install();
+        let window = cx.add_window(|_w, cx| EditorTab::new(cx));
+        cx.run_until_parked();
+
+        ControlWalk::new(window, &fake)
+            .fingerprint(|t: &EditorTab| {
+                format!(
+                    "comp={} hover={} dirty={}",
+                    t.completions.len(),
+                    t.hover.is_some(),
+                    t.dirty,
+                )
+            })
+            .reset(|t: &mut EditorTab, _w, cx| {
+                // Both overlays up in every frame: the hover strip (its dismiss
+                // ✕) and the completion list (its rows insert + clear). Set
+                // directly — in-crate — so each rebase re-establishes them.
+                t.hover = Some("fn foo() -> Result<(), Error>".to_string());
+                t.completions = vec![
+                    ("foo".to_string(), Some("fn foo()".to_string())),
+                    ("foobar".to_string(), None),
+                ];
+                cx.notify();
+            })
+            .sources(&[include_str!("mod.rs")])
+            .run(cx)
+            .assert_every_control_lives()
+            .assert_covers_every_literal_id();
     }
 }

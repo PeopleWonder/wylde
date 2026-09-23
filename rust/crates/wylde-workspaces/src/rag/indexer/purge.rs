@@ -233,7 +233,7 @@ mod tests {
         // A real registered workspace whose folder is a tempdir root.
         let folder = env.ws_path("proj");
         std::fs::create_dir_all(&folder).unwrap();
-        let def = registry::create(&folder, None);
+        let def = registry::create(&folder, None).unwrap();
         let root = folder.replace('/', std::path::MAIN_SEPARATOR_STR);
 
         // Mix real source with target-dev rustdoc + node_modules artifacts.
@@ -275,7 +275,7 @@ mod tests {
         let env = TestEnv::new();
         let folder = env.ws_path("clean");
         std::fs::create_dir_all(&folder).unwrap();
-        let def = registry::create(&folder, None);
+        let def = registry::create(&folder, None).unwrap();
         let root = folder.replace('/', std::path::MAIN_SEPARATOR_STR);
         let join = |rel: &str| format!("{root}{}{rel}", std::path::MAIN_SEPARATOR);
         store::save_chunks(

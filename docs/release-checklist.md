@@ -24,7 +24,9 @@ For shipping a `0.1.x` build to Beta-channel users. Lighter bar than a stable pr
    - ⏳ G4 clippy `-D warnings`, ⏳ G6 `cargo fmt --check` (enable once the tree is clean).
 3. **Local preflight L1–L3** (mechanical smoke) on the release machine — **`wylde-release preflight
    --launch`** now scripts L2 + L3 (below) into the receipt; run it (add `--build` for L1-lite):
-   - L1 build ALL shipped artifacts (`wylde-gui.exe`, every service binary, the NSIS installer).
+   - L1 build ALL shipped artifacts (`wylde-gui.exe`, every service binary). There is
+     no installer artifact: the NSIS installer is non-functional and lives at
+     https://github.com/PeopleWonder/wylde-installer as future work.
    - L2 cold-start smoke (clean install/launch → daemon up → services discovered + spawned).
    - L3 service health (vram-broker inventories HW → Ollama up w/ `nomic-embed-text` → harness
      answers → **Memgraph has real data** → RAG answers → GUI renders → a chat turn completes).
@@ -65,6 +67,13 @@ The full bar. Only on the maintainer's explicit say-so. **This is the definition
 4. **Local preflight — full L1–L7:**
    - L1–L3 via **`wylde-release preflight --launch --build`** (build-all, cold-start, service-health —
      each check reported individually into the receipt; fails closed).
+     - **Clean-install form (#37):** run **`tools/self-preflight.ps1`** instead of invoking
+       `wylde-release` in place — it takes a **throwaway fresh checkout**, points `WYLDE_DATA_DIR` at
+       a **fresh empty profile**, runs the same `preflight --launch --build`, then tears the scratch
+       tree down. This is the automated form of "a clean profile cold-starts into a serving system"
+       (no human reimage). A truly empty profile can't pass the data-dependent L3 legs
+       (`l3.memgraph_has_data`, `l3.ollama_model`), so pass `-SeedDataFrom <indexed profile>` for a
+       launch-verified run; the L6 human feel test (#274) is still owed separately.
    - ~~**L4 first-run bootstrap** completes on a clean profile.~~ **DROPPED from the 0.2 gate
      (2026-07-16).** First-run bootstrap is now **post-0.2** (#66) and is being redesigned as a
      deliberately guided UX + install wizard (#67), so 0.2 does not gate on it. It was never

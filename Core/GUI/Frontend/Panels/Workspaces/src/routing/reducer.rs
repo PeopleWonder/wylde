@@ -93,6 +93,11 @@ pub struct GroupEdge {
     pub from: NodeRefView,
     pub to: NodeRefView,
     pub kind: RelationKindView,
+    /// An endpoint no longer resolves, so this edge is retained but excluded
+    /// from routing (#137). Carried through from `RelationView` so the row can
+    /// badge it — previously the flag was dropped here and the user saw an
+    /// inert edge rendered as live.
+    pub dangling: bool,
 }
 
 /// Bucket the edges touching `focus` (the `relations.list` set) into the four
@@ -116,6 +121,7 @@ pub fn group_edges(
             from: r.from.clone(),
             to: r.to.clone(),
             kind: r.kind,
+            dangling: r.dangling,
         };
         match r.kind {
             RelationKindView::Dependency if &r.from == focus => depends_on.push(edge),
@@ -236,6 +242,7 @@ mod tests {
             kind,
             note: None,
             created_at: 0.0,
+            dangling: false,
         }
     }
 

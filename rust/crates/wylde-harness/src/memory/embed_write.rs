@@ -23,8 +23,16 @@
 //! `WYLDE_EMBED_WRITE_BUDGET_MS`). Any failure — embedder down, over
 //! budget, empty text — returns `None`, and the caller saves the record
 //! JSON-only exactly as before. A write is never blocked or failed by a
-//! slow / absent embedder; the mirror simply catches up on the next
-//! write (or a `reindex`).
+//! slow / absent embedder.
+//!
+//! **That record does NOT catch up on its own.** This comment used to claim
+//! the mirror caught up "on the next write (or a `reindex`)"; neither was
+//! true. A later write embeds only the record being written, and there was no
+//! `reindex` at all — so a record saved while the embedder was down stayed
+//! absent from the mirror permanently, and semantic search silently skipped
+//! it. Closing that gap now requires an explicit rebuild:
+//! [`crate::memory::long_term::reindex_vectors`] or
+//! [`crate::memory::workspace::store::reindex_vectors`] (#136).
 
 use std::time::Duration;
 

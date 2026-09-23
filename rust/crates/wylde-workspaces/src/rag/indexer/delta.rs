@@ -270,7 +270,7 @@ mod tests {
     /// Register a real workspace (so the existence-guard in `vector_remove`
     /// passes) and return its id. The folder is a throwaway tempdir.
     fn registered_ws(env: &TestEnv, name: &str) -> String {
-        registry::create(&env.ws_path(name), None).id
+        registry::create(&env.ws_path(name), None).unwrap().id
     }
 
     #[tokio::test]

@@ -15,6 +15,12 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
+# The nav chrome (sidebar, panel slot, update pill + changelog modal) + its
+# view-model, extracted into a `wry`-free crate the L7 walk can build (#247).
+# The Shell renders it (via `NavChromeHost`) and owns the `wry`/tray plumbing.
+wylde-gui-shell-chrome = { path = "../Frontend/ShellChrome" }
+# The one constructor every interactive control routes through (#247).
+wylde-gui-controls = { path = "../Frontend/Controls" }
 wylde-gui-pipe     = { path = "../Frontend/Pipe" }
 wylde-theme        = { path = "../Frontend/Theme" }
 wylde-webview      = { path = "../Frontend/Extension_handlers/WebView" }
@@ -22,20 +28,3 @@ wylde-webview      = { path = "../Frontend/Extension_handlers/WebView" }
 # startup and reads it during render to drive the sidebar + slot.
 wylde-panel-registry = { path = "../Manifest/Extension_handlers" }
 
-# The stack roster drives the shutdown kill list + drain-wait poll set,
-# so neither is a hand-kept parallel list (#124).
-wylde-stack.workspace   = true
-
-gpui.workspace          = true
-gpui_platform.workspace = true
-tray-icon.workspace     = true
-tokio.workspace       = true
-serde.workspace       = true
-serde_json.workspace  = true
-async-trait.workspace = true
-anyhow.workspace      = true
-
-# Auto-launch isn't wired in this slice — the dep is declared so the
-# path is confirmed and the next slice's Settings port can pull it in
-# without a workspace bump.
-auto-launch.workspace = true

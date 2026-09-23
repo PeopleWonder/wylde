@@ -143,11 +143,12 @@ to the pre-release **`0.2.0-beta.1`** on 2026-07-19 when the maintainer confirme
 The stamp was made uniform across both workspaces and every non-`version.workspace` crate:
 `rust/Cargo.toml` and `Core/GUI/Cargo.toml` (the two `[workspace.package]` versions G7
 compares), `Core/GUI/Frontend/test-support/Cargo.toml`, `tools/xtask`,
-`tools/wylde-release`, `rust/tests/parity`, and the installer's display default — with all
+`tools/wylde-release`, and `rust/tests/parity` — with all
 five `Cargo.lock`s synced (`cargo update -w`, local crates only) so the `--locked` CI gates
-don't red-wall on a stale lock. `version consistency (G7)` passes. The installer's numeric
-`VI_VERSION` deliberately stays `0.2.0` (Windows `VIProductVersion` must be numeric X.Y.Z);
-only the display `VERSION` carries the `-beta.1` suffix.
+don't red-wall on a stale lock. `version consistency (G7)` passes.
+
+> The installer's `VI_VERSION` / display `VERSION` split no longer applies here — the
+> installer was extracted to https://github.com/PeopleWonder/wylde-installer.
 
 **Still gated on a separate say-so: tagging + publishing (#38).** #36 was the *version
 string in the source tree*; it does not create any tag, promote `develop`→`main`,
@@ -482,7 +483,10 @@ running" + Start. Threaded through `nav::service_health_body_is_ready`/`service_
 - `wylde-lifecycle/src/control.rs`: `service.health` short-circuit + `service.list` `incompatible_reason` field.
 - `Core/GUI/Shell/src/{nav,slot,shell_root}.rs`: the GUI reason display. Tests in `nav::tests`.
 - `semver = "1"` added to `wylde-lifecycle/Cargo.toml`.
-- Applied as a live example to `Services/wylde-images/manifest.json` (`"min_core": "0.1.0"`, compatible).
+- First applied as a worked example to the `wylde-images` Service's `manifest.json`
+  (`"min_core": "0.1.0"`, compatible). That Service has since been parked to
+  [PeopleWonder/wylde-images](https://github.com/PeopleWonder/wylde-images) (#234), so the example
+  is no longer in this tree — see the archived repo's `manifest.json` if you want to read it.
 
 **For the two external service repos** (`wylde-organize`, `wylde-tabulate`) — add to each repo's
 folder `manifest.json` when their repos are next touched (they aren't in Core's tree):

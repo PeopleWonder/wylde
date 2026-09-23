@@ -23,6 +23,7 @@ use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::workspaces_panel::pack;
 use ipc::{Entry, Kind};
+use wylde_gui_controls::control;
 
 /// Per-depth indent (px).
 const INDENT: f32 = 14.0;
@@ -183,6 +184,8 @@ impl EventEmitter<FileOpenEvent> for FilesTab {}
 impl Render for FilesTab {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = div()
+            // wylde-check: control-ok: the tab root is a layout container, not a
+            // click-button — Refresh, Retry and the file rows are the controls.
             .id("workspaces-files-tab")
             .size_full()
             .flex()
@@ -211,8 +214,7 @@ impl Render for FilesTab {
                 )
                 .child(div().flex_1())
                 .child(
-                    div()
-                        .id("files-refresh")
+                    control(div(), "files-refresh")
                         .px_2()
                         .py_0p5()
                         .rounded(px(4.0))
@@ -245,8 +247,7 @@ impl Render for FilesTab {
                             .child(SharedString::from(format!("Couldn't list files — {err}"))),
                     )
                     .child(
-                        div()
-                            .id("files-retry")
+                        control(div(), "files-retry")
                             .px_2()
                             .py_0p5()
                             .rounded(px(4.0))
@@ -290,6 +291,8 @@ impl Render for FilesTab {
 
         let rows = self.flatten();
         let mut list = div()
+            // wylde-check: control-ok: the scroll viewport wrapping the file
+            // rows, not a click-button — the rows are the controls.
             .id("files-list")
             .flex_1()
             .min_h(px(0.0))
@@ -352,8 +355,7 @@ fn file_row(i: usize, row: Row, cx: &mut Context<FilesTab>) -> impl IntoElement 
     let indent = px(8.0 + INDENT * row.depth as f32);
     let ignored = row.entry.ignored;
 
-    let mut el = div()
-        .id(("file-row", i))
+    let mut el = control(div(), ("file-row", i))
         .flex()
         .flex_row()
         .items_center()
@@ -606,5 +608,85 @@ mod tests {
         assert_eq!(spec("target", Kind::Dir, false), "package");
         assert_eq!(spec("src", Kind::Dir, false), "folder");
         assert_eq!(spec("main.rs", Kind::File, false), "rust");
+    }
+}
+
+#[cfg(test)]
+mod control_walk {
+    //! L7 **control**-walk — the Files tab (issue #247).
+    //!
+    //! In-crate, not a `tests/` file, because the gated frame (the error
+    //! strip's Retry) is reached by setting private fields (`error`,
+    //! `children`, `expanded`) that no public seam exposes. It still runs in
+    //! CI: the `panel-walk` cargo alias is `cargo test -p wylde-panel-workspaces`,
+    //! which executes this crate's lib unit tests alongside its `tests/`.
+
+    use super::ipc::{Entry, Kind};
+    use super::FilesTab;
+    use gpui::TestAppContext;
+    use wylde_gui_test_support::control_walk::ControlWalk;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    fn dir(name: &str) -> Entry {
+        Entry {
+            name: name.to_string(),
+            kind: Kind::Dir,
+            rel_path: name.to_string(),
+            ignored: false,
+        }
+    }
+
+    #[gpui::test]
+    fn every_files_control_does_something(cx: &mut TestAppContext) {
+        let fake = ScriptedBackend::new()
+            .on(
+                "workspaces.list_mru",
+                serde_json::json!({ "active_id": "ws-a" }),
+            )
+            .on(
+                "workspaces.fs.list_dir",
+                serde_json::json!({ "entries": [] }),
+            );
+        let _guard = fake.clone().install();
+        let window = cx.add_window(|_w, cx| FilesTab::new(cx));
+        cx.run_until_parked();
+
+        ControlWalk::new(window, &fake)
+            .fingerprint(|t: &FilesTab| {
+                format!(
+                    "ws={:?} err={} loaded={} rootrows={} expanded={}",
+                    t.workspace_id,
+                    t.error.is_some(),
+                    t.loaded_root,
+                    t.children.get("").map(Vec::len).unwrap_or(0),
+                    t.expanded.len(),
+                )
+            })
+            .reset(|t: &mut FilesTab, _w, cx| {
+                // A loaded root with two *directory* rows: a file row's only
+                // effect is an emitted `FileOpenEvent` the standalone view can't
+                // observe, whereas a dir row toggles observable `expanded` (and
+                // lazily fetches). Children are set directly — in-crate — so
+                // every rebase re-establishes the same frame synchronously.
+                t.workspace_id = Some("ws-a".to_string());
+                t.loaded_root = true;
+                t.error = None;
+                t.children.clear();
+                t.children
+                    .insert(String::new(), vec![dir("src"), dir("lib")]);
+                t.expanded.clear();
+                t.loading.clear();
+                cx.notify();
+            })
+            // The error body and its Retry button (an early-return frame — the
+            // rows and list don't paint here).
+            .state("error", |t: &mut FilesTab, _w, cx| {
+                t.error = Some("couldn't reach the workspace".to_string());
+                cx.notify();
+            })
+            .sources(&[include_str!("mod.rs")])
+            .run(cx)
+            .assert_every_control_lives()
+            .assert_covers_every_literal_id();
     }
 }

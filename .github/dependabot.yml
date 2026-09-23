@@ -32,9 +32,16 @@ updates:
       timezone: "Etc/UTC"
     open-pull-requests-limit: 10
     commit-message:
+      # NO `include: "scope"` here. The prefixes below already carry their
+      # scope, and `include: "scope"` makes Dependabot append a SECOND one:
+      # "chore(deps)" + "(deps)" = "chore(deps)(deps): Bump ...", which the
+      # `conventional commits` gate rejects (type(scope): subject). That
+      # malformed subject blocked every cargo Dependabot PR ever opened —
+      # no cargo bump has merged since #104 configured this. The
+      # github-actions entry below sets `prefix` alone and has always been
+      # green (#144), which is the shape copied here.
       prefix: "chore(deps)"
       prefix-development: "chore(deps-dev)"
-      include: "scope"
     labels:
       - "dependencies"
       - "rust"

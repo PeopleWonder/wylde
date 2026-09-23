@@ -96,6 +96,20 @@ pub struct RelationView {
     pub note: Option<String>,
     #[serde(default)]
     pub created_at: f64,
+    /// Whether an endpoint no longer resolves, so the edge is retained on disk
+    /// but **excluded from routing** (#137).
+    ///
+    /// The backend has always sent this — `sweep_dangling` runs at the tail of
+    /// every concept build and the wire shape carries the flag — but this
+    /// struct did not deserialise it, so the Relations editor rendered a
+    /// silently inert edge as if it were live. The Hierarchy sub-tab mirrors
+    /// and badges the same flag; the two views disagreed about the same data.
+    ///
+    /// `#[serde(default)]` so an older backend (no field) reads as "live",
+    /// which is the safe direction: it under-warns rather than falsely
+    /// flagging every edge.
+    #[serde(default)]
+    pub dangling: bool,
 }
 
 /// One pickable node + its human label (the picker candidate / list row model).
@@ -245,6 +259,71 @@ mod tests {
         assert_eq!(back, v);
         assert_eq!(back.key(), "nextcloud");
         assert!(c.is_concept() && !v.is_concept());
+    }
+
+    /// #137 — the backend flags an edge whose endpoint no longer resolves as
+    /// `dangling` (retained on disk, excluded from routing). This struct used
+    /// to drop the field entirely, so the Relations editor rendered a silently
+    /// inert edge exactly like a live one, while the Hierarchy sub-tab badged
+    /// the same flag correctly. Two views, same data, opposite stories.
+    #[test]
+    fn relation_carries_the_dangling_flag_the_backend_sends() {
+        let v = json!({
+            "from": { "node": "concept", "id": "sem:0007" },
+            "to": { "node": "concept", "id": "sem:0009" },
+            "kind": "positive",
+            "dangling": true
+        });
+        let r: RelationView = serde_json::from_value(v).unwrap();
+        assert!(
+            r.dangling,
+            "the dangling flag must survive deserialisation — the user cannot \
+             re-point an edge they cannot see is broken"
+        );
+
+        // A live edge (and an older backend that omits the key) reads as live.
+        let live: RelationView = serde_json::from_value(json!({
+            "from": { "node": "concept", "id": "sem:0007" },
+            "to": { "node": "concept", "id": "sem:0009" },
+            "kind": "positive"
+        }))
+        .unwrap();
+        assert!(!live.dangling, "absent flag defaults to live, not broken");
+    }
+
+    /// The flag has to reach the row model too — `group_edges` builds
+    /// `GroupEdge` from `RelationView`, and dropping it there would hide the
+    /// badge just as effectively as dropping it at the wire.
+    #[test]
+    fn grouping_preserves_the_dangling_flag_through_to_the_row() {
+        use crate::routing::reducer;
+        let focus = NodeRefView::concept("sem:0007");
+        let touching = vec![
+            RelationView {
+                from: NodeRefView::concept("sem:0007"),
+                to: NodeRefView::concept("sem:0009"),
+                kind: RelationKindView::Positive,
+                note: None,
+                created_at: 0.0,
+                dangling: true,
+            },
+            RelationView {
+                from: NodeRefView::concept("sem:0007"),
+                to: NodeRefView::concept("sem:0010"),
+                kind: RelationKindView::Positive,
+                note: None,
+                created_at: 0.0,
+                dangling: false,
+            },
+        ];
+        let groups = reducer::group_edges(&focus, &touching);
+        let edges: Vec<_> = groups.into_iter().flat_map(|(_, e)| e).collect();
+        assert_eq!(edges.len(), 2);
+        assert_eq!(
+            edges.iter().filter(|e| e.dangling).count(),
+            1,
+            "exactly the dangling edge is flagged in the row model"
+        );
     }
 
     #[test]

@@ -164,7 +164,7 @@ pub fn reset_for_tests() {
 mod tests {
     use super::*;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-    use wylde_shared::ipc::{dispatch_action, list_actions};
+    use wylde_shared::ipc::{assert_action_table_matches_registry, dispatch_action};
 
     async fn registry_guard() -> MutexGuard<'static, ()> {
         static LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
@@ -172,29 +172,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_registers_all_eleven_actions() {
+    async fn install_registers_all_actions() {
         let _g = registry_guard().await;
         reset_for_tests();
         install();
-        let actions = list_actions();
-        // list_actions returns unary actions only — the contract metadata
-        // covers both. Assert the 9 unary entries (Phase 8 added
-        // `ollama.preload`).
-        for n in [
-            "ollama.health",
-            "ollama.list_models",
-            "ollama.list_loaded",
-            "ollama.show",
-            "ollama.delete",
-            "ollama.eject",
-            "ollama.preload",
-            "ollama.chat",
-            "ollama.embed",
-            "ollama.gc",
-            "ollama.store_usage",
-        ] {
-            assert!(actions.contains(&n.to_string()), "missing {n}");
-        }
+        // #130: iterate ALL_ACTIONS in BOTH directions via list_action_meta
+        // (which covers streaming too). This replaces a hardcoded 11-name inline
+        // list — a third copy of the verb set that was already stale (it omitted
+        // get_model_defaults / pull / chat_stream) and could not guard drift.
+        assert_action_table_matches_registry(&["ollama."], &ALL_ACTIONS);
         reset_for_tests();
     }
 

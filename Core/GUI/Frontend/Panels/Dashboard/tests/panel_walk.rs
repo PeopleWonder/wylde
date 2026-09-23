@@ -65,7 +65,7 @@ fn dashboard_healthy_mounts_and_loads(cx: &mut TestAppContext) {
                 panel
                     .service_health
                     .iter()
-                    .all(|(_, h)| h.status == HealthStatus::Healthy),
+                    .all(|r| r.health.status == HealthStatus::Healthy),
                 "every monitored service reports Healthy on the happy path"
             );
         })
@@ -104,7 +104,7 @@ fn dashboard_survives_backend_down(cx: &mut TestAppContext) {
                 panel
                     .service_health
                     .iter()
-                    .all(|(_, h)| h.status == HealthStatus::Unhealthy),
+                    .all(|r| r.health.status == HealthStatus::Unhealthy),
                 "a down daemon is DETECTED as Unhealthy, not silently green"
             );
         })
@@ -135,7 +135,7 @@ fn dashboard_surfaces_backend_error_envelope(cx: &mut TestAppContext) {
                 panel
                     .service_health
                     .iter()
-                    .all(|(_, h)| h.status == HealthStatus::Unhealthy),
+                    .all(|r| r.health.status == HealthStatus::Unhealthy),
                 "an error-envelope service reads Unhealthy"
             );
         })

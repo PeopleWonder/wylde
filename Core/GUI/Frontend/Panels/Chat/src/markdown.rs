@@ -34,6 +34,7 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size as text_size, weight, FAMILY_INTER};
 
 use crate::chat_panel::pack;
+use wylde_gui_controls::control;
 
 /// Block-level markdown element.
 #[derive(Debug, Clone, PartialEq)]
@@ -454,19 +455,18 @@ fn code_span(s: &str) -> gpui::Div {
 fn link_span(text: &str, url: &str, key: &str) -> Stateful<gpui::Div> {
     let target = url.to_owned();
     let id = ElementId::Name(format!("md-link::{key}").into());
-    div()
-        .id(id)
+    control(div(), id)
         .cursor_pointer()
         .text_color(rgb(pack(BRAND_LIGHT)))
         .on_mouse_down(
             gpui::MouseButton::Left,
             move |_ev: &MouseDownEvent, _window, _cx| {
-                // Best-effort: if the OS handler can't open the URL we
-                // intentionally swallow the error — the chat log isn't
-                // a place to surface "open in browser failed" with a
-                // modal.  Future polish could surface to the panel
-                // error strip.
-                let _ = opener::open(&target);
+                // Open in the OS default handler through the pipe seam. In a
+                // control walk this records the target and opens nothing (a walk
+                // must not spawn a real browser, #247); in the shipped build it is
+                // a plain `opener::open`. Best-effort: any open error is swallowed
+                // — the chat log is no place to surface it with a modal.
+                wylde_gui_pipe::open_url(&target);
             },
         )
         .child(SharedString::from(text.to_owned()))

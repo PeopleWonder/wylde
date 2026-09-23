@@ -178,6 +178,157 @@ where
     f()
 }
 
+/// Run a **native file dialog** (folder/file picker, save-as) on the blocking
+/// pool, via [`bridged_spawn_blocking`].
+///
+/// The important part is the `test-support` behaviour. `bridged_spawn_blocking`
+/// runs its closure *inline* when no runtime is installed — exactly the L7
+/// control-walk case — so a walk clicking a picker control would open a **real
+/// `rfd` OS dialog on the developer's desktop**, once per rebuild+walk cycle
+/// (issue #247). That is a harness defect: a control walk must have zero real
+/// OS side effects. So in any `test-support` build the dialog is **suppressed
+/// by default** — the request is recorded via [`native_dialog`] (so a walk can
+/// still prove "the handler fired and asked for a `{kind}`") and the call
+/// returns `None` instead of opening a window. The shipped Shell has no
+/// `test-support`, so this compiles down to a plain `bridged_spawn_blocking`
+/// and opens the real dialog — production behaviour is unchanged.
+pub async fn native_file_dialog<F>(kind: &'static str, f: F) -> Option<std::path::PathBuf>
+where
+    F: FnOnce() -> Option<std::path::PathBuf> + Send + 'static,
+{
+    #[cfg(feature = "test-support")]
+    if native_dialog::is_suppressed() {
+        native_dialog::record(kind);
+        return None;
+    }
+    #[cfg(not(feature = "test-support"))]
+    let _ = kind; // only recorded in `test-support` builds
+    bridged_spawn_blocking(f).await
+}
+
+/// Dev-only native-dialog suppression + record seam (#247 walk safety).
+///
+/// Compiled out entirely without `test-support` (requested only from the
+/// panels' `[dev-dependencies]`), so the shipped Shell has no thread-local, no
+/// suppression, and no recording branch inside [`native_file_dialog`]. A
+/// thread-local (not a process global), the same shape as [`nav_bus::nav_probe`]
+/// — so a parallel test's dialog can't leak into another's assertions, and the
+/// default is **suppressed** so no test can accidentally open a real OS window.
+#[cfg(feature = "test-support")]
+pub mod native_dialog {
+    use std::cell::RefCell;
+
+    thread_local! {
+        /// Suppressed by default: a headless/dev walk must never open a real
+        /// OS dialog. Flip only from a test that specifically wants the live
+        /// picker (there is none today).
+        static SUPPRESS: RefCell<bool> = const { RefCell::new(true) };
+        static REQUESTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Toggle live native dialogs on this thread (default: suppressed).
+    pub fn set_suppressed(on: bool) {
+        SUPPRESS.with(|s| *s.borrow_mut() = on);
+    }
+
+    /// Whether native file dialogs are suppressed on this thread.
+    pub fn is_suppressed() -> bool {
+        SUPPRESS.with(|s| *s.borrow())
+    }
+
+    pub(super) fn record(kind: &str) {
+        REQUESTS.with(|r| r.borrow_mut().push(kind.to_owned()));
+    }
+
+    /// Every native-dialog request made (and suppressed) on this thread.
+    pub fn requests() -> Vec<String> {
+        REQUESTS.with(|r| r.borrow().clone())
+    }
+
+    /// How many native-dialog requests have been made on this thread.
+    pub fn count() -> usize {
+        REQUESTS.with(|r| r.borrow().len())
+    }
+
+    /// Forget them — call between independent phases of a test.
+    pub fn clear() {
+        REQUESTS.with(|r| r.borrow_mut().clear());
+    }
+}
+
+/// Note a **fire-and-forget handoff** for the control walk (#247).
+///
+/// Some live controls neither call the backend, request a nav/focus, open a
+/// dialog, nor change their own panel's state — their whole effect is a
+/// `cx.emit(..)` event handed to a parent the walk didn't mount, or a similar
+/// out-of-band signal. The oracle has no channel for a gpui event emit, so such
+/// a control would read *dead* (clicked, no observable delta) even though its
+/// handler fired correctly. A panel calls this right before the emit; the label
+/// (e.g. `"tree-selected::<node>"`) is recorded via [`emit_probe`] under
+/// `test-support` so the walk can prove the handler fired — and with what — and
+/// compiles to nothing in the shipped build.
+pub fn note_emit(label: &str) {
+    #[cfg(feature = "test-support")]
+    emit_probe::record(label);
+    #[cfg(not(feature = "test-support"))]
+    let _ = label;
+}
+
+/// Open a URL in the OS default handler — the Chat markdown link path (#247).
+///
+/// The same walk-safety concern as [`native_file_dialog`]: `opener::open` spawns
+/// a **real browser** on the developer's desktop, which a control walk clicking
+/// a rendered link must never do. So in a `test-support` build this records the
+/// target (via [`emit_probe`], the fire-and-forget-handoff channel) and returns
+/// without opening anything; the walk asserts `open-url::<url>` was requested.
+/// The shipped build has no `test-support`, so this compiles down to a plain
+/// `opener::open` — production behaviour is unchanged.
+pub fn open_url(url: &str) {
+    #[cfg(feature = "test-support")]
+    emit_probe::record(&format!("open-url::{url}"));
+    #[cfg(not(feature = "test-support"))]
+    let _ = opener::open(url);
+}
+
+/// Dev-only fire-and-forget-handoff record seam (#247 walk coverage).
+///
+/// Records the out-of-band signals ([`note_emit`] gpui event emits, [`open_url`]
+/// external opens) a control makes that leave no other observable trace, so the
+/// walk's oracle can prove the handler fired. Compiled out entirely without
+/// `test-support` (requested only from the panels' `[dev-dependencies]`), so the
+/// shipped Shell carries no thread-local and no recording branch. A thread-local
+/// (not a process global), the same shape as [`native_dialog`] / [`nav_bus::nav_probe`],
+/// so a parallel test's handoff can't leak into another's assertions. No
+/// suppression flag: an emit is inert in a standalone-mounted view, and
+/// [`open_url`]'s real open is gated by the `cfg` itself.
+#[cfg(feature = "test-support")]
+pub mod emit_probe {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static REQUESTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn record(label: &str) {
+        REQUESTS.with(|r| r.borrow_mut().push(label.to_owned()));
+    }
+
+    /// Every fire-and-forget handoff noted on this thread.
+    pub fn requests() -> Vec<String> {
+        REQUESTS.with(|r| r.borrow().clone())
+    }
+
+    /// How many handoffs have been noted on this thread.
+    pub fn count() -> usize {
+        REQUESTS.with(|r| r.borrow().len())
+    }
+
+    /// Forget them — call between independent phases of a test.
+    pub fn clear() {
+        REQUESTS.with(|r| r.borrow_mut().clear());
+    }
+}
+
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(400);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_FRAME: usize = 64 * 1024 * 1024;
@@ -815,9 +966,10 @@ pub async fn service_health(service: &str) -> Result<Value, String> {
 // `service.start` verb (see `slot::start_service_action`).
 
 /// The Lifecycle daemon's canonical name for the graph database (Memgraph,
-/// the Bolt `:7687` backend). Matches the Dashboard's `MONITORED_SERVICES`
-/// entry so a one-click "Start graph database" targets the same service the
-/// health strip probes.
+/// the Bolt `:7687` backend). Matches the service the Dashboard's health strip
+/// probes for Memgraph (kept on the strip as a `NON_ROSTER_MONITORED` carve-out
+/// — it is `image: None` in the stack roster) so a one-click "Start graph
+/// database" targets the same service the strip shows.
 pub const MEMGRAPH_SERVICE: &str = "wylde-memgraph";
 
 /// Start a stopped service (`service.start`). Used by the "down" recovery
@@ -1008,5 +1160,55 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// #247 regression: a control walk clicks the folder/file-picker controls
+    /// to prove they're wired, and `bridged_spawn_blocking` runs its closure
+    /// inline when no runtime is installed — so without suppression a walk
+    /// would open a REAL `rfd` OS dialog on the developer's desktop, once per
+    /// rebuild+walk cycle. In any `test-support` build the dialog must be
+    /// suppressed: the closure never runs, the request is recorded, and the
+    /// call returns `None`.
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn native_file_dialog_is_suppressed_in_test_builds() {
+        native_dialog::clear();
+        assert!(
+            native_dialog::is_suppressed(),
+            "native dialogs must be suppressed by default in test-support builds"
+        );
+        let got = native_file_dialog("unit-picker", || -> Option<std::path::PathBuf> {
+            panic!("the real native-dialog closure must never run in a test build");
+        })
+        .await;
+        assert!(
+            got.is_none(),
+            "a suppressed dialog returns None (nothing picked)"
+        );
+        assert_eq!(native_dialog::count(), 1, "the request was recorded");
+        assert!(native_dialog::requests().contains(&"unit-picker".to_string()));
+    }
+
+    /// `open_url` must never spawn a real browser in a test build: it records the
+    /// target via `emit_probe` and returns, so a control walk clicking a markdown
+    /// link asserts the handoff without a real OS side effect (#247).
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn open_url_is_recorded_and_suppressed_in_test_builds() {
+        emit_probe::clear();
+        open_url("https://example.com/x");
+        assert_eq!(emit_probe::count(), 1, "the open was recorded");
+        assert!(emit_probe::requests().contains(&"open-url::https://example.com/x".to_string()));
+    }
+
+    /// `note_emit` records the fire-and-forget label so the walk's emit-probe
+    /// channel can observe a control whose only effect is a `cx.emit(..)`.
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn note_emit_records_the_handoff_label() {
+        emit_probe::clear();
+        note_emit("tree-selected::concept:a");
+        assert_eq!(emit_probe::count(), 1);
+        assert!(emit_probe::requests().contains(&"tree-selected::concept:a".to_string()));
     }
 }

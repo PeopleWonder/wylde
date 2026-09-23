@@ -66,7 +66,7 @@ fn main() {
         .expect("tokio runtime");
 
     rt.block_on(async move {
-        let def = registry::create(&folder, Some("index-bench"));
+        let def = registry::create(&folder, Some("index-bench")).unwrap();
 
         // ── Phase 1: full from-scratch index (real embeds, production pacing) ─
         let t = Instant::now();

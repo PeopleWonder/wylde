@@ -179,7 +179,7 @@ fn migrate_conversations() -> MigrationReport {
 fn write_marker() {
     let dir = workspaces_dir();
     let _ = ensure_dir(&dir);
-    let _ = std::fs::write(marker_path(), b"v1\n");
+    let _ = std::fs::write(marker_path(), b"v1\n"); // best-effort marker; migration re-runs if unwritten (wylde-check: discard-result-ok)
 }
 
 /// `<data_dir>/workspaces/index_hygiene_purge_v1`.
@@ -262,7 +262,7 @@ fn registered_workspace_ids() -> Vec<String> {
 fn write_hygiene_marker() {
     let dir = workspaces_dir();
     let _ = ensure_dir(&dir);
-    let _ = std::fs::write(hygiene_marker_path(), b"v1\n");
+    let _ = std::fs::write(hygiene_marker_path(), b"v1\n"); // best-effort marker; hygiene pass re-runs if unwritten (wylde-check: discard-result-ok)
 }
 
 #[cfg(test)]
@@ -358,7 +358,7 @@ mod tests {
         let env = TestEnv::new();
         let folder = env.ws_path("hygiene-proj");
         std::fs::create_dir_all(&folder).unwrap();
-        let def = crate::registry::create(&folder, None);
+        let def = crate::registry::create(&folder, None).unwrap();
         let sep = std::path::MAIN_SEPARATOR;
         let mk = |rel: &str, n: u32| IndexedChunk {
             id: format!("id-{rel}-{n}"),

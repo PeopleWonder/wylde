@@ -21,6 +21,12 @@ wylde-theme = { path = "../../Theme" }
 # here — every call goes over the wire.
 wylde-gui-pipe = { path = "../../Pipe" }
 
+# The one constructor every interactive control routes through (#247).
+# In this (normal) build it is `.id()` and nothing else; the panel's
+# `[dev-dependencies]` below re-declare it with `test-support` so the test
+# build additionally records what painted, for `tests/control_walk.rs`.
+wylde-gui-controls = { path = "../../Controls" }
+
 # gpui — every panel imports the same set: div builders, Render, etc.
 gpui.workspace = true
 
@@ -38,4 +44,5 @@ anyhow.workspace     = true
 wylde-gui-test-support = { path = "../../test-support" }
 gpui = { workspace = true, features = ["test-support"] }
 wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
+wylde-gui-controls = { path = "../../Controls", features = ["test-support"] }
 serde_json.workspace = true

@@ -47,22 +47,10 @@ use std::path::{Path, PathBuf};
 /// JSON/JSONL/Markdown store can collide with it.
 pub const ENC_HEADER: &[u8] = b"WYLDE-ENC-V1\n";
 
-/// `<data_dir>` resolved the same way the harness/workspaces services do
-/// (`WYLDE_DATA_DIR` → `DATA_DIR` → `<WYLDE_ROOT>/.wylde/data`). Kept here so
-/// `wylde-shared` can find the toggle pref file without depending on a
-/// service crate.
-fn data_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os("WYLDE_DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    if let Some(v) = std::env::var_os("DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    let root = std::env::var_os("WYLDE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    root.join(".wylde").join("data")
-}
+// `<data_dir>` (convention A: `WYLDE_DATA_DIR` → `DATA_DIR` →
+// `<WYLDE_ROOT>/.wylde/data`) comes from the ONE canonical resolver (#138).
+// `wylde-shared` owns it, so this is a plain intra-crate `use`.
+use crate::paths::data_dir;
 
 /// `<data_dir>/encryption_at_rest.json` — the Settings toggle's persisted
 /// state, read by every service so the choice applies process-wide.
@@ -232,7 +220,7 @@ fn backend_protect(data: &[u8]) -> io::Result<Vec<u8>> {
         )
         .map_err(|e| io::Error::other(format!("CryptProtectData: {e}")))?;
         let out = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
-        let _ = LocalFree(HLOCAL(out_blob.pbData as *mut core::ffi::c_void));
+        let _ = LocalFree(Some(HLOCAL(out_blob.pbData as *mut core::ffi::c_void)));
         Ok(out)
     }
 }
@@ -261,7 +249,7 @@ fn backend_unprotect(data: &[u8]) -> io::Result<Vec<u8>> {
         )
         .map_err(|e| io::Error::other(format!("CryptUnprotectData: {e}")))?;
         let out = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
-        let _ = LocalFree(HLOCAL(out_blob.pbData as *mut core::ffi::c_void));
+        let _ = LocalFree(Some(HLOCAL(out_blob.pbData as *mut core::ffi::c_void)));
         Ok(out)
     }
 }

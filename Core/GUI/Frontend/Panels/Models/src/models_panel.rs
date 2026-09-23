@@ -39,9 +39,11 @@ use crate::catalog::{self, CatalogEntry};
 use crate::hf::{self, HfModel};
 use crate::ipc::{
     delete_installed_model, list_installed_models, list_loaded_model_names, pull_model,
-    read_hardware, HardwareSnapshot, InstalledModel, PullProgress,
+    read_hardware, DefaultResolution, HardwareSnapshot, InstalledModel, PullProgress, Recommended,
+    ReferenceSet,
 };
 use crate::recommend::{pick as pick_recommendations, Recommendation};
+use wylde_gui_controls::control;
 
 /// Max catalog suggestions shown in the autocomplete dropdown.
 const CATALOG_SUGGESTION_LIMIT: usize = 10;
@@ -78,6 +80,16 @@ pub struct ModelsPanel {
     pub active_pull: Option<PullState>,
     pub confirm_delete: Option<String>,
     pub session_default: Option<String>,
+    /// The #235 resolution the panel last read from
+    /// `models.resolve_default` — the star checked against the live
+    /// inventory, with its fallbacks. `None` until the first reply lands
+    /// (or if the harness is down; a failure deliberately leaves the
+    /// prior value rather than reading as "nothing installed").
+    ///
+    /// Drives two things the raw star can't: the *recommend card* on an
+    /// empty store, and the "your default was deleted" note when a star
+    /// falls through.
+    pub default_resolution: Option<DefaultResolution>,
     pub hardware: HardwareSnapshot,
     /// State of an opt-in HuggingFace online search (privacy-gated). Stays
     /// `Idle` unless the user explicitly triggers a search.
@@ -90,6 +102,20 @@ pub struct ModelsPanel {
     /// copy read it.
     pub hf_query: String,
     pub error: Option<String>,
+    /// Whether the LAST `ollama.list_models` attempt reached the daemon.
+    /// Drives the #132 distinction between a genuinely empty store and one
+    /// that was merely unreachable (so an empty list never reads as "you
+    /// have no models" when the models are safe on disk). Starts `true` so
+    /// the initial spinner doesn't flash the unreachable state.
+    pub installed_reachable: bool,
+    /// Transient success line (e.g. "Freed 1.4 GB — deleted qwen2.5:1.5b")
+    /// shown after a completed delete; cleared when the next mutating
+    /// action starts.
+    pub status: Option<String>,
+    /// The reasoning slots the running config references, from
+    /// `settings.reasoning.get`. Empty until the first reply lands (and on
+    /// a down harness); drives the per-row slot / "not referenced" labels.
+    pub references: ReferenceSet,
     pub loading_installed: bool,
     pub loading_hardware: bool,
     _input_sub: Subscription,
@@ -210,11 +236,15 @@ impl ModelsPanel {
             active_pull: None,
             confirm_delete: None,
             session_default: None,
+            default_resolution: None,
             hardware: HardwareSnapshot::default(),
             hf_search: HfSearch::Idle,
             hf_selected: None,
             hf_query: String::new(),
             error: None,
+            installed_reachable: true,
+            status: None,
+            references: ReferenceSet::default(),
             loading_installed: true,
             loading_hardware: true,
             _input_sub: input_sub,
@@ -229,6 +259,7 @@ impl ModelsPanel {
             Self::spawn_refresh_hardware(cx);
             Self::spawn_loaded_poll(cx);
             Self::spawn_load_default(cx);
+            Self::spawn_refresh_references(cx);
             panel
         })
         .into()
@@ -242,13 +273,36 @@ impl ModelsPanel {
                     Ok(rows) => {
                         panel.error = None;
                         panel.installed = rows;
+                        panel.installed_reachable = true;
                     }
                     Err(err) => {
                         panel.error = Some(err);
+                        // The store was unreachable — DON'T blank the list
+                        // (a stale list is better than a false empty) and
+                        // flag it so an empty list renders the "safe on
+                        // disk" state, not "no models pulled yet" (#132).
+                        panel.installed_reachable = false;
                     }
                 }
                 panel.loading_installed = false;
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Refresh the reasoning-slot reference set so each installed row can
+    /// show whether the running config references it. Soft-fails: a down
+    /// harness leaves `references` empty (no slot labels) rather than
+    /// surfacing an error.
+    pub fn spawn_refresh_references(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let outcome = crate::ipc::get_reasoning_slots().await;
+            let _ = this.update(app_cx, |panel, cx| {
+                if let Ok(refs) = outcome {
+                    panel.references = refs;
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -304,6 +358,8 @@ impl ModelsPanel {
         if self.active_pull.is_some() {
             return;
         }
+        // A new action supersedes any lingering "Freed …" success line.
+        self.status = None;
         // A pull is starting — collapse the autocomplete so it doesn't
         // pop back over the progress bar (or linger once the pull ends).
         self.pull_query.clear();
@@ -524,14 +580,32 @@ impl ModelsPanel {
         let Some(name) = self.confirm_delete.take() else {
             return;
         };
+        // Capture the size we already have for this row so we can still
+        // report bytes freed if the wrapper couldn't determine it.
+        let cached_size = self
+            .installed
+            .iter()
+            .find(|m| m.name == name)
+            .map(|m| m.size_bytes)
+            .unwrap_or(0);
+        self.status = None;
         cx.notify();
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let outcome = delete_installed_model(&name).await;
             let _ = this.update(app_cx, |panel, cx| {
-                if let Err(e) = outcome {
-                    panel.error = Some(format!("delete '{name}': {e}"));
-                } else if panel.session_default.as_deref() == Some(name.as_str()) {
-                    panel.session_default = None;
+                match outcome {
+                    Ok(freed) => {
+                        // Prefer the wrapper's authoritative freed_bytes;
+                        // fall back to the size the row already showed.
+                        let bytes = if freed > 0 { freed } else { cached_size };
+                        panel.status = Some(freed_message(&name, bytes));
+                        if panel.session_default.as_deref() == Some(name.as_str()) {
+                            panel.session_default = None;
+                        }
+                    }
+                    Err(e) => {
+                        panel.error = Some(format!("delete '{name}': {e}"));
+                    }
                 }
                 cx.notify();
                 Self::spawn_refresh_installed(cx);
@@ -562,19 +636,30 @@ impl ModelsPanel {
         .detach();
     }
 
-    /// Read the persisted default-model star on panel open and pre-check
-    /// the matching row.  Soft-fails: a down harness leaves the star
-    /// un-filled rather than surfacing an error toast.
+    /// Resolve the default model on panel open and pre-check the matching
+    /// row (#235).
+    ///
+    /// Reads `models.resolve_default`, not the raw star: the star is only
+    /// arm 1 of the resolution, and a star whose model was deleted must
+    /// light up *nothing* rather than a row that isn't there. The reply
+    /// also carries the recommend arm, which the empty-store card renders.
+    ///
+    /// Soft-fails: a down harness leaves the star un-filled and
+    /// `default_resolution` untouched rather than surfacing an error
+    /// toast — and, per #132, never reads as "nothing installed".
     pub fn spawn_load_default(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
-            if let Ok(Some(model)) = crate::ipc::get_default().await {
+            if let Ok(resolution) = crate::ipc::resolve_default().await {
                 let _ = this.update(app_cx, |panel, cx| {
-                    // Don't clobber an explicit in-session choice the user
-                    // made before the reply landed.
-                    if panel.session_default.is_none() {
-                        panel.session_default = Some(model);
-                        cx.notify();
+                    // Only the *starred* arm pre-checks a row. A
+                    // first-available pick is what the picker would land
+                    // on, not a choice the user made — filling the star
+                    // for it would silently invent a preference.
+                    if panel.session_default.is_none() && resolution.source == "default" {
+                        panel.session_default = resolution.model.clone();
                     }
+                    panel.default_resolution = Some(resolution);
+                    cx.notify();
                 });
             }
         })
@@ -595,23 +680,54 @@ impl Render for ModelsPanel {
         if let Some(err) = &self.error {
             column = column.child(error_strip(err));
         }
+        if let Some(status) = &self.status {
+            column = column.child(status_strip(status));
+        }
+        // A star that outlived its model explains itself once, at the top
+        // — the fallback already happened, so this is a note, not an error.
+        if let Some(stale) = self
+            .default_resolution
+            .as_ref()
+            .and_then(|r| r.stale_default.as_deref())
+        {
+            let fell_back_to = self
+                .default_resolution
+                .as_ref()
+                .and_then(|r| r.model.as_deref());
+            column = column.child(stale_default_note(stale, fell_back_to));
+        }
 
         column = column.child(section_title("Pull a model"));
         column = column.child(pull_section(self, cx));
 
         column = column.child(section_title("Installed models"));
-        if self.loading_installed {
-            column = column.child(loading_row());
-        } else if self.installed.is_empty() {
-            column = column.child(empty_installed_state());
-        } else {
-            column = column.child(search_strip(self, cx));
-            let ranked = fuzzy_rank(&self.installed, &self.search_query);
-            if ranked.is_empty() {
-                column = column.child(no_match_state(self.search_query.trim()));
-            } else {
-                for m in ranked {
-                    column = column.child(installed_row(self, m, cx));
+        match classify_installed_section(
+            self.loading_installed,
+            self.installed_reachable,
+            self.installed.is_empty(),
+        ) {
+            InstalledSection::Loading => {
+                column = column.child(loading_row());
+            }
+            InstalledSection::Unreachable => {
+                column = column.child(unreachable_state(cx));
+            }
+            InstalledSection::Empty => {
+                let rec = self
+                    .default_resolution
+                    .as_ref()
+                    .and_then(|r| r.recommendation.clone());
+                column = column.child(empty_installed_state(rec.as_ref(), cx));
+            }
+            InstalledSection::List => {
+                column = column.child(search_strip(self, cx));
+                let ranked = fuzzy_rank(&self.installed, &self.search_query);
+                if ranked.is_empty() {
+                    column = column.child(no_match_state(self.search_query.trim()));
+                } else {
+                    for m in ranked {
+                        column = column.child(installed_row(self, m, cx));
+                    }
                 }
             }
         }
@@ -660,8 +776,7 @@ fn header_row(cx: &mut Context<ModelsPanel>) -> gpui::Div {
 
 fn refresh_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let id: ElementId = ElementId::Name("models-refresh".into());
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -676,6 +791,7 @@ fn refresh_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
             cx.listener(|_this: &mut ModelsPanel, _event, _window, cx| {
                 ModelsPanel::spawn_refresh_installed(cx);
                 ModelsPanel::spawn_refresh_hardware(cx);
+                ModelsPanel::spawn_refresh_references(cx);
             }),
         )
         .child(SharedString::from("Refresh"))
@@ -810,9 +926,7 @@ fn catalog_row(entry: &CatalogEntry, cx: &mut Context<ModelsPanel>) -> Stateful<
     if let Some(lic) = &entry.license {
         meta_bits.push(lic.clone());
     }
-
-    div()
-        .id(id)
+    control(div(), id)
         .flex()
         .flex_row()
         .items_center()
@@ -908,8 +1022,7 @@ fn size_badge(label: String) -> gpui::Div {
 fn pull_anyway_row(query: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let tag = query.to_owned();
     let tag_for_click = tag.clone();
-    div()
-        .id(ElementId::Name("models-pull-anyway".into()))
+    control(div(), ElementId::Name("models-pull-anyway".into()))
         .flex()
         .flex_row()
         .items_center()
@@ -1028,8 +1141,7 @@ fn catalog_detail_strip(entry: &CatalogEntry) -> gpui::Div {
 fn hf_search_row(query: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let q = query.to_owned();
     let q_for_click = q.clone();
-    div()
-        .id(ElementId::Name("models-hf-search".into()))
+    control(div(), ElementId::Name("models-hf-search".into()))
         .flex()
         .flex_row()
         .items_center()
@@ -1140,9 +1252,7 @@ fn hf_result_row(m: &HfModel, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::D
     if !m.last_modified.is_empty() {
         meta_bits.push(format!("updated {}", m.last_modified));
     }
-
-    div()
-        .id(id)
+    control(div(), id)
         .flex()
         .flex_row()
         .items_center()
@@ -1243,8 +1353,7 @@ fn hf_detail_strip(sel: &HfSelection, cx: &mut Context<ModelsPanel>) -> gpui::Di
 /// Clickable quant pill for the HF detail strip — cycles the quant on
 /// click. Brand-filled to read as the one interactive choice on the strip.
 fn hf_quant_pill(quant: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-hf-quant".into()))
+    control(div(), ElementId::Name("models-hf-quant".into()))
         .cursor_pointer()
         .rounded(px(999.0))
         .border_1()
@@ -1267,8 +1376,7 @@ fn hf_quant_pill(quant: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::D
 
 /// The ✕ close button on the HF results strip header.
 fn hf_close_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-hf-close".into()))
+    control(div(), ElementId::Name("models-hf-close".into()))
         .w(px(24.0))
         .h(px(24.0))
         .flex()
@@ -1324,8 +1432,7 @@ fn pull_submit_button(
     cx: &mut Context<ModelsPanel>,
 ) -> Stateful<gpui::Div> {
     let listener_input = input.clone();
-    div()
-        .id(ElementId::Name("models-pull-submit".into()))
+    control(div(), ElementId::Name("models-pull-submit".into()))
         .px_4()
         .py_2()
         .rounded(px(8.0))
@@ -1349,8 +1456,7 @@ fn pull_submit_button(
 }
 
 fn cancel_pull_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-pull-cancel".into()))
+    control(div(), ElementId::Name("models-pull-cancel".into()))
         .px_4()
         .py_2()
         .rounded(px(8.0))
@@ -1465,8 +1571,7 @@ fn recommendations_strip(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> 
 fn recommendation_chip(rec: Recommendation, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let name_for_click = rec.name.clone();
     let id: ElementId = ElementId::Name(format!("models-rec::{}", rec.name).into());
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_1()
         .rounded(px(999.0))
@@ -1494,6 +1599,18 @@ fn installed_row(
     let is_default = panel.session_default.as_deref() == Some(m.name.as_str());
     let is_loaded = panel.loaded.iter().any(|n| n == &m.name);
     let confirming = panel.confirm_delete.as_deref() == Some(m.name.as_str());
+    // What the running config references this model as (#131): a slot role,
+    // or — when nothing references it — a "not referenced" hint that makes
+    // superseded/orphaned models answerable as safe-to-delete at a glance.
+    let slot = slot_role(&m.name, &panel.references);
+    // Only claim "not referenced" once we actually know the reference set
+    // (at least one slot populated). With a down harness the set is empty
+    // and every model would falsely read as orphaned — stay silent then.
+    let references_known = !(panel.references.reasoner.is_empty()
+        && panel.references.fast.is_empty()
+        && panel.references.embedder.is_empty());
+    let unreferenced =
+        references_known && is_unreferenced(&m.name, &panel.references, is_default, is_loaded);
 
     let border = if is_default {
         BORDER_EMPHASIS
@@ -1511,7 +1628,15 @@ fn installed_row(
         .flex_col()
         .gap_2();
 
-    row = row.child(installed_row_head(m, is_default, is_loaded, confirming, cx));
+    row = row.child(installed_row_head(
+        m,
+        is_default,
+        is_loaded,
+        confirming,
+        slot,
+        unreferenced,
+        cx,
+    ));
 
     if confirming {
         row = row.child(confirm_strip(cx));
@@ -1524,11 +1649,14 @@ fn installed_row(
 /// name + metadata column, then the conditional "loaded" pill and the
 /// delete button (hidden while a delete confirmation is armed for this
 /// model).
+#[allow(clippy::too_many_arguments)]
 fn installed_row_head(
     m: &InstalledModel,
     is_default: bool,
     is_loaded: bool,
     confirming: bool,
+    slot: Option<SlotRole>,
+    unreferenced: bool,
     cx: &mut Context<ModelsPanel>,
 ) -> gpui::Div {
     let label = SharedString::from(m.name.clone());
@@ -1575,8 +1703,17 @@ fn installed_row_head(
                 ),
         );
 
+    if let Some(role) = slot {
+        head = head.child(slot_pill(role));
+    }
     if is_loaded {
         head = head.child(loaded_pill());
+    }
+    // `unreferenced` is already gated on the reference set being known
+    // (see `installed_row`), so a down harness stays silent rather than
+    // mislabelling every model as orphaned.
+    if unreferenced {
+        head = head.child(unreferenced_pill());
     }
     if !confirming {
         head = head.child(delete_button(
@@ -1610,8 +1747,7 @@ fn confirm_strip(cx: &mut Context<ModelsPanel>) -> gpui::Div {
                 )),
         )
         .child(
-            div()
-                .id(ElementId::Name("models-confirm-yes".into()))
+            control(div(), ElementId::Name("models-confirm-yes".into()))
                 .px_3()
                 .py_1()
                 .rounded(px(4.0))
@@ -1632,8 +1768,7 @@ fn confirm_strip(cx: &mut Context<ModelsPanel>) -> gpui::Div {
                 .child(SharedString::from("Yes, delete")),
         )
         .child(
-            div()
-                .id(ElementId::Name("models-confirm-no".into()))
+            control(div(), ElementId::Name("models-confirm-no".into()))
                 .px_3()
                 .py_1()
                 .rounded(px(4.0))
@@ -1662,8 +1797,7 @@ where
     } else {
         ("☆", TEXT_MUTED)
     };
-    div()
-        .id(id)
+    control(div(), id)
         .w(px(24.0))
         .h(px(24.0))
         .flex()
@@ -1692,12 +1826,117 @@ fn loaded_pill() -> gpui::Div {
         .child(SharedString::from("in use"))
 }
 
+/// Per-row pill naming the reasoning slot a model fills — the running
+/// config references it, so it is NOT a safe delete (#131).
+fn slot_pill(role: SlotRole) -> gpui::Div {
+    div()
+        .px_2()
+        .py(px(1.0))
+        .rounded(px(999.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_EMPHASIS)))
+        .bg(rgb(pack(SURFACE_900)))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::MICRO))
+        .text_color(rgb(pack(BRAND)))
+        .child(SharedString::from(role.label()))
+}
+
+/// Muted per-row pill for a model nothing in the running config
+/// references — the superseded/orphaned models that are safe to delete.
+fn unreferenced_pill() -> gpui::Div {
+    div()
+        .px_2()
+        .py(px(1.0))
+        .rounded(px(999.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .bg(rgb(pack(SURFACE_900)))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::MICRO))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .child(SharedString::from("not referenced"))
+}
+
+/// Transient success strip (brand-toned, distinct from the error strip)
+/// carrying the post-delete "Freed …" line.
+fn status_strip(msg: &str) -> gpui::Div {
+    div()
+        .bg(rgb(pack(SURFACE_800)))
+        .border_1()
+        .border_color(rgb(pack(BORDER_EMPHASIS)))
+        .rounded(px(4.0))
+        .px_3()
+        .py_2()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(BRAND)))
+        .child(SharedString::from(msg.to_owned()))
+}
+
+/// The #132 "store unreachable" body for the Installed section — shown
+/// instead of the "pull your first model" empty state when the list is
+/// empty only because the daemon couldn't be reached. It reassures that
+/// the models are safe on disk and offers a Retry, so a user right after
+/// an update never mistakes "still starting" for "everything is gone".
+fn unreachable_state(cx: &mut Context<ModelsPanel>) -> gpui::Div {
+    div()
+        .bg(rgb(pack(SURFACE_800)))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .rounded(px(6.0))
+        .p_6()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::SM))
+                .text_color(rgb(pack(TEXT_PRIMARY)))
+                .font_weight(FontWeight(weight::SEMIBOLD as f32))
+                .child(SharedString::from("Model store unavailable")),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(
+                    "Couldn't reach Ollama to list models — it may still be starting after an \
+                     update. Your installed models are safe on disk.",
+                )),
+        )
+        .child(retry_button(cx))
+}
+
+fn retry_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
+    control(div(), ElementId::Name("models-retry".into()))
+        .px_3()
+        .py_2()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_DEFAULT)))
+        .cursor_pointer()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::SM))
+        .text_color(rgb(pack(TEXT_PRIMARY)))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(|_this: &mut ModelsPanel, _event, _window, cx| {
+                ModelsPanel::spawn_refresh_installed(cx);
+                ModelsPanel::spawn_refresh_references(cx);
+            }),
+        )
+        .child(SharedString::from("Retry"))
+}
+
 fn delete_button<F>(id: ElementId, listener: F) -> Stateful<gpui::Div>
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(id)
+    control(div(), id)
         .px_2()
         .py_1()
         .rounded(px(4.0))
@@ -1741,8 +1980,7 @@ fn search_strip(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> Stateful<
 }
 
 fn clear_search_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-search-clear".into()))
+    control(div(), ElementId::Name("models-search-clear".into()))
         .w(px(28.0))
         .h(px(28.0))
         .flex()
@@ -1788,8 +2026,17 @@ fn no_match_state(query: &str) -> gpui::Div {
         )
 }
 
-fn empty_installed_state() -> gpui::Div {
-    div()
+/// The genuinely-empty store (#235 arm 3): a *recommendation* with its
+/// warnings, and a button that pulls it — never an auto-download.
+///
+/// `rec` is the harness's recommend payload (`models.resolve_default`).
+/// When it hasn't landed yet — a down harness, or the reply still in
+/// flight — the card degrades to the pre-#235 copy rather than inventing
+/// a model name locally: the recommendation and its warnings have one
+/// owner, and a GUI-side guess could name a model the backend never
+/// vetted.
+fn empty_installed_state(rec: Option<&Recommended>, cx: &mut Context<ModelsPanel>) -> gpui::Div {
+    let card = div()
         .bg(rgb(pack(SURFACE_800)))
         .border_1()
         .border_color(rgb(pack(BORDER_SUBTLE)))
@@ -1806,8 +2053,10 @@ fn empty_installed_state() -> gpui::Div {
                 .text_color(rgb(pack(TEXT_PRIMARY)))
                 .font_weight(FontWeight(weight::SEMIBOLD as f32))
                 .child(SharedString::from("No models installed yet")),
-        )
-        .child(
+        );
+
+    let Some(rec) = rec else {
+        return card.child(
             div()
                 .font_family(FAMILY_INTER)
                 .text_size(px(size::XS))
@@ -1815,7 +2064,82 @@ fn empty_installed_state() -> gpui::Div {
                 .child(SharedString::from(
                     "Pull one of the recommendations above to get started.",
                 )),
+        );
+    };
+
+    let mut card = card.child(
+        div()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::XS))
+            .text_color(rgb(pack(TEXT_SECONDARY)))
+            .child(SharedString::from(format!(
+                "Recommended: {} ({})",
+                rec.model, rec.size
+            ))),
+    );
+
+    // Every warning, verbatim, before the button that acts on them.
+    for w in &rec.warnings {
+        card = card.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::MICRO))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(w.clone())),
+        );
+    }
+
+    card.child(pull_recommended_button(&rec.model, cx))
+}
+
+/// The recommend card's action. Labelled with what it will do — pull a
+/// named model of a stated size — so the click is informed, not implied.
+fn pull_recommended_button(model: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
+    let name_for_click = model.to_owned();
+    control(div(), ElementId::Name("models-pull-recommended".into()))
+        .px_3()
+        .py_2()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_DEFAULT)))
+        .cursor_pointer()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::SM))
+        .text_color(rgb(pack(TEXT_PRIMARY)))
+        .on_mouse_down(
+            gpui::MouseButton::Left,
+            cx.listener(move |this: &mut ModelsPanel, _ev, _window, cx| {
+                this.start_pull(name_for_click.clone(), cx);
+            }),
         )
+        .child(SharedString::from(format!("Pull {model}")))
+}
+
+/// The note shown when a starred default no longer resolves — its model
+/// was deleted, and the picker fell through to first-available (#235).
+/// Explanatory, not an error: the fallback already succeeded.
+fn stale_default_note(stale: &str, fell_back_to: Option<&str>) -> gpui::Div {
+    let copy = match fell_back_to {
+        Some(m) => format!(
+            "Your default model “{stale}” is no longer installed — using “{m}” instead. \
+             Star another model to set a new default."
+        ),
+        None => format!(
+            "Your default model “{stale}” is no longer installed, and nothing else is \
+             either. Pull a model below to get started."
+        ),
+    };
+    div()
+        .bg(rgb(pack(SURFACE_800)))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .rounded(px(4.0))
+        .px_3()
+        .py_2()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .child(SharedString::from(copy))
 }
 
 fn loading_row() -> gpui::Div {
@@ -1841,6 +2165,111 @@ fn error_strip(msg: &str) -> gpui::Div {
 }
 
 // ── Pure projections (unit-testable) ─────────────────────────────────
+
+/// Which body the "Installed models" section renders. Splitting
+/// **Unreachable** out from **Empty** is the #132 fix: a genuinely empty
+/// store ("no models pulled yet — pull one") must never be shown when the
+/// list is empty only because the model store was unreachable (e.g. the
+/// daemon is still restarting right after an update). Conflating the two
+/// tells a user with a full disk that their models are gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstalledSection {
+    /// The first list reply hasn't landed yet.
+    Loading,
+    /// The list is empty because the store couldn't be reached — the
+    /// installed models are still on disk. Distinct copy + a retry, never
+    /// the "pull your first model" empty state.
+    Unreachable,
+    /// The store answered and genuinely holds no models.
+    Empty,
+    /// One or more installed models to render.
+    List,
+}
+
+/// Classify the installed section. `reachable` is whether the LAST list
+/// attempt reached the daemon; a stale non-empty list still renders as
+/// `List` even after a later refresh fails (models don't vanish because a
+/// poll blipped).
+pub fn classify_installed_section(
+    loading: bool,
+    reachable: bool,
+    is_empty: bool,
+) -> InstalledSection {
+    if loading {
+        InstalledSection::Loading
+    } else if !is_empty {
+        InstalledSection::List
+    } else if reachable {
+        InstalledSection::Empty
+    } else {
+        InstalledSection::Unreachable
+    }
+}
+
+/// A reasoning slot an installed model fills. Surfaced as a per-row pill so
+/// the user can see at a glance that a model is wired into the running
+/// config (and is therefore NOT a safe delete) (#131).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotRole {
+    Reasoner,
+    Fast,
+    Embedder,
+}
+
+impl SlotRole {
+    pub fn label(self) -> &'static str {
+        match self {
+            SlotRole::Reasoner => "reasoner",
+            SlotRole::Fast => "fast",
+            SlotRole::Embedder => "embedder",
+        }
+    }
+}
+
+/// Normalise a model tag for reference matching: `/api/tags` reports the
+/// implicit `:latest` on an untagged pull (`nomic-embed-text` →
+/// `nomic-embed-text:latest`) while a slot may store the bare name. Strip a
+/// trailing `:latest` on both sides so the two match. Mirrors the wrapper's
+/// `actions::gc` / `actions::models` rule.
+pub(crate) fn normalize_model_tag(tag: &str) -> &str {
+    let t = tag.trim();
+    t.strip_suffix(":latest").unwrap_or(t)
+}
+
+/// The reasoning slot (if any) this model fills. First match wins in
+/// reasoner → fast → embedder order; an unset (empty) slot never matches.
+pub fn slot_role(name: &str, refs: &ReferenceSet) -> Option<SlotRole> {
+    let n = normalize_model_tag(name);
+    let matches = |slot: &str| !slot.trim().is_empty() && normalize_model_tag(slot) == n;
+    if matches(&refs.reasoner) {
+        Some(SlotRole::Reasoner)
+    } else if matches(&refs.fast) {
+        Some(SlotRole::Fast)
+    } else if matches(&refs.embedder) {
+        Some(SlotRole::Embedder)
+    } else {
+        None
+    }
+}
+
+/// True when NOTHING in the running config references this model: not a
+/// reasoning slot, not the session-default star, not resident in VRAM.
+/// These are the superseded/orphaned models — visible and one click from
+/// deletion, labelled so "safe to delete?" is answerable at a glance (#131).
+pub fn is_unreferenced(name: &str, refs: &ReferenceSet, is_default: bool, is_loaded: bool) -> bool {
+    !is_default && !is_loaded && slot_role(name, refs).is_none()
+}
+
+/// The transient success line shown after a delete: reports the bytes
+/// freed (#131 — "delete must report bytes freed"). Falls back to a plain
+/// "Deleted" line when the freed size is unknown (0).
+pub fn freed_message(name: &str, freed_bytes: u64) -> String {
+    if freed_bytes > 0 {
+        format!("Freed {} — deleted {name}", humanize_bytes(freed_bytes))
+    } else {
+        format!("Deleted {name}")
+    }
+}
 
 /// The text a model is matched against: its name plus the same
 /// metadata the row surfaces (family, parameter size, quantization),
@@ -2143,6 +2572,85 @@ mod tests {
     fn pack_round_trips_known_surface() {
         assert_eq!(pack(SURFACE_900), 0x0a_0e_17);
         assert_eq!(pack(BRAND), 0x0e_74_90);
+    }
+
+    #[test]
+    fn classify_installed_section_splits_unreachable_from_empty() {
+        // Loading always wins.
+        assert_eq!(
+            classify_installed_section(true, false, true),
+            InstalledSection::Loading
+        );
+        // Non-empty → the list, regardless of reachability (stale list stays).
+        assert_eq!(
+            classify_installed_section(false, false, false),
+            InstalledSection::List
+        );
+        // Empty + reached → genuinely empty ("pull your first model").
+        assert_eq!(
+            classify_installed_section(false, true, true),
+            InstalledSection::Empty
+        );
+        // #132: empty + unreachable → the "models safe on disk" state, NOT
+        // the empty state. This is the whole point of the split.
+        assert_eq!(
+            classify_installed_section(false, false, true),
+            InstalledSection::Unreachable
+        );
+    }
+
+    #[test]
+    fn slot_role_matches_across_latest_normalisation() {
+        let refs = ReferenceSet {
+            reasoner: "qwen2.5:7b".into(),
+            fast: "qwen2.5:1.5b".into(),
+            embedder: "nomic-embed-text".into(),
+        };
+        assert_eq!(slot_role("qwen2.5:7b", &refs), Some(SlotRole::Reasoner));
+        assert_eq!(slot_role("qwen2.5:1.5b", &refs), Some(SlotRole::Fast));
+        // Slot stores the bare tag; /api/tags reports the implicit :latest.
+        assert_eq!(
+            slot_role("nomic-embed-text:latest", &refs),
+            Some(SlotRole::Embedder)
+        );
+        // A hand-pulled model fills no slot.
+        assert_eq!(slot_role("mistral:7b", &refs), None);
+    }
+
+    #[test]
+    fn slot_role_ignores_empty_slots() {
+        let refs = ReferenceSet::default();
+        // Every slot empty ⇒ no match, and crucially an empty model name
+        // must not match an empty slot.
+        assert_eq!(slot_role("", &refs), None);
+        assert_eq!(slot_role("anything", &refs), None);
+    }
+
+    #[test]
+    fn is_unreferenced_flags_only_the_orphans() {
+        let refs = ReferenceSet {
+            reasoner: "qwen2.5:7b".into(),
+            fast: String::new(),
+            embedder: "nomic-embed-text".into(),
+        };
+        // A slot model is referenced.
+        assert!(!is_unreferenced("qwen2.5:7b", &refs, false, false));
+        // The session default is referenced even if it fills no slot.
+        assert!(!is_unreferenced("mistral:7b", &refs, true, false));
+        // A resident (loaded) model is referenced even if it fills no slot.
+        assert!(!is_unreferenced("mistral:7b", &refs, false, true));
+        // No slot, not default, not loaded ⇒ orphan, safe to delete.
+        assert!(is_unreferenced("mistral:7b", &refs, false, false));
+    }
+
+    #[test]
+    fn freed_message_reports_bytes_or_falls_back() {
+        assert_eq!(
+            freed_message("qwen2.5:1.5b", 1_500_000_000),
+            "Freed 1.4 GB — deleted qwen2.5:1.5b"
+        );
+        // Unknown size (0) → a plain deleted line, never "Freed 0 B".
+        assert_eq!(freed_message("ghost", 0), "Deleted ghost");
     }
 
     #[test]

@@ -12,10 +12,11 @@ flat 700-LOC cap.
   a coupling graph that breaks the "one panel per crate" boundary.
 
 * :func:`check_no_legacy_gui_imports_in_panels` — no ``tauri::*`` use
-  paths and no Svelte-flavored references anywhere under
-  ``Core/GUI/Frontend/Panels/**``.  Panel crates are gpui-native; the
-  legacy Tauri+Svelte tree lives in ``Core/GUI/src/`` /
-  ``Core/GUI/src-tauri/`` and stays out of the gpui workspace.
+  paths anywhere under ``Core/GUI/Frontend/Panels/**``.  Panel crates
+  are gpui-native; the legacy Tauri tree lives in
+  ``Core/GUI/src-tauri/`` and stays out of the gpui workspace.  (The
+  Svelte matcher was retired 2026-07-20 — that tree was deleted at the
+  slice-11 cutover.)
 
 * :func:`check_webview_only_in_extension_handlers` — ``wry::*`` imports
   are reserved for the ``wylde-webview`` crate at
@@ -25,8 +26,8 @@ flat 700-LOC cap.
 * :func:`check_first_party_manifest_must_be_gpui_view` — every
   ``manifest.json`` under ``Core/GUI/Frontend/Panels/**`` declares
   ``source.kind == "gpui_view"`` for every entry in its ``panels`` array.
-  ``iframe`` is the iframe-extension shape — only valid for manifests
-  under ``Extensions/**``.
+  (The symmetric ``Extensions/**`` half was retired 2026-07-20 — that
+  tree no longer exists.)
 
 * :func:`check_panel_crate_must_be_workspace_member` — every
   ``Cargo.toml`` found under ``Core/GUI/Frontend/Panels/*/Cargo.toml``
@@ -64,7 +65,6 @@ GPUI_PANELS_ROOT: str = "Core/GUI/Frontend/Panels"
 GPUI_EXTENSION_HANDLERS_ROOT: str = "Core/GUI/Frontend/Extension_handlers"
 GPUI_WEBVIEW_ROOT: str = "Core/GUI/Frontend/Extension_handlers/WebView"
 GPUI_WORKSPACE_CARGO: str = "Core/GUI/Cargo.toml"
-EXTENSIONS_ROOT: str = "Extensions"
 
 # Panel crates may depend on these and only these wylde-* internal
 # crates.  Anything outside this allowlist that starts with ``wylde-``
@@ -75,8 +75,55 @@ EXTENSIONS_ROOT: str = "Extensions"
 PANEL_SHARED_INFRA_CRATES: Tuple[str, ...] = (
     "wylde-theme",
     "wylde-gui-pipe",
+    "wylde-gui-controls",
     "wylde-gpui-input",
     "wylde-panel-registry",
+)
+
+# Additional shared crates a panel may depend on: gpui WIDGET crates and
+# pure TOPOLOGY/type libs that are not themselves panels and carry no
+# backend pipe an importer would be bypassing. Kept separate from the core
+# infra list above (which the finding message quotes) so the reason for
+# each is explicit.
+PANEL_EXTRA_ALLOWED_CRATES: Tuple[str, ...] = (
+    "wylde-gui-test-support",  # shared test harness — dev-dependency only, not shipped
+    "wylde-stack",  # roster + service_name topology lib (Dashboard service strip)
+    "wylde-updater",  # updater types/lib for the Settings update UI (a lib, not a service)
+    "wylde-gpui-code-editor",  # shared gpui code-editor widget (Workspaces IDE)
+    "wylde-anchor-actions",  # shared anchor action definitions (Chat / Workspaces)
+)
+
+# Per-edge panel→panel carve-outs: `(owning_panel_crate, depended_panel)`
+# pairs that are a DELIBERATE, documented composition rather than accidental
+# coupling. NOTE for the maintainer: Workspaces mounts the SHARED singleton
+# ChatPanel's `InferenceBarDock` at its base (workspaces_panel.rs) — a real
+# panel→panel dependency. If that dock should live in a shared crate instead,
+# that is a separate refactor; this carve-out names the coupling that exists
+# today rather than hiding it behind the generic allowlist.
+# Per-edge carve-outs for a backend crate a panel may link **in
+# `[dev-dependencies]` only**: `(owning_panel_crate, backend_crate)`.
+#
+# The production boundary above is absolute and stays that way — a panel
+# reaches the backend through the pipe surface, never by linking the harness.
+# A dev-dependency is a different object: with `resolver = "2"` its features
+# are not unified into normal builds, so the edge cannot reach the shipped
+# Shell (verified for the GUI via `cargo tree -p wylde-gui`; see
+# `Core/GUI/docs/gui-testing.md`). Listing the edge here rather than adding the
+# crate to PANEL_EXTRA_ALLOWED_CRATES keeps that asymmetry visible: the same
+# dependency in `[dependencies]` is still an error.
+#
+# wylde-panel-chat -> wylde-harness / wylde-shared (#236): the all-surfaces
+# chat-turn e2e drives the REAL turn driver, by dispatching the GUI's own
+# request envelope into the real harness action registry. Stubbing the harness
+# instead would defeat the test's whole purpose — proving a typed message
+# reaches the production driver and its reply renders back.
+PANEL_DEV_ONLY_BACKEND_EDGE_EXEMPTIONS: Tuple[Tuple[str, str], ...] = (
+    ("wylde-panel-chat", "wylde-harness"),
+    ("wylde-panel-chat", "wylde-shared"),
+)
+
+PANEL_CROSS_PANEL_EDGE_EXEMPTIONS: Tuple[Tuple[str, str], ...] = (
+    ("wylde-panel-workspaces", "wylde-panel-chat"),
 )
 
 
@@ -167,17 +214,24 @@ _CARGO_DEP_LINE_RE = re.compile(r"^\s*([A-Za-z0-9_.\-]+)\s*=")
 _CARGO_SECTION_RE = re.compile(r"^\s*\[([^\]]+)\]\s*$")
 
 
-def _parse_cargo_deps(text: str) -> List[Tuple[int, str]]:
-    """Return ``(line_number, dep_name)`` pairs for every entry inside a
-    ``[dependencies]`` / ``[dev-dependencies]`` / ``[build-dependencies]``
-    /  ``[target.*.dependencies]`` section.
+def _parse_cargo_deps(text: str) -> List[Tuple[int, str, bool]]:
+    """Return ``(line_number, dep_name, is_dev)`` triples for every entry
+    inside a ``[dependencies]`` / ``[dev-dependencies]`` /
+    ``[build-dependencies]`` / ``[target.*.dependencies]`` section.
 
     The dep name is the *crate* name as it appears on the left-hand side
     (so ``wylde-panel-chat.workspace = true`` and
     ``wylde-panel-chat = { path = "..." }`` both yield ``"wylde-panel-chat"``).
+
+    ``is_dev`` marks a ``[dev-dependencies]`` (or ``[target.*.dev-dependencies]``)
+    entry.  The distinction matters because with ``resolver = "2"`` a
+    dev-dependency's features are NOT unified into normal builds, so such an
+    edge cannot reach the shipped Shell — see
+    ``PANEL_DEV_ONLY_BACKEND_EDGE_EXEMPTIONS``.
     """
-    out: List[Tuple[int, str]] = []
+    out: List[Tuple[int, str, bool]] = []
     in_deps = False
+    is_dev = False
     for lineno, raw in enumerate(text.splitlines(), start=1):
         line = raw.rstrip()
         sec = _CARGO_SECTION_RE.match(line)
@@ -190,6 +244,7 @@ def _parse_cargo_deps(text: str) -> List[Tuple[int, str]]:
                 or name.endswith(".dependencies")
                 or name.endswith(".dev-dependencies")
             )
+            is_dev = name == "dev-dependencies" or name.endswith(".dev-dependencies")
             continue
         if not in_deps:
             continue
@@ -200,7 +255,7 @@ def _parse_cargo_deps(text: str) -> List[Tuple[int, str]]:
         if not m:
             continue
         dep_name = m.group(1).split(".", 1)[0]
-        out.append((lineno, dep_name))
+        out.append((lineno, dep_name, is_dev))
     return out
 
 
@@ -217,7 +272,7 @@ def check_no_cross_panel_imports() -> List[Finding]:
     knows about another panel's existence.
     """
     out: List[Finding] = []
-    allow = set(PANEL_SHARED_INFRA_CRATES)
+    allow = set(PANEL_SHARED_INFRA_CRATES) | set(PANEL_EXTRA_ALLOWED_CRATES)
     for cargo in _walk_panel_cargo_tomls():
         rel = _to_rel(cargo)
         text = _read_text(cargo)
@@ -227,7 +282,7 @@ def check_no_cross_panel_imports() -> List[Finding]:
         m = re.search(r'^\s*name\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
         if m:
             own_crate = m.group(1)
-        for lineno, dep in _parse_cargo_deps(text):
+        for lineno, dep, is_dev in _parse_cargo_deps(text):
             if not dep.startswith("wylde-"):
                 continue
             if dep == own_crate:
@@ -237,6 +292,8 @@ def check_no_cross_panel_imports() -> List[Finding]:
             if dep in allow:
                 continue
             if dep.startswith("wylde-panel-"):
+                if (own_crate, dep) in PANEL_CROSS_PANEL_EDGE_EXEMPTIONS:
+                    continue
                 out.append(
                     Finding(
                         rule="no_cross_panel_imports",
@@ -252,6 +309,12 @@ def check_no_cross_panel_imports() -> List[Finding]:
                         context=f"{dep} = ...",
                     )
                 )
+                continue
+            # A backend crate is permitted when the edge is dev-only AND
+            # explicitly carved out: test code may drive the real backend, the
+            # shipped Shell may not link it. The same dep in `[dependencies]`
+            # still falls through to the finding below.
+            if is_dev and (own_crate, dep) in PANEL_DEV_ONLY_BACKEND_EDGE_EXEMPTIONS:
                 continue
             # Any other wylde-* crate the panel reaches for is also a
             # boundary break — panels talk to the backend through the
@@ -279,21 +342,24 @@ def check_no_cross_panel_imports() -> List[Finding]:
 
 
 _TAURI_USE_RE = re.compile(r"\btauri\s*::")
-# A "Svelte-adjacent" reference: anywhere a panel source mentions a
-# .svelte file path or imports the Svelte runtime.  Comments are
-# stripped before this fires, so the doc references the panels already
-# carry (``Cutover deletes src-tauri/ + src/ together``) don't match.
-_SVELTE_REF_RE = re.compile(r"\.svelte\b|\bsvelte::|['\"]svelte['\"]")
 
 
 def check_no_legacy_gui_imports_in_panels() -> List[Finding]:
-    """No ``tauri::*`` use paths or Svelte references anywhere under
+    """No ``tauri::*`` use paths anywhere under
     ``Core/GUI/Frontend/Panels/**``.
 
-    Panel crates are gpui-native — the legacy Tauri+Svelte tree at
-    ``Core/GUI/src/`` + ``Core/GUI/src-tauri/`` is built by its own
-    workspace and deleted at cutover.  References from a panel crate
-    would re-couple the two worlds.
+    Panel crates are gpui-native — the legacy Tauri tree at
+    ``Core/GUI/src-tauri/`` is built by its own workspace and deleted at
+    cutover.  References from a panel crate would re-couple the two
+    worlds.
+
+    The Svelte half of this rule was RETIRED on 2026-07-20.  It matched
+    ``.svelte`` / ``svelte::`` / ``"svelte"`` in panel sources, but the
+    Svelte tree (``Core/GUI/src/``) was deleted at the slice-11 cutover
+    and zero ``.svelte``/``.js``/``.ts`` files remain.  Its only surviving
+    finding was a false positive on
+    ``Core/GUI/Frontend/Panels/Workspaces/src/files/icon_map.rs``, where
+    ``("svelte", &["svelte"])`` is a file-icon table row, not an import.
     """
     out: List[Finding] = []
     for path in _walk_gpui_rs((GPUI_PANELS_ROOT,)):
@@ -323,23 +389,6 @@ def check_no_legacy_gui_imports_in_panels() -> List[Finding]:
                     )
                 )
                 continue
-            if _SVELTE_REF_RE.search(line):
-                out.append(
-                    Finding(
-                        rule="no_legacy_gui_imports_in_panels",
-                        severity="error",
-                        file=rel,
-                        line=lineno,
-                        message=(
-                            "Panel crate references Svelte (.svelte / "
-                            "svelte::).  Panels are gpui-native; the "
-                            "legacy Svelte tree at Core/GUI/src/ is "
-                            "excluded from the gpui workspace and "
-                            "removed at cutover."
-                        ),
-                        context=raw_line.strip()[:200],
-                    )
-                )
     return out
 
 
@@ -400,48 +449,19 @@ def check_webview_only_in_extension_handlers() -> List[Finding]:
 # ── Rule 36: first_party_manifest_must_be_gpui_view ──────────────────
 
 
-def _walk_extension_manifests() -> List[Path]:
-    """Every ``manifest.json`` directly under ``Extensions/<X>/`` —
-    one per extension.  Nested manifests (``Extensions/<X>/tools/*/``,
-    ``Extensions/<X>/browser_extension/``) are tool/manifest shapes
-    that don't carry ``ui_panels`` and are intentionally skipped.
-    Also accepts ``mcp-server.json`` / ``mcp-client.json`` siblings
-    since those are where MCP extensions declare ``ui_panels`` today.
-    """
-    base = _pkg.WYLDE_ROOT / EXTENSIONS_ROOT
-    if not base.exists():
-        return []
-    out: List[Path] = []
-    for child in sorted(base.iterdir()):
-        if not child.is_dir():
-            continue
-        for name in ("manifest.json", "mcp-server.json", "mcp-client.json"):
-            candidate = child / name
-            if candidate.exists() and not _is_excluded(candidate):
-                out.append(candidate)
-    return out
-
-
 def check_first_party_manifest_must_be_gpui_view() -> List[Finding]:
-    """Two symmetric kind-must-match-origin checks against panel manifests:
+    """Every ``manifest.json`` under ``Core/GUI/Frontend/Panels/**`` must
+    declare ``source.kind == "gpui_view"`` for every entry in its
+    ``panels`` array.  ``iframe`` was the iframe-extension shape.
 
-    * **First-party** manifests under ``Core/GUI/Frontend/Panels/**``
-      must declare ``source.kind == "gpui_view"`` for every entry in
-      their ``panels`` array.  ``iframe`` is the iframe-extension
-      shape — only valid for manifests under ``Extensions/**``.
-    * **Extension** manifests under ``Extensions/<X>/`` that carry
-      a ``ui_panels`` array must declare ``source.kind == "iframe"``
-      for every entry.  Extensions can't ship a native gpui ``View``
-      (no shared gpui dependency, no factory-registration path), so
-      a ``gpui_view`` declaration there is statically impossible.
-
-    Both checks live in the same rule because they enforce the same
-    invariant from two sides — kind matches origin.
+    NARROWED 2026-07-20: the rule used to carry a symmetric second half
+    asserting that every ``Extensions/<X>/`` manifest's ``ui_panels``
+    entry declared ``source.kind == "iframe"``.  ``Extensions/`` no
+    longer exists, so that half walked nothing and could only ever
+    report a pass — the dead-gate shape issue #101 called out.  It was
+    removed along with its ``EXTENSIONS_ROOT`` walk.
     """
-    out: List[Finding] = []
-    out.extend(_check_first_party_panel_manifests())
-    out.extend(_check_extension_ui_panels())
-    return out
+    return _check_first_party_panel_manifests()
 
 
 def _check_first_party_panel_manifests() -> List[Finding]:
@@ -534,77 +554,6 @@ def _check_first_party_panel_manifests() -> List[Finding]:
                         ),
                     )
                 )
-    return out
-
-
-def _check_extension_ui_panels() -> List[Finding]:
-    """Extension manifests declaring ``ui_panels`` must use ``iframe``
-    kind — gpui_view is architecturally impossible for an extension."""
-    out: List[Finding] = []
-    for path in _walk_extension_manifests():
-        rel = _to_rel(path)
-        text = _read_text(path)
-        if not text:
-            continue
-        try:
-            data = json.loads(text)
-        except (ValueError, TypeError):
-            # Malformed extension manifests are picked up by the
-            # extension-bridge's own loader; we don't double-flag here.
-            continue
-        if not isinstance(data, dict):
-            continue
-        panels = data.get("ui_panels")
-        # Extensions without UI panels (most have only tools/transport)
-        # contribute nothing — skip silently.
-        if not isinstance(panels, list) or not panels:
-            continue
-        for idx, panel in enumerate(panels):
-            if not isinstance(panel, dict):
-                out.append(
-                    Finding(
-                        rule="first_party_manifest_must_be_gpui_view",
-                        severity="error",
-                        file=rel,
-                        line=0,
-                        message=f"ui_panels[{idx}] is not an object",
-                    )
-                )
-                continue
-            source = panel.get("source")
-            if not isinstance(source, dict):
-                pid = panel.get("id", f"#{idx}")
-                out.append(
-                    Finding(
-                        rule="first_party_manifest_must_be_gpui_view",
-                        severity="error",
-                        file=rel,
-                        line=0,
-                        message=(
-                            f"extension ui_panel {pid!r} has no `source` "
-                            f"object; extension panels must declare "
-                            f'`source.kind: "iframe"`.'
-                        ),
-                    )
-                )
-                continue
-            kind = source.get("kind")
-            if kind == "iframe":
-                continue
-            pid = panel.get("id", f"#{idx}")
-            out.append(
-                Finding(
-                    rule="first_party_manifest_must_be_gpui_view",
-                    severity="error",
-                    file=rel,
-                    line=0,
-                    message=(
-                        f"extension ui_panel {pid!r} has source.kind = "
-                        f"{kind!r}; extension panels must be \"iframe\" "
-                        f"(extensions can't register a native gpui factory)."
-                    ),
-                )
-            )
     return out
 
 

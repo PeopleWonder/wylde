@@ -23,4 +23,12 @@ path = "src/lib.rs"
 # into a normal Shell build.
 wylde-gui-pipe = { path = "../Pipe", features = ["test-support"] }
 
+# The control-walk harness (#247). `gpui/test-support` gives it
+# `VisualTestContext` (draw + simulate_click + debug_bounds);
+# `wylde-gui-controls/test-support` gives it the per-frame registry of what
+# actually painted. Both features live behind the same excluded-crate wall as
+# the Pipe seam above, so neither can reach the shipped Shell.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "b3d93d44", default-features = false, features = ["test-support"] }
+wylde-gui-controls = { path = "../Controls", features = ["test-support"] }
+
 serde_json = "1"

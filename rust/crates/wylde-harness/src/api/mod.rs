@@ -130,6 +130,7 @@ pub trait HarnessApi: Send + Sync {
     async fn models_set_default(&self, payload: Value) -> Reply;
     async fn models_get_default(&self, payload: Value) -> Reply;
     async fn models_get_effective(&self, payload: Value) -> Reply;
+    async fn models_resolve_default(&self, payload: Value) -> Reply;
 
     // ── settings.ollama.* (4 verbs; per-model inference override store) ─
     async fn settings_ollama_get_overrides(&self, payload: Value) -> Reply;
@@ -167,6 +168,7 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_long_term_delete(&self, payload: Value) -> Reply;
     async fn memory_long_term_history(&self, payload: Value) -> Reply;
     async fn memory_long_term_search(&self, payload: Value) -> Reply;
+    async fn memory_long_term_reindex(&self, payload: Value) -> Reply;
 
     // ── memory.workspace.* (6 verbs; full-Rust cutover R2a) ──────────
     async fn memory_workspace_list(&self, payload: Value) -> Reply;
@@ -174,6 +176,8 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_workspace_save(&self, payload: Value) -> Reply;
     async fn memory_workspace_update(&self, payload: Value) -> Reply;
     async fn memory_workspace_delete(&self, payload: Value) -> Reply;
+    async fn memory_workspace_delete_all(&self, payload: Value) -> Reply;
+    async fn memory_workspace_reindex(&self, payload: Value) -> Reply;
     async fn memory_workspace_curate(&self, payload: Value) -> Reply;
 
     // ── memory.reflect (1 verb; full-Rust cutover R2b) ───────────────
@@ -383,6 +387,13 @@ impl HarnessApi for DefaultHarnessApi {
         model_actions::handle_get_effective(payload).await
     }
 
+    async fn models_resolve_default(&self, payload: Value) -> Reply {
+        let ollama = model_actions::LiveOllama {
+            service: Config::get().ollama_service.clone(),
+        };
+        crate::model_registry::default_model::handle_resolve_default(payload, &ollama).await
+    }
+
     // ── settings.ollama.* ────────────────────────────────────────────
     // Pass-throughs to the per-model override store's action handlers.
 
@@ -557,6 +568,21 @@ impl HarnessApi for DefaultHarnessApi {
         Reply::ok(json!({ "id": rid, "chain": chain }))
     }
 
+    /// `memory.long_term.reindex` — rebuild the long-term vector mirror from
+    /// the authoritative JSON records (#136). See
+    /// [`crate::memory::long_term::reindex_vectors`].
+    async fn memory_long_term_reindex(&self, _payload: Value) -> Reply {
+        match crate::memory::long_term::reindex_vectors().await {
+            Ok(r) => Reply::ok(json!({
+                "ok": true,
+                "total": r.total,
+                "embedded": r.embedded,
+                "failed": r.failed,
+            })),
+            Err(e) => Reply::err_msg("embedder_unavailable", e.to_string()),
+        }
+    }
+
     async fn memory_long_term_search(&self, payload: Value) -> Reply {
         let Some(query) = require_string(&payload, "query") else {
             return Reply::err_msg("bad_request", "query is required");
@@ -599,6 +625,14 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn memory_workspace_delete(&self, payload: Value) -> Reply {
         workspace_memory_actions::handle_delete(payload).await
+    }
+
+    async fn memory_workspace_delete_all(&self, payload: Value) -> Reply {
+        workspace_memory_actions::handle_delete_all(payload).await
+    }
+
+    async fn memory_workspace_reindex(&self, payload: Value) -> Reply {
+        workspace_memory_actions::handle_reindex(payload).await
     }
 
     async fn memory_workspace_curate(&self, payload: Value) -> Reply {

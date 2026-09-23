@@ -12,10 +12,10 @@
 //! lives in **Core config, not in the service**, the path survives a binary
 //! swap.
 //!
-//! ## The contract (generic; Images is the first user)
+//! ## The contract (generic; every data-owning service uses it)
 //!
 //! 1. **Persisted store** — `service_paths.json`, keyed by canonical
-//!    service name (e.g. `wylde-images`).
+//!    service name (e.g. `wylde-example`).
 //! 2. **Default = a sibling of the Core repo** — when no entry exists,
 //!    [`default_data_dir`] is `<root-parent>/WyldeData/<svc>/` (a sibling
 //!    of `WYLDE_ROOT`, never inside `Services/<svc>/`), so user data leaves
@@ -30,9 +30,9 @@
 //!    that env var in place of any hardcoded path; a path change takes
 //!    effect on the next service bounce.
 //!
-//! Nothing here is Images-specific except, eventually, the one env-var the
+//! Nothing here is specific to any one service except the env-var name that
 //! service reads. The store, default-sibling rule, and injection are the
-//! reusable contract for any future data-owning service.
+//! reusable contract for any data-owning service.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -138,9 +138,9 @@ pub fn save_at(store: &ServicePaths, path: &Path) -> std::io::Result<()> {
 /// The default data dir for `service`: `<root-parent>/WyldeData/<stripped>/`
 /// — a sibling of the Core repo (`WYLDE_ROOT`), so user data never lives in
 /// the repo tree or the service folder. `<stripped>` drops the `wylde-`
-/// prefix (`wylde-images` → `images`), matching the env-var name and the
-/// pre-extraction `data/images` layout. Falls back to `<root>/WyldeData/…`
-/// only when the root has no parent (a filesystem root).
+/// prefix (`wylde-example` → `example`), matching the env-var name. Falls
+/// back to `<root>/WyldeData/…` only when the root has no parent (a
+/// filesystem root).
 pub fn default_data_dir(service: &str) -> PathBuf {
     default_data_dir_under(&wylde_root_abs(), service)
 }
@@ -176,8 +176,8 @@ fn resolve_with(store: &ServicePaths, root: &Path, service: &str) -> PathBuf {
 
 /// The env-var name a data-owning service reads for its library:
 /// `WYLDE_<SVC>_DATA_DIR`, where `<SVC>` is the `wylde-`-stripped name,
-/// uppercased, dashes→underscores (`wylde-images` →
-/// `WYLDE_IMAGES_DATA_DIR`). Matches the plan's §3 example exactly.
+/// uppercased, dashes→underscores (`wylde-example` →
+/// `WYLDE_EXAMPLE_DATA_DIR`). Matches the plan's §3 example exactly.
 pub fn data_dir_env_name(service: &str) -> String {
     let stripped = service.strip_prefix("wylde-").unwrap_or(service);
     format!(
@@ -223,8 +223,8 @@ mod tests {
         let td = TempDir::new().unwrap();
         let path = td.path().join("service_paths.json");
         let mut s = ServicePaths::default();
-        s.set("wylde-images", "D:/Pictures/WyldeLibrary");
-        assert_eq!(s.get("wylde-images"), Some("D:/Pictures/WyldeLibrary"));
+        s.set("wylde-example", "D:/Pictures/WyldeLibrary");
+        assert_eq!(s.get("wylde-example"), Some("D:/Pictures/WyldeLibrary"));
         assert_eq!(s.get("wylde-notes"), None);
         save_at(&s, &path).unwrap();
         let back = load_at(&path);
@@ -234,8 +234,8 @@ mod tests {
     #[test]
     fn empty_override_is_treated_as_unset() {
         let mut s = ServicePaths::default();
-        s.set("wylde-images", "");
-        assert_eq!(s.get("wylde-images"), None);
+        s.set("wylde-example", "");
+        assert_eq!(s.get("wylde-example"), None);
     }
 
     #[test]
@@ -243,10 +243,10 @@ mod tests {
         // The default is <root-parent>/WyldeData/<svc> — outside the repo
         // tree, never inside Services/<svc>/. Pure helper, no process env.
         let root = Path::new(r"C:\wylde\Wylde-release");
-        let d = default_data_dir_under(root, "wylde-images");
+        let d = default_data_dir_under(root, "wylde-example");
         assert!(
-            d.ends_with(Path::new("WyldeData").join("images")),
-            "expected .../WyldeData/images, got {d:?}"
+            d.ends_with(Path::new("WyldeData").join("example")),
+            "expected .../WyldeData/example, got {d:?}"
         );
         let wylde_data = d.parent().unwrap();
         assert_eq!(wylde_data.file_name().unwrap(), "WyldeData");
@@ -259,9 +259,9 @@ mod tests {
         // No process env, so this never races a concurrent test.
         let root = Path::new(r"C:\wylde\Wylde-release");
         let mut s = ServicePaths::default();
-        s.set("wylde-images", "E:/CustomLib");
+        s.set("wylde-example", "E:/CustomLib");
         assert_eq!(
-            resolve_with(&s, root, "wylde-images"),
+            resolve_with(&s, root, "wylde-example"),
             PathBuf::from("E:/CustomLib")
         );
         let notes = resolve_with(&s, root, "wylde-notes");
@@ -270,9 +270,9 @@ mod tests {
 
     #[test]
     fn data_dir_env_name_strips_and_uppercases() {
-        assert_eq!(data_dir_env_name("wylde-images"), "WYLDE_IMAGES_DATA_DIR");
+        assert_eq!(data_dir_env_name("wylde-example"), "WYLDE_EXAMPLE_DATA_DIR");
         assert_eq!(data_dir_env_name("wylde-foo-bar"), "WYLDE_FOO_BAR_DATA_DIR");
         // A name without the prefix is uppercased as-is.
-        assert_eq!(data_dir_env_name("images"), "WYLDE_IMAGES_DATA_DIR");
+        assert_eq!(data_dir_env_name("example"), "WYLDE_EXAMPLE_DATA_DIR");
     }
 }

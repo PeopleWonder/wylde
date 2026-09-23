@@ -32,6 +32,7 @@ Items marked **(CI)** are enforced by a required status check — a ticked box o
 - [ ] **(CI)** cargo-deny is happy, or any new advisory is documented in `deny.toml` with a reason + review date (G5).
 - [ ] **(CI)** If the version changed, **both** workspace roots moved together (G7).
 - [ ] **(CI)** CHANGELOG `[Unreleased]` updated for any user-facing change — escape: `skip-changelog` label. (`tools/changelog-draft.sh` seeds it.)
+- [ ] **(CI)** References a tracking issue (`Closes #123`, `Refs #123`, or a bare `#123` in the title, body, or a commit) — escape: `no-issue` label for a deliberate no-issue change. (Dependabot + the `develop`→`main` promotion are exempt automatically.)
 - [ ] Docs updated if behaviour, config, or a public interface changed. *(human judgment)*
 
 ## Verification

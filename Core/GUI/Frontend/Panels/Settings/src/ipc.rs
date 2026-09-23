@@ -283,7 +283,10 @@ fn autostart_handle() -> Result<auto_launch::AutoLaunch, String> {
     auto_launch::AutoLaunchBuilder::new()
         .set_app_name(AUTOSTART_APP_NAME)
         .set_app_path(&exe)
-        .set_use_launch_agent(false)
+        // 0.6 deprecated the `use_launch_agent` bool for an explicit enum; the
+        // old `false` mapped to AppleScript mode. macOS-only knob, inert on the
+        // Windows target this GUI ships to — kept faithful to the prior value.
+        .set_macos_launch_mode(auto_launch::MacOSLaunchMode::AppleScript)
         .build()
         .map_err(|e| format!("auto-launch build: {e}"))
 }
@@ -481,6 +484,14 @@ pub const DEVICE_SYSTEM_DEFAULT: &str = "System default";
 /// set matches `wylde_voice::config_persist::VoiceConfig`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VoiceSettings {
+    /// The capture mode (`config_persist::ALL_MODES`: `push_to_talk` /
+    /// `always_on`). Deliberately NOT mirrored as a `MODE_PRESETS` cycle-list:
+    /// the panel exposes mode as a two-state toggle, not a cycle picker, so
+    /// there is no ordered preset list to keep in lockstep — and
+    /// `check-voice-presets-mirror.py` therefore does not (and need not) cover
+    /// it. If the panel ever grows a cycle-list over the modes, add a
+    /// `MODE_PRESETS` const with a `/// Mirrors …::ALL_MODES` comment and the
+    /// gate will pick it up automatically.
     pub mode: String,
     pub push_to_talk_hotkey: String,
     pub stt_backend_pref: String,

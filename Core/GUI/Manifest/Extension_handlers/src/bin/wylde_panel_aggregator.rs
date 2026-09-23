@@ -8,12 +8,19 @@
 //!
 //! Usage:
 //!
-//!   wylde-panel-aggregator [--repo-root <PATH>] [--output <PATH>]
+//!   wylde-panel-aggregator [--repo-root <PATH>] [--output <PATH>] [--check]
 //!
 //! With no flags the binary walks up from the current directory
 //! looking for `pyproject.toml` (the repo-root sentinel — see the
 //! GPUI rewrite plan §12.4 recommendation) and writes
 //! `Manifest/Extension_handlers/src/generated.rs` under it.
+//!
+//! `--check` regenerates the source **in memory** and compares it against
+//! the committed `generated.rs`, exiting non-zero (with a GitHub-annotated
+//! error) on any drift and writing nothing. This is the CI gate (#125): a
+//! panel added without re-running the aggregator compiles clean and passes
+//! every other check, yet the panel is silently absent from the product —
+//! `--check` turns that into a red build instead.
 //!
 //! The aggregator is also exposed as a library function
 //! (`aggregate`) so unit tests can run it against a fixture tree
@@ -29,6 +36,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut repo_root: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
+    let mut check = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -40,12 +48,15 @@ fn main() -> ExitCode {
                 i += 1;
                 output = Some(PathBuf::from(args.get(i).cloned().unwrap_or_default()));
             }
+            "--check" => check = true,
             "-h" | "--help" => {
                 println!(
-                    "wylde-panel-aggregator [--repo-root PATH] [--output PATH]\n\
+                    "wylde-panel-aggregator [--repo-root PATH] [--output PATH] [--check]\n\
                      \n\
                      Scans the repo for panel manifests and emits a generated\n\
-                     register_all() Rust source file.\n",
+                     register_all() Rust source file. With --check it regenerates\n\
+                     in memory and fails non-zero if the committed generated.rs is\n\
+                     out of date, writing nothing.\n",
                 );
                 return ExitCode::SUCCESS;
             }
@@ -88,6 +99,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+
+    if check {
+        return run_check(&output, &rendered);
+    }
 
     if let Err(e) = atomic_write(&output, rendered.as_bytes()) {
         eprintln!("write to {}: {e}", output.display());
@@ -449,6 +464,90 @@ fn atomic_write(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::rename(&tmp, target)
 }
 
+/// Whether two sources are byte-identical up to line endings.
+///
+/// The renderer emits `\n`; git may check `generated.rs` out with CRLF on
+/// Windows. That is not drift, so normalise line endings before comparing.
+/// Everything else — including `rustfmt`'s trailing commas and multi-line
+/// layout — is made equal by running the render through `rustfmt` first (see
+/// [`run_check`]), so this final compare is exact.
+pub fn generated_matches(committed: &str, formatted_render: &str) -> bool {
+    normalize_eol(committed) == normalize_eol(formatted_render)
+}
+
+fn normalize_eol(s: &str) -> String {
+    s.replace("\r\n", "\n")
+}
+
+/// Format Rust source the way the committed `generated.rs` is: the aggregator
+/// emits compact source, and the file in the tree is that output after
+/// `rustfmt`. To compare like-for-like the check formats the fresh render the
+/// same way. Reads `src` on stdin, returns the formatted stdout.
+fn rustfmt(src: &str) -> Result<String, String> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("rustfmt")
+        .args(["--emit", "stdout", "--edition", "2021"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not launch rustfmt (is the component installed?): {e}"))?;
+    {
+        let mut stdin = child.stdin.take().ok_or("rustfmt stdin unavailable")?;
+        stdin
+            .write_all(src.as_bytes())
+            .map_err(|e| format!("writing to rustfmt: {e}"))?;
+    } // drop stdin → close the pipe so rustfmt can finish
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("waiting on rustfmt: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "rustfmt exited non-zero: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    String::from_utf8(out.stdout).map_err(|e| format!("rustfmt output not UTF-8: {e}"))
+}
+
+/// `--check`: verify the committed `generated.rs` matches what the aggregator
+/// would emit now (formatted the same way). Returns non-zero (and prints a
+/// GitHub-annotated error) on any drift, on a missing/unreadable file, or if
+/// `rustfmt` is unavailable — and never writes.
+fn run_check(output: &Path, rendered: &str) -> ExitCode {
+    let formatted = match rustfmt(rendered) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("::error::--check could not format the render: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let committed = match std::fs::read_to_string(output) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "::error::--check: cannot read committed {}: {e}",
+                normalise_for_log(output)
+            );
+            return ExitCode::FAILURE;
+        }
+    };
+    if generated_matches(&committed, &formatted) {
+        println!("OK: {} is up to date", normalise_for_log(output));
+        ExitCode::SUCCESS
+    } else {
+        eprintln!(
+            "::error::{} is out of date — a panel manifest changed without \
+             regenerating it. Run `cargo run -p wylde-panel-registry --bin \
+             wylde-panel-aggregator`, then `cargo fmt`, and commit the result.",
+            normalise_for_log(output)
+        );
+        ExitCode::FAILURE
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,6 +638,89 @@ mod tests {
         // Determinism: render twice, compare byte-for-byte.
         let rendered_again = render_generated(&manifests).unwrap();
         assert_eq!(rendered, rendered_again, "render must be deterministic");
+    }
+
+    #[test]
+    fn check_flags_a_panel_added_without_regeneration() {
+        // #125A falsification: adding a panel manifest without re-running the
+        // aggregator must be caught. The committed source reflects N panels;
+        // after an (N+1)th manifest appears, a fresh render no longer matches
+        // the committed source — which is exactly what `--check` reports as a
+        // red build. Removing the `--check` gate lets this drift ship silently.
+        let td = tempdir();
+        let root = td.path();
+        fs::write(root.join("pyproject.toml"), "").unwrap();
+
+        // One panel is committed.
+        let settings = root.join("Core/GUI/Frontend/Panels/Settings");
+        fs::create_dir_all(&settings).unwrap();
+        fs::write(
+            settings.join("manifest.json"),
+            r#"{
+                "schema_version": 2, "service": "core",
+                "panels": [{
+                    "id":"settings","title":"Settings","order":95,"version":"0.1.0",
+                    "source":{"kind":"gpui_view","factory":"wylde_panel_settings::SettingsPanel::view"}
+                }]
+            }"#,
+        )
+        .unwrap();
+        let committed = render_generated(&discover_manifests(root).unwrap()).unwrap();
+        // Sanity: the committed source is in sync with itself.
+        assert!(generated_matches(&committed, &committed));
+
+        // A tenth panel is added, but `generated.rs` is NOT regenerated.
+        let tools = root.join("Core/GUI/Frontend/Panels/Tools");
+        fs::create_dir_all(&tools).unwrap();
+        fs::write(
+            tools.join("manifest.json"),
+            r#"{
+                "schema_version": 2, "service": "core",
+                "panels": [{
+                    "id":"tools","title":"Tools","order":50,"version":"0.1.0",
+                    "source":{"kind":"gpui_view","factory":"wylde_panel_tools::ToolsPanel::view"}
+                }]
+            }"#,
+        )
+        .unwrap();
+        let rendered_now = render_generated(&discover_manifests(root).unwrap()).unwrap();
+
+        assert!(
+            !generated_matches(&committed, &rendered_now),
+            "the check must flag a panel added without regenerating generated.rs",
+        );
+        // Regenerating (committing the fresh render) clears the drift.
+        assert!(generated_matches(&rendered_now, &rendered_now));
+    }
+
+    #[test]
+    fn generated_matches_ignores_line_endings_but_not_content() {
+        // `run_check` rustfmt-normalises the render before this compare, so the
+        // only difference this must absorb is the CRLF a Windows checkout adds.
+        let lf = "line one\nline two\n";
+        let crlf = "line one\r\nline two\r\n";
+        assert!(generated_matches(lf, crlf), "CRLF must not read as drift");
+        // Any real content difference is caught.
+        assert!(!generated_matches("line one\n", "line TWO\n"));
+    }
+
+    #[test]
+    fn rustfmt_makes_the_compact_render_match_the_committed_style() {
+        // The committed `generated.rs` is `rustfmt(render)`; a compact literal
+        // becomes multi-line with a trailing comma after formatting, and the
+        // check must treat the two as equal by formatting first. Skips cleanly
+        // if rustfmt isn't installed (the CI job that runs --check adds it).
+        let compact = "fn f() -> Foo { Foo { a: 1, b: 2 } }\n";
+        let Ok(formatted) = rustfmt(compact) else {
+            return;
+        };
+        assert!(
+            generated_matches(&formatted, &formatted),
+            "a formatted source matches itself",
+        );
+        // The raw compact form differs from the formatted form (trailing comma
+        // / layout) — which is exactly why the check formats before comparing.
+        assert_ne!(normalize_eol(compact), normalize_eol(&formatted));
     }
 
     #[test]

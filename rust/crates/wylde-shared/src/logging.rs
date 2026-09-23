@@ -107,6 +107,16 @@ pub fn configure_logging(service: Option<&str>, level: Level) {
 // and is bounded without knowing the numbers. Opening a raw
 // `OpenOptions::new().append(true)` for a persistent log bypasses this
 // and is gate-red (wylde_check rule 54: `no_unbounded_log_sink_rust`).
+//
+// Bounding is *inherited by construction*, not opted into per sink (#118).
+// Routing through the factory is necessary but was not sufficient: the
+// factory used to store whatever [`RotationPolicy`] a caller handed it,
+// so a future sink given a never-rotating policy (`max_bytes` at the u64
+// ceiling), or one built from a pathological `WYLDE_LOG_MAX_BYTES` /
+// `WYLDE_LOG_KEEP_FILES`, would still grow forever. Every construction
+// path now funnels its policy through [`RotationPolicy::bounded`], so no
+// sink obtainable from this module can carry an unbounded policy —
+// adding a sink cannot reintroduce unbounded growth.
 
 /// Size + retention caps every Wylde file log inherits.
 ///
@@ -136,11 +146,29 @@ impl RotationPolicy {
     /// thrash. A nonsense value falls back to the default.
     pub const MIN_MAX_BYTES: u64 = 4 * 1024;
 
+    /// Structural ceiling on `max_bytes` — the backstop that makes
+    /// boundedness an *invariant* rather than a hope. 1 GiB is ~100× the
+    /// default, so any realistic operator widening
+    /// (`WYLDE_LOG_MAX_BYTES`) passes through untouched; its only job is
+    /// to clamp a pathological or forgotten value (a stray `u64::MAX`, a
+    /// programmatic never-rotate policy) down to something finite so the
+    /// active file can never grow forever.
+    pub const MAX_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+    /// Structural ceiling on `keep_files`. 1000 is ~200× the default;
+    /// like [`MAX_MAX_BYTES`](Self::MAX_MAX_BYTES) it exists only to keep
+    /// total on-disk growth finite when a nonsense retention count is
+    /// supplied. Real config keeps a handful of generations.
+    pub const MAX_KEEP_FILES: u32 = 1000;
+
     /// Load from `WYLDE_LOG_MAX_BYTES` / `WYLDE_LOG_KEEP_FILES`, falling
     /// back to the bounded literal defaults for missing or unparseable
     /// values. `WYLDE_LOG_MAX_BYTES=0` (or anything below
     /// [`MIN_MAX_BYTES`](Self::MIN_MAX_BYTES)) is treated as unset so a
-    /// stray `0` can never disable the bound.
+    /// stray `0` can never disable the bound; a value above
+    /// [`MAX_MAX_BYTES`](Self::MAX_MAX_BYTES) (or a `keep_files` above
+    /// [`MAX_KEEP_FILES`](Self::MAX_KEEP_FILES)) is clamped down by
+    /// [`bounded`](Self::bounded), so no env can install an unbounded
+    /// policy.
     pub fn from_env() -> Self {
         let max_bytes = std::env::var("WYLDE_LOG_MAX_BYTES")
             .ok()
@@ -154,6 +182,32 @@ impl RotationPolicy {
         Self {
             max_bytes,
             keep_files,
+        }
+        .bounded()
+    }
+
+    /// Whether this policy bounds on-disk growth. False only for a policy
+    /// whose `max_bytes` or `keep_files` sits above the structural ceiling
+    /// — the never-rotate / unbounded-retention shapes. Every policy the
+    /// factory hands out satisfies this by construction (#118); the check
+    /// exists so tests can assert that guarantee directly.
+    pub fn is_bounded(&self) -> bool {
+        self.max_bytes <= Self::MAX_MAX_BYTES && self.keep_files <= Self::MAX_KEEP_FILES
+    }
+
+    /// Clamp this policy into the bounded range — the normalizer every
+    /// construction path funnels through so boundedness is *inherited by
+    /// construction*, not opted into per sink.
+    ///
+    /// It only lowers a ceiling breach; it never raises a small cap, so
+    /// the deliberately-tiny policies tests hand to
+    /// [`RotatingLog::with_policy`] to exercise rotation quickly pass
+    /// through unchanged. After this, [`is_bounded`](Self::is_bounded) is
+    /// always true.
+    pub fn bounded(self) -> Self {
+        Self {
+            max_bytes: self.max_bytes.min(Self::MAX_MAX_BYTES),
+            keep_files: self.keep_files.min(Self::MAX_KEEP_FILES),
         }
     }
 }
@@ -231,10 +285,16 @@ impl RotatingLog {
 
     /// A sink for `path` with an explicit policy — for tests that need a
     /// tiny cap to exercise rotation quickly.
+    ///
+    /// The policy is normalized through [`RotationPolicy::bounded`], so
+    /// even this explicit-policy path cannot install an unbounded sink
+    /// (#118): a caller who hands in a never-rotate policy still gets a
+    /// bounded one. Tiny caps pass through unchanged — `bounded` only
+    /// lowers a ceiling breach, never raises a small cap.
     pub fn with_policy(path: impl Into<PathBuf>, policy: RotationPolicy) -> Self {
         Self {
             path: path.into(),
-            policy,
+            policy: policy.bounded(),
             sink: Mutex::new(None),
         }
     }
@@ -345,6 +405,10 @@ pub fn reset_rotating_sinks() {
 /// over-cap file) — the best a redirect target can inherit without a
 /// Rust writer in the path.
 pub fn open_rotating_append(path: &Path, policy: RotationPolicy) -> io::Result<File> {
+    // Normalize before use so a redirect sink inherits the bound by
+    // construction too — a caller who passes a never-rotate policy still
+    // gets a bounded roll-at-open (#118).
+    let policy = policy.bounded();
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)?;
@@ -508,5 +572,95 @@ mod tests {
         assert_eq!(p.max_bytes, RotationPolicy::DEFAULT_MAX_BYTES);
         assert_eq!(p.keep_files, RotationPolicy::DEFAULT_KEEP_FILES);
         assert!(p.max_bytes > 0 && p.keep_files > 0);
+        assert!(p.is_bounded());
+    }
+
+    // ── Bounded by construction (#118) ────────────────────────────────
+    //
+    // The rotation policy is *inherited by construction*, not opted into
+    // per sink: no sink obtainable from this module can carry an unbounded
+    // policy, so adding a sink can never reintroduce unbounded growth.
+
+    #[test]
+    fn newly_registered_sink_is_bounded_without_opt_in() {
+        // The registry front door is the way a new sink is added. Ask for
+        // one with NO policy argument at all — the "5th sink" a future
+        // author registers — and it must already be bounded. Bounding is
+        // inherited, not something the author has to remember to opt into.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("brand-new-sink.jsonl");
+        let sink = rotating_sink(&path);
+        assert!(
+            sink.policy().is_bounded(),
+            "a newly-registered sink must be bounded by default, no per-sink opt-in"
+        );
+        reset_rotating_sinks();
+    }
+
+    #[test]
+    fn factory_normalizes_an_unbounded_policy() {
+        // Routing through the factory used to be necessary but not
+        // sufficient — it stored whatever policy it was handed. A future
+        // sink author who hands in a never-rotate / unbounded-retention
+        // policy must STILL get a bounded sink: the factory normalizes it.
+        let never_rotates = RotationPolicy {
+            max_bytes: u64::MAX,
+            keep_files: u32::MAX,
+        };
+        // Precondition: the hazard is expressible as a value…
+        assert!(
+            !never_rotates.is_bounded(),
+            "precondition: this policy value is unbounded"
+        );
+        // …but no sink built from it carries it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let via_with_policy = RotatingLog::with_policy(dir.path().join("a.jsonl"), never_rotates);
+        assert!(
+            via_with_policy.policy().is_bounded(),
+            "with_policy must bound an unbounded policy by construction"
+        );
+        assert!(via_with_policy.policy().max_bytes <= RotationPolicy::MAX_MAX_BYTES);
+        assert!(via_with_policy.policy().keep_files <= RotationPolicy::MAX_KEEP_FILES);
+
+        // The env-default constructor is bounded too.
+        assert!(RotatingLog::new(dir.path().join("b.jsonl"))
+            .policy()
+            .is_bounded());
+    }
+
+    #[test]
+    fn bounded_preserves_the_tiny_caps_tests_rely_on() {
+        // `bounded()` only lowers a ceiling breach; it must never raise a
+        // small cap, or the deliberately-tiny policies elsewhere in this
+        // module (max_bytes: 64, …) would stop exercising rotation.
+        let tiny = RotationPolicy {
+            max_bytes: 64,
+            keep_files: 2,
+        };
+        assert_eq!(
+            tiny.bounded(),
+            tiny,
+            "a tiny in-range policy must be untouched"
+        );
+        assert!(tiny.is_bounded());
+    }
+
+    #[test]
+    #[serial(env_log)]
+    fn from_env_clamps_a_pathological_env_to_bounded() {
+        // An operator can widen the bound, but cannot disable it: a
+        // pathological `WYLDE_LOG_MAX_BYTES` / `WYLDE_LOG_KEEP_FILES` is
+        // clamped to the structural ceiling rather than believed verbatim.
+        std::env::set_var("WYLDE_LOG_MAX_BYTES", u64::MAX.to_string());
+        std::env::set_var("WYLDE_LOG_KEEP_FILES", u32::MAX.to_string());
+        let p = RotationPolicy::from_env();
+        std::env::remove_var("WYLDE_LOG_MAX_BYTES");
+        std::env::remove_var("WYLDE_LOG_KEEP_FILES");
+        assert!(
+            p.is_bounded(),
+            "a pathological env must not yield an unbounded policy"
+        );
+        assert_eq!(p.max_bytes, RotationPolicy::MAX_MAX_BYTES);
+        assert_eq!(p.keep_files, RotationPolicy::MAX_KEEP_FILES);
     }
 }

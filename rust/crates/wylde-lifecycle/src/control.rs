@@ -1255,7 +1255,9 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-    use wylde_shared::ipc::{dispatch_action, list_actions, unregister_action};
+    use wylde_shared::ipc::{
+        assert_action_table_matches_registry, dispatch_action, list_actions, unregister_action,
+    };
 
     // The action registry is a process-global. Without a guard,
     // parallel tests race each other's register/cleanup pairs and
@@ -1344,10 +1346,13 @@ mod tests {
         let _g = registry_guard().await;
         cleanup();
         register_with_ipc();
-        let actions = list_actions();
-        for n in ALL_ACTIONS {
-            assert!(actions.contains(&n.to_string()), "missing action {n}");
-        }
+        // #130: both directions. This service owns four verb namespaces; a
+        // registered verb under any of them that is missing from ALL_ACTIONS
+        // (which drives cleanup() too) now fails, not only the reverse.
+        assert_action_table_matches_registry(
+            &["service.", "lifecycle.", "updater.", "paths."],
+            &ALL_ACTIONS,
+        );
         cleanup();
     }
 
@@ -1381,7 +1386,7 @@ mod tests {
         // Default first (no override yet).
         let got = dispatch_action(json!({
             "action": "paths.get",
-            "payload": {"name": "wylde-images"},
+            "payload": {"name": "wylde-example"},
         }))
         .await;
         assert!(got.ok, "paths.get must succeed");
@@ -1390,7 +1395,7 @@ mod tests {
         // Set an override, then read it back.
         let set = dispatch_action(json!({
             "action": "paths.set",
-            "payload": {"name": "wylde-images", "data_dir": "E:/MyLib"},
+            "payload": {"name": "wylde-example", "data_dir": "E:/MyLib"},
         }))
         .await;
         assert!(set.ok, "paths.set must succeed");
@@ -1399,7 +1404,7 @@ mod tests {
 
         let got2 = dispatch_action(json!({
             "action": "paths.get",
-            "payload": {"name": "wylde-images"},
+            "payload": {"name": "wylde-example"},
         }))
         .await;
         assert_eq!(got2.data["source"], "override");
