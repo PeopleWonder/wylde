@@ -1014,7 +1014,13 @@ impl BoltClient {
         if !temporal::temporal_memory_enabled() {
             return Reply::ok(json!({"ok": true, "temporal": false}));
         }
-        let timeout = self.config.connect_timeout;
+        // One budget per DDL statement, not one for the whole batch: each
+        // `CREATE INDEX` is a separate schema transaction, and ten of them
+        // against a freshly booted database can outlast a single
+        // connect-sized budget (seen on the CI live-graph runner).
+        let statements =
+            temporal::TEMPORAL_RELATIONS.len() * temporal::TEMPORAL_INDEXED_PROPS.len();
+        let timeout = self.config.connect_timeout * statements.max(1) as u32;
         let mut planned = 0usize;
         let fut = async {
             let graph = self.graph().await.map_err(|e| (e.code, e.message))?;
