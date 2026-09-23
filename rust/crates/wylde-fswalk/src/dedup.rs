@@ -82,7 +82,7 @@ pub fn group_file_stats(files: &[FileStat]) -> Vec<DuplicateGroup> {
             Some(DuplicateGroup { hash, size, paths })
         })
         .collect();
-    groups.sort_by(|a, b| b.reclaimable_bytes().cmp(&a.reclaimable_bytes()));
+    groups.sort_by_key(|g| std::cmp::Reverse(g.reclaimable_bytes()));
     groups
 }
 
