@@ -167,7 +167,10 @@ mod tests {
             chunk("a.rs", 1, vec![1.0, 0.0]), // aligned — high
         ];
         let out = select_member_chunks(Some(&centroid), &chunks, &files(&["a.rs"]), 2);
-        assert_eq!(out[0].start_line, 11, "the centroid-aligned chunk ranks first");
+        assert_eq!(
+            out[0].start_line, 11,
+            "the centroid-aligned chunk ranks first"
+        );
         assert!(out[0].score > out[1].score);
     }
 
@@ -196,7 +199,10 @@ mod tests {
         let out = select_member_chunks(Some(&centroid), &chunks, &files(&["a.rs"]), 2);
         let picked: Vec<u32> = out.iter().map(|s| (s.start_line - 1) / 10).collect();
         assert_eq!(picked[0], 0, "top hit seeds");
-        assert_eq!(picked[1], 2, "MMR picks the diverse chunk, not the duplicate");
+        assert_eq!(
+            picked[1], 2,
+            "MMR picks the diverse chunk, not the duplicate"
+        );
     }
 
     #[test]
@@ -207,13 +213,20 @@ mod tests {
         ];
         let out = select_member_chunks(None, &chunks, &files(&["a.rs", "b.rs"]), 5);
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0].path, "a.rs", "stable path/idx order without a centroid");
+        assert_eq!(
+            out[0].path, "a.rs",
+            "stable path/idx order without a centroid"
+        );
     }
 
     #[test]
     fn empty_inputs_are_safe() {
         assert!(select_member_chunks(None, &[], &files(&["a"]), 5).is_empty());
-        assert!(select_member_chunks(None, &[chunk("a", 0, vec![1.0])], &HashSet::new(), 5).is_empty());
-        assert!(select_member_chunks(None, &[chunk("a", 0, vec![1.0])], &files(&["a"]), 0).is_empty());
+        assert!(
+            select_member_chunks(None, &[chunk("a", 0, vec![1.0])], &HashSet::new(), 5).is_empty()
+        );
+        assert!(
+            select_member_chunks(None, &[chunk("a", 0, vec![1.0])], &files(&["a"]), 0).is_empty()
+        );
     }
 }

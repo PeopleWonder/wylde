@@ -239,7 +239,13 @@ async fn reflect_conversation(
                 Some(reflection_importance(&inputs)),
                 Vec::new(),
             ) {
-                Ok(r) => r.id,
+                Ok(r) => {
+                    // Populate the workspace vector mirror so the insight
+                    // is semantically searchable (budgeted, fail-soft).
+                    let vector = crate::memory::embed_write::embed_for_write(&text).await;
+                    workspace::store::vector_upsert(ws_id, &r.id, vector);
+                    r.id
+                }
                 Err(e) => {
                     tracing::warn!("reflection: workspace save failed: {e}");
                     return ReflectionResult::skipped(
@@ -264,12 +270,13 @@ async fn reflect_conversation(
         crate::memory::long_term::touch(&existing_id);
         existing_id
     } else {
+        let vector = crate::memory::embed_write::embed_for_write(&text).await;
         match long_term::save(
             &text,
             &source,
             Some(reflection_importance(&inputs)),
             vec![REFLECTION_TAG.to_owned()],
-            None,
+            vector,
         ) {
             Ok(r) => r.id,
             Err(e) => {

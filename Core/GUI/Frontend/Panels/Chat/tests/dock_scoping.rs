@@ -231,7 +231,10 @@ fn enter_empty_workspace_mints_fresh_thread_with_deferred_bind(cx: &mut TestAppC
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert_eq!(panel.conversation_id, "c-fresh", "none → fresh fileless thread");
+            assert_eq!(
+                panel.conversation_id, "c-fresh",
+                "none → fresh fileless thread"
+            );
             assert_eq!(
                 panel.pending_bind_workspace.as_deref(),
                 Some("ws-a"),
@@ -245,10 +248,8 @@ fn enter_empty_workspace_mints_fresh_thread_with_deferred_bind(cx: &mut TestAppC
 #[gpui::test]
 fn enter_workspace_with_threads_opens_most_recent(cx: &mut TestAppContext) {
     // Newest-first scoped list; no last-open pointer → open the head.
-    let fake = ScriptedBackend::new().conversations(vec![
-        conv("c-new", "ws-a", 300),
-        conv("c-old", "ws-a", 100),
-    ]);
+    let fake = ScriptedBackend::new()
+        .conversations(vec![conv("c-new", "ws-a", 300), conv("c-old", "ws-a", 100)]);
     let _guard = fake.clone().install();
 
     let window = cx.add_window(|_w, cx| ChatPanel::new(ChatScope::Docked, cx));

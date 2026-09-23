@@ -154,7 +154,7 @@ pub struct RoutingConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Never inject silently (Aaron's lock): show the candidate menu before
+    /// Never inject silently (the maintainer's lock): show the candidate menu before
     /// any injection. Default `true`. **Inert until R2** (no injection yet).
     #[serde(default = "default_true")]
     pub curate_before_inject: bool,
@@ -252,22 +252,10 @@ impl RoutingConfig {
     }
 }
 
-/// `<data_dir>` resolved exactly the way every other service + the shared
-/// encryption store does (`WYLDE_DATA_DIR` → `DATA_DIR` →
-/// `<WYLDE_ROOT>/.wylde/data`). Read on every call so tests can point the env
-/// at a scratch dir per-case.
-fn data_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os("WYLDE_DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    if let Some(v) = std::env::var_os("DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    let root = std::env::var_os("WYLDE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    root.join(".wylde").join("data")
-}
+// `<data_dir>` (convention A: `WYLDE_DATA_DIR` → `DATA_DIR` →
+// `<WYLDE_ROOT>/.wylde/data`) from the ONE canonical resolver (#138) — this was
+// a verbatim copy of that body.
+use wylde_shared::paths::data_dir;
 
 /// `<data_dir>/settings/concept_routing.json` — alongside the other settings
 /// stores (`privacy.json`, `ollama.json`, `encryption_at_rest.json`).
@@ -348,7 +336,10 @@ mod tests {
         assert!(c.curate_before_inject, "never silent by default");
         assert_eq!(c.mode, InjectionMode::Augment);
         assert_eq!(c.max_concepts, 3);
-        assert!((c.abs_threshold - 0.62).abs() < 1e-6, "R4-calibrated abs floor");
+        assert!(
+            (c.abs_threshold - 0.62).abs() < 1e-6,
+            "R4-calibrated abs floor"
+        );
         assert!((c.relative_floor - 0.6).abs() < 1e-6);
         assert!(c.scope_to_active_region);
         assert_eq!(c.inject_token_budget, 1500);

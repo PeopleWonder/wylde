@@ -153,15 +153,13 @@ mod tests {
         });
         Mock::given(method("POST"))
             .and(path("/api/embed"))
-            .and(body_json(json!({"model": "nomic-embed-text", "input": ["hello"]})))
+            .and(body_json(
+                json!({"model": "nomic-embed-text", "input": ["hello"]}),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(envelope.clone()))
             .mount(&server)
             .await;
-        let r = handle_embed(
-            json!({"model": "nomic-embed-text", "input": ["hello"]}),
-            up,
-        )
-        .await;
+        let r = handle_embed(json!({"model": "nomic-embed-text", "input": ["hello"]}), up).await;
         assert!(r.ok);
         assert_eq!(r.data, envelope);
         std::env::remove_var("WYLDE_OLLAMA_EMBED_SKIP_BROKER");
@@ -176,11 +174,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(404).set_body_string("model missing"))
             .mount(&server)
             .await;
-        let r = handle_embed(
-            json!({"model": "ghost-embed", "input": "hello"}),
-            up,
-        )
-        .await;
+        let r = handle_embed(json!({"model": "ghost-embed", "input": "hello"}), up).await;
         assert!(!r.ok);
         assert_eq!(r.error.unwrap().code, "model_not_found");
         std::env::remove_var("WYLDE_OLLAMA_EMBED_SKIP_BROKER");

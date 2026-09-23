@@ -1,7 +1,7 @@
 # Bundled-asset attribution — Wylde GUI
 
 This directory carries the licence / NOTICE text for every asset Wylde ships
-as a default. **Standing rule (Aaron): anything shipped as a default must be
+as a default. **Standing rule (the maintainer): anything shipped as a default must be
 free for commercial use.** Non-commercial or ShareAlike-encumbered assets are
 rejected (e.g. vscode-icons is CC BY-SA — *not* used).
 

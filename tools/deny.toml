@@ -1,0 +1,57 @@
+# cargo-deny policy — Wylde dev-tooling workspaces (`tools/xtask`, `tools/wylde-release`).
+#
+# ONE policy shared by both tools/ workspaces: cargo-deny resolves it by walking
+# up from each manifest to the nearest deny.toml (see tools/list-workspaces.sh
+# --deny-config, which the cargo-deny workflows call). A future tools/<name>
+# workspace inherits this file automatically — no per-crate copy to keep in sync.
+#
+# Gate: the `cargo-deny (advisories)` and `cargo-deny (licenses)` matrix legs in
+# .github/workflows/security-audit.yml and license-check.yml now cover every
+# gated workspace (#122), so the two release tools get the SAME vulnerability +
+# GPLv3 scan the shipped backend does. Before #122 they had neither.
+#
+# Policy MIRRORS rust/deny.toml — the tools are first-party Wylde crates and
+# carry Core's GPL-3.0-or-later copyleft, so the license allow-list must be
+# identical. Accepting an advisory = adding to `ignore` WITH a reason + a
+# "Review by <date>". See docs/security/dependency-hygiene-policy.md.
+
+[advisories]
+version = 2
+yanked = "warn"
+# Only fail on unmaintained advisories for a workspace member's DIRECT deps;
+# transitive ones with no maintained replacement would be noise, not signal.
+unmaintained = "workspace"
+# No outstanding advisories in the tools graphs. When an unavoidable one appears,
+# add it here WITH a reason + review date (see rust/deny.toml for the shape).
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+unused-allowed-license = "allow"
+# Identical to rust/deny.toml — Wylde Core is GPL-3.0-or-later and copyleft
+# inherits, so every linked dependency must be GPLv3-compatible. DENIED by
+# design (absent on purpose): GPL-2.0-only, CDDL, EPL, MS-PL/MS-RL, SSPL, BUSL,
+# CC-BY-NC-*, the historical advertising-clause OpenSSL license, and anything
+# proprietary/unlicensed. Do NOT widen without legal review.
+allow = [
+    # Permissive / public-domain — trivially GPLv3-compatible.
+    "0BSD", "BSD-1-Clause", "BSD-2-Clause", "BSD-3-Clause",
+    "MIT", "MIT-0", "ISC", "Zlib", "zlib-acknowledgement",
+    "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
+    "BSL-1.0", "bzip2-1.0.6",
+    "Unicode-3.0", "Unicode-DFS-2016",
+    "CC0-1.0", "Unlicense", "WTFPL", "CDLA-Permissive-2.0",
+    # Weak copyleft — GPLv3-compatible.
+    "MPL-2.0",
+    "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later",
+    # Strong copyleft — this project's own license and compatible upgrades.
+    "GPL-3.0-only", "GPL-3.0-or-later", "GPL-2.0-or-later",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"

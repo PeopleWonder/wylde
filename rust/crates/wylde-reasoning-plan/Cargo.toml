@@ -1,0 +1,23 @@
+[package]
+name = "wylde-reasoning-plan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+# Isolated, removable crate (agentic-reasoning-tier scope, P0). Holds the
+# planner's data model (`PlanDag` / `PlanStep` / `ExpectedOutcome`) and the
+# pure surprise-detection `evaluate()` (L0 deterministic + L1 declared
+# structural checks) as a Core-free library — no I/O, no Ollama, no Core dep.
+# This mirrors how `wylde-concept-routing` / `wylde-concept-hierarchy` are
+# isolable: the types take a `serde_json::Value` tool result in and a verdict
+# out, so nothing here ever reaches for a service, the broker, or the
+# filesystem. The crate is INERT at P0 — no turn code calls it — so the
+# reasoning tier stays byte-identical to today until the gated wiring lands in
+# later phases (P1+). Deleting this crate restores pre-reasoning behaviour.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

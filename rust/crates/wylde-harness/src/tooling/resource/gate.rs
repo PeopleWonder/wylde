@@ -146,10 +146,8 @@ mod tests {
 
     #[tokio::test]
     async fn bypass_allows_destructive_op() {
-        let _guard = consent::serial_test_guard().await;
-        consent::set_bypass_for_tests(true);
+        let _guard = consent::bypass_scope(true).await;
         let g = op_consent_gate("memory", ResourceOp::Delete, true, false);
         assert!(matches!(g, OpGate::Allow));
-        consent::set_bypass_for_tests(false);
     }
 }

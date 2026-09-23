@@ -1,7 +1,7 @@
 //! Navigation behaviour knobs (Slice C-navigation).
 //!
 //! Per the Build Order §8 convention ("every tunable lives in exactly one
-//! `config.rs`"): everything here is a **behavioural** knob Aaron can tweak in
+//! `config.rs`"): everything here is a **behavioural** knob the maintainer can tweak in
 //! one place during the feel-test. **Visual** values (colours, sizes,
 //! durations, easings) are NOT here — they come from the [`Theme`]
 //! (`graph_panel.breadcrumb_bar`, `graph_panel.exit_edges`,

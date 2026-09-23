@@ -13,6 +13,16 @@
 //! `shutdown_with_fallback` is the same pure-orchestration function
 //! `tray.rs` carries upstream; lifting it verbatim means the unit tests
 //! ride along and the behaviour is identical to the Tauri tray.
+//!
+//! Both process-name sets used by steps 2 and 3 come from
+//! [`wylde_stack::shutdown_targets`], derived from the stack roster.
+//! They used to be two literal arrays here, each naming four of the
+//! eleven killable services; the drain wait polled the same four, so it
+//! concluded "drained" as soon as those exited and the hard kill never
+//! ran — a clean-looking shutdown that left eight services alive holding
+//! VRAM and named pipes (issue #124). Do not reintroduce a list here:
+//! `rust/crates/wylde-stack/tests/shutdown_target_coverage.rs` counts
+//! this file's contents against the roster and will fail CI.
 
 use std::future::Future;
 use std::process::Command;
@@ -20,30 +30,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use wylde_gui_pipe::lifecycle_action;
-
-/// Daemon-managed Wylde services polled during the drain wait.  The GUI
-/// process itself (`wylde-gui.exe` in the gpui era; `fletch-gui.exe`
-/// during the cutover overlap) is intentionally absent — it is the
-/// process doing the polling, so it would always read as alive.
-pub const WYLDE_SERVICE_PROCESSES: &[&str] = &[
-    "wylde-gateway.exe",
-    "wylde-lifecycle.exe",
-    "wylde-vram-broker.exe",
-    "wylde-device-gate.exe",
-];
-
-/// Image names handed to `taskkill` in the hard-kill fallback.  The GUI
-/// binaries (`wylde-gui.exe` first, `fletch-gui.exe` for the cutover
-/// overlap) are listed last so the services get the signal before the
-/// process that issued the command goes down.
-pub const WYLDE_KILL_TARGETS: &[&str] = &[
-    "wylde-gateway.exe",
-    "wylde-lifecycle.exe",
-    "wylde-vram-broker.exe",
-    "wylde-device-gate.exe",
-    "fletch-gui.exe",
-    "wylde-gui.exe",
-];
+use wylde_stack::shutdown_targets::{kill_targets, poll_set};
 
 /// Grace window for daemon-managed services to exit after the graceful
 /// `lifecycle.shutdown_all` request.  Matches the Tauri tray's window.
@@ -151,9 +138,9 @@ pub fn services_still_running() -> bool {
             return false;
         }
         let table = String::from_utf8_lossy(&output.stdout).to_lowercase();
-        WYLDE_SERVICE_PROCESSES
+        poll_set()
             .iter()
-            .any(|name| table.contains(*name))
+            .any(|name| table.contains(&name.to_lowercase()))
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -186,8 +173,9 @@ pub async fn wait_for_services_exit() -> bool {
 pub fn hard_kill_wylde() {
     #[cfg(target_os = "windows")]
     {
+        let targets = kill_targets();
         let mut args: Vec<&str> = vec!["/F"];
-        for &name in WYLDE_KILL_TARGETS {
+        for name in &targets {
             args.push("/IM");
             args.push(name);
         }
@@ -286,37 +274,29 @@ mod tests {
         );
     }
 
-    /// The kill-targets list keeps the GUI binaries at the END so a
-    /// service gets signalled before the GUI that issued the command
-    /// goes down.  Catches a future re-order that would race the GUI
-    /// against its own services.
+    /// The kill order and the drain-wait poll set are derived in
+    /// `wylde_stack::shutdown_targets`, and the gate that *counts* them
+    /// against the roster lives in
+    /// `rust/crates/wylde-stack/tests/shutdown_target_coverage.rs` — in
+    /// the one workspace whose `cargo test` runs in CI.  What is worth
+    /// asserting here is the wiring: that this module reaches for the
+    /// derived sets at all, rather than growing a parallel list again.
     #[test]
-    fn kill_targets_put_gui_last() {
-        let gui_binaries = ["fletch-gui.exe", "wylde-gui.exe"];
-        for binary in gui_binaries {
-            let pos = WYLDE_KILL_TARGETS
-                .iter()
-                .position(|&n| n == binary)
-                .unwrap_or_else(|| panic!("{binary} should be in WYLDE_KILL_TARGETS"));
-            // GUI binaries occupy the trailing slots.  More precisely:
-            // every entry after them is *also* a GUI binary.
-            for &later in &WYLDE_KILL_TARGETS[pos + 1..] {
-                assert!(
-                    gui_binaries.contains(&later),
-                    "{later} must not come after {binary} in kill order",
-                );
-            }
-        }
-    }
+    fn shutdown_paths_read_from_the_derived_sets() {
+        let kill = kill_targets();
+        let poll = poll_set();
 
-    /// The drain-list deliberately omits the GUI binaries — they are
-    /// the process doing the polling, and would always read as alive.
-    #[test]
-    fn drain_list_omits_gui_binaries() {
+        // The pre-#124 lists named four services.  The roster carries
+        // eleven killable ones plus the daemon and the GUI binaries, so a
+        // regression to a hand-typed list shows up as a collapse in size.
+        assert!(
+            kill.len() > poll.len(),
+            "the kill list must exceed the poll set by the GUI binaries",
+        );
         for gui in ["fletch-gui.exe", "wylde-gui.exe"] {
             assert!(
-                !WYLDE_SERVICE_PROCESSES.contains(&gui),
-                "{gui} must not be in WYLDE_SERVICE_PROCESSES (it polls itself)",
+                !poll.iter().any(|n| n == gui),
+                "{gui} must not be polled during the drain wait (it polls itself)",
             );
         }
     }

@@ -19,7 +19,12 @@ pub struct Request {
 
 impl Request {
     pub fn new(id: u64, method: &str, params: Value) -> Self {
-        Self { jsonrpc: JSONRPC_VERSION, id, method: method.to_owned(), params }
+        Self {
+            jsonrpc: JSONRPC_VERSION,
+            id,
+            method: method.to_owned(),
+            params,
+        }
     }
 }
 
@@ -32,7 +37,11 @@ pub struct Notification {
 
 impl Notification {
     pub fn new(method: &str, params: Value) -> Self {
-        Self { jsonrpc: JSONRPC_VERSION, method: method.to_owned(), params }
+        Self {
+            jsonrpc: JSONRPC_VERSION,
+            method: method.to_owned(),
+            params,
+        }
     }
 }
 
@@ -56,7 +65,11 @@ pub struct RpcError {
 }
 
 /// What the host sends in `initialize.params`.
-pub fn build_initialize_params(client_name: &str, client_version: &str, spec_version: &str) -> Value {
+pub fn build_initialize_params(
+    client_name: &str,
+    client_version: &str,
+    spec_version: &str,
+) -> Value {
     json!({
         "protocolVersion": spec_version,
         "capabilities": {

@@ -105,7 +105,10 @@ mod tests {
     #[tokio::test]
     async fn post_without_token_is_401() {
         let resp = router()
-            .oneshot(post_request(None, r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#))
+            .oneshot(post_request(
+                None,
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#,
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -118,12 +121,7 @@ mod tests {
     #[tokio::test]
     async fn get_without_token_is_401() {
         let resp = router()
-            .oneshot(
-                Request::builder()
-                    .uri("/mcp")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/mcp").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);

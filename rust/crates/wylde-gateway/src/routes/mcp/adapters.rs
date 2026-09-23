@@ -402,7 +402,10 @@ mod tests {
         let schema = json!({ "type": "object", "properties": { "path": {"type": "string"} } });
         let entry = json!({ "id": "t", "parameters": schema });
         let mapped = tool_to_mcp(&entry);
-        assert_eq!(mapped["inputSchema"]["properties"]["path"]["type"], "string");
+        assert_eq!(
+            mapped["inputSchema"]["properties"]["path"]["type"],
+            "string"
+        );
     }
 
     #[test]
@@ -506,7 +509,10 @@ mod tests {
         let file = dir.path().join("note.txt");
         std::fs::write(&file, "hello workspace").unwrap();
         let root = dir.path().to_str().unwrap();
-        assert_eq!(resolve_and_read(root, "note.txt").unwrap(), "hello workspace");
+        assert_eq!(
+            resolve_and_read(root, "note.txt").unwrap(),
+            "hello workspace"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@
       "icon": "settings",
       "order": 95,
       "version": "0.1.0",
-      "required_services": ["wylde-harness"],
+      "required_services": ["wylde-harness", "wylde-ollama", "wylde-voice"],
       "source": {
         "kind": "gpui_view",
         "factory": "wylde_panel_settings::SettingsPanel::view"

@@ -246,7 +246,10 @@ mod tests {
 
     #[test]
     fn bare_matches_bare_and_latest_matches_latest() {
-        assert!(model_matches(&json!({"name": "nomic-embed-text"}), "nomic-embed-text"));
+        assert!(model_matches(
+            &json!({"name": "nomic-embed-text"}),
+            "nomic-embed-text"
+        ));
         assert!(model_matches(
             &json!({"name": "nomic-embed-text:latest"}),
             "nomic-embed-text:latest"

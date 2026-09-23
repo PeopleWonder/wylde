@@ -133,7 +133,11 @@ async fn handle_open(p: Value) -> Reply {
     let (Some(root), Some(path)) = (require_str(&p, "root"), require_str(&p, "path")) else {
         return Reply::err_msg("bad_request", "root and path are required");
     };
-    let text = p.get("text").and_then(Value::as_str).unwrap_or("").to_owned();
+    let text = p
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
     let language_id = require_str(&p, "language").unwrap_or_else(|| "rust".to_owned());
     let uri = path_to_uri(&path);
     let outcome: Result<(), String> = match ask(|reply| LspCommand::Open {
@@ -158,7 +162,11 @@ async fn handle_change(p: Value) -> Reply {
     let Some(path) = require_str(&p, "path") else {
         return Reply::err_msg("bad_request", "path is required");
     };
-    let text = p.get("text").and_then(Value::as_str).unwrap_or("").to_owned();
+    let text = p
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
     let version = p.get("version").and_then(Value::as_i64).unwrap_or(2);
     let uri = path_to_uri(&path);
     let outcome: Result<(), String> = match ask(|reply| LspCommand::Change {
@@ -218,7 +226,9 @@ async fn handle_diagnostics(p: Value) -> Reply {
     };
     let uri = path_to_uri(&path);
     match ask(|reply| LspCommand::Diagnostics { uri, reply }).await {
-        Ok(diags) => Reply::ok(json!({ "diagnostics": diags.iter().map(simplify_diagnostic).collect::<Vec<_>>() })),
+        Ok(diags) => Reply::ok(
+            json!({ "diagnostics": diags.iter().map(simplify_diagnostic).collect::<Vec<_>>() }),
+        ),
         Err(e) => err_reply(e),
     }
 }
@@ -278,10 +288,7 @@ pub fn parse_hover(v: &Value) -> String {
         return String::new();
     };
     if let Some(arr) = contents.as_array() {
-        arr.iter()
-            .filter_map(one)
-            .collect::<Vec<_>>()
-            .join("\n")
+        arr.iter().filter_map(one).collect::<Vec<_>>().join("\n")
     } else {
         one(contents).unwrap_or_default()
     }
@@ -299,6 +306,24 @@ fn simplify_diagnostic(d: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wylde_shared::ipc::assert_action_table_matches_registry;
+
+    // Serialize the process-wide registry mutation (install/reset) — this is
+    // the only registry-touching test in the crate today, but the lock keeps it
+    // correct if another is added.
+    static REGISTRY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn install_registers_all_actions_both_directions() {
+        // #130: wylde-lsp had NO registration test. Assert ALL_ACTIONS and the
+        // live registry agree in both directions — a registered lsp.* verb
+        // missing from the table (and thus from reset_for_tests) fails here.
+        let _g = REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        reset_for_tests();
+        install();
+        assert_action_table_matches_registry(&["lsp."], ALL_ACTIONS);
+        reset_for_tests();
+    }
 
     #[test]
     fn parse_completion_handles_both_shapes() {

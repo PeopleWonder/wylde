@@ -33,10 +33,7 @@ pub async fn health() -> Response {
 }
 
 pub fn router() -> Router {
-    Router::new().route(
-        "/health",
-        get(health).route_layer(from_fn(require_public)),
-    )
+    Router::new().route("/health", get(health).route_layer(from_fn(require_public)))
 }
 
 #[cfg(test)]

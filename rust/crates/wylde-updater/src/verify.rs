@@ -29,10 +29,10 @@ pub(crate) fn verify_with_key(
     data: &[u8],
     minisig: &str,
 ) -> Result<(), UpdateError> {
-    let public_key = PublicKey::from_base64(public_key_b64)
-        .map_err(|_| UpdateError::NoSigningKey)?;
-    let signature =
-        Signature::decode(minisig).map_err(|e| UpdateError::Verify(format!("bad signature: {e}")))?;
+    let public_key =
+        PublicKey::from_base64(public_key_b64).map_err(|_| UpdateError::NoSigningKey)?;
+    let signature = Signature::decode(minisig)
+        .map_err(|e| UpdateError::Verify(format!("bad signature: {e}")))?;
     // `allow_legacy = false`: require the modern prehashed signature
     // algorithm that both rsign2 and the `minisign` crate emit by default.
     public_key
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn embedded_key_is_a_real_production_key() {
-        // The dev placeholder was replaced with Aaron's real signing key
+        // The dev placeholder was replaced with the maintainer's real signing key
         // (baked 2026-06-04), so the fail-closed guard no longer trips and
         // the convenience flag agrees a usable key is embedded.
         assert_ne!(PUBLIC_KEY, pubkey::PLACEHOLDER);

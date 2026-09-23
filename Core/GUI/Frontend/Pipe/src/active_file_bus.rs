@@ -36,9 +36,7 @@ fn latch() -> &'static Mutex<ActiveFile> {
 /// file open in one workspace never biases another workspace's turns. A blank
 /// path is normalised to `None`.
 pub fn publish_active_file(path: ActiveFile) {
-    let cleaned = path
-        .map(|p| p.trim().to_owned())
-        .filter(|p| !p.is_empty());
+    let cleaned = path.map(|p| p.trim().to_owned()).filter(|p| !p.is_empty());
     if let Ok(mut slot) = latch().lock() {
         *slot = cleaned;
     }

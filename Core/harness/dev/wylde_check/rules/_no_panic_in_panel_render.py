@@ -252,14 +252,23 @@ def check_no_panic_in_panel_render() -> List[Finding]:
                         None,
                     )
                     if matched is not None:
-                        opted_out = _OPT_OUT in raw or (
-                            lineno >= 2 and _OPT_OUT in lines[lineno - 2]
+                        # The line BELOW is included because rustfmt parks an
+                        # overflowing trailing comment there — a marked
+                        # `.expect(...)` whose line exceeds max_width keeps the
+                        # code and pushes `// … panel-panic-allowed` to the next
+                        # line. Checking it keeps a deliberate opt-out honoured.
+                        below = lines[lineno] if lineno < len(lines) else ""
+                        opted_out = (
+                            _OPT_OUT in raw
+                            or (lineno >= 2 and _OPT_OUT in lines[lineno - 2])
+                            or _OPT_OUT in below
                         )
                         if opted_out:
                             # Opt-out honoured only with a SAFETY / INVARIANT
                             # justification in the small surrounding window
-                            # (flagged line, the line above, two above).
-                            window = [raw]
+                            # (flagged line, the two above, and the line below —
+                            # where rustfmt may have parked the comment).
+                            window = [raw, below]
                             if lineno >= 2:
                                 window.append(lines[lineno - 2])
                             if lineno >= 3:

@@ -1,6 +1,7 @@
 //! Integration: the graph IPC data → panel-state path over a real named pipe.
 //!
-//! Stands up a mock `wylde-workspaces` server on `\\.\pipe\wylde-workspaces`
+//! Stands up a mock `wylde-workspaces` server on a private, per-process fixture
+//! pipe (never the production endpoint — see `PipeNameOverride` below)
 //! speaking the exact msgpack wire format `wylde_gui_pipe::call` uses (4-byte
 //! BE length prefix + a `{id, method, http_verb, data, meta}` request, a
 //! `{ok, data}` reply). It answers `workspaces.list_mru` with a one-workspace
@@ -19,9 +20,13 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 
+use wylde_gui_pipe::test_backend;
 use wylde_panel_workspaces::graph::ipc;
 
-const PIPE_NAME: &str = r"\\.\pipe\wylde-workspaces";
+/// The service the panel's graph verbs target. The fixture server binds a
+/// PRIVATE pipe and routes this service name to it — see the override in the
+/// test below.
+const SERVICE: &str = "wylde-workspaces";
 
 /// A fixture `workspaces.graph` reply mirroring the service projection: 4
 /// workspace entities in one file dir + 2 synthesised external edge targets,
@@ -100,13 +105,13 @@ async fn handle(mut server: NamedPipeServer) {
 /// not-yet-created pipe. Serves exactly `count` connections then returns.
 /// `initial` is created in the test thread (before the first client call) so
 /// the pipe exists up front.
-async fn run_server(initial: NamedPipeServer, count: usize) {
+async fn run_server(initial: NamedPipeServer, pipe: String, count: usize) {
     let mut listener = initial;
     for _ in 0..count {
         listener.connect().await.unwrap();
         let connected = listener;
         // Create the next waiting instance BEFORE handling this one.
-        listener = ServerOptions::new().create(PIPE_NAME).unwrap();
+        listener = ServerOptions::new().create(&pipe).unwrap();
         handle(connected).await;
     }
 }
@@ -117,14 +122,22 @@ async fn fetch_active_graph_loads_fixture_over_the_pipe() {
     // bare test there is none, so calls run inline on this runtime — which is
     // exactly what we want.
 
+    // Own a PRIVATE pipe, never the production one. Binding
+    // `\\.\pipe\wylde-workspaces` here claimed the live service's endpoint, so
+    // this test failed with ERROR_ACCESS_DENIED on any machine actually running
+    // Wylde — and passed in CI, which never runs the stack (#75). The override
+    // re-points `wylde_gui_pipe::call` at the fixture for the life of the guard.
+    let pipe = test_backend::unique_pipe_name(SERVICE);
+    let _route = test_backend::PipeNameOverride::install(SERVICE, &pipe);
+
     // Create the first pipe instance up front so the client's first connect
     // can't lose a race with the server task starting.
     let initial = ServerOptions::new()
         .first_pipe_instance(true)
-        .create(PIPE_NAME)
-        .unwrap();
+        .create(&pipe)
+        .expect("fixture pipe should be free — it is unique to this process");
     // `fetch_active_graph` makes two sequential calls (list_mru, then graph).
-    let server = tokio::spawn(run_server(initial, 2));
+    let server = tokio::spawn(run_server(initial, pipe, 2));
 
     let load = ipc::fetch_active_graph()
         .await

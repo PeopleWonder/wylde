@@ -57,9 +57,7 @@ pub mod project;
 pub mod traverse;
 
 pub use config::HierarchyConfig;
-pub use model::{
-    DefSource, Definition, HierGraph, HierNode, NodeId, NodeKind, XRef, XRefKind,
-};
+pub use model::{DefSource, Definition, HierGraph, HierNode, NodeId, NodeKind, XRef, XRefKind};
 pub use overlay::{
     apply_overlay, HierarchyIdentity, HierarchyOverlay, NodeMerge, OverlayEdge, OverlayNode,
 };

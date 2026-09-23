@@ -583,8 +583,10 @@ mod tests {
     fn state_round_trips_through_save_and_load() {
         let _env = TestEnv::new();
         let path = state_path();
-        let mut state = SchedulerState::default();
-        state.long_term_reflected_at = 123.5;
+        let mut state = SchedulerState {
+            long_term_reflected_at: 123.5,
+            ..Default::default()
+        };
         state
             .conversation_reflected_at
             .insert("c1".to_owned(), 456.25);

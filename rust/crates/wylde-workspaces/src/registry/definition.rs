@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn basename_handles_windows_and_trailing_seps() {
-        assert_eq!(basename(r"C:\Users\aaron\proj"), "proj");
+        assert_eq!(basename(r"C:\Users\wylde\proj"), "proj");
         assert_eq!(basename("/home/x/code/"), "code");
         assert_eq!(basename("/"), "workspace");
     }

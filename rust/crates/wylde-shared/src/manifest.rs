@@ -17,7 +17,8 @@
 //!   longer exists.
 //!
 //! `status.state` values: `alive` (heartbeating), `stopped` (graceful exit),
-//! `dead-orphan` (orphan-detector found the pid gone).
+//! `dead-orphan` (orphan-detector found the pid gone), `failed` (the daemon's
+//! crash-restart supervisor gave up after the crash-loop breaker tripped).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -426,6 +427,28 @@ pub fn mark_orphan_dead(service: &str) -> Result<()> {
     atomic_write(&path, &data)
 }
 
+/// Mark a manifest `failed` — the terminal state the Lifecycle daemon's
+/// crash-restart supervisor stamps when a service crash-loops past the
+/// restart cap and the daemon gives up on it. Distinct from `dead-orphan`
+/// (a single observed crash that the daemon *will* retry): `failed` means
+/// "retried to the cap, still dying, no longer being restarted" so the
+/// GUI service surface can render it as a hard fault needing attention.
+/// Like [`mark_orphan_dead`], only the daemon calls this; best-effort —
+/// returns `Ok(())` when the manifest is absent.
+pub fn mark_failed(service: &str) -> Result<()> {
+    let path = manifest_path(service);
+    if !path.exists() {
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("manifest: read {}", path.display()))?;
+    let mut data: ManifestData = serde_json::from_str(&raw)
+        .with_context(|| format!("manifest: parse {}", path.display()))?;
+    data.status.state = "failed".to_owned();
+    data.status.last_seen = Some(now_iso());
+    atomic_write(&path, &data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -632,6 +655,31 @@ mod tests {
         set_root(&tmp);
 
         mark_orphan_dead("wylde-nope").unwrap();
+    }
+
+    #[tokio::test]
+    #[serial(manifest)]
+    async fn mark_failed_sets_terminal_state() {
+        let tmp = TempDir::new().unwrap();
+        set_root(&tmp);
+
+        let _w = ManifestWriter::write(
+            "wylde-loop",
+            None,
+            "core",
+            "crash-loop test",
+            json!({}),
+            Some("rust:loop"),
+        )
+        .unwrap();
+
+        mark_failed("wylde-loop").unwrap();
+        let m = read_manifest(&tmp, "wylde-loop");
+        assert_eq!(m["status"]["state"], "failed");
+        assert!(m["status"]["last_seen"].is_string());
+
+        // Absent manifest is a best-effort no-op, never an error.
+        mark_failed("wylde-nope").unwrap();
     }
 
     /// Cross-language parity: a hand-written fixture matching what

@@ -234,7 +234,10 @@ mod tests {
             assert!(text.contains("<svg"), "icon {key:?} is not an SVG");
         }
         // A miss is a clean None, never a panic.
-        assert!(assets.load("icons/file-tree/does-not-exist.svg").unwrap().is_none());
+        assert!(assets
+            .load("icons/file-tree/does-not-exist.svg")
+            .unwrap()
+            .is_none());
         // `list` filters by prefix.
         assert_eq!(
             assets.list("icons/file-tree/").unwrap().len(),

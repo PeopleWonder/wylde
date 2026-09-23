@@ -13,10 +13,15 @@
 //!     dispatch.  Multi-line; Enter submits, Shift+Enter newline.
 //!   * `workspaces` / `models`  — MRU + picker state for the inference
 //!     bar's two pills.
-//!   * `tool_activity`          — current in-flight `chat.stream_tools`
-//!     event the activity strip renders.  Disjoint from the bubble log
-//!     (the `wylde_inference_bar_scope` rule says tool calls don't
-//!     become bubbles).
+//!   * `processing`             — live status for the in-flight turn
+//!     (chat-processing-indicator): current phase, an activity log, the
+//!     token meter, and the thinking buffer, fed by both `chat.stream_turn`
+//!     (phase / usage / thinking) and `chat.stream_tools` (tool activity).
+//!     Drives the animated indicator that replaces the old static `…`, and
+//!     is folded onto the assistant bubble as a collapsible disclosure when
+//!     the turn settles.  Tool calls still never become bubbles (the
+//!     `wylde_inference_bar_scope` rule) — they surface only as friendly
+//!     activity-log lines, never raw args/output.
 //!   * `active_stream` /
 //!     `active_tool_stream`      — the two open `PipeStream`s for the
 //!     in-flight turn.  Dropping them cancels server-side handlers; the
@@ -29,12 +34,13 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, Entity,
-    FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseDownEvent, Render,
-    SharedString, Stateful, Subscription, WeakEntity, Window,
+    div, list, prelude::*, px, rgb, AnyElement, AnyView, App, AppContext, AsyncApp, Context,
+    ElementId, Entity, FocusHandle, Focusable, FollowMode, FontWeight, IntoElement, KeyDownEvent,
+    ListAlignment, ListState, MouseDownEvent, Render, SharedString, Stateful, Subscription,
+    WeakEntity, Window,
 };
 use wylde_gpui_input::{InputEvent, SubmitMode, TextInput};
 use wylde_theme::colors::{
@@ -48,17 +54,23 @@ use crate::ipc::{
     activate_workspace, cancel_turn, clear_working_memory, delete_conversation, eject_model,
     export_conversation, fetch_conversation_messages, fetch_working_memory,
     get_active_conversation, get_active_conversation_for_workspace, import_conversation,
-    list_conversations, list_conversations_for_workspace, list_models,
-    new_conversation, recent_workspaces, respond_consent, set_active_conversation,
-    set_active_conversation_for_workspace, set_active_model, set_active_workspace,
-    set_workspace_for_conversation,
-    start_turn_with_model, stream_consent_pending,
-    stream_tools, stream_turn, ConsentEvent, ConversationMeta, PendingConsent, ToolChunk,
-    TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
+    list_conversations, list_conversations_for_workspace, list_models, new_conversation,
+    reasoning_fit_check, reasoning_settings, recent_workspaces, respond_consent,
+    set_active_conversation, set_active_conversation_for_workspace, set_active_model,
+    set_active_workspace, set_reasoning_mode, set_workspace_for_conversation,
+    start_turn_with_model, stream_consent_pending, stream_tools, stream_turn, ConsentEvent,
+    ConversationMeta, PendingConsent, ToolChunk, TurnChunk, WorkingMemoryEntry, WorkspaceSummary,
 };
 use crate::markdown;
+use crate::processing::{self, MessageActivity, ProcessingPhase, ProcessingState};
+use wylde_gui_controls::control;
 
 const WORKSPACE_MRU_LIMIT: u32 = 5;
+
+/// How often the processing-indicator animation advances (the bouncing-dot
+/// frame + any elapsed display). Cheap: one `cx.notify()` per tick, only
+/// while a turn is in flight.
+const PROCESSING_TICK: Duration = Duration::from_millis(360);
 
 /// Process-wide shared [`ChatPanel`] singleton (UX rework decision 6). Holds a
 /// weak handle so the entity is freed if every surface that renders it unmounts;
@@ -114,6 +126,13 @@ pub struct ChatMessage {
     /// `true` while the chunk loop is still appending tokens to this
     /// bubble.  The bubble shows a typing indicator until this clears.
     pub streaming: bool,
+    /// Activity log + token totals folded from the live processing state
+    /// when this turn settled (chat-processing-indicator). `None` on user /
+    /// system messages and on assistant turns with nothing worth showing;
+    /// `Some` powers the collapsible "Activity" disclosure on the bubble.
+    pub activity: Option<MessageActivity>,
+    /// Whether this bubble's activity disclosure is expanded.
+    pub activity_expanded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +152,8 @@ impl ChatMessage {
             content,
             thinking: None,
             streaming: false,
+            activity: None,
+            activity_expanded: false,
         }
     }
 
@@ -143,6 +164,8 @@ impl ChatMessage {
             content: String::new(),
             thinking: None,
             streaming: true,
+            activity: None,
+            activity_expanded: false,
         }
     }
 
@@ -162,22 +185,14 @@ impl ChatMessage {
             content,
             thinking: None,
             streaming: false,
+            activity: None,
+            activity_expanded: false,
         }
     }
 }
 
 fn new_message_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
-}
-
-/// One active tool call surfaced from `chat.stream_tools`.  The strip
-/// renders the most recently dispatched name; tool_result / tool_error
-/// for the same call_id clears it.
-#[derive(Debug, Clone)]
-pub struct ToolActivity {
-    pub call_id: String,
-    pub name: String,
-    pub since: Instant,
 }
 
 /// Which surface a [`ChatPanel`] backs, and thus which process-wide scope the
@@ -237,6 +252,103 @@ impl ChatScope {
     }
 }
 
+/// Per-turn reasoning depth — the thinking TIERS (modelled on Claude's
+/// think / think-harder / ultrathink levels). Surfaced as a cycling pill
+/// in the InferenceBar per the maintainer's confirmed placement.
+///
+/// **`Fast` is the default** — never planning-by-default (the reasoning
+/// tax). Each click cycles one tier up: fast → think → think harder →
+/// ultrathink → fast. The wire token rides the send payload as `depth`;
+/// the harness maps tiers to plan-call deliberation budgets (`think` runs
+/// the planner with deliberation off — seconds; `ultrathink` deliberates
+/// at length — up to ~a minute).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReasoningDepth {
+    /// The everyday fast-model ReAct loop — no reasoning tax. Default.
+    #[default]
+    Fast,
+    /// Plan grammar-first, deliberation off (~seconds).
+    Think,
+    /// Plan with a bounded deliberation budget (tens of seconds).
+    ThinkHarder,
+    /// Plan with the heavy-rumination budget (up to ~a minute).
+    Ultrathink,
+}
+
+impl ReasoningDepth {
+    /// The next tier up (wrapping) — used by the cycling pill.
+    pub fn toggled(self) -> Self {
+        match self {
+            ReasoningDepth::Fast => ReasoningDepth::Think,
+            ReasoningDepth::Think => ReasoningDepth::ThinkHarder,
+            ReasoningDepth::ThinkHarder => ReasoningDepth::Ultrathink,
+            ReasoningDepth::Ultrathink => ReasoningDepth::Fast,
+        }
+    }
+
+    /// Wire token — matches the harness's `Depth::parse` strings.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasoningDepth::Fast => "fast",
+            ReasoningDepth::Think => "think",
+            ReasoningDepth::ThinkHarder => "think_harder",
+            ReasoningDepth::Ultrathink => "ultrathink",
+        }
+    }
+
+    /// Human label for the pill (the wire token reads awkwardly).
+    pub fn label(self) -> &'static str {
+        match self {
+            ReasoningDepth::Fast => "fast",
+            ReasoningDepth::Think => "think",
+            ReasoningDepth::ThinkHarder => "think harder",
+            ReasoningDepth::Ultrathink => "ultrathink",
+        }
+    }
+}
+
+/// Split vs Single reasoning mode (agentic reasoning S1 — the maintainer's confirmed
+/// InferenceBar placement, scope DECISION #11). Mirrors the harness's
+/// `ReasonMode`; the pill is a facade over `settings.reasoning.{get,set}` so
+/// the harness-owned store stays the single source of truth. Defaults to
+/// `Single` (the maintainer 2026-07-13: PLAN and EXECUTE run on the same model).
+/// Inert while the reasoning master toggle is off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReasonMode {
+    /// fast slot ≠ reasoner slot — reason once, execute on fast.
+    Split,
+    /// fast slot == reasoner slot — one brain plans and executes. Default.
+    #[default]
+    Single,
+}
+
+impl ReasonMode {
+    /// The other mode — used by the toggle pill.
+    pub fn toggled(self) -> Self {
+        match self {
+            ReasonMode::Split => ReasonMode::Single,
+            ReasonMode::Single => ReasonMode::Split,
+        }
+    }
+
+    /// Short wire/label token (`"split"` / `"single"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReasonMode::Split => "split",
+            ReasonMode::Single => "single",
+        }
+    }
+
+    /// Tolerant wire parse; unknown values keep the default.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "split" => Some(ReasonMode::Split),
+            "single" => Some(ReasonMode::Single),
+            _ => None,
+        }
+    }
+}
+
 /// Root Chat panel.
 pub struct ChatPanel {
     pub focus_handle: FocusHandle,
@@ -245,6 +357,32 @@ pub struct ChatPanel {
     /// mode restores its own session pointer.
     pub scope: ChatScope,
     pub messages: Vec<ChatMessage>,
+    /// Virtualized backing store for the message log. The log renders through
+    /// gpui's [`gpui::list`], which paints only the items in (and just around)
+    /// the viewport — so a long conversation costs a bounded number of bubble
+    /// builds per frame instead of one per message. Bubbles are variable height
+    /// (message length, thinking block, markdown), so this is `list`/[`ListState`]
+    /// (measured items) rather than `uniform_list`. [`ChatPanel::sync_message_list`]
+    /// keeps its item count + measurements in lock-step with `messages` before
+    /// each paint; [`ListAlignment::Top`] keeps short logs pinned to the top
+    /// (identical to the old flex column) while [`FollowMode::Tail`] gives
+    /// stick-to-bottom while streaming.
+    pub message_list: ListState,
+    /// Id of `messages[0]` as of the last [`sync_message_list`] pass. Lets the
+    /// sync tell a pure append within the current thread (same head → `splice`
+    /// the tail delta, preserve scroll) from a wholesale swap (head changed →
+    /// `reset` + re-engage tail-follow so a switched/loaded thread opens pinned
+    /// to its newest message).
+    ///
+    /// [`sync_message_list`]: ChatPanel::sync_message_list
+    list_head_id: Option<String>,
+    /// Cheap signature of the tail bubble's rendered size inputs (content +
+    /// thinking length, plus the streaming flag) at the last sync. A streaming
+    /// bubble grows token-by-token at a fixed item count, so the list must
+    /// remeasure that one item (`remeasure_items`, which preserves the scroll
+    /// anchor) whenever this changes — including the final non-streaming swap
+    /// `TurnComplete` may apply.
+    list_tail_sig: usize,
     pub active_turn_id: Option<String>,
     pub conversation_id: String,
     /// Conversation switcher (Memory Slice B): the saved-chat list for the
@@ -279,6 +417,20 @@ pub struct ChatPanel {
     pub models: Vec<String>,
     pub active_model: Option<String>,
     pub show_model_dropdown: bool,
+    /// Per-turn reasoning depth (agentic reasoning tier P1b). Defaults to
+    /// [`ReasoningDepth::Fast`]; toggled from the InferenceBar pill. As of
+    /// S1 the pill's value rides the send payload as `depth` — the harness
+    /// parses + logs it; `fast` (the default) stays byte-identical, and the
+    /// Deep pipeline itself lands in S3.
+    pub reasoning_depth: ReasoningDepth,
+    /// Split/Single selector state (agentic reasoning S1) — a facade over
+    /// the harness `settings.reasoning` store, hydrated on mount and
+    /// persisted on toggle. Inert while the reasoning master toggle is off.
+    pub reason_mode: ReasonMode,
+    /// The inline VRAM fit-chip text (readiness-chip pattern): the first
+    /// warning from `reasoning.fit_check`, `None` when the slot set fits or
+    /// the probe soft-failed.
+    pub fit_warning: Option<String>,
     /// In-flight latch for the eject button — set while an `ollama.eject`
     /// round-trip is pending so the button dims and ignores re-clicks.
     pub ejecting: bool,
@@ -292,7 +444,11 @@ pub struct ChatPanel {
     pub active_stream: Option<wylde_gui_pipe::PipeStream>,
     pub active_tool_stream: Option<wylde_gui_pipe::PipeStream>,
     pub consent_stream: Option<wylde_gui_pipe::PipeStream>,
-    pub tool_activity: Option<ToolActivity>,
+    /// Live processing status for the in-flight turn (chat-processing-
+    /// indicator): current phase, the activity log, the token meter, and the
+    /// dropdown's expanded flag. `Some` only while a turn is active; folded
+    /// onto the assistant message and cleared when the turn settles.
+    pub processing: Option<ProcessingState>,
     pub prompt_input: Entity<TextInput>,
     /// Held to keep the input → panel subscription alive for the
     /// lifetime of the panel.
@@ -391,6 +547,18 @@ impl ChatPanel {
             focus_handle: cx.focus_handle(),
             scope,
             messages: Vec::new(),
+            // Bottom-anchored chat behaviour without a Bottom alignment: Top keeps
+            // a short log pinned to the top (matching the old flex column), and
+            // Tail follow snaps to / re-engages the bottom as the log grows past
+            // the viewport — i.e. stick-to-bottom while streaming. The overdraw
+            // measures a little above/below the fold so scrolling doesn't pop in.
+            message_list: {
+                let state = ListState::new(0, ListAlignment::Top, px(256.0));
+                state.set_follow_mode(FollowMode::Tail);
+                state
+            },
+            list_head_id: None,
+            list_tail_sig: 0,
             active_turn_id: None,
             conversation_id: "default".to_owned(),
             conversations: Vec::new(),
@@ -406,6 +574,9 @@ impl ChatPanel {
             models: Vec::new(),
             active_model: None,
             show_model_dropdown: false,
+            reasoning_depth: ReasoningDepth::Fast,
+            reason_mode: ReasonMode::default(),
+            fit_warning: None,
             ejecting: false,
             pending_consents: BTreeMap::new(),
             error: None,
@@ -413,7 +584,7 @@ impl ChatPanel {
             active_stream: None,
             active_tool_stream: None,
             consent_stream: None,
-            tool_activity: None,
+            processing: None,
             prompt_input,
             _input_sub: input_sub,
             composer: ComposerState::default(),
@@ -463,6 +634,7 @@ impl ChatPanel {
             wylde_gui_pipe::publish_active_conversation(&panel.conversation_id);
             Self::spawn_load_workspaces(cx);
             Self::spawn_load_models(cx);
+            Self::spawn_load_reasoning(cx);
             // Restore the persisted active conversation (Slice B), then load
             // its working-memory buffer + the switcher list — sequenced in
             // one task so the WM load reads the *restored* id, not "default".
@@ -503,6 +675,7 @@ impl ChatPanel {
             let panel = Self::new(ChatScope::Docked, cx);
             Self::spawn_load_workspaces(cx);
             Self::spawn_load_models(cx);
+            Self::spawn_load_reasoning(cx);
             // Per-mode restore (stubbed to "default" until C7's per-workspace
             // pointer): hydrate the WM strip + switcher without adopting the
             // global active-conversation pointer.
@@ -546,6 +719,78 @@ impl ChatPanel {
                 if let Ok(rows) = outcome {
                     panel.models = rows;
                 }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Hydrate the Split/Single pill + fit chip from the harness-owned
+    /// reasoning store (agentic reasoning S1). Soft-fail throughout: an
+    /// unreachable harness leaves the defaults (Single, no chip) — the
+    /// pill is inert while the master toggle is off anyway. The fit chip
+    /// only renders when reasoning is enabled AND the fit probe warned,
+    /// so a default install shows nothing new.
+    pub fn spawn_load_reasoning(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let settings = reasoning_settings().await;
+            let (mode, enabled) = match &settings {
+                Ok(v) => (
+                    v.get("mode")
+                        .and_then(|m| m.as_str())
+                        .and_then(ReasonMode::parse)
+                        .unwrap_or_default(),
+                    v.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false),
+                ),
+                Err(_) => (ReasonMode::default(), false),
+            };
+            let fit_warning = if enabled {
+                Self::fetch_fit_warning().await
+            } else {
+                None
+            };
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.reason_mode = mode;
+                panel.fit_warning = fit_warning;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// First `reasoning.fit_check` warning, `None` on a clean fit or any
+    /// probe failure (advisory chip — never surface an error for it).
+    async fn fetch_fit_warning() -> Option<String> {
+        let v = reasoning_fit_check().await.ok()?;
+        v.get("warnings")
+            .and_then(|w| w.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|w| w.as_str())
+            .map(str::to_owned)
+    }
+
+    /// Flip the Split/Single selector: optimistic local flip, then persist
+    /// through `settings.reasoning.set` and refresh the fit chip against
+    /// the new mode. A failed persist flips back on the next hydrate.
+    pub fn toggle_reason_mode(&mut self, cx: &mut Context<Self>) {
+        self.reason_mode = self.reason_mode.toggled();
+        let mode = self.reason_mode;
+        cx.notify();
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            let persisted = set_reasoning_mode(mode.as_str()).await;
+            let enabled = persisted
+                .as_ref()
+                .ok()
+                .and_then(|v| v.get("enabled"))
+                .and_then(|e| e.as_bool())
+                .unwrap_or(false);
+            let fit_warning = if enabled {
+                Self::fetch_fit_warning().await
+            } else {
+                None
+            };
+            let _ = this.update(app_cx, |panel, cx| {
+                panel.fit_warning = fit_warning;
                 cx.notify();
             });
         })
@@ -923,7 +1168,9 @@ impl ChatPanel {
         // Docked dock with no workspace) updates the single global pointer.
         // Routing through `scope` keeps a bound workspace thread out of the
         // Global slot's restore (D1).
-        let pointer_ws = self.scope.resolve_workspace_id(self.active_workspace_id.clone());
+        let pointer_ws = self
+            .scope
+            .resolve_workspace_id(self.active_workspace_id.clone());
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             match pointer_ws.as_deref() {
                 Some(ws) => {
@@ -979,7 +1226,9 @@ impl ChatPanel {
             if let Some(ws) = bind_workspace.as_deref() {
                 if let Err(e) = set_workspace_for_conversation(&id, ws).await {
                     let _ = this.update(app_cx, |panel, cx| {
-                        panel.error = Some(format!("Couldn't bind the new thread to this workspace: {e}"));
+                        panel.error = Some(format!(
+                            "Couldn't bind the new thread to this workspace: {e}"
+                        ));
                         cx.notify();
                     });
                 }
@@ -1235,15 +1484,136 @@ impl ChatPanel {
         self.send_user_message(trimmed, cx);
     }
 
+    /// Drive the processing-indicator animation: advance the tick + notify
+    /// every [`PROCESSING_TICK`] while a turn is in flight. Exits the moment
+    /// `processing` clears (turn settled) or the entity is gone, so there's
+    /// never a runaway timer between turns.
+    fn spawn_processing_ticker(&self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| loop {
+            app_cx.background_executor().timer(PROCESSING_TICK).await;
+            let keep_going = this.update(app_cx, |panel, cx| match panel.processing.as_mut() {
+                Some(p) => {
+                    p.tick = p.tick.wrapping_add(1);
+                    cx.notify();
+                    true
+                }
+                None => false,
+            });
+            match keep_going {
+                Ok(true) => {}
+                _ => break,
+            }
+        })
+        .detach();
+    }
+
+    /// Fold the live processing state onto the just-settled assistant bubble
+    /// so its activity log + token meter survive as a collapsible disclosure,
+    /// then clear `processing` (which also stops the ticker). No-op when
+    /// there's no in-flight processing. Drops an empty log (nothing ran) so
+    /// the bubble shows no disclosure rather than an empty one.
+    fn settle_processing(&mut self, assistant_id: &str) {
+        let Some(state) = self.processing.take() else {
+            return;
+        };
+        let activity = state.into_message_activity();
+        if activity.is_empty() {
+            return;
+        }
+        if let Some(msg) = self.messages.iter_mut().find(|m| m.id == assistant_id) {
+            msg.activity = Some(activity);
+        }
+    }
+
+    /// Toggle the live indicator's activity dropdown.
+    pub fn toggle_processing_expanded(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = self.processing.as_mut() {
+            p.expanded = !p.expanded;
+            cx.notify();
+        }
+    }
+
+    /// Toggle a settled bubble's persisted activity disclosure.
+    pub fn toggle_message_activity(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(msg) = self.messages.iter_mut().find(|m| m.id == id) {
+            msg.activity_expanded = !msg.activity_expanded;
+            cx.notify();
+        }
+    }
+
+    /// Reconcile the virtualized [`ListState`] with `self.messages` before each
+    /// paint. `list` tracks an opaque item count; it can't see how the backing
+    /// vec changed, so we tell it — and crucially we choose the *kind* of update
+    /// so scroll position survives:
+    ///
+    /// * **empty** → reset to zero items (the empty-state element renders
+    ///   instead, but keep the list count honest so the next message rebuilds);
+    /// * **pure append within the current thread** (same `messages[0]`, count
+    ///   only grew) → [`ListState::splice`] the new tail items, leaving existing
+    ///   measurements and the scroll anchor untouched. This is the in-turn path:
+    ///   the user+assistant bubbles get spliced once, then the assistant bubble
+    ///   grows *in place* (count unchanged) and only needs remeasuring;
+    /// * **wholesale swap** (head id changed — switch / load / new / clear — or
+    ///   the log shrank) → [`ListState::reset`] and re-engage [`FollowMode::Tail`]
+    ///   so the freshly loaded thread opens pinned to its newest message, the
+    ///   chat convention;
+    /// * **streaming tail** → whenever the last bubble's size inputs change
+    ///   (content/thinking length or the streaming flag) [`ListState::remeasure_items`]
+    ///   the single tail item. That re-measures the growing bubble while
+    ///   preserving the scroll anchor (and tail-follow keeps it on screen).
+    ///
+    /// Identity for short logs: with nothing scrolled and everything fitting the
+    /// viewport, Top alignment paints from the top exactly like the old column.
+    ///
+    /// Called from `render`; `pub` only so the windowed tests can drive the
+    /// reconciler deterministically without depending on paint scheduling.
+    pub fn sync_message_list(&mut self) {
+        let n = self.messages.len();
+        let head_id = self.messages.first().map(|m| m.id.clone());
+        let tail_sig = self.messages.last().map_or(0, |m| {
+            m.content.len() + m.thinking.as_ref().map_or(0, String::len) + m.streaming as usize
+        });
+        let known = self.message_list.item_count();
+
+        if n == 0 {
+            if known != 0 {
+                self.message_list.reset(0);
+            }
+        } else if head_id == self.list_head_id && n >= known {
+            if n > known {
+                self.message_list.splice(known..known, n - known);
+            }
+            if n > known || tail_sig != self.list_tail_sig {
+                self.message_list.remeasure_items(n - 1..n);
+            }
+        } else {
+            self.message_list.reset(n);
+            self.message_list.set_follow_mode(FollowMode::Tail);
+        }
+
+        self.list_head_id = head_id;
+        self.list_tail_sig = tail_sig;
+    }
+
     pub fn send_user_message(&mut self, text: String, cx: &mut Context<Self>) {
         self.error = None;
         self.messages.push(ChatMessage::user(text.clone()));
         let assistant = ChatMessage::assistant_streaming();
         let assistant_id = assistant.id.clone();
         self.messages.push(assistant);
+        // A new turn always sticks to the bottom while it streams, regardless of
+        // where the user had scrolled — re-engage tail-follow. `sync_message_list`
+        // then splices the two new bubbles in on the next paint.
+        self.message_list.set_follow_mode(FollowMode::Tail);
         // Latch synchronously — see the `starting` field doc.  Cleared
         // the moment `active_turn_id` is published (or on any failure).
         self.starting = true;
+        // Arm the live processing indicator (chat-processing-indicator). It
+        // shows "Working…" through the `start_turn` round-trip, then tracks
+        // real phase / tool / token / thinking signals as they stream. Folded
+        // onto the assistant bubble and cleared when the turn settles.
+        self.processing = Some(ProcessingState::new());
+        self.spawn_processing_ticker(cx);
         cx.notify();
 
         let conversation_id = self.conversation_id.clone();
@@ -1251,7 +1621,9 @@ impl ChatPanel {
         // Global is structurally unbound, so this resolves to `None` regardless
         // of the field — the single read that guarantees a global turn never
         // rides a workspace context.
-        let workspace_id = self.scope.resolve_workspace_id(self.active_workspace_id.clone());
+        let workspace_id = self
+            .scope
+            .resolve_workspace_id(self.active_workspace_id.clone());
         // C6: a first send out of the empty state binds the fresh thread to the
         // entered workspace so it joins the scoped list. Only ever `Some` on a
         // Docked dock that minted a fileless thread on enter (see
@@ -1269,6 +1641,9 @@ impl ChatPanel {
         let model = self.active_model.clone();
         // The composer's per-message ✕/↺ choices ride the send (Slices F+M).
         let (excluded_tokens, reactivated_tokens) = self.composer.send_overrides();
+        // Agentic-reasoning S1: the fast/deep pill rides the wire. `fast`
+        // (the default) is behaviourally inert harness-side.
+        let depth = self.reasoning_depth;
 
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let start = start_turn_with_model(
@@ -1279,6 +1654,7 @@ impl ChatPanel {
                 &excluded_tokens,
                 &reactivated_tokens,
                 active_file.as_deref(),
+                depth.as_str(),
             )
             .await;
             let (turn_id, reply_conversation_id) = match start {
@@ -1293,6 +1669,7 @@ impl ChatPanel {
                         }
                         panel.active_turn_id = None;
                         panel.starting = false;
+                        panel.processing = None;
                         panel.error = Some(msg);
                         cx.notify();
                     });
@@ -1313,6 +1690,7 @@ impl ChatPanel {
                         panel.active_turn_id = None;
                         panel.starting = false;
                         panel.active_tool_stream = None;
+                        panel.processing = None;
                         cx.notify();
                     });
                     return;
@@ -1431,21 +1809,21 @@ impl ChatPanel {
                                     done = true;
                                     return;
                                 }
-                                // A user-facing token clears any stale tool
-                                // activity strip — the assistant is talking.
-                                if matches!(event, TurnChunk::Token { .. }) {
-                                    panel.tool_activity = None;
-                                }
+                                // Feed the live indicator (phase / token meter
+                                // / thinking) before the bubble apply.
+                                apply_processing_turn_event(panel.processing.as_mut(), &event);
                                 apply_turn_chunk(&mut panel.messages, &assistant_id, &event);
                                 if matches!(
                                     event,
                                     TurnChunk::TurnComplete { .. } | TurnChunk::TurnAborted { .. }
                                 ) {
                                     done = true;
+                                    // Fold the activity onto the bubble, then
+                                    // clear (also stops the ticker).
+                                    panel.settle_processing(&assistant_id);
                                     panel.active_turn_id = None;
                                     panel.active_stream = None;
                                     panel.active_tool_stream = None;
-                                    panel.tool_activity = None;
                                 }
                                 cx.notify();
                             })
@@ -1461,10 +1839,10 @@ impl ChatPanel {
                                 &assistant_id,
                                 &format!("[stream error: {e}]"),
                             );
+                            panel.settle_processing(&assistant_id);
                             panel.active_turn_id = None;
                             panel.active_stream = None;
                             panel.active_tool_stream = None;
-                            panel.tool_activity = None;
                             cx.notify();
                         });
                         break;
@@ -1481,10 +1859,10 @@ impl ChatPanel {
             let _ = this.update(app_cx, |panel, cx| {
                 if panel.active_turn_id.as_deref() == Some(turn_id.as_str()) {
                     flush_streaming_bubble(&mut panel.messages, &assistant_id, "[stream ended]");
+                    panel.settle_processing(&assistant_id);
                     panel.active_turn_id = None;
                     panel.active_stream = None;
                     panel.active_tool_stream = None;
-                    panel.tool_activity = None;
                     cx.notify();
                 }
             });
@@ -1500,8 +1878,9 @@ impl ChatPanel {
         .detach();
     }
 
-    /// Pump events off the active tool stream into `tool_activity`.
-    /// Runs until the stream ends (turn complete, drop, or transport
+    /// Pump events off the active tool stream into the live processing
+    /// indicator (`processing`). Runs until the stream ends (turn complete,
+    /// drop, or transport
     /// error) — the parent task that spawned the user-facing stream
     /// owns the actual stream slot; this task only borrows it briefly
     /// per `recv`.  When the slot is taken from under us (turn ends),
@@ -1531,10 +1910,8 @@ impl ChatPanel {
                     };
                     let Some(chunk) = next else {
                         // Stream ended naturally.
-                        let _ = this.update(app_cx, |panel, cx| {
+                        let _ = this.update(app_cx, |panel, _| {
                             panel.active_tool_stream = None;
-                            panel.tool_activity = None;
-                            cx.notify();
                         });
                         return;
                     };
@@ -1544,35 +1921,56 @@ impl ChatPanel {
                             // Transport hiccup; let it ride.  The
                             // user-facing stream will surface a louder
                             // error if the whole turn died.
-                            let _ = this.update(app_cx, |panel, cx| {
-                                panel.tool_activity = None;
-                                cx.notify();
-                            });
                             return;
                         }
                     };
                     let event = ToolChunk::from_value(&value);
                     let _ = this.update(app_cx, |panel, cx| {
                         match event {
-                            ToolChunk::Dispatched { call_id, name, .. } => {
-                                panel.tool_activity = Some(ToolActivity {
-                                    call_id,
-                                    name,
-                                    since: Instant::now(),
-                                });
-                            }
-                            ToolChunk::Result { call_id, .. }
-                            | ToolChunk::Error { call_id, .. } => {
-                                if panel
-                                    .tool_activity
-                                    .as_ref()
-                                    .map(|a| a.call_id == call_id)
-                                    .unwrap_or(false)
-                                {
-                                    panel.tool_activity = None;
+                            ToolChunk::Dispatched {
+                                call_id,
+                                name,
+                                args,
+                                ..
+                            } => {
+                                if let Some(p) = panel.processing.as_mut() {
+                                    p.on_tool_dispatched(&call_id, &name, tool_detail(&args, None));
                                 }
                             }
-                            ToolChunk::MemoryWritten | ToolChunk::Warning | ToolChunk::Unknown => {}
+                            ToolChunk::Result {
+                                call_id,
+                                output,
+                                duration_ms,
+                                ..
+                            } => {
+                                if let Some(p) = panel.processing.as_mut() {
+                                    p.on_tool_done(
+                                        &call_id,
+                                        true,
+                                        tool_detail(&output, Some(duration_ms)),
+                                    );
+                                }
+                            }
+                            ToolChunk::Error {
+                                call_id,
+                                message,
+                                duration_ms,
+                                ..
+                            } => {
+                                if let Some(p) = panel.processing.as_mut() {
+                                    let detail = tool_detail(
+                                        &serde_json::Value::String(message),
+                                        Some(duration_ms),
+                                    );
+                                    p.on_tool_done(&call_id, false, detail);
+                                }
+                            }
+                            ToolChunk::MemoryWritten => {
+                                if let Some(p) = panel.processing.as_mut() {
+                                    p.on_memory_written();
+                                }
+                            }
+                            ToolChunk::Warning | ToolChunk::Unknown => {}
                         }
                         cx.notify();
                     });
@@ -1596,12 +1994,22 @@ impl ChatPanel {
         // resources immediately instead of waiting on close-detect.
         self.active_stream.take();
         self.active_tool_stream.take();
-        self.tool_activity = None;
         // Abandon any consent cards belonging to this turn.  Only one
         // turn is ever in flight (sends are blocked while active), so
         // every pending card belongs to the turn being cancelled.
         self.pending_consents.clear();
-        // Flush the in-flight assistant bubble's streaming flag.
+        // Flush the in-flight assistant bubble's streaming flag, preserving
+        // whatever activity ran before the stop as a disclosure on it.
+        let cancelled_id = self
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.streaming)
+            .map(|m| m.id.clone());
+        if let Some(id) = &cancelled_id {
+            self.settle_processing(id);
+        }
+        self.processing = None;
         if let Some(msg) = self.messages.iter_mut().rev().find(|m| m.streaming) {
             msg.streaming = false;
             if msg.content.is_empty() {
@@ -1655,6 +2063,14 @@ impl ChatPanel {
         self.show_model_dropdown = !self.show_model_dropdown;
         self.show_ws_dropdown = false;
         self.show_conversations = false;
+        cx.notify();
+    }
+
+    /// Cycle the per-turn thinking tier (fast → think → think harder →
+    /// ultrathink → fast). An instant local flip; the chosen tier rides
+    /// the next send's `depth` field.
+    pub fn toggle_reasoning_depth(&mut self, cx: &mut Context<Self>) {
+        self.reasoning_depth = self.reasoning_depth.toggled();
         cx.notify();
     }
 
@@ -1730,14 +2146,15 @@ impl ChatPanel {
             let outcome: Result<String, String> = async {
                 let envelope = export_conversation(&id).await?;
                 let default_name = format!("{id}.wylde-conv.json");
-                let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(move || {
-                    rfd::FileDialog::new()
-                        .set_title("Export conversation")
-                        .set_file_name(&default_name)
-                        .add_filter("Wylde conversation export", &["json"])
-                        .save_file()
-                })
-                .await;
+                let picked: Option<PathBuf> =
+                    wylde_gui_pipe::native_file_dialog("chat-conversation-export", move || {
+                        rfd::FileDialog::new()
+                            .set_title("Export conversation")
+                            .set_file_name(&default_name)
+                            .add_filter("Wylde conversation export", &["json"])
+                            .save_file()
+                    })
+                    .await;
                 let Some(path) = picked else {
                     return Ok(String::new()); // cancelled — no status
                 };
@@ -1765,13 +2182,14 @@ impl ChatPanel {
     pub fn spawn_import_conversation(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let outcome: Result<Option<String>, String> = async {
-                let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(|| {
-                    rfd::FileDialog::new()
-                        .set_title("Import conversation")
-                        .add_filter("Wylde conversation export", &["json"])
-                        .pick_file()
-                })
-                .await;
+                let picked: Option<PathBuf> =
+                    wylde_gui_pipe::native_file_dialog("chat-conversation-import", || {
+                        rfd::FileDialog::new()
+                            .set_title("Import conversation")
+                            .add_filter("Wylde conversation export", &["json"])
+                            .pick_file()
+                    })
+                    .await;
                 let Some(path) = picked else { return Ok(None) };
                 let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
                 let envelope: serde_json::Value =
@@ -1802,8 +2220,11 @@ impl ChatPanel {
     pub fn spawn_pick_workspace(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             // Runs on gpui's executor (no tokio reactor) — `tokio::task::
-            // spawn_blocking` would panic. Hop onto the bridge runtime.
-            let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(pick_folder).await;
+            // spawn_blocking` would panic. Hop onto the bridge runtime. Routed
+            // through `native_file_dialog` so a control walk records the request
+            // instead of opening a real folder picker on the dev's desktop.
+            let picked: Option<PathBuf> =
+                wylde_gui_pipe::native_file_dialog("chat-ws-pick", pick_folder).await;
             let Some(path) = picked else {
                 return;
             };
@@ -1879,6 +2300,65 @@ fn flush_streaming_bubble(messages: &mut [ChatMessage], assistant_id: &str, fall
     }
 }
 
+/// Format a tool's args / output (+ optional duration) into a compact,
+/// truncated activity-log detail line (chat-processing-indicator, full
+/// visibility). A bare string value is used verbatim (error messages), other
+/// JSON is serialised; `Null`/empty collapses to just the duration, or `None`.
+fn tool_detail(value: &serde_json::Value, duration_ms: Option<f64>) -> Option<String> {
+    let raw = match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s.clone()),
+        other => serde_json::to_string(other).ok(),
+    };
+    let body = raw
+        .as_deref()
+        .and_then(|s| processing::compact_detail(s, 160));
+    match (body, duration_ms) {
+        (Some(b), Some(ms)) if ms > 0.0 => Some(format!("{b}  ·  {ms:.0}ms")),
+        (Some(b), _) => Some(b),
+        (None, Some(ms)) if ms > 0.0 => Some(format!("{ms:.0}ms")),
+        (None, _) => None,
+    }
+}
+
+/// Feed a user-facing turn chunk into the live processing indicator
+/// (chat-processing-indicator). A `None` state — no in-flight indicator — is
+/// a silent noop, so this is safe to call unconditionally. Only the
+/// indicator-relevant variants do anything; bubble text, completion, and
+/// abort are handled by [`apply_turn_chunk`] and the pump's settle.
+fn apply_processing_turn_event(state: Option<&mut ProcessingState>, event: &TurnChunk) {
+    let Some(p) = state else {
+        return;
+    };
+    match event {
+        TurnChunk::Phase { phase, .. } => {
+            p.set_phase(ProcessingPhase::from_wire(phase));
+        }
+        TurnChunk::Usage {
+            prompt_tokens,
+            completion_tokens,
+            ..
+        } => {
+            p.on_usage(*prompt_tokens, *completion_tokens);
+        }
+        TurnChunk::Thinking { text, .. } => {
+            p.on_thinking(text);
+        }
+        TurnChunk::Step {
+            stage,
+            summary,
+            detail,
+            ..
+        } => {
+            p.on_step(stage, summary.clone(), detail.clone());
+        }
+        TurnChunk::Token { .. }
+        | TurnChunk::TurnComplete { .. }
+        | TurnChunk::TurnAborted { .. }
+        | TurnChunk::Unknown => {}
+    }
+}
+
 /// Apply a single `chat.stream_turn` chunk to the assistant bubble.
 fn apply_turn_chunk(messages: &mut [ChatMessage], assistant_id: &str, event: &TurnChunk) {
     let Some(msg) = messages.iter_mut().find(|m| m.id == assistant_id) else {
@@ -1908,6 +2388,9 @@ fn apply_turn_chunk(messages: &mut [ChatMessage], assistant_id: &str, event: &Tu
             }
             msg.streaming = false;
         }
+        // Phase / Usage / Step feed only the processing indicator
+        // (`apply_processing_turn_event`); the bubble itself is unchanged.
+        TurnChunk::Phase { .. } | TurnChunk::Usage { .. } | TurnChunk::Step { .. } => {}
         TurnChunk::Unknown => { /* future variant — noop */ }
     }
 }
@@ -2569,10 +3052,11 @@ impl ChatPanel {
 
 impl Render for ChatPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Reconcile the virtualized list with `messages` before anything reads it.
+        self.sync_message_list();
         let inference_bar = inference_bar(self, cx);
         let log = message_log(self, cx);
         let consent_strip = consent_card_strip(self, cx);
-        let tool_strip = tool_activity_strip(self);
 
         let mut body =
             div()
@@ -2585,8 +3069,7 @@ impl Render for ChatPanel {
                     this.on_panel_key(ev, window, cx)
                 }))
                 .child(log)
-                .child(consent_strip)
-                .child(tool_strip);
+                .child(consent_strip);
 
         if let Some(err) = &self.error {
             body = body.child(error_strip(err));
@@ -2634,35 +3117,354 @@ impl Render for InferenceBarDock {
     }
 }
 
-fn message_log(panel: &ChatPanel, _cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
-    let mut log = div()
-        .id(ElementId::Name("chat-log".into()))
-        .flex_1()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .p_5()
-        .overflow_y_scroll();
-
+fn message_log(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> AnyElement {
     if panel.messages.is_empty() {
-        log = log.child(
+        return div()
+            .id(ElementId::Name("chat-log".into()))
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::SM))
+            .text_color(rgb(pack(TEXT_MUTED)))
+            .child(SharedString::from("How can I help?"))
+            .into_any_element();
+    }
+
+    // Virtualized log: `list` invokes this closure only for the items it needs
+    // to paint (visible range + overdraw), so render cost is bounded regardless
+    // of how long the conversation is. The closure can't borrow `panel` (it must
+    // be `'static`), so it reads the live messages back out of the entity by
+    // index each time an item is (re)built — the same bubble builders as before.
+    //
+    // Each list item is exactly one message (item count == messages.len(), the
+    // reconciler's contract), with the chat-processing-indicator extras nested
+    // *under* the bubble inside the same item: a settled assistant turn's
+    // collapsible activity disclosure, or the live animated indicator on the
+    // in-flight tail bubble. Both are interactive, so they dispatch through the
+    // panel `entity` handle — the `list` closure only hands out `&mut App`, not
+    // a `Context<ChatPanel>`, so `cx.listener` isn't available here.
+    let entity = cx.entity();
+    list(panel.message_list.clone(), move |ix, _window, cx| {
+        let Some(m) = entity.read(cx).messages.get(ix).cloned() else {
+            // Index briefly out of range between a `messages` mutation and the
+            // next `sync_message_list` — render nothing rather than panic.
+            return div().into_any_element();
+        };
+        // `gap_3` between bubbles in the old flex column = a 12px top gap on
+        // every item but the first; reproduce it exactly here. The bubble and
+        // its extras stack in a column so they read as one message block.
+        let mut item = div()
+            .when(ix > 0, |d| d.pt_3())
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(bubble(&m));
+        // A settled assistant turn keeps its activity as a collapsible
+        // disclosure under the bubble (chat-processing-indicator).
+        if m.role == MessageRole::Assistant && !m.streaming {
+            if let Some(act) = &m.activity {
+                if !act.is_empty() {
+                    item = item.child(message_activity_disclosure(
+                        &m.id,
+                        act,
+                        m.activity_expanded,
+                        &entity,
+                    ));
+                }
+            }
+        }
+        // The in-flight assistant bubble carries the live, animated status
+        // indicator in place of the old static `…`.
+        if m.role == MessageRole::Assistant && m.streaming {
+            if let Some(p) = entity.read(cx).processing.clone() {
+                item = item.child(processing_indicator(&p, &entity));
+            }
+        }
+        item.into_any_element()
+    })
+    .flex_1()
+    .p_5()
+    .into_any_element()
+}
+
+/// The live, animated processing status (chat-processing-indicator): a
+/// clickable row — bouncing dots + the current phase + a live token meter +
+/// a ▸/▾ chevron — over an expandable activity dropdown. Every sub-part
+/// degrades gracefully: no phase signal ⇒ "Working"; no usage ⇒ no meter;
+/// nothing logged ⇒ no chevron / dropdown.
+fn processing_indicator(p: &ProcessingState, view: &Entity<ChatPanel>) -> gpui::Div {
+    let label = format!("{}{}", p.phase.label(), processing_dots(p.tick));
+    let has_detail = !p.log.is_empty() || !p.thinking.is_empty();
+
+    // Three bouncing dots — the bright one cycles with the tick. Plain
+    // rounded divs, so no glyph/font dependency.
+    let active = processing::active_dot(p.tick);
+    let mut dots = div().flex().flex_row().gap_1().items_center().mr_1();
+    for i in 0..3usize {
+        let color = if i == active { BRAND } else { TEXT_MUTED };
+        dots = dots.child(div().size(px(6.0)).rounded(px(3.0)).bg(rgb(pack(color))));
+    }
+
+    let mut row = control(div(), ElementId::Name("chat-processing".into()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(dots)
+        .child(
             div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
                 .font_family(FAMILY_INTER)
                 .text_size(px(size::SM))
-                .text_color(rgb(pack(TEXT_MUTED)))
-                .child(SharedString::from("How can I help?")),
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(SharedString::from(label)),
         );
-        return log;
+
+    // Live token meter, when the stream has reported any usage.
+    if let Some(meter) = p.token_meter() {
+        row = row.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(meter)),
+        );
     }
 
-    for m in &panel.messages {
-        log = log.child(bubble(m));
+    // Expand affordance — only when there's something to expand.
+    if has_detail {
+        row = row
+            .cursor_pointer()
+            .child(
+                div()
+                    .font_family(FAMILY_INTER)
+                    .text_size(px(size::XS))
+                    .text_color(rgb(pack(TEXT_MUTED)))
+                    .child(SharedString::from(if p.expanded { "▾" } else { "▸" })),
+            )
+            .on_mouse_down(gpui::MouseButton::Left, {
+                let view = view.clone();
+                move |_ev, _w: &mut Window, cx: &mut App| {
+                    view.update(cx, |this, cx| this.toggle_processing_expanded(cx));
+                }
+            });
     }
-    log
+
+    let mut col = div().flex().flex_col().gap_1().max_w(px(720.0)).child(row);
+    if has_detail && p.expanded {
+        col = col.child(activity_dropdown(&p.log, &p.thinking, p.token_detail()));
+    }
+    col
+}
+
+/// The expandable activity dropdown body — the honest, full-visibility log of
+/// what the turn did, **grouped** Claude-style into Context (the gather
+/// pipeline), Tools (each call with its args/result), and Thinking (the
+/// model's reasoning), plus the prompt/completion token split. Each group is
+/// rendered only when it has content, so a turn never shows an empty section.
+/// Shared by the live indicator and the settled-message disclosure.
+fn activity_dropdown(
+    entries: &[processing::ActivityEntry],
+    thinking: &str,
+    token_detail: Option<String>,
+) -> gpui::Div {
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .ml_4()
+        .pl_3()
+        .border_l_2()
+        .border_color(rgb(pack(BORDER_SUBTLE)));
+
+    // Context (the gather pipeline), Plan (the reasoning tier's grounded
+    // step checklist — agentic-reasoning S3), and Tools sections, in time
+    // order within each. The Thinking marker rows are skipped here — the
+    // reasoning text is rendered as its own block below.
+    let context: Vec<&processing::ActivityEntry> =
+        entries.iter().filter(|e| e.kind.group() == 0).collect();
+    let plan: Vec<&processing::ActivityEntry> =
+        entries.iter().filter(|e| e.kind.group() == 3).collect();
+    let tools: Vec<&processing::ActivityEntry> =
+        entries.iter().filter(|e| e.kind.group() == 1).collect();
+
+    if !context.is_empty() {
+        body = body.child(activity_section("Context", &context));
+    }
+    if !plan.is_empty() {
+        body = body.child(activity_section("Plan", &plan));
+    }
+    if !tools.is_empty() {
+        body = body.child(activity_section("Tools", &tools));
+    }
+
+    if !thinking.is_empty() {
+        body = body.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(activity_section_header("Thinking"))
+                .child(
+                    div()
+                        .font_family(FAMILY_INTER)
+                        .text_size(px(size::XS))
+                        .text_color(rgb(pack(TEXT_MUTED)))
+                        .child(SharedString::from(thinking.to_owned())),
+                ),
+        );
+    }
+
+    if let Some(detail) = token_detail {
+        body = body.child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(format!("tokens · {detail}"))),
+        );
+    }
+
+    body
+}
+
+/// A small uppercase section header for the grouped activity dropdown.
+fn activity_section_header(title: &str) -> gpui::Div {
+    div()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .font_weight(FontWeight(weight::SEMIBOLD as f32))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .child(SharedString::from(title.to_uppercase()))
+}
+
+/// One titled group of activity rows.
+fn activity_section(title: &str, rows: &[&processing::ActivityEntry]) -> gpui::Div {
+    let mut sec = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(activity_section_header(title));
+    for e in rows {
+        sec = sec.child(activity_log_row(e));
+    }
+    sec
+}
+
+/// One row in the activity dropdown — a small coloured kind-glyph + text, with
+/// the optional `detail` (concept names / tool args / output) on a dim,
+/// indented second line for full visibility without crowding the line.
+fn activity_log_row(e: &processing::ActivityEntry) -> gpui::Div {
+    use processing::ActivityKind;
+    let (glyph, color) = match e.kind {
+        ActivityKind::Phase => ("▸", TEXT_MUTED),
+        ActivityKind::Step => ("•", TEXT_SECONDARY),
+        ActivityKind::Tool => ("→", TEXT_SECONDARY),
+        ActivityKind::ToolOk => ("✓", BRAND),
+        ActivityKind::ToolErr => ("✕", BORDER_EMPHASIS),
+        ActivityKind::Memory => ("✦", TEXT_SECONDARY),
+        ActivityKind::Thinking => ("…", TEXT_MUTED),
+        ActivityKind::Reasoning => ("◆", TEXT_SECONDARY),
+    };
+    let head = div()
+        .flex()
+        .flex_row()
+        .gap_2()
+        .items_center()
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .child(
+            div()
+                .w(px(12.0))
+                .text_color(rgb(pack(color)))
+                .child(SharedString::from(glyph)),
+        )
+        .child(
+            div()
+                .text_color(rgb(pack(TEXT_SECONDARY)))
+                .child(SharedString::from(e.text.clone())),
+        );
+
+    let mut row = div().flex().flex_col().child(head);
+    if let Some(detail) = &e.detail {
+        row = row.child(
+            div()
+                .ml(px(20.0))
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(detail.clone())),
+        );
+    }
+    row
+}
+
+/// The persisted "Activity" disclosure under a settled assistant bubble: a
+/// collapsed one-line summary ("Used 2 tools · 1.2k tokens") that expands to
+/// the full activity log. Mirrors Claude's collapsible tool-use sections.
+fn message_activity_disclosure(
+    id: &str,
+    act: &MessageActivity,
+    expanded: bool,
+    view: &Entity<ChatPanel>,
+) -> gpui::Div {
+    let id_owned = id.to_owned();
+    let header = control(div(), ElementId::Name(format!("chat-activity-{id}").into()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .cursor_pointer()
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(if expanded { "▾" } else { "▸" })),
+        )
+        .child(
+            div()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from(act.summary())),
+        )
+        .on_mouse_down(gpui::MouseButton::Left, {
+            let view = view.clone();
+            move |_ev, _w: &mut Window, cx: &mut App| {
+                view.update(cx, |this, cx| this.toggle_message_activity(&id_owned, cx));
+            }
+        });
+
+    let mut col = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .max_w(px(720.0))
+        .child(header);
+    if expanded {
+        col = col.child(activity_dropdown(
+            &act.log,
+            "",
+            match (act.prompt_tokens, act.completion_tokens) {
+                (Some(p), Some(c)) => Some(format!(
+                    "{} in · {} out",
+                    processing::fmt_tokens(p),
+                    processing::fmt_tokens(c)
+                )),
+                _ => None,
+            },
+        ));
+    }
+    col
+}
+
+/// Animated trailing ellipsis for the status label — cycles `""`, `"."`,
+/// `".."`, `"..."` so the line reads as live even when no tokens are
+/// arriving (the streaming driver emits text in bulk).
+fn processing_dots(tick: u64) -> String {
+    ".".repeat((tick % 4) as usize)
 }
 
 fn bubble(m: &ChatMessage) -> gpui::Div {
@@ -2704,17 +3506,11 @@ fn assistant_bubble(m: &ChatMessage) -> gpui::Div {
         );
     }
 
-    // While streaming and still empty, show a typing indicator.  Once
-    // the first token arrives we switch to markdown rendering so the
-    // partial reply already starts formatting.
+    // While streaming and still empty, the live processing indicator
+    // (rendered alongside by `message_log`) stands in for the reply — no
+    // static `…` placeholder. Once the first token arrives we switch to
+    // markdown so the partial reply already starts formatting.
     if m.streaming && m.content.is_empty() {
-        col = col.child(
-            div()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::SM))
-                .text_color(rgb(pack(TEXT_MUTED)))
-                .child(SharedString::from("…")),
-        );
         return col;
     }
 
@@ -2847,8 +3643,7 @@ fn consent_button<F>(id: ElementId, label: &str, listener: F) -> Stateful<gpui::
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_1()
         .rounded(px(4.0))
@@ -2860,32 +3655,6 @@ where
         .text_color(rgb(pack(TEXT_SECONDARY)))
         .on_mouse_down(gpui::MouseButton::Left, listener)
         .child(SharedString::from(label.to_owned()))
-}
-
-fn tool_activity_strip(panel: &ChatPanel) -> gpui::Div {
-    let mut strip = div().flex().flex_col();
-    if let Some(activity) = &panel.tool_activity {
-        let label = SharedString::from(format!("Wylde is consulting {}…", activity.name));
-        strip = strip.px_5().pb_2().child(
-            div()
-                .flex()
-                .flex_row()
-                .gap_2()
-                .items_center()
-                .px_3()
-                .py_1()
-                .rounded(px(12.0))
-                .bg(rgb(pack(SURFACE_800)))
-                .border_1()
-                .border_color(rgb(pack(BORDER_SUBTLE)))
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::XS))
-                .text_color(rgb(pack(TEXT_SECONDARY)))
-                .child(SharedString::from("·"))
-                .child(label),
-        );
-    }
-    strip
 }
 
 fn inference_bar(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
@@ -2964,15 +3733,70 @@ fn pill_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
             ));
     }
 
-    row.child(pill_button(
-        ElementId::Name("chat-model-toggle".into()),
-        model_label,
+    let mut row = row
+        .child(pill_button(
+            ElementId::Name("chat-model-toggle".into()),
+            model_label,
+            cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+                this.toggle_model_dropdown(cx);
+            }),
+        ))
+        .child(reasoning_depth_pill(panel, cx))
+        .child(reason_mode_pill(panel, cx));
+    // Inline VRAM fit chip (readiness-chip pattern): advisory only, renders
+    // solely when reasoning is enabled and the fit probe warned.
+    if let Some(warning) = &panel.fit_warning {
+        row = row.child(fit_chip(warning.clone()));
+    }
+    row.child(eject_button(panel, cx))
+        .child(working_memory_pill(panel, cx))
+}
+
+/// Thinking-tier pill (the maintainer's confirmed InferenceBar placement). Each
+/// click cycles one tier up: fast → think → think harder → ultrathink →
+/// fast. Defaults to `fast` (never planning-by-default); the tier rides
+/// the send payload as `depth`.
+fn reasoning_depth_pill(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
+    let label = SharedString::from(format!("reasoning · {}", panel.reasoning_depth.label()));
+    pill_button(
+        ElementId::Name("chat-reasoning-toggle".into()),
+        label,
         cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
-            this.toggle_model_dropdown(cx);
+            this.toggle_reasoning_depth(cx);
         }),
-    ))
-    .child(eject_button(panel, cx))
-    .child(working_memory_pill(panel, cx))
+    )
+}
+
+/// Split/Single selector pill (agentic reasoning S1 — the maintainer's confirmed
+/// InferenceBar placement, beside the fast/deep toggle). One click flips
+/// the mode and persists it through `settings.reasoning.set`. Inert while
+/// the reasoning master toggle is off — the harness never consults the
+/// mode on a fast/off turn.
+fn reason_mode_pill(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
+    let label = SharedString::from(format!("mode · {}", panel.reason_mode.as_str()));
+    pill_button(
+        ElementId::Name("chat-reason-mode-toggle".into()),
+        label,
+        cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+            this.toggle_reason_mode(cx);
+        }),
+    )
+}
+
+/// Inline VRAM fit warning chip (readiness-chip style, scope §3.2): the
+/// fit picker warns, never blocks — so this is a muted advisory tag, not
+/// an error banner.
+fn fit_chip(warning: String) -> gpui::Div {
+    div()
+        .px_2()
+        .py_1()
+        .rounded(px(4.0))
+        .border_1()
+        .border_color(rgb(pack(BORDER_SUBTLE)))
+        .font_family(FAMILY_INTER)
+        .text_size(px(size::XS))
+        .text_color(rgb(pack(TEXT_MUTED)))
+        .child(SharedString::from(format!("⚠ {warning}")))
 }
 
 /// Working-memory toggle pill — shows the live entry count for the active
@@ -3013,8 +3837,7 @@ fn working_memory_panel(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui:
         );
     if !panel.working_memory.is_empty() {
         header = header.child(
-            div()
-                .id(ElementId::Name("chat-wm-clear".into()))
+            control(div(), ElementId::Name("chat-wm-clear".into()))
                 .px_2()
                 .py_1()
                 .rounded(px(4.0))
@@ -3119,29 +3942,30 @@ fn conversations_panel(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::
                 .flex_row()
                 .gap_1()
                 .child(
-                    // Slice J: import a portable conversation export file.
-                    div()
-                        .id(ElementId::Name("chat-conversation-import".into()))
-                        .px_2()
-                        .py_1()
-                        .rounded(px(4.0))
-                        .border_1()
-                        .border_color(rgb(pack(BORDER_SUBTLE)))
-                        .cursor_pointer()
-                        .font_family(FAMILY_INTER)
-                        .text_size(px(size::MICRO))
-                        .text_color(rgb(pack(TEXT_SECONDARY)))
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|_this: &mut ChatPanel, _ev, _window, cx| {
-                                ChatPanel::spawn_import_conversation(cx);
-                            }),
-                        )
-                        .child(SharedString::from("Import…")),
+                    control(
+                        // Slice J: import a portable conversation export file.
+                        div(),
+                        ElementId::Name("chat-conversation-import".into()),
+                    )
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(rgb(pack(BORDER_SUBTLE)))
+                    .cursor_pointer()
+                    .font_family(FAMILY_INTER)
+                    .text_size(px(size::MICRO))
+                    .text_color(rgb(pack(TEXT_SECONDARY)))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_this: &mut ChatPanel, _ev, _window, cx| {
+                            ChatPanel::spawn_import_conversation(cx);
+                        }),
+                    )
+                    .child(SharedString::from("Import…")),
                 )
                 .child(
-                    div()
-                        .id(ElementId::Name("chat-conversation-new".into()))
+                    control(div(), ElementId::Name("chat-conversation-new".into()))
                         .px_2()
                         .py_1()
                         .rounded(px(4.0))
@@ -3212,39 +4036,39 @@ fn conversation_row(
 
     // Left: the select target. A nested clickable block (not the whole
     // row) so the delete control on the right doesn't double-fire select.
-    let select_block = div()
-        .id(ElementId::Name(
-            format!("chat-conversation-pick::{}", meta.id).into(),
-        ))
-        .flex_1()
-        .flex()
-        .flex_col()
-        .gap(px(1.0))
-        .cursor_pointer()
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |this: &mut ChatPanel, _ev, window, cx| {
-                this.select_conversation(&id_for_select, window, cx);
-            }),
-        )
-        .child(
-            div()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::XS))
-                .text_color(rgb(pack(if is_active {
-                    TEXT_PRIMARY
-                } else {
-                    TEXT_SECONDARY
-                })))
-                .child(title),
-        )
-        .child(
-            div()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::MICRO))
-                .text_color(rgb(pack(TEXT_MUTED)))
-                .child(meta_line),
-        );
+    let select_block = control(
+        div(),
+        ElementId::Name(format!("chat-conversation-pick::{}", meta.id).into()),
+    )
+    .flex_1()
+    .flex()
+    .flex_col()
+    .gap(px(1.0))
+    .cursor_pointer()
+    .on_mouse_down(
+        gpui::MouseButton::Left,
+        cx.listener(move |this: &mut ChatPanel, _ev, window, cx| {
+            this.select_conversation(&id_for_select, window, cx);
+        }),
+    )
+    .child(
+        div()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::XS))
+            .text_color(rgb(pack(if is_active {
+                TEXT_PRIMARY
+            } else {
+                TEXT_SECONDARY
+            })))
+            .child(title),
+    )
+    .child(
+        div()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::MICRO))
+            .text_color(rgb(pack(TEXT_MUTED)))
+            .child(meta_line),
+    );
 
     let mut row = div()
         .flex()
@@ -3277,47 +4101,47 @@ fn conversation_row(
 /// The "⤓" affordance — export this conversation to a file (Slice J).
 fn export_button(id: &str, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
     let id_for_click = id.to_owned();
-    div()
-        .id(ElementId::Name(
-            format!("chat-conversation-export::{id}").into(),
-        ))
-        .px_2()
-        .py_1()
-        .rounded(px(4.0))
-        .cursor_pointer()
-        .font_family(FAMILY_INTER)
-        .text_size(px(size::XS))
-        .text_color(rgb(pack(TEXT_MUTED)))
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |_this: &mut ChatPanel, _ev, _window, cx| {
-                ChatPanel::spawn_export_conversation(id_for_click.clone(), cx);
-            }),
-        )
-        .child(SharedString::from("⤓"))
+    control(
+        div(),
+        ElementId::Name(format!("chat-conversation-export::{id}").into()),
+    )
+    .px_2()
+    .py_1()
+    .rounded(px(4.0))
+    .cursor_pointer()
+    .font_family(FAMILY_INTER)
+    .text_size(px(size::XS))
+    .text_color(rgb(pack(TEXT_MUTED)))
+    .on_mouse_down(
+        gpui::MouseButton::Left,
+        cx.listener(move |_this: &mut ChatPanel, _ev, _window, cx| {
+            ChatPanel::spawn_export_conversation(id_for_click.clone(), cx);
+        }),
+    )
+    .child(SharedString::from("⤓"))
 }
 
 /// The "×" affordance that arms the inline delete confirm for `id`.
 fn delete_request_button(id: &str, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
     let id_for_click = id.to_owned();
-    div()
-        .id(ElementId::Name(
-            format!("chat-conversation-del::{id}").into(),
-        ))
-        .px_2()
-        .py_1()
-        .rounded(px(4.0))
-        .cursor_pointer()
-        .font_family(FAMILY_INTER)
-        .text_size(px(size::XS))
-        .text_color(rgb(pack(TEXT_MUTED)))
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |this: &mut ChatPanel, _ev, _window, cx| {
-                this.request_delete_conversation(&id_for_click, cx);
-            }),
-        )
-        .child(SharedString::from("×"))
+    control(
+        div(),
+        ElementId::Name(format!("chat-conversation-del::{id}").into()),
+    )
+    .px_2()
+    .py_1()
+    .rounded(px(4.0))
+    .cursor_pointer()
+    .font_family(FAMILY_INTER)
+    .text_size(px(size::XS))
+    .text_color(rgb(pack(TEXT_MUTED)))
+    .on_mouse_down(
+        gpui::MouseButton::Left,
+        cx.listener(move |this: &mut ChatPanel, _ev, _window, cx| {
+            this.request_delete_conversation(&id_for_click, cx);
+        }),
+    )
+    .child(SharedString::from("×"))
 }
 
 /// Inline delete confirmation: a "Delete" (destructive) + "Cancel" pair
@@ -3331,46 +4155,46 @@ fn delete_confirm_controls(id: &str, cx: &mut Context<ChatPanel>) -> gpui::Div {
         .gap_1()
         .items_center()
         .child(
-            div()
-                .id(ElementId::Name(
-                    format!("chat-conversation-del-yes::{id}").into(),
-                ))
-                .px_2()
-                .py_1()
-                .rounded(px(4.0))
-                .border_1()
-                .border_color(rgb(pack(BORDER_EMPHASIS)))
-                .cursor_pointer()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::MICRO))
-                .text_color(rgb(pack(TEXT_PRIMARY)))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(move |this: &mut ChatPanel, _ev, _window, cx| {
-                        this.confirm_delete_conversation(&id_confirm, cx);
-                    }),
-                )
-                .child(SharedString::from("Delete")),
+            control(
+                div(),
+                ElementId::Name(format!("chat-conversation-del-yes::{id}").into()),
+            )
+            .px_2()
+            .py_1()
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(rgb(pack(BORDER_EMPHASIS)))
+            .cursor_pointer()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::MICRO))
+            .text_color(rgb(pack(TEXT_PRIMARY)))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this: &mut ChatPanel, _ev, _window, cx| {
+                    this.confirm_delete_conversation(&id_confirm, cx);
+                }),
+            )
+            .child(SharedString::from("Delete")),
         )
         .child(
-            div()
-                .id(ElementId::Name(
-                    format!("chat-conversation-del-no::{id}").into(),
-                ))
-                .px_2()
-                .py_1()
-                .rounded(px(4.0))
-                .cursor_pointer()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::MICRO))
-                .text_color(rgb(pack(TEXT_MUTED)))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
-                        this.cancel_delete_conversation(cx);
-                    }),
-                )
-                .child(SharedString::from("Cancel")),
+            control(
+                div(),
+                ElementId::Name(format!("chat-conversation-del-no::{id}").into()),
+            )
+            .px_2()
+            .py_1()
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::MICRO))
+            .text_color(rgb(pack(TEXT_MUTED)))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+                    this.cancel_delete_conversation(cx);
+                }),
+            )
+            .child(SharedString::from("Cancel")),
         )
 }
 
@@ -3413,8 +4237,7 @@ fn eject_button(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui
     } else {
         (rgb(pack(TEXT_MUTED)), rgb(pack(BORDER_SUBTLE)))
     };
-    let mut btn = div()
-        .id(ElementId::Name("chat-model-eject".into()))
+    let mut btn = control(div(), ElementId::Name("chat-model-eject".into()))
         .px_3()
         .py_1()
         .rounded(px(12.0))
@@ -3444,8 +4267,7 @@ fn pill_button<F>(id: ElementId, label: SharedString, listener: F) -> Stateful<g
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_1()
         .rounded(px(12.0))
@@ -3530,8 +4352,7 @@ fn dropdown_row<F>(id: ElementId, label: SharedString, listener: F) -> Stateful<
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(id)
+    control(div(), id)
         .px_2()
         .py_1()
         .rounded(px(4.0))
@@ -3588,8 +4409,7 @@ fn prompt_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
 
 fn send_button(input: Entity<TextInput>, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
     let listener_input = input.clone();
-    div()
-        .id(ElementId::Name("chat-send".into()))
+    control(div(), ElementId::Name("chat-send".into()))
         .px_4()
         .py_2()
         .rounded(px(8.0))
@@ -3610,8 +4430,7 @@ fn send_button(input: Entity<TextInput>, cx: &mut Context<ChatPanel>) -> Statefu
 }
 
 fn stop_button(cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("chat-stop".into()))
+    control(div(), ElementId::Name("chat-stop".into()))
         .px_4()
         .py_2()
         .rounded(px(8.0))
@@ -3977,6 +4796,126 @@ mod tests {
     }
 
     #[test]
+    fn processing_event_routing_drives_indicator_through_a_turn() {
+        // Idle → animating → phases → tokens, fed off the user-facing
+        // stream the same way the pump routes it (chat-processing-indicator).
+        let mut p = ProcessingState::new();
+        // Pre-signal: generic "Working" fallback (graceful degradation).
+        assert_eq!(p.phase, ProcessingPhase::Working);
+
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Phase {
+                turn_id: "t".into(),
+                phase: "gathering_context".into(),
+            },
+        );
+        assert_eq!(p.phase, ProcessingPhase::GatheringContext);
+
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Phase {
+                turn_id: "t".into(),
+                phase: "generating".into(),
+            },
+        );
+        assert_eq!(p.phase, ProcessingPhase::Generating);
+
+        // Running usage tick, then thinking.
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Usage {
+                turn_id: "t".into(),
+                prompt_tokens: None,
+                completion_tokens: 120,
+                done: false,
+            },
+        );
+        assert_eq!(p.token_meter(), Some("120 tokens".to_owned()));
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Thinking {
+                turn_id: "t".into(),
+                text: "hmm".into(),
+            },
+        );
+        assert_eq!(p.thinking, "hmm");
+
+        // Authoritative final usage.
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Usage {
+                turn_id: "t".into(),
+                prompt_tokens: Some(1_000),
+                completion_tokens: 200,
+                done: true,
+            },
+        );
+        assert_eq!(p.token_meter(), Some("1.2k tokens".to_owned()));
+    }
+
+    #[test]
+    fn tool_detail_formats_args_output_and_duration() {
+        // Object args → compact JSON.
+        let d = tool_detail(&serde_json::json!({"query": "vpn"}), None);
+        assert_eq!(d.as_deref(), Some("{\"query\":\"vpn\"}"));
+        // String value (an error) used verbatim + duration appended.
+        let d = tool_detail(&serde_json::Value::String("boom".into()), Some(12.0));
+        assert_eq!(d.as_deref(), Some("boom  ·  12ms"));
+        // Null + no duration → nothing.
+        assert_eq!(tool_detail(&serde_json::Value::Null, None), None);
+        // Null + duration → just the duration.
+        assert_eq!(
+            tool_detail(&serde_json::Value::Null, Some(5.0)).as_deref(),
+            Some("5ms")
+        );
+    }
+
+    #[test]
+    fn processing_event_routing_handles_steps() {
+        let mut p = ProcessingState::new();
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Step {
+                turn_id: "t".into(),
+                stage: "routing".into(),
+                summary: "Routed to 2 concepts".into(),
+                detail: Some("nextcloud, vpn".into()),
+            },
+        );
+        let e = p
+            .log
+            .iter()
+            .find(|e| e.text == "Routed to 2 concepts")
+            .unwrap();
+        assert_eq!(e.detail.as_deref(), Some("nextcloud, vpn"));
+    }
+
+    #[test]
+    fn processing_event_routing_is_a_noop_without_a_state() {
+        // Graceful degradation: a chunk arriving with no in-flight indicator
+        // (e.g. a late frame after settle) must not panic.
+        apply_processing_turn_event(
+            None,
+            &TurnChunk::Phase {
+                turn_id: "t".into(),
+                phase: "generating".into(),
+            },
+        );
+        // Bubble-only variants are ignored by the processing router.
+        let mut p = ProcessingState::new();
+        apply_processing_turn_event(
+            Some(&mut p),
+            &TurnChunk::Token {
+                turn_id: "t".into(),
+                text: "hi".into(),
+            },
+        );
+        assert!(p.log.is_empty());
+        assert_eq!(p.token_meter(), None);
+    }
+
+    #[test]
     fn apply_turn_aborted_surfaces_reason_when_not_cancelled() {
         let a = ChatMessage::assistant_streaming();
         let aid = a.id.clone();
@@ -4266,5 +5205,92 @@ mod tests {
         // A stamp slightly in the future (clock skew) is "just now", not a
         // negative age.
         assert_eq!(relative_time(now + 100), "just now");
+    }
+
+    // ── InferenceBar thinking-tier pill ──────────────────────────────────
+    // No gpui-executor harness in this crate (see the note above the C1
+    // tests), so the pill is pinned at the state + label level: the field
+    // the pill reads/writes and the exact string the pill renders.
+
+    /// The confirmed default is Fast — never planning-by-default (the
+    /// reasoning tax). This is the identity-invariant end of the ladder.
+    #[test]
+    fn reasoning_depth_defaults_to_fast() {
+        assert_eq!(ReasoningDepth::default(), ReasoningDepth::Fast);
+        assert_eq!(ReasoningDepth::Fast.as_str(), "fast");
+    }
+
+    /// The wire tokens the harness's `Depth::parse` accepts, one per tier.
+    #[test]
+    fn reasoning_depth_wire_tokens_match_harness() {
+        assert_eq!(ReasoningDepth::Think.as_str(), "think");
+        assert_eq!(ReasoningDepth::ThinkHarder.as_str(), "think_harder");
+        assert_eq!(ReasoningDepth::Ultrathink.as_str(), "ultrathink");
+    }
+
+    /// Clicking cycles the full tier ladder and wraps back to Fast (the
+    /// pill's whole contract).
+    #[test]
+    fn reasoning_depth_cycles_the_tier_ladder() {
+        let d = ReasoningDepth::Fast;
+        assert_eq!(d.toggled(), ReasoningDepth::Think);
+        assert_eq!(d.toggled().toggled(), ReasoningDepth::ThinkHarder);
+        assert_eq!(d.toggled().toggled().toggled(), ReasoningDepth::Ultrathink);
+        assert_eq!(
+            d.toggled().toggled().toggled().toggled(),
+            ReasoningDepth::Fast,
+            "wraps"
+        );
+    }
+
+    /// The pill label the InferenceBar renders per tier, defaulting Fast.
+    #[test]
+    fn reasoning_depth_pill_label_matches_state() {
+        assert_eq!(
+            format!("reasoning · {}", ReasoningDepth::default().label()),
+            "reasoning · fast"
+        );
+        assert_eq!(
+            format!("reasoning · {}", ReasoningDepth::ThinkHarder.label()),
+            "reasoning · think harder"
+        );
+        assert_eq!(
+            format!("reasoning · {}", ReasoningDepth::Ultrathink.label()),
+            "reasoning · ultrathink"
+        );
+    }
+
+    #[test]
+    fn reason_mode_defaults_to_single() {
+        // The maintainer 2026-07-13: PLAN and EXECUTE on the same model ⇒ Single.
+        assert_eq!(ReasonMode::default(), ReasonMode::Single);
+        assert_eq!(ReasonMode::Single.as_str(), "single");
+        assert_eq!(ReasonMode::Split.as_str(), "split");
+    }
+
+    #[test]
+    fn reason_mode_toggles_both_ways() {
+        let m = ReasonMode::Single;
+        assert_eq!(m.toggled(), ReasonMode::Split);
+        assert_eq!(m.toggled().toggled(), ReasonMode::Single);
+    }
+
+    #[test]
+    fn reason_mode_parse_is_tolerant() {
+        assert_eq!(ReasonMode::parse("split"), Some(ReasonMode::Split));
+        assert_eq!(ReasonMode::parse("single"), Some(ReasonMode::Single));
+        assert_eq!(
+            ReasonMode::parse("sideways"),
+            None,
+            "unknown → caller default"
+        );
+    }
+
+    #[test]
+    fn reason_mode_pill_label_matches_state() {
+        let single = format!("mode · {}", ReasonMode::default().as_str());
+        assert_eq!(single, "mode · single");
+        let split = format!("mode · {}", ReasonMode::Split.as_str());
+        assert_eq!(split, "mode · split");
     }
 }

@@ -1,7 +1,7 @@
 //! Read `models` declarations from service manifests. Rust port of
 //! `Core/harness/model_registry/_service_manifests.py`.
 //!
-//! Each top-level service folder under the Wylde root may ship a
+//! Each service in the out-of-tree `Services/` bucket may ship a
 //! `manifest.json` with a `models` array. This module collects every
 //! such declaration and returns:
 //!
@@ -9,9 +9,20 @@
 //! * a `required_by` map (model id → list of service names) — surfaced
 //!   on the entry for the GUI.
 //!
-//! Manifests without a `models` key are silently skipped. Tool
-//! manifests under `Core/harness/tooling/tools/<group>/<id>/`
-//! aren't reached because we don't scan `Core`.
+//! Manifests without a `models` key are silently skipped.
+//!
+//! ## Scan roots are *discovered*, not listed (#125)
+//!
+//! The scan used to walk a hand-kept list of pre-cutover top-level folder
+//! names (`Voice`, `Gateway`, `N8N`, …), most of which no longer exist,
+//! and it did **not** include `Services/` — so a `Services/<svc>/manifest.json`
+//! that declared a model was invisible to the model registry, silently, by
+//! construction (a manifest with no `models` key is legitimately skipped, so an
+//! absent root looked identical to a no-op). The roots now come from
+//! [`wylde_stack::roster::discovered_folders`] — the *same* `Services/` walk
+//! the updater, launcher, and lifecycle daemon already follow — so a service
+//! dropped into the bucket is covered with no edit here, and honours the same
+//! `WYLDE_SERVICES` override.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,18 +33,6 @@ use once_cell::sync::Lazy;
 use serde_json::Value;
 
 use crate::model_registry::types::Kind;
-
-/// Top-level dirs to scan. Skipping `Core` (no service manifests there)
-/// and `_legacy`. Anything new added to the Wylde root that ships a
-/// service manifest needs to be added here.
-const SERVICE_ROOTS: &[&str] = &[
-    "Voice",
-    "VoiceAssistant", // wylde-check: dead-ref-ok
-    "Extensions",
-    "Gateway",
-    "device_gate",
-    "N8N",
-];
 
 type Signature = Vec<(PathBuf, u64, u64)>;
 
@@ -61,47 +60,26 @@ pub fn wylde_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Find every service `manifest.json` under the recognised roots. A
-/// service manifest sits at `<service>/manifest.json` (top-level of the
-/// service folder) or at `<service>/<sub>/manifest.json` for nested
-/// services. Tool manifests under `Core/harness/tooling/tools/` are not
-/// reached because we don't scan `Core`.
+/// Find every service `manifest.json` in the `Services/` bucket.
+///
+/// The roots are *discovered*, not listed:
+/// [`wylde_stack::roster::discovered_folders`] returns each
+/// immediate `Services/<svc>/` folder that carries a readable `manifest.json`
+/// (dot/underscore-prefixed folders excluded), the same walk the updater,
+/// launcher, and lifecycle registry use. Each such folder's `manifest.json` is
+/// a candidate; whether it declares any `models` is decided later in
+/// [`read_one`].
 fn candidate_manifests() -> Vec<PathBuf> {
     let root = wylde_root();
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-    for name in SERVICE_ROOTS {
-        let service_root = root.join(name);
-        if !service_root.is_dir() {
-            continue;
-        }
-        // Direct child manifest first.
-        let direct = service_root.join("manifest.json");
-        if direct.is_file() && seen.insert(direct.clone()) {
-            paths.push(direct);
-        }
-        // One level deep for `Voice/_wylde_voice`-style services.
-        let Ok(it) = std::fs::read_dir(&service_root) else {
-            continue;
-        };
-        for entry in it.flatten() {
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-            let child_name = entry.file_name();
-            let Some(child_str) = child_name.to_str() else {
-                continue;
-            };
-            if child_str.starts_with("__") || child_str.starts_with('.') {
-                continue;
-            }
-            let m = entry.path().join("manifest.json");
-            if m.is_file() && seen.insert(m.clone()) {
-                paths.push(m);
-            }
+    for folder in wylde_stack::roster::discovered_folders(&root) {
+        let manifest = folder.join("manifest.json");
+        // `discovered_folders` already guarantees the manifest exists, but the
+        // re-check keeps this robust to a folder that vanishes between the walk
+        // and here (and is cheap).
+        if manifest.is_file() && seen.insert(manifest.clone()) {
+            paths.push(manifest);
         }
     }
     paths
@@ -246,20 +224,29 @@ mod tests {
     struct WyldeRootEnv {
         _guard: MutexGuard<'static, ()>,
         _td: TempDir,
-        prior: Option<std::ffi::OsString>,
+        prior_root: Option<std::ffi::OsString>,
+        prior_services: Option<std::ffi::OsString>,
     }
 
     impl WyldeRootEnv {
         fn new() -> Self {
             let guard = TEST_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
             let td = TempDir::new().expect("tempdir");
-            let prior = std::env::var_os("WYLDE_ROOT");
+            let prior_root = std::env::var_os("WYLDE_ROOT");
+            // The `Services/` bucket walk honours a `WYLDE_SERVICES` override
+            // (`wylde_stack::roster::resolve_bucket_dir`), which a real dev
+            // machine sets to its live install. Clear it so the scan resolves
+            // under the tempdir; without this the discovery would read the
+            // developer's actual `Services/` and the test wouldn't be hermetic.
+            let prior_services = std::env::var_os("WYLDE_SERVICES");
             std::env::set_var("WYLDE_ROOT", td.path());
+            std::env::remove_var("WYLDE_SERVICES");
             invalidate_cache();
             Self {
                 _guard: guard,
                 _td: td,
-                prior,
+                prior_root,
+                prior_services,
             }
         }
 
@@ -271,9 +258,13 @@ mod tests {
     impl Drop for WyldeRootEnv {
         fn drop(&mut self) {
             invalidate_cache();
-            match self.prior.take() {
+            match self.prior_root.take() {
                 Some(v) => std::env::set_var("WYLDE_ROOT", v),
                 None => std::env::remove_var("WYLDE_ROOT"),
+            }
+            match self.prior_services.take() {
+                Some(v) => std::env::set_var("WYLDE_SERVICES", v),
+                None => std::env::remove_var("WYLDE_SERVICES"),
             }
         }
     }
@@ -300,10 +291,37 @@ mod tests {
     }
 
     #[test]
+    fn services_bucket_manifest_is_seen_by_the_model_registry() {
+        // #125B falsification: a service dropped into the `Services/` bucket
+        // that declares a model must be visible to the model registry — with no
+        // code edit. Before deriving the roots from `discovered_folders` the
+        // scan walked a hand-kept list of pre-cutover names that did NOT include
+        // `Services/`, so this manifest was silently invisible; reverting to
+        // that literal turns this red. Mirrors the discovery seam
+        // `wylde_updater/tests/whole_stack_coverage.rs` drives.
+        let env = WyldeRootEnv::new();
+        write_manifest(
+            &env.root().join("Services/wylde-synthetic/manifest.json"),
+            "wylde-synthetic",
+            &[("acme/embed-v1", "embed")],
+        );
+        let (overrides, required) = load_declarations(true);
+        assert_eq!(
+            overrides.get("acme/embed-v1"),
+            Some(&Kind::Embed),
+            "a Services/ manifest's model must reach the registry",
+        );
+        assert_eq!(
+            required.get("acme/embed-v1"),
+            Some(&vec!["wylde-synthetic".to_owned()])
+        );
+    }
+
+    #[test]
     fn manifest_at_top_level_of_service_is_picked_up() {
         let env = WyldeRootEnv::new();
         write_manifest(
-            &env.root().join("Voice/manifest.json"),
+            &env.root().join("Services/Voice/manifest.json"),
             "voice",
             &[
                 ("openai/whisper-small", "stt"),
@@ -320,29 +338,14 @@ mod tests {
     }
 
     #[test]
-    fn nested_one_level_manifest_is_picked_up() {
+    fn underscore_prefixed_bucket_children_are_skipped() {
         let env = WyldeRootEnv::new();
-        // Voice/_wylde_voice/manifest.json — one level deep.
+        // `discovered_folders` excludes `_`/`.`-prefixed immediate children of
+        // the bucket (private/dotfiles) — so a `Services/_staging/` never
+        // reaches the model registry, mirroring the daemon's own discovery.
         write_manifest(
-            &env.root().join("Voice/_wylde_voice/manifest.json"),
-            "voice-internal",
-            &[("openai/whisper-large-v3", "stt")],
-        );
-        let (overrides, required) = load_declarations(true);
-        assert_eq!(overrides.get("openai/whisper-large-v3"), Some(&Kind::Stt));
-        assert_eq!(
-            required.get("openai/whisper-large-v3"),
-            Some(&vec!["voice-internal".to_owned()])
-        );
-    }
-
-    #[test]
-    fn dunder_subdirs_are_skipped() {
-        let env = WyldeRootEnv::new();
-        // __pycache__/manifest.json — should be ignored.
-        write_manifest(
-            &env.root().join("Voice/__pycache__/manifest.json"),
-            "pycache",
+            &env.root().join("Services/_staging/manifest.json"),
+            "staging",
             &[("ignored/model", "llm")],
         );
         let (overrides, _) = load_declarations(true);
@@ -353,7 +356,7 @@ mod tests {
     fn bad_kind_dropped_silently() {
         let env = WyldeRootEnv::new();
         write_manifest(
-            &env.root().join("Voice/manifest.json"),
+            &env.root().join("Services/Voice/manifest.json"),
             "voice",
             &[("openai/whisper-small", "audio")], // unknown kind
         );
@@ -365,29 +368,30 @@ mod tests {
     fn first_declaration_wins_on_conflict() {
         let env = WyldeRootEnv::new();
         write_manifest(
-            &env.root().join("Voice/manifest.json"),
-            "voice",
+            &env.root().join("Services/svc-a/manifest.json"),
+            "svc-a",
             &[("multi/model", "stt")],
         );
         write_manifest(
-            &env.root().join("Gateway/manifest.json"),
-            "gateway",
+            &env.root().join("Services/svc-b/manifest.json"),
+            "svc-b",
             &[("multi/model", "llm")],
         );
         let (overrides, required) = load_declarations(true);
-        // Voice scans first (alphabetical in SERVICE_ROOTS); its kind wins.
+        // `discovered_folders` returns the bucket's children sorted by path, so
+        // `svc-a` scans before `svc-b`; the first declaration's kind wins.
         assert_eq!(overrides.get("multi/model"), Some(&Kind::Stt));
         // Both services are still recorded in required_by.
         let req = required.get("multi/model").cloned().unwrap_or_default();
         assert_eq!(req.len(), 2);
-        assert!(req.contains(&"voice".to_owned()));
-        assert!(req.contains(&"gateway".to_owned()));
+        assert!(req.contains(&"svc-a".to_owned()));
+        assert!(req.contains(&"svc-b".to_owned()));
     }
 
     #[test]
     fn manifest_with_no_models_array_is_tolerated() {
         let env = WyldeRootEnv::new();
-        let path = env.root().join("Voice/manifest.json");
+        let path = env.root().join("Services/Voice/manifest.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{"name": "voice"}"#).unwrap();
         let (overrides, _) = load_declarations(true);
@@ -397,7 +401,7 @@ mod tests {
     #[test]
     fn bad_json_is_tolerated() {
         let env = WyldeRootEnv::new();
-        let path = env.root().join("Voice/manifest.json");
+        let path = env.root().join("Services/Voice/manifest.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "not json").unwrap();
         let (overrides, _) = load_declarations(true);
@@ -408,14 +412,14 @@ mod tests {
     fn cache_invalidate_forces_rebuild() {
         let env = WyldeRootEnv::new();
         write_manifest(
-            &env.root().join("Voice/manifest.json"),
+            &env.root().join("Services/Voice/manifest.json"),
             "voice",
             &[("openai/whisper-small", "stt")],
         );
         let _ = load_declarations(true);
         invalidate_cache();
         write_manifest(
-            &env.root().join("Voice/manifest.json"),
+            &env.root().join("Services/Voice/manifest.json"),
             "voice",
             &[
                 ("openai/whisper-small", "stt"),

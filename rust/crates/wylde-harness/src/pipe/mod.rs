@@ -85,9 +85,12 @@ mod settings;
 mod tools;
 mod user_profile;
 
-/// Every action the harness pipe registers. Tests compare this against
-/// `list_action_meta()` to catch a missing registration. Order mirrors
-/// the Phase 9 sectioning so the contract emitter produces stable output.
+/// Every action the harness pipe registers. `install_registers_every_action`
+/// asserts this table and `list_action_meta()` are EQUAL — every table entry is
+/// registered (a listed-but-unregistered verb) AND every registered verb is
+/// listed (the direction a developer actually trips: add a handler, forget the
+/// table — #142). Order mirrors the Phase 9 sectioning so the contract emitter
+/// produces stable output.
 pub const ALL_PIPE_ACTIONS: &[&str] = &[
     // chat.* — turn driver (7 verbs)
     "chat.run_turn",
@@ -127,6 +130,8 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "models.set_default",
     "models.get_default",
     "models.get_effective",
+    // #235 — the star resolved against the live on-disk inventory.
+    "models.resolve_default",
     // settings.ollama.* — per-model inference override store (4 verbs)
     "settings.ollama.get_overrides",
     "settings.ollama.set_overrides",
@@ -139,6 +144,11 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     // plan §3, 2 verbs)
     "settings.concept_routing.get",
     "settings.concept_routing.set",
+    // settings.reasoning.* + reasoning.fit_check — agentic-reasoning master
+    // toggle + model slots + advisory VRAM fit (reasoning plan S1, 3 verbs)
+    "settings.reasoning.get",
+    "settings.reasoning.set",
+    "reasoning.fit_check",
     // prompts.* — system-prompt overrides + presets (5 verbs; Rust port
     // of the Python `_prompts.py` actions, full-Rust cutover)
     "prompts.list",
@@ -160,13 +170,16 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.long_term.delete",
     "memory.long_term.history",
     "memory.long_term.search",
+    "memory.long_term.reindex",
     // memory.workspace.* — workspace-scoped durable memory tier
-    // (6 verbs; full-Rust cutover slice R2a)
+    // (8 verbs; R2a base + delete_all (#135) + reindex (#136))
     "memory.workspace.list",
     "memory.workspace.search",
     "memory.workspace.save",
     "memory.workspace.update",
     "memory.workspace.delete",
+    "memory.workspace.delete_all",
+    "memory.workspace.reindex",
     "memory.workspace.curate",
     // memory.reflect — consolidation cycles, all scopes (full-Rust
     // cutover slice R2b)
@@ -179,7 +192,7 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "memory.short_term.get",
     "memory.short_term.append",
     "memory.short_term.clear",
-    // conversations.* — lifecycle + active selection + workspace (8 verbs)
+    // conversations.* — lifecycle + active selection + workspace (10 verbs)
     "conversations.new",
     "conversations.list",
     "conversations.get",
@@ -187,6 +200,8 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "conversations.delete_by_workspace",
     "conversations.get_active",
     "conversations.set_active",
+    "conversations.get_active_for_workspace",
+    "conversations.set_active_for_workspace",
     "conversations.set_workspace",
     // consent.* — per-tool consent gate (Phase 12.2; 6 unary + 1 streaming = 7 verbs)
     "consent.list",

@@ -76,23 +76,16 @@ WebView child window.
 > clone-to-running instructions (under 10 minutes). The sections below are
 > the reference detail behind that guide.
 
-### Quick install (Windows)
+### Install (Windows)
 
-> **Latest release: [`v0.1.0-alpha.1`](https://github.com/PeopleWonder/wylde/releases/tag/v0.1.0-alpha.1)** (beta / pre-release) —
-> grab [`WyldeSetup-0.1.0-alpha.1.exe`](https://github.com/PeopleWonder/wylde/releases/download/v0.1.0-alpha.1/WyldeSetup-0.1.0-alpha.1.exe).
-> The bare signed `wylde-gui-x86_64-pc-windows-msvc.exe` on that page is what
-> the in-app self-updater consumes — you don't need it for a first install.
+> **There is no working packaged installer.** The `WyldeSetup-<version>.exe`
+> asset on the Releases page does **not** produce a working install and never
+> has. Do not use it. The NSIS installer work has moved to
+> [PeopleWonder/wylde-installer](https://github.com/PeopleWonder/wylde-installer),
+> where it is parked as planned future work.
 
-Grab the latest **`WyldeSetup-<version>.exe`** from the
-[GitHub Releases](https://github.com/PeopleWonder/wylde/releases) page and run
-it. The installer is **per-user — no admin / UAC prompt** — and lands in
-`%LOCALAPPDATA%\Programs\Wylde\`. It adds a Start-menu shortcut (and optional
-desktop shortcut / autostart) that launches Wylde daemon-first. Uninstall any
-time from **Settings → Apps**.
-
-> The alpha installer is unsigned, so SmartScreen will warn the first time —
-> choose *More info → Run anyway*. Building the installer yourself is covered
-> in [docs/installer.md](docs/installer.md).
+The only supported route is a **development checkout** — build from source and
+launch via `launch_wylde.ps1`. See [docs/setup.md](docs/setup.md).
 
 ### Prerequisites
 

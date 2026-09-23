@@ -1,5 +1,9 @@
 # Strict mypy mode — full-monorepo rollout completion report
 
+> ⚠️ **ARCHIVED / STALE — describes the REMOVED Python runtime, NOT the current all-Rust stack. Kept for history.**
+> The "full-monorepo strict mypy" walk this report describes covered the Python services that were **deleted in the full-Rust cutover (R6, commit `2f5aa82`, 2026-06-10)**. The only Python remaining is the dev-time `wylde_check` architecture linter under `Core/harness/dev/`; there is no longer a monorepo-wide Python codebase to type-check. Kept for historical reference.
+> *Banner added 2026-06-27 on branch `chore/structure-tidy` (structure-tidy pass).*
+
 **Status:** complete. Every service is on strict mypy. Unified mypy walk over the
 monorepo returns a single error — and that error is in
 `Core/harness/dev/wylde_check/rules/_actions.py:359`, which is owned by a

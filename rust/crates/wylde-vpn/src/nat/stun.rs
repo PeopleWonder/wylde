@@ -205,11 +205,7 @@ pub fn discover_endpoint_with(
 
 /// Run the four-test NAT classification. Matches `VPN/nat/stun.py::classify`
 /// branch-for-branch.
-pub fn classify(
-    stun_servers: &[String],
-    local_port: u16,
-    timeout: Duration,
-) -> Classification {
+pub fn classify(stun_servers: &[String], local_port: u16, timeout: Duration) -> Classification {
     classify_with(&UdpTransport, stun_servers, local_port, timeout)
 }
 
@@ -263,7 +259,11 @@ pub fn classify_with(
     // Test II — CHANGE-REQUEST 0x06 (different IP + different port).
     // Python passes mapped_port as local_port only when caller supplied
     // a local_port. Replicate that conditional.
-    let test_ii_local = if local_port != 0 { test_i.mapped_port } else { 0 };
+    let test_ii_local = if local_port != 0 {
+        test_i.mapped_port
+    } else {
+        0
+    };
     let test_ii = transport.probe(primary, 0x06, test_ii_local, timeout);
     if test_ii.is_some() {
         return Classification {
@@ -282,9 +282,7 @@ pub fn classify_with(
             port: test_iii.mapped_port,
             rtt_ms: test_iii.rtt_ms,
         });
-        if (&test_iii.mapped_ip, test_iii.mapped_port)
-            != (&test_i.mapped_ip, test_i.mapped_port)
-        {
+        if (&test_iii.mapped_ip, test_iii.mapped_port) != (&test_i.mapped_ip, test_i.mapped_port) {
             return Classification {
                 nat_type: NatType::Symmetric,
                 mappings,
@@ -315,22 +313,13 @@ pub fn classify_with(
 
 /// One-sided UDP datagram burst. The richer coordinated punch lives in
 /// [`super::hole_puncher::punch`].
-pub fn punch_hole(
-    peer_endpoint: &str,
-    local_port: u16,
-    attempts: u32,
-    interval: Duration,
-) {
+pub fn punch_hole(peer_endpoint: &str, local_port: u16, attempts: u32, interval: Duration) {
     let Some((host, port)) = parse_endpoint(peer_endpoint) else {
-        tracing::debug!(
-            "stun::punch_hole: skipping malformed endpoint {peer_endpoint:?}"
-        );
+        tracing::debug!("stun::punch_hole: skipping malformed endpoint {peer_endpoint:?}");
         return;
     };
     let Ok(sock) = std::net::UdpSocket::bind(("0.0.0.0", local_port)) else {
-        tracing::debug!(
-            "stun::punch_hole: bind on local_port {local_port} failed"
-        );
+        tracing::debug!("stun::punch_hole: bind on local_port {local_port} failed");
         return;
     };
     let target = format!("{host}:{port}");
@@ -338,9 +327,7 @@ pub fn punch_hole(
         let _ = sock.send_to(b"", &target);
         std::thread::sleep(interval);
     }
-    tracing::debug!(
-        "stun::punch_hole sent {attempts} datagrams → {host}:{port}"
-    );
+    tracing::debug!("stun::punch_hole sent {attempts} datagrams → {host}:{port}");
 }
 
 // ── wire helpers ──────────────────────────────────────────────────────────────
@@ -362,10 +349,7 @@ pub(crate) fn encode_request(transaction_id: [u8; 12], change_flags: u32) -> Vec
     out
 }
 
-pub(crate) fn decode_response(
-    data: &[u8],
-    transaction_id: [u8; 12],
-) -> Option<StunResult> {
+pub(crate) fn decode_response(data: &[u8], transaction_id: [u8; 12]) -> Option<StunResult> {
     if data.len() < 20 {
         return None;
     }
@@ -403,19 +387,15 @@ pub(crate) fn decode_response(
                         ip_bytes = ip_int.to_be_bytes();
                     }
                     if family == FAMILY_IPV4 {
-                        mapped_ip =
-                            std::net::Ipv4Addr::from(ip_bytes).to_string();
+                        mapped_ip = std::net::Ipv4Addr::from(ip_bytes).to_string();
                         mapped_port = port;
                     }
                 }
             }
-            ATTR_OTHER_ADDRESS => {
-                if val.len() >= 8 {
-                    let port = u16::from_be_bytes([val[2], val[3]]);
-                    let ip = std::net::Ipv4Addr::new(val[4], val[5], val[6], val[7])
-                        .to_string();
-                    other = Some((ip, port));
-                }
+            ATTR_OTHER_ADDRESS if val.len() >= 8 => {
+                let port = u16::from_be_bytes([val[2], val[3]]);
+                let ip = std::net::Ipv4Addr::new(val[4], val[5], val[6], val[7]).to_string();
+                other = Some((ip, port));
             }
             _ => {}
         }
@@ -508,8 +488,7 @@ mod tests {
     /// a real timeout).
     #[derive(Default)]
     struct MockTransport {
-        responses:
-            Mutex<std::collections::HashMap<(String, u32, u16), Option<StunResult>>>,
+        responses: Mutex<std::collections::HashMap<(String, u32, u16), Option<StunResult>>>,
         local: Mutex<Option<String>>,
     }
 
@@ -575,10 +554,7 @@ mod tests {
         // Verify header decoding.
         assert_eq!(u16::from_be_bytes([req[0], req[1]]), BIND_REQUEST);
         assert_eq!(u16::from_be_bytes([req[2], req[3]]), 0); // no attrs
-        assert_eq!(
-            u32::from_be_bytes([req[4], req[5], req[6], req[7]]),
-            MAGIC
-        );
+        assert_eq!(u32::from_be_bytes([req[4], req[5], req[6], req[7]]), MAGIC);
         assert_eq!(&req[8..20], &txid);
     }
 
@@ -644,14 +620,12 @@ mod tests {
 
     #[test]
     fn classify_open_when_local_matches_mapped() {
-        let mock = MockTransport::new()
-            .with_local_ip("9.9.9.9")
-            .with_response(
-                "primary:3478",
-                0,
-                0,
-                Some(mock_result("primary:3478", "9.9.9.9", 51820)),
-            );
+        let mock = MockTransport::new().with_local_ip("9.9.9.9").with_response(
+            "primary:3478",
+            0,
+            0,
+            Some(mock_result("primary:3478", "9.9.9.9", 51820)),
+        );
         let servers = vec!["primary:3478".to_string()];
         let c = classify_with(&mock, &servers, 0, Duration::from_millis(1));
         assert_eq!(c.nat_type, NatType::Open);
@@ -698,10 +672,7 @@ mod tests {
                 0,
                 Some(mock_result("secondary:3478", "1.2.3.4", 6000)),
             );
-        let servers = vec![
-            "primary:3478".to_string(),
-            "secondary:3478".to_string(),
-        ];
+        let servers = vec!["primary:3478".to_string(), "secondary:3478".to_string()];
         let c = classify_with(&mock, &servers, 0, Duration::from_millis(1));
         assert_eq!(c.nat_type, NatType::Symmetric);
         assert_eq!(c.recommend, Recommend::Relay);
@@ -732,10 +703,7 @@ mod tests {
                 0,
                 Some(mock_result("primary:3478", "1.2.3.4", 7000)),
             );
-        let servers = vec![
-            "primary:3478".to_string(),
-            "secondary:3478".to_string(),
-        ];
+        let servers = vec!["primary:3478".to_string(), "secondary:3478".to_string()];
         let c = classify_with(&mock, &servers, 0, Duration::from_millis(1));
         assert_eq!(c.nat_type, NatType::RestrictedCone);
         assert_eq!(c.recommend, Recommend::HolePunch);
@@ -758,10 +726,7 @@ mod tests {
                 Some(mock_result("secondary:3478", "1.2.3.4", 8000)),
             );
         // Tests II + IV return None (no entries registered).
-        let servers = vec![
-            "primary:3478".to_string(),
-            "secondary:3478".to_string(),
-        ];
+        let servers = vec!["primary:3478".to_string(), "secondary:3478".to_string()];
         let c = classify_with(&mock, &servers, 0, Duration::from_millis(1));
         assert_eq!(c.nat_type, NatType::PortRestricted);
         assert_eq!(c.recommend, Recommend::HolePunch);
@@ -784,12 +749,8 @@ mod tests {
             0,
             Some(mock_result("primary:3478", "5.6.7.8", 4444)),
         );
-        let servers = vec![
-            "deadbeef:3478".to_string(),
-            "primary:3478".to_string(),
-        ];
-        let v = discover_endpoint_with(&mock, &servers, 0, Duration::from_millis(1))
-            .unwrap();
+        let servers = vec!["deadbeef:3478".to_string(), "primary:3478".to_string()];
+        let v = discover_endpoint_with(&mock, &servers, 0, Duration::from_millis(1)).unwrap();
         assert_eq!(v["ip"], "5.6.7.8");
         assert_eq!(v["port"], 4444);
         assert_eq!(v["server"], "primary:3478");
@@ -800,10 +761,7 @@ mod tests {
     fn discover_endpoint_none_when_all_fail() {
         let mock = MockTransport::new();
         let servers = vec!["none:3478".to_string()];
-        assert!(
-            discover_endpoint_with(&mock, &servers, 0, Duration::from_millis(1))
-                .is_none()
-        );
+        assert!(discover_endpoint_with(&mock, &servers, 0, Duration::from_millis(1)).is_none());
     }
 
     #[test]
@@ -881,8 +839,7 @@ mod tests {
             let _ = n;
         });
 
-        let result =
-            udp_probe(&addr.to_string(), 0, 0, Duration::from_secs(2)).unwrap();
+        let result = udp_probe(&addr.to_string(), 0, 0, Duration::from_secs(2)).unwrap();
         server_thread.join().unwrap();
         assert_eq!(result.mapped_ip, "5.6.7.8");
         assert_eq!(result.mapped_port, 9999);

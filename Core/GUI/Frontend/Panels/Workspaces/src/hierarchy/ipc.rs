@@ -51,7 +51,10 @@ impl HierNodeView {
     /// The underlying source id (the part after the `concept:` / `vocab:` /
     /// `node:` prefix) — what a graph deep-link targets.
     pub fn source_id(&self) -> &str {
-        self.id.split_once(':').map(|(_, rest)| rest).unwrap_or(&self.id)
+        self.id
+            .split_once(':')
+            .map(|(_, rest)| rest)
+            .unwrap_or(&self.id)
     }
 }
 
@@ -109,14 +112,22 @@ async fn workspaces_call(action: &str, payload: Value) -> Result<Value, String> 
 /// `workspaces.hierarchy.get_tree` — the whole applied DAG (or the inert
 /// `enabled:false` shape when the master toggle is off).
 pub async fn get_tree(ws: &str) -> Result<TreeReply, String> {
-    let v = workspaces_call("workspaces.hierarchy.get_tree", json!({ "workspace_id": ws })).await?;
+    let v = workspaces_call(
+        "workspaces.hierarchy.get_tree",
+        json!({ "workspace_id": ws }),
+    )
+    .await?;
     serde_json::from_value(v).map_err(|e| format!("bad get_tree reply: {e}"))
 }
 
 /// `workspaces.hierarchy.set_enabled` — flip the master toggle. Returns the new
 /// state.
 pub async fn set_enabled(enabled: bool) -> Result<bool, String> {
-    let v = workspaces_call("workspaces.hierarchy.set_enabled", json!({ "enabled": enabled })).await?;
+    let v = workspaces_call(
+        "workspaces.hierarchy.set_enabled",
+        json!({ "enabled": enabled }),
+    )
+    .await?;
     Ok(v.get("enabled").and_then(Value::as_bool).unwrap_or(enabled))
 }
 
@@ -138,7 +149,10 @@ pub async fn set_definition(
         payload["label"] = json!(label);
     }
     let v = workspaces_call("workspaces.hierarchy.set_definition", payload).await?;
-    Ok(v.get("id").and_then(Value::as_str).unwrap_or_default().to_owned())
+    Ok(v.get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned())
 }
 
 /// `workspaces.hierarchy.add_edge` — author one containment edge (H4).
@@ -184,7 +198,11 @@ pub async fn remove_merge(ws: &str, primary: &str, alias: &str) -> Result<bool, 
 /// `workspaces.hierarchy.get_overlay` — the raw authored overlay (edges + merges
 /// with dangling flags) for the authoring UI's re-point/remove affordances.
 pub async fn get_overlay(ws: &str) -> Result<OverlayReply, String> {
-    let v = workspaces_call("workspaces.hierarchy.get_overlay", json!({ "workspace_id": ws })).await?;
+    let v = workspaces_call(
+        "workspaces.hierarchy.get_overlay",
+        json!({ "workspace_id": ws }),
+    )
+    .await?;
     serde_json::from_value(v).map_err(|e| format!("bad get_overlay reply: {e}"))
 }
 
@@ -214,7 +232,10 @@ mod tests {
         assert_eq!(r.count, 2);
         assert_eq!(r.nodes[0].id, "concept:auth");
         assert!(!r.nodes[0].needs_definition());
-        assert!(r.nodes[1].needs_definition(), "missing source flags needs-definition");
+        assert!(
+            r.nodes[1].needs_definition(),
+            "missing source flags needs-definition"
+        );
         assert_eq!(r.nodes[0].source_id(), "auth");
     }
 
@@ -228,9 +249,15 @@ mod tests {
 
     #[test]
     fn source_id_handles_colon_bearing_ids() {
-        let n = HierNodeView { id: "concept:dir:src/graph".into(), ..Default::default() };
+        let n = HierNodeView {
+            id: "concept:dir:src/graph".into(),
+            ..Default::default()
+        };
         assert_eq!(n.source_id(), "dir:src/graph");
-        let m = HierNodeView { id: "node:0003".into(), ..Default::default() };
+        let m = HierNodeView {
+            id: "node:0003".into(),
+            ..Default::default()
+        };
         assert_eq!(m.source_id(), "0003");
     }
 }

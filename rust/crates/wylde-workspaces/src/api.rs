@@ -60,6 +60,12 @@ pub async fn handle_set_active(payload: Value) -> Reply {
             // the background so `symbols.find` is warm. Same MRU model: one
             // workspace's index in memory at a time. No-op until armed.
             crate::graph::symbol_index::on_active_changed();
+            // #99 — activating a workspace bumps the MRU and can evict the LRU
+            // past the window; that eviction enqueued its graph teardown. Drain
+            // it (and any prior deferred teardown) in the background.
+            tokio::spawn(async {
+                crate::graph::cleanup::run_pending_cleanup().await;
+            });
             Reply::ok(json!({
                 "active_id": state.active_id,
                 "mru": state.mru,
@@ -68,7 +74,27 @@ pub async fn handle_set_active(payload: Value) -> Reply {
         Err(registry::RegistryError::NotFound(_)) => {
             Reply::err_msg("not_found", format!("workspace {id:?} not found"))
         }
+        Err(e @ registry::RegistryError::IndexDamaged(_)) => index_damaged_reply(&e),
     }
+}
+
+/// The reply for a damaged `index.json` (#140).
+///
+/// A dedicated `index_damaged` code, NOT `not_found` and NOT a silent empty
+/// result. The registry's index is unreadable, so the set of workspaces is
+/// unknown — the data is still on disk and the user needs to be told that
+/// rather than shown an empty list they might "fix" by re-registering
+/// everything (which is what would actually destroy it).
+fn index_damaged_reply(e: &registry::RegistryError) -> Reply {
+    tracing::error!("workspaces: refusing to serve a damaged registry index: {e}");
+    Reply::err_msg(
+        "index_damaged",
+        format!(
+            "{e}. Your workspaces have NOT been deleted — the registry index \
+             could not be read, so the list is unknown. The file has been left \
+             untouched for recovery; restore or remove it to continue."
+        ),
+    )
 }
 
 /// `workspaces.create` — register a folder as a workspace (and activate
@@ -85,10 +111,19 @@ pub async fn handle_create(payload: Value) -> Reply {
         }
     }
     let name = payload.get("name").and_then(Value::as_str);
-    let def = registry::create(&folder, name);
+    let def = match registry::create(&folder, name) {
+        Ok(def) => def,
+        Err(e) => return index_damaged_reply(&e),
+    };
     // Index the folder in the background so create stays non-blocking;
     // first-time create has no index yet → a full pass.
     indexer::spawn_background_index(def.id.clone());
+    // #99 — a create can push a workspace past the MRU-5 window; the eviction
+    // enqueued its graph teardown through the shared primitive. Drain it (and
+    // any prior deferred teardown) in the background.
+    tokio::spawn(async {
+        crate::graph::cleanup::run_pending_cleanup().await;
+    });
     Reply::ok(def.to_value())
 }
 
@@ -114,7 +149,10 @@ pub async fn handle_delete(payload: Value) -> Reply {
     let Some(id) = require_string(&payload, "workspace_id") else {
         return Reply::err_msg("bad_request", "workspace_id is required");
     };
-    let ok = registry::delete(&id);
+    let ok = match registry::delete(&id) {
+        Ok(ok) => ok,
+        Err(e) => return index_damaged_reply(&e),
+    };
     if ok {
         // Re-evaluate the watcher: if the deleted workspace was active, the
         // registry cleared the active pointer, so this stops the watch.
@@ -122,46 +160,26 @@ pub async fn handle_delete(payload: Value) -> Reply {
         // Slice F-data — same re-evaluation for the symbol index: a deleted
         // active workspace clears the pointer, so this drops its index.
         crate::graph::symbol_index::on_active_changed();
-        // C9 — Route 1 deletion sweep. The registry's bundle-dir removal
-        // cascades the *legacy* per-workspace service-store conversations, but
-        // under Route 1 a workspace's live **bound** conversations live in the
-        // harness flat store (`<data_dir>/conversations/<id>.json` with a
-        // matching `workspace_id`), which the bundle removal never touches.
-        // Ask the harness — the canonical owner of that store — to sweep them,
-        // or they orphan in the global list forever. Fire-and-forget for the
-        // same reason as the graph prune below (a Fast/Medium verb must not
-        // block on a peer service) and so a unit-test delete never stalls on a
-        // pipe connect; best-effort, so an unreachable/slow harness only logs.
-        let sweep_ws = id.clone();
-        tokio::spawn(async move {
-            let sweep = wylde_shared::ipc::send_action(
-                "wylde-harness",
-                "conversations.delete_by_workspace",
-                json!({ "workspace_id": sweep_ws.clone() }),
-            )
-            .await;
-            if !sweep.ok {
-                tracing::warn!(
-                    "workspaces.delete: flat-store conversation sweep degraded for {sweep_ws}: {:?}",
-                    sweep.error
-                );
-            }
-        });
-        // Slice I — also clean up the workspace's Neo4j footprint (the Slice A
-        // report flagged that `delete` left graph nodes behind). Fire-and-
-        // forget: a Bolt connect can take seconds when the graph is down, and
-        // `workspaces.delete` is a Fast/Medium verb — it must NOT block on the
-        // graph. The registry delete already succeeded; the graph prune is
-        // best-effort cleanup that can't fail the response.
-        let ws = id.clone();
-        tokio::spawn(async move {
-            let cleanup = crate::graph::BoltClient::new().delete_workspace(&ws).await;
-            if !cleanup.ok {
-                tracing::warn!(
-                    "workspaces.delete: graph cleanup degraded for {ws}: {:?}",
-                    cleanup.error
-                );
-            }
+        // #166 — cascade every peer-service store the workspace left behind, on
+        // ONE durable queue. `registry::delete` already enqueued the graph
+        // footprint (Chunk + now-orphan Entity + `Concept` nodes, #99/#117 — as
+        // does MRU eviction) AND, because this is an explicit delete, the two
+        // stores eviction must preserve: the Route-1 bound conversations in the
+        // harness flat store, and the durable workspace-memory tier at
+        // `<data_dir>/workspace_memories/<id>/` (#135). All three now drain
+        // here.
+        //
+        // This replaces the two fire-and-forget `tokio::spawn` sweeps that used
+        // to live inline: a down/slow harness silently dropped them, orphaning
+        // the memory tier permanently — and because a workspace id derives from
+        // its folder (#28), re-registering the same folder silently re-attached
+        // memories the user believed deleted. Draining the durable queue instead
+        // retries each sweep until it lands (or dequeues it untouched if the
+        // workspace is live again). Still spawned so a slow Bolt/pipe connect
+        // never blocks this Fast/Medium verb; the registry delete already
+        // succeeded and the prune can't fail the response.
+        tokio::spawn(async {
+            crate::graph::cleanup::run_pending_cleanup().await;
         });
     }
     Reply::ok(json!({ "ok": ok, "workspace_id": id }))
@@ -209,7 +227,10 @@ fn def_with_index_state(def: &registry::WorkspaceDefinition) -> Value {
         // Live progress (phase / counts / rate / ETA) rides the same row so the
         // GUI can render a determinate bar + ETA mid-index; absent when idle.
         if let Some(p) = &st.progress {
-            obj.insert("progress".to_owned(), serde_json::to_value(p).unwrap_or(Value::Null));
+            obj.insert(
+                "progress".to_owned(),
+                serde_json::to_value(p).unwrap_or(Value::Null),
+            );
         }
     }
     v
@@ -223,9 +244,28 @@ fn def_with_index_state(def: &registry::WorkspaceDefinition) -> Value {
 /// previously they were carried only in the one-shot `reindex` reply and
 /// lost on refresh.
 pub async fn handle_list_mru(_payload: Value) -> Reply {
-    let (defs, active_id) = registry::list_mru();
+    let (defs, active_id) = match registry::list_mru() {
+        Ok(v) => v,
+        // #140 — an unreadable index must NOT render as "no workspaces".
+        Err(e) => return index_damaged_reply(&e),
+    };
     let workspaces: Vec<Value> = defs.iter().map(def_with_index_state).collect();
     Reply::ok(json!({ "workspaces": workspaces, "active_id": active_id }))
+}
+
+/// `workspaces.list_all` — **every** workspace on disk (a disk-walk), not just
+/// the MRU-5 window. No payload. Reply: `{ workspaces: [WorkspaceDefinition] }`.
+///
+/// This is the enumeration that makes `index.json` no longer the *sole* record
+/// of which workspaces exist (#134): it surfaces bundles the index never knew
+/// about or has lost, so none can be silently orphaned, and every id it returns
+/// is deletable through `workspaces.delete`. It reconciles stale index entries
+/// as a side effect and recovers from a damaged index straight off disk rather
+/// than folding to an empty list.
+pub async fn handle_list_all(_payload: Value) -> Reply {
+    let defs = registry::list_all();
+    let workspaces: Vec<Value> = defs.iter().map(def_with_index_state).collect();
+    Reply::ok(json!({ "workspaces": workspaces }))
 }
 
 /// `workspaces.rag_query` — k-NN search over a workspace's file index.
@@ -483,6 +523,92 @@ mod tests {
         let active = handle_set_active(json!({ "workspace_id": id })).await;
         assert!(active.ok);
         assert_eq!(active.data["active_id"], id);
+    }
+
+    /// #140 — the user-visible half. A damaged `index.json` must surface as an
+    /// error, not as an empty workspace list.
+    ///
+    /// Showing "no workspaces" for an unreadable index is the failure mode that
+    /// makes this severe: it looks exactly like total data loss, and the
+    /// natural user response (re-register everything, or delete and start over)
+    /// is what actually destroys the still-recoverable file.
+    #[tokio::test]
+    async fn damaged_index_surfaces_an_error_rather_than_an_empty_list() {
+        let _env = TestEnv::new();
+        let td = tempdir().unwrap();
+        let p = td.path().join("proj");
+        std::fs::create_dir(&p).unwrap();
+
+        let created = handle_create(json!({ "folder": p.to_string_lossy(), "name": "Proj" })).await;
+        assert!(created.ok, "create failed: {:?}", created.error);
+
+        // Sanity: it lists before the damage.
+        let before = handle_list_mru(Value::Null).await;
+        assert!(before.ok);
+        assert_eq!(before.data["workspaces"].as_array().unwrap().len(), 1);
+
+        // Tear the index the way a partial write would.
+        let torn = b"{\"active_id\": \"x\", \"mru\": [\"x\",".to_vec();
+        std::fs::write(registry::state::index_path(), &torn).unwrap();
+
+        let listed = handle_list_mru(Value::Null).await;
+        assert!(
+            !listed.ok,
+            "a damaged index must NOT report success with an empty list; got {:?}",
+            listed.data
+        );
+        assert_eq!(listed.error.as_ref().unwrap().code, "index_damaged");
+        assert!(
+            listed.data.get("workspaces").is_none(),
+            "must not present a workspace list it could not read"
+        );
+
+        // Mutating verbs refuse too — and leave the file alone.
+        let create2 = handle_create(json!({ "folder": p.to_string_lossy() })).await;
+        assert_eq!(create2.error.unwrap().code, "index_damaged");
+        let del = handle_delete(json!({ "workspace_id": "x" })).await;
+        assert_eq!(del.error.unwrap().code, "index_damaged");
+        // Decrypted content, not raw bytes — the at-rest layer re-encrypts a
+        // plaintext file on read, so the bytes may change while the content
+        // (the thing the user needs back) does not.
+        let on_disk =
+            wylde_shared::encryption::read_to_string_at_rest(&registry::state::index_path())
+                .unwrap();
+        assert_eq!(
+            on_disk.as_bytes(),
+            torn.as_slice(),
+            "the damaged index must survive every refused verb"
+        );
+    }
+
+    /// #134 — `workspaces.list_all` surfaces a bundle the index never knew
+    /// about, over the wire, so nothing on disk is unreachable through the GUI.
+    #[tokio::test]
+    async fn list_all_verb_surfaces_an_orphan_bundle() {
+        let _env = TestEnv::new();
+        let td = tempdir().unwrap();
+        let p = td.path().join("proj");
+        std::fs::create_dir(&p).unwrap();
+        let created = handle_create(json!({ "folder": p.to_string_lossy() })).await;
+        assert!(created.ok, "create failed: {:?}", created.error);
+
+        // Plant an orphan bundle straight to disk — no index entry.
+        let orphan =
+            registry::WorkspaceDefinition::new(td.path().join("orphan").to_string_lossy().as_ref());
+        registry::persistence::save_definition(&orphan).unwrap();
+
+        let reply = handle_list_all(Value::Null).await;
+        assert!(reply.ok, "list_all failed: {:?}", reply.error);
+        let ids: Vec<String> = reply.data["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["id"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(
+            ids.contains(&orphan.id),
+            "list_all must surface the orphan bundle; got {ids:?}"
+        );
     }
 
     #[tokio::test]

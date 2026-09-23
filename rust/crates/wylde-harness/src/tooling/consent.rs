@@ -359,6 +359,38 @@ pub async fn serial_test_guard() -> tokio::sync::MutexGuard<'static, ()> {
     G.lock().await
 }
 
+/// RAII scope for tests that dispatch through the consent gate: holds
+/// the serial guard AND pins [`BYPASS_FLAG`] to `enabled`, restoring
+/// the process default (`false`) on drop — including on panic.
+///
+/// Any test whose dispatch path crosses `runner::check_consent_gate`
+/// must hold one of these (`true` to skip the gate, `false` to
+/// exercise it) rather than calling [`set_bypass_for_tests`] bare: a
+/// bare flip leaks the flag to whichever test acquires the guard next,
+/// which makes those tests pass or fail depending on execution order.
+/// That leak is exactly what made the `turn::tool_round` dispatch
+/// tests flaky when run in isolation.
+#[cfg(test)]
+pub struct BypassScope {
+    _serial: tokio::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for BypassScope {
+    fn drop(&mut self) {
+        BYPASS_FLAG.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Acquire the serial guard and pin the consent bypass flag for the
+/// scope's lifetime. See [`BypassScope`].
+#[cfg(test)]
+pub async fn bypass_scope(enabled: bool) -> BypassScope {
+    let serial = serial_test_guard().await;
+    BYPASS_FLAG.store(enabled, Ordering::Relaxed);
+    BypassScope { _serial: serial }
+}
+
 /// Process-wide store. Lazy: first access reads the config's
 /// `wylde_root` to figure out the file path.
 pub fn store() -> &'static ConsentStore {

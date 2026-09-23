@@ -21,12 +21,39 @@ wylde-theme = { path = "../../Theme" }
 # which would create a cycle through the factory wiring.
 wylde-gui-pipe = { path = "../../Pipe" }
 
+# The stack roster — the service-health strip derives its membership (and each
+# chip's Stop affordance, from the roster `Tier`) from here rather than a
+# hand-kept list, so a new service — in-tree or a `Services/` sibling — gets a
+# chip automatically (#123). Dependency-lean by charter; already in the lock
+# graph via wylde-updater, so no new weight lands in the shipped GUI.
+wylde-stack.workspace = true
+
 # Tokio for the auto-refresh loop's sleep.
 tokio.workspace = true
 
 # gpui.
+# The one constructor every interactive control routes through (#247).
+wylde-gui-controls = { path = "../../Controls" }
+
 gpui.workspace = true
 
 serde.workspace      = true
 serde_json.workspace = true
 anyhow.workspace     = true
+
+# ── DEV-ONLY (windowed gpui tests) ───────────────────────────────────
+# Same seam the Chat/Workspaces/Memory/Devices panels adopt (see
+# docs/gui-testing.md). dev-dependencies only, so resolver = "2" never
+# unifies `test-support` into the shipped Shell's normal lib (verified via
+# cargo tree). These four panels were the zero-coverage gap the L7
+# panel-walk (issue #35) closes.
+[dev-dependencies]
+wylde-gui-controls = { path = "../../Controls", features = ["test-support"] }
+wylde-gui-test-support = { path = "../../test-support" }
+gpui = { workspace = true, features = ["test-support"] }
+wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
+serde_json.workspace = true
+# Drives the #123 falsification test: a synthetic `Services/<svc>/manifest.json`
+# in a tempdir, run through `roster_in` + `strip_services_from`, must appear on
+# the strip with no code edit. Mirrors wylde-stack's own tempdir discovery tests.
+tempfile = "3"

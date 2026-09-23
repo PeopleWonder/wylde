@@ -57,7 +57,10 @@ fn docked_in_workspace(
     ws: &str,
     rows: Vec<Value>,
     fake: std::sync::Arc<ScriptedBackend>,
-) -> (gpui::WindowHandle<ChatPanel>, wylde_gui_test_support::BackendGuard) {
+) -> (
+    gpui::WindowHandle<ChatPanel>,
+    wylde_gui_test_support::BackendGuard,
+) {
     let guard = fake.conversations(rows).install();
     let window = cx.add_window(|_w, cx| ChatPanel::new(ChatScope::Docked, cx));
     cx.run_until_parked();
@@ -96,7 +99,10 @@ fn new_conversation_on_a_bound_dock_binds_to_the_workspace(cx: &mut TestAppConte
 
     window
         .update(cx, |panel, _w, _cx| {
-            assert_eq!(panel.conversation_id, "c-new", "the dock switches to the new thread");
+            assert_eq!(
+                panel.conversation_id, "c-new",
+                "the dock switches to the new thread"
+            );
         })
         .unwrap();
 
@@ -231,7 +237,10 @@ fn deleting_the_active_thread_falls_back_to_the_next(cx: &mut TestAppContext) {
     );
     window
         .update(cx, |panel, _w, _cx| {
-            assert_eq!(panel.conversation_id, "c1", "enter opened the most-recent thread");
+            assert_eq!(
+                panel.conversation_id, "c1",
+                "enter opened the most-recent thread"
+            );
             assert_eq!(panel.conversations.len(), 2);
         })
         .unwrap();
@@ -253,7 +262,10 @@ fn deleting_the_active_thread_falls_back_to_the_next(cx: &mut TestAppContext) {
                 !panel.conversations.iter().any(|c| c.id == "c1"),
                 "the deleted row is dropped from the rail (optimistic)"
             );
-            assert!(panel.confirm_delete.is_none(), "the confirmation is cleared");
+            assert!(
+                panel.confirm_delete.is_none(),
+                "the confirmation is cleared"
+            );
         })
         .unwrap();
     cx.run_until_parked();
@@ -281,12 +293,19 @@ fn delete_confirmation_arms_and_cancels_without_deleting(cx: &mut TestAppContext
     window
         .update(cx, |panel, _w, cx| {
             panel.request_delete_conversation("c1", cx);
-            assert_eq!(panel.confirm_delete.as_deref(), Some("c1"), "arm targets the row");
+            assert_eq!(
+                panel.confirm_delete.as_deref(),
+                Some("c1"),
+                "arm targets the row"
+            );
             // A different target replaces the first (only one live confirm).
             panel.request_delete_conversation("c2", cx);
             assert_eq!(panel.confirm_delete.as_deref(), Some("c2"));
             panel.cancel_delete_conversation(cx);
-            assert!(panel.confirm_delete.is_none(), "cancel dismisses the confirm");
+            assert!(
+                panel.confirm_delete.is_none(),
+                "cancel dismisses the confirm"
+            );
         })
         .unwrap();
     cx.run_until_parked();
@@ -305,8 +324,10 @@ fn a_bound_turn_carries_the_workspace_excluding_long_term(cx: &mut TestAppContex
     // A docked turn inside a workspace carries the workspace_id; the harness's
     // context_gather reads exactly that to CONFINE long-term memory out of a
     // bound turn ([D2]: bound conversation excludes the global long-term store).
-    let fake = ScriptedBackend::new()
-        .on("chat.start_turn", json!({ "turn_id": "t1", "conversation_id": "c1" }));
+    let fake = ScriptedBackend::new().on(
+        "chat.start_turn",
+        json!({ "turn_id": "t1", "conversation_id": "c1" }),
+    );
     let (window, _guard) =
         docked_in_workspace(cx, "ws-a", vec![conv("c1", "ws-a", 300)], fake.clone());
 
@@ -331,8 +352,10 @@ fn a_bound_turn_carries_the_workspace_excluding_long_term(cx: &mut TestAppContex
 fn a_global_turn_carries_no_workspace_including_long_term(cx: &mut TestAppContext) {
     // The Global slot's turn is structurally workspace-free, so context_gather
     // INCLUDES the long-term store (the unbound path) — the mirror of [D2].
-    let fake = ScriptedBackend::new()
-        .on("chat.start_turn", json!({ "turn_id": "t1", "conversation_id": "default" }));
+    let fake = ScriptedBackend::new().on(
+        "chat.start_turn",
+        json!({ "turn_id": "t1", "conversation_id": "default" }),
+    );
     let _guard = fake.clone().install();
     let window = cx.add_window(|_w, cx| ChatPanel::new(ChatScope::Global, cx));
     cx.run_until_parked();
@@ -361,7 +384,8 @@ fn a_failed_delete_surfaces_an_error(cx: &mut TestAppContext) {
     // GUI-responsiveness pass (category c): the row is dropped optimistically,
     // so a swallowed delete failure would vanish-then-flicker with no
     // explanation. The failure must reach the error strip.
-    let fake = ScriptedBackend::new().on_err("conversations.delete", "pipe_unavailable: harness down");
+    let fake =
+        ScriptedBackend::new().on_err("conversations.delete", "pipe_unavailable: harness down");
     let (window, _guard) = docked_in_workspace(
         cx,
         "ws-a",
@@ -370,7 +394,9 @@ fn a_failed_delete_surfaces_an_error(cx: &mut TestAppContext) {
     );
 
     window
-        .update(cx, |panel, _w, cx| panel.confirm_delete_conversation("c1", cx))
+        .update(cx, |panel, _w, cx| {
+            panel.confirm_delete_conversation("c1", cx)
+        })
         .unwrap();
     cx.run_until_parked();
 

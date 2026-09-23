@@ -43,6 +43,7 @@ use crate::ipc::{
 use crate::settings_tab::GraphSettingsTab;
 use crate::tabs::WorkspacesTab;
 use crate::vocabulary::VocabularyTab;
+use wylde_gui_controls::control;
 
 /// Root Workspaces panel. Hosts a minimal tab system (Registry + Graph);
 /// the active tab's body is rendered below a tab bar.
@@ -409,8 +410,11 @@ impl WorkspacesPanel {
             // executor (no tokio reactor), so a bare `tokio::task::
             // spawn_blocking` panics ("no reactor running").  Hop onto the
             // bridge runtime's blocking pool so the gpui dispatcher doesn't
-            // stall and the await just parks on the join.
-            let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(pick_folder).await;
+            // stall and the await just parks on the join. Routed through
+            // `native_file_dialog` so a control walk records the request
+            // instead of opening a real folder picker on the dev's desktop.
+            let picked: Option<PathBuf> =
+                wylde_gui_pipe::native_file_dialog("workspaces-add", pick_folder).await;
             let Some(path) = picked else {
                 return;
             };
@@ -596,12 +600,11 @@ impl WorkspacesPanel {
                     Some(p) if matches!(p.phase, PullPhase::Downloading(_))
                 );
                 if !already_pulling {
-                    self.pull =
-                        wylde_gui_pipe::parse_pullable_model(&e).map(|model| ModelPull {
-                            model,
-                            retry_id: id.to_owned(),
-                            phase: PullPhase::Offered,
-                        });
+                    self.pull = wylde_gui_pipe::parse_pullable_model(&e).map(|model| ModelPull {
+                        model,
+                        retry_id: id.to_owned(),
+                        phase: PullPhase::Offered,
+                    });
                 }
                 self.error = Some(e);
             }
@@ -732,11 +735,19 @@ impl Render for WorkspacesPanel {
         // UX rework state machine: the Registry landing (a list of workspace
         // cards you land on) ⇄ the in-workspace view (back arrow + scoped tab
         // bar + body), keyed off `entered`.
-        let root = div().size_full().bg(rgb(pack(SURFACE_900))).flex().flex_col();
+        let root = div()
+            .size_full()
+            .bg(rgb(pack(SURFACE_900)))
+            .flex()
+            .flex_col();
         match &self.entered {
-            None => root.child(div().flex_1().min_h(px(0.0)).overflow_hidden().child(
-                self.registry_body(cx),
-            )),
+            None => root.child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_hidden()
+                    .child(self.registry_body(cx)),
+            ),
             Some(_) => {
                 let body: AnyElement = match self.tab {
                     WorkspacesTab::Editor => match self.editor.clone() {
@@ -894,8 +905,7 @@ fn tab_button(
     } else {
         (TEXT_SECONDARY, None)
     };
-    let mut btn = div()
-        .id(id)
+    let mut btn = control(div(), id)
         .px_3()
         .py_1()
         .rounded(px(4.0))
@@ -927,8 +937,7 @@ fn tab_button(
 /// The back arrow at the top-left of the in-workspace view — returns to the
 /// Registry landing (clears `entered`).
 fn back_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("ws-back".into()))
+    control(div(), ElementId::Name("ws-back".into()))
         .flex_shrink_0()
         .px_2()
         .py_1()
@@ -949,7 +958,7 @@ fn back_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
 
 /// The readiness chip (decision 5): a small coloured dot + short label in the
 /// in-workspace tab bar. Conveys service-up/indexed state at a glance from any
-/// tab — itself meaningful status, per Aaron's no-decoration principle.
+/// tab — itself meaningful status, per the maintainer's no-decoration principle.
 fn readiness_chip(readiness: Readiness) -> gpui::Div {
     let (colour, label) = readiness.chip();
     div()
@@ -1015,8 +1024,7 @@ fn header_row(cx: &mut Context<WorkspacesPanel>) -> gpui::Div {
 
 fn add_button(cx: &mut Context<WorkspacesPanel>) -> Stateful<gpui::Div> {
     let id: ElementId = ElementId::Name("workspaces-add".into());
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -1082,8 +1090,7 @@ fn workspace_card(
     }
 
     // The whole card is clickable → ENTER the workspace (UX rework decision 2).
-    let mut row = div()
-        .id(ElementId::Name(format!("ws-card::{}", ws.id).into()))
+    let mut row = control(div(), ElementId::Name(format!("ws-card::{}", ws.id).into()))
         .bg(rgb(pack(SURFACE_800)))
         .border_1()
         .border_color(rgb(pack(border)))
@@ -1172,8 +1179,7 @@ where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
     let label_owned = SharedString::from(label.to_owned());
-    div()
-        .id(id)
+    control(div(), id)
         // Never let the button shrink/wrap when it shares a row with a long
         // wrapping label — it keeps its intrinsic size; the text takes the rest.
         .flex_shrink_0()
@@ -1555,10 +1561,11 @@ fn download_strip(pull: &ModelPull, cx: &mut Context<WorkspacesPanel>) -> gpui::
                     format!("Embedding model '{model}' isn't installed."),
                     "Download model",
                 ),
-                PullPhase::Failed(msg) => {
-                    (format!("Download of '{model}' failed: {msg}"), "Retry download")
-                }
-                PullPhase::Downloading(_) => unreachable!(),
+                PullPhase::Failed(msg) => (
+                    format!("Download of '{model}' failed: {msg}"),
+                    "Retry download",
+                ),
+                PullPhase::Downloading(_) => unreachable!(), // INVARIANT: enclosing `Offered | Failed` arm guarantees phase is not Downloading. wylde-check: panel-panic-allowed
             };
             strip = strip.child(
                 div()
@@ -1711,14 +1718,26 @@ mod tests {
 
     #[test]
     fn readiness_reflects_index_state_when_service_ok() {
-        let indexing = WorkspaceSummary { indexing: true, ..Default::default() };
-        assert_eq!(Readiness::compute(None, Some(&indexing)), Readiness::Indexing);
+        let indexing = WorkspaceSummary {
+            indexing: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            Readiness::compute(None, Some(&indexing)),
+            Readiness::Indexing
+        );
 
-        let fresh = WorkspaceSummary { file_count: Some(3), ..Default::default() };
+        let fresh = WorkspaceSummary {
+            file_count: Some(3),
+            ..Default::default()
+        };
         assert_eq!(Readiness::compute(None, Some(&fresh)), Readiness::Ready);
 
         let never = WorkspaceSummary::default();
-        assert_eq!(Readiness::compute(None, Some(&never)), Readiness::NotIndexed);
+        assert_eq!(
+            Readiness::compute(None, Some(&never)),
+            Readiness::NotIndexed
+        );
         // No summary loaded yet ⇒ not indexed.
         assert_eq!(Readiness::compute(None, None), Readiness::NotIndexed);
     }
@@ -1786,7 +1805,7 @@ mod tests {
 
     #[test]
     fn reindex_missing_model_offers_download_with_retry_id() {
-        // The real error Aaron hit: the embed step fails because the model
+        // The real error the maintainer hit: the embed step fails because the model
         // isn't installed. The panel must offer an inline download tied to
         // the workspace that failed (for auto-retry).
         let mut p = panel_with_one_indexing_row();
@@ -1797,9 +1816,15 @@ mod tests {
                 (model \"nomic-embed-text\" not installed in Ollama)",
         });
         p.apply_reindex_outcome("ws-a", &Ok(reply));
-        let pull = p.pull.as_ref().expect("a missing-model error must offer a download");
+        let pull = p
+            .pull
+            .as_ref()
+            .expect("a missing-model error must offer a download");
         assert_eq!(pull.model, "nomic-embed-text");
-        assert_eq!(pull.retry_id, "ws-a", "auto-retry must target the failed workspace");
+        assert_eq!(
+            pull.retry_id, "ws-a",
+            "auto-retry must target the failed workspace"
+        );
         assert!(matches!(pull.phase, PullPhase::Offered));
         // The raw error still shows in the strip above the offer.
         assert!(p.error.as_deref().unwrap().contains("nomic-embed-text"));
@@ -1809,7 +1834,10 @@ mod tests {
     fn reindex_non_model_error_offers_no_download() {
         let mut p = panel_with_one_indexing_row();
         p.apply_reindex_outcome("ws-a", &Err("ollama_unreachable: upstream down".to_owned()));
-        assert!(p.pull.is_none(), "non-model errors must not offer a download");
+        assert!(
+            p.pull.is_none(),
+            "non-model errors must not offer a download"
+        );
     }
 
     #[test]
@@ -1822,7 +1850,10 @@ mod tests {
         });
         let reply = serde_json::json!({ "ok": true, "file_count": 7, "last_error": null });
         p.apply_reindex_outcome("ws-a", &Ok(reply));
-        assert!(p.pull.is_none(), "a clean reindex retires the download offer");
+        assert!(
+            p.pull.is_none(),
+            "a clean reindex retires the download offer"
+        );
         assert!(p.error.is_none());
     }
 
@@ -1869,7 +1900,9 @@ mod tests {
 
         // Enter the indexed workspace → Ready (green).
         window
-            .update(cx, |p, _w, cx| p.enter_workspace("ws-indexed".to_owned(), cx))
+            .update(cx, |p, _w, cx| {
+                p.enter_workspace("ws-indexed".to_owned(), cx)
+            })
             .unwrap();
         cx.run_until_parked();
         window
@@ -1924,7 +1957,11 @@ mod tests {
         window
             .update(cx, |p, _w, _cx| {
                 p.error = Some("no_action: unknown action workspaces.x".to_owned());
-                assert_eq!(p.readiness(), Readiness::OutOfDate, "no_action ⇒ out of date");
+                assert_eq!(
+                    p.readiness(),
+                    Readiness::OutOfDate,
+                    "no_action ⇒ out of date"
+                );
             })
             .unwrap();
     }

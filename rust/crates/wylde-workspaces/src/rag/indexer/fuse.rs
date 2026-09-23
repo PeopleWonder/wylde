@@ -98,8 +98,11 @@ mod tests {
         let fused = fuse(2, &[1, 0], &[(0, 1000.0), (1, 1.0)], &cfg());
         let d0 = fused[0].0; // dense rank 1 + lex rank 0
         let d1 = fused[1].0; // dense rank 0 + lex rank 1
-        // Both have one rank-0 and one rank-1 contribution ⇒ equal fused score.
-        assert!((d0 - d1).abs() < 1e-12, "fusion is rank-based, magnitude-blind");
+                             // Both have one rank-0 and one rank-1 contribution ⇒ equal fused score.
+        assert!(
+            (d0 - d1).abs() < 1e-12,
+            "fusion is rank-based, magnitude-blind"
+        );
     }
 
     #[test]

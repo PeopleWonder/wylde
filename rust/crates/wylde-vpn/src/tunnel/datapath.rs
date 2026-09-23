@@ -174,9 +174,7 @@ fn start_windows(params: TunnelParams) -> Result<RunningTunnel> {
         .with_context(|| format!("load wintun.dll from {}", dll_path.display()))?;
 
     let adapter = wintun::Adapter::open(&wintun_dll, &params.iface_name)
-        .or_else(|_| {
-            wintun::Adapter::create(&wintun_dll, &params.iface_name, "wylde-vpn", None)
-        })
+        .or_else(|_| wintun::Adapter::create(&wintun_dll, &params.iface_name, "wylde-vpn", None))
         .with_context(|| format!("create wintun adapter {}", params.iface_name))?;
 
     // Set address from CIDR; e.g. "10.8.0.2/24" → 10.8.0.2 + /24.
@@ -205,9 +203,7 @@ fn start_windows(params: TunnelParams) -> Result<RunningTunnel> {
 
     // Bind UDP — let the OS pick a port for outbound (Python lets
     // wg-quick pick too). The remote endpoint is the peer.
-    let udp = Arc::new(
-        UdpSocket::bind("0.0.0.0:0").context("bind WireGuard UDP socket")?,
-    );
+    let udp = Arc::new(UdpSocket::bind("0.0.0.0:0").context("bind WireGuard UDP socket")?);
     udp.set_read_timeout(Some(Duration::from_millis(250)))
         .context("set udp read timeout")?;
     let peer_endpoint: std::net::SocketAddr = params
@@ -324,7 +320,9 @@ fn tun_to_udp_loop(
                 if let Err(e) = udp.send(buf) {
                     tracing::debug!("wylde-vpn: udp send err: {e}");
                 } else {
-                    stats.tx_bytes.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                    stats
+                        .tx_bytes
+                        .fetch_add(buf.len() as u64, Ordering::Relaxed);
                 }
             }
             TunnResult::Done => {}
@@ -354,8 +352,9 @@ fn udp_to_tun_loop(
         }
         let n = match udp.recv(&mut recv) {
             Ok(n) => n,
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut =>
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 continue;
             }
@@ -382,7 +381,9 @@ fn udp_to_tun_loop(
                     if let Ok(mut send_pkt) = session.allocate_send_packet(packet.len() as u16) {
                         send_pkt.bytes_mut().copy_from_slice(packet);
                         session.send_packet(send_pkt);
-                        stats.rx_bytes.fetch_add(packet.len() as u64, Ordering::Relaxed);
+                        stats
+                            .rx_bytes
+                            .fetch_add(packet.len() as u64, Ordering::Relaxed);
                         *stats.last_rx.lock() = Some(Instant::now());
                     }
                     break;
@@ -459,7 +460,10 @@ mod tests {
     fn cidr_to_mask_known_values() {
         assert_eq!(cidr_to_mask(24), std::net::Ipv4Addr::new(255, 255, 255, 0));
         assert_eq!(cidr_to_mask(16), std::net::Ipv4Addr::new(255, 255, 0, 0));
-        assert_eq!(cidr_to_mask(32), std::net::Ipv4Addr::new(255, 255, 255, 255));
+        assert_eq!(
+            cidr_to_mask(32),
+            std::net::Ipv4Addr::new(255, 255, 255, 255)
+        );
         assert_eq!(cidr_to_mask(0), std::net::Ipv4Addr::new(0, 0, 0, 0));
         assert_eq!(cidr_to_mask(8), std::net::Ipv4Addr::new(255, 0, 0, 0));
     }
