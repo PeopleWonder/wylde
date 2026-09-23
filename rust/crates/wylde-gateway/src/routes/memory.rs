@@ -21,18 +21,18 @@
 //! | `GET    /api/memory/long_term`                                | `memory.long_term.list`         |
 //! | `POST   /api/memory/long_term/search`                         | `memory.long_term.search`       |
 //! | `POST   /api/memory/long_term`                                | `memory.long_term.save`         |
-//! | `PUT    /api/memory/long_term/:id`                            | `memory.long_term.update`       |
-//! | `DELETE /api/memory/long_term/:id`                            | `memory.long_term.delete`       |
-//! | `GET    /api/memory/long_term/:id/history`                    | `memory.long_term.history`      |
-//! | `GET    /api/memory/workspace/:workspace_id`                  | `memory.workspace.list`         |
-//! | `POST   /api/memory/workspace/:workspace_id/search`           | `memory.workspace.search`       |
-//! | `POST   /api/memory/workspace/:workspace_id`                  | `memory.workspace.save`         |
-//! | `PUT    /api/memory/workspace/:workspace_id/:id`              | `memory.workspace.update`       |
-//! | `DELETE /api/memory/workspace/:workspace_id/:id`              | `memory.workspace.delete`       |
-//! | `POST   /api/memory/workspace/:workspace_id/curate`           | `memory.workspace.curate`       |
-//! | `GET    /api/memory/short_term/:conversation_id`              | `memory.short_term.get`         |
-//! | `POST   /api/memory/short_term/:conversation_id`              | `memory.short_term.append`      |
-//! | `DELETE /api/memory/short_term/:conversation_id`              | `memory.short_term.clear`       |
+//! | `PUT    /api/memory/long_term/{id}`                            | `memory.long_term.update`       |
+//! | `DELETE /api/memory/long_term/{id}`                            | `memory.long_term.delete`       |
+//! | `GET    /api/memory/long_term/{id}/history`                    | `memory.long_term.history`      |
+//! | `GET    /api/memory/workspace/{workspace_id}`                  | `memory.workspace.list`         |
+//! | `POST   /api/memory/workspace/{workspace_id}/search`           | `memory.workspace.search`       |
+//! | `POST   /api/memory/workspace/{workspace_id}`                  | `memory.workspace.save`         |
+//! | `PUT    /api/memory/workspace/{workspace_id}/{id}`              | `memory.workspace.update`       |
+//! | `DELETE /api/memory/workspace/{workspace_id}/{id}`              | `memory.workspace.delete`       |
+//! | `POST   /api/memory/workspace/{workspace_id}/curate`           | `memory.workspace.curate`       |
+//! | `GET    /api/memory/short_term/{conversation_id}`              | `memory.short_term.get`         |
+//! | `POST   /api/memory/short_term/{conversation_id}`              | `memory.short_term.append`      |
+//! | `DELETE /api/memory/short_term/{conversation_id}`              | `memory.short_term.clear`       |
 //! | `POST   /api/memory/reflect`                                  | `memory.reflect`                |
 
 use std::collections::HashMap;
@@ -113,7 +113,7 @@ pub async fn long_term_save(headers: HeaderMap, body: Option<Json<Value>>) -> Re
     harness_dispatch("memory.long_term.save", payload).await
 }
 
-/// `PUT /api/memory/long_term/:id` — update fields on an existing record.
+/// `PUT /api/memory/long_term/{id}` — update fields on an existing record.
 pub async fn long_term_update(
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -129,7 +129,7 @@ pub async fn long_term_update(
     harness_dispatch("memory.long_term.update", payload).await
 }
 
-/// `DELETE /api/memory/long_term/:id` — drop one long-term record.
+/// `DELETE /api/memory/long_term/{id}` — drop one long-term record.
 pub async fn long_term_delete(headers: HeaderMap, Path(id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
@@ -140,7 +140,7 @@ pub async fn long_term_delete(headers: HeaderMap, Path(id): Path<String>) -> Res
     harness_dispatch("memory.long_term.delete", json!({ "id": id })).await
 }
 
-/// `GET /api/memory/long_term/:id/history` — show the supersession chain.
+/// `GET /api/memory/long_term/{id}/history` — show the supersession chain.
 pub async fn long_term_history(headers: HeaderMap, Path(id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
@@ -162,7 +162,7 @@ pub async fn long_term_history(headers: HeaderMap, Path(id): Path<String>) -> Re
 // served by the Rust harness, and it has no search/save/update/curate
 // verbs.  The two namespaces coexist by design.
 
-/// `GET /api/memory/workspace/:workspace_id[?include_superseded=true]`.
+/// `GET /api/memory/workspace/{workspace_id}[?include_superseded=true]`.
 pub async fn workspace_list(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
@@ -186,7 +186,7 @@ pub async fn workspace_list(
     harness_dispatch("memory.workspace.list", Value::Object(payload)).await
 }
 
-/// `POST /api/memory/workspace/:workspace_id/search`.
+/// `POST /api/memory/workspace/{workspace_id}/search`.
 pub async fn workspace_search(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
@@ -206,7 +206,7 @@ pub async fn workspace_search(
     harness_dispatch("memory.workspace.search", payload).await
 }
 
-/// `POST /api/memory/workspace/:workspace_id` — save a workspace memory.
+/// `POST /api/memory/workspace/{workspace_id}` — save a workspace memory.
 pub async fn workspace_save(
     headers: HeaderMap,
     Path(workspace_id): Path<String>,
@@ -226,7 +226,7 @@ pub async fn workspace_save(
     harness_dispatch("memory.workspace.save", payload).await
 }
 
-/// `PUT /api/memory/workspace/:workspace_id/:id` — update workspace memory.
+/// `PUT /api/memory/workspace/{workspace_id}/{id}` — update workspace memory.
 pub async fn workspace_update(
     headers: HeaderMap,
     Path((workspace_id, id)): Path<(String, String)>,
@@ -252,7 +252,7 @@ pub async fn workspace_update(
     harness_dispatch("memory.workspace.update", payload).await
 }
 
-/// `DELETE /api/memory/workspace/:workspace_id/:id`.
+/// `DELETE /api/memory/workspace/{workspace_id}/{id}`.
 pub async fn workspace_delete(
     headers: HeaderMap,
     Path((workspace_id, id)): Path<(String, String)>,
@@ -274,7 +274,7 @@ pub async fn workspace_delete(
     .await
 }
 
-/// `POST /api/memory/workspace/:workspace_id/curate` — trigger curation.
+/// `POST /api/memory/workspace/{workspace_id}/curate` — trigger curation.
 pub async fn workspace_curate(headers: HeaderMap, Path(workspace_id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
@@ -295,7 +295,7 @@ pub async fn workspace_curate(headers: HeaderMap, Path(workspace_id): Path<Strin
 
 // ── Memory: short-term ────────────────────────────────────────────────
 
-/// `GET /api/memory/short_term/:conversation_id` — read working memory.
+/// `GET /api/memory/short_term/{conversation_id}` — read working memory.
 pub async fn short_term_get(headers: HeaderMap, Path(conversation_id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
@@ -314,7 +314,7 @@ pub async fn short_term_get(headers: HeaderMap, Path(conversation_id): Path<Stri
     .await
 }
 
-/// `POST /api/memory/short_term/:conversation_id` — append an entry.
+/// `POST /api/memory/short_term/{conversation_id}` — append an entry.
 pub async fn short_term_append(
     headers: HeaderMap,
     Path(conversation_id): Path<String>,
@@ -337,7 +337,7 @@ pub async fn short_term_append(
     harness_dispatch("memory.short_term.append", payload).await
 }
 
-/// `DELETE /api/memory/short_term/:conversation_id` — clear working memory.
+/// `DELETE /api/memory/short_term/{conversation_id}` — clear working memory.
 pub async fn short_term_clear(headers: HeaderMap, Path(conversation_id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
@@ -374,39 +374,39 @@ pub fn router() -> Router {
         .route("/api/memory/long_term", get(long_term_list))
         .route("/api/memory/long_term", post(long_term_save))
         .route("/api/memory/long_term/search", post(long_term_search))
-        .route("/api/memory/long_term/:id", put(long_term_update))
-        .route("/api/memory/long_term/:id", delete(long_term_delete))
-        .route("/api/memory/long_term/:id/history", get(long_term_history))
+        .route("/api/memory/long_term/{id}", put(long_term_update))
+        .route("/api/memory/long_term/{id}", delete(long_term_delete))
+        .route("/api/memory/long_term/{id}/history", get(long_term_history))
         // workspace
-        .route("/api/memory/workspace/:workspace_id", get(workspace_list))
-        .route("/api/memory/workspace/:workspace_id", post(workspace_save))
+        .route("/api/memory/workspace/{workspace_id}", get(workspace_list))
+        .route("/api/memory/workspace/{workspace_id}", post(workspace_save))
         .route(
-            "/api/memory/workspace/:workspace_id/search",
+            "/api/memory/workspace/{workspace_id}/search",
             post(workspace_search),
         )
         .route(
-            "/api/memory/workspace/:workspace_id/curate",
+            "/api/memory/workspace/{workspace_id}/curate",
             post(workspace_curate),
         )
         .route(
-            "/api/memory/workspace/:workspace_id/:id",
+            "/api/memory/workspace/{workspace_id}/{id}",
             put(workspace_update),
         )
         .route(
-            "/api/memory/workspace/:workspace_id/:id",
+            "/api/memory/workspace/{workspace_id}/{id}",
             delete(workspace_delete),
         )
         // short-term
         .route(
-            "/api/memory/short_term/:conversation_id",
+            "/api/memory/short_term/{conversation_id}",
             get(short_term_get),
         )
         .route(
-            "/api/memory/short_term/:conversation_id",
+            "/api/memory/short_term/{conversation_id}",
             post(short_term_append),
         )
         .route(
-            "/api/memory/short_term/:conversation_id",
+            "/api/memory/short_term/{conversation_id}",
             delete(short_term_clear),
         )
         // reflection

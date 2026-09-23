@@ -37,3 +37,15 @@ pub(super) fn string_array(payload: &Value, key: &str) -> Vec<String> {
         })
         .unwrap_or_default()
 }
+
+/// A caller-supplied precomputed embedding (`vector`), or `None` when the
+/// key is absent / not a numeric array. `Some(vec)` mirrors verbatim; a
+/// present-but-empty array yields `Some(vec![])`, which the store treats
+/// as "no mirror" — same as the model-tool `parse_float_array`.
+pub(super) fn float_array(payload: &Value, key: &str) -> Option<Vec<f32>> {
+    payload.get(key).and_then(Value::as_array).map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_f64().map(|f| f as f32))
+            .collect()
+    })
+}

@@ -11,8 +11,8 @@
 //! during the cooldown window still run inference (so the rolling
 //! buffer stays warm) but score-over-threshold events are suppressed.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -177,9 +177,7 @@ fn run_listener_thread(
         let chunk = match next {
             Some(Ok(c)) => c,
             Some(Err(RecvError::Lagged(skipped))) => {
-                tracing::warn!(
-                    "wylde-voice: wake-word listener lagged, skipped {skipped} chunks"
-                );
+                tracing::warn!("wylde-voice: wake-word listener lagged, skipped {skipped} chunks");
                 continue;
             }
             Some(Err(RecvError::Closed)) => {

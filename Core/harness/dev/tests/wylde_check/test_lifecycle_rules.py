@@ -1,204 +1,180 @@
-"""Tests for the launcher/shutdown/service-manifest rules (44-47),
-mirrors prod-side wylde_check/rules/_lifecycle.py. Added at the slice-11
-cutover.
+"""Tests for the boot/shutdown rules (44-45), mirrors prod-side
+wylde_check/rules/_lifecycle.py. Added at the slice-11 cutover; rules
+44/45 repointed at the live Rust single source of truth (the
+``DAEMON_MANAGED`` table) for issue #101 — the old rules targeted the
+deleted ``Core/Lifecycle/launcher.py`` / ``shutdown.py`` and passed green
+over the missing files (a dead gate).
+
+Rules 46 (every_service_has_manifest) and 47 (service_manifest_schema)
+were retired 2026-07-20; their tests were removed with them.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+import pytest
 
 from .conftest import _write
 
-_LAUNCHER = "Core/Lifecycle/launcher.py"
-_SHUTDOWN = "Core/Lifecycle/shutdown.py"
+_DAEMON_MANAGED = "rust/crates/wylde-lifecycle/src/daemon_managed.rs"
+_BOOT = "rust/crates/wylde-lifecycle/src/daemon.rs"
+_SHUTDOWN = "rust/crates/wylde-lifecycle/src/state/mod.rs"
 _GPUI_SHUTDOWN = "Core/GUI/Shell/src/shutdown.rs"
 
 
-# ── Rule 44: launcher enumerates services from manifests ──────────────
-
-
-def test_launcher_clean_when_manifest_driven(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
+def _write_single_source(root: Any) -> None:
+    """Write a minimal, structurally-clean single source: the
+    ``DAEMON_MANAGED`` table plus boot + shutdown derived from it."""
+    _write(root / _DAEMON_MANAGED, "pub const DAEMON_MANAGED: &[DaemonService] = &[];\n")
+    _write(root / _BOOT, "for svc in crate::daemon_managed::boot_sequence() {}\n")
     _write(
-        root / _LAUNCHER,
-        "def launch_all():\n"
-        "    services = load_services()\n"
-        "    mf = load_manifest(folder)\n",
+        root / _SHUTDOWN,
+        "for svc in crate::daemon_managed::shutdown_sequence() {}\n",
     )
+
+
+# ── Rule 44: boot is derived from the single DAEMON_MANAGED table ──────
+
+
+def test_boot_clean_when_table_driven(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write_single_source(root)
     assert wc.check_launcher_enumerates_services_from_manifests() == []
 
 
-def test_launcher_flags_missing_manifest_reference(isolated_tree: Any) -> None:
+def test_boot_flags_missing_daemon_managed_table(isolated_tree: Any) -> None:
+    """The single-source file is gone (or never declared the table): the
+    rule must FIRE, not silently pass — the exact rot issue #101 fixed."""
     wc, root = isolated_tree
-    _write(root / _LAUNCHER, "def launch_all():\n    return spawn_everything()\n")
+    _write(root / _BOOT, "for svc in crate::daemon_managed::boot_sequence() {}\n")
+    # No daemon_managed.rs at all.
     findings = wc.check_launcher_enumerates_services_from_manifests()
-    assert len(findings) == 1
-    assert findings[0].rule == "launcher_enumerates_services_from_manifests"
-    assert "filesystem registry" in findings[0].message
-
-
-def test_launcher_flags_hardcoded_service_roster(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / _LAUNCHER,
-        "services = load_services()\n"
-        'SERVICES = ["wylde-gateway", "wylde-voice", "wylde-vpn"]\n',
+    assert any(
+        f.rule == "launcher_enumerates_services_from_manifests"
+        and "DAEMON_MANAGED table is missing" in f.message
+        for f in findings
     )
+
+
+def test_boot_flags_boot_not_derived_from_table(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write(root / _DAEMON_MANAGED, "pub const DAEMON_MANAGED: &[DaemonService] = &[];\n")
+    # daemon.rs that spawns by hand instead of iterating boot_sequence().
+    _write(root / _BOOT, "services::start_gateway().await;\n")
     findings = wc.check_launcher_enumerates_services_from_manifests()
-    assert len(findings) == 1
-    assert "hardcoded service roster" in findings[0].message
+    assert any("boot is no longer derived" in f.message for f in findings)
 
 
-def test_launcher_ignores_lowercase_services_local(isolated_tree: Any) -> None:
-    """`services = load_services()` is the normal idiom — the rule only
-    flags UPPERCASE roster constants, not lowercase locals."""
+def test_boot_flags_rust_const_services_array(isolated_tree: Any) -> None:
     wc, root = isolated_tree
-    _write(root / _LAUNCHER, "services = load_services()\nfor s in services:\n    pass\n")
-    assert wc.check_launcher_enumerates_services_from_manifests() == []
-
-
-def test_launcher_flags_rust_const_services_array(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(root / _LAUNCHER, "load_services()\n")  # keep the python half clean
+    _write_single_source(root)
     _write(
-        root / "rust/crates/wylde-lifecycle/src/daemon.rs",
+        root / "rust/crates/wylde-lifecycle/src/roster.rs",
         'const SERVICES: [&str; 2] = ["wylde-gateway", "wylde-voice"];\n',
     )
     findings = wc.check_launcher_enumerates_services_from_manifests()
-    assert any("Rust launcher" in f.message for f in findings)
+    assert any("hardcoded service roster in the Rust boot path" in f.message for f in findings)
 
 
-# ── Rule 45: shutdown enumerates services from manifests ──────────────
+# #115 — each of these ESCAPED rule 44 before the regex fix. The first is the
+# exact CORE_SERVICES literal #101 deleted from control.rs: re-pasting it back
+# passed the gate clean. The prefix alternation missed any qualifier
+# (CORE_/DAEMON_/WYLDE_), and the `: [` type-annotation requirement missed the
+# idiomatic slice form `: &[&str] = &[` (the `[` is preceded by `&`).
+_PREVIOUSLY_ESCAPING_ROSTERS = [
+    ("core_services_array", 'const CORE_SERVICES: [&str; 2] = ["wylde-gateway", "wylde-voice"];\n'),
+    ("core_services_slice", 'pub const CORE_SERVICES: &[&str] = &["wylde-gateway"];\n'),
+    ("daemon_services_slice", 'static DAEMON_SERVICES: &[&str] = &["wylde-gateway"];\n'),
+    ("bare_services_slice", 'const SERVICES: &[&str] = &["wylde-gateway"];\n'),
+]
 
 
-def test_shutdown_clean_when_manifest_driven(isolated_tree: Any) -> None:
+@pytest.mark.parametrize(
+    "literal",
+    [lit for _, lit in _PREVIOUSLY_ESCAPING_ROSTERS],
+    ids=[label for label, _ in _PREVIOUSLY_ESCAPING_ROSTERS],
+)
+def test_boot_flags_prefixed_and_slice_service_rosters(isolated_tree: Any, literal: str) -> None:
+    """A qualifier-prefixed name or a slice-form declaration is still a
+    hand-kept roster and must fire rule 44. Testing only the two forms that
+    already matched (bare/`ALL_` array) reproduces the blind spot #115 exists
+    to close, so these assert the previously-escaping cases."""
     wc, root = isolated_tree
+    _write_single_source(root)
+    _write(root / "rust/crates/wylde-lifecycle/src/roster.rs", literal)
+    findings = wc.check_launcher_enumerates_services_from_manifests()
+    assert any(
+        "hardcoded service roster in the Rust boot path" in f.message for f in findings
+    ), f"rule 44 did not flag: {literal!r}"
+
+
+def test_boot_does_not_flag_non_roster_service_constants(isolated_tree: Any) -> None:
+    """The widened regex must not over-match: a scalar const whose name merely
+    starts with SERVICE (e.g. a timeout) is not a roster and must stay clean."""
+    wc, root = isolated_tree
+    _write_single_source(root)
     _write(
-        root / _SHUTDOWN,
-        "def shutdown_all():\n"
-        "    running = launcher.get_running()\n"
-        "    order = _shutdown_sequence(list(running))\n",
+        root / "rust/crates/wylde-lifecycle/src/roster.rs",
+        "const SERVICE_TIMEOUT_MS: u64 = 5_000;\nconst MAX_SERVICES: usize = 12;\n",
     )
+    assert wc.check_launcher_enumerates_services_from_manifests() == []
+
+
+def test_boot_does_not_flag_typed_policy_table(isolated_tree: Any) -> None:
+    """The #101 anti-pattern is a hand-kept roster of service-NAME strings
+    (`&[&str]`). A TYPED struct table (e.g. the strangler-fig impl-selection
+    table `&[StranglerService]`) is a different structure — boot still derives
+    from DAEMON_MANAGED — and must not be flagged, exactly as `DAEMON_MANAGED:
+    &[DaemonService]` is not."""
+    wc, root = isolated_tree
+    _write_single_source(root)
+    _write(
+        root / "rust/crates/wylde-lifecycle/src/state/services.rs",
+        "const STRANGLER_SERVICES: &[StranglerService] = &[];\n",
+    )
+    assert wc.check_launcher_enumerates_services_from_manifests() == []
+
+
+# ── Rule 45: shutdown is derived from the same DAEMON_MANAGED table ────
+
+
+def test_shutdown_clean_when_table_driven(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write_single_source(root)
     _write(root / _GPUI_SHUTDOWN, 'lifecycle_action("lifecycle.shutdown_all", Null)\n')
     assert wc.check_shutdown_enumerates_services_from_manifests() == []
 
 
-def test_shutdown_flags_missing_enumeration(isolated_tree: Any) -> None:
+def test_shutdown_flags_not_derived_from_table(isolated_tree: Any) -> None:
     wc, root = isolated_tree
-    _write(root / _SHUTDOWN, "def shutdown_all():\n    kill_them_all()\n")
+    # state/mod.rs that drains a hand-kept array instead of shutdown_sequence().
+    _write(root / _SHUTDOWN, "let steps: [(&str, bool); 12] = [];\n")
     _write(root / _GPUI_SHUTDOWN, 'lifecycle_action("lifecycle.shutdown_all", Null)\n')
     findings = wc.check_shutdown_enumerates_services_from_manifests()
-    assert any("no longer enumerates" in f.message for f in findings)
+    assert any("shutdown is no longer derived" in f.message for f in findings)
 
 
 def test_shutdown_flags_gpui_not_delegating(isolated_tree: Any) -> None:
     wc, root = isolated_tree
-    _write(root / _SHUTDOWN, "running = launcher.get_running()\n")
+    _write(
+        root / _SHUTDOWN,
+        "for svc in crate::daemon_managed::shutdown_sequence() {}\n",
+    )
     # gpui shutdown.rs that enumerates on its own instead of delegating.
     _write(root / _GPUI_SHUTDOWN, 'taskkill(["wylde-gateway.exe"]);\n')
     findings = wc.check_shutdown_enumerates_services_from_manifests()
-    assert any("does not delegate".lower() in f.message.lower() or
-               "delegate" in f.message.lower() for f in findings)
+    assert any("delegate" in f.message.lower() for f in findings)
     assert any(f.file == _GPUI_SHUTDOWN for f in findings)
 
 
-# ── Rule 46: every backend service has a manifest ─────────────────────
-
-
-def test_every_service_forward_flags_runpy_without_manifest(isolated_tree: Any) -> None:
+def test_shutdown_flags_gpui_delegate_file_missing(isolated_tree: Any) -> None:
+    """Hardened: a deleted gpui delegate must FIRE, not silently pass."""
     wc, root = isolated_tree
-    _write(root / "MyService" / "run.py", "# entry point\n")
-    findings = wc.check_every_service_has_manifest()
-    assert len(findings) == 1
-    assert findings[0].rule == "every_service_has_manifest"
-    assert "MyService" in findings[0].message
-
-
-def test_every_service_forward_clean_with_manifest(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(root / "MyService" / "run.py", "# entry point\n")
-    _write(root / "MyService" / "manifest.json", json.dumps({"name": "MyService"}))
-    assert wc.check_every_service_has_manifest() == []
-
-
-def test_every_service_reverse_flags_manifest_in_runtime_dir(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(root / "logs" / "manifest.json", json.dumps({"name": "logs"}))
-    findings = wc.check_every_service_has_manifest()
-    assert len(findings) == 1
-    assert "runtime/archive" in findings[0].message
-
-
-def test_every_service_reverse_exempts_core(isolated_tree: Any) -> None:
-    """Core holds a legitimate infra rollup manifest — never flagged."""
-    wc, root = isolated_tree
-    _write(root / "Core" / "manifest.json", json.dumps({"name": "Core"}))
-    assert wc.check_every_service_has_manifest() == []
-
-
-# ── Rule 47: service manifest schema ──────────────────────────────────
-
-
-def _svc_manifest(root: Any, name: str, body: dict) -> None:
-    _write(root / name / "manifest.json", json.dumps(body))
-
-
-def test_schema_clean_with_required_keys(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _svc_manifest(
-        root,
-        "Gateway",
-        {"name": "Gateway", "entry_point": "py -3 -m Gateway.run", "shutdown_order": 20},
+    _write(
+        root / _SHUTDOWN,
+        "for svc in crate::daemon_managed::shutdown_sequence() {}\n",
     )
-    assert wc.check_service_manifest_schema() == []
-
-
-def test_schema_allows_null_entry_point(isolated_tree: Any) -> None:
-    """entry_point may be null — a library / in-process / pipe-only service."""
-    wc, root = isolated_tree
-    _svc_manifest(
-        root, "N8N", {"name": "N8N", "entry_point": None, "shutdown_order": 40}
-    )
-    assert wc.check_service_manifest_schema() == []
-
-
-def test_schema_flags_missing_shutdown_order(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _svc_manifest(root, "Voice", {"name": "Voice", "entry_point": "py -3 -m Voice.run"})
-    findings = wc.check_service_manifest_schema()
-    assert any("shutdown_order" in f.message and "missing" in f.message for f in findings)
-
-
-def test_schema_flags_wrong_shutdown_order_type(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _svc_manifest(
-        root,
-        "Voice",
-        {"name": "Voice", "entry_point": "x", "shutdown_order": "soon"},
-    )
-    findings = wc.check_service_manifest_schema()
-    assert any("shutdown_order" in f.message and "integer" in f.message for f in findings)
-
-
-def test_schema_flags_empty_name(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _svc_manifest(root, "VPN", {"name": "", "entry_point": "x", "shutdown_order": 70})
-    findings = wc.check_service_manifest_schema()
-    assert any("name" in f.message for f in findings)
-
-
-def test_schema_flags_bad_health_check_type(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _svc_manifest(
-        root,
-        "Gateway",
-        {
-            "name": "Gateway",
-            "entry_point": "x",
-            "shutdown_order": 20,
-            "health_check": 123,
-        },
-    )
-    findings = wc.check_service_manifest_schema()
-    assert any("health_check" in f.message for f in findings)
+    # No gpui shutdown.rs at all.
+    findings = wc.check_shutdown_enumerates_services_from_manifests()
+    assert any(f.file == _GPUI_SHUTDOWN for f in findings)

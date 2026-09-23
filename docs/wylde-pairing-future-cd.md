@@ -1,7 +1,7 @@
 # Wylde Pairing — Future Options C and D
 
 **Captured:** 2026-05-24. **Status:** future-reference, no implementation queued.
-**Companion doc:** [`wylde-android-app-plan.md`](wylde-android-app-plan.md) (§5 ships
+**Companion doc:** [`wylde-android-app-plan.md`](plans/wylde-android-app-plan.md) (§5 ships
 options A + B as the default pairing UX).
 
 The Android plan ships pairing options **A** (LAN-mDNS first-pair) and **B**

@@ -421,44 +421,44 @@ mod tests {
 
     #[test]
     fn vocab_seed_lift_raises_described_concept() {
-        // {{nextcloud}} matched (seed 1.0) and it describes the Nextcloud
+        // {{photos}} matched (seed 1.0) and it describes the Photos
         // concept, whose cosine is a flat 0.40. seed_vocab_weight 0.7 lifts it.
-        let nc_concept = NodeRef::concept("nextcloud");
-        let nc_vocab = NodeRef::vocab("nextcloud");
-        let s = seed(&[(nc_concept.clone(), 0.40), (nc_vocab.clone(), 1.0)]);
-        let links = vec![(nc_vocab.clone(), nc_concept.clone())];
+        let ph_concept = NodeRef::concept("photos");
+        let ph_vocab = NodeRef::vocab("photos");
+        let s = seed(&[(ph_concept.clone(), 0.40), (ph_vocab.clone(), 1.0)]);
+        let links = vec![(ph_vocab.clone(), ph_concept.clone())];
         let out = spread(s, &links, &[], &RelationGraph::empty(), &params());
-        assert!(approx(out.activation_of(&nc_concept), 0.7), "lifted to 0.7");
+        assert!(approx(out.activation_of(&ph_concept), 0.7), "lifted to 0.7");
         assert!(matches!(
-            out.provenance_of(&nc_concept),
+            out.provenance_of(&ph_concept),
             Provenance::SeedLift { .. }
         ));
     }
 
     #[test]
     fn dependency_spread_pulls_in_a_flat_dependency() {
-        // Nextcloud fires (0.64); DDNS's own cosine is a flat 0.30 (below the
-        // 0.50 floor R4 would use). The depends-on edge pulls DDNS up to
+        // Photos fires (0.64); Thumbnailer's own cosine is a flat 0.30 (below the
+        // 0.50 floor R4 would use). The depends-on edge pulls Thumbnailer up to
         // 0.64*0.5 = 0.32 at hop 1 — and the proof is the provenance.
-        let nc = NodeRef::vocab("nextcloud");
-        let ddns = NodeRef::vocab("ddns");
+        let ph = NodeRef::vocab("photos");
+        let thumbnailer = NodeRef::vocab("thumbnailer");
         let g = RelationGraph {
             relations: vec![Relation::normalized(
-                nc.clone(),
-                ddns.clone(),
+                ph.clone(),
+                thumbnailer.clone(),
                 RelationKind::Dependency,
                 None,
             )],
         };
-        let s = seed(&[(nc.clone(), 0.64), (ddns.clone(), 0.30)]);
+        let s = seed(&[(ph.clone(), 0.64), (thumbnailer.clone(), 0.30)]);
         let out = spread(s, &[], &[], &g, &params());
         assert!(
-            approx(out.activation_of(&ddns), 0.32),
+            approx(out.activation_of(&thumbnailer), 0.32),
             "0.64*dep_decay(0.5)"
         );
-        match out.provenance_of(&ddns) {
+        match out.provenance_of(&thumbnailer) {
             Provenance::Dependency { from, hops } => {
-                assert_eq!(from, nc);
+                assert_eq!(from, ph);
                 assert_eq!(hops, 1);
             }
             o => panic!("expected Dependency provenance, got {o:?}"),
@@ -626,20 +626,20 @@ mod tests {
 
     #[test]
     fn negative_edge_softly_inhibits_with_floor() {
-        // Nextcloud fires 0.64, Wylde sits 0.62 next to it. A Nextcloud ⊘ Wylde
+        // Photos fires 0.64, Wylde sits 0.62 next to it. A Photos ⊘ Wylde
         // edge damps Wylde: 0.62 * (1 - 0.8*0.64) = 0.62 * 0.488 = 0.3026.
-        let nc = NodeRef::concept("nextcloud");
+        let ph = NodeRef::concept("photos");
         let wylde = NodeRef::concept("wylde");
         let g = RelationGraph {
             relations: vec![Relation::normalized(
-                nc.clone(),
+                ph.clone(),
                 wylde.clone(),
                 RelationKind::Negative,
                 None,
             )],
         };
         let out = spread(
-            seed(&[(nc.clone(), 0.64), (wylde.clone(), 0.62)]),
+            seed(&[(ph.clone(), 0.64), (wylde.clone(), 0.62)]),
             &[],
             &[],
             &g,
@@ -653,7 +653,7 @@ mod tests {
         assert!(w < 0.62, "Wylde suppressed below its raw cosine");
         match out.provenance_of(&wylde) {
             Provenance::Inhibited { by, raw } => {
-                assert_eq!(by, nc);
+                assert_eq!(by, ph);
                 assert!(approx(raw, 0.62));
             }
             o => panic!("expected Inhibited, got {o:?}"),
@@ -680,7 +680,13 @@ mod tests {
             inhibition_strength: 1.5,
             ..params()
         };
-        let out = spread(seed(&[(x.clone(), 1.0), (y.clone(), 0.9)]), &[], &[], &g, &p);
+        let out = spread(
+            seed(&[(x.clone(), 1.0), (y.clone(), 0.9)]),
+            &[],
+            &[],
+            &g,
+            &p,
+        );
         assert!(
             approx(out.activation_of(&y), 0.9 * 0.15),
             "floor caps the damp"
@@ -717,35 +723,40 @@ mod tests {
 
     #[test]
     fn full_pipeline_dependency_pulls_and_exclusion_suppresses() {
-        // The canonical proof in miniature: Nextcloud (0.64) depends-on DDNS
-        // (flat 0.30) and is-not Wylde (0.62). After spread: DDNS pulled UP,
+        // The canonical proof in miniature: Photos (0.64) depends-on Thumbnailer
+        // (flat 0.30) and is-not Wylde (0.62). After spread: Thumbnailer pulled UP,
         // Wylde pushed DOWN — the gap the flat cosine couldn't make.
-        let nc = NodeRef::concept("nextcloud");
-        let ddns = NodeRef::concept("ddns");
+        let ph = NodeRef::concept("photos");
+        let thumbnailer = NodeRef::concept("thumbnailer");
         let wylde = NodeRef::concept("wylde");
         let g = RelationGraph {
             relations: vec![
-                Relation::normalized(nc.clone(), ddns.clone(), RelationKind::Dependency, None),
-                Relation::normalized(nc.clone(), wylde.clone(), RelationKind::Negative, None),
+                Relation::normalized(
+                    ph.clone(),
+                    thumbnailer.clone(),
+                    RelationKind::Dependency,
+                    None,
+                ),
+                Relation::normalized(ph.clone(), wylde.clone(), RelationKind::Negative, None),
             ],
         };
         let s = seed(&[
-            (nc.clone(), 0.64),
-            (ddns.clone(), 0.30),
+            (ph.clone(), 0.64),
+            (thumbnailer.clone(), 0.30),
             (wylde.clone(), 0.62),
         ]);
         let before = s.clone();
         let out = spread(s, &[], &[], &g, &params());
         assert!(
-            out.activation_of(&ddns) > before[&ddns],
-            "dependency pulled DDNS up"
+            out.activation_of(&thumbnailer) > before[&thumbnailer],
+            "dependency pulled Thumbnailer up"
         );
         assert!(
             out.activation_of(&wylde) < before[&wylde],
             "exclusion pushed Wylde down"
         );
-        // And the ordering flips usefully: DDNS now outranks the excluded Wylde.
-        assert!(out.activation_of(&ddns) > out.activation_of(&wylde));
+        // And the ordering flips usefully: Thumbnailer now outranks the excluded Wylde.
+        assert!(out.activation_of(&thumbnailer) > out.activation_of(&wylde));
     }
 
     // ── H6: containment spread (the new, gated, separate channel) ──────────
@@ -756,19 +767,22 @@ mod tests {
         // (the canonical dep proof) AND must never stamp a Containment
         // provenance — the spread-level identity-when-empty guarantee, proven
         // with a LIVE relation graph (not just an empty one).
-        let nc = NodeRef::vocab("nextcloud");
-        let ddns = NodeRef::vocab("ddns");
+        let ph = NodeRef::vocab("photos");
+        let thumbnailer = NodeRef::vocab("thumbnailer");
         let g = RelationGraph {
             relations: vec![Relation::normalized(
-                nc.clone(),
-                ddns.clone(),
+                ph.clone(),
+                thumbnailer.clone(),
                 RelationKind::Dependency,
                 None,
             )],
         };
-        let s = seed(&[(nc.clone(), 0.64), (ddns.clone(), 0.30)]);
+        let s = seed(&[(ph.clone(), 0.64), (thumbnailer.clone(), 0.30)]);
         let out = spread(s, &[], &[], &g, &params());
-        assert!(approx(out.activation_of(&ddns), 0.32), "dep result unchanged");
+        assert!(
+            approx(out.activation_of(&thumbnailer), 0.32),
+            "dep result unchanged"
+        );
         assert!(
             out.provenance
                 .values()
@@ -793,7 +807,10 @@ mod tests {
             &RelationGraph::empty(),
             &params(),
         );
-        assert!(approx(up.activation_of(&p_node), 0.4), "child→parent strong");
+        assert!(
+            approx(up.activation_of(&p_node), 0.4),
+            "child→parent strong"
+        );
         match up.provenance_of(&p_node) {
             Provenance::Containment { from, hops } => {
                 assert_eq!(from, c_node);
@@ -811,7 +828,10 @@ mod tests {
             &RelationGraph::empty(),
             &params(),
         );
-        assert!(approx(down.activation_of(&c_node), 0.12), "parent→child weak");
+        assert!(
+            approx(down.activation_of(&c_node), 0.12),
+            "parent→child weak"
+        );
         assert!(
             down.activation_of(&c_node) < up.activation_of(&p_node),
             "asymmetry: up-strong beats down-weak (OQ-5)"
@@ -832,7 +852,10 @@ mod tests {
             &RelationGraph::empty(), // empty relations
             &params(),
         );
-        assert!(approx(out.activation_of(&p_node), 0.5), "containment still fired");
+        assert!(
+            approx(out.activation_of(&p_node), 0.5),
+            "containment still fired"
+        );
     }
 
     #[test]
@@ -888,7 +911,10 @@ mod tests {
             &RelationGraph::empty(),
             &params(),
         );
-        assert!(approx(out.activation_of(&a), 1.0), "seed keeps its own activation");
+        assert!(
+            approx(out.activation_of(&a), 1.0),
+            "seed keeps its own activation"
+        );
         // b is a's child (down-weak 0.15) but also reachable up from c; it
         // settles to its best finite value and the walk halts.
         assert!(out.activation_of(&b) > 0.0 && out.activation_of(&b) <= 1.0);

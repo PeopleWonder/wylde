@@ -73,11 +73,18 @@ fn long_term_rows_load_from_the_list_verb(cx: &mut TestAppContext) {
     window
         .update(cx, |panel, _w, _cx| {
             let ids: Vec<&str> = panel.long_term.iter().map(|r| r.id.as_str()).collect();
-            assert_eq!(ids, vec!["m1", "m2"], "the long-term section lists the curated rows");
+            assert_eq!(
+                ids,
+                vec!["m1", "m2"],
+                "the long-term section lists the curated rows"
+            );
             assert_eq!(panel.long_term[0].body, "prefers terse answers");
             assert_eq!(panel.long_term[0].importance, 9);
             assert!(!panel.search_active, "a plain list load is not a search");
-            assert!(!panel.loading_long_term, "the load flag clears once rows arrive");
+            assert!(
+                !panel.loading_long_term,
+                "the load flag clears once rows arrive"
+            );
         })
         .unwrap();
     assert_eq!(fake.count_for("memory.long_term.list"), 1);
@@ -127,7 +134,9 @@ fn copy_to_workspace_issues_notes_add_with_provenance(cx: &mut TestAppContext) {
     // Copy the record's body into the (MRU-head) target workspace.
     window
         .update(cx, |panel, _w, cx| {
-            let target = panel.copy_target_id().expect("a workspace exists to copy into");
+            let target = panel
+                .copy_target_id()
+                .expect("a workspace exists to copy into");
             let body = panel.long_term[0].body.clone();
             panel.spawn_copy_in(target, body, cx);
         })
@@ -137,8 +146,14 @@ fn copy_to_workspace_issues_notes_add_with_provenance(cx: &mut TestAppContext) {
     let add = fake
         .last_call_for("workspaces.notes.add")
         .expect("copy-in must fire workspaces.notes.add");
-    assert_eq!(add.service, "wylde-workspaces", "notes live on the workspaces service");
-    assert_eq!(add.payload_str("workspace_id").as_deref(), Some("ws-recent"));
+    assert_eq!(
+        add.service, "wylde-workspaces",
+        "notes live on the workspaces service"
+    );
+    assert_eq!(
+        add.payload_str("workspace_id").as_deref(),
+        Some("ws-recent")
+    );
     assert_eq!(
         add.payload_str("text").as_deref(),
         Some("uses tabs not spaces"),
@@ -153,7 +168,10 @@ fn copy_to_workspace_issues_notes_add_with_provenance(cx: &mut TestAppContext) {
     window
         .update(cx, |panel, _w, _cx| {
             let msg = panel.copy_feedback.as_deref().unwrap_or_default();
-            assert!(msg.contains("Copied"), "a success strip confirms the copy: {msg:?}");
+            assert!(
+                msg.contains("Copied"),
+                "a success strip confirms the copy: {msg:?}"
+            );
         })
         .unwrap();
 }

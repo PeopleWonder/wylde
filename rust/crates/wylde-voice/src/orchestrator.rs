@@ -158,7 +158,8 @@ pub trait HarnessChat: Send + Sync {
     /// the wylde-voice STT primitive via the harness's
     /// `voice.transcribe` bridge — the same value catalog entry the
     /// model gets.
-    async fn transcribe(&self, audio: &[i16], sample_rate: u32) -> Result<String, HarnessCallError>;
+    async fn transcribe(&self, audio: &[i16], sample_rate: u32)
+        -> Result<String, HarnessCallError>;
     /// Drive one chat turn through the harness. `modality` is set to
     /// `"voice"` so the slot-ordering builder folds in the voice prelude.
     async fn run_chat_turn(
@@ -230,7 +231,10 @@ where
 {
     let session_id = new_session_id();
 
-    let conv_id = match harness.resolve_conversation(inputs.active_conversation_id).await {
+    let conv_id = match harness
+        .resolve_conversation(inputs.active_conversation_id)
+        .await
+    {
         Some(id) if !id.is_empty() => id,
         _ => {
             return finalize(
@@ -277,7 +281,10 @@ where
 
     // STT.
     let t0 = Instant::now();
-    transcript = match harness.transcribe(&audio_bytes, capture.sample_rate()).await {
+    transcript = match harness
+        .transcribe(&audio_bytes, capture.sample_rate())
+        .await
+    {
         Ok(t) => t,
         Err(e) => {
             return finalize(
@@ -533,7 +540,9 @@ mod tests {
                     PlaybackError::Play(s) => PlaybackError::Play(s.clone()),
                     PlaybackError::Timeout(d) => PlaybackError::Timeout(*d),
                     PlaybackError::BufferTooLarge(a, b) => PlaybackError::BufferTooLarge(*a, *b),
-                    PlaybackError::NoSupportedConfig(s) => PlaybackError::NoSupportedConfig(s.clone()),
+                    PlaybackError::NoSupportedConfig(s) => {
+                        PlaybackError::NoSupportedConfig(s.clone())
+                    }
                 });
             }
             Ok(())
@@ -630,13 +639,7 @@ mod tests {
         let cap = Arc::new(ok_capture());
         let play = Arc::new(ok_playback());
         let harn = Arc::new(ok_harness());
-        let r = run_session(
-            cap,
-            play.clone(),
-            harn,
-            SessionInputs::new("conv-1"),
-        )
-        .await;
+        let r = run_session(cap, play.clone(), harn, SessionInputs::new("conv-1")).await;
         assert_eq!(r.transcript, "hello world");
         assert_eq!(r.response, "hello back");
         assert_eq!(r.conversation_id, "conv-1");

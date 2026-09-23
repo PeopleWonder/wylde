@@ -56,10 +56,10 @@ impl Config {
         let dram_safety_margin =
             env_int("WYLDE_DRAM_SAFETY_MB", 2048).saturating_mul(1024 * 1024) as u64;
         let enable_spillover = env_bool("WYLDE_VRAM_ENABLE_SPILLOVER", true);
-        let estimate_default_vram = env_int("WYLDE_VRAM_ESTIMATE_DEFAULT_MB", 4 * 1024)
-            .saturating_mul(1024 * 1024) as u64;
-        let estimate_default_dram = env_int("WYLDE_DRAM_ESTIMATE_DEFAULT_MB", 0)
-            .saturating_mul(1024 * 1024) as u64;
+        let estimate_default_vram =
+            env_int("WYLDE_VRAM_ESTIMATE_DEFAULT_MB", 4 * 1024).saturating_mul(1024 * 1024) as u64;
+        let estimate_default_dram =
+            env_int("WYLDE_DRAM_ESTIMATE_DEFAULT_MB", 0).saturating_mul(1024 * 1024) as u64;
         let default_ttl = env_f64("WYLDE_VRAM_TTL", 60.0);
         let ollama_url =
             std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://127.0.0.1:11434".into());

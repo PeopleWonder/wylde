@@ -124,7 +124,9 @@ fn back_arrow_returns_to_registry_keeping_active(cx: &mut TestAppContext) {
 
     let window = mount(cx);
     window
-        .update(cx, |panel, _w, cx| panel.enter_workspace("ws-a".to_owned(), cx))
+        .update(cx, |panel, _w, cx| {
+            panel.enter_workspace("ws-a".to_owned(), cx)
+        })
         .unwrap();
     cx.run_until_parked();
     let set_active_before = fake.count_for("workspaces.set_active");
@@ -219,7 +221,11 @@ fn focus_selects_in_workspace_tab(cx: &mut TestAppContext) {
                 Some("ws-a"),
                 "a tab focus from the Registry must first enter the active workspace"
             );
-            assert_eq!(panel.tab, WorkspacesTab::Graph, "focus selected the Graph tab");
+            assert_eq!(
+                panel.tab,
+                WorkspacesTab::Graph,
+                "focus selected the Graph tab"
+            );
         })
         .unwrap();
 
@@ -238,8 +244,16 @@ fn focus_selects_in_workspace_tab(cx: &mut TestAppContext) {
     cx.run_until_parked();
     window
         .update(cx, |panel, _w, _cx| {
-            assert_eq!(panel.tab, WorkspacesTab::Editor, "tab-shell switched to Editor");
-            assert_eq!(panel.entered.as_deref(), Some("ws-a"), "still in the workspace");
+            assert_eq!(
+                panel.tab,
+                WorkspacesTab::Editor,
+                "tab-shell switched to Editor"
+            );
+            assert_eq!(
+                panel.entered.as_deref(),
+                Some("ws-a"),
+                "still in the workspace"
+            );
         })
         .unwrap();
 
@@ -294,7 +308,10 @@ fn start_service_affordance_issues_lifecycle_start(cx: &mut TestAppContext) {
     let start = fake
         .last_call_for("service.start")
         .expect("Start service must dispatch the lifecycle service.start verb");
-    assert_eq!(start.service, "wylde-lifecycle", "service control hits the lifecycle daemon");
+    assert_eq!(
+        start.service, "wylde-lifecycle",
+        "service control hits the lifecycle daemon"
+    );
     assert_eq!(
         start.payload_str("name").as_deref(),
         Some("wylde-workspaces"),
@@ -303,7 +320,10 @@ fn start_service_affordance_issues_lifecycle_start(cx: &mut TestAppContext) {
     // A successful control re-read clears the banner.
     window
         .update(cx, |panel, _w, _cx| {
-            assert!(panel.error.is_none(), "a successful start clears the error banner");
+            assert!(
+                panel.error.is_none(),
+                "a successful start clears the error banner"
+            );
         })
         .unwrap();
 }
@@ -326,7 +346,10 @@ fn restart_service_affordance_issues_lifecycle_restart(cx: &mut TestAppContext) 
         .last_call_for("service.restart")
         .expect("Restart service must dispatch the lifecycle service.restart verb");
     assert_eq!(restart.service, "wylde-lifecycle");
-    assert_eq!(restart.payload_str("name").as_deref(), Some("wylde-workspaces"));
+    assert_eq!(
+        restart.payload_str("name").as_deref(),
+        Some("wylde-workspaces")
+    );
     assert_eq!(
         fake.count_for("service.start"),
         0,

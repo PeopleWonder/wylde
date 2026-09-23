@@ -122,6 +122,19 @@ async fn symbol_context_returns_full_neighbourhood_from_live_neo4j() {
         "seed INHERITS"
     );
 
+    // Warm the Bolt pool + query planner BEFORE the timed reads. The OI-1
+    // per-hop budget (200ms + 300ms × hops) measures the *traversal* cost, not
+    // the one-time connection handshake and first-query plan compilation a
+    // freshly-booted Neo4j pays — which lands ~500ms on the very first call and
+    // would otherwise blow the 1-hop budget on cold-start alone (the warm 3-hop
+    // read below runs in tens of ms). This throwaway read primes both caches so
+    // the timed measurement reflects steady-state per-hop cost, the thing the
+    // budget is actually about.
+    let _ = neighborhood::symbol_context(&ws, &n("focal"), Some(1), false, false)
+        .await
+        .expect("warmup read")
+        .expect("focal resolves");
+
     // ── 1-hop read through the verb code path ───────────────────────────
     let t1 = Instant::now();
     let ctx = neighborhood::symbol_context(&ws, &n("focal"), Some(1), true, true)

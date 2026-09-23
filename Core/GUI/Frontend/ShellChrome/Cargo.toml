@@ -1,0 +1,32 @@
+[package]
+name = "wylde-gui-shell-chrome"
+description = "The Shell's nav-chrome renderers (sidebar, panel slot, update pill + changelog modal) + their pure view-model, extracted from the `wry`/tray-linking Shell crate into a webview-free crate so the headless L7 panel-walk job can build and control-walk them (#247). Renders against a small `NavChromeHost` trait the Shell implements, not the concrete `Shell` type."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Theme tokens — every colour/spacing constant comes from the shared Theme.
+wylde-theme = { path = "../Theme" }
+
+# The one constructor every interactive control routes through (#247). In this
+# (normal) build it is `.id()` and nothing else.
+wylde-gui-controls = { path = "../Controls" }
+
+gpui.workspace = true
+serde_json.workspace = true
+
+# ── DEV-ONLY (windowed gpui tests) ───────────────────────────────────
+# The nav-chrome renderers make no pipe calls (they dispatch to the host
+# trait), so — like the Changelog crate — the walk needs only the shared
+# harness + `gpui/test-support`. A dev-dependency-only feature set, so
+# resolver = "2" never unifies it into the shipped Shell (docs/gui-testing.md).
+[dev-dependencies]
+wylde-gui-test-support = { path = "../test-support" }
+wylde-gui-controls = { path = "../Controls", features = ["test-support"] }
+gpui = { workspace = true, features = ["test-support"] }

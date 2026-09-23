@@ -41,7 +41,12 @@ fn ollama_url() -> String {
 
 fn live_mode_enabled() -> bool {
     std::env::var("WYLDE_OLLAMA_LIVE")
-        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|v| {
+            matches!(
+                v.trim().to_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -53,9 +58,7 @@ async fn drop_propagates_upstream_stop() {
         return;
     }
     let url = ollama_url();
-    let client = Client::builder()
-        .build()
-        .expect("reqwest client");
+    let client = Client::builder().build().expect("reqwest client");
 
     // Probe — bail with diagnostic if Ollama isn't actually reachable.
     let probe = client
@@ -66,7 +69,10 @@ async fn drop_propagates_upstream_stop() {
     match probe {
         Ok(r) if r.status().is_success() => {}
         Ok(r) => {
-            panic!("SPIKE PRECHECK FAIL: Ollama at {url}/ returned {}", r.status());
+            panic!(
+                "SPIKE PRECHECK FAIL: Ollama at {url}/ returned {}",
+                r.status()
+            );
         }
         Err(e) => {
             panic!("SPIKE PRECHECK FAIL: cannot reach Ollama at {url}/: {e}");
@@ -90,7 +96,9 @@ async fn drop_propagates_upstream_stop() {
         .filter_map(|m| m["name"].as_str().map(str::to_owned))
         .collect();
     assert!(
-        installed.iter().any(|n| n == SPIKE_MODEL || n.starts_with(SPIKE_MODEL)),
+        installed
+            .iter()
+            .any(|n| n == SPIKE_MODEL || n.starts_with(SPIKE_MODEL)),
         "spike model {SPIKE_MODEL} not installed (installed: {installed:?})"
     );
 

@@ -15,12 +15,28 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
+# The nav chrome (sidebar, panel slot, update pill + changelog modal) + its
+# view-model, extracted into a `wry`-free crate the L7 walk can build (#247).
+# The Shell renders it (via `NavChromeHost`) and owns the `wry`/tray plumbing.
+wylde-gui-shell-chrome = { path = "../Frontend/ShellChrome" }
+# The one constructor every interactive control routes through (#247).
+wylde-gui-controls = { path = "../Frontend/Controls" }
 wylde-gui-pipe     = { path = "../Frontend/Pipe" }
 wylde-theme        = { path = "../Frontend/Theme" }
 wylde-webview      = { path = "../Frontend/Extension_handlers/WebView" }
 # Panel registry — the Shell installs the process-wide registry at
 # startup and reads it during render to drive the sidebar + slot.
 wylde-panel-registry = { path = "../Manifest/Extension_handlers" }
+
+# Update-notification UI (#196) — the bottom-left pill's visibility policy
+# (`pill_visible`) and the lazy-loaded changelog viewer the pill opens. A
+# self-contained gpui component (no backend deps); the Shell owns the pill's
+# click handlers + modal chrome, this crate owns the changelog surface.
+wylde-changelog = { path = "../Frontend/Changelog" }
+
+# The stack roster drives the shutdown kill list + drain-wait poll set,
+# so neither is a hand-kept parallel list (#124).
+wylde-stack.workspace   = true
 
 gpui.workspace          = true
 gpui_platform.workspace = true

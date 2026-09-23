@@ -20,8 +20,11 @@ resolver = "2"
 members = [
     "Shell",
     "Frontend/Theme",
+    "Frontend/Controls",
     "Frontend/Pipe",
     "Frontend/Input",
+    "Frontend/Changelog",
+    "Frontend/ShellChrome",
     "Frontend/Code_editor",
     "Frontend/Extension_handlers/WebView",
     "Frontend/Panels/Settings",
@@ -51,7 +54,7 @@ members = [
 exclude = ["Frontend/test-support"]
 
 [workspace.package]
-version = "0.1.0-alpha.1"
+version = "0.2.0-beta.1"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Wylde User <user@example.com>"]
@@ -70,6 +73,13 @@ wylde-shared  = { path = "../../rust/crates/wylde-shared" }
 # logic behind the `self_update`/`self-replace` placeholders noted below —
 # wylde-updater owns the self-replace dep internally.
 wylde-updater = { path = "../../rust/crates/wylde-updater" }
+
+# The stack roster — WHAT the stack is, as data. Already in this
+# workspace'"'"'s lock graph via wylde-updater, so naming it directly costs
+# no new dependency. Deliberately the lean crate: wylde-lifecycle owns the
+# same table'"'"'s start/stop hooks but drags in tokio + anyhow, which must not
+# ripple into the shipped GUI binary (see #109).
+wylde-stack = { path = "../../rust/crates/wylde-stack" }
 
 # Async runtime + IPC primitives.  Feature set matches src-tauri so a
 # verb that worked there works here.
@@ -90,12 +100,12 @@ anyhow      = "1"
 
 # Tray icon — cross-platform Shell_NotifyIcon / NSStatusItem / AppIndicator.
 # Replaces tauri::tray.
-tray-icon = "0.19"
+tray-icon = "0.24"
 
 # Autostart toggle (HKCU\…\Run on Windows, LaunchAgent on macOS, .desktop
 # on Linux).  Not wired in this slice; declared here so the path is
 # confirmed for the slice that ports Settings.
-auto-launch = "0.5"
+auto-launch = "0.6"
 
 # Updater driver — `self_update` for the existing endpoint signing flow
 # (Phase 12.5), `self-replace` for the in-place binary swap.  Not wired
@@ -106,7 +116,7 @@ self-replace = "1"
 # Native folder/file picker — used by the Workspaces panel's "Add
 # workspace" flow (replaces the Tauri dialog plugin the Svelte alpha
 # uses).  `rfd` 0.15 supports the gpui-era Windows/macOS targets.
-rfd = { version = "0.15", default-features = false, features = ["common-controls-v6"] }
+rfd = { version = "0.17", default-features = false, features = ["common-controls-v6"] }
 
 # gpui.  Lives in the Zed monorepo and is not published to crates.io.
 # §10's risk register calls for a pinned rev; slice 1 left it on
@@ -135,7 +145,7 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "b3d93d44
 #
 # Both gpui and wry use raw-window-handle 0.6; wry's `build_as_child`
 # accepts gpui's `Window` directly (`impl HasWindowHandle`).
-wry = "0.54"
+wry = "0.55"
 
 # HTTP client for iframe health probes.  Picked over `ureq` because
 # reqwest is already a transitive dep of every wylde-* crate that
@@ -152,7 +162,7 @@ raw-window-handle = "0.6"
 # the Chat panel's markdown link renderer; declared at workspace level
 # so future panels (Settings docs links, Workspaces "Reveal in
 # Explorer", ...) reach for the same version.
-opener = "0.7"
+opener = "0.8"
 
 # Pure-Rust QR encoder, no_std-friendly.  Used by the Devices panel to
 # render a scannable code next to the 6-digit pairing PIN, and by the

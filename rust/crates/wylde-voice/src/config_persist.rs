@@ -369,14 +369,13 @@ mod tests {
 
     #[test]
     fn with_patch_applies_subset_and_normalises() {
-        let cfg = VoiceConfig::default()
-            .with_patch(&serde_json::json!({
-                "mode": "always_on",
-                "stt_backend_pref": "npu",
-                "vad_sensitivity": "high",
-                "wake_word_enabled": true,
-                "input_device": "USB Mic",
-            }));
+        let cfg = VoiceConfig::default().with_patch(&serde_json::json!({
+            "mode": "always_on",
+            "stt_backend_pref": "npu",
+            "vad_sensitivity": "high",
+            "wake_word_enabled": true,
+            "input_device": "USB Mic",
+        }));
         assert_eq!(cfg.mode, MODE_ALWAYS_ON);
         assert_eq!(cfg.stt_backend_pref, BACKEND_NPU);
         assert_eq!(cfg.vad_sensitivity, VAD_HIGH);
@@ -400,8 +399,8 @@ mod tests {
     fn with_patch_rejects_bad_enum_by_normalising() {
         // A patch with an out-of-range enum doesn't wedge the config —
         // normalisation snaps it back to the safe default.
-        let cfg = VoiceConfig::default()
-            .with_patch(&serde_json::json!({ "stt_backend_pref": "tpu" }));
+        let cfg =
+            VoiceConfig::default().with_patch(&serde_json::json!({ "stt_backend_pref": "tpu" }));
         assert_eq!(cfg.stt_backend_pref, BACKEND_AUTO);
     }
 

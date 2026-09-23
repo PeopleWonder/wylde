@@ -140,14 +140,42 @@ pub fn save(workspace_id: &str, manifest: &Manifest) -> std::io::Result<()> {
 }
 
 /// Whether an existing index must be fully rebuilt rather than delta-updated:
-/// a present-but-incompatible manifest (version / model / dim mismatch, §3.4).
-/// An **absent** manifest is *not* a forced rebuild — a legacy index upgrades
-/// in place via the delta's mtime fallback ([`diff`]), so no mass re-embed.
+/// a present-but-incompatible manifest (version / model / dim mismatch, §3.4),
+/// **or** a legacy index whose vectors have no recorded provenance (#136).
+///
+/// # The legacy case
+///
+/// This used to return `false` for an absent manifest, so a pre-manifest index
+/// upgraded in place via the delta's mtime fallback and skipped a mass
+/// re-embed. That is the right instinct — but it is only safe when the stored
+/// vectors were produced by the *current* embedder, and an absent manifest is
+/// precisely the case where that cannot be known.
+///
+/// The failure it allowed: swap `WYLDE_EMBED_MODEL` before the first
+/// post-manifest pass, and the delta keeps every old vector verbatim, then
+/// stamps a fresh manifest carrying the **new** model. The result is a mixed
+/// vector set — some from each embedder, silently incomparable — permanently
+/// blessed as compatible, because every later `is_compatible()` check now
+/// passes against a record that was never true.
+///
+/// So a legacy index with vectors at risk is treated as needing a rebuild: a
+/// one-time re-embed buys a manifest that actually describes its contents.
+/// A workspace with no chunks yet has nothing to protect and is unaffected.
 pub fn needs_full_rebuild(workspace_id: &str) -> bool {
     match load(workspace_id) {
         Some(m) => !m.is_compatible(),
-        None => false,
+        None => legacy_index_has_vectors(workspace_id),
     }
+}
+
+/// Does this workspace hold indexed chunks with embeddings but no manifest?
+///
+/// That is the unknown-provenance case: vectors exist, and nothing on disk
+/// records which embedder produced them.
+fn legacy_index_has_vectors(workspace_id: &str) -> bool {
+    super::store::load_chunks(workspace_id)
+        .iter()
+        .any(|c| !c.vector.is_empty())
 }
 
 /// `(hash, size, mtime)` for one file — the fields a [`FileEntry`] carries
@@ -218,14 +246,12 @@ where
                         // Touched (mtime/size moved, bytes identical) — keep the
                         // vectors, refresh the recorded mtime/size. No re-embed.
                         out.keep_paths.insert(s.path.clone());
-                        out.file_meta
-                            .insert(s.path.clone(), (h, s.size, s.mtime));
+                        out.file_meta.insert(s.path.clone(), (h, s.size, s.mtime));
                     }
                     Some(h) => {
                         // Real content change.
                         out.to_embed.push(s.path.clone());
-                        out.file_meta
-                            .insert(s.path.clone(), (h, s.size, s.mtime));
+                        out.file_meta.insert(s.path.clone(), (h, s.size, s.mtime));
                     }
                     None => {
                         // Unreadable now — keep the prior vectors rather than
@@ -375,7 +401,9 @@ pub fn update_file(
 /// hash/chunk ids — the touch/no-op short-circuit. No-op if the entry is absent.
 /// Call under the index lock.
 pub fn touch_file(workspace_id: &str, path: &str, size: u64, mtime: f64) {
-    let Some(mut m) = load(workspace_id) else { return };
+    let Some(mut m) = load(workspace_id) else {
+        return;
+    };
     if let Some(e) = m.files.get_mut(path) {
         e.size = size;
         e.mtime = mtime;
@@ -387,7 +415,9 @@ pub fn touch_file(workspace_id: &str, path: &str, size: u64, mtime: f64) {
 /// `<canonical><sep>` (a deleted directory's subtree). Call under the index
 /// lock, after the matching chunk removal.
 pub fn remove_files(workspace_id: &str, canonical: &str) {
-    let Some(mut m) = load(workspace_id) else { return };
+    let Some(mut m) = load(workspace_id) else {
+        return;
+    };
     let prefix = format!("{canonical}{}", std::path::MAIN_SEPARATOR);
     let before = m.files.len();
     m.files
@@ -433,6 +463,82 @@ pub fn legacy_mtimes(chunks: &[IndexedChunk]) -> HashMap<String, f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TestEnv;
+
+    /// #136 criterion 5 — a legacy index (chunks with vectors, no manifest) has
+    /// no record of which embedder produced its vectors, so it must NOT be
+    /// delta-upgraded and then stamped with the current model.
+    ///
+    /// The failure that allowed: swap the embedding model before the first
+    /// post-manifest pass, and the delta keeps every old vector verbatim while
+    /// writing a manifest naming the *new* model — a mixed, silently
+    /// incomparable vector set permanently blessed as compatible, because
+    /// every later `is_compatible()` check passes against a record that was
+    /// never true.
+    #[test]
+    fn a_legacy_index_with_vectors_forces_a_rebuild_rather_than_a_false_stamp() {
+        let _env = TestEnv::new();
+        let ws = "ws-legacy-vec";
+
+        // Chunks with embeddings, and deliberately NO manifest on disk.
+        let chunks = vec![super::super::store::IndexedChunk {
+            id: "c0".to_owned(),
+            path: "src/a.rs".to_owned(),
+            chunk_idx: 0,
+            content: String::new(),
+            mtime: 100.0,
+            start_line: 1,
+            end_line: 1,
+            vector: vec![0.1, 0.2, 0.3],
+        }];
+        super::super::store::save_chunks(ws, &chunks).unwrap();
+        assert!(load(ws).is_none(), "precondition: no manifest");
+
+        assert!(
+            needs_full_rebuild(ws),
+            "vectors of unknown provenance must force a rebuild, not be \
+             delta-kept and stamped with the current model (#136)"
+        );
+    }
+
+    /// The guard must be narrow: a never-indexed workspace, and one whose
+    /// chunks carry no embeddings, have nothing at risk and must not be
+    /// pushed into a needless mass re-embed.
+    #[test]
+    fn an_index_with_no_vectors_at_risk_does_not_force_a_rebuild() {
+        let _env = TestEnv::new();
+
+        // Never indexed at all.
+        assert!(!needs_full_rebuild("ws-never-indexed"));
+
+        // Indexed, but vector-less (the lexical-only path).
+        let ws = "ws-legacy-novec";
+        let chunks = vec![super::super::store::IndexedChunk {
+            id: "c0".to_owned(),
+            path: "src/a.rs".to_owned(),
+            chunk_idx: 0,
+            content: String::new(),
+            mtime: 100.0,
+            start_line: 1,
+            end_line: 1,
+            vector: Vec::new(),
+        }];
+        super::super::store::save_chunks(ws, &chunks).unwrap();
+        assert!(
+            !needs_full_rebuild(ws),
+            "no embeddings means nothing of unknown provenance to protect"
+        );
+    }
+
+    /// A present, compatible manifest still takes the delta path — the common
+    /// case must stay cheap.
+    #[test]
+    fn a_compatible_manifest_still_takes_the_delta_path() {
+        let _env = TestEnv::new();
+        let ws = "ws-compatible";
+        save(ws, &Manifest::current_env()).unwrap();
+        assert!(!needs_full_rebuild(ws));
+    }
 
     fn stat(path: &str, mtime: f64, size: u64) -> FileStat {
         FileStat {
@@ -478,7 +584,9 @@ mod tests {
         // mtime moved (touch / checkout) but the hash is identical.
         let prior = manifest_with(&[("/a.rs", entry("hashA", 10, 100.0, &["c0"]))]);
         let stats = vec![stat("/a.rs", 999.0, 10)];
-        let d = diff(&prior, &stats, &HashMap::new(), |_| Some("hashA".to_owned()));
+        let d = diff(&prior, &stats, &HashMap::new(), |_| {
+            Some("hashA".to_owned())
+        });
         assert!(d.keep_paths.contains("/a.rs"), "touched file is kept");
         assert!(d.to_embed.is_empty(), "no re-embed for identical bytes");
         // mtime refreshed in the recorded meta.
@@ -489,7 +597,9 @@ mod tests {
     fn changed_bytes_get_reembedded() {
         let prior = manifest_with(&[("/a.rs", entry("hashA", 10, 100.0, &["c0"]))]);
         let stats = vec![stat("/a.rs", 200.0, 12)];
-        let d = diff(&prior, &stats, &HashMap::new(), |_| Some("hashB".to_owned()));
+        let d = diff(&prior, &stats, &HashMap::new(), |_| {
+            Some("hashB".to_owned())
+        });
         assert_eq!(d.to_embed, vec!["/a.rs".to_owned()]);
         assert!(!d.keep_paths.contains("/a.rs"));
         assert_eq!(d.file_meta["/a.rs"], ("hashB".to_owned(), 12, 200.0));
@@ -499,7 +609,9 @@ mod tests {
     fn new_file_is_embedded() {
         let prior = Manifest::current_env();
         let stats = vec![stat("/new.rs", 50.0, 5)];
-        let d = diff(&prior, &stats, &HashMap::new(), |_| Some("hashN".to_owned()));
+        let d = diff(&prior, &stats, &HashMap::new(), |_| {
+            Some("hashN".to_owned())
+        });
         assert_eq!(d.to_embed, vec!["/new.rs".to_owned()]);
         assert_eq!(d.file_meta["/new.rs"], ("hashN".to_owned(), 5, 50.0));
     }
@@ -514,7 +626,10 @@ mod tests {
         let d = diff(&prior, &stats, &HashMap::new(), |_| Some("x".to_owned()));
         assert_eq!(d.deleted, vec!["/gone.rs".to_owned()]);
         assert!(d.keep_paths.contains("/keep.rs"));
-        assert!(!d.file_meta.contains_key("/gone.rs"), "deleted file dropped");
+        assert!(
+            !d.file_meta.contains_key("/gone.rs"),
+            "deleted file dropped"
+        );
     }
 
     #[test]
@@ -572,7 +687,11 @@ mod tests {
             },
         ];
         let m = build(&meta, &chunks);
-        assert_eq!(m.files["/a.rs"].chunk_ids, vec!["a0", "a1"], "ordered by idx");
+        assert_eq!(
+            m.files["/a.rs"].chunk_ids,
+            vec!["a0", "a1"],
+            "ordered by idx"
+        );
         assert_eq!(m.files["/a.rs"].chunk_count, 2);
         assert_eq!(m.files["/b.rs"].chunk_count, 0, "no chunks ⇒ empty entry");
         assert!(m.is_compatible());

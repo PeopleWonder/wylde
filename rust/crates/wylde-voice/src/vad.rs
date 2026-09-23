@@ -380,7 +380,10 @@ mod tests {
 
         // ~0.5 s of speech: 10 × 50 ms tone chunks.
         for _ in 0..10 {
-            assert_eq!(gate.observe(&tone_chunk(200.0, 0.5)), GateDecision::Continue);
+            assert_eq!(
+                gate.observe(&tone_chunk(200.0, 0.5)),
+                GateDecision::Continue
+            );
         }
         assert!(gate.speech_started());
 
@@ -404,7 +407,11 @@ mod tests {
         // Captured speech is the ~0.5 s segment, trailing silence dropped.
         let span = gate.speech_span_ms().expect("speech span recorded");
         assert_eq!(span.0, 0, "speech started at t=0");
-        assert!(span.1 >= 480 && span.1 <= 520, "speech ends ~500ms, got {}", span.1);
+        assert!(
+            span.1 >= 480 && span.1 <= 520,
+            "speech ends ~500ms, got {}",
+            span.1
+        );
         let speech = gate.into_speech();
         assert_eq!(speech.len(), 10 * 800, "10 chunks of 800 samples");
     }

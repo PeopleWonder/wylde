@@ -10,8 +10,11 @@
 //!   to the Python implementation; the Settings UI reads from here.
 //! * `long_term.vec.bin` — vector mirror via
 //!   [`crate::memory::vector::VectorStore`]. Pure-Rust, bincode-serialised
-//!   single file per data dir. Rebuilt by [`reindex`] from the JSON if
-//!   the two ever drift.
+//!   single file per data dir. Rebuilt by
+//!   [`reindex_vectors`] from the JSON when the two drift — which
+//!   they do routinely, since a write whose embed fails saves JSON-only and
+//!   nothing else revisits it. (Before #136 this line named a `reindex` that
+//!   did not exist; the rebuild is real now.)
 //!
 //! ## On-disk layout
 //!
@@ -44,8 +47,8 @@ mod text_search;
 pub(crate) mod test_support;
 
 pub use entries::{
-    core_block, delete, get, history, list_records, save, search, touch, touch_all, update,
-    SaveError, SearchHit,
+    core_block, delete, get, history, list_records, reindex_vectors, save, search, touch,
+    touch_all, update, SaveError, SearchHit,
 };
 pub use records::LongTermMemory;
 pub use scoring::{combined_score, heuristic_importance, normalize_importance, DEFAULT_DECAY_DAYS};

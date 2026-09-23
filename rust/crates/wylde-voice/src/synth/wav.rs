@@ -33,13 +33,9 @@ pub fn encode_wav(audio: &[f32], sample_rate: u32) -> Result<Vec<u8>, String> {
     };
     let mut cursor = std::io::Cursor::new(Vec::<u8>::new());
     {
-        let mut writer = WavWriter::new(&mut cursor, spec)
-            .map_err(|e| format!("WAV writer init: {e}"))?;
-        let peak = audio
-            .iter()
-            .copied()
-            .map(f32::abs)
-            .fold(0.0_f32, f32::max);
+        let mut writer =
+            WavWriter::new(&mut cursor, spec).map_err(|e| format!("WAV writer init: {e}"))?;
+        let peak = audio.iter().copied().map(f32::abs).fold(0.0_f32, f32::max);
         let scale = if peak > 0.0 { 0.95 / peak } else { 1.0 };
         for sample in audio {
             let v = (*sample * scale).clamp(-1.0, 1.0);
@@ -65,8 +61,7 @@ pub fn encode_wav_kokoro(audio: &[f32]) -> Result<Vec<u8>, String> {
 /// can carry without escaping. Same alphabet Python's
 /// `base64.b64encode` produces (standard + padding).
 pub fn encode_base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     let chunks = bytes.chunks_exact(3);
     let remainder = chunks.remainder();

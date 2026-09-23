@@ -114,7 +114,10 @@ async fn endpoint_change_callback_broadcasts_to_every_webhook_subscription() {
         // assert on what landed.
         handle.spawn(async move {
             let mut data = Map::new();
-            data.insert("type".to_string(), Value::String("endpoint_change".to_string()));
+            data.insert(
+                "type".to_string(),
+                Value::String("endpoint_change".to_string()),
+            );
             data.insert("previous".to_string(), Value::String(prev));
             data.insert("new_endpoint".to_string(), Value::String(curr.clone()));
             store
@@ -199,10 +202,20 @@ async fn endpoint_change_falls_back_to_queue_when_webhook_fails() {
         .unwrap();
 
     let mut data = Map::new();
-    data.insert("type".to_string(), Value::String("endpoint_change".to_string()));
-    data.insert("new_endpoint".to_string(), Value::String("9.9.9.9:6000".to_string()));
+    data.insert(
+        "type".to_string(),
+        Value::String("endpoint_change".to_string()),
+    );
+    data.insert(
+        "new_endpoint".to_string(),
+        Value::String("9.9.9.9:6000".to_string()),
+    );
     let res = store
-        .broadcast("WyldeLink endpoint changed", "New endpoint: 9.9.9.9:6000", data)
+        .broadcast(
+            "WyldeLink endpoint changed",
+            "New endpoint: 9.9.9.9:6000",
+            data,
+        )
         .await;
 
     assert_eq!(res.recipients, 1);

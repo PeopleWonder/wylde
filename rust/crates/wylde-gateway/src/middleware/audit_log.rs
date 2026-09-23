@@ -19,8 +19,6 @@
 //! rounded to three decimals exactly like the Python implementation.
 
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -34,23 +32,29 @@ use futures::future::BoxFuture;
 use serde_json::{json, Value};
 use tower::{Layer, Service};
 
+use wylde_shared::logging::RotatingLog;
+
 use crate::middleware::trace::RequestId;
 use crate::settings::get_settings;
 
 const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%SZ";
 
 /// Lazy-opened JSONL writer for a single audit stream.
+///
+/// Backed by a [`RotatingLog`], so `gateway.jsonl` / `egress.jsonl`
+/// inherit the shared size + retention policy — no per-file cap lives
+/// here. The writer keeps the port's warn-once semantics: a failed write
+/// logs a single warning and further failures are silent, so losing the
+/// audit log never breaks the request path.
 pub struct JsonlWriter {
-    path: PathBuf,
-    file: Mutex<Option<File>>,
+    sink: RotatingLog,
     failed_once: AtomicBool,
 }
 
 impl JsonlWriter {
     fn new(path: PathBuf) -> Self {
         Self {
-            path,
-            file: Mutex::new(None),
+            sink: RotatingLog::new(path),
             failed_once: AtomicBool::new(false),
         }
     }
@@ -75,41 +79,21 @@ impl JsonlWriter {
     }
 
     fn write_line(&self, line: &str) -> std::io::Result<()> {
-        let mut guard = self
-            .file
-            .lock()
-            .map_err(|_| std::io::Error::other("writer poisoned"))?;
-        if guard.is_none() {
-            if let Some(parent) = self.path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            *guard = Some(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&self.path)?,
-            );
-        }
-        let file = guard.as_mut().expect("just set");
-        file.write_all(line.as_bytes())?;
-        file.write_all(b"\n")?;
-        file.flush()
+        self.sink.write_line(line)
     }
 
     fn warn_once(&self, msg: &str) {
         if !self.failed_once.swap(true, Ordering::SeqCst) {
             tracing::warn!(
                 "audit: write to {} failed: {} — silenced",
-                self.path.display(),
+                self.sink.path().display(),
                 msg
             );
         }
     }
 
     fn close(&self) {
-        if let Ok(mut guard) = self.file.lock() {
-            *guard = None;
-        }
+        self.sink.close();
     }
 }
 

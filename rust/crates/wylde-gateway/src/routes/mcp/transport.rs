@@ -179,7 +179,11 @@ pub async fn process_post(raw_body: &[u8], session_id: Option<&str>) -> PostOutc
     };
 
     let params = obj.get("params").cloned().unwrap_or_else(|| json!({}));
-    let params = if params.is_object() { params } else { json!({}) };
+    let params = if params.is_object() {
+        params
+    } else {
+        json!({})
+    };
 
     // A session is minted on initialize; other methods are served with
     // whatever session the client echoed (or none — stateless fallback).

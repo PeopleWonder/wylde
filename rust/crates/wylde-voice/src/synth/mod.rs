@@ -34,7 +34,7 @@ pub mod wav;
 
 pub use g2p::{british_for_voice, text_to_phonemes};
 pub use kokoro::{KokoroInferError, KokoroLoadError, KokoroSynth};
-pub use tokenizer::{tokenize, pad_with_zero, split_phonemes, TokenizeResult};
+pub use tokenizer::{pad_with_zero, split_phonemes, tokenize, TokenizeResult};
 pub use vocab::{KOKORO_SAMPLE_RATE, MAX_PHONEME_LENGTH};
 pub use voices::{VoiceStyle, Voices, VoicesLoadError};
 pub use wav::{encode_base64, encode_wav, encode_wav_kokoro};

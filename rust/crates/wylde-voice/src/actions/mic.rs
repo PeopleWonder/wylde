@@ -26,7 +26,7 @@ use wylde_shared::ipc::{IpcError, Reply, StreamSender};
 
 use crate::actions::error::invalid_request;
 use crate::mic::{
-    list_input_device_names, DEFAULT_MIC_CHUNK_SAMPLES, MicCapture, MicError, TARGET_SAMPLE_RATE,
+    list_input_device_names, MicCapture, MicError, DEFAULT_MIC_CHUNK_SAMPLES, TARGET_SAMPLE_RATE,
 };
 use crate::state;
 use crate::synth::wav::{encode_base64, encode_wav};
@@ -280,7 +280,9 @@ fn read_chunk_samples(payload: &Value) -> Result<usize, IpcError> {
                 return Err(invalid_request("chunk_samples must be > 0"));
             }
             if n > 32_000 {
-                return Err(invalid_request("chunk_samples must be ≤ 32000 (2 s at 16 kHz)"));
+                return Err(invalid_request(
+                    "chunk_samples must be ≤ 32000 (2 s at 16 kHz)",
+                ));
             }
             Ok(n as usize)
         }
@@ -297,12 +299,11 @@ fn pcm_to_le_bytes(samples: &[i16]) -> Vec<u8> {
 
 pub(crate) fn mic_error_to_ipc(e: MicError) -> IpcError {
     match e {
-        MicError::NoDevice => {
-            IpcError::new("mic_unavailable", "no default input device")
-        }
-        MicError::NoSupportedConfig(m) => {
-            IpcError::new("mic_unavailable", format!("default input has no supported config: {m}"))
-        }
+        MicError::NoDevice => IpcError::new("mic_unavailable", "no default input device"),
+        MicError::NoSupportedConfig(m) => IpcError::new(
+            "mic_unavailable",
+            format!("default input has no supported config: {m}"),
+        ),
         MicError::Build(m) => IpcError::new("mic_unavailable", format!("cpal stream build: {m}")),
         MicError::Play(m) => IpcError::new("mic_unavailable", format!("cpal stream play: {m}")),
     }
@@ -335,8 +336,14 @@ mod tests {
 
     #[test]
     fn read_chunk_samples_uses_default_when_missing() {
-        assert_eq!(read_chunk_samples(&json!({})).unwrap(), DEFAULT_MIC_CHUNK_SAMPLES);
-        assert_eq!(read_chunk_samples(&json!({"chunk_samples": null})).unwrap(), DEFAULT_MIC_CHUNK_SAMPLES);
+        assert_eq!(
+            read_chunk_samples(&json!({})).unwrap(),
+            DEFAULT_MIC_CHUNK_SAMPLES
+        );
+        assert_eq!(
+            read_chunk_samples(&json!({"chunk_samples": null})).unwrap(),
+            DEFAULT_MIC_CHUNK_SAMPLES
+        );
     }
 
     #[test]
@@ -353,8 +360,14 @@ mod tests {
 
     #[test]
     fn read_chunk_samples_accepts_legit_values() {
-        assert_eq!(read_chunk_samples(&json!({"chunk_samples": 1_280})).unwrap(), 1_280);
-        assert_eq!(read_chunk_samples(&json!({"chunk_samples": 800})).unwrap(), 800);
+        assert_eq!(
+            read_chunk_samples(&json!({"chunk_samples": 1_280})).unwrap(),
+            1_280
+        );
+        assert_eq!(
+            read_chunk_samples(&json!({"chunk_samples": 800})).unwrap(),
+            800
+        );
     }
 
     #[test]
@@ -385,10 +398,18 @@ mod tests {
         assert!((rms - 1.0).abs() < 1e-3, "rms {rms}");
     }
 
+    // `#[ignore]` for the same reason as the capture/playback device tests
+    // (mic.rs / playback.rs): it enumerates the host's input devices via
+    // `cpal::default_host()`, and on a headless CI runner WASAPI enumeration
+    // *access-violates* (STATUS_ACCESS_VIOLATION) rather than returning a
+    // catchable `mic_unavailable` — a native crash safe Rust can't intercept,
+    // so the graceful-reply assertion below never gets to run. Runs locally
+    // (`cargo test -- --ignored`) where a real audio device exists.
     #[tokio::test]
+    #[ignore = "requires a working default input device; cpal enumeration access-violates on headless CI"]
     async fn list_input_devices_dispatches_cleanly() {
-        // Either a device list (Ok) or a mic_unavailable error on a
-        // headless host — both are well-formed replies, never a panic.
+        // Either a device list (Ok) or a mic_unavailable error on a host with a
+        // real (but unusable) device — both are well-formed replies.
         let r = handle_list_input_devices(json!({})).await;
         if r.ok {
             assert!(r.data["devices"].is_array());

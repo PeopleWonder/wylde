@@ -1,5 +1,9 @@
 # Mypy baseline — M1 observability pass
 
+> ⚠️ **ARCHIVED / STALE — describes the REMOVED Python runtime, NOT the current all-Rust stack. Kept for history.**
+> This report enumerates per-file mypy type errors in Python source (`VPN/peers/pairing.py`, Flask handlers, `Core/shared/ipc.py`, etc.) that was **deleted in the full-Rust cutover (R6, commit `2f5aa82`, 2026-06-10)**. The only Python still in the repo is the dev-time `wylde_check` architecture linter under `Core/harness/dev/`; this mypy baseline does not describe the live (Rust) runtime. Kept for historical reference.
+> *Banner added 2026-06-27 on branch `chore/structure-tidy` (structure-tidy pass).*
+
 **Date:** 2026-05-16
 **Mypy version:** 2.1.0 (compiled)
 **Config:** `[tool.mypy]` in `pyproject.toml` (permissive — `ignore_missing_imports = true`, no `disallow_untyped_defs`, no `strict`).

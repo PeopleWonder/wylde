@@ -419,11 +419,7 @@ async fn parity_recent_actions_orders_pair_tier_rotate_newest_first() {
     )
     .await;
     assert!(st.ok, "set_tier failed: {st:?}");
-    let rot = call(
-        "device_gate.rotate_token",
-        json!({"device_id": device_id}),
-    )
-    .await;
+    let rot = call("device_gate.rotate_token", json!({"device_id": device_id})).await;
     assert!(rot.ok, "rotate failed: {rot:?}");
 
     let r = call(

@@ -55,21 +55,10 @@ impl HierarchyConfig {
     }
 }
 
-/// `<data_dir>` resolved exactly as every other service + settings store does
-/// (`WYLDE_DATA_DIR` -> `DATA_DIR` -> `<WYLDE_ROOT>/.wylde/data`). Read on every
-/// call so tests can point the env at a scratch dir per-case.
-fn data_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os("WYLDE_DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    if let Some(v) = std::env::var_os("DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    let root = std::env::var_os("WYLDE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    root.join(".wylde").join("data")
-}
+// `<data_dir>` (convention A: `WYLDE_DATA_DIR` -> `DATA_DIR` ->
+// `<WYLDE_ROOT>/.wylde/data`) from the ONE canonical resolver (#138) -- this was
+// a verbatim copy of that body.
+use wylde_shared::paths::data_dir;
 
 /// `<data_dir>/settings/hierarchy.json` -- alongside `concept_routing.json`.
 fn config_path() -> PathBuf {
@@ -95,7 +84,8 @@ fn write_to_path(path: &std::path::Path, cfg: &HierarchyConfig) -> Result<(), St
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("hierarchy: mkdir: {e}"))?;
     }
-    let body = serde_json::to_vec_pretty(&cfg.to_value()).map_err(|e| format!("hierarchy: encode: {e}"))?;
+    let body = serde_json::to_vec_pretty(&cfg.to_value())
+        .map_err(|e| format!("hierarchy: encode: {e}"))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, &body).map_err(|e| format!("hierarchy: write: {e}"))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("hierarchy: rename: {e}"))?;
@@ -140,7 +130,10 @@ mod tests {
 
     #[test]
     fn default_is_off() {
-        assert!(!HierarchyConfig::default().enabled, "master toggle defaults OFF");
+        assert!(
+            !HierarchyConfig::default().enabled,
+            "master toggle defaults OFF"
+        );
     }
 
     #[test]

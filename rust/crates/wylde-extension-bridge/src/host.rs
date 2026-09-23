@@ -80,6 +80,16 @@ pub struct PanelEntry {
     pub icon: Option<String>,
     pub kind: &'static str,
     pub url: String,
+    /// Live availability — `live`, `unreachable`, or `not_running`
+    /// (see [`crate::availability::Availability`]). The GUI renders a
+    /// panel as live only on `live`; every other value renders as a
+    /// status. Carried per-read so the answer is current, not cached
+    /// from process start (#239).
+    pub availability: &'static str,
+    /// Why the panel isn't live, for the status the GUI shows. `None`
+    /// exactly when `availability == "live"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,6 +120,14 @@ struct ExtensionState {
     /// Cached tool list (filled at `tools/list` time).
     tool_cache: Option<Vec<ToolDescription>>,
     restart_attempts: u32,
+    /// Did this entry come from a filesystem walk?
+    ///
+    /// `refresh_catalog` prunes entries that discovery no longer finds on
+    /// disk — that pruning is what makes a deleted registration vanish
+    /// from the GUI without a restart (#239). It must only ever apply to
+    /// entries discovery owns: a test-seeded record has no file behind it,
+    /// so pruning it would just mean "every read empties the catalog".
+    disk_backed: bool,
 }
 
 impl ExtensionState {
@@ -133,6 +151,7 @@ impl ExtensionState {
             pid: None,
             tool_cache: None,
             restart_attempts: 0,
+            disk_backed: true,
         }
     }
 }
@@ -168,13 +187,33 @@ impl Host {
                 .entry(name.clone())
                 .or_insert_with(|| Mutex::new(ExtensionState::from_record(rec.clone())));
         }
-        // Remove gone-from-disk extensions; drop their clients.
+        // Remove gone-from-disk extensions; drop their clients. This is
+        // the half that makes a removed registration disappear from the
+        // GUI (#239) — without it the catalog only ever grows and a
+        // deleted stub keeps its panel until the bridge restarts.
+        //
+        // Two entries are deliberately exempt:
+        //   * ones discovery doesn't own (`disk_backed == false`, i.e.
+        //     test-seeded), which have no file to go missing; and
+        //   * every entry, when the extensions dir isn't readable at all.
+        //     An unreadable directory is *absence of information*, not
+        //     evidence that every extension was uninstalled — treating a
+        //     transient unreadable mount as "everything is gone" would
+        //     blank the whole GUI, a worse silent failure than the one
+        //     this fix targets.
+        let dir_readable = self.cfg.extensions_dir.is_dir();
         let known: std::collections::BTreeSet<&String> = records.keys().collect();
-        let stale: Vec<String> = state
-            .keys()
-            .filter(|k| !known.contains(k))
-            .cloned()
-            .collect();
+        let mut stale: Vec<String> = Vec::new();
+        if dir_readable {
+            // `get_mut` rather than `lock().await`: we already hold the
+            // map's write guard, so the per-entry mutexes are provably
+            // uncontended and this stays a synchronous read.
+            for (name, mu) in state.iter_mut() {
+                if !known.contains(name) && mu.get_mut().disk_backed {
+                    stale.push(name.clone());
+                }
+            }
+        }
         for name in stale {
             if let Some(mu) = state.remove(&name) {
                 let mut s = mu.into_inner();
@@ -318,7 +357,28 @@ impl Host {
         let mut state = self.extensions.write().await;
         let mut s = ExtensionState::from_record(record);
         s.status = status;
+        // No file backs this record, so `refresh_catalog` must not treat
+        // its absence from the filesystem walk as an uninstall.
+        s.disk_backed = false;
         state.insert(s.record.manifest.name.clone(), Mutex::new(s));
+    }
+
+    /// Test-only: a `Host` whose extensions dir is `dir`.
+    ///
+    /// Reads now re-walk the filesystem (#239), so a `Host` built from the
+    /// ambient [`Config`] would discover whatever is installed on the
+    /// developer's machine and fold it into the test's assertions — the
+    /// environment-bleed trap. Pointing every test at its own empty temp
+    /// dir keeps the catalog exactly what the test seeded.
+    ///
+    /// Leaks one small `Config` per call to satisfy the `&'static` field;
+    /// bounded by the test count and freed at process exit.
+    #[doc(hidden)]
+    #[cfg(test)]
+    pub fn with_extensions_dir_for_tests(dir: std::path::PathBuf) -> Self {
+        let mut cfg = Config::get().clone();
+        cfg.extensions_dir = dir;
+        Self::new(Box::leak(Box::new(cfg)))
     }
 
     /// Test-only: seed a minimal, never-spawned extension record that
@@ -368,6 +428,11 @@ impl Host {
     }
 
     pub async fn list_status(&self) -> Vec<ExtensionStatus> {
+        // Re-walk first so an extension removed from `Extensions/` leaves
+        // this list without a bridge restart — the same live-registration
+        // property `list_panels` relies on (#239). Cheap when the tree is
+        // unchanged (mtime/size-signature cached discovery).
+        self.refresh_catalog().await;
         let g = self.extensions.read().await;
         let mut out = Vec::with_capacity(g.len());
         for (name, mu) in g.iter() {
@@ -564,25 +629,82 @@ impl Host {
     }
 
     /// Snapshot every enabled-or-disabled extension's `ui_panels` with
-    /// the extension's name attached. Pure read; never spawns a server.
-    /// The harness exposes this via the `extensions.list_panels` pipe
-    /// action so the GUI can render its Tools tab.
+    /// the extension's name and its live availability attached. Never
+    /// spawns a server. The harness exposes this via the
+    /// `extensions.list_panels` pipe action so the GUI can render its
+    /// Tools tab.
+    ///
+    /// **Two liveness properties this read guarantees (#239).** Both
+    /// exist because the GUI is a projection of the filesystem, and a
+    /// projection that answers from a snapshot taken at process start is
+    /// not a projection:
+    ///
+    ///   1. *Registration is re-walked.* [`Self::refresh_catalog`] runs
+    ///      first, so an extension deleted from `Extensions/` stops being
+    ///      reported on the very next read — no bridge restart, no manual
+    ///      file surgery. The walk is cheap: `discovery::discover` is
+    ///      cached on an mtime/size signature, so an unchanged tree costs
+    ///      a stat pass and no re-parse.
+    ///   2. *Availability is probed.* Each panel's URL gets a loopback
+    ///      reachability check ([`crate::availability`]), TTL-cached, so
+    ///      a registered-but-dead panel is reported `unreachable` rather
+    ///      than handed to the GUI as though it worked.
+    ///
+    /// The probes run **after** the extension lock is released: holding a
+    /// per-extension `Mutex` across a network await would serialise every
+    /// other bridge action behind this read.
     pub async fn list_panels(&self) -> Vec<PanelEntry> {
-        let g = self.extensions.read().await;
-        let mut out: Vec<PanelEntry> = Vec::new();
-        for (name, mu) in g.iter() {
-            let s = mu.lock().await;
-            for p in &s.record.ui_panels {
-                let PanelSource::Iframe { url } = &p.source;
-                out.push(PanelEntry {
-                    extension: name.clone(),
-                    id: p.id.clone(),
-                    title: p.title.clone(),
-                    icon: p.icon.clone(),
-                    kind: "iframe",
-                    url: url.clone(),
-                });
+        // (1) Live registration.
+        self.refresh_catalog().await;
+
+        // Collect the declarations under the locks, then drop them.
+        struct Declared {
+            extension: String,
+            id: String,
+            title: String,
+            icon: Option<String>,
+            url: String,
+            panel_only: bool,
+            running: bool,
+        }
+        let declared: Vec<Declared> = {
+            let g = self.extensions.read().await;
+            let mut rows = Vec::new();
+            for (name, mu) in g.iter() {
+                let s = mu.lock().await;
+                let panel_only = s.record.manifest.transport == crate::manifest::Transport::None;
+                let running = matches!(s.status, LifecycleStatus::Running);
+                for p in &s.record.ui_panels {
+                    let PanelSource::Iframe { url } = &p.source;
+                    rows.push(Declared {
+                        extension: name.clone(),
+                        id: p.id.clone(),
+                        title: p.title.clone(),
+                        icon: p.icon.clone(),
+                        url: url.clone(),
+                        panel_only,
+                        running,
+                    });
+                }
             }
+            rows
+        };
+
+        // (2) Availability, with every lock released.
+        let mut out: Vec<PanelEntry> = Vec::with_capacity(declared.len());
+        for d in declared {
+            let reachable = crate::availability::reachable(&d.url).await;
+            let (state, detail) = crate::availability::classify(d.panel_only, d.running, reachable);
+            out.push(PanelEntry {
+                extension: d.extension,
+                id: d.id,
+                title: d.title,
+                icon: d.icon,
+                kind: "iframe",
+                url: d.url,
+                availability: state.as_str(),
+                detail,
+            });
         }
         out
     }
@@ -646,8 +768,33 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::manifest::{McpServerManifest, Transport, UiPanel};
+
+    /// A `Host` whose extensions dir is its own empty temp directory.
+    ///
+    /// Reads re-walk the filesystem now (#239), so a `Host` built from the
+    /// ambient config would fold whatever is installed on the developer's
+    /// machine into the test's assertions. Hold the returned `TempDir` for
+    /// the test's duration — dropping it removes the directory, which
+    /// flips `refresh_catalog` into its don't-prune-on-unreadable branch.
+    fn hermetic_host() -> (Host, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp extensions dir");
+        let host = Host::with_extensions_dir_for_tests(dir.path().to_path_buf());
+        (host, dir)
+    }
+
+    /// A loopback URL nothing is listening on: bind a port, learn its
+    /// number, release it. Beats hardcoding a "probably free" port, which
+    /// would make the test pass or fail depending on what the developer
+    /// happens to be running.
+    async fn dead_loopback_url() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        drop(listener);
+        format!("http://127.0.0.1:{port}")
+    }
 
     fn make_record(name: &str, panels: Vec<UiPanel>) -> ExtensionRecord {
         let manifest = McpServerManifest {
@@ -687,7 +834,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_panels_unions_across_extensions() {
-        let host = Host::new(Config::get());
+        let (host, _extensions_dir) = hermetic_host();
         host.seed_record_for_tests(
             make_record(
                 "n8n",
@@ -745,7 +892,7 @@ mod tests {
         // Even with enabled=true persisted, a transport=none extension
         // must never fork a child or report a crash — ensure_started is
         // a clean no-op (status disabled, no client, no pid, no error).
-        let host = Host::new(Config::get());
+        let (host, _extensions_dir) = hermetic_host();
         host.seed_record_for_tests(
             make_panel_only_record(
                 "n8n",
@@ -790,11 +937,153 @@ mod tests {
 
     #[tokio::test]
     async fn list_panels_returns_empty_when_no_extensions_declare_panels() {
-        let host = Host::new(Config::get());
+        let (host, _extensions_dir) = hermetic_host();
         host.seed_record_for_tests(make_record("plain", Vec::new()), LifecycleStatus::Disabled)
             .await;
         let panels = host.list_panels().await;
         assert!(panels.is_empty());
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // #239 — the GUI is a projection of the filesystem + live health.
+    // These drive `list_panels` against a real on-disk extension dir,
+    // because the properties under test are exactly the ones an
+    // in-memory seeded record cannot exercise.
+    // ────────────────────────────────────────────────────────────────
+
+    /// Write a panel-only (`transport: "none"`) extension — the
+    /// `Extensions/wylde-images` shape — into `dir`.
+    fn write_panel_only_extension(dir: &std::path::Path, name: &str, url: &str) {
+        let root = dir.join(name);
+        std::fs::create_dir_all(&root).expect("create extension dir");
+        let manifest = serde_json::json!({
+            "name": name,
+            "description": "panel-only stub for tests",
+            "version": "1.0",
+            "transport": "none",
+            "ui_panels": [{
+                "id": "gallery",
+                "title": "Gallery",
+                "source": { "kind": "iframe", "url": url }
+            }]
+        });
+        std::fs::write(
+            root.join("mcp-server.json"),
+            serde_json::to_string_pretty(&manifest).expect("serialise manifest"),
+        )
+        .expect("write manifest");
+        // Discovery memoises on an (mtime, size) signature; a temp dir
+        // created and mutated inside one test can land within the same
+        // filesystem timestamp tick, so clear it explicitly rather than
+        // depending on clock granularity.
+        crate::discovery::invalidate_cache();
+    }
+
+    #[tokio::test]
+    async fn a_registration_removed_from_disk_stops_being_reported() {
+        // The core of #239: deleting the registration must be enough.
+        // Before the fix the catalog was walked at bootstrap and on
+        // toggle only, so the panel survived every read until the bridge
+        // process restarted.
+        let (host, extensions_dir) = hermetic_host();
+        let url = dead_loopback_url().await;
+        write_panel_only_extension(extensions_dir.path(), "wylde-images-test", &url);
+
+        let before = host.list_panels().await;
+        assert_eq!(
+            before.len(),
+            1,
+            "the declared panel is reported while registered"
+        );
+        assert_eq!(before[0].extension, "wylde-images-test");
+
+        // Remove the registration — no restart, no toggle, no other call.
+        std::fs::remove_dir_all(extensions_dir.path().join("wylde-images-test"))
+            .expect("remove extension dir");
+        crate::discovery::invalidate_cache();
+
+        let after = host.list_panels().await;
+        assert!(
+            after.is_empty(),
+            "a removed registration must vanish on the next read, not at the next restart; got {after:?}"
+        );
+        // And it leaves the extension list too, not just the panel list.
+        assert!(
+            host.list_status()
+                .await
+                .iter()
+                .all(|e| e.name != "wylde-images-test"),
+            "the extension itself also leaves ext.list"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_registered_panel_with_a_dead_port_is_unreachable_never_live() {
+        // The dead-Images case: registration present, service gone. The
+        // panel must be reported with a status, not handed to the GUI as
+        // though it worked.
+        let (host, extensions_dir) = hermetic_host();
+        let dead = dead_loopback_url().await;
+        write_panel_only_extension(extensions_dir.path(), "dead-panel-ext", &dead);
+        crate::availability::invalidate_cache();
+
+        let panels = host.list_panels().await;
+        assert_eq!(panels.len(), 1);
+        assert_eq!(
+            panels[0].availability, "unreachable",
+            "a registered panel pointing at a dead port is unreachable, not live"
+        );
+        assert!(
+            panels[0].detail.is_some(),
+            "an unavailable panel must carry a reason the GUI can show"
+        );
+        // The URL is still reported — the GUI shows what it points at.
+        assert_eq!(panels[0].url, dead);
+    }
+
+    #[tokio::test]
+    async fn a_registered_panel_with_a_live_listener_is_live() {
+        // The other side of the gate: availability tracks reality, so a
+        // panel-only extension whose port IS up reports live even though
+        // it has no process and is permanently "disabled".
+        let (host, extensions_dir) = hermetic_host();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        let url = format!("http://127.0.0.1:{port}");
+        write_panel_only_extension(extensions_dir.path(), "live-panel-ext", &url);
+        crate::availability::invalidate_cache();
+
+        let panels = host.list_panels().await;
+        assert_eq!(panels.len(), 1);
+        assert_eq!(panels[0].availability, "live");
+        assert!(
+            panels[0].detail.is_none(),
+            "a live panel carries no unavailability reason"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_extensions_dir_does_not_wipe_the_catalog() {
+        // Absence of information is not evidence of uninstall: if the
+        // extensions dir can't be read we keep what we know rather than
+        // blanking every panel in the GUI.
+        let (host, extensions_dir) = hermetic_host();
+        let url = dead_loopback_url().await;
+        write_panel_only_extension(extensions_dir.path(), "survives-ext", &url);
+        assert_eq!(host.list_panels().await.len(), 1);
+
+        // Drop the whole directory — the dir itself is now gone, which is
+        // "unreadable", not "empty".
+        drop(extensions_dir);
+        crate::discovery::invalidate_cache();
+
+        assert_eq!(
+            host.list_panels().await.len(),
+            1,
+            "an unreadable extensions dir must not be read as 'everything was uninstalled'"
+        );
     }
 
     #[test]
@@ -878,7 +1167,7 @@ mod tests {
             capabilities: Vec::new(),
             ui_panels: Vec::new(),
         };
-        let host = Host::new(Config::get());
+        let (host, _extensions_dir) = hermetic_host();
         host.seed_record_for_tests(record, LifecycleStatus::Disabled)
             .await;
 

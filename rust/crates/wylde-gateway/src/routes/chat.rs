@@ -137,10 +137,7 @@ fn read_body(headers: &HeaderMap, raw: &Bytes) -> Map<String, Value> {
 /// pass-through fields: `model`, `workspace_id`, `modality`, `turn_id`,
 /// `timeout`. The verified device's tier overrides any `device_tier`
 /// field in the body.
-pub async fn run_turn(
-    Extension(device): Extension<Device>,
-    body: Option<Json<Value>>,
-) -> Response {
+pub async fn run_turn(Extension(device): Extension<Device>, body: Option<Json<Value>>) -> Response {
     let body_map: Map<String, Value> = body
         .and_then(|Json(v)| {
             if let Value::Object(m) = v {
@@ -190,10 +187,7 @@ pub async fn run_turn(
 /// harness-pipe `run_turn` driver.
 pub fn router() -> Router {
     Router::new()
-        .route(
-            "/api/chat",
-            post(chat).route_layer(from_fn(require_local)),
-        )
+        .route("/api/chat", post(chat).route_layer(from_fn(require_local)))
         .route(
             "/api/chat/generate",
             post(generate).route_layer(from_fn(require_local)),
@@ -334,7 +328,10 @@ mod tests {
 
     #[test]
     fn read_body_object_round_trips() {
-        let m = read_body(&HeaderMap::new(), &Bytes::from_static(br#"{"model":"llama3"}"#));
+        let m = read_body(
+            &HeaderMap::new(),
+            &Bytes::from_static(br#"{"model":"llama3"}"#),
+        );
         assert_eq!(m.get("model").and_then(Value::as_str), Some("llama3"));
     }
 
@@ -366,8 +363,7 @@ mod tests {
             if let Ok((mut sock, _)) = listener.accept().await {
                 let mut buf = [0u8; 1024];
                 let _ = sock.read(&mut buf).await; // wylde-check: discard-result-ok
-                let ndjson =
-                    "{\"message\":{\"content\":\"Hi\"},\"done\":false}\n{\"done\":true}\n";
+                let ndjson = "{\"message\":{\"content\":\"Hi\"},\"done\":false}\n{\"done\":true}\n";
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     ndjson.len()

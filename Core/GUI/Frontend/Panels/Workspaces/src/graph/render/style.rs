@@ -330,7 +330,7 @@ pub struct BreadcrumbBarStyle {
 impl Default for BreadcrumbBarStyle {
     fn default() -> Self {
         // The locked spec values — used only when the YAML omits the section.
-        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults")
+        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults") // INVARIANT: parses the literal "{}" to fill serde defaults — cannot fail. wylde-check: panel-panic-allowed
     }
 }
 
@@ -372,7 +372,7 @@ pub struct ExitEdgeStyle {
 
 impl Default for ExitEdgeStyle {
     fn default() -> Self {
-        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults")
+        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults") // INVARIANT: parses the literal "{}" to fill serde defaults — cannot fail. wylde-check: panel-panic-allowed
     }
 }
 
@@ -418,7 +418,7 @@ pub struct ClusterBoundaryStyle {
 
 impl Default for ClusterBoundaryStyle {
     fn default() -> Self {
-        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults")
+        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults") // INVARIANT: parses the literal "{}" to fill serde defaults — cannot fail. wylde-check: panel-panic-allowed
     }
 }
 
@@ -481,7 +481,7 @@ pub struct ContextMenuStyle {
 
 impl Default for ContextMenuStyle {
     fn default() -> Self {
-        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults")
+        serde_yaml::from_str("{}").expect("empty mapping fills serde defaults") // INVARIANT: parses the literal "{}" to fill serde defaults — cannot fail. wylde-check: panel-panic-allowed
     }
 }
 

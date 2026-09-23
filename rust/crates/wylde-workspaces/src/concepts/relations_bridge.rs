@@ -115,7 +115,9 @@ pub fn sweep_dangling(workspace_id: &str) -> usize {
 
 /// Parse a `NodeRef` from a payload key (the serde-tagged wire shape).
 fn parse_node(payload: &Value, key: &str) -> Result<NodeRef, String> {
-    let v = payload.get(key).ok_or_else(|| format!("{key} is required"))?;
+    let v = payload
+        .get(key)
+        .ok_or_else(|| format!("{key} is required"))?;
     serde_json::from_value::<NodeRef>(v.clone()).map_err(|_| {
         format!("{key} must be {{node:\"concept\",id}} or {{node:\"vocab\",identifier}}")
     })
@@ -493,7 +495,10 @@ mod tests {
         assert_eq!(g.relations.len(), 1, "edge kept, not deleted");
         assert!(g.relations[0].dangling, "flag set");
         // …and excluded from routing.
-        assert!(g.adjacency().is_empty(), "dangling edge absent from routing adjacency");
+        assert!(
+            g.adjacency().is_empty(),
+            "dangling edge absent from routing adjacency"
+        );
 
         // The concept returns on a later build → the flag clears (re-validate).
         super::super::store::create(
@@ -501,7 +506,11 @@ mod tests {
             Concept::new("wylde", "Wylde", "the assistant", ConceptSource::Manual),
         )
         .unwrap();
-        assert_eq!(sweep_dangling(ws), 0, "flag cleared when the endpoint returns");
+        assert_eq!(
+            sweep_dangling(ws),
+            0,
+            "flag cleared when the endpoint returns"
+        );
         assert!(!load(ws).relations[0].dangling);
     }
 }

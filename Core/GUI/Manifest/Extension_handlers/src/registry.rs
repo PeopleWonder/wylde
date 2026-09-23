@@ -164,6 +164,11 @@ impl PanelRegistry {
                 order: r.entry.order,
                 version: r.entry.version.clone(),
                 required_services: r.entry.required_services.clone(),
+                // A first-party panel's liveness is decided by the
+                // Shell's `required_services` health gate, which polls
+                // for the process lifetime — so its snapshot row records
+                // that gate rather than a second, redundant answer.
+                availability: None,
                 source: source_snapshot(&r.entry.source),
             })
             .collect();
@@ -175,7 +180,12 @@ impl PanelRegistry {
                 icon: e.icon.clone(),
                 order: e.order,
                 version: e.version.clone(),
+                // Extension panels declare no `required_services`: they
+                // are iframes, and the thing that decides whether one
+                // works is whether its URL answers. That verdict is
+                // `availability`, computed by the bridge per read.
                 required_services: Vec::new(),
+                availability: Some(e.availability.clone()),
                 source: SourceSnapshot::Iframe { url: e.url.clone() },
             });
         }
@@ -230,6 +240,10 @@ struct RegistryRowSnapshot {
     version: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     required_services: Vec<String>,
+    /// Bridge-computed availability, for extension rows. `None` for
+    /// first-party rows, whose gate is `required_services` instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    availability: Option<String>,
     source: SourceSnapshot,
 }
 
@@ -315,6 +329,7 @@ mod tests {
             order: 50,
             version: "0.0.1".into(),
             url: "http://127.0.0.1:5678".into(),
+            availability: "live".into(),
         };
         let snap = r.snapshot_json(&[ext]);
         let tabs = snap["tabs"].as_array().expect("tabs is array");

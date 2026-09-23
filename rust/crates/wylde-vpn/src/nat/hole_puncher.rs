@@ -22,12 +22,7 @@ use std::time::Duration;
 /// hole is open).
 ///
 /// Defaults mirror Python: 8 attempts × 0.25s interval.
-pub fn punch(
-    remote_endpoint: &str,
-    local_port: u16,
-    attempts: u32,
-    interval: Duration,
-) -> bool {
+pub fn punch(remote_endpoint: &str, local_port: u16, attempts: u32, interval: Duration) -> bool {
     punch_with(&RealSocket, remote_endpoint, local_port, attempts, interval)
 }
 
@@ -76,9 +71,7 @@ pub fn punch_with(
         Err(_) => return false,
     };
     let Some(sock) = socket.bind(local_port) else {
-        tracing::warn!(
-            "hole_puncher: cannot bind local port {local_port}"
-        );
+        tracing::warn!("hole_puncher: cannot bind local port {local_port}");
         return false;
     };
 
@@ -90,9 +83,7 @@ pub fn punch_with(
         }
         std::thread::sleep(interval);
     }
-    tracing::info!(
-        "hole_puncher: sent {sent}/{attempts} datagrams to {remote_endpoint}"
-    );
+    tracing::info!("hole_puncher: sent {sent}/{attempts} datagrams to {remote_endpoint}");
     sent == attempts
 }
 
@@ -187,7 +178,13 @@ mod tests {
     #[test]
     fn punch_returns_false_on_nonnumeric_port() {
         let mock = MockSocket::new();
-        assert!(!punch_with(&mock, "host:notanum", 1, 5, Duration::from_millis(0)));
+        assert!(!punch_with(
+            &mock,
+            "host:notanum",
+            1,
+            5,
+            Duration::from_millis(0)
+        ));
     }
 
     #[test]
@@ -208,13 +205,7 @@ mod tests {
     fn punch_returns_false_if_any_send_fails() {
         let mut mock = MockSocket::new();
         mock.fail_send_after = Some(2);
-        let ok = punch_with(
-            &mock,
-            "1.2.3.4:99",
-            123,
-            5,
-            Duration::from_millis(0),
-        );
+        let ok = punch_with(&mock, "1.2.3.4:99", 123, 5, Duration::from_millis(0));
         assert!(!ok);
         assert_eq!(mock.state.lock().unwrap().sends.len(), 2);
     }

@@ -23,11 +23,11 @@
 //! | `GET    /api/workspaces/mru_limit`                | `rag.workspaces.get_mru_limit`    |
 //! | `PUT    /api/workspaces/mru_limit`                | `rag.workspaces.set_mru_limit`    |
 //! | `POST   /api/workspaces/activate`                 | `rag.workspaces.activate`         |
-//! | `DELETE /api/workspaces/:workspace_id`            | `rag.workspaces.delete`           |
-//! | `GET    /api/workspaces/:workspace_id/status`     | `rag.workspaces.status`           |
-//! | `POST   /api/workspaces/:workspace_id/reindex`    | `rag.workspaces.reindex`          |
-//! | `GET    /api/workspaces/:workspace_id/persona`    | `rag.workspaces.get_persona`      |
-//! | `PUT    /api/workspaces/:workspace_id/persona`    | `rag.workspaces.set_persona`      |
+//! | `DELETE /api/workspaces/{workspace_id}`            | `rag.workspaces.delete`           |
+//! | `GET    /api/workspaces/{workspace_id}/status`     | `rag.workspaces.status`           |
+//! | `POST   /api/workspaces/{workspace_id}/reindex`    | `rag.workspaces.reindex`          |
+//! | `GET    /api/workspaces/{workspace_id}/persona`    | `rag.workspaces.get_persona`      |
+//! | `PUT    /api/workspaces/{workspace_id}/persona`    | `rag.workspaces.set_persona`      |
 
 use std::collections::HashMap;
 
@@ -38,7 +38,7 @@ use axum::routing::{delete, get, post, put};
 use axum::Router;
 use serde_json::{json, Map, Value};
 
-use super::common::{authorize, harness_dispatch};
+use super::common::{authorize, workspaces_dispatch};
 use crate::envelopes::failure;
 
 fn merged_payload(body: Option<Json<Value>>, extra: Vec<(&str, Value)>) -> Value {
@@ -69,7 +69,7 @@ pub async fn list_workspaces(headers: HeaderMap) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    harness_dispatch("workspaces.list_mru", Value::Null).await
+    workspaces_dispatch("workspaces.list_mru", Value::Null).await
 }
 
 /// `GET /api/workspaces/recent[?limit=N]` — MRU-5 list (limit ignored;
@@ -81,7 +81,7 @@ pub async fn recent_workspaces(
     if let Err(resp) = authorize(&headers).await {
         return resp;
     }
-    harness_dispatch("workspaces.list_mru", Value::Null).await
+    workspaces_dispatch("workspaces.list_mru", Value::Null).await
 }
 
 /// `GET /api/workspaces/mru_limit` — retired (static MRU-5).
@@ -119,10 +119,10 @@ pub async fn activate_workspace(headers: HeaderMap, body: Option<Json<Value>>) -
     if folder.trim().is_empty() {
         return failure("bad_request", "path is required", StatusCode::BAD_REQUEST);
     }
-    harness_dispatch("workspaces.create", json!({ "folder": folder })).await
+    workspaces_dispatch("workspaces.create", json!({ "folder": folder })).await
 }
 
-/// `DELETE /api/workspaces/:workspace_id` — drop a workspace.
+/// `DELETE /api/workspaces/{workspace_id}` — drop a workspace.
 pub async fn delete_workspace(headers: HeaderMap, Path(workspace_id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
@@ -134,10 +134,10 @@ pub async fn delete_workspace(headers: HeaderMap, Path(workspace_id): Path<Strin
             StatusCode::BAD_REQUEST,
         );
     }
-    harness_dispatch("workspaces.delete", json!({ "workspace_id": workspace_id })).await
+    workspaces_dispatch("workspaces.delete", json!({ "workspace_id": workspace_id })).await
 }
 
-/// `GET /api/workspaces/:workspace_id/status` — retired (no file indexer).
+/// `GET /api/workspaces/{workspace_id}/status` — retired (no file indexer).
 pub async fn workspace_status(headers: HeaderMap, _workspace_id: Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
@@ -145,7 +145,7 @@ pub async fn workspace_status(headers: HeaderMap, _workspace_id: Path<String>) -
     retired("workspace index status")
 }
 
-/// `POST /api/workspaces/:workspace_id/reindex` — retired (no file indexer).
+/// `POST /api/workspaces/{workspace_id}/reindex` — retired (no file indexer).
 pub async fn reindex_workspace(headers: HeaderMap, _workspace_id: Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
         return resp;
@@ -153,7 +153,7 @@ pub async fn reindex_workspace(headers: HeaderMap, _workspace_id: Path<String>) 
     retired("workspace re-index")
 }
 
-/// `GET /api/workspaces/:workspace_id/persona` — retired (no read verb;
+/// `GET /api/workspaces/{workspace_id}/persona` — retired (no read verb;
 /// persona now lives in `persona.md`, read via the workspace bundle).
 pub async fn get_persona(headers: HeaderMap, _workspace_id: Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
@@ -162,7 +162,7 @@ pub async fn get_persona(headers: HeaderMap, _workspace_id: Path<String>) -> Res
     retired("the persona read endpoint")
 }
 
-/// `PUT /api/workspaces/:workspace_id/persona` — set persona text.
+/// `PUT /api/workspaces/{workspace_id}/persona` — set persona text.
 ///
 /// Body shape: `{"text": <persona_string>}`. An empty/missing string
 /// clears the override.
@@ -182,7 +182,7 @@ pub async fn set_persona(
         );
     }
     let payload = merged_payload(body, vec![("workspace_id", Value::String(workspace_id))]);
-    harness_dispatch("workspaces.set_persona", payload).await
+    workspaces_dispatch("workspaces.set_persona", payload).await
 }
 
 /// Build the workspaces sub-router.
@@ -193,17 +193,17 @@ pub fn router() -> Router {
         .route("/api/workspaces/mru_limit", get(get_mru_limit))
         .route("/api/workspaces/mru_limit", put(set_mru_limit))
         .route("/api/workspaces/activate", post(activate_workspace))
-        .route("/api/workspaces/:workspace_id", delete(delete_workspace))
+        .route("/api/workspaces/{workspace_id}", delete(delete_workspace))
         .route(
-            "/api/workspaces/:workspace_id/status",
+            "/api/workspaces/{workspace_id}/status",
             get(workspace_status),
         )
         .route(
-            "/api/workspaces/:workspace_id/reindex",
+            "/api/workspaces/{workspace_id}/reindex",
             post(reindex_workspace),
         )
-        .route("/api/workspaces/:workspace_id/persona", get(get_persona))
-        .route("/api/workspaces/:workspace_id/persona", put(set_persona))
+        .route("/api/workspaces/{workspace_id}/persona", get(get_persona))
+        .route("/api/workspaces/{workspace_id}/persona", put(set_persona))
 }
 
 #[cfg(test)]

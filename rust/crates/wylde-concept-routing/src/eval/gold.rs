@@ -2,7 +2,7 @@
 //! arms against (concept-routing plan §6.4; relation-model addendum §6.1).
 //!
 //! **The fixture is a DRAFT** (`fixtures/gold_set.json`, embedded via
-//! `include_str!`): authored by Dispatch because Aaron delegated it, grounded in
+//! `include_str!`): authored by Dispatch because the maintainer delegated it, grounded in
 //! real Wylde source files, to be vetted + extended. Three case kinds:
 //! `Easy` (one clear subsystem), `Conflation` (a cosine would wrongly pull an
 //! adjacent same-named concept — `avoid_files` — that a `Negative` edge should
@@ -113,7 +113,10 @@ mod tests {
         // The three kinds are all represented (conflation + dependency are the
         // relation-model's whole point).
         let (easy, conf, dep) = g.counts();
-        assert!(easy > 0 && conf > 0 && dep > 0, "kinds: {easy}/{conf}/{dep}");
+        assert!(
+            easy > 0 && conf > 0 && dep > 0,
+            "kinds: {easy}/{conf}/{dep}"
+        );
     }
 
     #[test]

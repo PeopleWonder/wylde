@@ -110,6 +110,15 @@ trait GraphSink {
         rel_type: &str,
         pairs: Vec<EntityPair>,
     ) -> impl std::future::Future<Output = Reply> + Send;
+    /// DETACH DELETE the workspace's Chunk nodes before a full-reindex write
+    /// so the fresh upsert SUPERSEDES the prior (mtime-rekeyed) chunk set
+    /// instead of accumulating orphans (#99). `prune_orphans=false` for the
+    /// reindex path — authored relations are preserved.
+    fn delete_workspace_chunks(
+        &self,
+        workspace: &str,
+        prune_orphans: bool,
+    ) -> impl std::future::Future<Output = Reply> + Send;
 }
 
 /// Real entity source: one `treesitter.extract_entities` pipe hop per file.
@@ -141,29 +150,58 @@ impl GraphSink for BoltClient {
         let rel = rel_type.to_owned();
         async move { BoltClient::relate(self, &rel, pairs).await }
     }
+
+    fn delete_workspace_chunks(
+        &self,
+        workspace: &str,
+        prune_orphans: bool,
+    ) -> impl std::future::Future<Output = Reply> + Send {
+        let ws = workspace.to_owned();
+        async move { BoltClient::delete_workspace_chunks(self, &ws, prune_orphans).await }
+    }
 }
 
 /// Entry point: extract entities for every file among `chunks` and write
 /// the resulting Chunk/Entity nodes + typed edges to the graph. Fail-soft
 /// (see the module docs) — safe to call from the index passes alongside
-/// the embed step.
+/// the embed step. **Additive** (bare MERGE) — used by the delta / watcher
+/// passes, which already delete the changed/deleted files' nodes per file
+/// before calling this.
 pub async fn write_graph(def: &WorkspaceDefinition, chunks: &[Chunk]) -> GraphOutcome {
     let cfg = Config::get();
     let extractor = PipeExtractor {
         service: cfg.treesitter_service.clone(),
     };
     let sink = BoltClient::new();
-    ingest_graph(&def.id, chunks, &extractor, &sink).await
+    ingest_graph(&def.id, chunks, &extractor, &sink, false).await
+}
+
+/// Full-reindex entry (#99): **replace-by-construction**. Like [`write_graph`]
+/// but DETACH DELETEs the workspace's prior Chunk nodes immediately before the
+/// upsert, so a re-index (which re-keys every chunk id via its mtime)
+/// SUPERSEDES the old chunk set instead of accumulating orphans. The Entity
+/// nodes and the authored `Concept`→`Entity` / typed edges anchored on them are
+/// preserved (no orphan prune) — the recompute rebuilds chunks without nuking
+/// authored relations. Used only by [`super::reindex_full`].
+pub async fn write_graph_replace(def: &WorkspaceDefinition, chunks: &[Chunk]) -> GraphOutcome {
+    let cfg = Config::get();
+    let extractor = PipeExtractor {
+        service: cfg.treesitter_service.clone(),
+    };
+    let sink = BoltClient::new();
+    ingest_graph(&def.id, chunks, &extractor, &sink, true).await
 }
 
 /// Testable core: drive `extractor` + `sink` over `chunks`. Split from
 /// [`write_graph`] so unit tests can mock the sidecar reply + graph writes
-/// without any live infrastructure.
+/// without any live infrastructure. `replace` gates the full-reindex
+/// pre-delete (see [`write_graph_replace`]).
 async fn ingest_graph<E, S>(
     workspace_id: &str,
     chunks: &[Chunk],
     extractor: &E,
     sink: &S,
+    replace: bool,
 ) -> GraphOutcome
 where
     E: EntityExtractor,
@@ -236,7 +274,30 @@ where
     if mem_chunks.is_empty() {
         // Nothing parseable (e.g. an all-prose vault) or the sidecar was
         // down for every file. No graph writes; carry any recorded error.
+        // Note the pre-delete below is intentionally skipped in this case: a
+        // full reindex whose extraction produced nothing (all-prose, or a
+        // sidecar outage) must NOT wipe the workspace's existing graph — that
+        // would turn a transient outage into data loss. Replace only fires
+        // when there is a fresh chunk set to swap in.
         return outcome;
+    }
+
+    // Full-reindex replace-by-construction (#99): clear the workspace's prior
+    // Chunk nodes so the upsert below supersedes them. The chunk id embeds
+    // mtime, so a re-saved/re-checked-out file re-keys its chunks and a bare
+    // MERGE would leave every superseded node orphaned. prune_orphans=false:
+    // the Entity nodes (+ authored Concept/typed edges anchored on them) are
+    // about to be re-MERGE'd and MUST survive — recompute chunks, preserve
+    // authored relations. Best-effort: a failed pre-delete is recorded but we
+    // still attempt the write (the delta/watcher passes handle their own
+    // per-file deletes and pass replace=false).
+    if replace {
+        let cleared = sink.delete_workspace_chunks(workspace_id, false).await;
+        if !cleared.ok {
+            outcome
+                .error
+                .get_or_insert_with(|| reply_err(&cleared, "replace-clear"));
+        }
     }
 
     let up = sink.upsert(mem_chunks).await;
@@ -609,6 +670,12 @@ mod tests {
     struct Recorded {
         upserts: Vec<Vec<Value>>,
         relates: Vec<(String, Vec<EntityPair>)>,
+        /// `(workspace, prune_orphans)` for each pre-delete the replace path
+        /// issued.
+        deletes: Vec<(String, bool)>,
+        /// Ordered trace of sink calls ("delete" / "upsert") so a test can
+        /// assert the replace pre-delete precedes the upsert.
+        events: Vec<&'static str>,
     }
 
     struct MockSink {
@@ -617,7 +684,11 @@ mod tests {
     }
     impl GraphSink for MockSink {
         fn upsert(&self, chunks: Vec<Value>) -> impl std::future::Future<Output = Reply> + Send {
-            self.rec.lock().unwrap().upserts.push(chunks.clone());
+            {
+                let mut r = self.rec.lock().unwrap();
+                r.upserts.push(chunks.clone());
+                r.events.push("upsert");
+            }
             let ok = self.ok;
             async move {
                 if ok {
@@ -639,6 +710,25 @@ mod tests {
                 .push((rel_type.to_owned(), pairs.clone()));
             async move { Reply::ok(json!({"ok": true, "written": pairs.len()})) }
         }
+        fn delete_workspace_chunks(
+            &self,
+            workspace: &str,
+            prune_orphans: bool,
+        ) -> impl std::future::Future<Output = Reply> + Send {
+            {
+                let mut r = self.rec.lock().unwrap();
+                r.deletes.push((workspace.to_owned(), prune_orphans));
+                r.events.push("delete");
+            }
+            let ok = self.ok;
+            async move {
+                if ok {
+                    Reply::ok(json!({"ok": true, "chunks_deleted": 0}))
+                } else {
+                    Reply::err_msg("bolt_connect", "no neo4j")
+                }
+            }
+        }
     }
 
     fn extractor_with(path: &str, reply: Value) -> MockExtractor {
@@ -656,7 +746,7 @@ mod tests {
             ok: true,
         };
 
-        let out = ingest_graph("ws-1", &chunks, &extractor, &sink).await;
+        let out = ingest_graph("ws-1", &chunks, &extractor, &sink, false).await;
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.files_parsed, 1);
         assert_eq!(out.chunk_nodes, 1);
@@ -689,7 +779,7 @@ mod tests {
             rec: Mutex::new(Recorded::default()),
             ok: true,
         };
-        let out = ingest_graph("ws-1", &chunks, &extractor, &sink).await;
+        let out = ingest_graph("ws-1", &chunks, &extractor, &sink, false).await;
         assert_eq!(out.files_parsed, 1);
         assert_eq!(out.files_skipped, 1);
         assert!(out.error.is_none());
@@ -709,7 +799,7 @@ mod tests {
             rec: Mutex::new(Recorded::default()),
             ok: true,
         };
-        let out = ingest_graph("ws-1", &chunks, &extractor, &sink).await;
+        let out = ingest_graph("ws-1", &chunks, &extractor, &sink, false).await;
         assert!(out
             .error
             .as_deref()
@@ -773,7 +863,7 @@ mod tests {
             ok: true,
         };
 
-        let out = ingest_graph("ws-int", &chunks, &extractor, &sink).await;
+        let out = ingest_graph("ws-int", &chunks, &extractor, &sink, false).await;
         assert!(out.error.is_none(), "{:?}", out.error);
         assert_eq!(out.files_parsed, 3, "all three .rs files parsed");
         assert!(out.chunk_nodes >= 3);
@@ -836,9 +926,166 @@ mod tests {
             rec: Mutex::new(Recorded::default()),
             ok: false, // upsert returns !ok
         };
-        let out = ingest_graph("ws-1", &chunks, &extractor, &sink).await;
+        let out = ingest_graph("ws-1", &chunks, &extractor, &sink, false).await;
         assert!(out.error.as_deref().unwrap().contains("upsert failed"));
         // No relate calls once the upsert failed.
         assert!(sink.rec.lock().unwrap().relates.is_empty());
+    }
+
+    // ── #99: full re-index is replace-by-construction, not additive ──────
+
+    /// A chunk for `path` at `idx` carrying an explicit `mtime`. The graph
+    /// chunk id embeds mtime, so the SAME (path, idx) at two mtimes yields two
+    /// DIFFERENT ids — exactly what a re-saved / re-checked-out file produces.
+    fn chunk_mt(path: &str, idx: u32, start: u32, end: u32, mtime: f64) -> Chunk {
+        Chunk {
+            path: path.to_owned(),
+            chunk_idx: idx,
+            content: "x".to_owned(),
+            mtime,
+            start_line: start,
+            end_line: end,
+        }
+    }
+
+    /// A stateful fake graph modelling the two Cypher shapes that matter here:
+    /// `MERGE (c:Chunk {id})` (upsert = insert-by-id, idempotent) and
+    /// `MATCH (c:Chunk {workspace}) DETACH DELETE c` (the pre-delete). It lets
+    /// a test observe node ACCUMULATION across re-indexes without a live Neo4j.
+    #[derive(Default)]
+    struct StatefulGraph {
+        chunks: Mutex<std::collections::HashSet<(String, String)>>,
+    }
+    impl StatefulGraph {
+        fn chunk_count(&self, ws: &str) -> usize {
+            self.chunks
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(w, _)| w == ws)
+                .count()
+        }
+    }
+    impl GraphSink for StatefulGraph {
+        fn upsert(&self, chunks: Vec<Value>) -> impl std::future::Future<Output = Reply> + Send {
+            {
+                let mut set = self.chunks.lock().unwrap();
+                for c in &chunks {
+                    let id = c
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    let ws = c
+                        .get("workspace")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    if !id.is_empty() {
+                        set.insert((ws, id));
+                    }
+                }
+            }
+            let n = chunks.len();
+            async move { Reply::ok(json!({"ok": true, "count": n})) }
+        }
+        fn relate(
+            &self,
+            _rel_type: &str,
+            pairs: Vec<EntityPair>,
+        ) -> impl std::future::Future<Output = Reply> + Send {
+            // The accumulation test only tracks Chunk nodes; edges are a no-op.
+            let written = pairs.len();
+            async move { Reply::ok(json!({"ok": true, "written": written})) }
+        }
+        fn delete_workspace_chunks(
+            &self,
+            workspace: &str,
+            _prune_orphans: bool,
+        ) -> impl std::future::Future<Output = Reply> + Send {
+            let ws = workspace.to_owned();
+            let removed = {
+                let mut set = self.chunks.lock().unwrap();
+                let before = set.len();
+                set.retain(|(w, _)| w != &ws);
+                before - set.len()
+            };
+            async move { Reply::ok(json!({"ok": true, "chunks_deleted": removed})) }
+        }
+    }
+
+    #[tokio::test]
+    async fn full_reindex_additive_accumulates_but_replace_supersedes() {
+        // One .rs file, two chunks, re-indexed after an mtime bump (a re-save /
+        // re-checkout) so every chunk id changes. This is the "rogue chunks"
+        // scenario #99 diagnoses.
+        let path = "C:/ws/widget.rs";
+        let extractor = extractor_with(path, sample_reply());
+        let two_chunks = |mtime: f64| {
+            vec![
+                chunk_mt(path, 0, 1, 6, mtime),
+                chunk_mt(path, 1, 8, 14, mtime),
+            ]
+        };
+
+        // Additive path (the BUG): replace=false ⇒ no pre-delete. Proves the
+        // graph DOUBLES on the second pass — this assertion FAILS if you flip
+        // reindex_full back to the additive write.
+        let g = StatefulGraph::default();
+        ingest_graph("ws-add", &two_chunks(1.0), &extractor, &g, false).await;
+        ingest_graph("ws-add", &two_chunks(2.0), &extractor, &g, false).await;
+        assert_eq!(
+            g.chunk_count("ws-add"),
+            4,
+            "additive re-index accumulates superseded chunk-id nodes"
+        );
+
+        // Replace path (the FIX): replace=true ⇒ pre-delete then write. The
+        // graph holds EXACTLY the current content's chunks — zero orphans — no
+        // matter how many times it is re-indexed.
+        let g = StatefulGraph::default();
+        ingest_graph("ws-rep", &two_chunks(1.0), &extractor, &g, true).await;
+        ingest_graph("ws-rep", &two_chunks(2.0), &extractor, &g, true).await;
+        assert_eq!(
+            g.chunk_count("ws-rep"),
+            2,
+            "replace re-index supersedes: exactly the on-disk chunk set"
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_clears_workspace_before_upsert_without_orphan_prune() {
+        let chunks = vec![chunk("C:/ws/widget.rs", 0, 1, 20)];
+        let extractor = extractor_with("C:/ws/widget.rs", sample_reply());
+        let sink = MockSink {
+            rec: Mutex::new(Recorded::default()),
+            ok: true,
+        };
+
+        ingest_graph("ws-1", &chunks, &extractor, &sink, true).await;
+
+        let rec = sink.rec.lock().unwrap();
+        // The pre-delete ran, workspace-scoped, WITHOUT pruning orphan entities
+        // — authored Concept/typed edges survive the recompute (#99).
+        assert_eq!(rec.deletes, vec![("ws-1".to_owned(), false)]);
+        // ...and it ran BEFORE the upsert (replace-by-construction ordering).
+        let del = rec.events.iter().position(|e| *e == "delete").unwrap();
+        let up = rec.events.iter().position(|e| *e == "upsert").unwrap();
+        assert!(del < up, "delete precedes upsert: {:?}", rec.events);
+    }
+
+    #[tokio::test]
+    async fn delta_path_issues_no_whole_workspace_clear() {
+        let chunks = vec![chunk("C:/ws/widget.rs", 0, 1, 20)];
+        let extractor = extractor_with("C:/ws/widget.rs", sample_reply());
+        let sink = MockSink {
+            rec: Mutex::new(Recorded::default()),
+            ok: true,
+        };
+
+        // The delta/watcher path (replace=false) deletes per changed file
+        // itself; it must NOT issue a whole-workspace clear.
+        ingest_graph("ws-1", &chunks, &extractor, &sink, false).await;
+        assert!(sink.rec.lock().unwrap().deletes.is_empty());
     }
 }

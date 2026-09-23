@@ -24,8 +24,8 @@ pub mod run;
 pub mod store;
 
 pub use crate::core::{
-    DeviceGateError, DeviceGateService, ALL_TIERS, PAIRING_CODE_LENGTH, PAIRING_CODE_TTL_SECONDS,
-    TIER_DESTRUCTIVE, TIER_READ_ONLY, TIER_TOOL_USE,
+    devices_store_path, store_root_path, DeviceGateError, DeviceGateService, ALL_TIERS,
+    PAIRING_CODE_LENGTH, PAIRING_CODE_TTL_SECONDS, TIER_DESTRUCTIVE, TIER_READ_ONLY, TIER_TOOL_USE,
 };
 pub use crate::store::{Device, DeviceStore};
 

@@ -120,6 +120,10 @@ pub struct UpdatePrefs {
     /// [`wylde_updater::Channel`] at the check call site.
     pub channel: String,
     pub last_checked: Option<u64>,
+    /// The version the user chose to skip via "Decline" on the changelog
+    /// card. `None` until a skip is recorded (or once a newer version
+    /// supersedes it). Mirrors the daemon's `skipped_version` key.
+    pub skipped_version: Option<String>,
 }
 
 impl Default for UpdatePrefs {
@@ -133,6 +137,7 @@ impl Default for UpdatePrefs {
             frequency: "weekly".into(),
             channel: "stable".into(),
             last_checked: None,
+            skipped_version: None,
         }
     }
 }
@@ -156,6 +161,10 @@ impl UpdatePrefs {
                 .unwrap_or("stable")
                 .to_owned(),
             last_checked: v.get("last_checked").and_then(|x| x.as_u64()),
+            skipped_version: v
+                .get("skipped_version")
+                .and_then(|x| x.as_str())
+                .map(str::to_owned),
         }
     }
 
@@ -205,13 +214,23 @@ pub async fn check_for_update(
 }
 
 /// Download, verify, and install a resolved update, off the gpui executor.
-/// `install_update` re-verifies the signature before touching the running
-/// binary, so this is fail-closed even though the check already resolved
-/// the assets.
+///
+/// Since #97 an update is the **whole stack**, not just this GUI: the
+/// download fetches every binary the release resolved to, and
+/// `install_stack` re-verifies *each* one against the embedded key before
+/// anything is written. That keeps the path fail-closed per binary even
+/// though the check already resolved the assets — nothing rides in
+/// unverified behind something else.
+///
+/// The switch-over is a single atomic pointer move once the whole stack is
+/// staged, so "GUI new, daemon stale" is not a reachable state. Nothing is
+/// swapped underneath the running processes: the new stack takes effect on
+/// the **next launch**, which is why the caller reports "restart to apply"
+/// rather than "installed and live".
 pub async fn download_and_install(info: wylde_updater::UpdateInfo) -> Result<(), String> {
     wylde_gui_pipe::bridged_spawn_blocking(move || {
         let dl = wylde_updater::download_release(&info).map_err(|e| e.to_string())?;
-        wylde_updater::install_update(&dl.bytes, &dl.minisig).map_err(|e| e.to_string())
+        wylde_updater::install_stack(&info.version, &dl).map_err(|e| e.to_string())
     })
     .await
 }
@@ -264,7 +283,10 @@ fn autostart_handle() -> Result<auto_launch::AutoLaunch, String> {
     auto_launch::AutoLaunchBuilder::new()
         .set_app_name(AUTOSTART_APP_NAME)
         .set_app_path(&exe)
-        .set_use_launch_agent(false)
+        // 0.6 deprecated the `use_launch_agent` bool for an explicit enum; the
+        // old `false` mapped to AppleScript mode. macOS-only knob, inert on the
+        // Windows target this GUI ships to — kept faithful to the prior value.
+        .set_macos_launch_mode(auto_launch::MacOSLaunchMode::AppleScript)
         .build()
         .map_err(|e| format!("auto-launch build: {e}"))
 }
@@ -462,6 +484,14 @@ pub const DEVICE_SYSTEM_DEFAULT: &str = "System default";
 /// set matches `wylde_voice::config_persist::VoiceConfig`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VoiceSettings {
+    /// The capture mode (`config_persist::ALL_MODES`: `push_to_talk` /
+    /// `always_on`). Deliberately NOT mirrored as a `MODE_PRESETS` cycle-list:
+    /// the panel exposes mode as a two-state toggle, not a cycle picker, so
+    /// there is no ordered preset list to keep in lockstep — and
+    /// `check-voice-presets-mirror.py` therefore does not (and need not) cover
+    /// it. If the panel ever grows a cycle-list over the modes, add a
+    /// `MODE_PRESETS` const with a `/// Mirrors …::ALL_MODES` comment and the
+    /// gate will pick it up automatically.
     pub mode: String,
     pub push_to_talk_hotkey: String,
     pub stt_backend_pref: String,
@@ -1018,13 +1048,13 @@ mod tests {
     #[test]
     fn user_profile_parses_all_fields() {
         let p = UserProfile::from_value(&json!({
-            "name": "Aaron",
+            "name": "Sam",
             "style": "terse",
             "free_text_rules": "Show diffs.",
             "preferences": {"tone": "dry"},
             "recurring_topics": ["rust", "gpui"]
         }));
-        assert_eq!(p.name, "Aaron");
+        assert_eq!(p.name, "Sam");
         assert_eq!(p.style, "terse");
         assert_eq!(p.free_text_rules, "Show diffs.");
         assert_eq!(p.preferences, vec![("tone".to_owned(), "dry".to_owned())]);
@@ -1073,8 +1103,8 @@ mod tests {
         assert_eq!(rej["payload"]["proposal_id"], "p2");
 
         // update sends the field patch directly.
-        let upd = profile_request("user_profile.update", json!({"name": "Aaron"}));
+        let upd = profile_request("user_profile.update", json!({"name": "Sam"}));
         assert_eq!(upd["action"], "user_profile.update");
-        assert_eq!(upd["payload"]["name"], "Aaron");
+        assert_eq!(upd["payload"]["name"], "Sam");
     }
 }

@@ -29,8 +29,8 @@
 //!   the most recent entry — mirrors the prior `Voice/orchestrator.py`
 //!   `_resolve_conversation`.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -240,7 +240,10 @@ impl HarnessChat for HarnessIpcClient {
         let reply =
             crate::actions::transcribe::handle_transcribe(json!({ "audio_b64": b64 })).await;
         if !reply.ok {
-            return Err(HarnessCallError(format_reply_error(&reply, "voice.transcribe")));
+            return Err(HarnessCallError(format_reply_error(
+                &reply,
+                "voice.transcribe",
+            )));
         }
         Ok(reply
             .data
@@ -264,7 +267,10 @@ impl HarnessChat for HarnessIpcClient {
         });
         let reply = send_action(&self.service, "chat.run_turn", payload).await;
         if !reply.ok {
-            return Err(HarnessCallError(format_reply_error(&reply, "chat.run_turn")));
+            return Err(HarnessCallError(format_reply_error(
+                &reply,
+                "chat.run_turn",
+            )));
         }
         let final_message = reply
             .data
@@ -299,7 +305,10 @@ impl HarnessChat for HarnessIpcClient {
         // orchestrator's `decode_wav_to_i16` consumes.
         let reply = crate::actions::synthesize::handle_synthesize(json!({"text": text})).await;
         if !reply.ok {
-            return Err(HarnessCallError(format_reply_error(&reply, "voice.synthesize")));
+            return Err(HarnessCallError(format_reply_error(
+                &reply,
+                "voice.synthesize",
+            )));
         }
         let audio_b64 = reply
             .data
@@ -311,7 +320,8 @@ impl HarnessChat for HarnessIpcClient {
             .data
             .get("sample_rate")
             .and_then(Value::as_u64)
-            .unwrap_or(u64::from(crate::synth::vocab::KOKORO_SAMPLE_RATE)) as u32;
+            .unwrap_or(u64::from(crate::synth::vocab::KOKORO_SAMPLE_RATE))
+            as u32;
         Ok(SynthResult {
             audio_b64,
             sample_rate,
@@ -401,10 +411,7 @@ mod tests {
 
     #[test]
     fn format_reply_error_includes_code_and_message() {
-        let reply = wylde_shared::ipc::Reply::err(wylde_shared::ipc::IpcError::new(
-            "foo",
-            "bar",
-        ));
+        let reply = wylde_shared::ipc::Reply::err(wylde_shared::ipc::IpcError::new("foo", "bar"));
         assert_eq!(
             format_reply_error(&reply, "voice.transcribe"),
             "voice.transcribe [foo] bar"

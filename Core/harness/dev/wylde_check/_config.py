@@ -8,7 +8,7 @@ import only the constants they need.
 from __future__ import annotations
 
 import re
-from typing import Tuple
+from typing import Dict, Tuple
 
 
 # Walk-time exclusions.  These never get inspected by any rule.
@@ -27,35 +27,12 @@ EXCLUDED_DIRS: Tuple[str, ...] = (
 )
 
 
-# Files exempt from rule 1 (no_internal_http).  The Ollama / Memgraph
-# clients talk to external systems on the local box; extensions may call
-# the Gateway boundary.
-NO_HTTP_EXEMPT_PREFIXES: Tuple[str, ...] = (
-    "Core/harness/backend/ollama_client.py",  # external LLM daemon
-    "Core/harness/model_registry/_routing/ollama_watcher.py",
-    "Core/harness/backend/request_building.py",  # builds Ollama bodies
-    "Core/harness/tooling/tools/ollama",  # /api/* helpers
-    "Core/harness/tooling/tools/visual/browser_",  # Playwright HTTP
-    "Core/Memgraph",  # Bolt (7687) is DB wire protocol
-    "Extensions",  # extensions can call Gateway
-    # (The old `Core/GUI/src-tauri/src` exemption was dropped at the
-    # slice-11 cutover — that tree is deleted, and rule 1 walks only
-    # .py/.svelte/.js/.ts, so the gpui Rust GUI isn't scanned here.)
-    #
-    # The `Gateway`, `VPN`, and `Core/resource_monitor` exemptions were
-    # dropped once the strangler deleted their Python sources — Gateway
-    # (boundary HTTP), VPN (WireGuard/STUN/TURN), and the vram-broker
-    # (resource_monitor, deleted in 7072947). No .py/.svelte/.js/.ts
-    # source remains under those prefixes, so the exemptions matched
-    # nothing — same cleanup as the earlier device_gate / vram_broker
-    # prunes.
-)
-
-
+# Retained for the queued no_internal_http_rust rule (see issue) — the
+# Python rule was retired 2026-07-20 but no Rust counterpart exists yet.
+#
 # Wylde-internal ports + loopback hosts the rule scans for.
 # ``11434`` (Ollama) and ``7687`` (Memgraph Bolt) are external from
-# Wylde's perspective but listed for completeness — the exemption
-# prefixes above cover the legitimate callers.
+# Wylde's perspective but listed for completeness.
 INTERNAL_HOSTS: Tuple[str, ...] = (
     "127.0.0.1",
     "localhost",
@@ -147,39 +124,12 @@ DEAD_REF_ALLOWLISTED_FILES: Tuple[str, ...] = (
 )
 
 
-# Gateway route categories per the Wylde user's contract.  Any route handler
-# whose path doesn't start with one of these prefixes gets flagged for
-# review.  The list is intentionally generous — egress + the dozen
-# inbound mobile-future routes + MCP + extensions.
-GATEWAY_ROUTE_PREFIXES: Tuple[str, ...] = (
-    "/api/egress",
-    "/api/chat",
-    "/api/conversations",  # chat-history CRUD (mobile-bound)
-    "/api/prompts",  # system-prompt overrides + presets (mobile-bound)
-    "/api/devices",
-    "/api/link",
-    "/api/settings",
-    "/api/system",
-    "/api/rag",
-    "/api/images",
-    "/api/models",
-    "/api/tools",  # tool registry
-    "/api/dev",  # local-only dev diagnostics (GUI error-capture sink)
-    "/api/health",
-    "/health",
-    "/mcp",  # planned
-    "/extensions",  # phase 7 contract
-    "/__action__",  # internal action dispatch
-)
-
-
-# Canonical tool id / name regex.  Snake or dotted, lower-case, digits OK.
-TOOL_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
-
-
-# Pre-compiled patterns for rule 1.  Catches the common HTTP client
-# entry-points.  We intentionally keep it stringy so a future client
-# library doesn't slip through silently — add to this list.
+# Retained for the queued no_internal_http_rust rule (see issue) — the
+# Python rule was retired 2026-07-20 but no Rust counterpart exists yet.
+#
+# Catches the common HTTP client entry-points.  We intentionally keep it
+# stringy so a future client library doesn't slip through silently — add
+# to this list.
 HTTP_CLIENT_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"\brequests\.(?:get|post|put|delete|patch|head|options|request)\s*\("),
     re.compile(
@@ -209,67 +159,6 @@ ACTIVE_ROOTS: Tuple[str, ...] = (
 )
 
 
-# Service folders that are documented entry points (used by rules 16-19).
-# Some entries (Trainer, N8N, Extensions/*) are library-style and don't
-# host their own run.py — the rules tolerate the absence and only flag
-# violations of the naming/contract when a run.py IS present.
-SERVICE_FOLDERS: Tuple[str, ...] = (
-    "Core/resource_monitor",
-    "Core/Memgraph",
-    "device_gate",
-    "Gateway",
-    "Voice",
-    "VPN",
-    "Trainer",
-    "N8N",
-    "Extensions/extension_bridge",
-    "Extensions/Webcrawler",
-    "Extensions/Wylde_Study",
-)
-
-
-# Subprocess-spawn callsites are restricted to these prefixes (rule 14).
-# Lifecycle is the daemon's job; tool runtimes wrap external CLIs by
-# design; Memgraph wraps the Neo4j JVM; VPN/tunnel runs wg/iptables;
-# Voice/device_manager talks to the system audio stack.
-SUBPROCESS_ALLOWED_PREFIXES: Tuple[str, ...] = (
-    "Core/Lifecycle/",
-    "Core/harness/dev/",
-    "Core/harness/tooling/tools/",  # all tool runtimes
-    "Core/Memgraph/",  # Neo4j JVM wrapper
-    "Voice/device_manager.py",  # system audio device control
-    "VPN/tunnel/",  # wg-quick / iptables shell-outs
-)
-
-
-# Subprocess-spawn patterns rule 14 catches.  Stringy on purpose so the
-# rule stays diff-friendly when a new spawning API needs blocking.
-SUBPROCESS_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    re.compile(r"\bsubprocess\.Popen\s*\("),
-    re.compile(r"\bsubprocess\.run\s*\("),
-    re.compile(r"\bsubprocess\.call\s*\("),
-    re.compile(r"\bsubprocess\.check_call\s*\("),
-    re.compile(r"\bsubprocess\.check_output\s*\("),
-    re.compile(r"\bos\.spawnv\s*\("),
-    re.compile(r"\bos\.spawnvp\s*\("),
-    re.compile(r"\bos\.spawnvpe\s*\("),
-    re.compile(r"\bos\.spawnl\s*\("),
-    re.compile(r"\bos\.spawnle\s*\("),
-    re.compile(r"\bos\.spawnlp\s*\("),
-    re.compile(r"\bos\.spawnlpe\s*\("),
-)
-
-
-# Logging-setup patterns rule 13 catches outside Core/shared/logging_setup.py.
-LOGGING_SETUP_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    re.compile(r"\blogging\.basicConfig\s*\("),
-    re.compile(r"\blogging\.getLogger\(\s*\)\s*\.\s*addHandler\s*\("),
-    re.compile(r"\blogging\.getLogger\(\s*\)\s*\.\s*setLevel\s*\("),
-    re.compile(r"\blogging\.root\s*\.\s*addHandler\s*\("),
-    re.compile(r"\blogging\.root\s*\.\s*setLevel\s*\("),
-)
-
-
 # Pipe-name convention regex (rule 17).  Two passes:
 #
 # * ``PIPE_NAME_REF_RE``: matches the canonical dash form anywhere in
@@ -284,15 +173,15 @@ PIPE_NAME_REF_RE = re.compile(r"\bwylde-[A-Za-z0-9_\-]+")
 PIPE_NAME_TYPO_RE = re.compile(r"pipe[\\/](wylde_[A-Za-z][A-Za-z0-9_]*)")
 PIPE_NAME_GOOD_RE = re.compile(r"^wylde-[a-z][a-z0-9\-]*$")
 
-
-# Deprecated run.py naming variants (rule 16).  If any of these patterns
-# matches a top-level file in a service folder, the convention is broken.
-DEPRECATED_ENTRY_PATTERNS: Tuple[re.Pattern[str], ...] = (
-    re.compile(r"^[A-Za-z0-9_-]+_run\.py$"),
-    re.compile(r"^start_[A-Za-z0-9_-]+\.py$"),
-    re.compile(r"^launcher[A-Za-z0-9_-]*\.py$"),
-    re.compile(r"^main_[A-Za-z0-9_-]+\.py$"),
-    re.compile(r"^server_[A-Za-z0-9_-]+\.py$"),
+# A ``wylde-<name>`` token that carries a build-artifact / target-triple
+# marker is a RELEASE BINARY filename (``wylde-gui-x86_64-pc-windows-msvc.exe``,
+# ``…​.exe.minisig``), not a named pipe.  Pass-1 (canonical-form casing) would
+# otherwise flag every such asset name in the updater/roster code for the
+# uppercase/underscore inside the target triple — a false positive, since the
+# pipe-name convention governs pipes, not artifact filenames.  Names matching
+# this are skipped by pass-1.
+PIPE_NAME_BINARY_ARTIFACT_RE = re.compile(
+    r"x86_64|aarch64|pc-windows|unknown-linux|apple-darwin|-gnu\b|-msvc\b|\.exe\b|\.minisig\b"
 )
 
 
@@ -304,7 +193,14 @@ RUST_CRATES_ROOT: str = "rust/crates"
 # you're traversing three module levels up, the module organisation is
 # wrong.  Anchored regex used only against the part of the `use` line
 # after the keyword.
-RUST_DEEP_SUPER_RE = re.compile(r"\bsuper::super::")
+#
+# Matches THREE-or-more `super::` hops (`super::super::super::…`), which is
+# what the finding message has always described ("three or more module
+# levels up"). The prior pattern fired on the two-hop `super::super::` form
+# too — a within-a-nested-module reach to a grandparent's sibling that is
+# ordinary Rust, especially from an inline `#[cfg(test)]` module — so the
+# regex now matches the level the message actually calls out.
+RUST_DEEP_SUPER_RE = re.compile(r"\bsuper::super::super::")
 
 
 # Rule 26: cross-crate Rust imports.  Wylde crates (other than
@@ -314,6 +210,39 @@ RUST_DEEP_SUPER_RE = re.compile(r"\bsuper::super::")
 # are always allowed; imports of one's own crate name (path component) are
 # allowed.  All other ``wylde_<name>`` use-paths are flagged.
 RUST_USE_CRATE_RE = re.compile(r"\buse\s+(wylde_[A-Za-z0-9_]+)\b")
+
+
+# Rule 26: crates that are legitimately importable across the workspace,
+# in the same spirit as the existing ``wylde_shared`` / ``wylde_plugin_api``
+# exemptions.  Each is either a PURE library crate (types + algorithms, no
+# service pipe of its own that an importer would be bypassing) or the
+# dedicated ``*-client`` crate that IS the sanctioned way to reach a peer
+# service's pipe — importing it is USING the IPC contract, not routing
+# around it.  Add here (with a one-line reason) rather than sprinkling
+# per-file exemptions.
+RUST_SHARED_SURFACE_CRATES: Tuple[str, ...] = (
+    "wylde_stack",  # roster + service_name constants — a naming/topology lib, no pipe
+    "wylde_workspaces_client",  # the sanctioned client for the wylde-workspaces service pipe
+    "wylde_concept_routing",  # pure concept-routing algorithms + value types, no pipe
+    "wylde_concept_hierarchy",  # pure concept-hierarchy types, no pipe
+    "wylde_reasoning_plan",  # pure plan/DAG value types (evaluate/predicates), no pipe
+    "wylde_fswalk",  # pure detector lib extracted from wylde-workspaces; shared by workspaces + wylde-organize
+)
+
+
+# Rule 26: per-edge cross-crate exemptions — ``(importing_crate, imported)``
+# pairs where a direct dependency is the deliberate architecture, mirroring
+# the existing ``wylde_plugin_* from wylde-harness only`` host-linkage
+# carve-out.  ``wylde-gateway`` is the harness's REST facade: it links
+# ``wylde-harness`` on purpose and calls a handful of action handlers
+# in-process against the same on-disk store (the settings / model-registry
+# routes).  NOTE for the maintainer: the chat/conversations routes reach the
+# harness over the pipe instead; if the settings/model-registry routes should
+# too, that is a separate refactor — this carve-out keeps the rule honest
+# about the dependency that exists today rather than hiding it.
+RUST_CROSS_CRATE_EDGE_EXEMPTIONS: Tuple[Tuple[str, str], ...] = (
+    ("wylde-gateway", "wylde_harness"),
+)
 
 
 # Rule 27: Rust silent-Result-swallow patterns.  ``let _ = expr;`` and
@@ -338,6 +267,13 @@ RUST_LOGGING_INIT_PATTERNS: Tuple[re.Pattern[str], ...] = (
     re.compile(r"\btracing::subscriber::set_global_default\s*\("),
     re.compile(r"\btracing::subscriber::with_default\s*\("),
 )
+# Same-line inline opt-out for a service that genuinely CANNOT use the
+# canonical ``configure_logging`` — specifically an MCP stdio server, whose
+# stdout is the JSON-RPC frame channel, so its subscriber MUST write to
+# stderr (``configure_logging`` installs a stdout writer that would corrupt
+# the protocol stream). Reserved for that constraint; the reason must sit in
+# a comment beside the call.
+RUST_LOGGING_INIT_OK_MARKER = "wylde-check: logging-init-ok"
 
 
 # Rule 29: only specific crates may spawn external processes.  These
@@ -371,85 +307,164 @@ RUST_PROCESS_SPAWN_ALLOWED_CRATES: Tuple[str, ...] = (
     "wylde-extension-bridge",
     "wylde-lsp",
 )
+# Same-line inline opt-out for a single justified spawn outside the allowed
+# crates — a surgical alternative to widening the crate allowlist (which
+# would wave through EVERY spawn in that crate).  Reserved for a spawn that
+# is inherently a local subprocess with no lifecycle-pipe equivalent, e.g.
+# ``git blame`` in the workspaces code graph.  Requires a reason in the same
+# small window (mirrors the panel-panic rule's justification requirement).
+RUST_PROCESS_SPAWN_OK_MARKER = "wylde-check: external-spawn-ok"
 # Back-compat alias for callers that still import the singular name.
 RUST_PROCESS_SPAWN_ALLOWED_CRATE: str = RUST_PROCESS_SPAWN_ALLOWED_CRATES[0]
 
 
-# ── Rules 44-47: launcher / shutdown / service-manifest correctness ──
-#
-# Added at the slice-11 cutover (2026-05-29) so the launcher + shutdown
-# stay manifest-driven (no hardcoded service roster) and every backend
-# service carries a schema-valid manifest. the Wylde user's modularity directive:
-# "give special attention that launcher and shutdown rules cover all
-# services attached with modularity in mind … make them reference the
-# manifests."
+# Rule 54: every persistent file log must inherit the shared rotation
+# policy.  The canonical logging module
+# (``rust/crates/wylde-shared/src/logging.rs``) owns the ONE append-only
+# ``OpenOptions`` behind ``RotatingLog`` / ``open_rotating_append``; the
+# rule skips that file and flags a raw ``.append(true)`` anywhere else —
+# the tell-tale of an ad-hoc uncapped log sink that bypasses rotation.
+# Matches both ``std::fs`` and ``tokio::fs`` OpenOptions builders.  A
+# same-line ``// wylde-check: unbounded-append-ok`` marker suppresses the
+# rule for a justified non-log append.
+RUST_UNBOUNDED_APPEND_PATTERNS: Tuple[re.Pattern[str], ...] = (
+    re.compile(r"\.append\(\s*true\s*\)"),
+)
+RUST_UNBOUNDED_APPEND_MARKER = "wylde-check: unbounded-append-ok"
+# The single sanctioned home of an append-only open — the rotation
+# factory itself.  Skipped wholesale (analogous to rule 28 skipping the
+# canonical logging file for subscriber init).
+RUST_LOG_ROTATION_FACTORY_FILE = "rust/crates/wylde-shared/src/logging.rs"
 
-# Canonical launcher + shutdown sources. The launcher is Python
-# (WYLDE_LIFECYCLE_IMPL defaults to python); the Rust daemon is a parity
-# port held to the same no-hardcoded-roster contract by the negative
-# scan below + its own crate tests.
-LAUNCHER_PY: str = "Core/Lifecycle/launcher.py"
-SHUTDOWN_PY: str = "Core/Lifecycle/shutdown.py"
+
+# ── Rules 44-47: boot / shutdown / service-manifest correctness ──
+#
+# Added at the slice-11 cutover (2026-05-29) so boot + shutdown stay
+# driven by a single source (no hardcoded, hand-kept service roster) and
+# every backend service carries a schema-valid manifest. the Wylde user's
+# modularity directive: "give special attention that launcher and shutdown
+# rules cover all services attached with modularity in mind."
+#
+# REPOINTED for issue #101 (0.2 stability audit, finding F): the original
+# rules 44/45 targeted `Core/Lifecycle/launcher.py` / `shutdown.py`, which
+# the full-Rust cutover DELETED. Guarded by `if <file>.exists()`, they ran
+# over a missing file, found nothing, and passed green — a dead gate. They
+# now target the LIVE Rust single source of truth: the `DAEMON_MANAGED`
+# table (`rust/crates/wylde-lifecycle/src/daemon_managed.rs`) that drives
+# boot, shutdown, dispatch, and the kill-image list from one row per
+# service. The SEMANTIC set-equality gate (boot-set == shutdown-set ==
+# dispatch-set, modulo the two typed exceptions) is the crate unit test
+# `daemon_managed::tests::boot_shutdown_dispatch_sets_agree`, run in CI by
+# `cargo test --workspace`; these static rules ensure that single source
+# stays STRUCTURALLY in place — the table exists, boot + shutdown are
+# derived from it, and no hand-kept `const SERVICES` roster returns.
+
 RUST_LIFECYCLE_CRATE: str = "rust/crates/wylde-lifecycle"
 GPUI_SHUTDOWN_RS: str = "Core/GUI/Shell/src/shutdown.rs"
 
-# A reference to any of these proves the launcher/shutdown builds its
-# service set from the filesystem-as-registry (services.yaml + per-service
-# manifest.json) rather than a hardcoded list.
-LAUNCHER_MANIFEST_REFERENCES: Tuple[str, ...] = (
-    "load_services",
-    "load_manifest",
-    "list_service_folders",
-)
-SHUTDOWN_ENUMERATION_REFERENCES: Tuple[str, ...] = (
-    "get_running",
-    "load_manifest",
-    "shutdown_order",
-    "_shutdown_sequence",
-    "load_services",
-)
+# The single source of truth (issue #101). Rule 44 asserts this file
+# declares the table; rules 44/45 assert boot + shutdown are derived from
+# it (below). A missing token here means the single source was ripped out
+# or bypassed — the gate fires.
+RUST_DAEMON_MANAGED_FILE: str = "rust/crates/wylde-lifecycle/src/daemon_managed.rs"
+RUST_DAEMON_MANAGED_TABLE_TOKEN: str = "DAEMON_MANAGED"
 
-# The anti-pattern rules 44/45 forbid: a module-level UPPERCASE service
-# roster assigned a list/tuple literal (Python), or a `const`/`static`
-# SERVICES array (Rust). Case-sensitive so ordinary lowercase locals like
-# `services = load_services()` never match.
-PY_HARDCODED_SERVICE_LIST_RE = re.compile(
-    r"^\s*_?(?:ALL_)?SERVICES?(?:_LIST|_NAMES)?\s*(?::[^=]+)?=\s*[\[\(]"
-)
+# Boot must be derived from the table (`daemon.rs` iterates `boot_sequence()`),
+# not a hand-written run of `start_<name>()` calls.
+RUST_BOOT_FILE: str = "rust/crates/wylde-lifecycle/src/daemon.rs"
+RUST_BOOT_TABLE_TOKEN: str = "boot_sequence"
+
+# Shutdown must be derived from the table (`state/mod.rs` iterates
+# `shutdown_sequence()`), not a hand-kept `let steps: [_; N]` array.
+RUST_SHUTDOWN_FILE: str = "rust/crates/wylde-lifecycle/src/state/mod.rs"
+RUST_SHUTDOWN_TABLE_TOKEN: str = "shutdown_sequence"
+
+# The anti-pattern rule 44 still forbids: a `const`/`static` SERVICES array
+# (Rust) reintroducing a hand-kept roster. Case-sensitive so ordinary
+# lowercase locals never match. (The `DAEMON_MANAGED` table is not a
+# `SERVICES` array and is intentionally not matched.)
+#
+# Two blind spots were closed in #115:
+#   * ANY uppercase qualifier prefix — `CORE_SERVICES`, `DAEMON_SERVICES`,
+#     `WYLDE_SERVICES` — not just the bare/`ALL_` forms. `CORE_SERVICES`
+#     (the exact literal #101 deleted from control.rs) escaped before.
+#   * SLICE syntax `: &[&str] = &[`, not only the array-annotation form
+#     `: [&str; N] = [`. The idiomatic slice table has a `&` before the `[`,
+#     so every slice-form roster escaped regardless of name.
+#
+# The element type must be `&str` — the #101 anti-pattern is a hand-kept
+# roster of service NAME strings (`&[&str]` / `[&str; N]`), the exact
+# `CORE_SERVICES: &[&str]` shape deleted from control.rs. A TYPED struct
+# table (`&[StranglerService]` — a per-service impl-selection policy table,
+# NOT the boot roster; boot still derives from DAEMON_MANAGED via
+# `boot_sequence()`) is a different structure and is intentionally not
+# matched, exactly as the `DAEMON_MANAGED: &[DaemonService]` single source
+# is not.
 RUST_HARDCODED_SERVICE_ARRAY_RE = re.compile(
-    r"\b(?:const|static)\s+_?(?:ALL_)?SERVICES?(?:_LIST|_NAMES)?\s*:\s*\[",
+    r"\b(?:const|static)\s+_?(?:[A-Z][A-Z0-9]*_)*SERVICES?(?:_LIST|_NAMES)?\s*:\s*&?\[\s*&?\s*str\b",
 )
 
-# The gpui-side graceful shutdown must delegate to the manifest-driven
-# Python drain via this action (rule 45). The hard-kill image-name
-# fallback constants (WYLDE_SERVICE_PROCESSES / WYLDE_KILL_TARGETS) are a
-# recognised last resort — image names for `taskkill`, not the service
-# enumeration — so they are deliberately NOT treated as a hardcoded
-# roster.
+# The gpui-side graceful shutdown must delegate to the daemon drain via
+# this action (rule 45). Rule 45 checks only that this token is present;
+# it does NOT count service coverage of the GUI's hard-kill / drain-wait
+# sets. It used to exempt the WYLDE_SERVICE_PROCESSES / WYLDE_KILL_TARGETS
+# constants from any roster check — an exemption that hid issue #124.
+# Those constants are gone (both sets now derive from
+# wylde_stack::shutdown_targets) and the counting gate is a Rust test:
+# rust/crates/wylde-stack/tests/shutdown_target_coverage.rs.
 GPUI_SHUTDOWN_DELEGATE_TOKEN: str = "lifecycle.shutdown_all"
 
-# Top-level dirs that are NOT discoverable services. Source of truth is
-# Core/Lifecycle/_common.EXCLUDED_TOP_LEVEL — keep this in sync when that
-# set changes (this module is deliberately import-free, so the mirror is
-# manual). `Core` holds a legitimate infra rollup manifest
-# (Core/manifest.json); `data`/`logs`/`docs` are runtime/archive dirs and
-# `rust`/`tools` are build/dev folders — none may carry a service manifest.
-SERVICE_MANIFEST_EXCLUDED_TOP_LEVEL: Tuple[str, ...] = (
-    "Core",
-    "data",
-    "logs",
-    "docs",
-    "rust",
-    "tools",
-)
-SERVICE_MANIFEST_NONSERVICE_DIRS: Tuple[str, ...] = ("data", "logs", "docs")
 
-# Required keys on a top-level service manifest (rule 47). `entry_point`
-# is the canonical launch command / binary (may be null for an in-process
-# / library / pipe-only service); there is deliberately no separate
-# `binary` key — one field, one source of truth.
-SERVICE_MANIFEST_REQUIRED_KEYS: Tuple[str, ...] = (
-    "name",
-    "entry_point",
-    "shutdown_order",
-)
+# ── Rule 62: dependency-spread ratchet (#290 dependency isolation) ────────
+#
+# The forward-looking half of #290. See rules/_dependency_spread.py for the
+# full rationale. Three tiers: contained deps pinned to one owning crate;
+# baselined deps frozen at today's crate-spread (fail on growth); everything
+# else capped at DEPENDENCY_SPREAD_NEW_MAX crates before it needs a decision.
+
+# Deps #290 routed through a single owning crate's adapter. Must stay there —
+# a direct dep in any other crate means the adapter was bypassed.
+DEPENDENCY_CONTAINED: Dict[str, str] = {
+    "rand": "wylde-shared",  # via wylde_shared::rng      (#290)
+    "cpal": "wylde-voice",   # via voice::audio_device    (#290)
+}
+
+# A brand-new external dep (not contained, not baselined) may span at most this
+# many crates before the rule forces a conscious wrap-or-baseline decision.
+DEPENDENCY_SPREAD_NEW_MAX: int = 2
+
+# Grandfathered crate-spread, seeded from develop @ 2026-07-28 using the rule's
+# own walk (ACTIVE_ROOTS). The rule fails only when a dep grows PAST its number.
+# `reqwest` (12) is the named watch target — the biggest 0.x shotgun risk;
+# wrap-trigger is its first breaking bump. Raising a number is a deliberate,
+# reviewed act; lowering one after a cleanup ratchets the gate tighter.
+DEPENDENCY_SPREAD_BASELINE: Dict[str, int] = {
+    "anyhow": 30,
+    "async-trait": 6,
+    "auto-launch": 3,
+    "axum": 3,
+    "base64": 3,
+    "chrono": 12,
+    "futures": 4,
+    "gpui": 20,
+    "hex": 3,
+    "qrcode": 3,
+    "reqwest": 12,  # watch target — biggest 0.x shotgun risk; wrap on first break
+    "rfd": 3,
+    "rmp-serde": 5,
+    "serde": 38,
+    "serde_json": 41,
+    "serde_yaml": 4,
+    "serial_test": 9,
+    "sha2": 3,
+    "tempfile": 19,
+    "thiserror": 18,
+    "tokio": 31,
+    "tokio-test": 5,
+    "tower": 3,
+    "tracing": 22,
+    "tracing-subscriber": 4,
+    "uuid": 12,
+    "windows": 4,
+    "wiremock": 3,
+}

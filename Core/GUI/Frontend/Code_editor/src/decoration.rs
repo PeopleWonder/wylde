@@ -110,11 +110,7 @@ pub(crate) fn segment(
 /// applying decorations whose ranges have already been rebased to
 /// line-local byte offsets (`0..text.len()`). Run lengths sum to
 /// `text.len()` exactly — `shape_text` requires full coverage.
-pub(crate) fn build_line_runs(
-    text: &str,
-    style: &TextStyle,
-    decos: &[Decoration],
-) -> Vec<TextRun> {
+pub(crate) fn build_line_runs(text: &str, style: &TextStyle, decos: &[Decoration]) -> Vec<TextRun> {
     let base = TextRun {
         len: 0,
         font: style.font(),
@@ -204,7 +200,10 @@ mod tests {
 
     #[test]
     fn segments_cover_exactly_and_later_wins() {
-        let decos = vec![Decoration::color(0..6, red()), Decoration::color(4..10, red())];
+        let decos = vec![
+            Decoration::color(0..6, red()),
+            Decoration::color(4..10, red()),
+        ];
         let segs = segment(10, &decos);
         let mut cursor = 0;
         for (r, _, _) in &segs {
@@ -249,7 +248,7 @@ mod tests {
     #[test]
     fn line_rebase_clamps_and_drops() {
         let decos = vec![
-            Decoration::color(2..8, red()), // spans into the line
+            Decoration::color(2..8, red()),     // spans into the line
             Decoration::color(100..110, red()), // far away → dropped
         ];
         // Line spans buffer bytes 4..10 → local 0..6.

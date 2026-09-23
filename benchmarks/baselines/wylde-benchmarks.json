@@ -1,0 +1,69 @@
+{
+  "schema": 1,
+  "recorded": {
+    "commit": "a47f9f7443bddd80544a3b1bf57db006f94fdfbd",
+    "date": "2026-07-15",
+    "reps": 2,
+    "host": {
+      "label": "reference dev rig",
+      "cpu": "Intel Core Ultra 9 285K",
+      "gpu": "NVIDIA RTX 5080 16GB",
+      "ram": "DDR5-4800",
+      "os": "Microsoft Windows [Version 10.0.26200.8655]",
+      "model": "hf.co/unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ3_XXS",
+      "ollama": "0.32.0"
+    }
+  },
+  "metrics": {
+    "reasoning.fast.success_rate": {
+      "value": 0.9166666666666666,
+      "unit": "rate",
+      "direction": "higher_is_better",
+      "gate": "fail",
+      "compare": "absolute",
+      "warn_delta": 0.01,
+      "fail_delta": 0.1,
+      "note": "Fast ReAct success rate. Absolute-point band; one model refusal flake (~0.08 at n=12) warns, a ≥0.10 collapse fails."
+    },
+    "reasoning.fast.wall_ms_median": {
+      "value": 7547.0,
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "gate": "fail",
+      "compare": "relative",
+      "warn_pct": 20.0,
+      "fail_pct": 40.0,
+      "note": "Fast-path chat turn latency — the number users feel. Wide band: GPU-shared wall-clock is ~±25% noisy, so this catches a latency cliff, not drift (drift → the trend history)."
+    },
+    "reasoning.think.completion_tokens_median": {
+      "value": 1494.5,
+      "unit": "tok",
+      "direction": "lower_is_better",
+      "gate": "fail",
+      "compare": "relative",
+      "warn_pct": 15.0,
+      "fail_pct": 30.0,
+      "note": "Planning-tier token cost. Tokens are much steadier than wall-clock, so a 30% jump means the tier genuinely got heavier, not noise."
+    },
+    "reasoning.think.success_rate": {
+      "value": 1.0,
+      "unit": "rate",
+      "direction": "higher_is_better",
+      "gate": "fail",
+      "compare": "absolute",
+      "warn_delta": 0.01,
+      "fail_delta": 0.1,
+      "note": "Planning-tier success — the S6 regression class. Must not drop below the fast control by construction."
+    },
+    "reasoning.think.wall_ms_median": {
+      "value": 30933.0,
+      "unit": "ms",
+      "direction": "lower_is_better",
+      "gate": "warn",
+      "compare": "relative",
+      "warn_pct": 25.0,
+      "fail_pct": 50.0,
+      "note": "Planning-tier wall-clock. WARN-only: the noisiest metric we have; token-cost is the sharp cost gate instead."
+    }
+  }
+}

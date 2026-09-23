@@ -139,12 +139,7 @@ impl TunnelManager {
             .start_tunnel(params)
             .map_err(|e| anyhow!("start_tunnel failed: {e:#}"))?;
 
-        let tunnel_ip = req
-            .tunnel_addr
-            .split('/')
-            .next()
-            .unwrap_or("")
-            .to_string();
+        let tunnel_ip = req.tunnel_addr.split('/').next().unwrap_or("").to_string();
 
         let stats_ref = session
             .inner
@@ -197,8 +192,8 @@ impl TunnelManager {
 
         let private_key = decode_key(&cfg.link_private_key)?
             .ok_or_else(|| anyhow!("link_private_key not configured (run vpn.keygen first)"))?;
-        let peer_public = decode_key(&req.peer_public_key)?
-            .ok_or_else(|| anyhow!("peer_public_key required"))?;
+        let peer_public =
+            decode_key(&req.peer_public_key)?.ok_or_else(|| anyhow!("peer_public_key required"))?;
         if req.endpoint.trim().is_empty() {
             return Err(anyhow!("endpoint required"));
         }
@@ -307,7 +302,10 @@ impl TunnelManager {
     pub fn link_active_handshake(&self) -> Option<(String, Option<f64>)> {
         let state = self.state.lock();
         let active = state.link.as_ref()?;
-        let age = active.stats_ref.as_ref().and_then(|s| s.snapshot().last_rx_age_s);
+        let age = active
+            .stats_ref
+            .as_ref()
+            .and_then(|s| s.snapshot().last_rx_age_s);
         Some((active.peer_pubkey.clone(), age))
     }
 
@@ -411,8 +409,8 @@ pub fn public_from_private(b64: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tunnel::backend::{Op, StubBackend};
     use super::*;
+    use crate::tunnel::backend::{Op, StubBackend};
 
     fn fresh_manager() -> (TunnelManager, Arc<StubBackend>) {
         let backend = Arc::new(StubBackend::new());
@@ -423,7 +421,10 @@ mod tests {
     fn fake_keypair() -> (String, String) {
         let secret = StaticSecret::random_from_rng(rand_core::OsRng);
         let public = PublicKey::from(&secret);
-        (base64_encode(&secret.to_bytes()), base64_encode(public.as_bytes()))
+        (
+            base64_encode(&secret.to_bytes()),
+            base64_encode(public.as_bytes()),
+        )
     }
 
     fn fake_request() -> EnableRequest {
