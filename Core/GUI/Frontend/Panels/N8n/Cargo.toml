@@ -1,0 +1,36 @@
+[package]
+name = "wylde-panel-n8n"
+description = "Wylde Workflows panel — the embedded n8n editor.  A gpui header (engine status, Reload, Open in browser) over a content region the Shell hosts the n8n editor in, through the wry-free `embed_bus` seam, so this crate never links a WebView."
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Shared theme tokens — every panel imports the same palette.
+wylde-theme = { path = "../../Theme" }
+
+# Pipe surface — `n8n.health` on the `wylde-n8n` pipe, the `embed_bus`
+# seam the Shell hosts the editor through, and the `open_url` seam.
+wylde-gui-pipe = { path = "../../Pipe" }
+
+# The one constructor every interactive control routes through (#247).
+wylde-gui-controls = { path = "../../Controls" }
+
+gpui.workspace = true
+
+serde_json.workspace = true
+
+# ── DEV-ONLY (windowed gpui tests) ───────────────────────────────────
+# dev-dependencies only, so resolver = "2" never unifies `test-support`
+# into the shipped Shell's normal lib (see docs/gui-testing.md).
+[dev-dependencies]
+wylde-gui-test-support = { path = "../../test-support" }
+gpui = { workspace = true, features = ["test-support"] }
+wylde-gui-pipe = { path = "../../Pipe", features = ["test-support"] }
+wylde-gui-controls = { path = "../../Controls", features = ["test-support"] }
+serde_json.workspace = true

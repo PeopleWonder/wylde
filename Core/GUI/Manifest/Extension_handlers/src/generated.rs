@@ -169,6 +169,10 @@ pub fn register_all(
 
     // ── core / n8n  (from Core/GUI/Frontend/Panels/N8n/manifest.json) ──
     {
+        let factory_key = "wylde_panel_n8n::N8nPanel::view";
+        let factory = factories
+            .take(factory_key)
+            .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
         registry.register_internal(RegistryRow {
             origin: PanelOrigin::FirstParty {
                 service: "core".into(),
@@ -180,14 +184,11 @@ pub fn register_all(
                 order: 55,
                 version: "0.1.0".into(),
                 required_services: vec!["wylde-n8n".into()],
-                source: PanelSource::Iframe {
-                    url: "http://127.0.0.1:5678".into(),
-                    sandbox: None,
-                    health_check: None,
-                    auth_bootstrap: Some("wylde-n8n:n8n.editor_bootstrap".into()),
+                source: PanelSource::GpuiView {
+                    factory: factory_key.into(),
                 },
             },
-            factory: None,
+            factory: Some(factory),
         })?;
     }
 

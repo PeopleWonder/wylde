@@ -9180,6 +9180,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "wylde-panel-n8n"
+version = "0.2.0-beta.1"
+dependencies = [
+ "gpui",
+ "serde_json",
+ "wylde-gui-controls",
+ "wylde-gui-pipe",
+ "wylde-gui-test-support",
+ "wylde-theme",
+]
+
+[[package]]
 name = "wylde-panel-registry"
 version = "0.2.0-beta.1"
 dependencies = [
@@ -9192,6 +9204,7 @@ dependencies = [
  "wylde-panel-devices",
  "wylde-panel-memory",
  "wylde-panel-models",
+ "wylde-panel-n8n",
  "wylde-panel-remote-access",
  "wylde-panel-settings",
  "wylde-panel-tools",

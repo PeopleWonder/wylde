@@ -445,14 +445,14 @@ DEPENDENCY_SPREAD_BASELINE: Dict[str, int] = {
     "base64": 3,
     "chrono": 12,
     "futures": 4,
-    "gpui": 20,
+    "gpui": 21,  # raised for #338: the wry-free Workflows (n8n) panel crate
     "hex": 3,
     "qrcode": 3,
     "reqwest": 12,  # watch target — biggest 0.x shotgun risk; wrap on first break
     "rfd": 3,
     "rmp-serde": 5,
     "serde": 38,
-    "serde_json": 41,
+    "serde_json": 42,  # raised for #338: the wry-free Workflows (n8n) panel crate
     "serde_yaml": 4,
     "serial_test": 9,
     "sha2": 3,

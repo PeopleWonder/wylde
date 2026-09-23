@@ -7,6 +7,7 @@
 //! testable lives in the modules below.
 
 pub mod assets;
+pub mod embed_host;
 pub mod shell_root;
 pub mod shutdown;
 pub mod tray;

@@ -700,7 +700,10 @@ mod tests {
             .iter()
             .find(|s| s.name == "wylde-n8n-engine")
             .expect("the n8n engine stays on the strip via the carve-out");
-        assert!(engine.manageable, "the n8n engine is daemon-managed → offers Stop");
+        assert!(
+            engine.manageable,
+            "the n8n engine is daemon-managed → offers Stop"
+        );
     }
 
     #[test]

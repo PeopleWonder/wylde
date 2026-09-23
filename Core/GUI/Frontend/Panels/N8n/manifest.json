@@ -10,9 +10,8 @@
       "version": "0.1.0",
       "required_services": ["wylde-n8n"],
       "source": {
-        "kind": "iframe",
-        "url": "http://127.0.0.1:5678",
-        "auth_bootstrap": "wylde-n8n:n8n.editor_bootstrap"
+        "kind": "gpui_view",
+        "factory": "wylde_panel_n8n::N8nPanel::view"
       }
     }
   ]
