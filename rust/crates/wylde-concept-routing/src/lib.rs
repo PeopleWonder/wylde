@@ -46,10 +46,10 @@ pub mod relations;
 pub mod router;
 
 pub use config::{InjectionMode, RelationParams, RoutingConfig};
-pub use lens_select::region_for_active_file;
 pub use curation::{
     apply_curation, CuratedMenu, InjectionPlan, MenuAnnotation, MenuItem, MenuItemKind,
 };
+pub use lens_select::region_for_active_file;
 pub use relations::{NodeRef, Relation, RelationGraph, RelationKind};
 pub use router::spread::{spread, Provenance, SpreadResult};
 pub use router::{route, CandidateSet, ConceptCentroid, RoutedConcept, VocabMatch};

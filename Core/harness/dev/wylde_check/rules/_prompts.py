@@ -41,6 +41,16 @@ _pkg = _sys.modules[__name__.rsplit(".", 2)[0]]
 PROMPT_LITERAL_ALLOWLIST = frozenset(
     {
         "rust/crates/wylde-ext-study/src/tools.rs",
+        # Agentic reasoning tier (ships `enabled: false`, opt-in experiment).
+        # The L1 planner prompt (inputs.rs) and L2 result-checker prompt
+        # (surprise.rs) are the tier's two system prompts. Grandfathered when
+        # wylde_check became a CI gate (#114): the tier's prompts stabilise
+        # behind the feature flag and migrate to prompts/catalog.json in a
+        # dedicated reasoning-prompts slice (they CAN — unlike ext-study — so
+        # this is queued debt, not a permanent carve-out). MAINTAINER: if you
+        # want them in the catalog now, that migration replaces these entries.
+        "rust/crates/wylde-harness/src/turn/reasoning/inputs.rs",
+        "rust/crates/wylde-harness/src/turn/reasoning/surprise.rs",
     }
 )
 

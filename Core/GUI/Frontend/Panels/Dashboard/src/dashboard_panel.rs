@@ -3,9 +3,9 @@
 //! Layout (top → bottom):
 //!
 //!   * Header — title + last-refreshed indicator + manual Refresh.
-//!   * Service-health strip — one dot per service in
-//!     `MONITORED_SERVICES`.  Click → request_nav("core/tools") so the
-//!     Tools panel can show details.
+//!   * Service-health strip — one dot per service the strip covers
+//!     (derived from the stack roster, see `ipc::strip_services`).  Click
+//!     → request_nav("core/tools") so the Tools panel can show details.
 //!   * Hardware card — CPU, RAM, GPU(s), NPU, disk free.  Degrades to
 //!     "broker offline — last known: …" rather than disappearing.
 //!   * Active model card — first row of `ollama.list_loaded`.  Empty
@@ -21,9 +21,10 @@
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, FontWeight,
-    IntoElement, Render, SharedString, Stateful, Window,
+    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, FontWeight, IntoElement,
+    Render, SharedString, Stateful, Window,
 };
+use wylde_gui_controls::control;
 use wylde_theme::colors::{
     BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_LIGHT, SURFACE_800, SURFACE_900, TEXT_MUTED,
     TEXT_PRIMARY, TEXT_SECONDARY,
@@ -31,8 +32,8 @@ use wylde_theme::colors::{
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
 use crate::ipc::{
-    probe_service, read_hardware_card, read_loaded_models, read_recent_memories, HardwareCard,
-    HealthStatus, LoadedModel, RecentMemory, ServiceHealth, MONITORED_SERVICES,
+    probe_service, read_hardware_card, read_loaded_models, read_recent_memories, strip_services,
+    HardwareCard, HealthStatus, LoadedModel, RecentMemory, ServiceHealth,
 };
 
 /// Polling interval for the auto-refresh loop.  Matches the Svelte
@@ -46,8 +47,19 @@ const RECENT_LIMIT: usize = 5;
 /// Body preview length for a recent-memory row.
 const RECENT_PREVIEW_CHARS: usize = 96;
 
+/// One row of the service-health strip: the service, whether the console may
+/// offer it a Stop (its stack *role*, resolved once at strip-derivation time —
+/// see [`crate::ipc::StripService`] — never a name literal at render time), and
+/// its last probed health.
+#[derive(Debug, Clone)]
+pub struct ServiceRow {
+    pub name: String,
+    pub manageable: bool,
+    pub health: ServiceHealth,
+}
+
 pub struct DashboardPanel {
-    pub service_health: Vec<(String, ServiceHealth)>,
+    pub service_health: Vec<ServiceRow>,
     pub hardware: HardwareCard,
     /// `true` once we've successfully read the broker.  Lets the
     /// hardware card flip from "(loading…)" to "last known: …" if a
@@ -62,9 +74,13 @@ pub struct DashboardPanel {
 
 impl DashboardPanel {
     pub fn new() -> Self {
-        let service_health = MONITORED_SERVICES
-            .iter()
-            .map(|s| ((*s).to_owned(), ServiceHealth::plain(HealthStatus::Unknown)))
+        let service_health = strip_services()
+            .into_iter()
+            .map(|s| ServiceRow {
+                name: s.name,
+                manageable: s.manageable,
+                health: ServiceHealth::plain(HealthStatus::Unknown),
+            })
             .collect();
         Self {
             service_health,
@@ -121,10 +137,17 @@ impl DashboardPanel {
         });
 
         let health_fut = async {
-            let mut out: Vec<(String, ServiceHealth)> = Vec::new();
-            for svc in MONITORED_SERVICES {
-                let health = probe_service(svc).await;
-                out.push(((*svc).to_owned(), health));
+            // Re-derive membership every cycle so a service dropped into the
+            // `Services/` bucket at runtime picks up a chip without a restart —
+            // the same live-discovery property the daemon and updater have.
+            let mut out: Vec<ServiceRow> = Vec::new();
+            for svc in strip_services() {
+                let health = probe_service(&svc.name).await;
+                out.push(ServiceRow {
+                    name: svc.name,
+                    manageable: svc.manageable,
+                    health,
+                });
             }
             out
         };
@@ -165,6 +188,35 @@ impl DashboardPanel {
     pub fn spawn_manual_refresh(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             Self::refresh_once(this.clone(), app_cx).await;
+        })
+        .detach();
+    }
+
+    /// Stop a running service from the console — the deliberate operator action
+    /// (decision 7: start/restart/stop from anywhere in the GUI). Drives the
+    /// shared `service.stop` helper, then re-probes *just that service* so its
+    /// chip flips to the stopped (red) state without waiting for the next 5 s
+    /// refresh tick.
+    ///
+    /// There is deliberately **no error banner**: the Dashboard degrades
+    /// per-card by design (it has no panel-level `error` field), so the outcome
+    /// is read from the re-probe, not a wall of text. A stop that fails leaves
+    /// the service running and the re-probe shows it still green — the honest
+    /// signal, and the same "reflect reality" contract the auto-refresh loop
+    /// already keeps. `wylde-lifecycle` is never offered a Stop button (see
+    /// [`offers_stop`]), so this can't be asked to stop the daemon serving it.
+    pub fn spawn_stop_service(&mut self, name: String, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, app_cx: &mut AsyncApp| {
+            // Fire the stop. The outcome surfaces through the re-probe below,
+            // not a banner — see the doc comment.
+            let _ = wylde_gui_pipe::stop_service(&name).await;
+            let health = probe_service(&name).await;
+            let _ = this.update(app_cx, |panel, cx| {
+                if let Some(entry) = panel.service_health.iter_mut().find(|r| r.name == name) {
+                    entry.health = health;
+                }
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -275,9 +327,7 @@ fn header_row(panel: &DashboardPanel, cx: &mut Context<DashboardPanel>) -> gpui:
 }
 
 fn refresh_button(cx: &mut Context<DashboardPanel>) -> Stateful<gpui::Div> {
-    let id: ElementId = ElementId::Name("dashboard-refresh".into());
-    div()
-        .id(id)
+    control(div(), "dashboard-refresh")
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -307,8 +357,8 @@ fn section_title(label: &str) -> gpui::Div {
 
 fn service_health_strip(panel: &DashboardPanel, cx: &mut Context<DashboardPanel>) -> gpui::Div {
     let mut row = div().flex().flex_row().flex_wrap().gap_2();
-    for (name, health) in &panel.service_health {
-        row = row.child(service_chip(name, health, cx));
+    for svc in &panel.service_health {
+        row = row.child(service_chip(svc, cx));
     }
     div()
         .bg(rgb(pack(SURFACE_800)))
@@ -319,16 +369,27 @@ fn service_health_strip(panel: &DashboardPanel, cx: &mut Context<DashboardPanel>
         .child(row)
 }
 
-fn service_chip(
-    name: &str,
-    health: &ServiceHealth,
-    cx: &mut Context<DashboardPanel>,
-) -> Stateful<gpui::Div> {
+/// Whether a service's chip offers a one-click Stop (decision 7, console side).
+///
+/// Two conditions, both about not painting a dead button:
+///   * the service must actually be *running* — `Healthy` or `Degraded`. A
+///     `Unhealthy`/`Unknown` service has nothing to stop.
+///   * its *role* must be manageable. This is decided once, at strip
+///     derivation, from the stack roster's [`wylde_stack::roster::Tier`] (a
+///     [`Tier::Service`] is managed; the [`Tier::Daemon`] `wylde-lifecycle` is
+///     not — it serves the `service.stop` request and isn't in its own
+///     manageable set, so a stop there is an idempotent backend no-op). No name
+///     literal: a renamed or newly-added daemon carries its role automatically.
+fn offers_stop(manageable: bool, status: HealthStatus) -> bool {
+    manageable && matches!(status, HealthStatus::Healthy | HealthStatus::Degraded)
+}
+
+fn service_chip(svc: &ServiceRow, cx: &mut Context<DashboardPanel>) -> Stateful<gpui::Div> {
+    let name = svc.name.as_str();
+    let health = &svc.health;
     let label = SharedString::from(short_service_name(name));
     let colour = status_colour(health.status);
-    let id: ElementId = ElementId::Name(format!("dashboard-svc::{name}").into());
-    let mut chip = div()
-        .id(id)
+    let mut chip = control(div(), format!("dashboard-svc::{name}"))
         .px_2()
         .py_1()
         .rounded(px(999.0))
@@ -363,6 +424,32 @@ fn service_chip(
                 .text_color(rgb(pack(TEXT_PRIMARY)))
                 .child(label),
         );
+    // One-click Stop for a running service (decision 7). Nested inside the
+    // chip, so it needs `stop_propagation` in its handler — otherwise the
+    // chip's own click (navigate to Tools) would also fire. Only rendered
+    // where a stop is a live action (see `offers_stop`).
+    if offers_stop(svc.manageable, health.status) {
+        let service = name.to_owned();
+        chip = chip.child(
+            control(div(), format!("dashboard-stop::{name}"))
+                .px_1()
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(rgb(pack(BORDER_SUBTLE)))
+                .cursor_pointer()
+                .font_family(FAMILY_INTER)
+                .text_size(px(size::XS))
+                .text_color(rgb(pack(TEXT_MUTED)))
+                .child(SharedString::from("Stop"))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this: &mut DashboardPanel, _ev, _w, cx| {
+                        cx.stop_propagation();
+                        this.spawn_stop_service(service.clone(), cx);
+                    }),
+                ),
+        );
+    }
     // Degraded (and any future detail-bearing) tile gets a hover tooltip
     // explaining the specific degradation — "Ollama daemon unreachable…"
     // or "Slow response (>2s)".
@@ -538,9 +625,7 @@ fn recent_row(r: &RecentMemory, cx: &mut Context<DashboardPanel>) -> Stateful<gp
         },
         recency_label(r.last_used_at, r.created_at),
     ));
-    let id: ElementId = ElementId::Name(format!("dashboard-recent::{}", r.id).into());
-    div()
-        .id(id)
+    control(div(), format!("dashboard-recent::{}", r.id))
         .border_b_1()
         .border_color(rgb(pack(BORDER_SUBTLE)))
         .pb_2()
@@ -603,10 +688,7 @@ fn placeholder_card_clickable(
     nav_key: &'static str,
     cx: &mut Context<DashboardPanel>,
 ) -> gpui::Div {
-    let body = div()
-        .id(ElementId::Name(
-            format!("dashboard-empty::{nav_key}").into(),
-        ))
+    let body = control(div(), format!("dashboard-empty::{nav_key}"))
         .cursor_pointer()
         .font_family(FAMILY_INTER)
         .text_size(px(size::XS))
@@ -757,10 +839,20 @@ mod tests {
     #[test]
     fn new_with_defaults_marks_every_service_unknown() {
         let p = DashboardPanel::new();
-        assert_eq!(p.service_health.len(), MONITORED_SERVICES.len());
-        for (_, health) in &p.service_health {
-            assert_eq!(health.status, HealthStatus::Unknown);
-            assert!(health.detail.is_none());
+        // #123: the strip is derived from the roster, so its membership is the
+        // roster's — asserted against `strip_services()` rather than the old
+        // `service_health.len() == MONITORED_SERVICES.len()`, which compared the
+        // list to itself and was vacuously true for any content.
+        let expected = crate::ipc::strip_services();
+        assert_eq!(p.service_health.len(), expected.len());
+        assert!(!expected.is_empty(), "the roster is never empty");
+        let names: Vec<&str> = p.service_health.iter().map(|r| r.name.as_str()).collect();
+        for svc in &expected {
+            assert!(names.contains(&svc.name.as_str()), "missing {}", svc.name);
+        }
+        for row in &p.service_health {
+            assert_eq!(row.health.status, HealthStatus::Unknown);
+            assert!(row.health.detail.is_none());
         }
         assert!(!p.initial_load_done);
         assert!(p.recent_memories.is_empty());
@@ -792,6 +884,20 @@ mod tests {
     fn short_service_name_drops_wylde_prefix() {
         assert_eq!(short_service_name("wylde-harness"), "harness");
         assert_eq!(short_service_name("standalone"), "standalone");
+    }
+
+    #[test]
+    fn offers_stop_only_for_running_manageable_services() {
+        // A running, role-manageable service: Stop is a live action.
+        assert!(offers_stop(true, HealthStatus::Healthy));
+        assert!(offers_stop(true, HealthStatus::Degraded));
+        // Nothing to stop when it isn't up.
+        assert!(!offers_stop(true, HealthStatus::Unhealthy));
+        assert!(!offers_stop(true, HealthStatus::Unknown));
+        // Not manageable (the daemon itself, or the GUI shell) — a backend
+        // no-op, so the button would do nothing even when healthy. The role
+        // decides, not the name.
+        assert!(!offers_stop(false, HealthStatus::Healthy));
     }
 
     #[test]

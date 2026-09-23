@@ -79,7 +79,9 @@ fn resolve_snapshot(repo_cache: &std::path::Path) -> Option<PathBuf> {
 /// doesn't blow up the whole probe.
 fn dir_size_bytes(dir: &std::path::Path) -> u64 {
     let mut total: u64 = 0;
-    let Ok(read) = std::fs::read_dir(dir) else { return 0 };
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return 0;
+    };
     for entry in read.flatten() {
         let p = entry.path();
         let Ok(meta) = entry.metadata() else { continue };
@@ -110,7 +112,15 @@ fn probe_repo(repo_id: &str) -> Value {
     let ov_export_present = ov_export_dir.join("openvino_encoder_model.xml").exists();
     let ov_npu_dir = ov_export_dir
         .parent()
-        .map(|p| p.join(format!("{}-npu", ov_export_dir.file_name().unwrap_or_default().to_string_lossy())))
+        .map(|p| {
+            p.join(format!(
+                "{}-npu",
+                ov_export_dir
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ))
+        })
         .unwrap_or_else(|| ov_export_dir.with_extension("npu"));
     let ov_npu_present = ov_npu_dir.join("openvino_encoder_model.xml").exists();
 
@@ -199,7 +209,10 @@ pub async fn handle_download_status(payload: Value) -> Reply {
             "done": done,
             "total": total,
         })),
-        Some(EnsureStatus::Done { whisper_dir, kokoro_dir }) => Reply::ok(json!({
+        Some(EnsureStatus::Done {
+            whisper_dir,
+            kokoro_dir,
+        }) => Reply::ok(json!({
             "job_id": job_id,
             "state": "done",
             "whisper_dir": whisper_dir.display().to_string(),

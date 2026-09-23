@@ -217,6 +217,9 @@ mod tests {
 
     #[test]
     fn public_v6_allowed() {
-        assert_eq!(validate_external_url("http://[2606:4700:4700::1111]/"), None);
+        assert_eq!(
+            validate_external_url("http://[2606:4700:4700::1111]/"),
+            None
+        );
     }
 }

@@ -1,0 +1,139 @@
+# Roadmap lifecycle dates — keep the "Wylde Roadmap" timeline honest.
+#
+# The Roadmap view (projects/1, View 2) draws bars from two DATE fields. It
+# CANNOT use the built-in Created/Closed system fields — verified 2026-07-16 by
+# opening the view's own date-field picker: it offers only user-created DATE
+# fields, never Created/Updated/Closed. So the dates have to be mirrored onto
+# real fields, which is what this workflow does.
+#
+# The model is DESCRIPTIVE, not predictive: a bar starts when the issue actually
+# opened and ends when it actually closed. Nothing here invents a date. An issue
+# that is still open simply has no Target date, and that is not a problem — an
+# item with a start date and an EMPTY target still renders on the roadmap (also
+# verified live). That is why there is no scheduled job here: nothing needs a
+# rolling "today" to keep open bars from vanishing.
+#
+# NON-DESTRUCTIVE BY DESIGN. Both writes are "only if the field is empty", so a
+# date set by hand is never overwritten. That matters because Target date is
+# meant to stay usable as a *planned* end date later — the maintainer keeps that
+# option, and this workflow must not fight it.
+#
+# Known wart, deliberately left: `reopened` does NOT clear a Target date. It
+# can't distinguish a machine-written date from a hand-set one, and silently
+# deleting the maintainer's date is worse than a bar that ends early on a
+# reopened issue. Clear it by hand if it ever matters (reopens are rare).
+name: Roadmap dates
+
+on:
+  issues:
+    types: [opened, closed]
+
+# Least privilege: this only ever touches the Project, never repo contents.
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: mirror issue lifecycle onto the roadmap date fields
+    runs-on: ubuntu-latest
+    # PROJECT_TOKEN is a classic PAT with the `project` scope. The default
+    # GITHUB_TOKEN cannot write a USER-owned Project (v2) — no amount of
+    # `permissions:` here grants that, because the project isn't owned by this
+    # repo. Without the secret the job is skipped rather than failing every
+    # issue event with a red X for a cosmetic view.
+    if: ${{ github.repository_owner == 'PeopleWonder' }}
+    steps:
+      - name: Sync Start/Target date
+        env:
+          GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          NUMBER: ${{ github.event.issue.number }}
+          ACTION: ${{ github.event.action }}
+          CREATED: ${{ github.event.issue.created_at }}
+          CLOSED: ${{ github.event.issue.closed_at }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::notice::PROJECT_TOKEN not set — skipping roadmap date sync."
+            exit 0
+          fi
+
+          OWNER=PeopleWonder
+          PROJECT=1
+
+          # Resolve the project + field ids by NAME, not hardcoded ids: a field
+          # deleted and recreated gets a new id, and a stale id would fail on
+          # every issue forever.
+          META=$(gh api graphql -f query='
+            query($owner:String!,$num:Int!){
+              user(login:$owner){ projectV2(number:$num){
+                id
+                fields(first:50){ nodes { ... on ProjectV2Field { id name dataType } } }
+              } }
+            }' -f owner="$OWNER" -F num="$PROJECT" --jq '
+              .data.user.projectV2 as $p
+              | [ $p.id,
+                  ([$p.fields.nodes[] | select(.name=="Start date"  and .dataType=="DATE") | .id][0] // "-"),
+                  ([$p.fields.nodes[] | select(.name=="Target date" and .dataType=="DATE") | .id][0] // "-")
+                ] | @tsv')
+          PID=$(printf '%s' "$META" | cut -f1)
+          SF=$(printf '%s' "$META" | cut -f2)
+          TF=$(printf '%s' "$META" | cut -f3)
+
+          if [ "$SF" = "-" ] || [ "$TF" = "-" ]; then
+            echo "::warning::Start date / Target date DATE field missing on the project — nothing to sync."
+            exit 0
+          fi
+
+          # Find this issue's project item. Not on the board → nothing to do.
+          ITEM=$(gh api graphql -f query='
+            query($owner:String!,$repo:String!,$num:Int!){
+              repository(owner:$owner,name:$repo){ issue(number:$num){
+                projectItems(first:10){ nodes {
+                  id
+                  project { number owner { ... on User { login } } }
+                  sd: fieldValueByName(name:"Start date"){ ... on ProjectV2ItemFieldDateValue { date } }
+                  td: fieldValueByName(name:"Target date"){ ... on ProjectV2ItemFieldDateValue { date } }
+                } }
+              } }
+            }' -f owner="$OWNER" -f repo=wylde -F num="$NUMBER" --jq \
+            ".data.repository.issue.projectItems.nodes[]
+             | select(.project.number==$PROJECT and .project.owner.login==\"$OWNER\")
+             | [.id, (.sd.date // \"-\"), (.td.date // \"-\")] | @tsv" | head -n1)
+
+          if [ -z "$ITEM" ]; then
+            echo "::notice::#$NUMBER is not on the Wylde Roadmap board — skipping."
+            exit 0
+          fi
+          IID=$(printf '%s' "$ITEM" | cut -f1)
+          HAS_START=$(printf '%s' "$ITEM" | cut -f2)
+          HAS_TARGET=$(printf '%s' "$ITEM" | cut -f3)
+
+          set_date() {  # $1 = field id, $2 = YYYY-MM-DD
+            gh api graphql -f query='
+              mutation($p:ID!,$i:ID!,$f:ID!,$d:Date!){
+                updateProjectV2ItemFieldValue(input:{projectId:$p,itemId:$i,fieldId:$f,value:{date:$d}}){
+                  projectV2Item { id }
+                }
+              }' -f p="$PID" -f i="$IID" -f f="$1" -f d="$2" >/dev/null
+          }
+
+          # Only-if-empty on BOTH writes: never clobber a hand-set date.
+          if [ "$ACTION" = "opened" ] && [ "$HAS_START" = "-" ]; then
+            set_date "$SF" "${CREATED:0:10}"
+            echo "#$NUMBER start=${CREATED:0:10}"
+          fi
+
+          if [ "$ACTION" = "closed" ]; then
+            # Backstop: an issue that was on the board before this workflow
+            # existed may have no start date. Fill it from the real created_at.
+            if [ "$HAS_START" = "-" ]; then
+              set_date "$SF" "${CREATED:0:10}"
+              echo "#$NUMBER start=${CREATED:0:10} (backfilled on close)"
+            fi
+            if [ "$HAS_TARGET" = "-" ] && [ -n "${CLOSED:-}" ]; then
+              set_date "$TF" "${CLOSED:0:10}"
+              echo "#$NUMBER target=${CLOSED:0:10}"
+            else
+              echo "#$NUMBER target left alone (already set, or no closed_at)"
+            fi
+          fi

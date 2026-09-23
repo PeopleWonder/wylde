@@ -88,10 +88,16 @@ impl LayoutSnapshot {
             if s > e || (s == e && !covers_empty) {
                 continue;
             }
-            let Some(p1) = line.shaped.position_for_index(s - line_start, self.line_height) else {
+            let Some(p1) = line
+                .shaped
+                .position_for_index(s - line_start, self.line_height)
+            else {
                 continue;
             };
-            let Some(p2) = line.shaped.position_for_index(e - line_start, self.line_height) else {
+            let Some(p2) = line
+                .shaped
+                .position_for_index(e - line_start, self.line_height)
+            else {
                 continue;
             };
             let origin = self.line_origin(line.line_ix);

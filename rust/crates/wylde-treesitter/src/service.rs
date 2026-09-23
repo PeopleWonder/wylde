@@ -113,9 +113,7 @@ pub fn handle_highlight(payload: Value) -> Reply {
     };
     // Optional inline `source` — the live-editor path (IDE S4): highlight the
     // caller's in-memory buffer instead of reading `path` from disk.
-    let source = payload
-        .get("source")
-        .and_then(Value::as_str);
+    let source = payload.get("source").and_then(Value::as_str);
     match highlight::highlight(path, language, source) {
         Ok(v) => Reply::ok(v),
         Err(e) => Reply::err(e),
@@ -238,7 +236,7 @@ pub fn reset_for_tests() {
 mod tests {
     use super::*;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-    use wylde_shared::ipc::{dispatch_action, list_actions};
+    use wylde_shared::ipc::{assert_action_table_matches_registry, dispatch_action};
 
     async fn registry_guard() -> MutexGuard<'static, ()> {
         static LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
@@ -250,10 +248,9 @@ mod tests {
         let _g = registry_guard().await;
         reset_for_tests();
         install();
-        let actions = list_actions();
-        for n in ALL_ACTIONS {
-            assert!(actions.contains(&n.to_string()), "missing {n}");
-        }
+        // #130: both directions — every registered treesitter.* verb must also
+        // be listed in ALL_ACTIONS, not only the reverse.
+        assert_action_table_matches_registry(&["treesitter."], &ALL_ACTIONS);
         reset_for_tests();
     }
 

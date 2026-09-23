@@ -10,7 +10,7 @@
 //! concept first** (plan §6.3) until it fits, recording what was shed so the
 //! caller can warn.
 //!
-//! **Empty curated set ⇒ empty plan ⇒ nothing injected** (Aaron's lock: a
+//! **Empty curated set ⇒ empty plan ⇒ nothing injected** (the maintainer's lock: a
 //! curated-empty menu must inject nothing). An unknown id is simply ignored —
 //! a stale menu can never inject a concept the router didn't surface.
 

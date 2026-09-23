@@ -249,10 +249,7 @@ fn deny_excluded<'a>(components: impl Iterator<Item = &'a str>) -> bool {
 /// else the full path's components (the deny-list still finds an artifact name
 /// deep in an absolute path; only paths *above* root could yield a false name,
 /// which in practice they don't).
-fn rel_components<'a>(
-    path: &'a Path,
-    rel: Option<&'a Path>,
-) -> impl Iterator<Item = &'a str> {
+fn rel_components<'a>(path: &'a Path, rel: Option<&'a Path>) -> impl Iterator<Item = &'a str> {
     rel.unwrap_or(path).components().filter_map(|c| match c {
         Component::Normal(os) => os.to_str(),
         _ => None,

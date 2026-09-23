@@ -109,13 +109,14 @@ pub async fn try_grant(req: GrantRequest) -> GrantResult {
     // The grant logic below will compute the actual spillover split.
     let total_vram = registry().total();
     let total_dram = registry().total_dram();
-    let total_capacity = total_vram
-        .saturating_sub(cfg.safety_margin)
-        .saturating_add(if cfg.enable_spillover {
-            total_dram.saturating_sub(cfg.dram_safety_margin)
-        } else {
-            0
-        });
+    let total_capacity =
+        total_vram
+            .saturating_sub(cfg.safety_margin)
+            .saturating_add(if cfg.enable_spillover {
+                total_dram.saturating_sub(cfg.dram_safety_margin)
+            } else {
+                0
+            });
     if total_vram != 0 && nbytes > total_capacity {
         return err(
             "would_exceed_total",
@@ -149,15 +150,7 @@ pub async fn try_grant(req: GrantRequest) -> GrantResult {
     // Fast path: fits entirely in VRAM.
     if nbytes <= registry().free_for_grant() {
         let lease = grant_split(
-            &service,
-            &model,
-            nbytes,
-            0,
-            priority,
-            req.ttl,
-            req.pid,
-            &nonce,
-            estimated,
+            &service, &model, nbytes, 0, priority, req.ttl, req.pid, &nonce, estimated,
         );
         return GrantResult::Ok(json!({
             "ok": true,
@@ -175,14 +168,7 @@ pub async fn try_grant(req: GrantRequest) -> GrantResult {
         let want_dram = nbytes.saturating_sub(free_vram);
         if want_dram <= free_dram {
             let lease = grant_split(
-                &service,
-                &model,
-                free_vram,
-                want_dram,
-                priority,
-                req.ttl,
-                req.pid,
-                &nonce,
+                &service, &model, free_vram, want_dram, priority, req.ttl, req.pid, &nonce,
                 estimated,
             );
             let short = lease.lease_id.get(..8).unwrap_or(&lease.lease_id);

@@ -64,7 +64,11 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 fn raw_fuzzy(pattern: &Pattern, matcher: &mut Matcher, concept: &Concept) -> u32 {
     let mut buf = Vec::new();
     let mut best = 0u32;
-    for field in [concept.label.as_str(), concept.id.as_str(), concept.description.as_str()] {
+    for field in [
+        concept.label.as_str(),
+        concept.id.as_str(),
+        concept.description.as_str(),
+    ] {
         if field.is_empty() {
             continue;
         }
@@ -99,7 +103,12 @@ pub fn rank_pure(
                 semantic: 0.0,
             })
             .collect();
-        all.sort_by(|a, b| a.concept.label.cmp(&b.concept.label).then(a.concept.id.cmp(&b.concept.id)));
+        all.sort_by(|a, b| {
+            a.concept
+                .label
+                .cmp(&b.concept.label)
+                .then(a.concept.id.cmp(&b.concept.id))
+        });
         all.truncate(limit);
         return all;
     }

@@ -1,0 +1,4 @@
+# Shell scripts must keep LF line endings — a CRLF after `#!/usr/bin/env bash`
+# yields `bash\r: bad interpreter` on Linux (the security-audit runner) and can
+# break git-bash on the Windows runners. Force LF regardless of core.autocrlf.
+*.sh text eol=lf

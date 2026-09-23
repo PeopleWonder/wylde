@@ -149,8 +149,7 @@ pub fn pair(label: Option<String>, remote_ip: &str) -> Result<PairOutcome, Pairi
     let label = label.unwrap_or_else(|| "unnamed".to_string());
     let token = gen_token();
     let endpoint = cached_endpoint(cfg);
-    let server_pubkey =
-        public_from_private(&cfg.link_private_key).unwrap_or_default();
+    let server_pubkey = public_from_private(&cfg.link_private_key).unwrap_or_default();
     let uri = format!(
         "wylde://link/pair?token={token}&endpoint={endpoint}&server_pubkey={server_pubkey}&version=2"
     );

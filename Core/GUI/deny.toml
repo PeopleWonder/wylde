@@ -1,0 +1,129 @@
+# cargo-deny policy — Wylde GUI workspace (`Core/GUI/`).
+#
+# This workspace is deliberately separate from `rust/` (it pulls the heavy gpui
+# graphics graph via a pinned Zed git rev). It therefore has its own lockfile
+# and its own cargo-deny policy.
+#
+# Gate: CI runs `cargo deny check advisories` here on every PR and weekly. Every
+# `ignore` entry MUST carry a `reason` with (a) why it is not fixable now and
+# (b) a "Review by <date>". See `docs/security/dependency-hygiene-policy.md`.
+#
+# THE SHIPPED PRODUCT IS WINDOWS-ONLY (`wylde-gui.exe`). Several advisories below
+# are against crates that only compile on Linux (the GTK3 / X11 / D-Bus stack
+# that gpui + wry + tray-icon pull behind `cfg(target_os = "linux")`). Those are
+# genuinely not present in the shipped binary — verified with
+# `cargo tree -i <crate> --target x86_64-pc-windows-msvc` returning empty.
+
+# Scan BOTH the shipped Windows target and a Linux target. The product ships
+# Windows-only, but pinning both makes the gate deterministic regardless of the
+# CI runner OS AND lets cargo-deny see the Linux-only advisories (glib, quick-xml)
+# that Dependabot also reports — so the documented ignores below are actually
+# exercised rather than silently unused. The "not in the shipped binary" nuance
+# lives in each ignore's `reason`.
+[graph]
+targets = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+]
+
+[advisories]
+version = 2
+# `spin` is yanked deep in the transitive graph (ring/crypto); nothing to re-pin.
+yanked = "warn"
+# Only flag `unmaintained` for crates a workspace member depends on directly; the
+# large transitive GTK3 / font stack has no maintained replacement reachable
+# without an upstream (gpui/wry) move.
+unmaintained = "workspace"
+ignore = [
+    # --- glib: unsound iterator (GHSA-wrw7-89jp-8q8g). Dependabot alert #1. ---
+    # This advisory is `informational = "unsound"`. Under `[advisories] version = 2`
+    # cargo-deny does NOT fail the gate on informational advisories, so it reports
+    # `warning[advisory-not-detected]` for THIS ignore — that is EXPECTED, not a
+    # mistake and not a stale entry. The entry is kept deliberately: it is the
+    # recorded, reviewed acceptance of this advisory (see #30 / KI-3), and it still
+    # suppresses the finding should glib ever be reclassified to a hard
+    # vulnerability. Do NOT delete it as "unused".
+    { id = "RUSTSEC-2024-0429", reason = "glib 0.18.5 VariantStrIter unsoundness. Deep GTK3-binding transitive (glib <- gtk/gio/... <- libappindicator <- tray-icon, and <- webkit2gtk <- wry). The entire GTK3 stack is cfg(target_os=linux); `cargo tree -i glib --target x86_64-pc-windows-msvc` is EMPTY, so it is never compiled into the shipped Windows binary. Fix ships only in glib 0.20 (a full gtk-rs 0.18->0.20 migration), blocked by wry 0.54 / tray-icon 0.19 pinning the GTK3 bindings at ^0.18. Not deletable: wry (extension-iframe host) and tray-icon (system tray) are both LIVE gpui-era code, not dead Tauri deps. REVIEW TRIGGER: re-check when the gpui git rev (b3d93d44, see Core/GUI/Cargo.toml) bumps — that rev pin is what freezes the wry/tray-icon -> glib chain, so a deliberate rev bump is the real event that can clear this. The 2026-10-14 quarterly date is only a backstop. Review by 2026-10-14." },
+    # --- quick-xml: two DoS advisories, Linux-only provenance. ---
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic dup-attribute parse (DoS). Pulled only by xcb 0.30 (X11) and zbus_xml 0.39 (D-Bus) — both Linux-only gpui-platform deps; `cargo tree -i quick-xml --target x86_64-pc-windows-msvc` is EMPTY. Fix is quick-xml 0.41 (semver-major from 0.30), pinned by upstream xcb/zbus; not reachable via cargo update. Not in the shipped Windows binary. Review by 2026-10-14." },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml unbounded namespace-declaration allocation (DoS). Same Linux-only provenance (xcb/zbus_xml) and same upstream pin as RUSTSEC-2026-0194; not in the shipped Windows binary. Review by 2026-10-14." },
+    # NOTE — async-tar 0.5.1 (Dependabot alert #18, GHSA-35rm-7j9c-2f7m /
+    # CVE-2026-53600) is NOT listed here on purpose: RustSec has still NOT assigned
+    # it a RUSTSEC id (re-verified 2026-07-15 against a freshly-fetched advisory-db),
+    # so cargo-deny cannot see or ignore it — it sources the RustSec DB, and a raw
+    # GHSA/CVE id in this list would only produce `advisory-not-detected` noise.
+    # Dependabot (GHSA-sourced) is the gate for this one. Its full disposition —
+    # dormant (no untrusted-tar path reaches it; the self-updater is the separate,
+    # minisign-verified `wylde-updater`, not http_client), upstream-pinned via
+    # Zed's http_client behind the gpui rev, and unfixable by a rev bump alone
+    # because Zed `main` still pins async-tar 0.5.1 — is documented in
+    # docs/security/dependency-hygiene-policy.md and the dependabot triage doc.
+    # REVIEW TRIGGER: at the next gpui git-rev (b3d93d44) bump, re-check whether the
+    # new rev carries async-tar >= 0.6.1 AND whether RustSec has since ingested the
+    # advisory — if it has, add the RUSTSEC id here. Backstop date: 2026-10-14.
+]
+
+# ---------------------------------------------------------------------------
+# LICENSE COMPLIANCE — GPLv3 copyleft gate (GUI workspace).
+#
+# Policy is IDENTICAL to rust/deny.toml (see that file's header for the full
+# GPLv3-compatibility rationale) — kept in sync deliberately so one review
+# governs both workspaces. CI runs `cargo deny check licenses` here on every PR
+# (.github/workflows/license-check.yml) as a REQUIRED status check; anything not
+# allow-listed is denied by default.
+#
+# NOTE — "OpenSSL" was REMOVED from this list (it was previously allowed here but
+# not in rust/). The historical OpenSSL license carries an advertising-style
+# clause the FSF classifies as GPL-INCOMPATIBLE, and it is NOT present in this
+# tree (ring 0.17 resolves to Apache-2.0/MIT/ISC). Allowing it would be a silent
+# hole in a copyleft gate; if a future dep genuinely pulls OpenSSL-licensed code
+# the gate SHOULD flag it for a human decision. Do not re-add without review.
+#
+# DENIED by design: GPL-2.0-only, LGPL-2.0-only, CDDL, EPL, MS-PL/MS-RL,
+# SSPL-1.0, BUSL-1.1, CC-BY-NC-*, OpenSSL, and any proprietary/unlicensed crate.
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+confidence-threshold = 0.8
+unused-allowed-license = "allow"
+allow = [
+    # Permissive / public-domain — trivially GPLv3-compatible.
+    "0BSD", "BSD-1-Clause", "BSD-2-Clause", "BSD-3-Clause",
+    "MIT", "MIT-0", "ISC", "Zlib", "zlib-acknowledgement",
+    "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
+    "BSL-1.0", "bzip2-1.0.6",
+    "Unicode-3.0", "Unicode-DFS-2016",
+    "CC0-1.0", "Unlicense", "WTFPL", "CDLA-Permissive-2.0",
+    # Weak copyleft — GPLv3-compatible.
+    "MPL-2.0",
+    "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later",
+    # Strong copyleft — this project's own license and compatible upgrades.
+    "GPL-3.0-only", "GPL-3.0-or-later", "GPL-2.0-or-later",
+]
+
+# gpui_util and gpui_shared_string are internal gpui support crates from the
+# pinned zed-industries/zed git rev. They ship no `license` field in Cargo.toml
+# but each carries a LICENSE-APACHE file (they are Apache-2.0, like gpui itself).
+# Clarify so the gate reads them as Apache-2.0 instead of failing them as
+# unlicensed. The file hash re-validates on a gpui rev bump — if Zed relicenses
+# these, the clarify goes stale and the gate turns red for a deliberate re-review.
+[[licenses.clarify]]
+name = "gpui_util"
+expression = "Apache-2.0"
+license-files = [{ path = "LICENSE-APACHE", hash = 0x8a8d02f6 }]
+
+[[licenses.clarify]]
+name = "gpui_shared_string"
+expression = "Apache-2.0"
+license-files = [{ path = "LICENSE-APACHE", hash = 0x8a8d02f6 }]
+
+[bans]
+# gpui's graph carries many duplicate versions by design. Surface, don't fail.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "warn"
+# gpui / gpui_platform / http_client come from the zed-industries/zed git repo at
+# a pinned rev. That is intentional (see Core/GUI/Cargo.toml); allow it explicitly.
+unknown-git = "warn"
+allow-git = ["https://github.com/zed-industries/zed"]

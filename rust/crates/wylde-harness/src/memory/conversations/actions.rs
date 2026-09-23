@@ -252,10 +252,9 @@ mod tests {
         assert_eq!(got.data["workspace_id"], "ws-a");
 
         // Set then read back, isolated per workspace.
-        let set = handle_set_active_for_workspace(
-            json!({"workspace_id": "ws-a", "id": "thread-a"}),
-        )
-        .await;
+        let set =
+            handle_set_active_for_workspace(json!({"workspace_id": "ws-a", "id": "thread-a"}))
+                .await;
         assert!(set.ok);
         assert_eq!(set.data["id"], "thread-a");
         handle_set_active_for_workspace(json!({"workspace_id": "ws-b", "id": "thread-b"})).await;
@@ -264,7 +263,8 @@ mod tests {
         assert_eq!(a.data["id"], "thread-a", "B must not clobber A");
 
         // Empty id clears.
-        let cleared = handle_set_active_for_workspace(json!({"workspace_id": "ws-a", "id": ""})).await;
+        let cleared =
+            handle_set_active_for_workspace(json!({"workspace_id": "ws-a", "id": ""})).await;
         assert_eq!(cleared.data["id"], "");
         let a2 = handle_get_active_for_workspace(json!({"workspace_id": "ws-a"})).await;
         assert_eq!(a2.data["id"], "");
@@ -284,8 +284,14 @@ mod tests {
     #[tokio::test]
     async fn delete_by_workspace_sweeps_and_reports_count() {
         let _env = TestEnv::new();
-        seed("w1", json!({"id": "w1", "messages": [], "workspace_id": "ws-z"}));
-        seed("w2", json!({"id": "w2", "messages": [], "workspace_id": "ws-z"}));
+        seed(
+            "w1",
+            json!({"id": "w1", "messages": [], "workspace_id": "ws-z"}),
+        );
+        seed(
+            "w2",
+            json!({"id": "w2", "messages": [], "workspace_id": "ws-z"}),
+        );
         seed("keep", json!({"id": "keep", "messages": []}));
 
         let reply = handle_delete_by_workspace(json!({"workspace_id": "ws-z"})).await;
@@ -346,7 +352,10 @@ mod tests {
         let id = minted.data["id"].as_str().unwrap().to_owned();
         assert!(!id.is_empty());
         let before = handle_list(Value::Null).await;
-        assert_eq!(before.data["count"], 0, "an unbound mint writes no file yet");
+        assert_eq!(
+            before.data["count"], 0,
+            "an unbound mint writes no file yet"
+        );
 
         // 2. Bind — upserts the doc with the workspace_id.
         let bound = handle_set_workspace(json!({"id": id, "workspace_id": "ws-c5"})).await;

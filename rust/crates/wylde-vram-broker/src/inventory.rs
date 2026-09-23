@@ -549,7 +549,10 @@ mod tests {
     async fn sample_serialises_to_flat_json_object() {
         let _g = guard().await;
         let v = inventory_payload();
-        assert!(v.is_object(), "inventory payload must serialise to an object");
+        assert!(
+            v.is_object(),
+            "inventory payload must serialise to an object"
+        );
         // Phase-12.2 fields stay present; Phase-12.4 adds the three
         // arrays + legacy `npu` continues to mirror `npus[0]`.
         for key in [

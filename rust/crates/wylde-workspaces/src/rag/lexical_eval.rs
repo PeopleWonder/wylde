@@ -142,8 +142,10 @@ fn dense_ranked_files(chunks: &[EvalChunk], qv: &[f32], k: usize) -> Vec<String>
 
 /// Lexical arm: best BM25 per file from [`lexical::search_boosted`], top-k.
 fn lexical_ranked_files(ws: &str, chunks: &[EvalChunk], text: &str, k: usize) -> Vec<String> {
-    let id_to_path: HashMap<&str, &str> =
-        chunks.iter().map(|c| (c.id.as_str(), c.path.as_str())).collect();
+    let id_to_path: HashMap<&str, &str> = chunks
+        .iter()
+        .map(|c| (c.id.as_str(), c.path.as_str()))
+        .collect();
     let rows = lexical::search_boosted(ws, text, &[], LEXICAL_FETCH)
         .into_iter()
         .filter_map(|(id, s)| id_to_path.get(id.as_str()).map(|p| ((*p).to_owned(), s)))
@@ -168,14 +170,19 @@ fn fused_scores(
             .partial_cmp(&cosines[a])
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    let id_to_idx: HashMap<&str, usize> =
-        chunks.iter().enumerate().map(|(i, c)| (c.id.as_str(), i)).collect();
+    let id_to_idx: HashMap<&str, usize> = chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.id.as_str(), i))
+        .collect();
     let lex_hits: Vec<(usize, f64)> = lexical::search_boosted(ws, text, &[], LEXICAL_FETCH)
         .into_iter()
         .filter_map(|(id, s)| id_to_idx.get(id.as_str()).map(|&i| (i, s)))
         .collect();
     let fused = fuse::fuse(n, &dense_order, &lex_hits, cfg);
-    (0..n).map(|i| (fused[i].0, cosines[i], fused[i].1)).collect()
+    (0..n)
+        .map(|i| (fused[i].0, cosines[i], fused[i].1))
+        .collect()
 }
 
 /// Fused arm: best RRF score per file, descending, top-k.
@@ -284,11 +291,7 @@ pub fn run_eval(
 /// Mirror of `search.rs::dynamic_k_fused` (the production cutoff) over a sorted
 /// fused candidate list `(fused, cosine, lexical_opt)` — replicated here so the
 /// calibration measures the exact gate without the `IndexedChunk` coupling.
-fn fused_cutoff_count(
-    scored: &[(f64, f64, Option<f64>)],
-    k: usize,
-    cfg: &LexicalConfig,
-) -> usize {
+fn fused_cutoff_count(scored: &[(f64, f64, Option<f64>)], k: usize, cfg: &LexicalConfig) -> usize {
     if k == 0 || scored.is_empty() {
         return 0;
     }
@@ -350,14 +353,13 @@ pub fn calibrate_floor(
                     continue;
                 };
                 let mut scored = fused_scores(ws, chunks, qv, &case.query, &cfg);
-                scored.sort_by(|a, b| {
-                    b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
-                });
+                scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
                 let keep = fused_cutoff_count(&scored, k, &cfg);
                 match case.class {
                     LexClass::Lexical => {
                         // Injected iff a relevant file is within the kept prefix.
-                        let kept_files = fused_ranked_files(ws, chunks, qv, &case.query, keep, &cfg);
+                        let kept_files =
+                            fused_ranked_files(ws, chunks, qv, &case.query, keep, &cfg);
                         let hit = grade(&kept_files, &case.relevant_files).iter().any(|&b| b);
                         lex_inject.push(if keep > 0 && hit { 1.0 } else { 0.0 });
                     }
@@ -530,38 +532,86 @@ mod tests {
         // relevant files sit OFF that axis (low cosine).
         let chunks = vec![
             // semantic-A defining file: high cosine to the semA query.
-            EvalChunk { id: "sa".into(), path: "src/auth/login.rs".into(),
-                content: "authentication session login token flow".into(), vector: vec4(1.0, 0.0, 0.0, 0.0) },
+            EvalChunk {
+                id: "sa".into(),
+                path: "src/auth/login.rs".into(),
+                content: "authentication session login token flow".into(),
+                vector: vec4(1.0, 0.0, 0.0, 0.0),
+            },
             // semantic-B defining file.
-            EvalChunk { id: "sb".into(), path: "src/net/sync.rs".into(),
-                content: "synchronise replicate remote folder push".into(), vector: vec4(0.0, 1.0, 0.0, 0.0) },
+            EvalChunk {
+                id: "sb".into(),
+                path: "src/net/sync.rs".into(),
+                content: "synchronise replicate remote folder push".into(),
+                vector: vec4(0.0, 1.0, 0.0, 0.0),
+            },
             // lexical-class file 1: a rare constant, LOW cosine to every query.
-            EvalChunk { id: "lx1".into(), path: "src/rag/search.rs".into(),
-                content: "const ANCHOR_BOOST_CAP f64 0.30 ranking".into(), vector: vec4(0.1, 0.1, 1.0, 0.0) },
+            EvalChunk {
+                id: "lx1".into(),
+                path: "src/rag/search.rs".into(),
+                content: "const ANCHOR_BOOST_CAP f64 0.30 ranking".into(),
+                vector: vec4(0.1, 0.1, 1.0, 0.0),
+            },
             // lexical-class file 2: an error string, LOW cosine.
-            EvalChunk { id: "lx2".into(), path: "build/guard.rs".into(),
-                content: "fail loud os error 32 sharing violation linker".into(), vector: vec4(0.1, 0.1, 0.0, 1.0) },
+            EvalChunk {
+                id: "lx2".into(),
+                path: "build/guard.rs".into(),
+                content: "fail loud os error 32 sharing violation linker".into(),
+                vector: vec4(0.1, 0.1, 0.0, 1.0),
+            },
             // distractors that share the SEMANTIC topics (so dense fills its top-k
             // with on-axis files, burying the off-axis lexical files).
-            EvalChunk { id: "d1".into(), path: "src/auth/oauth.rs".into(),
-                content: "oauth provider authentication grant scope".into(), vector: vec4(0.92, 0.1, 0.0, 0.0) },
-            EvalChunk { id: "d2".into(), path: "src/auth/session.rs".into(),
-                content: "session cookie authentication store".into(), vector: vec4(0.88, 0.15, 0.0, 0.0) },
-            EvalChunk { id: "d3".into(), path: "src/net/ddns.rs".into(),
-                content: "dynamic dns update remote sync".into(), vector: vec4(0.1, 0.9, 0.0, 0.0) },
+            EvalChunk {
+                id: "d1".into(),
+                path: "src/auth/oauth.rs".into(),
+                content: "oauth provider authentication grant scope".into(),
+                vector: vec4(0.92, 0.1, 0.0, 0.0),
+            },
+            EvalChunk {
+                id: "d2".into(),
+                path: "src/auth/session.rs".into(),
+                content: "session cookie authentication store".into(),
+                vector: vec4(0.88, 0.15, 0.0, 0.0),
+            },
+            EvalChunk {
+                id: "d3".into(),
+                path: "src/net/ddns.rs".into(),
+                content: "dynamic dns update remote sync".into(),
+                vector: vec4(0.1, 0.9, 0.0, 0.0),
+            },
         ];
         let gold = vec![
-            LexGoldCase { id: "semA".into(), query: "how does authentication login work".into(),
-                relevant_files: vec!["src/auth/login.rs".into()], class: LexClass::Semantic },
-            LexGoldCase { id: "semB".into(), query: "how are folders synchronised".into(),
-                relevant_files: vec!["src/net/sync.rs".into()], class: LexClass::Semantic },
-            LexGoldCase { id: "lexA".into(), query: "ANCHOR_BOOST_CAP".into(),
-                relevant_files: vec!["src/rag/search.rs".into()], class: LexClass::Lexical },
-            LexGoldCase { id: "lexB".into(), query: "os error 32".into(),
-                relevant_files: vec!["build/guard.rs".into()], class: LexClass::Lexical },
+            LexGoldCase {
+                id: "semA".into(),
+                query: "how does authentication login work".into(),
+                relevant_files: vec!["src/auth/login.rs".into()],
+                class: LexClass::Semantic,
+            },
+            LexGoldCase {
+                id: "semB".into(),
+                query: "how are folders synchronised".into(),
+                relevant_files: vec!["src/net/sync.rs".into()],
+                class: LexClass::Semantic,
+            },
+            LexGoldCase {
+                id: "lexA".into(),
+                query: "ANCHOR_BOOST_CAP".into(),
+                relevant_files: vec!["src/rag/search.rs".into()],
+                class: LexClass::Lexical,
+            },
+            LexGoldCase {
+                id: "lexB".into(),
+                query: "os error 32".into(),
+                relevant_files: vec!["build/guard.rs".into()],
+                class: LexClass::Lexical,
+            },
             // Off-topic to BOTH arms (no shared token, query points at noise axis).
-            LexGoldCase { id: "off".into(), query: "zzqq absent nonsense xyzzy".into(),
-                relevant_files: vec![], class: LexClass::OffTopic },
+            LexGoldCase {
+                id: "off".into(),
+                query: "zzqq absent nonsense xyzzy".into(),
+                relevant_files: vec![],
+                class: LexClass::OffTopic,
+            },
         ];
         let mut qv = HashMap::new();
         // Semantic queries point straight along their topic axis (high cosine to
@@ -635,7 +685,10 @@ mod tests {
             dense_sem.recall
         );
 
-        eprintln!("\n{}", render_report_markdown(&report, "Mechanism proof (synthetic)"));
+        eprintln!(
+            "\n{}",
+            render_report_markdown(&report, "Mechanism proof (synthetic)")
+        );
     }
 
     #[test]
@@ -651,14 +704,22 @@ mod tests {
             &qv,
             3,
             &eval_cfg(),
-            &[(60.0, 1.0, 1.0), (60.0, 1.0, 2.0), (30.0, 1.0, 1.0), (10.0, 1.0, 1.0)],
+            &[
+                (60.0, 1.0, 1.0),
+                (60.0, 1.0, 2.0),
+                (30.0, 1.0, 1.0),
+                (10.0, 1.0, 1.0),
+            ],
         );
         assert_eq!(points.len(), 4);
         // Every parameterisation recovers SOME lexical recall (fusion engaged).
         assert!(points.iter().all(|p| p.lexical_recall > 0.0));
         // And none collapses the semantic guardrail to zero.
         assert!(points.iter().all(|p| p.semantic_recall > 0.0));
-        eprintln!("\n{}", render_sweep_markdown(&points, "RRF parameter sweep (synthetic)"));
+        eprintln!(
+            "\n{}",
+            render_sweep_markdown(&points, "RRF parameter sweep (synthetic)")
+        );
     }
 
     #[test]
@@ -672,7 +733,9 @@ mod tests {
         // The off-topic guard holds at EVERY floor (the on-topic gate, not the
         // relative floor, silences it).
         assert!(
-            points.iter().all(|p| (p.offtopic_silent_rate - 1.0).abs() < 1e-9),
+            points
+                .iter()
+                .all(|p| (p.offtopic_silent_rate - 1.0).abs() < 1e-9),
             "off-topic stays silent across the floor sweep"
         );
         // There EXISTS a floor that keeps the full lexical recall (the bypass
@@ -686,7 +749,10 @@ mod tests {
             chosen.is_finite(),
             "some floor keeps full lexical recall while silencing off-topic"
         );
-        eprintln!("\n{}", render_floor_markdown(&points, "Relative-floor calibration (synthetic)"));
+        eprintln!(
+            "\n{}",
+            render_floor_markdown(&points, "Relative-floor calibration (synthetic)")
+        );
         eprintln!("Chosen relative-floor cutoff (largest lossless): {chosen:.2}");
     }
 }

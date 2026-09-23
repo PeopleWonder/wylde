@@ -97,6 +97,39 @@ workspace; the old one orphans until pruned.
 * `delete_workspace(id)` — full delete: registry + index dir +
   workspace-memory dir. The "I'll never use this folder again" path.
 
+  The last of those three crosses a service boundary. The **workspaces
+  service** owns the delete verb and the workspace bundle; the **harness**
+  owns `<data_dir>/workspace_memories/<id>/`. So the delete handler asks
+  the harness to sweep its own store, over the
+  `memory.workspace.delete_all` verb. The delete verb still returns
+  without blocking on that peer call (a Fast/Medium verb must not stall on
+  a service that may be down) — but the sweep is now **durable**, not
+  fire-and-forget: see the pending-teardown queue note below.
+
+  Until #135 that call did not exist. `delete_memory_dir` was written,
+  correct, unit-tested, and had **zero callers**, so this bullet described
+  an intent rather than a behaviour: a deleted workspace's durable
+  memories stayed on disk indefinitely. Because a workspace id is derived
+  from its folder path (#28), re-registering the same folder re-derived
+  the same id and silently re-attached memories the user believed they had
+  deleted — a privacy consequence as much as a disk one.
+
+  As of #166 the sweep is durable. `registry::delete` enqueues the memory
+  sweep (and the flat-store conversation sweep) on the same on-disk
+  pending-teardown queue the graph cascade uses (#99), generalized from
+  bare workspace ids to `(workspace id, target)` pairs where `target ∈
+  { graph, memory, conversations }`. The drain
+  (`graph::cleanup::run_pending_cleanup`, fired on the next
+  create/activate/delete and at boot) dispatches each target and dequeues
+  a pair only on `reply.ok`; a down harness leaves the memory pair queued
+  for the next drain instead of dropping it. The re-created-workspace
+  guard applies to every target — if the folder is live again when the
+  drain runs, its queued sweeps are dequeued **without** running, so a
+  delete-then-re-add can't wipe the fresh memories. The memory + conversation
+  sweeps are enqueued only by explicit `delete`; since #133 that is the only
+  teardown path at all (registering a workspace no longer evicts anything), so
+  no non-delete path can sweep the memory tier.
+
 ### MRU semantics (`mru.rs`)
 
 * `get_mru_limit() -> u32` — current cap. Default 20, min 5, max 100.
@@ -246,7 +279,14 @@ Adding a tool means adding an `entry_active` call there — see
   are cheap; workspace memories are expensive. Don't ever delete a
   workspace-memory folder without an explicit user-facing confirm.
   `delete_workspace` does this on purpose — it's the "I really mean it"
-  path.
+  path. Route any new removal path through the **delete verb**, never
+  through the shared `teardown_bundle` primitive: MRU eviction funnels
+  through that too, and eviction must preserve this tier.
+* **`delete_memory_dir` validates its id, and must.** It is a
+  `remove_dir_all`, and `Path::join` leaves the tier for an empty id (which
+  resolves to the tier ROOT — every workspace's memories), an absolute id
+  (which discards the base entirely), or a `..` traversal. The store
+  refuses all three. Keep that guard if you refactor the path helpers.
 * **Slugs are content-addressable, not random.** If a user moves a
   folder (`mv ~/Novel ~/Books/Novel`), the workspace registry will
   orphan the old slug and create a new one. The user loses their

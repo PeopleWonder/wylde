@@ -248,7 +248,7 @@ pub fn reset_for_tests() {
 mod tests {
     use super::*;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-    use wylde_shared::ipc::list_actions;
+    use wylde_shared::ipc::assert_action_table_matches_registry;
 
     async fn registry_guard() -> MutexGuard<'static, ()> {
         static LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
@@ -260,27 +260,12 @@ mod tests {
         let _g = registry_guard().await;
         reset_for_tests();
         install();
-        let actions = list_actions();
-        // The 8 unary actions and the back-compat alias appear in
-        // list_actions(); the streaming one doesn't (it's in the
-        // streaming registry).
-        for n in [
-            "ext.list",
-            "ext.get",
-            "ext.enable",
-            "ext.disable",
-            "ext.tools.list",
-            "ext.tools.call",
-            "ext.resources.list",
-            "ext.health",
-            "ext.restart",
-            "extensions.list_panels",
-            "inference.embed",
-            "inference.chat",
-            "extensions.dispatch",
-        ] {
-            assert!(actions.contains(&n.to_string()), "missing {n}");
-        }
+        // #130: both directions via list_action_meta (covers the streaming
+        // ext.events too). This replaces a hardcoded 13-name inline list — a
+        // third copy of the verb set that was already stale (it omitted the
+        // streaming ext.events) and could not guard drift. This service owns
+        // three verb namespaces.
+        assert_action_table_matches_registry(&["ext.", "extensions.", "inference."], &ALL_ACTIONS);
         reset_for_tests();
     }
 

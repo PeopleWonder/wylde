@@ -1,0 +1,73 @@
+# Issue milestone auto-assign — the counterpart to the PR "linked issue" gate
+# (pr-checks.yml). Issues can't be gated by a required status check the way PRs
+# can, so instead of blocking we AUTO-ASSIGN: every issue opened (or reopened)
+# without a milestone gets the catch-all `0.x - backlog`, so no issue can sit
+# milestone-less. A weekly sweep re-checks anything that slipped through (e.g. a
+# milestone removed by hand, or an issue created while this workflow was down).
+#
+# Triage still happens normally afterwards — `0.x - backlog` is a floor, not a
+# verdict; a maintainer re-files into the right release milestone at will.
+name: Issue milestone auto-assign
+
+on:
+  issues:
+    types: [opened, reopened]
+  schedule:
+    # Weekly sweep, Monday 08:17 UTC. Runs from the default branch (develop).
+    - cron: "17 8 * * 1"
+  workflow_dispatch: {}
+
+# Least privilege: this workflow only reads and edits issue milestones. No
+# contents, no pull-requests, no packages. (See #177 — new jobs declare the
+# minimal token scope explicitly rather than inheriting a broad default.)
+permissions:
+  issues: write
+
+# Never run two sweeps at once.
+concurrency:
+  group: issue-milestone-${{ github.event_name }}-${{ github.event.issue.number || 'sweep' }}
+  cancel-in-progress: false
+
+jobs:
+  assign:
+    name: assign default milestone if missing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure every open issue carries a milestone
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          ISSUE: ${{ github.event.issue.number }}
+          DEFAULT_MILESTONE: "0.x - backlog"
+        run: |
+          set -euo pipefail
+
+          # Assign the default milestone to issue $1 iff it has none.
+          assign_if_missing() {
+            local n="$1" ms
+            ms="$(gh issue view "$n" --repo "$REPO" --json milestone --jq '.milestone.title // ""')"
+            if [ -n "$ms" ]; then
+              echo "#$n already milestoned ($ms) — leaving as-is."
+              return 0
+            fi
+            gh issue edit "$n" --repo "$REPO" --milestone "$DEFAULT_MILESTONE"
+            echo "#$n -> $DEFAULT_MILESTONE"
+          }
+
+          if [ "$EVENT" = "issues" ]; then
+            # Single issue just opened/reopened.
+            assign_if_missing "$ISSUE"
+          else
+            # Scheduled / manual sweep: every open, milestone-less issue.
+            # `--search 'no:milestone'` can lag GitHub's index, so we re-verify
+            # each candidate in assign_if_missing before editing.
+            nums="$(gh issue list --repo "$REPO" --state open --search 'no:milestone' --limit 500 --json number --jq '.[].number')"
+            if [ -z "$nums" ]; then
+              echo "Sweep: no unmilestoned open issues found."
+            else
+              for n in $nums; do
+                assign_if_missing "$n"
+              done
+            fi
+          fi

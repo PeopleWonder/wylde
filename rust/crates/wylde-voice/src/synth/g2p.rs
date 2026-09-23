@@ -111,7 +111,10 @@ mod tests {
         // (e.g. letter-spelling fallback) is caught.
         assert!(ph.contains('ə'), "expected schwa in {ph:?}");
         assert!(ph.contains('ˈ'), "expected primary stress in {ph:?}");
-        assert!(ph.contains('ɜ') || ph.contains('ɝ'), "expected NURSE vowel in {ph:?}");
+        assert!(
+            ph.contains('ɜ') || ph.contains('ɝ'),
+            "expected NURSE vowel in {ph:?}"
+        );
     }
 
     #[test]

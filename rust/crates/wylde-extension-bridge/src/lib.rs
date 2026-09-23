@@ -14,6 +14,7 @@
 //!   * [`service::stop`]   — drain background workers + reap children.
 //!   * [`host::Host`]      — supervisor for a set of MCP-server children.
 
+pub mod availability;
 pub mod config;
 pub mod discovery;
 pub mod host;

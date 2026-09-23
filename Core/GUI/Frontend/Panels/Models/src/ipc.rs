@@ -20,10 +20,17 @@
 //! see `recommend::pick`.
 //!
 //! Default-model star: persisted via the harness `models.set_default` /
-//! `models.get_default` pipe verbs (wired 2026-05-30).  The panel reads
-//! `get_default` on load to pre-check the star and writes `set_default`
-//! when the user toggles it; `session_default` stays as the optimistic
-//! mirror so the star updates instantly without waiting on the reply.
+//! `models.get_default` pipe verbs (wired 2026-05-30).  The panel writes
+//! `set_default` when the user toggles the star; `session_default` stays
+//! as the optimistic mirror so the star updates instantly without
+//! waiting on the reply.
+//!
+//! On load the panel reads `models.resolve_default` rather than the raw
+//! `get_default` (#235): the star is only the *first* arm of a
+//! three-step resolution (star-still-installed → first available →
+//! recommend `qwen3.5:9b` with warnings), and pre-checking an
+//! unvalidated star lights up a row for a model the user already
+//! deleted.
 
 use serde_json::{json, Value};
 
@@ -82,6 +89,40 @@ impl InstalledModel {
                 .and_then(|x| x.as_str())
                 .unwrap_or_default()
                 .to_owned(),
+        }
+    }
+}
+
+/// The models the running config actively references — the reasoning
+/// slots read from `settings.reasoning.get`. The panel labels each
+/// installed row against this set so "what references this model?" (and
+/// therefore "is it safe to delete?") is answerable at a glance (#131):
+/// a model matching no slot, no VRAM-resident set, and not the session
+/// default is superseded/orphaned and safe to drop. Empty strings mean
+/// "slot unset"; a down harness leaves the whole set empty (every model
+/// then reads as unreferenced only if it's also not loaded / not default).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReferenceSet {
+    pub reasoner: String,
+    pub fast: String,
+    pub embedder: String,
+}
+
+impl ReferenceSet {
+    pub fn from_value(v: &Value) -> Self {
+        let slots = v.get("slots").cloned().unwrap_or_else(|| json!({}));
+        let slot = |k: &str| {
+            slots
+                .get(k)
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .trim()
+                .to_owned()
+        };
+        Self {
+            reasoner: slot("reasoner"),
+            fast: slot("fast"),
+            embedder: slot("embedder"),
         }
     }
 }
@@ -261,8 +302,12 @@ pub async fn list_loaded_model_names() -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-pub async fn delete_installed_model(name: &str) -> Result<(), String> {
-    wylde_gui_pipe::call(
+/// Delete a local model. Returns the bytes freed as reported by the
+/// wrapper (`freed_bytes`), or 0 when the wrapper couldn't determine the
+/// size — the panel then falls back to the size it already had cached for
+/// the row, so it can still report "Freed N" (#131).
+pub async fn delete_installed_model(name: &str) -> Result<u64, String> {
+    let v = wylde_gui_pipe::call(
         SVC_OLLAMA,
         "POST",
         "/__action__",
@@ -271,8 +316,23 @@ pub async fn delete_installed_model(name: &str) -> Result<(), String> {
             "payload": { "name": name },
         })),
     )
-    .await
-    .map(|_| ())
+    .await?;
+    Ok(v.get("freed_bytes").and_then(|x| x.as_u64()).unwrap_or(0))
+}
+
+/// Read the reasoning slots (`settings.reasoning.get` on the harness) so
+/// the panel can label which installed models the running config
+/// references. Soft-fails to an empty [`ReferenceSet`] on a down harness —
+/// the panel then just shows no slot labels rather than erroring.
+pub async fn get_reasoning_slots() -> Result<ReferenceSet, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "settings.reasoning.get", "payload": {} })),
+    )
+    .await?;
+    Ok(ReferenceSet::from_value(&v))
 }
 
 /// Read `system.inventory` from the VRAM broker.  Soft-fails on the
@@ -305,6 +365,93 @@ pub async fn get_default() -> Result<Option<String>, String> {
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
         .map(str::to_owned))
+}
+
+/// The resolved default (`models.resolve_default`, #235) — the star
+/// checked against the live on-disk inventory, with the first-available
+/// and recommend fallbacks.  Distinct from [`get_default`], which
+/// reports the *raw* star without validating it: this is what a picker
+/// should select right now.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DefaultResolution {
+    /// The model to select.  `None` only in the recommend arm, where
+    /// nothing is installed to select.
+    pub model: Option<String>,
+    /// `"default"` | `"first_available"` | `"recommend"`.
+    pub source: String,
+    /// A star that was set but no longer resolves (its model was
+    /// deleted).  Explanatory only — the fallback already happened.
+    pub stale_default: Option<String>,
+    /// Present only in the recommend arm.
+    pub recommendation: Option<Recommended>,
+}
+
+/// The recommend arm's payload — what to pull, and every warning that
+/// must be shown with it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Recommended {
+    pub model: String,
+    /// Human-readable download size, e.g. `"6.6 GB"`.
+    pub size: String,
+    /// Rendered verbatim.  The harness owns this copy so a second
+    /// surface can't drift from it.
+    pub warnings: Vec<String>,
+}
+
+impl DefaultResolution {
+    pub fn from_value(v: &Value) -> Self {
+        let str_field = |k: &str| {
+            v.get(k)
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        };
+        let recommendation = v.get("recommendation").filter(|r| !r.is_null()).map(|r| {
+            let s = |k: &str| {
+                r.get(k)
+                    .and_then(|x| x.as_str())
+                    .unwrap_or_default()
+                    .to_owned()
+            };
+            Recommended {
+                model: s("model"),
+                size: s("size"),
+                warnings: r
+                    .get("warnings")
+                    .and_then(|w| w.as_array())
+                    .map(|w| {
+                        w.iter()
+                            .filter_map(|x| x.as_str())
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            }
+        });
+        Self {
+            model: str_field("model"),
+            source: str_field("source").unwrap_or_default(),
+            stale_default: str_field("stale_default"),
+            recommendation,
+        }
+    }
+}
+
+/// Resolve the default model against the live inventory (#235).
+///
+/// Soft-fails like the other read verbs: an `Err` here means the harness
+/// or the model store was unreachable, and the caller must keep whatever
+/// selection it already had rather than treating the failure as "nothing
+/// installed" (#132 — unreachable is not empty).
+pub async fn resolve_default() -> Result<DefaultResolution, String> {
+    let v = wylde_gui_pipe::call(
+        SVC_HARNESS,
+        "POST",
+        "/__action__",
+        Some(json!({ "action": "models.resolve_default", "payload": {} })),
+    )
+    .await?;
+    Ok(DefaultResolution::from_value(&v))
 }
 
 /// Persist the default-model star.  `Some(name)` stars it; `None` clears
@@ -450,6 +597,25 @@ mod tests {
     }
 
     #[test]
+    fn reference_set_parses_reasoning_get_slots() {
+        let v = json!({
+            "enabled": true,
+            "slots": { "embedder": "nomic-embed-text", "fast": "qwen2.5:1.5b", "reasoner": "qwen2.5:7b" },
+            "mode": "single",
+        });
+        let refs = ReferenceSet::from_value(&v);
+        assert_eq!(refs.reasoner, "qwen2.5:7b");
+        assert_eq!(refs.fast, "qwen2.5:1.5b");
+        assert_eq!(refs.embedder, "nomic-embed-text");
+    }
+
+    #[test]
+    fn reference_set_defaults_empty_when_slots_absent() {
+        let refs = ReferenceSet::from_value(&json!({}));
+        assert!(refs.reasoner.is_empty() && refs.fast.is_empty() && refs.embedder.is_empty());
+    }
+
+    #[test]
     fn pipe_call_helpers_exist() {
         // Build-time witness pattern — matches Settings / Memory tests.
         let _ = list_installed_models;
@@ -459,6 +625,7 @@ mod tests {
         let _ = pull_model;
         let _ = get_default;
         let _ = set_default;
+        let _ = get_reasoning_slots;
     }
 
     #[test]

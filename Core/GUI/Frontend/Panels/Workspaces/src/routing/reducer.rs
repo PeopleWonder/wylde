@@ -93,13 +93,21 @@ pub struct GroupEdge {
     pub from: NodeRefView,
     pub to: NodeRefView,
     pub kind: RelationKindView,
+    /// An endpoint no longer resolves, so this edge is retained but excluded
+    /// from routing (#137). Carried through from `RelationView` so the row can
+    /// badge it — previously the flag was dropped here and the user saw an
+    /// inert edge rendered as live.
+    pub dangling: bool,
 }
 
 /// Bucket the edges touching `focus` (the `relations.list` set) into the four
 /// authoring groups. Positive/Negative are symmetric (the focus may be stored
 /// as either endpoint — we surface the *other* end); Dependency splits by
 /// direction: `focus → X` is DEPENDS ON, `X → focus` is DEPENDED ON BY.
-pub fn group_edges(focus: &NodeRefView, touching: &[RelationView]) -> Vec<(RelGroup, Vec<GroupEdge>)> {
+pub fn group_edges(
+    focus: &NodeRefView,
+    touching: &[RelationView],
+) -> Vec<(RelGroup, Vec<GroupEdge>)> {
     let mut depends_on = Vec::new();
     let mut depended_on_by = Vec::new();
     let mut relates_to = Vec::new();
@@ -113,6 +121,7 @@ pub fn group_edges(focus: &NodeRefView, touching: &[RelationView]) -> Vec<(RelGr
             from: r.from.clone(),
             to: r.to.clone(),
             kind: r.kind,
+            dangling: r.dangling,
         };
         match r.kind {
             RelationKindView::Dependency if &r.from == focus => depends_on.push(edge),
@@ -233,6 +242,7 @@ mod tests {
             kind,
             note: None,
             created_at: 0.0,
+            dangling: false,
         }
     }
 
@@ -271,7 +281,11 @@ mod tests {
         // the OTHER endpoint, not the focus.
         let touching = vec![rel(wylde(), nc(), RelationKindView::Negative)];
         let groups = group_edges(&focus, &touching);
-        let is_not = &groups.iter().find(|(k, _)| *k == RelGroup::IsNot).unwrap().1;
+        let is_not = &groups
+            .iter()
+            .find(|(k, _)| *k == RelGroup::IsNot)
+            .unwrap()
+            .1;
         assert_eq!(is_not[0].other, wylde());
     }
 
@@ -331,10 +345,7 @@ mod tests {
             label_for(&NodeRefView::concept("ghost"), &u),
             "concept: ghost"
         );
-        assert_eq!(
-            label_for(&NodeRefView::vocab("orphan"), &u),
-            "{{orphan}}"
-        );
+        assert_eq!(label_for(&NodeRefView::vocab("orphan"), &u), "{{orphan}}");
     }
 
     #[test]

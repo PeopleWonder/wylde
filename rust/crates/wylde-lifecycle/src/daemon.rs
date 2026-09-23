@@ -168,71 +168,26 @@ pub async fn serve_forever() -> Result<i32> {
         }
     );
 
-    // Phase 2c — spawn the daemon-managed tier=core services. Each
-    // start_<service> logs its own failure path; we don't bail on
-    // individual failures because a partial bring-up is still useful
-    // (e.g. broker comes up, device_gate fails — the user can still
-    // drive the broker via the GUI).
-    if let Err(e) = services::start_memgraph().await {
-        tracing::error!("daemon: start_memgraph raised: {:#}", e);
-    }
-    if let Err(e) = services::start_memory_scheduler().await {
-        tracing::error!("daemon: start_memory_scheduler raised: {:#}", e);
-    }
-    if let Err(e) = services::start_vram_broker().await {
-        tracing::error!("daemon: start_vram_broker raised: {:#}", e);
-    }
-    if let Err(e) = services::start_voice().await {
-        tracing::error!("daemon: start_voice raised: {:#}", e);
-    }
-    if let Err(e) = services::start_device_gate().await {
-        tracing::error!("daemon: start_device_gate raised: {:#}", e);
-    }
-    // Extension bridge before Gateway — Gateway dispatches browser-
-    // extension calls through `\\.\pipe\wylde-extension-bridge`.
-    if let Err(e) = services::start_extension_bridge().await {
-        tracing::error!("daemon: start_extension_bridge raised: {:#}", e);
-    }
-    // wylde-ollama AFTER the broker (depends on it for VRAM leases)
-    // but BEFORE the gateway/harness (which call into it).
-    if let Err(e) = services::start_ollama().await {
-        tracing::error!("daemon: start_ollama raised: {:#}", e);
-    }
-    if let Err(e) = services::start_gateway().await {
-        tracing::error!("daemon: start_gateway raised: {:#}", e);
-    }
-    // wylde-harness — Phase 5 chat-turn driver. Slice 5.D (2026-05-25)
-    // flipped the default impl from `python` to `rust`: this start
-    // now spawns the Rust `wylde-harness.exe` binary which exposes
-    // the full chat.* surface over `\\.\pipe\wylde-harness`. Set
-    // `WYLDE_WYLDE_HARNESS_IMPL=python` to revert to the in-process
-    // Python driver inside the existing Python harness service
-    // (in which case this start is a no-op).
-    if let Err(e) = services::start_harness().await {
-        tracing::error!("daemon: start_harness raised: {:#}", e);
-    }
-    // wylde-treesitter — greenfield structural-parsing sidecar. A leaf
-    // service (no dependency on broker/gateway), so ordering is free;
-    // spawned last in the core tier. Default impl is rust.
-    if let Err(e) = services::start_treesitter().await {
-        tracing::error!("daemon: start_treesitter raised: {:#}", e);
-    }
-    // wylde-workspaces — Thought Bubble System Phase 0 service. Spawned
-    // LAST: its ingest pipeline consumes wylde-ollama (embeddings),
-    // wylde-treesitter (chunk/extract over the pipe), and Memgraph (Bolt
-    // graph writes), all of which are started above. Greenfield Rust,
-    // default impl rust. A missing binary is non-fatal — every consumer
-    // degrades gracefully when it's absent (Slice 0d).
-    if let Err(e) = services::start_workspaces().await {
-        tracing::error!("daemon: start_workspaces raised: {:#}", e);
-    }
-    // wylde-n8n — optional pipe surface over the external, user-managed
-    // n8n daemon (taxonomy reorg TX S3). A leaf service: nothing in core
-    // depends on it (the harness verb layer fail-softs), and it launches
-    // nothing itself — the n8n daemon is the user's to run. A missing
-    // binary is non-fatal.
-    if let Err(e) = services::start_n8n().await {
-        tracing::error!("daemon: start_n8n raised: {:#}", e);
+    // Phase 2c — spawn the daemon-managed tier=core services. The boot
+    // set + its order are derived from the single `DAEMON_MANAGED` table
+    // (issue #101): one row per service drives boot, shutdown, dispatch,
+    // and the kill-image list, so the 13th service is a one-line addition
+    // there — not four edits across four files. The per-service ordering
+    // rationale (broker before ollama, extension_bridge before gateway,
+    // workspaces last, …) lives as doc comments on the table.
+    //
+    // `wylde-vpn` is deliberately absent: it is `Role::UserStarted` (the
+    // user brings the VPN up on demand), so `boot_sequence()` skips it —
+    // an intended, typed asymmetry, not a forgotten line.
+    //
+    // Each start logs its own failure path; we don't bail on individual
+    // failures because a partial bring-up is still useful (e.g. broker
+    // comes up, device_gate fails — the user can still drive the broker
+    // via the GUI).
+    for svc in crate::daemon_managed::boot_sequence() {
+        if let Err(e) = (svc.start)().await {
+            tracing::error!("daemon: start {} raised: {:#}", svc.name, e);
+        }
     }
 
     // Phase 2c-bucket — dynamic out-of-tree sibling supervision. Nothing

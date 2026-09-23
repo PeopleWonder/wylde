@@ -198,12 +198,12 @@ mod tests {
     #[test]
     fn profile_only_renders_one_section() {
         let ctx = ChatContext {
-            user_profile: "Name: Aaron".into(),
+            user_profile: "Name: Sam".into(),
             ..ChatContext::default()
         };
         let out = render(&ctx);
         assert!(out.contains("### User profile"));
-        assert!(out.contains("Name: Aaron"));
+        assert!(out.contains("Name: Sam"));
         assert!(!out.contains("### Code graph context"));
         assert!(out.starts_with("\n\n"));
     }
@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn slots_appear_in_layered_order() {
         let ctx = ChatContext {
-            user_profile: "Name: Aaron".into(),
+            user_profile: "Name: Sam".into(),
             conversation_short_term: vec!["- recalled a thing".into()],
             conversation_summary: Some("They were debugging.".into()),
             long_term: vec!["- prefers tabs".into()],
@@ -288,7 +288,7 @@ mod tests {
         // The R2 slot is empty by default (routing off / no curation) ⇒ a plain
         // turn is byte-identical to pre-R2.
         let ctx = ChatContext {
-            user_profile: "Name: Aaron".into(),
+            user_profile: "Name: Sam".into(),
             ..ChatContext::default()
         };
         assert!(!render(&ctx).contains("### Concepts"));

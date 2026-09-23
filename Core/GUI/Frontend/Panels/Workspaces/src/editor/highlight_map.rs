@@ -70,7 +70,10 @@ mod tests {
     #[test]
     fn prefix_match_resolves_dotted_scopes() {
         assert_eq!(color_for_scope("function.method"), Some(syntax::FUNCTION));
-        assert_eq!(color_for_scope("punctuation.bracket"), Some(syntax::PUNCTUATION));
+        assert_eq!(
+            color_for_scope("punctuation.bracket"),
+            Some(syntax::PUNCTUATION)
+        );
         assert_eq!(color_for_scope("keyword"), Some(syntax::KEYWORD));
         assert!(color_for_scope("something.unthemed").is_none());
     }

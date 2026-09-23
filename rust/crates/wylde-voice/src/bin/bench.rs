@@ -36,7 +36,9 @@ fn main() {
     // exported by hand when the bundle sits beside the bench binary.
     match dll_bundle::ensure_ort_dylib_path() {
         Ok(Some(p)) => eprintln!("[bench] ORT_DYLIB_PATH -> {}", p.display()),
-        Ok(None) => eprintln!("[bench] ORT_DYLIB_PATH not set from bundle (relying on ort default)"),
+        Ok(None) => {
+            eprintln!("[bench] ORT_DYLIB_PATH not set from bundle (relying on ort default)")
+        }
         Err(e) => eprintln!("[bench] DLL discovery error: {e}"),
     }
 

@@ -24,10 +24,27 @@
 
 #![cfg(windows)]
 
+use std::sync::OnceLock;
+
 use serde_json::json;
+use tokio::sync::{Mutex, MutexGuard};
 
 use wylde_workspaces::graph::projection::NodeKind;
 use wylde_workspaces::graph::{api, BoltClient, EntityPair, RelType};
+
+/// Serialize every test in this binary against the one shared Neo4j.
+///
+/// `cargo test` runs a binary's tests multi-threaded by default, but the graph
+/// is global-by-name: `delete_workspace`'s orphan-entity prune and `stats()`
+/// are graph-wide, and concurrent tests also pile connections onto the freshly-
+/// booted (cold-planner) JVM, which intermittently can't service a query inside
+/// the connect timeout — surfacing as flaky `ok:false` operation failures on
+/// the live-graph CI leg (#216). Holding this lock for the whole test gives each
+/// one exclusive DB access, mirroring `wylde-harness`'s `memgraph_live` DB_LOCK.
+async fn db_guard() -> MutexGuard<'static, ()> {
+    static DB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    DB_LOCK.get_or_init(|| Mutex::new(())).lock().await
+}
 
 fn nonce() -> String {
     let micros = std::time::SystemTime::now()
@@ -40,6 +57,7 @@ fn nonce() -> String {
 #[tokio::test]
 #[ignore = "requires live Neo4j (bolt://127.0.0.1:7687) — run the stack first"]
 async fn graph_verb_returns_expected_shape_from_live_neo4j() {
+    let _db = db_guard().await;
     let p = nonce();
     let ws = format!("{p}ws");
     let client = BoltClient::new();
@@ -196,4 +214,92 @@ async fn graph_verb_returns_expected_shape_from_live_neo4j() {
     let after = api::graph(&ws).await.expect("post-cleanup read");
     assert!(after.nodes.is_empty(), "nodes cleaned up");
     assert!(after.edges.is_empty(), "edges cleaned up");
+}
+
+/// #117 — workspace teardown must sweep the `Concept` projection.
+///
+/// The live counterpart to the unit regression in `graph::cleanup` (whose
+/// FakeGraph can only prove the cascade *declares* the step). This proves the
+/// Cypher actually removes the rows: seed a two-level concept hierarchy over
+/// real entities, tear the workspace down, and assert the reported
+/// `concepts_deleted` matches — then tear down a second time and assert it
+/// reports **zero**. That second pass is the load-bearing one: a non-zero count
+/// on the first call only proves the statement ran, whereas a zero on the
+/// second proves the nodes are genuinely gone rather than re-matched forever.
+///
+/// Before the fix `concepts_deleted` did not exist at all — teardown ran chunks
+/// + orphan entities only, and the concepts stayed in Memgraph permanently with
+/// their `MEMBER` targets torn out by the entity prune.
+#[tokio::test]
+#[ignore = "requires live Neo4j (bolt://127.0.0.1:7687) — run the stack first"]
+async fn teardown_sweeps_concept_projection_from_live_neo4j() {
+    let _db = db_guard().await;
+    let p = nonce();
+    let ws = format!("{p}ws_concepts");
+    let client = BoltClient::new();
+    let n = |s: &str| format!("{p}{s}");
+
+    // Entities exist only as chunk mentions — the MEMBER targets a concept
+    // points at. They are what the orphan prune deletes on teardown.
+    let chunks = vec![json!({
+        "id": format!("{p}chunk-c"),
+        "path": format!("C:/bgtest/{ws}/src/c.rs"),
+        "workspace": ws,
+        "language": "rust",
+        "entities": [n("auth"), n("token")],
+    })];
+    let up = client.upsert(chunks).await;
+    assert!(up.ok, "seed upsert failed: {:?}", up.error);
+
+    // A parent concept and its child, over those entities.
+    let rows = vec![
+        json!({
+            "id": "sem:security",
+            "label": "Security",
+            "description": "",
+            "source": "semantic",
+            "members": [n("auth"), n("token")],
+            "parents": [],
+        }),
+        json!({
+            "id": "sem:login",
+            "label": "Login",
+            "description": "",
+            "source": "semantic",
+            "members": [n("auth")],
+            "parents": ["sem:security"],
+        }),
+    ];
+    let proj = client.project_concepts(&ws, rows).await;
+    assert!(proj.ok, "project_concepts failed: {:?}", proj.error);
+    assert_eq!(proj.data.get("projected").and_then(|v| v.as_u64()), Some(2));
+
+    // ── teardown ───────────────────────────────────────────────────────
+    let del = client.delete_workspace(&ws).await;
+    assert!(del.ok, "delete_workspace failed: {:?}", del.error);
+    assert_eq!(
+        del.data.get("concepts_deleted").and_then(|v| v.as_i64()),
+        Some(2),
+        "teardown must delete both Concept nodes (#117); got {:?}",
+        del.data
+    );
+
+    // The proof: a second teardown finds nothing left to delete.
+    let again = client.delete_workspace(&ws).await;
+    assert!(
+        again.ok,
+        "second delete_workspace failed: {:?}",
+        again.error
+    );
+    assert_eq!(
+        again.data.get("concepts_deleted").and_then(|v| v.as_i64()),
+        Some(0),
+        "Concept nodes survived teardown (#117); got {:?}",
+        again.data
+    );
+    assert_eq!(
+        again.data.get("chunks_deleted").and_then(|v| v.as_i64()),
+        Some(0),
+        "chunks survived teardown"
+    );
 }

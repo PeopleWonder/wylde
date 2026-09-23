@@ -67,7 +67,10 @@ fn backend() -> std::sync::Arc<ScriptedBackend> {
         .on("workspaces.concepts.search", concepts_reply())
         .on("workspaces.anchors.list", anchors_reply())
         .on("workspaces.concepts.relations.graph", graph_reply())
-        .on("workspaces.concepts.relations.list", json!({ "count": 0, "relations": [] }))
+        .on(
+            "workspaces.concepts.relations.list",
+            json!({ "count": 0, "relations": [] }),
+        )
 }
 
 // ── (a) the tree view loads + builds the typed-edge model ─────────────────
@@ -122,7 +125,9 @@ fn editor_toggles_to_tree_and_back(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     window
-        .update(cx, |view, _w, _cx| assert!(!view.show_tree(), "back to editor"))
+        .update(cx, |view, _w, _cx| {
+            assert!(!view.show_tree(), "back to editor")
+        })
         .unwrap();
 }
 

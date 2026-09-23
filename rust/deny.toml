@@ -1,0 +1,92 @@
+# cargo-deny policy — Wylde backend workspace (`rust/`).
+#
+# Gate: CI runs `cargo deny check advisories` on every PR and on a weekly
+# schedule (see `.github/workflows/security-audit.yml`). A new advisory against
+# any dependency turns the check red the moment it lands in the RustSec DB —
+# not months later in a `git push` warning.
+#
+# Policy for accepting an advisory (adding to `ignore` below): every entry
+# MUST carry a `reason` that states (a) why it is not fixable now and (b) a
+# "Review by <date>" so it is revisited rather than silently ignored forever.
+# See `docs/security/dependency-hygiene-policy.md` for the full policy.
+
+[advisories]
+version = 2
+# Yanked crates: surface but do not fail CI. The only yanked crate in the tree
+# is `spin` (deep transitive under the crypto stack); nothing we can re-pin.
+yanked = "warn"
+# Only flag `unmaintained` advisories for crates a workspace member depends on
+# directly. Transitive unmaintained crates (backoff, bincode, instant, paste,
+# rustls-pemfile, fxhash, …) have no maintained replacement reachable without an
+# upstream move; treating every one as a hard failure would make the gate noise,
+# not signal. Direct unmaintained deps still fail, which is what we can act on.
+unmaintained = "workspace"
+# No security *vulnerabilities* are outstanding in this workspace (crossbeam-epoch
+# and anyhow were bumped 2026-07-14). The one accepted advisory is an unmaintained
+# direct dep with no safe upgrade. When an unavoidable advisory appears, add it
+# WITH a reason + review date.
+ignore = [
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is unmaintained. Direct dep of wylde-gateway (msgpack/binary framing). bincode 2.x is a from-scratch rewrite with an incompatible API — 'no safe upgrade available'. Not a vulnerability (informational unmaintained notice). Tracked for a deliberate 2.x port. Review by 2026-10-14." },
+]
+
+# ---------------------------------------------------------------------------
+# LICENSE COMPLIANCE — GPLv3 copyleft gate.
+#
+# Wylde Core is `GPL-3.0-or-later`. Copyleft INHERITS: anything compiled or
+# linked into a Wylde binary is bound to GPLv3, so every dependency's license
+# must be GPLv3-COMPATIBLE. A single incompatible dep (an SSPL/BUSL/CDDL crate,
+# or a GPL-2.0-ONLY crate) is a genuine legal defect, not a lint.
+#
+# CI runs `cargo deny check licenses` on every PR (.github/workflows/
+# license-check.yml) as a REQUIRED status check. The allow-list below IS the
+# policy; anything not on it is denied by default (cargo-deny v2 has no separate
+# `deny` list — deny-by-default is the model, so denial is expressed by absence
+# plus the DENIED note below).
+#
+# GPLv3-compatibility notes (FSF license list + SPDX):
+#   * Apache-2.0 is compatible with GPLv3 but NOT GPLv2 (its patent-termination
+#     / indemnity terms). This tree is v3, so Apache-2.0 is fine.
+#   * MPL-2.0 is GPL-compatible via its §3.3 secondary-license clause.
+#   * LGPL-2.1/3.0 combine into a GPLv3 work (the LGPL->GPL upgrade path).
+#   * GPL-2.0-OR-LATER is compatible (upgradeable to v3); GPL-2.0-ONLY is NOT —
+#     deliberately absent below.
+#   * WTFPL, CDLA-Permissive-2.0, bzip2-1.0.6, zlib-acknowledgement, MIT-0 are
+#     lax permissive licenses the FSF/SPDX treat as GPL-compatible.
+#     (WTFPL enters via language-tokenizer <- misaki-rs <- wylde-voice, which
+#     declares no `license` field but ships a WTFPL LICENSE.md.)
+#
+# DENIED by design (absent on purpose — do NOT add without legal review):
+#   GPL-2.0-only, LGPL-2.0-only, CDDL-1.0/1.1, EPL-1.0/2.0, MS-PL/MS-RL,
+#   SSPL-1.0, BUSL-1.1, CC-BY-NC-*, the historical OpenSSL license (advertising
+#   clause -> FSF-incompatible with GPL), and any proprietary/unlicensed crate.
+#
+# `unused-allowed-license = "allow"` keeps CI quiet about policy entries not in
+# the current lockfile (LGPL*, GPL-2.0-or-later, ...); they are kept for policy
+# completeness, not noise.
+# ---------------------------------------------------------------------------
+[licenses]
+version = 2
+confidence-threshold = 0.8
+unused-allowed-license = "allow"
+allow = [
+    # Permissive / public-domain — trivially GPLv3-compatible.
+    "0BSD", "BSD-1-Clause", "BSD-2-Clause", "BSD-3-Clause",
+    "MIT", "MIT-0", "ISC", "Zlib", "zlib-acknowledgement",
+    "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
+    "BSL-1.0", "bzip2-1.0.6",
+    "Unicode-3.0", "Unicode-DFS-2016",
+    "CC0-1.0", "Unlicense", "WTFPL", "CDLA-Permissive-2.0",
+    # Weak copyleft — GPLv3-compatible.
+    "MPL-2.0",
+    "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later",
+    # Strong copyleft — this project's own license and compatible upgrades.
+    "GPL-3.0-only", "GPL-3.0-or-later", "GPL-2.0-or-later",
+]
+
+[bans]
+# gpui pulls a wide graph; duplicate versions are expected. Surface, don't fail.
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"

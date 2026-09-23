@@ -1,12 +1,13 @@
 //! `memory.workspace.*` IPC action handlers.
 //!
-//! The six workspace-memory verbs the gateway / GUI consume:
+//! The workspace-memory verbs the gateway / GUI consume:
 //!
 //! * `memory.workspace.list`   → `{ memories, count, workspace_id }`
 //! * `memory.workspace.search` → `{ hits: [...] }`
 //! * `memory.workspace.save`   → the record object
 //! * `memory.workspace.update` → the replacement record (revision)
 //! * `memory.workspace.delete` → `{ ok, workspace_id, id }`
+//! * `memory.workspace.delete_all` → `{ ok, workspace_id, removed }`
 //! * `memory.workspace.curate` → the skipped `CurationResult` shape
 //!
 //! Reply shapes + error codes/messages match the Python `_memory.py`
@@ -65,10 +66,20 @@ pub async fn handle_search(payload: Value) -> Reply {
         return Reply::err_msg("bad_request", "query is required");
     };
     let limit = search_limit(&payload);
-    let hits: Vec<Value> = store::search_records(&wsid, &query, limit, None)
-        .iter()
-        .map(|h| h.to_value())
-        .collect();
+    // Text-overlap baseline always computed — it's the safe fallback and
+    // it preserves recall for records the vector mirror doesn't cover.
+    let text_hits = store::search_records(&wsid, &query, limit, None);
+    // Upgrade to semantic ranking when the mirror is populated AND the
+    // query embeds; otherwise stay on text (dev / embedder-down path).
+    let ranked = if store::vector_mirror_is_empty(&wsid) {
+        text_hits
+    } else if let Some(query_vector) = crate::memory::embed_write::embed_for_write(&query).await {
+        let vector_hits = store::search_records_vector(&wsid, query_vector, limit, None);
+        store::merge_hits(vector_hits, text_hits, limit)
+    } else {
+        text_hits
+    };
+    let hits: Vec<Value> = ranked.iter().map(|h| h.to_value()).collect();
     Reply::ok(json!({ "hits": hits }))
 }
 
@@ -93,6 +104,11 @@ pub async fn handle_save(payload: Value) -> Reply {
 
     match store::save_new(&wsid, &body, &source, importance, entities) {
         Ok(record) => {
+            // Populate the per-workspace vector mirror so search can rank
+            // this record semantically (budgeted, fail-soft — an absent
+            // embedder just leaves it to text search).
+            let vector = crate::memory::embed_write::embed_for_write(&record.body).await;
+            store::vector_upsert(&wsid, &record.id, vector);
             record_entities_best_effort(&record);
             Reply::ok(record.to_value())
         }
@@ -121,6 +137,10 @@ pub async fn handle_update(payload: Value) -> Reply {
 
     match store::update(&wsid, &rid, body, importance, entities) {
         Some(record) => {
+            // The revision is a NEW record id — mirror its (possibly
+            // unchanged) body so the vector store tracks the live text.
+            let vector = crate::memory::embed_write::embed_for_write(&record.body).await;
+            store::vector_upsert(&wsid, &record.id, vector);
             record_entities_best_effort(&record);
             Reply::ok(record.to_value())
         }
@@ -140,6 +160,67 @@ pub async fn handle_delete(payload: Value) -> Reply {
     };
     let ok = store::delete(&wsid, &rid);
     Reply::ok(json!({ "ok": ok, "workspace_id": wsid, "id": rid }))
+}
+
+/// `memory.workspace.delete_all` — remove a workspace's ENTIRE durable
+/// memory directory: every record, the vector mirror, and the folder itself.
+/// Payload `{ workspace_id }`. Returns `{ ok: true, workspace_id, removed }`
+/// where `removed` is whether a folder was actually there to delete.
+///
+/// The teardown complement to the workspaces service's bundle removal (#135).
+/// `workspace_memories/<id>/` lives OUTSIDE the workspace bundle on purpose —
+/// so MRU eviction of a file index never takes the curated memories with it —
+/// but that also put it outside the reach of every removal path, so an
+/// explicitly deleted workspace left its memories on disk forever. Since a
+/// workspace id is derived from its folder (#28), re-registering the same
+/// folder re-derived the same id and silently re-attached memories the user
+/// believed they had deleted: a privacy consequence, not just a disk one.
+///
+/// **Only the explicit-delete path may call this.** MRU eviction must not —
+/// surviving eviction is the whole point of the durable tier. That asymmetry
+/// is enforced at the caller: the workspaces service invokes this from
+/// `handle_delete`, never from the shared `teardown_bundle` primitive that
+/// eviction also funnels through.
+///
+/// A blank id is rejected rather than treated as "no workspace": the store
+/// path for an empty id is the tier ROOT, so obeying it would wipe every
+/// workspace's memories (the store guards this too — defence in depth).
+pub async fn handle_delete_all(payload: Value) -> Reply {
+    let Some(wsid) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    if wsid.trim().is_empty() {
+        return Reply::err_msg("bad_request", "workspace_id must not be blank");
+    }
+    let removed = store::delete_memory_dir(&wsid);
+    Reply::ok(json!({ "ok": true, "workspace_id": wsid, "removed": removed }))
+}
+
+/// `memory.workspace.reindex` — rebuild this workspace's vector mirror from
+/// its authoritative JSON records (#136). Payload `{ workspace_id }`. Returns
+/// `{ ok, workspace_id, total, embedded, failed }`.
+///
+/// The recovery path the memory tiers documented for years without having.
+/// Use after an embedding-model or width change (which moves the old mirror
+/// aside rather than destroying it), or to close the drift that accumulates
+/// whenever a save's embed fails and leaves a record JSON-only forever.
+///
+/// Answers `embedder_unavailable` — rather than reporting a hollow success —
+/// when nothing could be embedded, leaving the existing mirror untouched.
+pub async fn handle_reindex(payload: Value) -> Reply {
+    let Some(wsid) = require_string(&payload, "workspace_id") else {
+        return Reply::err_msg("bad_request", "workspace_id is required");
+    };
+    match store::reindex_vectors(&wsid).await {
+        Ok(r) => Reply::ok(json!({
+            "ok": true,
+            "workspace_id": wsid,
+            "total": r.total,
+            "embedded": r.embedded,
+            "failed": r.failed,
+        })),
+        Err(e) => Reply::err_msg("embedder_unavailable", e.to_string()),
+    }
 }
 
 /// `memory.workspace.curate` — trigger LLM-driven curation. Payload

@@ -168,7 +168,10 @@ mod tests {
             let c = classify(e.to_owned());
             assert!(c.is_graph_db_down(), "{e} should be graph-db-down");
             assert!(c.is_recoverable(), "{e} offers Start graph database");
-            assert!(!c.is_service_unavailable(), "{e} is not the workspaces pipe being down");
+            assert!(
+                !c.is_service_unavailable(),
+                "{e} is not the workspaces pipe being down"
+            );
         }
     }
 

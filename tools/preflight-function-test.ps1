@@ -13,7 +13,7 @@
          the harness manifest names ollama as its model backend.
       6. AdGuard service status (Event 7034 has knocked it over before).
       7. WireGuard tunnel adapter (wg0 / wg1 / Wylde) - opt-in, informational.
-      8. wylde_check run_all == 0/0/0 across 44 rules.
+      8. wylde_check run_all == 0/0/0 across 30 rules.
 
     Prints a green/yellow/red status table at the end. ASCII-only so it parses
     under Windows PowerShell 5.1 regardless of file encoding.
@@ -260,7 +260,7 @@ else {
 
 # -- 8. wylde_check -----------------------------------------------------------
 Write-Host ""
-Write-Host "== wylde_check (44 rules) ==" -ForegroundColor Cyan
+Write-Host "== wylde_check (30 rules) ==" -ForegroundColor Cyan
 if ($SkipWyldeCheck) {
     Add-Result 'wylde_check' 'run_all' 'YELLOW' 'skipped (-SkipWyldeCheck)'
 }

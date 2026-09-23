@@ -36,6 +36,7 @@ use crate::workspaces_panel::pack;
 
 use super::curate_ipc;
 use super::curate_reducer::{CurateAnnotation, CurateCadence, CurateMenuModel, RowKind};
+use wylde_gui_controls::control;
 
 /// What the composer should do after [`CurateMenuView::load_for_turn`] resolves.
 #[derive(Clone, Debug, PartialEq)]
@@ -285,8 +286,7 @@ impl CurateMenuView {
         F: Fn(&mut Self, &mut Context<Self>) + 'static,
     {
         let bg = if accent { BRAND } else { SURFACE_800 };
-        div()
-            .id(id)
+        control(div(), id)
             .px_2()
             .py_0p5()
             .rounded(px(4.0))
@@ -330,8 +330,7 @@ impl CurateMenuView {
         if injectable {
             let k = key.clone();
             row = row.child(
-                div()
-                    .id(("curate-check", idx))
+                control(div(), ("curate-check", idx))
                     .text_size(px(size::XS))
                     .text_color(rgb(pack(if r.checked { BRAND_LIGHT } else { TEXT_MUTED })))
                     .cursor_pointer()
@@ -469,5 +468,90 @@ impl Render for CurateMenuView {
             );
         }
         panel
+    }
+}
+
+#[cfg(test)]
+mod control_walk {
+    //! L7 **control**-walk — the curate-before-inject menu (issue #247).
+    //!
+    //! In-crate: the menu only paints when `open && model.is_some()`, and it is
+    //! opened by resolving a preview reply through the per-conversation
+    //! `cadence` — which prompts the *first* turn and auto-applies after. So the
+    //! reset resets the cadence to a fresh default and re-applies the preview
+    //! before every click, guaranteeing the menu re-opens each rebase (an
+    //! out-of-crate test can't touch `cadence`, hence in-crate). Runs in CI via
+    //! the `panel-walk` alias (lib unit tests included).
+
+    use super::super::curate_ipc::PreviewReply;
+    use super::super::curate_reducer::CurateCadence;
+    use super::CurateMenuView;
+    use gpui::TestAppContext;
+    use serde_json::{json, Value};
+    use wylde_gui_test_support::control_walk::ControlWalk;
+    use wylde_gui_test_support::ScriptedBackend;
+
+    /// A `chat.preview_context` reply: routing on, interactive, two activated
+    /// concepts (pre-checked) + one inhibited, so several `curate-check` rows
+    /// paint and the inject/skip/auto actions have a non-empty selection.
+    fn preview_reply() -> Value {
+        json!({
+            "routing_enabled": true,
+            "curate": true,
+            "inject_token_budget": 1500,
+            "candidates": {
+                "query_echo": "how does nextcloud sync",
+                "concepts": [
+                    { "id": "nextcloud", "label": "Nextcloud", "score": 0.71, "seed_score": 0.71,
+                      "provenance": { "kind": "seed" }, "activated": true },
+                    { "id": "ddns", "label": "DDNS", "score": 0.32, "seed_score": 0.30,
+                      "provenance": { "kind": "dependency", "from": {"node":"concept","id":"nextcloud"}, "hops": 1 },
+                      "activated": true },
+                    { "id": "wylde", "label": "Wylde", "score": 0.30, "seed_score": 0.62,
+                      "provenance": { "kind": "inhibited", "by": {"node":"concept","id":"nextcloud"}, "raw": 0.62 },
+                      "activated": false }
+                ],
+                "vocabulary": [ { "identifier": "the_pipe", "score": 1.0 } ],
+                "abs_threshold": 0.5, "chosen_cutoff": 0.5, "activated_count": 2, "max_concepts": 3
+            }
+        })
+    }
+
+    #[gpui::test]
+    fn every_curate_control_does_something(cx: &mut TestAppContext) {
+        // No live pipe: the menu is opened by `apply_preview` directly.
+        let fake = ScriptedBackend::new();
+        let _guard = fake.clone().install();
+        let window = cx.add_window(|_w, cx| CurateMenuView::new(cx));
+        cx.run_until_parked();
+
+        ControlWalk::new(window, &fake)
+            .fingerprint(|v: &CurateMenuView| {
+                format!(
+                    "open={} resolved={:?} checked={:?} status={}",
+                    v.open,
+                    v.resolved,
+                    v.model.as_ref().map(|m| m.checked_concepts().len()),
+                    v.status.is_some(),
+                )
+            })
+            .reset(|v: &mut CurateMenuView, _w, cx| {
+                // Re-open the menu fresh: a default cadence prompts the first
+                // turn, and a re-applied preview rebuilds the model. This runs
+                // before every click, so inject/skip/auto (which close the
+                // menu) never leave a later control unpainted.
+                v.conversation_id = "c1".to_string();
+                v.cadence = CurateCadence::default();
+                v.status = None;
+                v.loading = false;
+                v.resolved = None;
+                let reply: PreviewReply =
+                    serde_json::from_value(preview_reply()).expect("preview reply parses");
+                v.apply_preview(Ok(reply), cx);
+            })
+            .sources(&[include_str!("curate_menu.rs")])
+            .run(cx)
+            .assert_every_control_lives()
+            .assert_covers_every_literal_id();
     }
 }

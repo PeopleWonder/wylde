@@ -170,7 +170,10 @@ fn str_param(params: &Value, key: &str) -> Option<String> {
 fn timeout_param(params: &Value) -> f64 {
     params
         .get("timeout")
-        .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+        .and_then(|v| {
+            v.as_f64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
         .unwrap_or(10.0)
 }
 

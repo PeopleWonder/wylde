@@ -77,8 +77,8 @@ mod tests_memory;
 mod tests_tools;
 
 use consent::{consent_snapshot_value, consent_stream_pending_impl, handle_consent_decide};
+use helpers::{float_array, record_to_value, string_array};
 pub(crate) use helpers::{optional_string, require_string};
-use helpers::{record_to_value, string_array};
 
 /// The harness's GUI-facing action surface, expressed as Rust methods so
 /// in-process callers (Tauri) can dispatch without the IPC hop.
@@ -130,6 +130,7 @@ pub trait HarnessApi: Send + Sync {
     async fn models_set_default(&self, payload: Value) -> Reply;
     async fn models_get_default(&self, payload: Value) -> Reply;
     async fn models_get_effective(&self, payload: Value) -> Reply;
+    async fn models_resolve_default(&self, payload: Value) -> Reply;
 
     // ── settings.ollama.* (4 verbs; per-model inference override store) ─
     async fn settings_ollama_get_overrides(&self, payload: Value) -> Reply;
@@ -146,6 +147,12 @@ pub trait HarnessApi: Send + Sync {
     async fn settings_concept_routing_get(&self, payload: Value) -> Reply;
     async fn settings_concept_routing_set(&self, payload: Value) -> Reply;
 
+    // ── settings.reasoning.* + reasoning.fit_check (agentic-reasoning S1:
+    //    master toggle + model slots + advisory VRAM fit) ───────────────
+    async fn settings_reasoning_get(&self, payload: Value) -> Reply;
+    async fn settings_reasoning_set(&self, payload: Value) -> Reply;
+    async fn reasoning_fit_check(&self, payload: Value) -> Reply;
+
     // prompts.* (5 verbs; system-prompt overrides + presets) — Rust
     // port of the Python `_prompts.py` actions (full-Rust cutover).
     async fn prompts_list(&self, payload: Value) -> Reply;
@@ -161,6 +168,7 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_long_term_delete(&self, payload: Value) -> Reply;
     async fn memory_long_term_history(&self, payload: Value) -> Reply;
     async fn memory_long_term_search(&self, payload: Value) -> Reply;
+    async fn memory_long_term_reindex(&self, payload: Value) -> Reply;
 
     // ── memory.workspace.* (6 verbs; full-Rust cutover R2a) ──────────
     async fn memory_workspace_list(&self, payload: Value) -> Reply;
@@ -168,6 +176,8 @@ pub trait HarnessApi: Send + Sync {
     async fn memory_workspace_save(&self, payload: Value) -> Reply;
     async fn memory_workspace_update(&self, payload: Value) -> Reply;
     async fn memory_workspace_delete(&self, payload: Value) -> Reply;
+    async fn memory_workspace_delete_all(&self, payload: Value) -> Reply;
+    async fn memory_workspace_reindex(&self, payload: Value) -> Reply;
     async fn memory_workspace_curate(&self, payload: Value) -> Reply;
 
     // ── memory.reflect (1 verb; full-Rust cutover R2b) ───────────────
@@ -377,6 +387,13 @@ impl HarnessApi for DefaultHarnessApi {
         model_actions::handle_get_effective(payload).await
     }
 
+    async fn models_resolve_default(&self, payload: Value) -> Reply {
+        let ollama = model_actions::LiveOllama {
+            service: Config::get().ollama_service.clone(),
+        };
+        crate::model_registry::default_model::handle_resolve_default(payload, &ollama).await
+    }
+
     // ── settings.ollama.* ────────────────────────────────────────────
     // Pass-throughs to the per-model override store's action handlers.
 
@@ -412,6 +429,19 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn settings_concept_routing_set(&self, payload: Value) -> Reply {
         settings_actions::handle_concept_routing_set(payload).await
+    }
+
+    // ── settings.reasoning.* + reasoning.fit_check (agentic-reasoning S1) ─
+    async fn settings_reasoning_get(&self, payload: Value) -> Reply {
+        settings_actions::handle_reasoning_get(payload).await
+    }
+
+    async fn settings_reasoning_set(&self, payload: Value) -> Reply {
+        settings_actions::handle_reasoning_set(payload).await
+    }
+
+    async fn reasoning_fit_check(&self, payload: Value) -> Reply {
+        crate::turn::reasoning::handle_fit_check(payload).await
     }
 
     // prompts.* (system-prompt overrides + presets). Synchronous store
@@ -461,8 +491,20 @@ impl HarnessApi for DefaultHarnessApi {
             optional_string(&payload, "source").unwrap_or_else(|| "settings_ui".to_owned());
         let importance = payload.get("importance").and_then(Value::as_f64);
         let tags = string_array(&payload, "tags");
+        // Auto-embed on write (fail-soft, budgeted) so memories saved
+        // through this API/pipe path (Settings UI, extensions, N8N —
+        // anything that isn't the model tool) still populate
+        // `long_term.vec.bin` and stay reachable by semantic search. A
+        // caller-supplied `vector` wins; otherwise embed the body — mirrors
+        // the model-tool handler (`tooling::tools::memory::run_save`) and
+        // the workspace save path. An absent embedder just leaves it to
+        // text search. (fix #43)
+        let vector = match float_array(&payload, "vector") {
+            Some(v) => Some(v),
+            None => crate::memory::embed_write::embed_for_write(&body).await,
+        };
 
-        match long_term::save(&body, &source, importance, tags, None) {
+        match long_term::save(&body, &source, importance, tags, vector) {
             Ok(record) => Reply::ok(record_to_value(record)),
             Err(SaveError::EmptyBody) => Reply::err_msg("bad_request", "body is required"),
             Err(SaveError::Io(e)) => Reply::err_msg("io_error", e.to_string()),
@@ -482,8 +524,26 @@ impl HarnessApi for DefaultHarnessApi {
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty());
         let importance = payload.get("importance").and_then(Value::as_f64);
+        // Re-embed the replacement record so its `long_term.vec.bin` mirror
+        // tracks the current text (update mints a NEW record id). Caller
+        // `vector` wins; else embed the effective new body — the supplied
+        // `body`, or the original's when unchanged. Mirrors the model-tool
+        // handler; fail-soft. (fix #43)
+        let vector = match float_array(&payload, "vector") {
+            Some(v) => Some(v),
+            None => {
+                let effective_body = body
+                    .map(str::to_owned)
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| long_term::get(&rid).map(|r| r.body));
+                match effective_body {
+                    Some(text) => crate::memory::embed_write::embed_for_write(&text).await,
+                    None => None,
+                }
+            }
+        };
 
-        match long_term::update(&rid, body, importance, source, None) {
+        match long_term::update(&rid, body, importance, source, vector) {
             Some(record) => Reply::ok(record_to_value(record)),
             None => Reply::err_msg("not_found", format!("memory {rid:?} not found")),
         }
@@ -506,6 +566,21 @@ impl HarnessApi for DefaultHarnessApi {
             .map(record_to_value)
             .collect();
         Reply::ok(json!({ "id": rid, "chain": chain }))
+    }
+
+    /// `memory.long_term.reindex` — rebuild the long-term vector mirror from
+    /// the authoritative JSON records (#136). See
+    /// [`crate::memory::long_term::reindex_vectors`].
+    async fn memory_long_term_reindex(&self, _payload: Value) -> Reply {
+        match crate::memory::long_term::reindex_vectors().await {
+            Ok(r) => Reply::ok(json!({
+                "ok": true,
+                "total": r.total,
+                "embedded": r.embedded,
+                "failed": r.failed,
+            })),
+            Err(e) => Reply::err_msg("embedder_unavailable", e.to_string()),
+        }
     }
 
     async fn memory_long_term_search(&self, payload: Value) -> Reply {
@@ -550,6 +625,14 @@ impl HarnessApi for DefaultHarnessApi {
 
     async fn memory_workspace_delete(&self, payload: Value) -> Reply {
         workspace_memory_actions::handle_delete(payload).await
+    }
+
+    async fn memory_workspace_delete_all(&self, payload: Value) -> Reply {
+        workspace_memory_actions::handle_delete_all(payload).await
+    }
+
+    async fn memory_workspace_reindex(&self, payload: Value) -> Reply {
+        workspace_memory_actions::handle_reindex(payload).await
     }
 
     async fn memory_workspace_curate(&self, payload: Value) -> Reply {

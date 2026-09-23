@@ -13,8 +13,8 @@ use crate::actions::{
     all_action_names, contract_metadata, handle_link_config_get, handle_link_config_patch,
     handle_link_connect, handle_link_pair, handle_link_peers, handle_link_peers_remove,
     handle_link_qr, handle_link_register, handle_link_restart, handle_link_services,
-    handle_link_status, handle_link_stun, handle_vpn_disable, handle_vpn_enable,
-    handle_vpn_keygen, handle_vpn_status, handler_module,
+    handle_link_status, handle_link_stun, handle_vpn_disable, handle_vpn_enable, handle_vpn_keygen,
+    handle_vpn_status, handler_module,
 };
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -26,8 +26,7 @@ pub fn install() {
     }
 
     let module = handler_module();
-    let metadata: std::collections::HashMap<&str, &str> =
-        contract_metadata().into_iter().collect();
+    let metadata: std::collections::HashMap<&str, &str> = contract_metadata().into_iter().collect();
     let doc = |name: &str| -> &'static str { metadata.get(name).copied().unwrap_or("") };
 
     register_action_with_meta(

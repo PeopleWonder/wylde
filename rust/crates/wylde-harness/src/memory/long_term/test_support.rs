@@ -30,6 +30,7 @@ pub struct TestEnv {
     _guard: MutexGuard<'static, ()>,
     _tempdir: TempDir,
     prior: Option<std::ffi::OsString>,
+    prior_budget: Option<std::ffi::OsString>,
 }
 
 impl TestEnv {
@@ -38,10 +39,19 @@ impl TestEnv {
         let tempdir = TempDir::new().expect("create test tempdir");
         let prior = std::env::var_os("WYLDE_DATA_DIR");
         std::env::set_var("WYLDE_DATA_DIR", tempdir.path());
+        // No wylde-ollama IPC service runs inside a cargo-test process, so
+        // every write-path embed fails fast — but the embedder's retry
+        // backoff would still burn ~1.2s per call at the default budget.
+        // Pin a tiny budget so the fail-soft path returns promptly and the
+        // suite stays quick. (Callers that want to exercise a real embed
+        // pass an explicit vector, bypassing this path entirely.)
+        let prior_budget = std::env::var_os("WYLDE_EMBED_WRITE_BUDGET_MS");
+        std::env::set_var("WYLDE_EMBED_WRITE_BUDGET_MS", "20");
         Self {
             _guard: guard,
             _tempdir: tempdir,
             prior,
+            prior_budget,
         }
     }
 }
@@ -51,6 +61,10 @@ impl Drop for TestEnv {
         match self.prior.take() {
             Some(v) => std::env::set_var("WYLDE_DATA_DIR", v),
             None => std::env::remove_var("WYLDE_DATA_DIR"),
+        }
+        match self.prior_budget.take() {
+            Some(v) => std::env::set_var("WYLDE_EMBED_WRITE_BUDGET_MS", v),
+            None => std::env::remove_var("WYLDE_EMBED_WRITE_BUDGET_MS"),
         }
     }
 }

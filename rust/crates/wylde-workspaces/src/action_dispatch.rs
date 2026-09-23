@@ -33,6 +33,7 @@ pub const UPDATE: &str = "workspaces.update";
 pub const DELETE: &str = "workspaces.delete";
 pub const SET_PERSONA: &str = "workspaces.set_persona";
 pub const LIST_MRU: &str = "workspaces.list_mru";
+pub const LIST_ALL: &str = "workspaces.list_all";
 pub const RAG_QUERY: &str = "workspaces.rag_query";
 pub const REINDEX: &str = "workspaces.reindex";
 
@@ -153,6 +154,7 @@ pub const ALL_ACTIONS: &[&str] = &[
     DELETE,
     SET_PERSONA,
     LIST_MRU,
+    LIST_ALL,
     RAG_QUERY,
     REINDEX,
     // Index hygiene (P1)
@@ -207,6 +209,23 @@ pub const ALL_ACTIONS: &[&str] = &[
     CONVERSATIONS_LIST,
     CONVERSATIONS_GET,
     CONVERSATIONS_DELETE,
+    // Registered and handled since Slice 0c but absent from this table until
+    // #130 — the reverse-direction gate caught it. Without the entry it leaked
+    // past reset_for_tests and the gpui-contract lint would flag its callers.
+    CONVERSATIONS_REFRESH_SUMMARY,
+    // Concept-hierarchy overlay — registered in install() but absent from this
+    // table until #130 (all ten leaked past reset_for_tests and were invisible
+    // to the gpui-contract lint).
+    HIERARCHY_GET_TREE,
+    HIERARCHY_GET_NODE,
+    HIERARCHY_SET_DEFINITION,
+    HIERARCHY_ADD_EDGE,
+    HIERARCHY_REMOVE_EDGE,
+    HIERARCHY_MERGE_NODES,
+    HIERARCHY_REMOVE_MERGE,
+    HIERARCHY_GET_CONFIG,
+    HIERARCHY_SET_ENABLED,
+    HIERARCHY_GET_OVERLAY,
     // Slice I — file watcher control
     WATCHER_STATUS,
     WATCHER_PAUSE,
@@ -294,6 +313,15 @@ pub fn install() {
         |p: Value| async move { api::handle_list_mru(p).await },
         "MRU-5 workspace list + active id. No payload. Reply: \
          {workspaces: [WorkspaceDefinition], active_id}.",
+        META_MODULE,
+    );
+    register_action_with_meta(
+        LIST_ALL,
+        |p: Value| async move { api::handle_list_all(p).await },
+        "Every workspace on disk (disk-walk, not just the MRU-5 window); \
+         surfaces bundles the index lost or never knew about and reconciles \
+         stale entries (#134). No payload. Reply: {workspaces: \
+         [WorkspaceDefinition]}.",
         META_MODULE,
     );
     register_action_with_meta(
@@ -1006,7 +1034,7 @@ pub fn reset_for_tests() {
 mod tests {
     use super::*;
     use tokio::sync::{Mutex as AsyncMutex, MutexGuard};
-    use wylde_shared::ipc::{dispatch_action, list_actions};
+    use wylde_shared::ipc::{assert_action_table_matches_registry, dispatch_action, list_actions};
 
     // The action registry is process-wide; serialize the tests that
     // install/reset it so parallel threads don't clobber each other's
@@ -1024,6 +1052,24 @@ mod tests {
         assert_eq!(reply.data["ok"], json!(true));
         assert_eq!(reply.data["service"], "wylde-workspaces");
         assert_eq!(reply.data["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn install_registers_all_actions_both_directions() {
+        // #130: workspaces has the largest table (~80 verbs) and was previously
+        // guarded only for PING and SYMBOL_CONTEXT. Assert ALL_ACTIONS and the
+        // live registry AGREE in both directions across every namespace this
+        // service owns — a registered verb missing from the table (which drives
+        // reset_for_tests, so it would leak across tests) now fails here and
+        // names itself.
+        let _g = registry_guard().await;
+        reset_for_tests();
+        install();
+        assert_action_table_matches_registry(
+            &["ping", "workspaces.", "settings.lexical.", "chat."],
+            ALL_ACTIONS,
+        );
+        reset_for_tests();
     }
 
     #[tokio::test]
@@ -1103,7 +1149,10 @@ mod tests {
         assert!(!reply.ok, "blank id must be rejected by the handler");
         let code = reply.error.unwrap().code;
         assert_eq!(code, "bad_request", "served by the handler, got {code:?}");
-        assert_ne!(code, "no_action", "must NOT be the unknown-action fallthrough");
+        assert_ne!(
+            code, "no_action",
+            "must NOT be the unknown-action fallthrough"
+        );
 
         reset_for_tests();
     }
@@ -1132,8 +1181,14 @@ mod tests {
             let reply = dispatch_action(json!({"action": verb, "payload": {}})).await;
             assert!(!reply.ok, "{verb}: blank payload must be rejected");
             let code = reply.error.unwrap().code;
-            assert_eq!(code, "bad_request", "{verb} served by handler, got {code:?}");
-            assert_ne!(code, "no_action", "{verb} must NOT be the unknown-action fallthrough");
+            assert_eq!(
+                code, "bad_request",
+                "{verb} served by handler, got {code:?}"
+            );
+            assert_ne!(
+                code, "no_action",
+                "{verb} must NOT be the unknown-action fallthrough"
+            );
         }
 
         reset_for_tests();

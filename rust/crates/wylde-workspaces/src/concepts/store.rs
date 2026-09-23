@@ -197,7 +197,12 @@ mod tests {
     use crate::test_support::TestEnv;
 
     fn concept(id: &str) -> Concept {
-        let mut c = Concept::new(id, id, format!("desc {id}"), ConceptSource::DirectoryCluster);
+        let mut c = Concept::new(
+            id,
+            id,
+            format!("desc {id}"),
+            ConceptSource::DirectoryCluster,
+        );
         c.members = vec![format!("{id}_sym")];
         c.member_files = vec![format!("src/{id}.rs")];
         c
@@ -272,7 +277,10 @@ mod tests {
         };
         assert_eq!(patched.description, "new");
         assert_eq!(patched.described_by, vec!["Term"]);
-        assert_eq!(update(ws, "ghost", ConceptPatch::default()).unwrap(), UpdateOutcome::NotFound);
+        assert_eq!(
+            update(ws, "ghost", ConceptPatch::default()).unwrap(),
+            UpdateOutcome::NotFound
+        );
     }
 
     #[test]

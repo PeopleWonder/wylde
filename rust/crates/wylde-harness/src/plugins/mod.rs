@@ -190,9 +190,9 @@ mod tests {
     #[tokio::test]
     async fn dispatch_reaches_plugin_end_to_end() {
         // Same harness the built-in dispatch tests use: consent bypass
-        // under the serial guard so the gate doesn't intercept.
-        let _g = consent::serial_test_guard().await;
-        consent::set_bypass_for_tests(true);
+        // scoped under the serial guard so the gate doesn't intercept
+        // (and the flag doesn't leak to the next test).
+        let _g = consent::bypass_scope(true).await;
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let mut reg = Registry::empty();
@@ -202,13 +202,13 @@ mod tests {
             cfg,
             "plugin.fixture.ping",
             TIER_TOOL_USE,
-            json!({"name": "Aaron"}),
+            json!({"name": "Sam"}),
         )
         .await;
         assert_eq!(outcome.canonical_id, "plugin_fixture_ping");
         let ok = outcome.result.expect("plugin handler runs");
         assert_eq!(ok["status"], "success");
-        assert_eq!(ok["pong"], "Aaron");
+        assert_eq!(ok["pong"], "Sam");
     }
 
     // ── more host behavior against the fixture plugin ───────────────
@@ -279,8 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn destructive_plugin_tool_blocked_on_tool_use_tier() {
-        let _g = consent::serial_test_guard().await;
-        consent::set_bypass_for_tests(true);
+        let _g = consent::bypass_scope(true).await;
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let mut reg = Registry::empty();

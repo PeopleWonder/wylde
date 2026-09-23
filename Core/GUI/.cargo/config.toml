@@ -1,0 +1,56 @@
+# Core/GUI cargo config.
+#
+# `cargo panel-walk` — the L7 GUI verification gate (issue #35, roadmap T0.1b).
+# Runs EVERY test target in the 9 panel crates, headless:
+#   * the windowed `#[gpui::test]` panel-walk (`tests/panel_walk.rs`) — every page
+#     mounts + loads without panic and detects an error state per panel, under
+#     four backend conditions (healthy / down / error envelope / empty); and
+#   * the windowed `control_walk` (`tests/control_walk.rs`, #247) — every control
+#     that ACTUALLY painted is clicked through gpui hit-testing and its real
+#     listener, and must produce an observable effect, so a dead / unwired /
+#     panicking button reds the gate; and
+#   * the behavioural windowed tests that cover critical-path behaviour —
+#     `Chat/tests/dock_scoping.rs` + `conversations.rs` (workspace-id scoping on
+#     send), `Memory/tests/copy_in.rs` (notes.add provenance + failure),
+#     `Workspaces/tests/registry_nav.rs` (enter/leave, service start/restart),
+#     `Settings/tests/prefs_dispatch.rs` (persist/patch/error banner),
+#     `Devices/tests/cancel_pairing.rs` (pairing cancel), and the rest.
+# Deterministic and desktop-session-free — the gpui test platform is a mock
+# `TestPlatform` (no GPU/display), so this runs the same locally and in CI.
+#
+# Invoke from this directory (`Core/GUI/`):  cargo panel-walk
+# The preflight (L7) and CI (ci.yml `gui panel-walk (L7)` job) both call it.
+#
+# WHY NO `--test panel_walk` (issue #56): that filter meant the gate ran
+# `tests/panel_walk.rs` and NOTHING ELSE, so ~130 behavioural tests that already
+# existed and passed were enforced by nothing and could rot silently — a
+# regression they'd catch turned nothing red. Dropping the filter runs every
+# target in the same crates and collects coverage already paid for.
+#
+# The `-p` scoping is the deliberate part and MUST stay — NOT `--workspace` — so
+# the gate never links the Shell (tray-icon / wry) or drags in the `rust/` audio
+# stack (`wylde-voice`/cpal, which segfaults headless). Widen test TARGETS here,
+# never the crate set.
+#
+# `wylde-changelog` (#196) is in the set for the same reason the 9 panels are: it
+# is a real user-facing gpui surface that the L7 gate must prove mounts without
+# panic. It is safe to add here specifically because — like a panel, unlike the
+# Shell — it links neither tray-icon/wry nor the `rust/` audio stack (its only
+# deps are `gpui` + `wylde-theme`), so it stays TestPlatform-headless-clean.
+#
+# The CI job keeps the context name `gui panel-walk (L7)` even though it now runs
+# more than the panel-walk. That is deliberate: the name is a REQUIRED status
+# check, and renaming it would mean the old context never reports again — GitHub
+# would block every PR forever waiting for a status that never arrives, including
+# the very PR doing the rename (a deadlock: it can't merge to fix itself). Same
+# lesson as #49/#57's "never require a path-filtered context". If it is ever
+# renamed, add the new context to both rulesets live BEFORE merging the rename,
+# and drop the old one after.
+# `wylde-gui-controls` (#247) is in the set for the same reason: it owns the
+# per-frame control registry that every `tests/control_walk.rs` reads, so a
+# regression in it would silently empty every control walk. Its only dependency
+# is `gpui`, so it stays TestPlatform-headless-clean like `wylde-changelog`.
+# Leaving it out would recreate #56 exactly — a gate whose foundation is
+# enforced by nothing.
+[alias]
+panel-walk = "test -p wylde-gui-controls -p wylde-panel-chat -p wylde-panel-dashboard -p wylde-panel-memory -p wylde-panel-workspaces -p wylde-panel-models -p wylde-panel-tools -p wylde-panel-devices -p wylde-panel-remote-access -p wylde-panel-settings -p wylde-changelog -p wylde-gui-shell-chrome"

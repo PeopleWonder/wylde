@@ -78,7 +78,9 @@ pub async fn upsert_file(def: &WorkspaceDefinition, path: &str) -> DeltaOutcome 
                 let _g = lk.lock().await;
                 manifest::touch_file(&def.id, &canonical, size, mtime);
             }
-            tracing::debug!("workspaces.watcher: {canonical} unchanged (hash match); skip re-embed");
+            tracing::debug!(
+                "workspaces.watcher: {canonical} unchanged (hash match); skip re-embed"
+            );
             return DeltaOutcome::skipped(&canonical, "unchanged");
         }
     }
@@ -179,7 +181,11 @@ async fn vector_upsert(
     // they're moved into the merged set (gated, so OFF pays nothing — not even
     // the clone). A single file's chunks are a handful, so the clone is cheap.
     let lexical_on = LexicalConfig::current().enabled;
-    let lexical_chunks = if lexical_on { fresh.clone() } else { Vec::new() };
+    let lexical_chunks = if lexical_on {
+        fresh.clone()
+    } else {
+        Vec::new()
+    };
     // Hold the per-workspace index lock across the chunks-then-manifest pair so
     // a racing manual reindex can't tear it (§3.3).
     let lk = lock::for_workspace(workspace_id);
@@ -264,7 +270,7 @@ mod tests {
     /// Register a real workspace (so the existence-guard in `vector_remove`
     /// passes) and return its id. The folder is a throwaway tempdir.
     fn registered_ws(env: &TestEnv, name: &str) -> String {
-        registry::create(&env.ws_path(name), None).id
+        registry::create(&env.ws_path(name), None).unwrap().id
     }
 
     #[tokio::test]

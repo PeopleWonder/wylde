@@ -76,7 +76,7 @@ Rust where they are testable, versioned, and fail-soft. N8N hosts the
 user-authored automation surface (e.g. `agent-orchestra.json`), not core
 data-plane plumbing. See memory `wylde-n8n-principle`.
 
-> ⚠️ **Live-N8N note for Aaron.** This file is only the importable
+> ⚠️ **Live-N8N note for the maintainer.** This file is only the importable
 > *template*. If `rag-ingest.json` was ever imported into the running N8N
 > instance and activated, it is still live in N8N's DB — deactivate it
 > manually (it has no harness caller for the Workspaces path anymore).
@@ -87,4 +87,4 @@ data-plane plumbing. See memory `wylde-n8n-principle`.
 > a *separate* path from Workspaces and were **out of scope** for this
 > slice, so their code was left intact. With the template retired they
 > should, in a follow-up, either be ported to the harness indexer the same
-> way or be retired alongside the workflow. Flagged for Aaron.
+> way or be retired alongside the workflow. Flagged for the maintainer.

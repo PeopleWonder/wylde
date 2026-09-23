@@ -16,10 +16,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use ort::session::Session;
-use ort::session::builder::GraphOptimizationLevel;
-use ort::value::TensorRef;
 use ort::inputs;
+use ort::session::builder::GraphOptimizationLevel;
+use ort::session::Session;
+use ort::value::TensorRef;
 use thiserror::Error;
 
 use crate::config::SttBackend;
@@ -157,10 +157,9 @@ impl WhisperEncoder {
             .run(inputs!["input_features" => input])
             .map_err(|e| WhisperInferError::Run(e.to_string()))?;
 
-        let (_, first) = outputs
-            .iter()
-            .next()
-            .ok_or_else(|| WhisperInferError::OutputShape("encoder produced no outputs".to_owned()))?;
+        let (_, first) = outputs.iter().next().ok_or_else(|| {
+            WhisperInferError::OutputShape("encoder produced no outputs".to_owned())
+        })?;
         let (out_shape, data) = first
             .try_extract_tensor::<f32>()
             .map_err(|e| WhisperInferError::OutputShape(e.to_string()))?;

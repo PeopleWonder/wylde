@@ -376,7 +376,13 @@ mod tests {
         let c = cfg(5, 100, 1000, 600);
         let mut g = Governor::default();
         let orphans = vec!["wylde-crashed".to_owned()];
-        let actions = plan_restarts(&orphans, &owned(&["wylde-crashed"]), &c, &mut g, Instant::now());
+        let actions = plan_restarts(
+            &orphans,
+            &owned(&["wylde-crashed"]),
+            &c,
+            &mut g,
+            Instant::now(),
+        );
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].0, "wylde-crashed");
         assert_eq!(
@@ -411,7 +417,13 @@ mod tests {
         c.enabled = false;
         let mut g = Governor::default();
         let orphans = vec!["wylde-crashed".to_owned()];
-        let actions = plan_restarts(&orphans, &owned(&["wylde-crashed"]), &c, &mut g, Instant::now());
+        let actions = plan_restarts(
+            &orphans,
+            &owned(&["wylde-crashed"]),
+            &c,
+            &mut g,
+            Instant::now(),
+        );
         assert!(actions.is_empty(), "disabled policy must plan nothing");
     }
 

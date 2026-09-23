@@ -33,16 +33,29 @@
 //!
 //! ## Migration
 //!
-//! On first use, if the old flat `<data_dir>/settings/ollama.json`
-//! exists, its contents are copied to
-//! `<data_dir>/settings/ollama/default/_global_migrated.json` (wrapped
-//! with an `_migrated_from_global` marker) so no user data is lost. The
-//! old file is left untouched; migration is idempotent (it no-ops once
-//! the marker file exists).
+//! Two independent, one-way, idempotent migrations run here — they stack,
+//! oldest first:
+//!
+//! 1. **Flat → per-model (pre-existing).** If the old flat
+//!    `<data_dir>/settings/ollama.json` exists, its contents are copied to
+//!    `<data_dir>/settings/ollama/default/_global_migrated.json` (wrapped
+//!    with an `_migrated_from_global` marker) so no user data is lost. The
+//!    old file is left untouched; it no-ops once the marker exists.
+//! 2. **Legacy root → convention A (#250).** `<data_dir>` is now
+//!    [`wylde_shared::paths::data_dir`] — `WYLDE_DATA_DIR` → `DATA_DIR` →
+//!    `<WYLDE_ROOT>/.wylde/data`. Before #250 the tail of that chain was
+//!    `<WYLDE_ROOT>/data` (then a cwd-relative `"data"`), so an existing
+//!    install's overrides sit under the legacy sibling root. The whole
+//!    `settings/ollama/` tree is adopted from there on first touch, and the
+//!    flat-file import above also still *looks* in the legacy root — the
+//!    Gateway wrote that file at `<ROOT>/data/settings/ollama.json` and a
+//!    box that never opened the panel since #250 has it nowhere else.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
+use wylde_shared::data_migration::adopt_legacy_tree;
+use wylde_shared::paths::{data_dir, legacy_data_dir};
 
 /// The default profile id. Future model-profile work adds sibling dirs
 /// (`work/`, `creative/`, …) next to `default/` under the same root.
@@ -52,29 +65,20 @@ pub const DEFAULT_PROFILE: &str = "default";
 /// excluded from [`list_models_with_overrides`] (it is not a real model).
 const MIGRATED_GLOBAL_FILE: &str = "_global_migrated.json";
 
-/// Resolve the on-disk data root. Precedence:
-/// `WYLDE_DATA_DIR` → `DATA_DIR` → `WYLDE_ROOT/data` → `"data"`.
+/// `<data_dir>/settings/ollama` — the override-store root, under
+/// convention A (#250).
 ///
-/// The `WYLDE_ROOT/data` arm matches where the Gateway wrote the old
-/// flat `ollama.json`, so migration finds it on a real box; the first
-/// two arms match the harness's own `model_state` / memory conventions
-/// and let tests rebind the root to a temp dir.
-fn data_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os("WYLDE_DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    if let Some(v) = std::env::var_os("DATA_DIR") {
-        return PathBuf::from(v);
-    }
-    if let Some(root) = std::env::var_os("WYLDE_ROOT") {
-        return PathBuf::from(root).join("data");
-    }
-    PathBuf::from("data")
-}
-
-/// `<data_dir>/settings/ollama` — the override-store root.
+/// Adopts the pre-#250 `<WYLDE_ROOT>/data/settings/ollama/` tree on first
+/// touch. Cheap enough to run unconditionally (one `read_dir` on a
+/// populated store), and correct under the env rebinding the tests here
+/// do — a `OnceLock` latch would not be.
 fn store_root() -> PathBuf {
-    data_dir().join("settings").join("ollama")
+    let canonical = data_dir().join("settings").join("ollama");
+    adopt_legacy_tree(
+        &legacy_data_dir().join("settings").join("ollama"),
+        &canonical,
+    );
+    canonical
 }
 
 /// `<store_root>/index.json` — the safe-name → real-tag reverse map.
@@ -87,9 +91,25 @@ fn profile_dir(profile_id: &str) -> PathBuf {
     store_root().join(sanitize(profile_id))
 }
 
-/// The old flat store the Gateway wrote: `<data_dir>/settings/ollama.json`.
+/// The old flat store the Gateway wrote, `settings/ollama.json`, looked up
+/// under the canonical root first and the pre-#250 legacy root second.
+///
+/// Both arms are needed. The canonical arm is what tests (and any box that
+/// has already migrated) hit; the legacy arm is the *only* place a real
+/// install that never opened the Settings panel since #250 has the file,
+/// because the Gateway wrote it at `<WYLDE_ROOT>/data/settings/ollama.json`.
+/// Dropping it would turn "your inference overrides are gone" into the
+/// silent no-op this whole issue exists to prevent.
 fn legacy_flat_path() -> PathBuf {
-    data_dir().join("settings").join("ollama.json")
+    let canonical = data_dir().join("settings").join("ollama.json");
+    if canonical.is_file() {
+        return canonical;
+    }
+    let legacy = legacy_data_dir().join("settings").join("ollama.json");
+    if legacy.is_file() {
+        return legacy;
+    }
+    canonical
 }
 
 /// Map a model tag (or profile id) to a safe filename stem: `:` and `/`
@@ -246,16 +266,54 @@ mod tests {
     /// Bind the store to a fresh temp dir for one test. Holds the shared
     /// env lock for the closure so concurrent tests don't cross-talk the
     /// `WYLDE_DATA_DIR` global.
+    ///
+    /// `WYLDE_ROOT` is pinned to the same temp dir, not just `WYLDE_DATA_DIR`:
+    /// since #250 the store also consults the *legacy* root
+    /// (`<WYLDE_ROOT>/data/settings/ollama`) to adopt an existing install's
+    /// overrides. Leaving `WYLDE_ROOT` ambient would let a dev box's real
+    /// overrides be copied into the temp store mid-test.
     fn with_temp_store<F: FnOnce(&Path)>(f: F) {
         let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().expect("tempdir");
-        let prior = std::env::var_os("WYLDE_DATA_DIR");
-        // SAFETY: TEST_ENV_LOCK serialises WYLDE_DATA_DIR mutation.
+        let prior: Vec<(&str, Option<std::ffi::OsString>)> =
+            ["WYLDE_DATA_DIR", "DATA_DIR", "WYLDE_ROOT"]
+                .iter()
+                .map(|k| (*k, std::env::var_os(k)))
+                .collect();
+        // SAFETY: TEST_ENV_LOCK serialises mutation of these globals.
+        std::env::remove_var("DATA_DIR");
         std::env::set_var("WYLDE_DATA_DIR", tmp.path());
+        std::env::set_var("WYLDE_ROOT", tmp.path());
         f(tmp.path());
-        match prior {
-            Some(v) => std::env::set_var("WYLDE_DATA_DIR", v),
-            None => std::env::remove_var("WYLDE_DATA_DIR"),
+        for (k, v) in prior {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+
+    /// Like [`with_temp_store`] but exercising the convention-A *fallback*
+    /// arm — `WYLDE_ROOT` only, no `WYLDE_DATA_DIR`/`DATA_DIR`. That is the
+    /// arm #250 changed and the only one under which the legacy root is a
+    /// genuinely different directory. Hands the closure the estate root.
+    fn with_temp_root<F: FnOnce(&Path)>(f: F) {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let prior: Vec<(&str, Option<std::ffi::OsString>)> =
+            ["WYLDE_DATA_DIR", "DATA_DIR", "WYLDE_ROOT"]
+                .iter()
+                .map(|k| (*k, std::env::var_os(k)))
+                .collect();
+        std::env::remove_var("WYLDE_DATA_DIR");
+        std::env::remove_var("DATA_DIR");
+        std::env::set_var("WYLDE_ROOT", tmp.path());
+        f(tmp.path());
+        for (k, v) in prior {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
         }
     }
 
@@ -347,6 +405,137 @@ mod tests {
 
             // The old file is preserved (never deleted).
             assert!(legacy.exists());
+        });
+    }
+
+    // ── #250: convention A, and no data lost getting there ──────────────
+
+    /// The store roots under `<WYLDE_ROOT>/.wylde/data`, not the legacy
+    /// `<WYLDE_ROOT>/data` and not the cwd.
+    #[test]
+    fn store_roots_under_convention_a() {
+        with_temp_root(|root| {
+            let expected = root
+                .join(".wylde")
+                .join("data")
+                .join("settings")
+                .join("ollama");
+            assert_eq!(store_root(), expected);
+            assert!(store_root().is_absolute());
+        });
+    }
+
+    /// THE upgrade guarantee: overrides present only under the legacy root
+    /// still read after the move. Without adoption this returns an empty
+    /// map and the user's per-model inference settings are silently gone.
+    #[test]
+    fn legacy_only_overrides_are_still_read_after_the_move() {
+        with_temp_root(|root| {
+            // The pre-#250 layout: `<ROOT>/data/settings/ollama/...`.
+            let legacy = root.join("data").join("settings").join("ollama");
+            std::fs::create_dir_all(legacy.join("default")).unwrap();
+            std::fs::write(
+                legacy.join("default").join("llama3.2_3b.json"),
+                r#"{"temperature":0.42}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                legacy.join("index.json"),
+                r#"{"llama3.2_3b":"llama3.2:3b"}"#,
+            )
+            .unwrap();
+
+            assert_eq!(
+                get_overrides(DEFAULT_PROFILE, "llama3.2:3b").get("temperature"),
+                Some(&json!(0.42)),
+                "an upgrade must not reset per-model inference overrides"
+            );
+            // The index came across too, so the real tag is still recoverable.
+            assert_eq!(
+                list_models_with_overrides(DEFAULT_PROFILE),
+                vec!["llama3.2:3b".to_owned()]
+            );
+            // One-way: the legacy tree is preserved.
+            assert!(legacy.join("default").join("llama3.2_3b.json").is_file());
+        });
+    }
+
+    /// The Gateway's old *flat* `ollama.json` lived under the legacy root
+    /// too. A box that never opened the panel since #250 has it nowhere
+    /// else, so the flat import must still find it there.
+    #[test]
+    fn the_flat_gateway_file_is_still_found_under_the_legacy_root() {
+        with_temp_root(|root| {
+            let legacy_flat = root.join("data").join("settings").join("ollama.json");
+            std::fs::create_dir_all(legacy_flat.parent().unwrap()).unwrap();
+            std::fs::write(&legacy_flat, r#"{"temperature":0.31}"#).unwrap();
+
+            let _ = get_overrides(DEFAULT_PROFILE, "anything:latest");
+            let marker = root
+                .join(".wylde")
+                .join("data")
+                .join("settings")
+                .join("ollama")
+                .join("default")
+                .join("_global_migrated.json");
+            assert!(marker.exists(), "the legacy flat store should import");
+            let wrapper = read_object(&marker).unwrap();
+            assert_eq!(wrapper["values"]["temperature"], json!(0.31));
+            assert!(legacy_flat.exists(), "the old file is never deleted");
+        });
+    }
+
+    /// Idempotent and one-way: a value written since the move outranks the
+    /// legacy tree, and re-touching the store never resurrects it.
+    #[test]
+    fn a_stale_legacy_tree_never_overwrites_canonical_overrides() {
+        with_temp_root(|root| {
+            let legacy = root
+                .join("data")
+                .join("settings")
+                .join("ollama")
+                .join("default");
+            std::fs::create_dir_all(&legacy).unwrap();
+            std::fs::write(legacy.join("m_1.json"), r#"{"temperature":0.1}"#).unwrap();
+
+            // First touch adopts, then the user changes the value.
+            assert_eq!(
+                get_overrides(DEFAULT_PROFILE, "m:1").get("temperature"),
+                Some(&json!(0.1))
+            );
+            set_override(DEFAULT_PROFILE, "m:1", "temperature", json!(0.9));
+
+            for _ in 0..3 {
+                assert_eq!(
+                    get_overrides(DEFAULT_PROFILE, "m:1").get("temperature"),
+                    Some(&json!(0.9)),
+                    "adoption must not re-run over a populated canonical store"
+                );
+            }
+            assert_eq!(
+                std::fs::read_to_string(legacy.join("m_1.json")).unwrap(),
+                r#"{"temperature":0.1}"#,
+                "the legacy tree is read-only to this migration"
+            );
+        });
+    }
+
+    /// `WYLDE_DATA_DIR` / `DATA_DIR` are test seams and operator escape
+    /// hatches — they still win over the convention-A fallback.
+    #[test]
+    fn env_overrides_still_win_over_convention_a() {
+        with_temp_root(|root| {
+            let elsewhere = root.join("elsewhere");
+            std::env::set_var("DATA_DIR", &elsewhere);
+            assert_eq!(store_root(), elsewhere.join("settings").join("ollama"));
+            std::env::set_var("WYLDE_DATA_DIR", root.join("winner"));
+            assert_eq!(
+                store_root(),
+                root.join("winner").join("settings").join("ollama"),
+                "WYLDE_DATA_DIR outranks DATA_DIR"
+            );
+            std::env::remove_var("WYLDE_DATA_DIR");
+            std::env::remove_var("DATA_DIR");
         });
     }
 

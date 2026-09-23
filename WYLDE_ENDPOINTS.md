@@ -501,7 +501,7 @@ Voice is a subprocess of the Lifecycle daemon (Phase 2e in `Core/Lifecycle/daemo
 | Component | Surface | File:line |
 |---|---|---|
 | `device_gate/pipe.py` | Ten `device_gate.*` action handlers; `start()` brings up the pipe via `Core.shared.ipc.serve_forever_background` | `device_gate/pipe.py:start` |
-| `device_gate/run.py` | Process entry; the Lifecycle daemon spawns this with cwd=vault root via `py -3 "device_gate/run.py"` | `device_gate/run.py` |
+| `device_gate/run.py` | Process entry; the Lifecycle daemon spawns this with cwd=repo root via `py -3 "device_gate/run.py"` | `device_gate/run.py` |
 | `device_gate/core.py` | `DeviceGateService` — pairing, tokens, tier, rotate, revoke, pending-events queue. Pure-Python, no transport | `device_gate/core.py` |
 | `device_gate/store.py` | JSON-backed device store; tier constants + rank table; `Device` dataclass | `device_gate/store.py` |
 | `device_gate/auth.py` | htpasswd credential check (passlib + crypt + APR1 inline fallback for Windows-without-passlib) | `device_gate/auth.py` |
@@ -692,8 +692,9 @@ What replaced its three real responsibilities:
    §4 callers.
 
 The gpui binary's bundler/updater config is no longer a `tauri.conf.json`:
-per the rewrite plan the installer moves to standalone WiX scripts under
-`Core/GUI/installer/` and the updater to `self_update` + `self-replace`
+per the rewrite plan the installer moves to standalone bundler scripts (now
+extracted to https://github.com/PeopleWonder/wylde-installer, non-functional)
+and the updater to `self_update` + `self-replace`
 (declared in `Core/GUI/Cargo.toml`, wired in a post-alpha slice). The
 old Tauri bundle-resource and `core/security-api` cleanup items are moot
 now that `src-tauri/` is deleted.
