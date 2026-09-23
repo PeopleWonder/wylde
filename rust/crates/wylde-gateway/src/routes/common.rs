@@ -48,19 +48,19 @@ pub(super) fn envelope_to_response(env: (StatusCode, Value)) -> Response {
 /// verbatim; on success returns the verified-device payload from
 /// device-gate (currently unused, but kept on the return type so future
 /// routes can read `device_id` / `tier` without revalidating).
-pub(super) async fn authorize(headers: &HeaderMap) -> Result<Value, Response> {
+pub(super) async fn authorize(headers: &HeaderMap) -> Result<Value, Box<Response>> {
     let token = match extract_bearer(headers) {
         Some(t) => t,
         None => {
-            return Err(failure(
+            return Err(Box::new(failure(
                 "missing_token",
                 "Bearer token required (Authorization: Bearer <token>)",
                 StatusCode::UNAUTHORIZED,
-            ));
+            )));
         }
     };
     let result: ProxyResult = validate_token(&token).await;
-    result.map_err(envelope_to_response)
+    result.map_err(|e| Box::new(envelope_to_response(e)))
 }
 
 /// Fire an action on `wylde-harness` and shape the [`Response`].

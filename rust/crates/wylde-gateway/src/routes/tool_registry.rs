@@ -36,7 +36,7 @@ pub async fn list_all() -> Response {
     let resp = harness_dispatch("tools.list", json!({})).await;
     let (parts, body_bytes) = match response_into_parts(resp).await {
         Ok(p) => p,
-        Err(e) => return e,
+        Err(e) => return *e,
     };
     if !parts.status.is_success() {
         return rebuild_failure(parts, body_bytes);
@@ -97,7 +97,7 @@ async fn fallback_get_via_list(tool_id: &str) -> Response {
     let list = harness_dispatch("tools.list", json!({})).await;
     let (parts, body_bytes) = match response_into_parts(list).await {
         Ok(p) => p,
-        Err(e) => return e,
+        Err(e) => return *e,
     };
     if !parts.status.is_success() {
         return rebuild_failure(parts, body_bytes);
@@ -188,15 +188,15 @@ fn push_unique(out: &mut Vec<String>, key: String) {
 
 async fn response_into_parts(
     resp: Response,
-) -> Result<(axum::http::response::Parts, axum::body::Bytes), Response> {
+) -> Result<(axum::http::response::Parts, axum::body::Bytes), Box<Response>> {
     let (parts, body) = resp.into_parts();
     match axum::body::to_bytes(body, 16 * 1024 * 1024).await {
         Ok(b) => Ok((parts, b)),
-        Err(e) => Err(failure(
+        Err(e) => Err(Box::new(failure(
             "bad_gateway",
             &format!("could not read harness reply: {e}"),
             StatusCode::BAD_GATEWAY,
-        )),
+        ))),
     }
 }
 
