@@ -497,11 +497,9 @@ impl Shell {
                 Some(serde_json::json!({ "action": action, "payload": {} })),
             )
             .await;
-            let init_js = outcome.ok().and_then(|v| {
-                v.get("init_js")
-                    .and_then(|j| j.as_str())
-                    .map(str::to_owned)
-            });
+            let init_js = outcome
+                .ok()
+                .and_then(|v| v.get("init_js").and_then(|j| j.as_str()).map(str::to_owned));
             let _ = this.update(app_cx, |this, cx| {
                 if let Some(state) = this.iframes.get_mut(&key_for_async) {
                     if let Some(js) = init_js {

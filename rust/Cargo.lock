@@ -5900,7 +5900,6 @@ name = "wylde-n8n"
 version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
- "rand 0.8.6",
  "reqwest",
  "serde",
  "serde_json",
