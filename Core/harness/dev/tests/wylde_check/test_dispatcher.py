@@ -96,3 +96,57 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
         # render its availability (0.2 Stability, #239). Rule 40 gates a panel
         # against its services; the unit that can be dead is the item.
         "service_backed_surface_declares_availability",
+        # Rule 58 — every GUI chat entry point is driven by the all-surfaces
+        # chat-turn e2e (#236). Chat is the primary path and has more than one
+        # entry point; a new surface must not ship covered by nothing.
+        "chat_surfaces_are_e2e_covered",
+        # Rule 59 — every interactive GUI control is wired and walkable
+        # (#247). Panel-walk proves a panel LOADS; nothing proved a control
+        # in it DOES anything. WARNING for the pilot, ERROR after migration.
+        "gui_controls_are_wired_and_walkable",
+        # Rule 60 — a unit test touching a process-global broadcast bus owns
+        # its channel or serializes on a test-module guard (#246). The
+        # `src/`-unit-test half of rule 56's #83 class, with no
+        # minimum-count carve-out: #246's colliders never named the bus.
+        "global_bus_test_isolation",
+        # Rule 61 — rule 59's companion and the other half of #247: a GUI crate
+        # that builds controls must have a control_walk declaring every one of
+        # its control-building sources. Landed with the deletion of rule 59's
+        # (now drained) grandfather ratchet, once every panel was walked.
+        "every_control_building_crate_is_walked",
+        # Rule 62 — dependency-spread ratchet (#290 dependency isolation). The
+        # forward-looking half of #290: freezes each external dep's crate-spread
+        # at a baseline so unwrapped shotgun-risk can't silently re-accumulate.
+        "dependency_spread_ratchet",
+        # Rule 63 — no axum types in a non-gateway crate's public API (#290 axum
+        # containment enforcement). Companion to #293's router() -> pub(crate).
+        "no_axum_types_in_public_api",
+    }
+    assert set(result["data"]["summary"]["by_rule"].keys()) == expected
+
+
+def test_run_all_selects_only_named_rules(isolated_tree: Any) -> None:
+    wc, root = isolated_tree
+    _write(
+        root / "Core" / "harness" / "mod.py",
+        "SVC = 'wylde-orchestrator'  # dead reference\n",  # wylde-check: dead-ref-ok
+    )
+    result = wc.run_all(only=["dead_service_refs"])
+    assert result["data"]["rules_checked"] == 1
+    # All findings should be from the one selected rule.
+    assert all(f["rule"] == "dead_service_refs" for f in result["data"]["findings"])
+
+
+def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
+    """The rule count is pinned to an explicit literal on purpose.
+
+    ``len(_RULES)`` alone would happily follow a rule being deleted.
+    Pinning the number means removing a rule is a deliberate edit here
+    too — the same "drift must be noticed, not absorbed" principle that
+    #116 was about.  Bump this when a rule is genuinely added or retired.
+    """
+    wc, _root = isolated_tree
+    assert len(wc._RULES) == 38
+    result = wc.run_all()
+    assert result["ok"] is True
+    assert result["data"]["rules_checked"] == len(wc._RULES)

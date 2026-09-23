@@ -656,3 +656,186 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # not the panel — Tools declared its bridge correctly and still rendered a card
 # per extension pointing at a service nothing checked. This makes the per-item
 # state a structural gate on both sides of the wire.
+# All-surfaces chat-turn e2e (#236, 2026-07-22): +1 (rule 58,
+# chat_surfaces_are_e2e_covered) = 33 active.  Chat is the primary path
+# and has more than one entry point; this keeps a newly-added surface
+# from shipping with no end-to-end proof that typing in it does anything.
+# (Numbered 58, not 57: #239 landed its own rule 57 on develop first.)
+# GUI control-functionality enforcement (#247, 2026-07-23): +1 (rule 59,
+# gui_controls_are_wired_and_walkable) = 34 active.  Panel-walk proves a
+# panel LOADS; nothing proved a control in it DOES anything.  Ships at
+# Ships at error with a grandfather ratchet rather than at WARNING: the CI
+# gate fails on any finding, warning included, so "warn for now" would red
+# develop just as hard.  (Numbered 59, not 58: #236 landed 58 first.)
+# Global-bus test isolation (#246, 2026-07-23): +1 (rule 60,
+# global_bus_test_isolation) = 35 active.  The `src/`-unit-test half of the
+# #83 self-collision class rule 56 covers for `tests/` binaries: a watcher
+# test asserting on the first event off a process-global broadcast bus was
+# really asserting that no sibling test published during its window, and
+# failed ~17% of the time at --test-threads=8 on unrelated PRs.  No
+# minimum-count carve-out, unlike rule 56 — #246 had exactly one
+# bus-touching test and its colliders never named the bus.
+# #247 endgame (2026-07-26): +1 (rule 61, every_control_building_crate_is_walked)
+# = 36 active. Rule 59's companion: it makes a control_walk mandatory for every
+# control-building GUI crate (declaring all its control sources), landed together
+# with the deletion of rule 59's now-drained grandfather ratchet. Closes #247 —
+# every panel is walked and the property is structurally enforced going forward.
+# Dependency isolation (#290, 2026-07-28): +1 (rule 62, dependency_spread_ratchet)
+# = 37 active. The forward-looking half of #290: freezes each external dep's
+# crate-spread at today's baseline so unwrapped shotgun-risk (rand → 2 crates,
+# axum → 3, before they were contained) cannot silently re-accumulate. reqwest
+# (12 crates) is the named watch target.
+# Axum-containment enforcement (#290, 2026-07-28): +1 (rule 63,
+# no_axum_types_in_public_api) = 38 active. Companion to #293's router() ->
+# pub(crate) fix: no fully-pub item outside wylde-gateway may name an axum type,
+# so an HTTP-framework bump can never bleed across a crate's public boundary.
+assert len(_RULES) == 38, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 38)"
+
+
+def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Run every rule (or the subset named in ``only``).
+
+    Returns the standard envelope ``{ok, data: {findings, summary}}``.
+    Never raises — a broken rule emits an error-level finding pointing
+    at the checker itself.
+    """
+    selected = list(_RULES.keys()) if only is None else [r for r in only if r in _RULES]
+    findings: List[Finding] = []
+    by_rule: Dict[str, int] = {r: 0 for r in selected}
+    for rule_name in selected:
+        fn = _RULES[rule_name]
+        try:
+            rule_findings = fn()
+        except Exception as exc:  # noqa: BLE001
+            rule_findings = [
+                Finding(
+                    rule=rule_name,
+                    severity="error",
+                    file="Core/harness/dev/wylde_check/__init__.py",
+                    line=0,
+                    message=f"rule {rule_name!r} raised {type(exc).__name__}: {exc}",
+                )
+            ]
+        by_rule[rule_name] = len(rule_findings)
+        findings.extend(rule_findings)
+
+    errors = sum(1 for f in findings if f.severity == "error")
+    warnings = sum(1 for f in findings if f.severity == "warning")
+    infos = sum(1 for f in findings if f.severity == "info")
+
+    return {
+        "ok": True,
+        "data": {
+            "rules_checked": len(selected),
+            "findings": [f.as_dict() for f in findings],
+            "summary": {
+                "by_rule": by_rule,
+                "by_severity": {
+                    "error": errors,
+                    "warning": warnings,
+                    "info": infos,
+                },
+                "total": len(findings),
+            },
+        },
+    }
+
+
+# ── Single-file checker (for pre-write hooks) ─────────────────────────
+
+
+def check_one_file(rel_path: str, content: str) -> Dict[str, Any]:
+    """Run the rules applicable to a single (path, content) pair.
+
+    Used by pre-write hooks — the architectural rules that don't need
+    the full tree all reduce cleanly to a per-file check.  Rules that
+    DO need cross-file state (gui_*, the gpui contract rules, the
+    lifecycle rules) are skipped here — the full ``run_all()`` catches
+    those.
+
+    Returns the canonical envelope shape.
+    """
+    if not isinstance(rel_path, str) or not rel_path:
+        return {
+            "ok": False,
+            "data": {
+                "findings": [],
+                "summary": {
+                    "total": 0,
+                    "by_severity": {"error": 0, "warning": 0, "info": 0},
+                    "by_rule": {},
+                },
+            },
+            "error": {"code": "bad_request", "message": "rel_path required"},
+        }
+    if content is None:
+        content = ""
+    # Normalise to forward slashes for consistent exemption matching.
+    rel_path = rel_path.replace("\\", "/")
+
+    findings: List[Finding] = []
+    findings.extend(_check_dead_refs_lines(rel_path, content))
+    findings.extend(_check_pipe_name_convention_lines(rel_path, content))
+
+    by_rule: Dict[str, int] = {}
+    for f in findings:
+        by_rule[f.rule] = by_rule.get(f.rule, 0) + 1
+    by_sev = {"error": 0, "warning": 0, "info": 0}
+    for f in findings:
+        if f.severity in by_sev:
+            by_sev[f.severity] += 1
+
+    return {
+        "ok": True,
+        "data": {
+            "findings": [f.as_dict() for f in findings],
+            "summary": {
+                "total": len(findings),
+                "by_severity": by_sev,
+                "by_rule": by_rule,
+            },
+        },
+    }
+
+
+__all__ = [
+    "Finding",
+    "WYLDE_ROOT",
+    "run_all",
+    "check_one_file",
+    "check_dead_service_refs",
+    "check_gui_no_backend_bypass",
+    "check_pipe_name_convention",
+    "check_shutdown_reaps_manifest_orphans",
+    "check_file_size_limit",
+    "check_service_owns_its_state",
+    "check_import_paths_rust",
+    "check_no_silent_error_swallow_rust",
+    "check_logging_setup_only_rust",
+    "check_no_external_process_spawn_rust",
+    "check_no_unbounded_log_sink_rust",
+    "check_no_cross_panel_imports",
+    "check_no_legacy_gui_imports_in_panels",
+    "check_webview_only_in_extension_handlers",
+    "check_first_party_manifest_must_be_gpui_view",
+    "check_panel_crate_must_be_workspace_member",
+    "check_panel_verbs_exist_in_harness_registry",
+    "check_nav_targets_exist",
+    "check_required_services_includes_called_services",
+    "check_service_backed_surface_declares_availability",
+    "check_manifest_factory_resolves",
+    "check_stream_call_must_handle_cancel",
+    "check_launcher_enumerates_services_from_manifests",
+    "check_shutdown_enumerates_services_from_manifests",
+    "check_gateway_verbs_exist_in_harness_registry",
+    "check_no_bare_tokio_in_panel_src",
+    "check_no_panic_in_panel_render",
+    "check_rule_targets_exist",
+    "check_dependency_spread_ratchet",
+    "check_no_axum_types_in_public_api",
+    "check_silent_skip_in_service_start",
+    "check_no_hardcoded_prompts_rust",
+    "check_graph_test_serialized_on_db_lock",
+    "check_chat_surfaces_are_e2e_covered",
+    "check_global_bus_test_isolation",
+]
