@@ -20,9 +20,11 @@ resolver = "2"
 members = [
     "Shell",
     "Frontend/Theme",
+    "Frontend/Controls",
     "Frontend/Pipe",
     "Frontend/Input",
     "Frontend/Changelog",
+    "Frontend/ShellChrome",
     "Frontend/Code_editor",
     "Frontend/Extension_handlers/WebView",
     "Frontend/Panels/Settings",

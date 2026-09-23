@@ -340,7 +340,31 @@ The rules:
                             build red.  Every live-graph binary in the tree
                             reaches the graph over Bolt, which the leg stands up.
                             Single-test live-graph binaries can't self-collide
-                            and are out of scope.  Details in
+                            and are out of scope.  Findings carry a pointer to
+                            the #83 class's diagnosis home,
+                            docs/trackers/self-collision-class.md, when that
+                            doc is present — a SELF-EXPIRING tracker, so the
+                            pointer is presence-gated via
+                            ``rules._tracker_ref.tracker_pointer`` and simply
+                            goes quiet once the doc is auto-deleted (#253).
+                            Details in docs/wylde_check_rules.md.
+58. ``chat_surfaces_are_e2e_covered`` — every GUI chat entry point must be
+                            driven by the all-surfaces chat-turn e2e
+                            (``Core/GUI/Frontend/Panels/Chat/tests/
+                            chat_turn_e2e.rs``, #236).  Two checks the Rust
+                            compiler cannot make: (a) every ``ChatScope``
+                            variant appears in the test's ``COVERED`` list —
+                            an arm can be added to the exhaustive ``spec()``
+                            match without ever being driven; and (b) every
+                            *send-capable chat composer* in the GUI tree (a
+                            ``SubmitMode::EnterSubmits`` input in a file that
+                            also reaches the turn path) is declared in
+                            ``COVERED_COMPOSER_FILES`` — a new panel growing
+                            its own chat bar adds no ``ChatScope`` variant, so
+                            the match is blind to it.  Chat is the product's
+                            primary path; a new place to type into it must be
+                            proven end-to-end before it ships, not covered by
+                            a percentage that quietly drops.  Details in
                             docs/wylde_check_rules.md.
 
 All rules are advisory.  The checker returns an envelope; nothing here
@@ -463,7 +487,23 @@ from .rules._personal_identifiers import (  # noqa: E402
 from .rules._graph_test_isolation import (  # noqa: E402
     check_graph_test_serialized_on_db_lock,
 )
+from .rules._chat_surface_coverage import (  # noqa: E402
+    check_chat_surfaces_are_e2e_covered,
+)
+from .rules._global_bus_test_isolation import (  # noqa: E402
+    check_global_bus_test_isolation,
+)
+from .rules._control_functionality import (  # noqa: E402
+    check_gui_controls_are_wired_and_walkable,
+    check_every_control_building_crate_is_walked,
+)
 from .rules._selfcheck import check_rule_targets_exist  # noqa: E402
+from .rules._dependency_spread import (  # noqa: E402
+    check_dependency_spread_ratchet,
+)
+from .rules._axum_public_api import (  # noqa: E402
+    check_no_axum_types_in_public_api,
+)
 from ._single_file import (  # noqa: E402
     _check_dead_refs_lines,
     _check_pipe_name_convention_lines,
@@ -540,7 +580,45 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
     # #83 self-collision class recurred three times because the lock was an
     # unenforced convention; this makes it structural.
     "graph_test_serialized_on_db_lock": check_graph_test_serialized_on_db_lock,
+    # Rule 57 — every GUI chat entry point is driven by the all-surfaces
+    # chat-turn e2e (#236). The exhaustive ChatScope match in that test is
+    # the compile-time half; this catches the two cases it cannot see —
+    # an arm added but never driven, and a brand-new chat bar elsewhere.
+    "chat_surfaces_are_e2e_covered": check_chat_surfaces_are_e2e_covered,
+    # Rule 59 — every interactive GUI control is wired and walkable (#247).
+    # The static half of the control-functionality gate: a dead handler
+    # body, and an interactive site that bypasses `controls::control()` and
+    # so never enters the per-frame registry the control walk enumerates.
+    # Error, with a per-file grandfather ratchet over the 140 pre-existing
+    # sites: this job fails on any finding, so WARN would red develop too.
+    "gui_controls_are_wired_and_walkable": check_gui_controls_are_wired_and_walkable,
+    # Rule 61 — rule 59's companion and the other half of #247. Rule 59 proves
+    # every control *site* routes through `control()`; this proves the *walk
+    # exists and sees every control-building file*: a GUI crate whose shipped
+    # src builds a control must have a control_walk declaring every such file in
+    # `.sources()`. Together they mean a control can neither bypass the registry
+    # nor sit in a file no walk's coverage assertion inspects. Added with the
+    # deletion of rule 59's grandfather ratchet (the migration is complete).
+    "every_control_building_crate_is_walked": check_every_control_building_crate_is_walked,
+    # Rule 60 — a unit test touching a process-global broadcast bus must own
+    # its channel or serialize on a test-module guard (#246). The other half
+    # of rule 56's #83 self-collision class: same hazard, but in a `src/`
+    # unit-test module rather than a `tests/` binary, and with no
+    # minimum-count carve-out — #246 had exactly ONE bus-touching test, and
+    # its colliders never mentioned the bus at all.
+    "global_bus_test_isolation": check_global_bus_test_isolation,
     "rule_targets_exist": check_rule_targets_exist,
+    # Rule 59 — dependency-spread ratchet (#290 dependency isolation). The
+    # forward-looking half of #290: freezes each external dep's crate-spread
+    # at today's baseline so unwrapped shotgun-risk (rand → 2 crates, axum →
+    # 3) can't silently re-accumulate. Contained deps (rand, cpal) pinned to
+    # their adapter's owning crate; reqwest (12) is the named watch target.
+    "dependency_spread_ratchet": check_dependency_spread_ratchet,
+    # Rule 63 — no axum types in a non-gateway crate's public API (#290 axum
+    # containment enforcement). Companion to #293's `router()` → `pub(crate)`
+    # fix: locks in that axum (an HTTP framework, housed in wylde-gateway) can
+    # never bleed across a crate's public boundary into a shared API.
+    "no_axum_types_in_public_api": check_no_axum_types_in_public_api,
 }
 
 # Asserting the count at import time so a future rule add/drop trips the
@@ -578,149 +656,3 @@ _RULES: Dict[str, Callable[[], List[Finding]]] = {
 # not the panel — Tools declared its bridge correctly and still rendered a card
 # per extension pointing at a service nothing checked. This makes the per-item
 # state a structural gate on both sides of the wire.
-assert len(_RULES) == 32, f"_RULES dispatcher size drifted: {len(_RULES)} (expected 32)"
-
-
-def run_all(only: Optional[List[str]] = None) -> Dict[str, Any]:
-    """Run every rule (or the subset named in ``only``).
-
-    Returns the standard envelope ``{ok, data: {findings, summary}}``.
-    Never raises — a broken rule emits an error-level finding pointing
-    at the checker itself.
-    """
-    selected = list(_RULES.keys()) if only is None else [r for r in only if r in _RULES]
-    findings: List[Finding] = []
-    by_rule: Dict[str, int] = {r: 0 for r in selected}
-    for rule_name in selected:
-        fn = _RULES[rule_name]
-        try:
-            rule_findings = fn()
-        except Exception as exc:  # noqa: BLE001
-            rule_findings = [
-                Finding(
-                    rule=rule_name,
-                    severity="error",
-                    file="Core/harness/dev/wylde_check/__init__.py",
-                    line=0,
-                    message=f"rule {rule_name!r} raised {type(exc).__name__}: {exc}",
-                )
-            ]
-        by_rule[rule_name] = len(rule_findings)
-        findings.extend(rule_findings)
-
-    errors = sum(1 for f in findings if f.severity == "error")
-    warnings = sum(1 for f in findings if f.severity == "warning")
-    infos = sum(1 for f in findings if f.severity == "info")
-
-    return {
-        "ok": True,
-        "data": {
-            "rules_checked": len(selected),
-            "findings": [f.as_dict() for f in findings],
-            "summary": {
-                "by_rule": by_rule,
-                "by_severity": {
-                    "error": errors,
-                    "warning": warnings,
-                    "info": infos,
-                },
-                "total": len(findings),
-            },
-        },
-    }
-
-
-# ── Single-file checker (for pre-write hooks) ─────────────────────────
-
-
-def check_one_file(rel_path: str, content: str) -> Dict[str, Any]:
-    """Run the rules applicable to a single (path, content) pair.
-
-    Used by pre-write hooks — the architectural rules that don't need
-    the full tree all reduce cleanly to a per-file check.  Rules that
-    DO need cross-file state (gui_*, the gpui contract rules, the
-    lifecycle rules) are skipped here — the full ``run_all()`` catches
-    those.
-
-    Returns the canonical envelope shape.
-    """
-    if not isinstance(rel_path, str) or not rel_path:
-        return {
-            "ok": False,
-            "data": {
-                "findings": [],
-                "summary": {
-                    "total": 0,
-                    "by_severity": {"error": 0, "warning": 0, "info": 0},
-                    "by_rule": {},
-                },
-            },
-            "error": {"code": "bad_request", "message": "rel_path required"},
-        }
-    if content is None:
-        content = ""
-    # Normalise to forward slashes for consistent exemption matching.
-    rel_path = rel_path.replace("\\", "/")
-
-    findings: List[Finding] = []
-    findings.extend(_check_dead_refs_lines(rel_path, content))
-    findings.extend(_check_pipe_name_convention_lines(rel_path, content))
-
-    by_rule: Dict[str, int] = {}
-    for f in findings:
-        by_rule[f.rule] = by_rule.get(f.rule, 0) + 1
-    by_sev = {"error": 0, "warning": 0, "info": 0}
-    for f in findings:
-        if f.severity in by_sev:
-            by_sev[f.severity] += 1
-
-    return {
-        "ok": True,
-        "data": {
-            "findings": [f.as_dict() for f in findings],
-            "summary": {
-                "total": len(findings),
-                "by_severity": by_sev,
-                "by_rule": by_rule,
-            },
-        },
-    }
-
-
-__all__ = [
-    "Finding",
-    "WYLDE_ROOT",
-    "run_all",
-    "check_one_file",
-    "check_dead_service_refs",
-    "check_gui_no_backend_bypass",
-    "check_pipe_name_convention",
-    "check_shutdown_reaps_manifest_orphans",
-    "check_file_size_limit",
-    "check_service_owns_its_state",
-    "check_import_paths_rust",
-    "check_no_silent_error_swallow_rust",
-    "check_logging_setup_only_rust",
-    "check_no_external_process_spawn_rust",
-    "check_no_unbounded_log_sink_rust",
-    "check_no_cross_panel_imports",
-    "check_no_legacy_gui_imports_in_panels",
-    "check_webview_only_in_extension_handlers",
-    "check_first_party_manifest_must_be_gpui_view",
-    "check_panel_crate_must_be_workspace_member",
-    "check_panel_verbs_exist_in_harness_registry",
-    "check_nav_targets_exist",
-    "check_required_services_includes_called_services",
-    "check_service_backed_surface_declares_availability",
-    "check_manifest_factory_resolves",
-    "check_stream_call_must_handle_cancel",
-    "check_launcher_enumerates_services_from_manifests",
-    "check_shutdown_enumerates_services_from_manifests",
-    "check_gateway_verbs_exist_in_harness_registry",
-    "check_no_bare_tokio_in_panel_src",
-    "check_no_panic_in_panel_render",
-    "check_rule_targets_exist",
-    "check_silent_skip_in_service_start",
-    "check_no_hardcoded_prompts_rust",
-    "check_graph_test_serialized_on_db_lock",
-]

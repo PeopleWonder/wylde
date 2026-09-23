@@ -22,16 +22,21 @@ use wylde_theme::colors::{
 };
 use wylde_theme::typography::{size, weight, FAMILY_INTER};
 
+use crate::host::NavChromeHost;
 use crate::pack::pack;
-use crate::shell_root::Shell;
+use wylde_gui_controls::control;
 
 /// Paint the update pill, anchored bottom-left of the shell's (relative) root.
 /// `version` is the resolved available version, shown as a tag and carried into
 /// the "Ignore" handler so the dismissal is keyed to exactly this release.
-pub fn render_update_pill(version: &str, cx: &mut Context<Shell>) -> impl IntoElement {
+pub fn render_update_pill<V: NavChromeHost>(
+    version: &str,
+    cx: &mut Context<V>,
+) -> impl IntoElement {
     let ignore_version = version.to_string();
-
     div()
+        // wylde-check: control-ok: the pill is a layout container — "What's
+        // new", Update and Ignore inside it are the controls, not this shell.
         .id("wylde-update-pill")
         .absolute()
         .bottom_4()
@@ -73,8 +78,7 @@ pub fn render_update_pill(version: &str, cx: &mut Context<Shell>) -> impl IntoEl
         )
         // "What's new" → open the changelog pop-up.
         .child(
-            div()
-                .id("wylde-update-pill-changelog")
+            control(div(), "wylde-update-pill-changelog")
                 .font_family(FAMILY_INTER)
                 .text_size(px(size::XS))
                 .text_color(rgb(pack(BRAND_LIGHT)))
@@ -112,9 +116,11 @@ pub fn render_update_pill(version: &str, cx: &mut Context<Shell>) -> impl IntoEl
 /// backdrop click) centred over a card holding the changelog viewer plus a
 /// close button. The card stops mouse-down propagation so interacting with the
 /// changelog never closes it.
-pub fn render_changelog_modal(view: &AnyView, cx: &mut Context<Shell>) -> impl IntoElement {
-    div()
-        .id("wylde-changelog-scrim")
+pub fn render_changelog_modal<V: NavChromeHost>(
+    view: &AnyView,
+    cx: &mut Context<V>,
+) -> impl IntoElement {
+    control(div(), "wylde-changelog-scrim")
         .absolute()
         .inset_0()
         .occlude()
@@ -129,8 +135,7 @@ pub fn render_changelog_modal(view: &AnyView, cx: &mut Context<Shell>) -> impl I
             cx.listener(|this, _ev, _w, cx| this.close_changelog(cx)),
         )
         .child(
-            div()
-                .id("wylde-changelog-card")
+            control(div(), "wylde-changelog-card")
                 .relative()
                 // Swallow clicks on the card so they don't reach the backdrop's
                 // close handler (same idiom the Chat composer popovers use).
@@ -140,8 +145,7 @@ pub fn render_changelog_modal(view: &AnyView, cx: &mut Context<Shell>) -> impl I
                 )
                 .child(view.clone())
                 .child(
-                    div()
-                        .id("wylde-changelog-close")
+                    control(div(), "wylde-changelog-close")
                         .absolute()
                         .top_2()
                         .right_2()
@@ -182,14 +186,21 @@ fn version_tag(version: &str) -> gpui::Div {
 
 /// A pill action button. `primary` = brand fill (Update); otherwise a quiet
 /// ghost (Ignore). The caller attaches the `on_mouse_down` handler.
+///
+/// Routes through `control()` so both buttons register in the walk's per-frame
+/// control registry (#247): they are real affordances — Update kicks the
+/// whole-stack install, Ignore dismisses this version — so the control-walk
+/// discovers and clicks them like any other control. The id is a bound param,
+/// not a literal at this call, so the static id-scan doesn't demand it; the
+/// pill state paints both, and their host-method deltas (`updated` /
+/// `dismissed_version`) are what the walk asserts moved.
 fn pill_button(id: &'static str, label: &'static str, primary: bool) -> gpui::Stateful<gpui::Div> {
     let (bg, fg, border, hover_bg) = if primary {
         (BRAND, TEXT_PRIMARY, BRAND, BRAND_LIGHT)
     } else {
         (SURFACE_700, TEXT_SECONDARY, BORDER_DEFAULT, SURFACE_650)
     };
-    div()
-        .id(id)
+    control(div(), id)
         .flex_1()
         .flex()
         .items_center()

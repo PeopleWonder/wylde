@@ -67,6 +67,13 @@ The full bar. Only on the maintainer's explicit say-so. **This is the definition
 4. **Local preflight — full L1–L7:**
    - L1–L3 via **`wylde-release preflight --launch --build`** (build-all, cold-start, service-health —
      each check reported individually into the receipt; fails closed).
+     - **Clean-install form (#37):** run **`tools/self-preflight.ps1`** instead of invoking
+       `wylde-release` in place — it takes a **throwaway fresh checkout**, points `WYLDE_DATA_DIR` at
+       a **fresh empty profile**, runs the same `preflight --launch --build`, then tears the scratch
+       tree down. This is the automated form of "a clean profile cold-starts into a serving system"
+       (no human reimage). A truly empty profile can't pass the data-dependent L3 legs
+       (`l3.memgraph_has_data`, `l3.ollama_model`), so pass `-SeedDataFrom <indexed profile>` for a
+       launch-verified run; the L6 human feel test (#274) is still owed separately.
    - ~~**L4 first-run bootstrap** completes on a clean profile.~~ **DROPPED from the 0.2 gate
      (2026-07-16).** First-run bootstrap is now **post-0.2** (#66) and is being redesigned as a
      deliberately guided UX + install wizard (#67), so 0.2 does not gate on it. It was never

@@ -361,6 +361,14 @@ jobs:
       - name: wylde_check self-tests (the gate must fail when a rule itself breaks)
         shell: bash
         run: python -m pytest Core/harness/dev/tests/wylde_check -q
+      # The self-expiring tracker mechanism (#253) — the date logic that decides when a
+      # docs/trackers/*.md is renewed and when it is DELETED. Run here rather than in a
+      # job of its own because it is the same bare-python setup, and because a scheduled
+      # workflow that quietly deletes committed files must not be the one thing in the
+      # tree with no gate. `.github/workflows/tracker-expiry.yml` is the consumer.
+      - name: tracker-expiry date logic (renew-on-touch, delete-past-expiry)
+        shell: bash
+        run: python -m pytest Core/harness/dev/tests/test_tracker_expiry.py -q
       - name: wylde_check full sweep against the tree (must report zero findings)
         shell: bash
         run: |

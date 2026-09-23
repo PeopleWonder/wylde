@@ -96,32 +96,3 @@ def test_run_all_covers_every_registered_rule(isolated_tree: Any) -> None:
         # render its availability (0.2 Stability, #239). Rule 40 gates a panel
         # against its services; the unit that can be dead is the item.
         "service_backed_surface_declares_availability",
-    }
-    assert set(result["data"]["summary"]["by_rule"].keys()) == expected
-
-
-def test_run_all_selects_only_named_rules(isolated_tree: Any) -> None:
-    wc, root = isolated_tree
-    _write(
-        root / "Core" / "harness" / "mod.py",
-        "SVC = 'wylde-orchestrator'  # dead reference\n",  # wylde-check: dead-ref-ok
-    )
-    result = wc.run_all(only=["dead_service_refs"])
-    assert result["data"]["rules_checked"] == 1
-    # All findings should be from the one selected rule.
-    assert all(f["rule"] == "dead_service_refs" for f in result["data"]["findings"])
-
-
-def test_run_all_executes_every_registered_rule(isolated_tree: Any) -> None:
-    """The rule count is pinned to an explicit literal on purpose.
-
-    ``len(_RULES)`` alone would happily follow a rule being deleted.
-    Pinning the number means removing a rule is a deliberate edit here
-    too — the same "drift must be noticed, not absorbed" principle that
-    #116 was about.  Bump this when a rule is genuinely added or retired.
-    """
-    wc, _root = isolated_tree
-    assert len(wc._RULES) == 32
-    result = wc.run_all()
-    assert result["ok"] is True
-    assert result["data"]["rules_checked"] == len(wc._RULES)

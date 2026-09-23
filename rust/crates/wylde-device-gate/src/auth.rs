@@ -21,6 +21,7 @@
 use std::path::Path;
 
 use md5::{Digest, Md5};
+use sha_crypt::{PasswordVerifier, ShaCrypt};
 use subtle::ConstantTimeEq;
 
 const APR1_MAGIC: &str = "$apr1$";
@@ -79,13 +80,14 @@ fn verify_hash(stored_hash: &str, password: &str) -> bool {
     if stored_hash.starts_with(APR1_MAGIC) {
         return verify_apr1(password, stored_hash);
     }
-    // SHA-512 crypt: `$6$...`
-    if stored_hash.starts_with("$6$") {
-        return sha_crypt::sha512_check(password, stored_hash).is_ok();
-    }
-    // SHA-256 crypt: `$5$...`
-    if stored_hash.starts_with("$5$") {
-        return sha_crypt::sha256_check(password, stored_hash).is_ok();
+    // SHA-512 (`$6$…`) and SHA-256 (`$5$…`) crypt. sha-crypt 0.6 dropped the
+    // free `sha512_check`/`sha256_check` helpers in favour of the `password-hash`
+    // `PasswordVerifier` trait; the algorithm + rounds are read from the stored
+    // MCF string itself, so a single default `ShaCrypt` verifies both schemes.
+    if stored_hash.starts_with("$6$") || stored_hash.starts_with("$5$") {
+        return ShaCrypt::default()
+            .verify_password(password.as_bytes(), stored_hash)
+            .is_ok();
     }
     // Legacy DES crypt is dropped — see module-level docstring.
     tracing::warn!(

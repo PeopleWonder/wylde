@@ -257,3 +257,170 @@ recipe):
 - **Conversation switcher** select / new / delete on a docked dock.
 - **Input-driven** sends via `VisualTestContext::simulate_keystrokes` to cover
   the TextInput → submit path end-to-end (vs. calling `send_user_message`).
+
+## The control walk — does the button DO anything? (#247)
+
+The panel-walk above proves every panel **loads**. It says nothing about
+whether a control in it **works**. Until #247 no test in this tree had ever
+clicked a GUI control through its real listener, so a button could ship with an
+empty handler, a handler wired to a method that no longer runs, or no listener
+at all, and every gate stayed green.
+
+`tests/control_walk.rs` closes that. **Pilot status: Tools only** — the
+remaining ~140 sites and the other 8 panels are #247 part 2.
+
+### How it works
+
+1. **`wylde_gui_controls::control(el, "id")`** — the one constructor every
+   interactive control routes through. In a shipped build it is
+   `el.id(ElementId::Name(id))` and nothing else; in a test build it also
+   records the id into a per-frame registry. `wylde_check` rule 59 flags
+   interactive sites that bypass it, because a control that is not registered
+   is never enumerated and never clicked — coverage that goes quiet, not red.
+2. **`wylde_gui_test_support::control_walk`** — the shared harness. It draws
+   the panel, reads the registry for what was *constructed*, looks each id up
+   in gpui's own `debug_bounds` for what actually *painted* (gpui clears that
+   map per frame, so the painted half is always frame-exact), and clicks the
+   intersection at each control's painted centre via `simulate_click`.
+3. **The oracle** samples two channels either side of the click: the
+   `ScriptedBackend` call count, and a per-panel state fingerprint closure. A
+   control passes if **either** moved.
+
+### What a panel writes
+
+The whole per-panel cost is a fixture, a fingerprint, and a call:
+
+```rust
+use wylde_gui_test_support::control_walk::ControlWalk;
+
+#[gpui::test]
+fn every_control_does_something(cx: &mut TestAppContext) {
+    let fake = healthy();
+    let _guard = fake.clone().install();
+    let window = mount(cx);
+
+    ControlWalk::new(window, &fake)
+        .fingerprint(|p: &ToolsPanel| format!("{} {:?}", p.loading, p.error))
+        .sources(&[include_str!("../src/tools_panel.rs")])
+        .run(cx)
+        .assert_every_control_lives()
+        .assert_covers_every_literal_id();
+}
+```
+
+**Adding a control after that needs no test edit at all.** Build it with
+`control(div(), "my-id")` and it is registered, painted, walked, clicked and
+required to do something — automatically. That is the entire point of routing
+every control through one constructor: coverage becomes a property of
+*construction* rather than of somebody remembering to add a case. `Tools/tests/
+control_walk.rs` is the reference copy.
+
+The oracle is deliberately weak per control and strong in aggregate. It cannot
+tell you the button did the *right* thing — it cannot be satisfied by a button
+that does *nothing*, which is the class #247 is about. Per-control behavioural
+depth stays in ordinary windowed tests next to the walk. One fingerprint
+closure per panel is what makes this affordable across the whole GUI; one
+assertion per button would not be.
+
+It also repaints branches panel-walk never touches. A click drives the panel
+into its loaded / error tree, so a **panic on click** in one of those branches
+surfaces here rather than in front of the user.
+
+### Modal-gated controls, and false coverage
+
+A control that only paints once a modal is open is not in the default frame's
+registry. Walking only that frame would report it as "covered" **by never
+mentioning it** — which is worse than not walking the panel at all, because the
+number looks complete.
+
+Two pieces fix that:
+
+* **`.state("label", |panel, window, cx| …)`** drives the panel into some
+  condition (open a dialog, expand a section, select a row); the walk redraws
+  and walks whatever *that* frame paints. Every state is walked and coverage is
+  asserted over the union.
+* **`.assert_covers_every_literal_id()`** scans the declared `include_str!`
+  sources for `control(…, "literal")` ids and fails on any that no state ever
+  painted, naming the id and telling you to add a state.
+
+So a modal control cannot be quietly uncovered: either a state paints it, or
+the walk goes red. Ids built at runtime (`format!("row::{}", id)`) carry no
+literal and are not checked that way — they are covered by the rows the fixture
+renders, and the live-control assertion still clicks them.
+
+### The trap that will cost you an afternoon
+
+**Mount with `add_window`, not `open_window`.** At gpui rev `b3d93d44`,
+`TestAppContext::open_window(size, …)` sets the window's reported
+`viewport_size` but the root element still lays out against the test *display*
+(1920×1080). Every control then paints at coordinates outside the window you
+asked for, `simulate_click` there hits nothing, and **every control in the walk
+reads as dead** — a total false positive that looks exactly like the bug the
+test is for. `add_window` maximizes to the test display, so layout and viewport
+agree. The display is a fixed size in gpui's `TestPlatform`, so this is
+deterministic, not machine-dependent.
+
+A `simulate_mouse_move` before each click was measured and changes nothing —
+`dispatch_mouse_event` recomputes the hit test from the mouse-down position
+itself — so the walk does not send one.
+
+### Mount with the one-shot loader, not the poll loop
+
+A panel with a `spawn_refresh_loop` should be mounted with its one-shot
+`spawn_refresh`. The walk must own every backend call it counts: a background
+poll landing mid-walk would move the counter on its own and let a dead button
+read as alive.
+
+### Migration status (#247 part 2)
+
+The constructor + harness are in place and Tools is walked. The remaining
+panels are being routed through `control()` in batches; the per-file budget in
+`wylde_check` rule 59's `GRANDFATHERED_UNROUTED` is the live count of what is
+left, and it is deleted outright when the last file lands.
+
+The Shell's nav chrome (sidebar, tab strip, update pill) needs extracting into
+a `wry`-free crate before the headless L7 job can walk it — Shell tests
+currently link `wry` and tray-icon, which that job deliberately never builds
+(see the `-p` scoping note in `.cargo/config.toml`).
+
+---
+
+## The exception: the all-surfaces chat-turn e2e
+
+`Panels/Chat/tests/chat_turn_e2e.rs` (#236) is the one test in this tree that
+does **not** script its backend. Everything above is about `ScriptedBackend`
+answering with canned JSON; that test installs a backend which answers by
+dispatching into the *real* harness — `wylde_shared::ipc::dispatch_action`
+against the registry `wylde_harness::install()` populated, exactly what the pipe
+server does on the far side of a socket. `chat.start_turn` therefore lands on the
+production `DefaultHarnessApi` and runs the production turn driver. Only
+*inference* is stubbed, and even that is reached over a real named pipe.
+
+Read it before writing anything similar, because two constraints shaped it and
+both will bite the next person:
+
+1. **A windowed gpui test and the GUI's own async transport are mutually
+   exclusive.** gpui's test scheduler records a non-determinism error — "Detected
+   activity on thread `tokio-rt-worker` … Your test is not deterministic" — the
+   moment a gpui task is woken from a foreign thread, which is exactly what a
+   real pipe round-trip on `wylde_gui_pipe`'s tokio bridge does. That is why the
+   backend seam is drawn where it is: `FakeBackend`'s methods are *synchronous*,
+   so the whole harness round-trip runs inside the gpui task's own poll on the
+   test thread. Do not "fix" it by installing a runtime bridge — it will pass
+   locally and flake in CI.
+2. **`run_until_parked` alone is not enough** once real work is involved. The
+   file's `pump_until` alternates draining gpui with yielding real time, because
+   a completion that lands off-executor is only visible to the *next* pump.
+
+It is also the model for hermeticity when a test must touch real services:
+private pid-keyed pipe names, a temp `WYLDE_DATA_DIR`, and every
+`WYLDE_HARNESS_*_SERVICE` set explicitly rather than inherited — so an ambient
+dev shell cannot steer the test at the live install (#83), and a running Wylde on
+the same machine is neither disturbed nor consulted (#75).
+
+Adding a chat surface? The test's `COVERED` registry derives from an exhaustive
+`match` on `ChatScope`, so a new variant stops it compiling — and `wylde_check`
+rule 58 catches the cases the compiler can't see (an arm added but never driven,
+and a new panel growing its own chat bar). Both are deliberate: chat is the
+primary path, and a new place to type must be proven end-to-end before it ships.
+

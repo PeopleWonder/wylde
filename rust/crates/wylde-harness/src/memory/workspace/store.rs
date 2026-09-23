@@ -36,7 +36,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rand::RngCore;
 use serde_json::{json, Value};
 
 use super::record::WorkspaceMemory;
@@ -198,7 +197,7 @@ fn now_secs() -> f64 {
 /// `secrets.token_hex(8)`.
 fn new_id() -> String {
     let mut buf = [0u8; 8];
-    rand::thread_rng().fill_bytes(&mut buf);
+    wylde_shared::rng::fill_bytes(&mut buf);
     hex::encode(buf)
 }
 

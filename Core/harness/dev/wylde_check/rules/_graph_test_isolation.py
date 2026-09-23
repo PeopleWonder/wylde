@@ -66,6 +66,7 @@ from typing import List, Tuple
 
 from .. import Finding
 from .._walkers import _read_text, _to_rel, _walk
+from ._tracker_ref import tracker_pointer
 
 # Resolve the TOP package object so ``monkeypatch.setattr(wc, "WYLDE_ROOT",
 # tmp_path)`` in the unit suite flows through to the CI-workflow read below
@@ -80,6 +81,13 @@ _pkg = _sys.modules[__name__.rsplit(".", 2)[0]]
 # ``_selfcheck.RULE_TARGET_SPECS`` so a rename turns THIS gate red instead of
 # quietly disarming the CI-coverage half.
 _CI_WORKFLOW_REL = ".github/workflows/ci.yml"
+
+# The self-collision class (#83) this rule is one arm of. Its diagnosis home is a
+# SELF-EXPIRING tracker doc, so the pointer is presence-gated: `tracker_pointer`
+# returns "" once the doc is gone and the message simply loses a sentence. Do NOT
+# register the doc in ``_selfcheck.RULE_TARGET_SPECS`` — that would red the build on
+# the day the tracker is designed to disappear. See ``_tracker_ref``.
+_CLASS_TRACKER = "self-collision-class"
 
 # A test is "live-graph" when it is #[ignore]d with a reason naming the graph
 # database. Matched against the joined attribute block preceding the fn.
@@ -282,7 +290,7 @@ def check_graph_test_serialized_on_db_lock() -> List[Finding]:
                             f"delete_workspace orphan-prune) when run "
                             f"multi-threaded — the #83 self-collision class "
                             f"(#216/#227). Acquire the lock at the top of the "
-                            f"test body."
+                            f"test body." + tracker_pointer(_CLASS_TRACKER)
                         ),
                         context=t.name,
                     )
@@ -306,6 +314,7 @@ def check_graph_test_serialized_on_db_lock() -> List[Finding]:
                         f"serialization is unverified and a regression can't be "
                         f"caught. Add it to the live-graph job's `--no-run` "
                         f"build and `--ignored` run steps."
+                        + tracker_pointer(_CLASS_TRACKER)
                     ),
                     context=stem,
                 )

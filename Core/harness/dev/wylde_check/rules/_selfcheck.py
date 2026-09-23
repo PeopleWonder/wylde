@@ -127,6 +127,16 @@ RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
         None,
         "graph_test_serialized_on_db_lock",
     ),
+    (
+        "Core/GUI/Frontend/Panels/Chat/src/chat_panel.rs",
+        None,
+        "chat_surfaces_are_e2e_covered",
+    ),
+    (
+        "Core/GUI/Frontend/Panels/Chat/tests/chat_turn_e2e.rs",
+        None,
+        "chat_surfaces_are_e2e_covered",
+    ),
     # ── walk roots (cardinality: at least one matching file) ──
     (
         "rust/crates",
@@ -147,6 +157,14 @@ RULE_TARGET_SPECS: Tuple[_TargetSpec, ...] = (
         (".rs",),
         "gui_no_backend_bypass, webview_only_in_extension_handlers, "
         "nav_targets_exist, file_size_limit",
+    ),
+    (
+        # Rule 59's corpus, listed separately from "Core/GUI" above because
+        # it walks the Shell as well as the Frontend — the Shell owns the nav
+        # chrome, and a control gate blind to it would be half a gate.
+        "Core/GUI/Shell/src",
+        (".rs",),
+        "gui_controls_are_wired_and_walkable",
     ),
     (
         "Core/GUI/Frontend/Panels",

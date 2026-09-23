@@ -28,16 +28,17 @@ anyhow.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
 
-# rmcp 1.7 is Anthropic's Rust MCP SDK and is the version pinned by Q-E1
-# (master plan §11). We carry it as a dep so the workspace Cargo.lock
-# pins it and the dep is visible to wylde_check / dependency auditing.
+# rmcp 3.x is Anthropic's Rust MCP SDK (was pinned at 1.7 by Q-E1, master
+# plan §11; kept current here). We carry it as a dep so the workspace
+# Cargo.lock pins it and the dep is visible to wylde_check / dependency
+# auditing.
 # The current implementation does not use the rmcp client API directly:
 # the MCP wire protocol is plain JSON-RPC 2.0 over stdio, and our
 # minimal in-tree client (`src/mcp/`) gives full control over
 # capability negotiation + version policy (N/N-1/N+1) without taking a
 # hard dependency on the Tier-2 SDK's evolving surface. Migration to
 # rmcp's client API is tracked as a follow-up if its surface stabilises.
-rmcp = "1.7"
+rmcp = "3"
 
 [dev-dependencies]
 tempfile = "3"

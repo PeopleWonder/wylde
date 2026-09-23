@@ -63,6 +63,7 @@ use crate::ipc::{
 };
 use crate::markdown;
 use crate::processing::{self, MessageActivity, ProcessingPhase, ProcessingState};
+use wylde_gui_controls::control;
 
 const WORKSPACE_MRU_LIMIT: u32 = 5;
 
@@ -2145,14 +2146,15 @@ impl ChatPanel {
             let outcome: Result<String, String> = async {
                 let envelope = export_conversation(&id).await?;
                 let default_name = format!("{id}.wylde-conv.json");
-                let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(move || {
-                    rfd::FileDialog::new()
-                        .set_title("Export conversation")
-                        .set_file_name(&default_name)
-                        .add_filter("Wylde conversation export", &["json"])
-                        .save_file()
-                })
-                .await;
+                let picked: Option<PathBuf> =
+                    wylde_gui_pipe::native_file_dialog("chat-conversation-export", move || {
+                        rfd::FileDialog::new()
+                            .set_title("Export conversation")
+                            .set_file_name(&default_name)
+                            .add_filter("Wylde conversation export", &["json"])
+                            .save_file()
+                    })
+                    .await;
                 let Some(path) = picked else {
                     return Ok(String::new()); // cancelled — no status
                 };
@@ -2180,13 +2182,14 @@ impl ChatPanel {
     pub fn spawn_import_conversation(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             let outcome: Result<Option<String>, String> = async {
-                let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(|| {
-                    rfd::FileDialog::new()
-                        .set_title("Import conversation")
-                        .add_filter("Wylde conversation export", &["json"])
-                        .pick_file()
-                })
-                .await;
+                let picked: Option<PathBuf> =
+                    wylde_gui_pipe::native_file_dialog("chat-conversation-import", || {
+                        rfd::FileDialog::new()
+                            .set_title("Import conversation")
+                            .add_filter("Wylde conversation export", &["json"])
+                            .pick_file()
+                    })
+                    .await;
                 let Some(path) = picked else { return Ok(None) };
                 let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
                 let envelope: serde_json::Value =
@@ -2217,8 +2220,11 @@ impl ChatPanel {
     pub fn spawn_pick_workspace(cx: &mut Context<Self>) {
         cx.spawn(async move |this, app_cx: &mut AsyncApp| {
             // Runs on gpui's executor (no tokio reactor) — `tokio::task::
-            // spawn_blocking` would panic. Hop onto the bridge runtime.
-            let picked: Option<PathBuf> = wylde_gui_pipe::bridged_spawn_blocking(pick_folder).await;
+            // spawn_blocking` would panic. Hop onto the bridge runtime. Routed
+            // through `native_file_dialog` so a control walk records the request
+            // instead of opening a real folder picker on the dev's desktop.
+            let picked: Option<PathBuf> =
+                wylde_gui_pipe::native_file_dialog("chat-ws-pick", pick_folder).await;
             let Some(path) = picked else {
                 return;
             };
@@ -3201,8 +3207,7 @@ fn processing_indicator(p: &ProcessingState, view: &Entity<ChatPanel>) -> gpui::
         dots = dots.child(div().size(px(6.0)).rounded(px(3.0)).bg(rgb(pack(color))));
     }
 
-    let mut row = div()
-        .id(ElementId::Name("chat-processing".into()))
+    let mut row = control(div(), ElementId::Name("chat-processing".into()))
         .flex()
         .flex_row()
         .items_center()
@@ -3405,8 +3410,7 @@ fn message_activity_disclosure(
     view: &Entity<ChatPanel>,
 ) -> gpui::Div {
     let id_owned = id.to_owned();
-    let header = div()
-        .id(ElementId::Name(format!("chat-activity-{id}").into()))
+    let header = control(div(), ElementId::Name(format!("chat-activity-{id}").into()))
         .flex()
         .flex_row()
         .items_center()
@@ -3639,8 +3643,7 @@ fn consent_button<F>(id: ElementId, label: &str, listener: F) -> Stateful<gpui::
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_1()
         .rounded(px(4.0))
@@ -3834,8 +3837,7 @@ fn working_memory_panel(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui:
         );
     if !panel.working_memory.is_empty() {
         header = header.child(
-            div()
-                .id(ElementId::Name("chat-wm-clear".into()))
+            control(div(), ElementId::Name("chat-wm-clear".into()))
                 .px_2()
                 .py_1()
                 .rounded(px(4.0))
@@ -3940,29 +3942,30 @@ fn conversations_panel(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::
                 .flex_row()
                 .gap_1()
                 .child(
-                    // Slice J: import a portable conversation export file.
-                    div()
-                        .id(ElementId::Name("chat-conversation-import".into()))
-                        .px_2()
-                        .py_1()
-                        .rounded(px(4.0))
-                        .border_1()
-                        .border_color(rgb(pack(BORDER_SUBTLE)))
-                        .cursor_pointer()
-                        .font_family(FAMILY_INTER)
-                        .text_size(px(size::MICRO))
-                        .text_color(rgb(pack(TEXT_SECONDARY)))
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|_this: &mut ChatPanel, _ev, _window, cx| {
-                                ChatPanel::spawn_import_conversation(cx);
-                            }),
-                        )
-                        .child(SharedString::from("Import…")),
+                    control(
+                        // Slice J: import a portable conversation export file.
+                        div(),
+                        ElementId::Name("chat-conversation-import".into()),
+                    )
+                    .px_2()
+                    .py_1()
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(rgb(pack(BORDER_SUBTLE)))
+                    .cursor_pointer()
+                    .font_family(FAMILY_INTER)
+                    .text_size(px(size::MICRO))
+                    .text_color(rgb(pack(TEXT_SECONDARY)))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|_this: &mut ChatPanel, _ev, _window, cx| {
+                            ChatPanel::spawn_import_conversation(cx);
+                        }),
+                    )
+                    .child(SharedString::from("Import…")),
                 )
                 .child(
-                    div()
-                        .id(ElementId::Name("chat-conversation-new".into()))
+                    control(div(), ElementId::Name("chat-conversation-new".into()))
                         .px_2()
                         .py_1()
                         .rounded(px(4.0))
@@ -4033,39 +4036,39 @@ fn conversation_row(
 
     // Left: the select target. A nested clickable block (not the whole
     // row) so the delete control on the right doesn't double-fire select.
-    let select_block = div()
-        .id(ElementId::Name(
-            format!("chat-conversation-pick::{}", meta.id).into(),
-        ))
-        .flex_1()
-        .flex()
-        .flex_col()
-        .gap(px(1.0))
-        .cursor_pointer()
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |this: &mut ChatPanel, _ev, window, cx| {
-                this.select_conversation(&id_for_select, window, cx);
-            }),
-        )
-        .child(
-            div()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::XS))
-                .text_color(rgb(pack(if is_active {
-                    TEXT_PRIMARY
-                } else {
-                    TEXT_SECONDARY
-                })))
-                .child(title),
-        )
-        .child(
-            div()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::MICRO))
-                .text_color(rgb(pack(TEXT_MUTED)))
-                .child(meta_line),
-        );
+    let select_block = control(
+        div(),
+        ElementId::Name(format!("chat-conversation-pick::{}", meta.id).into()),
+    )
+    .flex_1()
+    .flex()
+    .flex_col()
+    .gap(px(1.0))
+    .cursor_pointer()
+    .on_mouse_down(
+        gpui::MouseButton::Left,
+        cx.listener(move |this: &mut ChatPanel, _ev, window, cx| {
+            this.select_conversation(&id_for_select, window, cx);
+        }),
+    )
+    .child(
+        div()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::XS))
+            .text_color(rgb(pack(if is_active {
+                TEXT_PRIMARY
+            } else {
+                TEXT_SECONDARY
+            })))
+            .child(title),
+    )
+    .child(
+        div()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::MICRO))
+            .text_color(rgb(pack(TEXT_MUTED)))
+            .child(meta_line),
+    );
 
     let mut row = div()
         .flex()
@@ -4098,47 +4101,47 @@ fn conversation_row(
 /// The "⤓" affordance — export this conversation to a file (Slice J).
 fn export_button(id: &str, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
     let id_for_click = id.to_owned();
-    div()
-        .id(ElementId::Name(
-            format!("chat-conversation-export::{id}").into(),
-        ))
-        .px_2()
-        .py_1()
-        .rounded(px(4.0))
-        .cursor_pointer()
-        .font_family(FAMILY_INTER)
-        .text_size(px(size::XS))
-        .text_color(rgb(pack(TEXT_MUTED)))
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |_this: &mut ChatPanel, _ev, _window, cx| {
-                ChatPanel::spawn_export_conversation(id_for_click.clone(), cx);
-            }),
-        )
-        .child(SharedString::from("⤓"))
+    control(
+        div(),
+        ElementId::Name(format!("chat-conversation-export::{id}").into()),
+    )
+    .px_2()
+    .py_1()
+    .rounded(px(4.0))
+    .cursor_pointer()
+    .font_family(FAMILY_INTER)
+    .text_size(px(size::XS))
+    .text_color(rgb(pack(TEXT_MUTED)))
+    .on_mouse_down(
+        gpui::MouseButton::Left,
+        cx.listener(move |_this: &mut ChatPanel, _ev, _window, cx| {
+            ChatPanel::spawn_export_conversation(id_for_click.clone(), cx);
+        }),
+    )
+    .child(SharedString::from("⤓"))
 }
 
 /// The "×" affordance that arms the inline delete confirm for `id`.
 fn delete_request_button(id: &str, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
     let id_for_click = id.to_owned();
-    div()
-        .id(ElementId::Name(
-            format!("chat-conversation-del::{id}").into(),
-        ))
-        .px_2()
-        .py_1()
-        .rounded(px(4.0))
-        .cursor_pointer()
-        .font_family(FAMILY_INTER)
-        .text_size(px(size::XS))
-        .text_color(rgb(pack(TEXT_MUTED)))
-        .on_mouse_down(
-            gpui::MouseButton::Left,
-            cx.listener(move |this: &mut ChatPanel, _ev, _window, cx| {
-                this.request_delete_conversation(&id_for_click, cx);
-            }),
-        )
-        .child(SharedString::from("×"))
+    control(
+        div(),
+        ElementId::Name(format!("chat-conversation-del::{id}").into()),
+    )
+    .px_2()
+    .py_1()
+    .rounded(px(4.0))
+    .cursor_pointer()
+    .font_family(FAMILY_INTER)
+    .text_size(px(size::XS))
+    .text_color(rgb(pack(TEXT_MUTED)))
+    .on_mouse_down(
+        gpui::MouseButton::Left,
+        cx.listener(move |this: &mut ChatPanel, _ev, _window, cx| {
+            this.request_delete_conversation(&id_for_click, cx);
+        }),
+    )
+    .child(SharedString::from("×"))
 }
 
 /// Inline delete confirmation: a "Delete" (destructive) + "Cancel" pair
@@ -4152,46 +4155,46 @@ fn delete_confirm_controls(id: &str, cx: &mut Context<ChatPanel>) -> gpui::Div {
         .gap_1()
         .items_center()
         .child(
-            div()
-                .id(ElementId::Name(
-                    format!("chat-conversation-del-yes::{id}").into(),
-                ))
-                .px_2()
-                .py_1()
-                .rounded(px(4.0))
-                .border_1()
-                .border_color(rgb(pack(BORDER_EMPHASIS)))
-                .cursor_pointer()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::MICRO))
-                .text_color(rgb(pack(TEXT_PRIMARY)))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(move |this: &mut ChatPanel, _ev, _window, cx| {
-                        this.confirm_delete_conversation(&id_confirm, cx);
-                    }),
-                )
-                .child(SharedString::from("Delete")),
+            control(
+                div(),
+                ElementId::Name(format!("chat-conversation-del-yes::{id}").into()),
+            )
+            .px_2()
+            .py_1()
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(rgb(pack(BORDER_EMPHASIS)))
+            .cursor_pointer()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::MICRO))
+            .text_color(rgb(pack(TEXT_PRIMARY)))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this: &mut ChatPanel, _ev, _window, cx| {
+                    this.confirm_delete_conversation(&id_confirm, cx);
+                }),
+            )
+            .child(SharedString::from("Delete")),
         )
         .child(
-            div()
-                .id(ElementId::Name(
-                    format!("chat-conversation-del-no::{id}").into(),
-                ))
-                .px_2()
-                .py_1()
-                .rounded(px(4.0))
-                .cursor_pointer()
-                .font_family(FAMILY_INTER)
-                .text_size(px(size::MICRO))
-                .text_color(rgb(pack(TEXT_MUTED)))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
-                        this.cancel_delete_conversation(cx);
-                    }),
-                )
-                .child(SharedString::from("Cancel")),
+            control(
+                div(),
+                ElementId::Name(format!("chat-conversation-del-no::{id}").into()),
+            )
+            .px_2()
+            .py_1()
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .font_family(FAMILY_INTER)
+            .text_size(px(size::MICRO))
+            .text_color(rgb(pack(TEXT_MUTED)))
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this: &mut ChatPanel, _ev, _window, cx| {
+                    this.cancel_delete_conversation(cx);
+                }),
+            )
+            .child(SharedString::from("Cancel")),
         )
 }
 
@@ -4234,8 +4237,7 @@ fn eject_button(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> Stateful<gpui
     } else {
         (rgb(pack(TEXT_MUTED)), rgb(pack(BORDER_SUBTLE)))
     };
-    let mut btn = div()
-        .id(ElementId::Name("chat-model-eject".into()))
+    let mut btn = control(div(), ElementId::Name("chat-model-eject".into()))
         .px_3()
         .py_1()
         .rounded(px(12.0))
@@ -4265,8 +4267,7 @@ fn pill_button<F>(id: ElementId, label: SharedString, listener: F) -> Stateful<g
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_1()
         .rounded(px(12.0))
@@ -4351,8 +4352,7 @@ fn dropdown_row<F>(id: ElementId, label: SharedString, listener: F) -> Stateful<
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(id)
+    control(div(), id)
         .px_2()
         .py_1()
         .rounded(px(4.0))
@@ -4409,8 +4409,7 @@ fn prompt_row(panel: &ChatPanel, cx: &mut Context<ChatPanel>) -> gpui::Div {
 
 fn send_button(input: Entity<TextInput>, cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
     let listener_input = input.clone();
-    div()
-        .id(ElementId::Name("chat-send".into()))
+    control(div(), ElementId::Name("chat-send".into()))
         .px_4()
         .py_2()
         .rounded(px(8.0))
@@ -4431,8 +4430,7 @@ fn send_button(input: Entity<TextInput>, cx: &mut Context<ChatPanel>) -> Statefu
 }
 
 fn stop_button(cx: &mut Context<ChatPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("chat-stop".into()))
+    control(div(), ElementId::Name("chat-stop".into()))
         .px_4()
         .py_2()
         .rounded(px(8.0))

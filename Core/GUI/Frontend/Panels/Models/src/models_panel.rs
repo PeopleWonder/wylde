@@ -43,6 +43,7 @@ use crate::ipc::{
     ReferenceSet,
 };
 use crate::recommend::{pick as pick_recommendations, Recommendation};
+use wylde_gui_controls::control;
 
 /// Max catalog suggestions shown in the autocomplete dropdown.
 const CATALOG_SUGGESTION_LIMIT: usize = 10;
@@ -775,8 +776,7 @@ fn header_row(cx: &mut Context<ModelsPanel>) -> gpui::Div {
 
 fn refresh_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let id: ElementId = ElementId::Name("models-refresh".into());
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -926,9 +926,7 @@ fn catalog_row(entry: &CatalogEntry, cx: &mut Context<ModelsPanel>) -> Stateful<
     if let Some(lic) = &entry.license {
         meta_bits.push(lic.clone());
     }
-
-    div()
-        .id(id)
+    control(div(), id)
         .flex()
         .flex_row()
         .items_center()
@@ -1024,8 +1022,7 @@ fn size_badge(label: String) -> gpui::Div {
 fn pull_anyway_row(query: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let tag = query.to_owned();
     let tag_for_click = tag.clone();
-    div()
-        .id(ElementId::Name("models-pull-anyway".into()))
+    control(div(), ElementId::Name("models-pull-anyway".into()))
         .flex()
         .flex_row()
         .items_center()
@@ -1144,8 +1141,7 @@ fn catalog_detail_strip(entry: &CatalogEntry) -> gpui::Div {
 fn hf_search_row(query: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let q = query.to_owned();
     let q_for_click = q.clone();
-    div()
-        .id(ElementId::Name("models-hf-search".into()))
+    control(div(), ElementId::Name("models-hf-search".into()))
         .flex()
         .flex_row()
         .items_center()
@@ -1256,9 +1252,7 @@ fn hf_result_row(m: &HfModel, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::D
     if !m.last_modified.is_empty() {
         meta_bits.push(format!("updated {}", m.last_modified));
     }
-
-    div()
-        .id(id)
+    control(div(), id)
         .flex()
         .flex_row()
         .items_center()
@@ -1359,8 +1353,7 @@ fn hf_detail_strip(sel: &HfSelection, cx: &mut Context<ModelsPanel>) -> gpui::Di
 /// Clickable quant pill for the HF detail strip — cycles the quant on
 /// click. Brand-filled to read as the one interactive choice on the strip.
 fn hf_quant_pill(quant: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-hf-quant".into()))
+    control(div(), ElementId::Name("models-hf-quant".into()))
         .cursor_pointer()
         .rounded(px(999.0))
         .border_1()
@@ -1383,8 +1376,7 @@ fn hf_quant_pill(quant: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::D
 
 /// The ✕ close button on the HF results strip header.
 fn hf_close_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-hf-close".into()))
+    control(div(), ElementId::Name("models-hf-close".into()))
         .w(px(24.0))
         .h(px(24.0))
         .flex()
@@ -1440,8 +1432,7 @@ fn pull_submit_button(
     cx: &mut Context<ModelsPanel>,
 ) -> Stateful<gpui::Div> {
     let listener_input = input.clone();
-    div()
-        .id(ElementId::Name("models-pull-submit".into()))
+    control(div(), ElementId::Name("models-pull-submit".into()))
         .px_4()
         .py_2()
         .rounded(px(8.0))
@@ -1465,8 +1456,7 @@ fn pull_submit_button(
 }
 
 fn cancel_pull_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-pull-cancel".into()))
+    control(div(), ElementId::Name("models-pull-cancel".into()))
         .px_4()
         .py_2()
         .rounded(px(8.0))
@@ -1581,8 +1571,7 @@ fn recommendations_strip(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> 
 fn recommendation_chip(rec: Recommendation, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let name_for_click = rec.name.clone();
     let id: ElementId = ElementId::Name(format!("models-rec::{}", rec.name).into());
-    div()
-        .id(id)
+    control(div(), id)
         .px_3()
         .py_1()
         .rounded(px(999.0))
@@ -1758,8 +1747,7 @@ fn confirm_strip(cx: &mut Context<ModelsPanel>) -> gpui::Div {
                 )),
         )
         .child(
-            div()
-                .id(ElementId::Name("models-confirm-yes".into()))
+            control(div(), ElementId::Name("models-confirm-yes".into()))
                 .px_3()
                 .py_1()
                 .rounded(px(4.0))
@@ -1780,8 +1768,7 @@ fn confirm_strip(cx: &mut Context<ModelsPanel>) -> gpui::Div {
                 .child(SharedString::from("Yes, delete")),
         )
         .child(
-            div()
-                .id(ElementId::Name("models-confirm-no".into()))
+            control(div(), ElementId::Name("models-confirm-no".into()))
                 .px_3()
                 .py_1()
                 .rounded(px(4.0))
@@ -1810,8 +1797,7 @@ where
     } else {
         ("☆", TEXT_MUTED)
     };
-    div()
-        .id(id)
+    control(div(), id)
         .w(px(24.0))
         .h(px(24.0))
         .flex()
@@ -1926,8 +1912,7 @@ fn unreachable_state(cx: &mut Context<ModelsPanel>) -> gpui::Div {
 }
 
 fn retry_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-retry".into()))
+    control(div(), ElementId::Name("models-retry".into()))
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -1951,8 +1936,7 @@ fn delete_button<F>(id: ElementId, listener: F) -> Stateful<gpui::Div>
 where
     F: Fn(&gpui::MouseDownEvent, &mut gpui::Window, &mut gpui::App) + 'static,
 {
-    div()
-        .id(id)
+    control(div(), id)
         .px_2()
         .py_1()
         .rounded(px(4.0))
@@ -1996,8 +1980,7 @@ fn search_strip(panel: &ModelsPanel, cx: &mut Context<ModelsPanel>) -> Stateful<
 }
 
 fn clear_search_button(cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
-    div()
-        .id(ElementId::Name("models-search-clear".into()))
+    control(div(), ElementId::Name("models-search-clear".into()))
         .w(px(28.0))
         .h(px(28.0))
         .flex()
@@ -2113,8 +2096,7 @@ fn empty_installed_state(rec: Option<&Recommended>, cx: &mut Context<ModelsPanel
 /// named model of a stated size — so the click is informed, not implied.
 fn pull_recommended_button(model: &str, cx: &mut Context<ModelsPanel>) -> Stateful<gpui::Div> {
     let name_for_click = model.to_owned();
-    div()
-        .id(ElementId::Name("models-pull-recommended".into()))
+    control(div(), ElementId::Name("models-pull-recommended".into()))
         .px_3()
         .py_2()
         .rounded(px(4.0))

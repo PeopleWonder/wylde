@@ -107,9 +107,25 @@ enum Control {
 
 // ── Observer event bus ──────────────────────────────────────────────────────
 
+/// Channel depth for the delta-event bus. A lagging subscriber loses the
+/// oldest events rather than stalling the watcher.
+const EVENT_BUS_CAPACITY: usize = 128;
+
+/// The process-wide bus the *live service* publishes on. There is one watcher
+/// per process (see [`active`]), so one bus is the right shape in production —
+/// panels subscribe via [`subscribe`] without having to be handed a sender.
+///
+/// It is deliberately **not** what [`run_loop`] reaches for. The loop is
+/// handed its sender ([`start_for`] passes a clone of this one), so a test can
+/// give each loop a private channel. Before #246 the loop published straight
+/// to this global: `cargo test` runs a binary's tests on parallel threads, so
+/// sibling watcher tests' events landed in each other's receivers and
+/// `delta_event_is_broadcast_on_dispatch` failed ~17% of the time (the #83
+/// self-collision class). Injection removes the hazard by construction rather
+/// than by a convention each new test has to remember.
 fn event_bus() -> &'static broadcast::Sender<DeltaEvent> {
     static BUS: OnceLock<broadcast::Sender<DeltaEvent>> = OnceLock::new();
-    BUS.get_or_init(|| broadcast::channel(128).0)
+    BUS.get_or_init(|| broadcast::channel(EVENT_BUS_CAPACITY).0)
 }
 
 /// Subscribe to [`DeltaEvent`]s (the `delta_upsert_complete` stream). A
@@ -194,12 +210,19 @@ impl DeltaDispatcher for ServiceDispatcher {
 
 // ── The debounce + dispatch loop ────────────────────────────────────────────
 
+/// Drive one watch: coalesce raw events, dispatch each settled change, and
+/// publish the completion event on `deltas_tx`.
+///
+/// `deltas_tx` is injected rather than looked up globally so each loop owns
+/// its own event stream — the live service hands it a clone of [`event_bus`],
+/// tests hand it a private channel. See [`event_bus`] for why (#246).
 async fn run_loop<D: DeltaDispatcher>(
     mut events_rx: UnboundedReceiver<RawChange>,
     mut control_rx: UnboundedReceiver<Control>,
     dispatcher: D,
     status: Arc<Mutex<WatcherStatus>>,
     window: Duration,
+    deltas_tx: broadcast::Sender<DeltaEvent>,
 ) {
     let mut deb = Debouncer::new(window);
     let mut paused = false;
@@ -259,7 +282,7 @@ async fn run_loop<D: DeltaDispatcher>(
                 for (path, kind) in due {
                     let started = Instant::now();
                     let outcome = dispatcher.dispatch(path, kind).await;
-                    finish_delta(&dispatcher, &outcome, started);
+                    finish_delta(&dispatcher, &outcome, started, &deltas_tx);
                 }
                 set_files_watched(&status, dispatcher.files_watched());
             }
@@ -272,11 +295,13 @@ async fn run_loop<D: DeltaDispatcher>(
     );
 }
 
-/// Log + broadcast one settled delta (skips a filtered no-op).
+/// Log + broadcast one settled delta (skips a filtered no-op) on the loop's
+/// own `deltas_tx`.
 fn finish_delta<D: DeltaDispatcher>(
     dispatcher: &D,
     outcome: &delta::DeltaOutcome,
     started: Instant,
+    deltas_tx: &broadcast::Sender<DeltaEvent>,
 ) {
     if outcome.action == "skip" {
         return;
@@ -301,7 +326,7 @@ fn finish_delta<D: DeltaDispatcher>(
             .map(|e| format!(" vector_err={e}"))
             .unwrap_or_default(),
     );
-    let _ = event_bus().send(DeltaEvent {
+    let _ = deltas_tx.send(DeltaEvent {
         workspace_id: dispatcher.workspace_id(),
         path: outcome.path.clone(),
         action: outcome.action,
@@ -426,12 +451,15 @@ fn start_for(def: WorkspaceDefinition) -> ::notify::Result<()> {
         paused: false,
     }));
 
+    // The live service publishes on the process-wide bus, so `subscribe()`
+    // callers (the graph panel) see this watcher's deltas.
     let handle = tokio::spawn(run_loop(
         ev_rx,
         ctrl_rx,
         dispatcher,
         status.clone(),
         debounce_window(),
+        event_bus().clone(),
     ));
 
     *active().lock().expect("watcher mutex") = Some(ActiveWatcher {
@@ -482,192 +510,4 @@ pub fn resume() -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Mutex as StdMutex;
-
-    /// Recording mock — captures dispatched changes + catch_up calls, no IO.
-    #[derive(Clone)]
-    struct MockDispatcher {
-        ws: String,
-        dispatched: Arc<StdMutex<Vec<(String, ChangeKind)>>>,
-        catch_ups: Arc<StdMutex<u32>>,
-        files: u32,
-    }
-
-    impl MockDispatcher {
-        fn new() -> Self {
-            Self {
-                ws: "mock-ws".to_owned(),
-                dispatched: Arc::new(StdMutex::new(Vec::new())),
-                catch_ups: Arc::new(StdMutex::new(0)),
-                files: 7,
-            }
-        }
-    }
-
-    impl DeltaDispatcher for MockDispatcher {
-        fn workspace_id(&self) -> String {
-            self.ws.clone()
-        }
-        fn files_watched(&self) -> u32 {
-            self.files
-        }
-        fn dispatch(
-            &self,
-            path: PathBuf,
-            kind: ChangeKind,
-        ) -> impl std::future::Future<Output = delta::DeltaOutcome> + Send {
-            self.dispatched
-                .lock()
-                .unwrap()
-                .push((path.to_string_lossy().into_owned(), kind));
-            let path = path.to_string_lossy().into_owned();
-            async move {
-                delta::DeltaOutcome {
-                    action: if kind == ChangeKind::Upsert {
-                        "upsert"
-                    } else {
-                        "remove"
-                    },
-                    path,
-                    ..Default::default()
-                }
-            }
-        }
-        fn catch_up(&self) -> impl std::future::Future<Output = ()> + Send {
-            *self.catch_ups.lock().unwrap() += 1;
-            async {}
-        }
-    }
-
-    /// Spawn the loop with a mock dispatcher + a short window; return the
-    /// senders + the mock for assertions.
-    fn spawn_loop(
-        window: Duration,
-    ) -> (
-        UnboundedSender<RawChange>,
-        UnboundedSender<Control>,
-        Arc<Mutex<WatcherStatus>>,
-        MockDispatcher,
-    ) {
-        let (ev_tx, ev_rx) = unbounded_channel();
-        let (ctrl_tx, ctrl_rx) = unbounded_channel();
-        let status = Arc::new(Mutex::new(WatcherStatus::default()));
-        let mock = MockDispatcher::new();
-        tokio::spawn(run_loop(
-            ev_rx,
-            ctrl_rx,
-            mock.clone(),
-            status.clone(),
-            window,
-        ));
-        (ev_tx, ctrl_tx, status, mock)
-    }
-
-    #[tokio::test]
-    async fn ten_rapid_edits_dispatch_once() {
-        let (ev, _ctrl, _status, mock) = spawn_loop(Duration::from_millis(60));
-        let path = "/proj/src/main.rs";
-        for _ in 0..10 {
-            ev.send((PathBuf::from(path), ChangeKind::Upsert)).unwrap();
-            tokio::time::sleep(Duration::from_millis(3)).await;
-        }
-        // Wait past the window so the coalesced change settles + dispatches.
-        tokio::time::sleep(Duration::from_millis(160)).await;
-        let got = mock.dispatched.lock().unwrap().clone();
-        assert_eq!(got.len(), 1, "ten edits collapse to one dispatch: {got:?}");
-        assert_eq!(got[0], (path.to_owned(), ChangeKind::Upsert));
-    }
-
-    #[tokio::test]
-    async fn multiple_files_batch_and_status_updates() {
-        let (ev, _ctrl, status, mock) = spawn_loop(Duration::from_millis(60));
-        ev.send((PathBuf::from("/a.rs"), ChangeKind::Upsert))
-            .unwrap();
-        ev.send((PathBuf::from("/b.rs"), ChangeKind::Upsert))
-            .unwrap();
-        ev.send((PathBuf::from("/c.rs"), ChangeKind::Remove))
-            .unwrap();
-        tokio::time::sleep(Duration::from_millis(160)).await;
-        let got = mock.dispatched.lock().unwrap().clone();
-        assert_eq!(got.len(), 3, "all three dispatched: {got:?}");
-        // Status reflects activity + the mock's files_watched.
-        let s = status.lock().unwrap().clone();
-        assert!(s.last_event_at.is_some(), "last_event_at stamped");
-        assert_eq!(s.files_watched, 7);
-    }
-
-    #[tokio::test]
-    async fn pause_drops_events_resume_catches_up() {
-        let (ev, ctrl, status, mock) = spawn_loop(Duration::from_millis(50));
-        // Pause, then edit: the event must NOT dispatch.
-        ctrl.send(Control::Pause).unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        ev.send((PathBuf::from("/x.rs"), ChangeKind::Upsert))
-            .unwrap();
-        tokio::time::sleep(Duration::from_millis(120)).await;
-        assert!(
-            mock.dispatched.lock().unwrap().is_empty(),
-            "no dispatch while paused"
-        );
-        assert!(status.lock().unwrap().paused, "status shows paused");
-
-        // Resume → one catch_up re-walk; status clears paused.
-        ctrl.send(Control::Resume).unwrap();
-        tokio::time::sleep(Duration::from_millis(40)).await;
-        assert_eq!(
-            *mock.catch_ups.lock().unwrap(),
-            1,
-            "resume triggers catch_up"
-        );
-        assert!(!status.lock().unwrap().paused);
-    }
-
-    #[tokio::test]
-    async fn shutdown_ends_the_loop() {
-        let (ev, ctrl, _status, mock) = spawn_loop(Duration::from_millis(50));
-        ctrl.send(Control::Shutdown).unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        // After shutdown, the loop has dropped its receiver — sends now fail,
-        // and nothing is dispatched.
-        let _ = ev.send((PathBuf::from("/y.rs"), ChangeKind::Upsert)); // test-only event feed (wylde-check: discard-result-ok)
-        tokio::time::sleep(Duration::from_millis(120)).await;
-        assert!(mock.dispatched.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn delta_event_is_broadcast_on_dispatch() {
-        let mut rx = subscribe();
-        let (ev, _ctrl, _status, _mock) = spawn_loop(Duration::from_millis(50));
-        ev.send((PathBuf::from("/evt.rs"), ChangeKind::Upsert))
-            .unwrap();
-        // The completion event arrives after the debounce window.
-        let got = tokio::time::timeout(Duration::from_millis(300), rx.recv())
-            .await
-            .expect("event within budget")
-            .expect("event payload");
-        assert_eq!(got.action, "upsert");
-        assert!(got.path.ends_with("evt.rs"));
-    }
-
-    #[test]
-    fn status_default_when_no_watcher() {
-        // No watcher started in this test → default snapshot.
-        let s = status();
-        assert!(s.active_workspace.is_none() || s.active_workspace.is_some());
-        // pause/resume on no watcher are safe no-ops.
-        // (Don't assert None here — another test in the binary may hold one.)
-    }
-
-    #[test]
-    fn debounce_window_default_is_500ms() {
-        // Only assert the default when the env knob is unset.
-        if std::env::var_os("WYLDE_WORKSPACES_WATCH_DEBOUNCE_MS").is_none() {
-            assert_eq!(
-                debounce_window(),
-                Duration::from_millis(DEFAULT_DEBOUNCE_MS)
-            );
-        }
-    }
-}
+mod tests;

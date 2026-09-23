@@ -25,10 +25,11 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use gpui::{
-    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, ElementId, Entity,
-    FontWeight, IntoElement, Render, SharedString, Stateful, Subscription, Window,
+    div, prelude::*, px, rgb, AnyView, App, AppContext, AsyncApp, Context, Entity, FontWeight,
+    IntoElement, Render, SharedString, Stateful, Subscription, Window,
 };
 use wylde_gpui_input::{InputEvent, TextInput};
+use wylde_gui_controls::control;
 use wylde_theme::colors::{
     BORDER_DEFAULT, BORDER_SUBTLE, BRAND, BRAND_DIM, SURFACE_800, SURFACE_900, TEXT_MUTED,
     TEXT_PRIMARY, TEXT_SECONDARY,
@@ -466,9 +467,7 @@ fn header_row(cx: &mut Context<MemoryPanel>) -> gpui::Div {
 }
 
 fn refresh_button(cx: &mut Context<MemoryPanel>) -> Stateful<gpui::Div> {
-    let id: ElementId = ElementId::Name("memory-refresh".into());
-    div()
-        .id(id)
+    control(div(), "memory-refresh")
         .px_3()
         .py_2()
         .rounded(px(4.0))
@@ -535,8 +534,7 @@ fn long_term_row(
     let recency_label = SharedString::from(recency_strip(rec.last_used_at, rec.created_at));
     let body_label = SharedString::from(preview);
 
-    let mut row = div()
-        .id(ElementId::Name(format!("memory-row::{}", rec.id).into()))
+    let mut row = control(div(), format!("memory-row::{}", rec.id))
         .bg(rgb(pack(SURFACE_800)))
         .border_1()
         .border_color(rgb(pack(BORDER_SUBTLE)))
@@ -621,10 +619,7 @@ fn copy_in_button(
     let body_for_click = body.to_owned();
     let ws_for_click = workspace_id.to_owned();
     let label = SharedString::from(format!("Copy to “{workspace_id}”"));
-    div()
-        .id(ElementId::Name(
-            format!("memory-copyin::{record_id}").into(),
-        ))
+    control(div(), format!("memory-copyin::{record_id}"))
         .self_start()
         .px_3()
         .py_1()

@@ -7,16 +7,14 @@
 //! testable lives in the modules below.
 
 pub mod assets;
-pub mod nav;
-pub mod pack;
-pub mod resource_meter;
 pub mod shell_root;
 pub mod shutdown;
-pub mod sidebar;
-pub mod slot;
 pub mod tray;
-pub mod update_pill;
 pub mod window;
+
+// The nav chrome (sidebar, slot, update_pill) + its view-model (nav, pack,
+// resource_meter) moved to `wylde-gui-shell-chrome`, a `wry`-free crate the L7
+// panel-walk can build and control-walk (#247). `shell_root` re-consumes it.
 
 /// Canonical product title — used in the window title, tray tooltip,
 /// and (later) the autostart entry.  Centralised so a rebrand changes

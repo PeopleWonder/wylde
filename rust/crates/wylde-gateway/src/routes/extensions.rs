@@ -158,7 +158,7 @@ async fn call_extension_get(
 
 pub fn router() -> Router {
     Router::new().route(
-        "/extensions/:name/:endpoint",
+        "/extensions/{name}/{endpoint}",
         post(call_extension_post)
             .get(call_extension_get)
             .route_layer(from_fn(require_local)),
