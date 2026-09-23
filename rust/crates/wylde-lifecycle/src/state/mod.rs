@@ -26,8 +26,11 @@
 //! * [`services`] — the `start_<service>` / `stop_<service>` pairs
 //!   (the hooks the [`crate::daemon_managed`] table points at) and the
 //!   env-var dispatch that picks Python vs Rust per service.
+//! * [`n8n_engine`] — the Wylde-managed n8n engine launcher (a Node
+//!   runtime, launched here as the sanctioned third-party-process owner).
 
 pub mod manifest;
+pub mod n8n_engine;
 pub mod orphan_sweep;
 pub mod restart;
 pub mod services;

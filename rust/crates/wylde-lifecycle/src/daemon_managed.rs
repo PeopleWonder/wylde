@@ -161,13 +161,16 @@ pub struct DaemonService {
 ///   dispatches browser-extension calls through it); `wylde-ollama` after
 ///   the broker (VRAM leases) but before the gateway/harness that call it;
 ///   `wylde-workspaces` last of the spawned set (it consumes ollama,
-///   tree-sitter, and Memgraph); `wylde-n8n` a leaf. `wylde-vpn` is
+///   tree-sitter, and Memgraph); the n8n engine just before `wylde-n8n`,
+///   which attaches to it; `wylde-n8n` a leaf. `wylde-vpn` is
 ///   user-started so it is not in the boot sweep at all.
 /// * **Shutdown order** (`shutdown_rank`): Gateway first (outward-facing,
 ///   before its dependents); Workspaces early (it consumes ollama /
 ///   tree-sitter / Memgraph); Harness after its callers but before Ollama;
 ///   Ollama before the broker (release VRAM leases); VPN between Ollama and
-///   the broker; Memgraph last (Bolt drivers release first).
+///   the broker; Memgraph next (Bolt drivers release first); the n8n
+///   engine last of all (`wylde-n8n` detaches at rank 1, and n8n needs its
+///   longer grace to flush its database).
 pub const DAEMON_MANAGED: &[DaemonService] = &[
     DaemonService {
         name: service_name::MEMGRAPH,
@@ -245,6 +248,15 @@ pub const DAEMON_MANAGED: &[DaemonService] = &[
         stop: Some(|| Box::pin(services::stop_workspaces())),
         role: Role::Standard,
         shutdown_rank: 2,
+    },
+    // The n8n engine boots before `wylde-n8n` (which attaches to it) and
+    // is torn down after it. A Node runtime: no Wylde image.
+    DaemonService {
+        name: service_name::N8N_ENGINE,
+        start: || Box::pin(services::start_n8n_engine()),
+        stop: Some(|| Box::pin(services::stop_n8n_engine())),
+        role: Role::Standard,
+        shutdown_rank: 12,
     },
     DaemonService {
         name: service_name::N8N,

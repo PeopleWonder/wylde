@@ -1,15 +1,16 @@
 //! wylde-n8n service entry point.
 //!
-//! In **managed mode** (the default) this process *owns* the local n8n
-//! workflow engine end-to-end, delivering the maintainer's three requirements:
+//! In **managed mode** (the default) the lifecycle daemon launches the
+//! local n8n engine as its own service (`wylde-n8n-engine`) and this
+//! process attaches to it, delivering the maintainer's three requirements:
 //!
 //!   1. **Embed** — n8n binds loopback-only at `http://127.0.0.1:5678`,
-//!      the URL the Wylde GUI mounts in a `wry` WebView panel.
-//!   2. **Shared auth** — Wylde provisions and owns the n8n owner
-//!      account (a Wylde-generated identity in the out-of-tree data
-//!      dir) and hands the GUI an auto-login script via
+//!      the URL the Wylde GUI's n8n panel embeds.
+//!   2. **Shared auth** — lifecycle mints the Wylde-owned identity in the
+//!      out-of-tree data dir; this service provisions the n8n owner
+//!      account from it and hands the GUI an auto-login script via
 //!      `n8n.editor_bootstrap`, so the user never logs into n8n.
-//!   3. **Persistence** — n8n's `N8N_USER_FOLDER` points at the durable
+//!   3. **Persistence** — the engine's `N8N_USER_FOLDER` is the durable
 //!      `WyldeData/n8n/` data dir and its encryption key is pinned to
 //!      the Wylde-owned identity, so workflows, credentials, and
 //!      executions survive restarts.
@@ -33,7 +34,7 @@ use wylde_shared::manifest::ManifestWriter;
 
 use wylde_n8n::editor::{self, EditorContext};
 use wylde_n8n::provision;
-use wylde_n8n::runtime::{self, RuntimeConfig};
+use wylde_n8n::runtime::RuntimeConfig;
 use wylde_n8n::secret::N8nIdentity;
 
 const SERVICE_NAME: &str = "wylde-n8n";
@@ -46,21 +47,21 @@ async fn main() -> Result<()> {
     configure_logging(Some(SERVICE_NAME), Level::INFO);
     tracing::info!("wylde-n8n: starting (rust impl)");
 
-    // Bring up (or attach to) the managed n8n daemon BEFORE the config
-    // is first read: managed mode derives the upstream URL + owner
+    // Attach to the lifecycle-managed n8n engine BEFORE the config is
+    // first read: managed mode derives the upstream URL + owner
     // credentials from the Wylde-owned identity and exports them so the
     // shared action client (and the `n8n.*` verbs) authenticate as the
     // owner with no hand-wiring.
-    let mut n8n_child = bring_up_managed_n8n().await;
+    let managed = attach_managed_n8n();
 
     let cfg = wylde_n8n::config::Config::get();
     let manifest = ManifestWriter::write(
         SERVICE_NAME,
         None,
         "optional",
-        "N8N workflow service — Wylde-managed local n8n engine. Owns the \
-         daemon (loopback editor + out-of-tree persistence + provisioned \
-         owner for shared auth) and fronts it as n8n.* pipe actions. Core \
+        "N8N workflow service — attaches to the lifecycle-managed local n8n \
+         engine (loopback editor + out-of-tree persistence), provisions its \
+         owner for shared auth, and fronts it as n8n.* pipe actions. Core \
          works with or without it.",
         json!({
             "wylde_n8n": {
@@ -77,7 +78,7 @@ async fn main() -> Result<()> {
                 ],
                 "upstream_url": cfg.auth.url.clone(),
                 "auth_configured": cfg.auth.auth_ready(),
-                "managed": n8n_child.is_some(),
+                "managed": managed,
                 // Data/template home per the registry convention — the
                 // service folder keeps workflow templates only; the live
                 // database lives in WYLDE_N8N_DATA_DIR.
@@ -113,19 +114,8 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Tear down the managed daemon we spawned (no-op in unmanaged /
-    // attached mode). kill_on_drop is the backstop; this is the graceful
-    // path on a clean exit.
-    if let Some(child) = n8n_child.as_mut() {
-        tracing::info!("wylde-n8n: stopping managed n8n daemon");
-        if let Err(e) = child.start_kill() {
-            tracing::warn!("wylde-n8n: could not signal the managed n8n daemon to stop: {e}");
-        }
-        if let Err(e) = child.wait().await {
-            tracing::warn!("wylde-n8n: waiting for the managed n8n daemon to exit failed: {e}");
-        }
-    }
-
+    // The engine is the lifecycle daemon's to stop (`wylde-n8n-engine`);
+    // this service only drops its attachment.
     wylde_n8n::service::stop();
     if let Err(e) = manifest.mark_stopped() {
         tracing::warn!("wylde-n8n: mark_stopped failed: {e}");
@@ -133,35 +123,42 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Managed-mode startup. Returns the spawned n8n `Child` (so the caller
-/// can stop it on shutdown), or `None` in unmanaged mode or when we
-/// attached to an already-running daemon.
+/// Managed-mode startup: attach to the lifecycle-launched engine. Returns
+/// whether managed mode is active (an identity was found to attach with).
 ///
 /// Every failure is non-fatal: the service still boots and serves the
 /// pipe; calls degrade to structured errors until n8n is up. This keeps
 /// the "core works without the service" contract intact.
-async fn bring_up_managed_n8n() -> Option<tokio::process::Child> {
+fn attach_managed_n8n() -> bool {
     let wylde_root = std::env::var_os("WYLDE_ROOT")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let rt = RuntimeConfig::from_env(&wylde_root);
     if !rt.managed {
-        tracing::info!("wylde-n8n: WYLDE_N8N_MANAGED=0 — legacy proxy mode, not launching n8n");
-        return None;
+        tracing::info!("wylde-n8n: WYLDE_N8N_MANAGED=0 — legacy proxy mode");
+        return false;
     }
 
-    // Load/mint the Wylde-owned identity (encryption key + owner creds)
-    // in the durable data dir, then export the upstream URL + owner
-    // credentials so Config (read just after) wires the action client to
-    // authenticate as the owner.
-    let identity = match N8nIdentity::load_or_create(&rt.data_dir) {
-        Ok(id) => id,
+    // Read the Wylde-owned identity (encryption key + owner creds) the
+    // lifecycle daemon minted when it launched the engine, then export
+    // the upstream URL + owner credentials so Config (read just after)
+    // wires the action client to authenticate as the owner.
+    let identity = match N8nIdentity::load(&rt.data_dir) {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            tracing::warn!(
+                "wylde-n8n: no n8n identity in {} — the lifecycle daemon mints it when \
+                 it launches wylde-n8n-engine; falling back to unmanaged proxy mode",
+                rt.data_dir.display()
+            );
+            return false;
+        }
         Err(e) => {
             tracing::warn!(
-                "wylde-n8n: could not load/create n8n identity ({e}); \
-                 falling back to unmanaged proxy mode"
+                "wylde-n8n: could not read the n8n identity ({e:#}); falling back to \
+                 unmanaged proxy mode"
             );
-            return None;
+            return false;
         }
     };
     std::env::set_var("WYLDE_N8N_URL", rt.base_url());
@@ -169,47 +166,16 @@ async fn bring_up_managed_n8n() -> Option<tokio::process::Child> {
     std::env::set_var("WYLDE_N8N_PASSWORD", &identity.owner_password);
 
     // Install the editor context so n8n.editor_bootstrap can mint the
-    // auto-login script regardless of whether we spawn or attach.
+    // auto-login script.
     editor::set_context(EditorContext {
         base_url: rt.base_url(),
         identity: identity.clone(),
     });
 
-    // If a daemon is already answering on the port, attach to it rather
-    // than spawning a second one (the user may have started n8n by hand).
-    let child = if is_reachable(&rt.base_url()).await {
-        tracing::info!(
-            "wylde-n8n: a daemon already answers on {} — attaching without spawning",
-            rt.base_url()
-        );
-        None
-    } else {
-        match runtime::resolve_launch() {
-            Ok(spec) => match runtime::spawn(&rt, &identity, &spec) {
-                Ok(c) => Some(c),
-                Err(e) => {
-                    tracing::warn!(
-                        "wylde-n8n: failed to spawn n8n ({e}); calls degrade to \
-                         errors until a daemon is reachable"
-                    );
-                    None
-                }
-            },
-            Err(e) => {
-                tracing::warn!(
-                    "wylde-n8n: cannot launch n8n ({e}); calls degrade to errors \
-                     until a daemon is reachable at {}",
-                    rt.base_url()
-                );
-                None
-            }
-        }
-    };
-
     // Provision the owner account in the background so the pipe surface
-    // opens immediately — n8n.* calls that arrive before n8n finishes
-    // booting get the usual fail-soft error envelope, exactly like the
-    // wylde-ollama "daemon may come up later" contract. Provisioning is
+    // opens immediately — n8n.* calls that arrive before the engine
+    // finishes booting get the usual fail-soft error envelope, exactly like
+    // the wylde-ollama "daemon may come up later" contract. Provisioning is
     // idempotent across restarts (owner already present → no-op).
     let base = rt.base_url();
     tokio::spawn(async move {
@@ -231,21 +197,5 @@ async fn bring_up_managed_n8n() -> Option<tokio::process::Child> {
         }
     });
 
-    child
-}
-
-/// Quick liveness check: does `GET {base}/healthz` answer at all?
-async fn is_reachable(base_url: &str) -> bool {
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    else {
-        return false;
-    };
-    client
-        .get(format!("{base_url}/healthz"))
-        .send()
-        .await
-        .map(|r| r.status().is_success() || r.status().is_client_error())
-        .unwrap_or(false)
+    true
 }
