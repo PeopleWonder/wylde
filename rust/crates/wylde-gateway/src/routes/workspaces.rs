@@ -67,7 +67,7 @@ fn retired(what: &str) -> Response {
 /// `GET /api/workspaces` — list the MRU-5 workspaces.
 pub async fn list_workspaces(headers: HeaderMap) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     workspaces_dispatch("workspaces.list_mru", Value::Null).await
 }
@@ -79,7 +79,7 @@ pub async fn recent_workspaces(
     Query(_q): Query<HashMap<String, String>>,
 ) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     workspaces_dispatch("workspaces.list_mru", Value::Null).await
 }
@@ -87,7 +87,7 @@ pub async fn recent_workspaces(
 /// `GET /api/workspaces/mru_limit` — retired (static MRU-5).
 pub async fn get_mru_limit(headers: HeaderMap) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     retired("the configurable MRU limit")
 }
@@ -95,7 +95,7 @@ pub async fn get_mru_limit(headers: HeaderMap) -> Response {
 /// `PUT /api/workspaces/mru_limit` — retired (static MRU-5).
 pub async fn set_mru_limit(headers: HeaderMap, _body: Option<Json<Value>>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     retired("the configurable MRU limit")
 }
@@ -106,7 +106,7 @@ pub async fn set_mru_limit(headers: HeaderMap, _body: Option<Json<Value>>) -> Re
 /// `folder` field; `full_reindex` / `conversation_id` are ignored.
 pub async fn activate_workspace(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     let folder = body
         .and_then(|Json(v)| {
@@ -125,7 +125,7 @@ pub async fn activate_workspace(headers: HeaderMap, body: Option<Json<Value>>) -
 /// `DELETE /api/workspaces/{workspace_id}` — drop a workspace.
 pub async fn delete_workspace(headers: HeaderMap, Path(workspace_id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if workspace_id.trim().is_empty() {
         return failure(
@@ -140,7 +140,7 @@ pub async fn delete_workspace(headers: HeaderMap, Path(workspace_id): Path<Strin
 /// `GET /api/workspaces/{workspace_id}/status` — retired (no file indexer).
 pub async fn workspace_status(headers: HeaderMap, _workspace_id: Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     retired("workspace index status")
 }
@@ -148,7 +148,7 @@ pub async fn workspace_status(headers: HeaderMap, _workspace_id: Path<String>) -
 /// `POST /api/workspaces/{workspace_id}/reindex` — retired (no file indexer).
 pub async fn reindex_workspace(headers: HeaderMap, _workspace_id: Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     retired("workspace re-index")
 }
@@ -157,7 +157,7 @@ pub async fn reindex_workspace(headers: HeaderMap, _workspace_id: Path<String>) 
 /// persona now lives in `persona.md`, read via the workspace bundle).
 pub async fn get_persona(headers: HeaderMap, _workspace_id: Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     retired("the persona read endpoint")
 }
@@ -172,7 +172,7 @@ pub async fn set_persona(
     body: Option<Json<Value>>,
 ) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if workspace_id.trim().is_empty() {
         return failure(
