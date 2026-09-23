@@ -962,7 +962,12 @@ impl BoltClient {
                         .param("tt", BoltType::from(believed_at_ms)),
                 )
                 .await
-                .map_err(|e| (error_codes::QUERY.to_owned(), format!("as_believed_at: {e}")))?;
+                .map_err(|e| {
+                    (
+                        error_codes::QUERY.to_owned(),
+                        format!("as_believed_at: {e}"),
+                    )
+                })?;
             let mut edges: Vec<Value> = Vec::new();
             while let Ok(Some(row)) = rows.next().await {
                 let source: String = row.get("source").unwrap_or_default();
@@ -1057,10 +1062,7 @@ impl BoltClient {
             for rel in temporal::TEMPORAL_RELATIONS {
                 // Append a RETURN so we can count edges actually touched;
                 // the builder body is the idempotent SET guarded on NULL.
-                let stmt = format!(
-                    "{}\nRETURN count(r) AS n",
-                    temporal::backfill_temporal(rel)
-                );
+                let stmt = format!("{}\nRETURN count(r) AS n", temporal::backfill_temporal(rel));
                 let mut rows = graph
                     .execute(
                         neo4rs::query(&stmt)
@@ -1072,7 +1074,10 @@ impl BoltClient {
                     )
                     .await
                     .map_err(|e| {
-                        (error_codes::QUERY.to_owned(), format!("backfill {rel}: {e}"))
+                        (
+                            error_codes::QUERY.to_owned(),
+                            format!("backfill {rel}: {e}"),
+                        )
                     })?;
                 if let Ok(Some(row)) = rows.next().await {
                     migrated += row.get::<i64>("n").unwrap_or(0);
@@ -1628,7 +1633,7 @@ mod tests {
         // bare `MutexGuard` locals) stays quiet — same idiom as
         // `actions.rs::EmbedOffGuard`. Lock first, THEN mutate env.
         struct Hold {
-            _t: EnvGuard, // dropped first: restores env...
+            _t: EnvGuard,                           // dropped first: restores env...
             _g: std::sync::MutexGuard<'static, ()>, // ...then releases lock
         }
         let g = env_lock();

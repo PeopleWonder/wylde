@@ -82,7 +82,6 @@ pub mod temporal;
 pub mod transport;
 
 pub use bolt::{BoltClient, BoltConfig, DEFAULT_BOLT_URL, DRIVER_ERROR_TTL};
-pub use temporal::{temporal_memory_enabled, TemporalEdge, TemporalEdgeLog, OPEN};
 pub use client::{Client, EntityPair, TraverseRequest};
 pub use graph_retrieval::{
     expand_by_graph, ExpandOptions, GraphHit, DEFAULT_HOPS, DEFAULT_MAX_EXTRA,
@@ -92,6 +91,7 @@ pub use schema::{
     NODE_ENTITY, REL_CALLS, REL_CONFIGURES, REL_EXPOSES, REL_IMPORTS, REL_INHERITS,
     REL_MENTIONED_IN,
 };
+pub use temporal::{temporal_memory_enabled, TemporalEdge, TemporalEdgeLog, OPEN};
 pub use transport::MemgraphTraversal;
 
 /// Pick the right traversal transport for the active strangler-fig

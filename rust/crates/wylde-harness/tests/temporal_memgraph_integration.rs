@@ -33,6 +33,11 @@ use wylde_harness::memory::memgraph::bolt::BoltClient;
 use wylde_harness::memory::memgraph::client::EntityPair;
 use wylde_harness::memory::memgraph::temporal::{now_ms, OPEN};
 
+/// Serializes the live tests on the one shared Neo4j (the #83 self-collision
+/// class, #216/#227): they contend on graph-global state (ensure_schema,
+/// stats, the orphan-prune) and on the process-global toggle env var.
+static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Enable the temporal path for the whole (single-threaded) test run.
 fn enable_temporal() {
     // SAFETY: the ignored temporal integration tests are run with
@@ -81,6 +86,7 @@ async fn scrub(g: &Graph, prefix: &str) {
 #[tokio::test]
 #[ignore = "requires a live Neo4j/Memgraph on bolt://127.0.0.1:7687 + WYLDE_TEMPORAL_MEMORY=1"]
 async fn temporal_relate_and_as_of_roundtrip() {
+    let _db = DB_LOCK.lock().await;
     enable_temporal();
     let g = raw_graph().await;
     let src = uniq("rt_src");
@@ -90,7 +96,9 @@ async fn temporal_relate_and_as_of_roundtrip() {
     let client = BoltClient::new();
 
     // Write a temporal typed edge.
-    let relate = client.relate("CALLS", vec![EntityPair::new(&src, &tgt)]).await;
+    let relate = client
+        .relate("CALLS", vec![EntityPair::new(&src, &tgt)])
+        .await;
     assert!(relate.ok, "temporal relate failed: {:?}", relate.error);
     assert_eq!(relate.data["temporal"], true);
 
@@ -128,6 +136,7 @@ async fn temporal_relate_and_as_of_roundtrip() {
 #[tokio::test]
 #[ignore = "requires a live Neo4j/Memgraph on bolt://127.0.0.1:7687 + WYLDE_TEMPORAL_MEMORY=1"]
 async fn temporal_upsert_edge_supersedes_and_preserves_history() {
+    let _db = DB_LOCK.lock().await;
     enable_temporal();
     let g = raw_graph().await;
     let src = uniq("sup_src");
@@ -152,11 +161,16 @@ async fn temporal_upsert_edge_supersedes_and_preserves_history() {
     let mid = client.relations_as_of("CALLS", between).await;
     assert!(mid.ok);
     let mid_hit = find_in(&mid.data, &src, &tgt).expect("edge visible mid-history");
-    assert!(mid_hit["valid_to"].as_i64().unwrap() > between, "still valid at `between`");
+    assert!(
+        mid_hit["valid_to"].as_i64().unwrap() > between,
+        "still valid at `between`"
+    );
 
     // As-of "now" → the fresh open edge.
     let now = client.relations_as_of("CALLS", now_ms() + 1).await;
-    assert!(find_in(&now.data, &src, &tgt).expect("current edge")["valid_to"].as_i64() == Some(OPEN));
+    assert!(
+        find_in(&now.data, &src, &tgt).expect("current edge")["valid_to"].as_i64() == Some(OPEN)
+    );
 
     // As-of before t0 → nothing.
     let pre = client.relations_as_of("CALLS", t0 - 1).await;
@@ -170,6 +184,7 @@ async fn temporal_upsert_edge_supersedes_and_preserves_history() {
 #[tokio::test]
 #[ignore = "requires a live Neo4j/Memgraph on bolt://127.0.0.1:7687 + WYLDE_TEMPORAL_MEMORY=1"]
 async fn temporal_unrelate_is_logical_delete_preserving_history() {
+    let _db = DB_LOCK.lock().await;
     enable_temporal();
     let g = raw_graph().await;
     let src = uniq("del_src");
@@ -178,24 +193,41 @@ async fn temporal_unrelate_is_logical_delete_preserving_history() {
     let client = BoltClient::new();
 
     let t0 = now_ms();
-    assert!(client.relate("CALLS", vec![EntityPair::new(&src, &tgt)]).await.ok);
+    assert!(
+        client
+            .relate("CALLS", vec![EntityPair::new(&src, &tgt)])
+            .await
+            .ok
+    );
     tokio::time::sleep(std::time::Duration::from_millis(5)).await;
 
     // Logical delete: the fact stops being true now.
-    let del = client.unrelate("CALLS", vec![EntityPair::new(&src, &tgt)]).await;
+    let del = client
+        .unrelate("CALLS", vec![EntityPair::new(&src, &tgt)])
+        .await;
     assert!(del.ok, "temporal unrelate failed: {:?}", del.error);
     assert_eq!(del.data["temporal"], true);
 
     // The edge row still exists (not hard-deleted); history preserved.
-    assert_eq!(count_edges(&g, &src, &tgt, "CALLS").await, 1, "row preserved");
+    assert_eq!(
+        count_edges(&g, &src, &tgt, "CALLS").await,
+        1,
+        "row preserved"
+    );
 
     // As-of just after creation (inside the now-bounded window) still sees it.
     let mid = client.relations_as_of("CALLS", t0 + 1).await;
-    assert!(find_in(&mid.data, &src, &tgt).is_some(), "visible inside its valid window");
+    assert!(
+        find_in(&mid.data, &src, &tgt).is_some(),
+        "visible inside its valid window"
+    );
 
     // As-of far in the future (after retraction) does NOT.
     let future = client.relations_as_of("CALLS", now_ms() + 10_000).await;
-    assert!(find_in(&future.data, &src, &tgt).is_none(), "gone after retraction");
+    assert!(
+        find_in(&future.data, &src, &tgt).is_none(),
+        "gone after retraction"
+    );
 
     // tx_to stays OPEN (still current belief — §3.2).
     let (_, _, _, tx_to) = read_edge(&g, &src, &tgt, "CALLS").await;
@@ -209,6 +241,7 @@ async fn temporal_unrelate_is_logical_delete_preserving_history() {
 #[tokio::test]
 #[ignore = "requires a live Neo4j/Memgraph on bolt://127.0.0.1:7687 + WYLDE_TEMPORAL_MEMORY=1"]
 async fn temporal_correction_and_as_believed_at_travel() {
+    let _db = DB_LOCK.lock().await;
     enable_temporal();
     let g = raw_graph().await;
     let src = uniq("cor_src");
@@ -256,6 +289,7 @@ async fn temporal_correction_and_as_believed_at_travel() {
 #[tokio::test]
 #[ignore = "requires a live Neo4j/Memgraph on bolt://127.0.0.1:7687 + WYLDE_TEMPORAL_MEMORY=1"]
 async fn temporal_migration_backfills_created_at_and_is_idempotent() {
+    let _db = DB_LOCK.lock().await;
     enable_temporal();
     let g = raw_graph().await;
     let src = uniq("mig_src");
@@ -298,13 +332,19 @@ async fn temporal_migration_backfills_created_at_and_is_idempotent() {
     let idx = client.ensure_temporal_schema().await;
     assert!(idx.ok, "ensure_temporal_schema failed: {:?}", idx.error);
     assert_eq!(idx.data["temporal"], true);
-    assert!(idx.data["indexes"].as_i64().unwrap() >= 10, "5 rels × 2 props");
+    assert!(
+        idx.data["indexes"].as_i64().unwrap() >= 10,
+        "5 rels × 2 props"
+    );
 
     // Run the migration.
     let mig = client.backfill_temporal_edges().await;
     assert!(mig.ok, "backfill failed: {:?}", mig.error);
     let migrated = mig.data["migrated"].as_i64().expect("migrated count");
-    assert!(migrated >= 2, "at least our two seeded edges migrated (got {migrated})");
+    assert!(
+        migrated >= 2,
+        "at least our two seeded edges migrated (got {migrated})"
+    );
 
     // Edge with created_at → valid_from == created_at, ends OPEN.
     let (vf, vt, txf, txt) = read_edge(&g, &src, &tgt, "CALLS").await;
@@ -339,6 +379,7 @@ async fn temporal_migration_backfills_created_at_and_is_idempotent() {
 #[tokio::test]
 #[ignore = "requires a live Neo4j/Memgraph on bolt://127.0.0.1:7687 + WYLDE_TEMPORAL_MEMORY=1"]
 async fn temporal_traverse_respects_as_of_predicate() {
+    let _db = DB_LOCK.lock().await;
     use wylde_harness::memory::memgraph::client::TraverseRequest;
     enable_temporal();
     let g = raw_graph().await;
@@ -351,7 +392,12 @@ async fn temporal_traverse_respects_as_of_predicate() {
 
     // a -[CALLS(temporal)]-> b, and b MENTIONED_IN a chunk.
     let t0 = now_ms();
-    assert!(client.relate("CALLS", vec![EntityPair::new(&a, &b)]).await.ok);
+    assert!(
+        client
+            .relate("CALLS", vec![EntityPair::new(&a, &b)])
+            .await
+            .ok
+    );
     g.run(
         neo4rs::query(
             "MERGE (b:Entity {name:$b}) \
@@ -381,7 +427,10 @@ async fn temporal_traverse_respects_as_of_predicate() {
         .expect("chunks")
         .iter()
         .any(|c| c["id"] == chunk_id);
-    assert!(found_now, "as-of now must reach the chunk via the valid edge");
+    assert!(
+        found_now,
+        "as-of now must reach the chunk via the valid edge"
+    );
 
     // As-of BEFORE the edge existed: the typed edge isn't valid, so the
     // as-of walk must not traverse it to the chunk.
@@ -417,6 +466,7 @@ async fn temporal_traverse_respects_as_of_predicate() {
 #[tokio::test]
 #[ignore = "requires a live Neo4j/Memgraph on bolt://127.0.0.1:7687"]
 async fn toggle_off_is_byte_identical_relational_behavior() {
+    let _db = DB_LOCK.lock().await;
     // SAFETY: serial run (`--test-threads=1`); no concurrent env mutation.
     unsafe {
         std::env::remove_var("WYLDE_TEMPORAL_MEMORY");
@@ -431,8 +481,16 @@ async fn toggle_off_is_byte_identical_relational_behavior() {
     // and NO temporal properties (byte-identical to today's relational).
     let r1 = client.relate("CALLS", vec![EntityPair::new(&a, &b)]).await;
     assert!(r1.ok);
-    assert!(r1.data.get("temporal").is_none(), "OFF relate must not tag temporal");
-    assert!(client.relate("CALLS", vec![EntityPair::new(&a, &b)]).await.ok);
+    assert!(
+        r1.data.get("temporal").is_none(),
+        "OFF relate must not tag temporal"
+    );
+    assert!(
+        client
+            .relate("CALLS", vec![EntityPair::new(&a, &b)])
+            .await
+            .ok
+    );
     assert_eq!(
         count_edges(&g, &a, &b, "CALLS").await,
         1,
@@ -450,16 +508,33 @@ async fn toggle_off_is_byte_identical_relational_behavior() {
     scrub(&g, &s).await;
     assert!(client.upsert_edge(&s, "CALLS", &t, 1.0).await.ok);
     assert!(client.upsert_edge(&s, "CALLS", &t, 2.0).await.ok);
-    assert_eq!(count_edges(&g, &s, &t, "CALLS").await, 1, "in-place weight, one edge");
+    assert_eq!(
+        count_edges(&g, &s, &t, "CALLS").await,
+        1,
+        "in-place weight, one edge"
+    );
     assert!(!edge_has_temporal_props(&g, &s, &t, "CALLS").await);
 
     // unrelate → HARD delete (row gone), not a logical close.
-    assert!(client.unrelate("CALLS", vec![EntityPair::new(&a, &b)]).await.ok);
-    assert_eq!(count_edges(&g, &a, &b, "CALLS").await, 0, "OFF unrelate hard-deletes");
+    assert!(
+        client
+            .unrelate("CALLS", vec![EntityPair::new(&a, &b)])
+            .await
+            .ok
+    );
+    assert_eq!(
+        count_edges(&g, &a, &b, "CALLS").await,
+        0,
+        "OFF unrelate hard-deletes"
+    );
 
     // as-of / as-believed / correction / migration all refuse when OFF.
     assert_eq!(
-        client.relations_as_of("CALLS", now_ms()).await.error.map(|e| e.code),
+        client
+            .relations_as_of("CALLS", now_ms())
+            .await
+            .error
+            .map(|e| e.code),
         Some("temporal_disabled".to_owned())
     );
 
@@ -502,14 +577,17 @@ async fn edge_has_temporal_props(g: &Graph, src: &str, tgt: &str, rel: &str) -> 
 /// relational `cypher::upsert_edge` MERGEs *unlabeled* nodes, and this
 /// helper must count both (names are unique per test, so no collision).
 async fn count_edges(g: &Graph, src: &str, tgt: &str, rel: &str) -> i64 {
-    let q = format!(
-        "MATCH ({{name:$s}})-[r:{rel}]->({{name:$t}}) RETURN count(r) AS n"
-    );
+    let q = format!("MATCH ({{name:$s}})-[r:{rel}]->({{name:$t}}) RETURN count(r) AS n");
     let mut rows = g
         .execute(neo4rs::query(&q).param("s", src).param("t", tgt))
         .await
         .expect("count query");
-    rows.next().await.ok().flatten().and_then(|r| r.get("n").ok()).unwrap_or(0)
+    rows.next()
+        .await
+        .ok()
+        .flatten()
+        .and_then(|r| r.get("n").ok())
+        .unwrap_or(0)
 }
 
 /// Read the four temporal properties of the (single) current-belief-open
@@ -524,7 +602,11 @@ async fn read_edge(g: &Graph, src: &str, tgt: &str, rel: &str) -> (i64, i64, i64
         .execute(neo4rs::query(&q).param("s", src).param("t", tgt))
         .await
         .expect("read query");
-    let row = rows.next().await.expect("row result").expect("one open edge");
+    let row = rows
+        .next()
+        .await
+        .expect("row result")
+        .expect("one open edge");
     (
         row.get("vf").unwrap(),
         row.get("vt").unwrap(),
@@ -534,11 +616,7 @@ async fn read_edge(g: &Graph, src: &str, tgt: &str, rel: &str) -> (i64, i64, i64
 }
 
 /// Find a specific edge in an as-of / as-believed-at reply's `data`.
-fn find_in<'a>(
-    data: &'a serde_json::Value,
-    src: &str,
-    tgt: &str,
-) -> Option<&'a serde_json::Value> {
+fn find_in<'a>(data: &'a serde_json::Value, src: &str, tgt: &str) -> Option<&'a serde_json::Value> {
     data["edges"]
         .as_array()?
         .iter()

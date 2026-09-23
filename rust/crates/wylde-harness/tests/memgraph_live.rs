@@ -168,6 +168,7 @@ async fn upsert_traverse_relate_round_trip_lands_and_reads_edges() {
             workspace: Some(ws.into()),
             decay_alpha: None,
             rel_depths: None,
+            as_of: None,
         })
         .await;
     assert!(trav.ok, "traverse failed: {:?}", trav.error);

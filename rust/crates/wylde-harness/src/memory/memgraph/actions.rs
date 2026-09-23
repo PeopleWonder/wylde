@@ -240,9 +240,7 @@ where
         } else {
             Some(workspace_id.clone())
         },
-        decay_alpha: None,
-        rel_depths: None,
-        as_of: None,
+        ..Default::default()
     };
     let reply = client.traverse(req).await;
     if !reply.ok {
