@@ -39,7 +39,7 @@ use crate::envelopes::failure;
 /// active_preset in one round-trip (matches the Settings page hydration).
 pub async fn list_prompts(headers: HeaderMap) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     harness_dispatch("prompts.list", Value::Null).await
 }
@@ -50,7 +50,7 @@ pub async fn list_prompts(headers: HeaderMap) -> Response {
 /// Body shape: `{"id": <prompt_id>, "text": <string|null>}`.
 pub async fn save_prompt(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
     harness_dispatch("prompts.save", payload).await
@@ -62,7 +62,7 @@ pub async fn save_prompt(headers: HeaderMap, body: Option<Json<Value>>) -> Respo
 /// Body shape: `{"name": <preset_name>}`.
 pub async fn save_preset(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
     harness_dispatch("prompts.save_preset", payload).await
@@ -74,7 +74,7 @@ pub async fn save_preset(headers: HeaderMap, body: Option<Json<Value>>) -> Respo
 /// Body shape: `{"name": <preset_name>}`.
 pub async fn set_active_preset(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
     harness_dispatch("prompts.set_active", payload).await
@@ -83,7 +83,7 @@ pub async fn set_active_preset(headers: HeaderMap, body: Option<Json<Value>>) ->
 /// `DELETE /api/prompts/presets/{name}` — drop a saved preset.
 pub async fn delete_preset(headers: HeaderMap, Path(name): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if name.trim().is_empty() {
         return failure("bad_request", "name is required", StatusCode::BAD_REQUEST);

@@ -85,7 +85,7 @@ pub async fn long_term_list(
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     let payload = if q.is_empty() {
         Value::Null
@@ -98,7 +98,7 @@ pub async fn long_term_list(
 /// `POST /api/memory/long_term/search` — semantic search.
 pub async fn long_term_search(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
     harness_dispatch("memory.long_term.search", payload).await
@@ -107,7 +107,7 @@ pub async fn long_term_search(headers: HeaderMap, body: Option<Json<Value>>) -> 
 /// `POST /api/memory/long_term` — save a new long-term record.
 pub async fn long_term_save(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
     harness_dispatch("memory.long_term.save", payload).await
@@ -120,7 +120,7 @@ pub async fn long_term_update(
     body: Option<Json<Value>>,
 ) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if id.trim().is_empty() {
         return failure("bad_request", "id is required", StatusCode::BAD_REQUEST);
@@ -132,7 +132,7 @@ pub async fn long_term_update(
 /// `DELETE /api/memory/long_term/{id}` — drop one long-term record.
 pub async fn long_term_delete(headers: HeaderMap, Path(id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if id.trim().is_empty() {
         return failure("bad_request", "id is required", StatusCode::BAD_REQUEST);
@@ -143,7 +143,7 @@ pub async fn long_term_delete(headers: HeaderMap, Path(id): Path<String>) -> Res
 /// `GET /api/memory/long_term/{id}/history` — show the supersession chain.
 pub async fn long_term_history(headers: HeaderMap, Path(id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if id.trim().is_empty() {
         return failure("bad_request", "id is required", StatusCode::BAD_REQUEST);
@@ -169,7 +169,7 @@ pub async fn workspace_list(
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if workspace_id.trim().is_empty() {
         return failure(
@@ -193,7 +193,7 @@ pub async fn workspace_search(
     body: Option<Json<Value>>,
 ) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if workspace_id.trim().is_empty() {
         return failure(
@@ -213,7 +213,7 @@ pub async fn workspace_save(
     body: Option<Json<Value>>,
 ) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if workspace_id.trim().is_empty() {
         return failure(
@@ -233,7 +233,7 @@ pub async fn workspace_update(
     body: Option<Json<Value>>,
 ) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if workspace_id.trim().is_empty() || id.trim().is_empty() {
         return failure(
@@ -258,7 +258,7 @@ pub async fn workspace_delete(
     Path((workspace_id, id)): Path<(String, String)>,
 ) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if workspace_id.trim().is_empty() || id.trim().is_empty() {
         return failure(
@@ -277,7 +277,7 @@ pub async fn workspace_delete(
 /// `POST /api/memory/workspace/{workspace_id}/curate` — trigger curation.
 pub async fn workspace_curate(headers: HeaderMap, Path(workspace_id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if workspace_id.trim().is_empty() {
         return failure(
@@ -298,7 +298,7 @@ pub async fn workspace_curate(headers: HeaderMap, Path(workspace_id): Path<Strin
 /// `GET /api/memory/short_term/{conversation_id}` — read working memory.
 pub async fn short_term_get(headers: HeaderMap, Path(conversation_id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if conversation_id.trim().is_empty() {
         return failure(
@@ -321,7 +321,7 @@ pub async fn short_term_append(
     body: Option<Json<Value>>,
 ) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if conversation_id.trim().is_empty() {
         return failure(
@@ -340,7 +340,7 @@ pub async fn short_term_append(
 /// `DELETE /api/memory/short_term/{conversation_id}` — clear working memory.
 pub async fn short_term_clear(headers: HeaderMap, Path(conversation_id): Path<String>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     if conversation_id.trim().is_empty() {
         return failure(
@@ -361,7 +361,7 @@ pub async fn short_term_clear(headers: HeaderMap, Path(conversation_id): Path<St
 /// `POST /api/memory/reflect` — run a consolidation cycle.
 pub async fn reflect(headers: HeaderMap, body: Option<Json<Value>>) -> Response {
     if let Err(resp) = authorize(&headers).await {
-        return resp;
+        return *resp;
     }
     let payload = body.map(|Json(v)| v).unwrap_or(Value::Null);
     harness_dispatch("memory.reflect", payload).await

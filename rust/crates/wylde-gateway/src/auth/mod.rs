@@ -152,7 +152,7 @@ pub async fn require_device(mut req: Request, next: Next) -> Response {
             req.extensions_mut().insert(device);
             next.run(req).await
         }
-        Err(resp) => resp,
+        Err(resp) => *resp,
     }
 }
 
@@ -164,15 +164,15 @@ pub async fn require_device(mut req: Request, next: Next) -> Response {
 /// `401 missing_token`; a token device-gate rejects (`400`/`404`) is
 /// `401 invalid_token`; device-gate being unreachable is `503` (so the
 /// mobile app retries rather than clearing a still-valid token).
-async fn verify_bearer(headers: &HeaderMap) -> Result<Device, Response> {
+async fn verify_bearer(headers: &HeaderMap) -> Result<Device, Box<Response>> {
     let token = match extract_bearer(headers) {
         Some(t) => t,
         None => {
-            return Err(failure(
+            return Err(Box::new(failure(
                 "missing_token",
                 "Bearer token required (Authorization: Bearer <token>)",
                 StatusCode::UNAUTHORIZED,
-            ));
+            )));
         }
     };
 
@@ -193,11 +193,11 @@ async fn verify_bearer(headers: &HeaderMap) -> Result<Device, Response> {
                 .unwrap_or("")
                 .to_owned();
             if device_id.is_empty() || tier.is_empty() {
-                return Err(failure(
+                return Err(Box::new(failure(
                     "invalid_token",
                     "device-gate returned an empty record",
                     StatusCode::UNAUTHORIZED,
-                ));
+                )));
             }
             let device = Device { device_id, tier };
             token_cache_global().insert(token, device.clone()).await;
@@ -205,17 +205,17 @@ async fn verify_bearer(headers: &HeaderMap) -> Result<Device, Response> {
         }
         Err((status, _)) => {
             if status == StatusCode::NOT_FOUND || status == StatusCode::BAD_REQUEST {
-                Err(failure(
+                Err(Box::new(failure(
                     "invalid_token",
                     "device token is not recognised",
                     StatusCode::UNAUTHORIZED,
-                ))
+                )))
             } else {
-                Err(failure(
+                Err(Box::new(failure(
                     "device_gate_unavailable",
                     &format!("device-gate returned {}", status.as_u16()),
                     StatusCode::SERVICE_UNAVAILABLE,
-                ))
+                )))
             }
         }
     }
