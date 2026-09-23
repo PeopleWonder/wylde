@@ -107,7 +107,7 @@ jobs:
         working-directory: rust
         run: |
           cargo test -p wylde-workspaces --locked --no-run --test integration_graph --test integration_symbol_context --test integration_symbols_find
-          cargo test -p wylde-harness --locked --no-run --test memgraph_live --test memgraph_bolt_integration
+          cargo test -p wylde-harness --locked --no-run --test memgraph_live --test memgraph_bolt_integration --test temporal_memgraph_integration
       - name: Boot Neo4j and run the live-graph tests (--ignored)
         shell: pwsh
         env:
@@ -176,6 +176,8 @@ jobs:
             cargo test -p wylde-harness --locked --test memgraph_live -- --ignored --nocapture --test-threads=1
             if ($LASTEXITCODE -ne 0) { $failed = $true }
             cargo test -p wylde-harness --locked --test memgraph_bolt_integration -- --ignored --nocapture --test-threads=1
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            cargo test -p wylde-harness --locked --test temporal_memgraph_integration -- --ignored --nocapture --test-threads=1
             if ($LASTEXITCODE -ne 0) { $failed = $true }
             Pop-Location
           } finally {

@@ -189,6 +189,7 @@ pub async fn expand_by_graph<T: MemgraphTraversal>(
                         },
                         decay_alpha: None,
                         rel_depths: None,
+                        as_of: None,
                     })
                     .await;
                 if trv.ok {
@@ -219,6 +220,7 @@ pub async fn expand_by_graph<T: MemgraphTraversal>(
                 },
                 decay_alpha: None,
                 rel_depths: None,
+                as_of: None,
             })
             .await;
         if trv.ok {
