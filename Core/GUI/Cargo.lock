@@ -9180,6 +9180,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wylde-panel-organize"
+version = "0.2.0-beta.1"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "serde",
+ "serde_json",
+ "wylde-gpui-input",
+ "wylde-gui-controls",
+ "wylde-gui-pipe",
+ "wylde-gui-test-support",
+ "wylde-theme",
+]
+
+[[package]]
 name = "wylde-panel-registry"
 version = "0.2.0-beta.1"
 dependencies = [
@@ -9192,8 +9207,10 @@ dependencies = [
  "wylde-panel-devices",
  "wylde-panel-memory",
  "wylde-panel-models",
+ "wylde-panel-organize",
  "wylde-panel-remote-access",
  "wylde-panel-settings",
+ "wylde-panel-tabulate",
  "wylde-panel-tools",
  "wylde-panel-workspaces",
 ]
@@ -9229,6 +9246,21 @@ dependencies = [
  "wylde-gui-test-support",
  "wylde-theme",
  "wylde-updater",
+]
+
+[[package]]
+name = "wylde-panel-tabulate"
+version = "0.2.0-beta.1"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "serde",
+ "serde_json",
+ "wylde-gpui-input",
+ "wylde-gui-controls",
+ "wylde-gui-pipe",
+ "wylde-gui-test-support",
+ "wylde-theme",
 ]
 
 [[package]]

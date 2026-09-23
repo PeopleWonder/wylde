@@ -9,8 +9,10 @@
 //!   - Core/GUI/Frontend/Panels/Devices/manifest.json
 //!   - Core/GUI/Frontend/Panels/Memory/manifest.json
 //!   - Core/GUI/Frontend/Panels/Models/manifest.json
+//!   - Core/GUI/Frontend/Panels/Organize/manifest.json
 //!   - Core/GUI/Frontend/Panels/RemoteAccess/manifest.json
 //!   - Core/GUI/Frontend/Panels/Settings/manifest.json
+//!   - Core/GUI/Frontend/Panels/Tabulate/manifest.json
 //!   - Core/GUI/Frontend/Panels/Tools/manifest.json
 //!   - Core/GUI/Frontend/Panels/Workspaces/manifest.json
 //!
@@ -166,6 +168,31 @@ pub fn register_all(
         })?;
     }
 
+    // ── core / organize  (from Core/GUI/Frontend/Panels/Organize/manifest.json) ──
+    {
+        let factory_key = "wylde_panel_organize::OrganizePanel::view";
+        let factory = factories
+            .take(factory_key)
+            .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
+        registry.register_internal(RegistryRow {
+            origin: PanelOrigin::FirstParty {
+                service: "core".into(),
+            },
+            entry: PanelEntry {
+                id: "organize".into(),
+                title: "Organize".into(),
+                icon: Some("folder-tree".into()),
+                order: 45,
+                version: "0.1.0".into(),
+                required_services: vec!["wylde-organize".into()],
+                source: PanelSource::GpuiView {
+                    factory: factory_key.into(),
+                },
+            },
+            factory: Some(factory),
+        })?;
+    }
+
     // ── core / remote_access  (from Core/GUI/Frontend/Panels/RemoteAccess/manifest.json) ──
     {
         let factory_key = "wylde_panel_remote_access::RemoteAccessPanel::view";
@@ -212,6 +239,31 @@ pub fn register_all(
                     "wylde-ollama".into(),
                     "wylde-voice".into(),
                 ],
+                source: PanelSource::GpuiView {
+                    factory: factory_key.into(),
+                },
+            },
+            factory: Some(factory),
+        })?;
+    }
+
+    // ── core / tabulate  (from Core/GUI/Frontend/Panels/Tabulate/manifest.json) ──
+    {
+        let factory_key = "wylde_panel_tabulate::TabulatePanel::view";
+        let factory = factories
+            .take(factory_key)
+            .ok_or_else(|| RegistryError::MissingFactory(factory_key.into()))?;
+        registry.register_internal(RegistryRow {
+            origin: PanelOrigin::FirstParty {
+                service: "core".into(),
+            },
+            entry: PanelEntry {
+                id: "tabulate".into(),
+                title: "Tabulate".into(),
+                icon: Some("table".into()),
+                order: 47,
+                version: "0.1.0".into(),
+                required_services: vec!["wylde-tabulate".into()],
                 source: PanelSource::GpuiView {
                     factory: factory_key.into(),
                 },

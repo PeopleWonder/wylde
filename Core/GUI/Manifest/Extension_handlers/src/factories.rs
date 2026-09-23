@@ -137,6 +137,20 @@ pub fn default_first_party() -> FactoryMap {
     // then parked when ComfyUI was removed from Wylde — see #234. Nothing
     // registers here, and nothing is expected to.)
 
+    // Organize panel — file-organizer build (the `wylde-organize` Service
+    // cockpit: scope picker, plan review, apply, undo).
+    m.register(
+        "wylde_panel_organize::OrganizePanel::view",
+        Box::new(wylde_panel_organize::OrganizePanel::view),
+    );
+
+    // Tabulate panel — file→spreadsheet cockpit over the `wylde-tabulate`
+    // Service (PHI-safe Probe + Extract).
+    m.register(
+        "wylde_panel_tabulate::TabulatePanel::view",
+        Box::new(wylde_panel_tabulate::TabulatePanel::view),
+    );
+
     m
 }
 
@@ -196,6 +210,12 @@ mod tests {
     fn default_map_contains_remote_access_panel() {
         let m = default_first_party();
         assert!(m.contains("wylde_panel_remote_access::RemoteAccessPanel::view"));
+    }
+
+    #[test]
+    fn default_map_contains_tabulate_panel() {
+        let m = default_first_party();
+        assert!(m.contains("wylde_panel_tabulate::TabulatePanel::view"));
     }
 
     #[test]

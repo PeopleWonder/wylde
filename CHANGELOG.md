@@ -1577,6 +1577,34 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Tabulate panel.** A native gpui cockpit (`Frontend/Panels/Tabulate`) over
+  the out-of-tree `wylde-tabulate` Service: pick a file, **Probe** its structure
+  (PHI-safe — file type, table shape, per-column header + inferred type, never a
+  cell value, with the redaction-review gate), and **Extract** it to a `.xlsx` /
+  `.csv`, showing the absolute output path. A subtle safety chip surfaces the
+  HIPAA posture (local-only / encrypted-at-rest / audit on) from
+  `tabulate.capabilities`. Greys out via `required_services` when the service is
+  absent. (Built on the `feat/tabulate-panel` branch for a live feel-test; not
+  merged.)
+- **File organizer — `wylde-organize` Service + Organize panel (v1).** An
+  autonomous whole-PC file organizer: scan a chosen scope → propose a read-only
+  plan (group loose files into typed folders + junk/duplicate/stale/temp removal
+  candidates) → review/edit → apply reversibly → undo. Safety is the spine:
+  narrow default scope (`user_data`; whole-profile opt-in; whole-drive opt-in +
+  typed confirmation), a hard non-overridable protected-path denylist
+  (OS dirs / Program Files / AppData / credentials / Wylde footprint / system
+  files / drive roots) re-asserted at apply, removals to the OS recycle bin
+  (never hard delete), dry-run-always, no silent overwrite, and an append-only
+  undo journal. Ambiguous-file grouping uses the brokered `wylde-ollama` pipe
+  only. A first-party native gpui Organize panel drives it (greys out when the
+  service is absent). The maintenance watcher is deferred to phase 1.1; the
+  service ships `enabled:false` (opt-in for a whole-PC-capable tool).
+- **`wylde-fswalk` shared detector crate.** The walk-time `ExclusionMatcher`,
+  the metadata walk, the sha256 content-hash, and a new content-hash duplicate
+  grouper were extracted out of `wylde-workspaces`' RAG indexer into a shared
+  crate so the organizer reuses the identical detection logic without
+  cross-importing workspaces internals (`wylde_check` rule 26). Pure logic, no
+  storage; the indexer keeps its chunker and depends on the new crate.
 - **A one-click Stop control on the Dashboard service console.** The GUI could start and restart
   backend services from anywhere (decision 7) but had no way to *stop* one — the lifecycle
   `service.stop` verb existed and nothing drove it. Each running service chip now offers a Stop
