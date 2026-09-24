@@ -185,14 +185,18 @@ fn entries(data: &Value, key: &str) -> Vec<Value> {
 
 // ── tools ──────────────────────────────────────────────────────────────
 
-/// Return the harness tool catalog in MCP `Tool` shape, filtered to the
-/// tools MCP may expose. A tool the catalog offers but MCP does not
-/// expose is dropped here so `tools/list` and `tools/call` agree.
-pub async fn list_tools() -> Result<Value, BridgeError> {
+/// Return the harness tool catalog in MCP `Tool` shape, scoped to what the
+/// caller's `device_tier` may reach. Non-destructive allow-listed tools are
+/// always listed; destructive tools are listed **only** for a
+/// `destructive_tool_access` caller, and carry `annotations.destructiveHint`
+/// so the client knows a `confirm` is required. `tools/list` and
+/// `tools/call` therefore agree on what a given caller may run.
+pub async fn list_tools(device_tier: &str) -> Result<Value, BridgeError> {
     let data = harness("tools.list", json!({})).await?;
+    let allow_destructive = tier_allows_destructive(device_tier);
     let tools: Vec<Value> = entries(&data, "tools")
         .iter()
-        .filter(|e| entry_is_exposable(e))
+        .filter(|e| entry_listable(e, allow_destructive))
         .map(tool_to_mcp)
         .collect();
     Ok(Value::Array(tools))
@@ -210,20 +214,15 @@ fn entry_name(entry: &Value) -> &str {
         .unwrap_or("")
 }
 
-/// Whether a raw catalog entry may be exposed over MCP: it must be on the
-/// [`MCP_TOOL_ALLOWLIST`] **and** the harness must not mark it
-/// `destructive`. The destructive check is the confirm gate's defence in
-/// depth — MCP is an unattended surface with no way to prompt for
-/// confirmation, so a destructive tool must never be advertised or run,
-/// and this guarantees that even if one is mistakenly added to the
-/// hand-maintained allow-list it is still dropped here (and the caller's
-/// real tier is the further backstop at `tools.run`, per [`call_tool`]).
-fn entry_is_exposable(entry: &Value) -> bool {
-    is_exposable(entry_name(entry))
-        && !entry
-            .get("destructive")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
+/// Whether a catalog entry is listable for a caller: a destructive tool is
+/// listed only when `allow_destructive`; a non-destructive tool is listed
+/// only when allow-listed. Pure.
+fn entry_listable(entry: &Value, allow_destructive: bool) -> bool {
+    if entry_destructive(entry) {
+        allow_destructive
+    } else {
+        is_exposable(entry_name(entry))
+    }
 }
 
 /// Map one canonical harness catalog entry to an MCP `Tool`.
@@ -246,7 +245,17 @@ pub fn tool_to_mcp(entry: &Value) -> Value {
         .filter(|v| v.is_object())
         .cloned()
         .unwrap_or_else(|| json!({ "type": "object" }));
-    json!({ "name": name, "description": description, "inputSchema": schema })
+    // MCP tool annotations (spec `ToolAnnotations`): advertise the
+    // destructive/read-only hints so a client knows which tools need a
+    // `confirm`. Derived from the harness `destructive` flag, the source
+    // of truth.
+    let destructive = entry_destructive(entry);
+    json!({
+        "name": name,
+        "description": description,
+        "inputSchema": schema,
+        "annotations": { "readOnlyHint": !destructive, "destructiveHint": destructive },
+    })
 }
 
 /// Run one tool through the harness `tools.run` action.
@@ -548,20 +557,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn entry_is_exposable_requires_allowlist_and_non_destructive() {
-        // Allow-listed + non-destructive → exposed.
-        assert!(entry_is_exposable(
-            &json!({ "id": "read_file", "destructive": false })
-        ));
-        // Not on the allow-list → dropped.
-        assert!(!entry_is_exposable(
-            &json!({ "id": "write_file", "destructive": true })
-        ));
-        // On the allow-list but flagged destructive → dropped anyway
-        // (confirm-gate defence in depth against allow-list drift).
-        assert!(!entry_is_exposable(
-            &json!({ "id": "read_file", "destructive": true })
-        ));
+    fn entry_listable_scopes_destructive_tools_to_the_privileged_tier() {
+        let safe = json!({ "id": "read_file", "destructive": false });
+        let danger = json!({ "id": "write_file", "destructive": true });
+        // Non-destructive allow-listed tool: listed for everyone.
+        assert!(entry_listable(&safe, false));
+        assert!(entry_listable(&safe, true));
+        // Destructive tool: listed only when destructive is allowed.
+        assert!(!entry_listable(&danger, false));
+        assert!(entry_listable(&danger, true));
+        // Non-destructive but NOT allow-listed: never listed.
+        let hidden = json!({ "id": "execute_bash", "destructive": false });
+        assert!(!entry_listable(&hidden, false));
+        assert!(!entry_listable(&hidden, true));
+    }
+
+    #[test]
+    fn classify_entry_maps_catalog_to_access() {
+        assert_eq!(
+            classify_entry(Some(&json!({ "id": "read_file", "destructive": false })), "read_file"),
+            ToolAccess::Allowed
+        );
+        assert_eq!(
+            classify_entry(Some(&json!({ "id": "write_file", "destructive": true })), "write_file"),
+            ToolAccess::Destructive
+        );
+        // Non-destructive off-list tool → not exposed.
+        assert_eq!(
+            classify_entry(Some(&json!({ "id": "execute_bash", "destructive": false })), "execute_bash"),
+            ToolAccess::NotExposed
+        );
+        // Missing entry → not exposed.
+        assert_eq!(classify_entry(None, "ghost"), ToolAccess::NotExposed);
+    }
+
+    #[test]
+    fn tool_to_mcp_annotates_destructive_hint() {
+        let safe = tool_to_mcp(&json!({ "id": "read_file", "destructive": false }));
+        assert_eq!(safe["annotations"]["destructiveHint"], false);
+        assert_eq!(safe["annotations"]["readOnlyHint"], true);
+        let danger = tool_to_mcp(&json!({ "id": "write_file", "destructive": true }));
+        assert_eq!(danger["annotations"]["destructiveHint"], true);
+        assert_eq!(danger["annotations"]["readOnlyHint"], false);
     }
 
     #[test]

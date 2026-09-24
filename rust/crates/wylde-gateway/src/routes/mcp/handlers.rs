@@ -206,7 +206,7 @@ pub async fn dispatch(device: &Device, method: &str, params: &Value) -> Result<V
     match method {
         "initialize" => Ok(initialize(params)),
         "tools/list" => {
-            let tools = adapters::list_tools().await.map_err(bridge_to_mcp)?;
+            let tools = adapters::list_tools(&device.tier).await.map_err(bridge_to_mcp)?;
             list_result("tools", as_items(tools), cursor_of(params))
         }
         "tools/call" => {
