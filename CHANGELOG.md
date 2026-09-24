@@ -2002,6 +2002,19 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   cursor pagination to the `*/list` methods, and negotiates the client's requested
   `protocolVersion`. Docs: [`docs/mcp_surface.md`](docs/mcp_surface.md).
 
+- **MCP gains an explicit-confirm path for destructive tools, safe by default.** Building
+  on the hardening above, a properly-tiered device can now run destructive tools over MCP
+  when it explicitly confirms, without weakening the default posture. A `destructive_tool_access`
+  device sees destructive tools in `tools/list` (annotated `destructiveHint: true`) and may run
+  one by resending `tools/call` with `arguments.confirm: true`; without confirm it gets
+  `-32002 CONFIRMATION_REQUIRED` (never a silent run or no-op). A `tool_use` (default) device
+  still cannot see or run any destructive or off-allow-list tool — it is refused with `-32001`
+  before the pipe is touched, without even acknowledging the tool exists. The `confirm` flag is
+  read for the gate then stripped from the tool's arguments. Note this is the transport-layer
+  confirmation only: the harness `tools.run` still applies its own tier + per-tool **consent**
+  gate, so a confirmed destructive call can still return `consent_required` unless consent is
+  granted in the harness — MCP `confirm` does not override the user's local consent policy.
+
 - **Every third-party GitHub Action is now pinned to a commit SHA, and a CI gate
   keeps it that way (closes #127).** Every `uses:` across the seven workflows was
   pinned to a *mutable major tag* (`actions/checkout@v7`, `dependabot/fetch-metadata@v3`,

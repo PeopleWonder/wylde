@@ -37,8 +37,8 @@ JSON-RPC dispatch.
 | Method | What it does |
 |--------|--------------|
 | `initialize` | Handshake — negotiates `protocolVersion` (echoes the client's if supported, else answers with the server's latest), and returns `capabilities` (`tools`/`resources`/`prompts`) and `serverInfo` (`wylde-gateway-mcp` 1.0.0). |
-| `tools/list` | Lists the **allow-listed** harness tools (see [Tool authorization](#tool-authorization)). Each tool: `name`, `description`, `inputSchema`. Paginated. |
-| `tools/call` | Runs one allow-listed tool by name (harness `tools.run` → `tool_runner.run_tool`), gated by the caller's device tier. Returns the runner envelope as a text content block; `isError` mirrors the envelope's `ok`. A tool that is not exposed → JSON-RPC `-32001`. |
+| `tools/list` | Lists the tools available to the caller's tier (see [Tool authorization](#tool-authorization)). Each tool: `name`, `description`, `inputSchema`, and `annotations` (`readOnlyHint`/`destructiveHint`). Paginated. |
+| `tools/call` | Runs one tool by name (harness `tools.run` → `tool_runner.run_tool`), gated by the caller's tier + a `confirm` arg for destructive tools (see [Tool authorization](#tool-authorization)). Returns the runner envelope as a text content block; `isError` mirrors the envelope's `ok`. Not exposed → `-32001`; destructive without confirm → `-32002`. |
 | `resources/list` | Lists recent conversations + workspaces (see below). Paginated. |
 | `resources/read` | Reads one resource by `uri` (see below). |
 | `prompts/list` | Lists the system-prompt catalog (harness `prompts.list`). Each prompt: `name`, `description`. Paginated. |
@@ -56,21 +56,40 @@ the next page. A malformed cursor → JSON-RPC `-32602`.
 
 ### Tool authorization
 
-`tools/list` and `tools/call` are restricted to a curated server-side
-allow-list (`MCP_TOOL_ALLOWLIST` in `adapters.rs`) of non-destructive
-read/query tools. Tools that mutate, delete, execute, or reach the network
-are **not** exposed over MCP regardless of the caller's tier — MCP is an
-unattended surface with no way to confirm a destructive action. Defence in
-depth:
+Tool exposure depends on the caller's **device tier** (from `require_device`)
+and, for destructive tools, an explicit **`confirm`** argument. The harness
+`destructive` flag is the source of truth for what counts as destructive.
 
-1. The allow-list (what `tools/list` shows and `tools/call` will run).
-2. A `destructive`-flag filter on the live catalog, so a destructive tool
-   can never be advertised even if mis-added to the allow-list.
-3. The caller's real device tier is passed to `tools.run`, so the harness
-   tier gate is the final backstop.
+**Non-destructive tools** are a curated server-side allow-list
+(`MCP_TOOL_ALLOWLIST` in `adapters.rs`) of read/query tools. They are listed
+and runnable for any authenticated device, with no confirmation. Tools that
+are non-destructive but *not* on the allow-list (e.g. `execute_bash`) stay
+hidden from every tier.
 
-A `tools/call` for a tool that is not exposed returns JSON-RPC `-32001`
-(`TOOL_NOT_PERMITTED`) before the harness pipe is touched.
+**Destructive tools** (mutate/delete, etc.) are gated:
+
+| Caller tier | `tools/list` shows them? | `tools/call` |
+|---|---|---|
+| `tool_use` (default) | no | `-32001 TOOL_NOT_PERMITTED` (not even acknowledged to exist) |
+| `destructive_tool_access` | yes, with `annotations.destructiveHint: true` | needs `arguments.confirm: true` |
+
+For a `destructive_tool_access` caller invoking a destructive tool:
+
+* `confirm: true` → the call proceeds to `tools.run` (carrying the real
+  device tier).
+* `confirm` missing/false → `-32002 CONFIRMATION_REQUIRED` ("resend with
+  `confirm: true`") — never run silently, never a silent no-op.
+
+`confirm` is an MCP protocol flag: it is read for the gate and then
+**stripped** from `arguments` before the tool sees it.
+
+**Consent backstop.** The gateway gate is not the last word. The harness
+`tools.run` runs its own tier gate *and* a per-tool **consent gate**, so a
+destructive `tools/call` that clears the gateway can still return a
+`consent_required` result (surfaced as `isError: true`) unless consent for
+that tool is granted in the harness (GUI decision / stored approval /
+`no_auth` / bypass). The MCP `confirm` is the transport-layer confirmation;
+it does **not** override a user's local consent policy.
 
 ## Resources
 
