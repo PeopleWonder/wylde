@@ -361,27 +361,36 @@ async fn read_workspace_file(workspace_id: &str, rel_path: &str) -> Result<Strin
             "workspace {workspace_id:?} has no indexed path"
         )));
     }
-    resolve_and_read(root, rel_path)
+    resolve_and_read(root, rel_path).await
 }
 
 /// Resolve `rel_path` against `root`, confine it to the workspace, and
 /// read it. A `../` that escapes the workspace root is rejected.
-pub fn resolve_and_read(root: &str, rel_path: &str) -> Result<String, BridgeError> {
-    let base = std::fs::canonicalize(root)
+///
+/// All filesystem calls are `tokio::fs` so a resource read never blocks a
+/// runtime worker thread (H1).
+pub async fn resolve_and_read(root: &str, rel_path: &str) -> Result<String, BridgeError> {
+    let base = tokio::fs::canonicalize(root)
+        .await
         .map_err(|exc| BridgeError::msg(format!("workspace root unavailable: {exc}")))?;
-    let target = std::fs::canonicalize(base.join(rel_path))
+    let target = tokio::fs::canonicalize(base.join(rel_path))
+        .await
         .map_err(|_| BridgeError::msg(format!("file not found in workspace: {rel_path:?}")))?;
     if !target.starts_with(&base) {
         return Err(BridgeError::msg(format!(
             "path escapes workspace root: {rel_path:?}"
         )));
     }
-    if !target.is_file() {
+    let meta = tokio::fs::metadata(&target)
+        .await
+        .map_err(|exc| BridgeError::msg(format!("could not stat workspace file: {exc}")))?;
+    if !meta.is_file() {
         return Err(BridgeError::msg(format!(
             "file not found in workspace: {rel_path:?}"
         )));
     }
-    std::fs::read_to_string(&target)
+    tokio::fs::read_to_string(&target)
+        .await
         .map_err(|exc| BridgeError::msg(format!("could not read workspace file: {exc}")))
 }
 
@@ -633,27 +642,27 @@ mod tests {
         assert_eq!(entries(&bare, "tools").len(), 1);
     }
 
-    #[test]
-    fn resolve_and_read_reads_a_file_inside_the_workspace() {
+    #[tokio::test]
+    async fn resolve_and_read_reads_a_file_inside_the_workspace() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("note.txt");
         std::fs::write(&file, "hello workspace").unwrap();
         let root = dir.path().to_str().unwrap();
         assert_eq!(
-            resolve_and_read(root, "note.txt").unwrap(),
+            resolve_and_read(root, "note.txt").await.unwrap(),
             "hello workspace"
         );
     }
 
-    #[test]
-    fn resolve_and_read_rejects_traversal_outside_the_workspace() {
+    #[tokio::test]
+    async fn resolve_and_read_rejects_traversal_outside_the_workspace() {
         let outer = tempfile::tempdir().unwrap();
         std::fs::write(outer.path().join("secret.txt"), "top secret").unwrap();
         let inner = outer.path().join("workspace");
         std::fs::create_dir(&inner).unwrap();
         let root = inner.to_str().unwrap();
         // `../secret.txt` resolves outside the workspace root.
-        let err = resolve_and_read(root, "../secret.txt").unwrap_err();
+        let err = resolve_and_read(root, "../secret.txt").await.unwrap_err();
         assert!(
             err.message.contains("escapes") || err.message.contains("not found"),
             "unexpected message: {}",
