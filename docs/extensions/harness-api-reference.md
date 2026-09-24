@@ -118,7 +118,7 @@ The full set the harness pipe accepts (`rust/crates/wylde-harness/src/pipe.rs`,
 (streaming).
 
 **Tools** — reach the harness registry:
-`tools.list` (live catalog) · `tools.run` (`{name, args?, device_tier?}`).
+`tools.list` (live catalog) · `tools.run` (`{name, args?, device_tier?, confirm?}`).
 
 **Long-term memory:**
 `memory.long_term.list` · `.save` (`{body, source?, importance?, tags?}`) ·
@@ -158,6 +158,12 @@ persist to `data/preferences/consent.json`:
 
 `no_auth: true` is the power-user escape hatch (approve everything, no prompts);
 default is `false`. One-time grants ("allow once") are honored but not persisted.
+
+`tools.run` accepts a per-call **`confirm: true`** (used by the MCP surface for
+an explicitly-confirmed call). It satisfies an **undecided** consent gate
+(`Pending`) for that one dispatch only — nothing is persisted — and it **never**
+overrides a stored `Deny`: an explicit deny always wins. The interactive turn
+loop does not set it; it uses the normal `Pending → consent.respond` flow.
 An extension that wraps a destructive capability should expect `Pending` on
 first use and surface the prompt rather than treating it as failure.
 

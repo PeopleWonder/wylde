@@ -5,9 +5,9 @@ server so external clients (Claude Desktop, the Anthropic API, Cursor, …)
 can reach the harness's tool / resource / prompt catalogs through one
 standard protocol instead of speaking the Wylde named-pipe IPC.
 
-This is the **v1** surface — intentionally minimal. It is implemented
-twice, byte-for-byte equivalent: `Gateway/routes/mcp/` (Python) and
-`rust/crates/wylde-gateway/src/routes/mcp/` (Rust).
+This is the **v1** surface — intentionally minimal. It lives in
+`rust/crates/wylde-gateway/src/routes/mcp/` (the Python gateway was removed
+in the full-Rust cutover).
 
 ## Endpoint
 
@@ -83,13 +83,22 @@ For a `destructive_tool_access` caller invoking a destructive tool:
 `confirm` is an MCP protocol flag: it is read for the gate and then
 **stripped** from `arguments` before the tool sees it.
 
-**Consent backstop.** The gateway gate is not the last word. The harness
-`tools.run` runs its own tier gate *and* a per-tool **consent gate**, so a
-destructive `tools/call` that clears the gateway can still return a
-`consent_required` result (surfaced as `isError: true`) unless consent for
-that tool is granted in the harness (GUI decision / stored approval /
-`no_auth` / bypass). The MCP `confirm` is the transport-layer confirmation;
-it does **not** override a user's local consent policy.
+**Consent backstop.** The gateway gate is not the last word — the harness
+`tools.run` runs its own tier gate *and* a per-tool **consent gate**. The
+MCP `confirm` is forwarded to `tools.run` as a **per-call, non-persisted**
+confirmation, so a confirmed call executes end-to-end:
+
+* Consent **undecided** (never prompted / no stored decision) + `confirm`
+  → the harness runs it for this one call. Nothing is persisted, so the
+  next call without `confirm` prompts again.
+* Consent **explicitly denied** → still blocked (`consent_denied`),
+  `confirm` and all. A remote/MCP caller can never override the user's
+  local deny — the local consent gate is the ultimate authority.
+* A stored **approval** / `no_auth` / bypass → runs as before.
+
+Allow-listed non-destructive tools are sent with `confirm: true` too (they
+are pre-vetted for MCP), so a first call clears an undecided gate instead of
+returning `consent_required`; a stored deny still blocks them.
 
 ## Resources
 
@@ -118,8 +127,11 @@ are never modified — the MCP surface is a read/run layer on top of them.
 
 ## Verification
 
-- Python unit + integration tests: `Gateway/tests/test_mcp.py`.
-- Rust unit + integration tests: `#[cfg(test)]` modules under
-  `rust/crates/wylde-gateway/src/routes/mcp/`.
-- Cross-language parity: the four gated `mcp_*` cases in
-  `rust/tests/parity/tests/gateway.rs`.
+- Rust unit tests: `#[cfg(test)]` modules under
+  `rust/crates/wylde-gateway/src/routes/mcp/` (gate/authorization,
+  pagination, negotiation, resource sandboxing).
+- Harness-side per-call confirm + consent guardrail:
+  `dispatch_confirm_*` tests in
+  `rust/crates/wylde-harness/src/tooling/runner.rs`.
+- The surface is Rust-only; there is no Python twin or cross-language
+  parity gate for it.

@@ -2010,10 +2010,22 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
   `-32002 CONFIRMATION_REQUIRED` (never a silent run or no-op). A `tool_use` (default) device
   still cannot see or run any destructive or off-allow-list tool — it is refused with `-32001`
   before the pipe is touched, without even acknowledging the tool exists. The `confirm` flag is
-  read for the gate then stripped from the tool's arguments. Note this is the transport-layer
-  confirmation only: the harness `tools.run` still applies its own tier + per-tool **consent**
-  gate, so a confirmed destructive call can still return `consent_required` unless consent is
-  granted in the harness — MCP `confirm` does not override the user's local consent policy.
+  read for the gate then stripped from the tool's arguments.
+
+- **A confirmed MCP destructive call now executes end-to-end, with the local deny still
+  supreme.** `tools.run` / `dispatch_tool` gained a per-call `confirm` parameter that the
+  gateway forwards from the MCP `confirm`. On an **undecided** consent gate (`Pending`),
+  `confirm: true` lets the dispatch run for that one call — **not persisted**, so a later call
+  without confirm prompts again. Crucially, `confirm` **never** overrides a stored explicit
+  **deny**: a `consent_denied` tool stays blocked no matter what a remote/MCP caller sends —
+  the user's local consent gate is the ultimate authority. It also runs after the tier gate,
+  so tier still gates first. The interactive turn loop is unchanged (it never auto-confirms;
+  it uses the normal prompt → `consent.respond` flow). Allow-listed non-destructive MCP tools
+  are sent with `confirm: true` too, so a first call clears an undecided gate instead of
+  returning `consent_required` (a stored deny still blocks them). This path is Rust-only —
+  the Python gateway was removed in the full-Rust cutover. Docs:
+  [`docs/mcp_surface.md`](docs/mcp_surface.md),
+  [`docs/extensions/harness-api-reference.md`](docs/extensions/harness-api-reference.md).
 
 - **Every third-party GitHub Action is now pinned to a commit SHA, and a CI gate
   keeps it that way (closes #127).** Every `uses:` across the seven workflows was
