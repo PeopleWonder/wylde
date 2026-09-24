@@ -364,8 +364,16 @@ async fn read_workspace_file(workspace_id: &str, rel_path: &str) -> Result<Strin
     resolve_and_read(root, rel_path).await
 }
 
+/// Largest workspace file `resources/read` will return over MCP. A read
+/// is refused above this before any bytes are loaded, so a huge (or
+/// runaway) file cannot spike gateway memory (H2). 1 MiB comfortably
+/// covers source and text resources.
+pub const MAX_RESOURCE_READ_BYTES: u64 = 1_048_576;
+
 /// Resolve `rel_path` against `root`, confine it to the workspace, and
-/// read it. A `../` that escapes the workspace root is rejected.
+/// read it as UTF-8 text. A `../` that escapes the workspace root is
+/// rejected; a file over [`MAX_RESOURCE_READ_BYTES`] or one that is not
+/// valid UTF-8 is rejected rather than read.
 ///
 /// All filesystem calls are `tokio::fs` so a resource read never blocks a
 /// runtime worker thread (H1).
@@ -389,9 +397,20 @@ pub async fn resolve_and_read(root: &str, rel_path: &str) -> Result<String, Brid
             "file not found in workspace: {rel_path:?}"
         )));
     }
-    tokio::fs::read_to_string(&target)
+    // Cap BEFORE reading so an oversized file never enters memory.
+    if meta.len() > MAX_RESOURCE_READ_BYTES {
+        return Err(BridgeError::msg(format!(
+            "workspace file too large for MCP read: {rel_path:?} is {} bytes (cap {MAX_RESOURCE_READ_BYTES})",
+            meta.len()
+        )));
+    }
+    let bytes = tokio::fs::read(&target)
         .await
-        .map_err(|exc| BridgeError::msg(format!("could not read workspace file: {exc}")))
+        .map_err(|exc| BridgeError::msg(format!("could not read workspace file: {exc}")))?;
+    // MCP text content must be UTF-8 — refuse binary rather than emit
+    // lossy/garbled text.
+    String::from_utf8(bytes)
+        .map_err(|_| BridgeError::msg(format!("workspace file is not UTF-8 text: {rel_path:?}")))
 }
 
 // ── prompts ────────────────────────────────────────────────────────────
@@ -665,6 +684,36 @@ mod tests {
         let err = resolve_and_read(root, "../secret.txt").await.unwrap_err();
         assert!(
             err.message.contains("escapes") || err.message.contains("not found"),
+            "unexpected message: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_and_read_rejects_a_file_over_the_size_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let big = vec![b'a'; (MAX_RESOURCE_READ_BYTES + 1) as usize];
+        std::fs::write(dir.path().join("big.txt"), &big).unwrap();
+        let err = resolve_and_read(dir.path().to_str().unwrap(), "big.txt")
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("too large"),
+            "unexpected message: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_and_read_rejects_non_utf8_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        // Invalid UTF-8 byte sequence.
+        std::fs::write(dir.path().join("bin.dat"), [0xff, 0xfe, 0x00, 0x9f]).unwrap();
+        let err = resolve_and_read(dir.path().to_str().unwrap(), "bin.dat")
+            .await
+            .unwrap_err();
+        assert!(
+            err.message.contains("not UTF-8"),
             "unexpected message: {}",
             err.message
         );
