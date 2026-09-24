@@ -112,7 +112,11 @@ pub async fn call_internal(
     device_tier: &str,
     args: Value,
 ) -> DispatchOutcome {
-    dispatch_tool(registry, cfg, tool_name, device_tier, args).await
+    // The interactive turn loop never auto-confirms: an undecided
+    // destructive tool goes through the normal consent flow (Pending →
+    // GUI prompt → `consent.respond`). Only the MCP `tools.run` path
+    // passes an explicit per-call confirm.
+    dispatch_tool(registry, cfg, tool_name, device_tier, args, false).await
 }
 
 #[cfg(test)]

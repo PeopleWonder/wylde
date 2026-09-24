@@ -313,8 +313,16 @@ impl HarnessApi for DefaultHarnessApi {
             .filter(|s| !s.is_empty())
             .unwrap_or(TIER_TOOL_USE);
 
+        // Per-call confirmation (the MCP surface sets this from an explicit
+        // `confirm: true`). Satisfies an undecided consent gate for this one
+        // dispatch; never overrides a stored deny, never persisted.
+        let confirm = payload
+            .get("confirm")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
         let cfg = Config::get();
-        let outcome = dispatch_tool(global(), cfg, &name, device_tier, args).await;
+        let outcome = dispatch_tool(global(), cfg, &name, device_tier, args, confirm).await;
 
         match outcome.result {
             Ok(data) => Reply::ok(json!({

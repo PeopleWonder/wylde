@@ -203,6 +203,7 @@ mod tests {
             "plugin.fixture.ping",
             TIER_TOOL_USE,
             json!({"name": "Sam"}),
+            false,
         )
         .await;
         assert_eq!(outcome.canonical_id, "plugin_fixture_ping");
@@ -285,7 +286,7 @@ mod tests {
         let mut reg = Registry::empty();
         register_plugin(&mut reg, Arc::new(Fixture));
         let outcome =
-            dispatch_tool(&reg, cfg, "plugin.fixture.wipe", TIER_TOOL_USE, json!({})).await;
+            dispatch_tool(&reg, cfg, "plugin.fixture.wipe", TIER_TOOL_USE, json!({}), false).await;
         let err = outcome.result.expect_err("tier gate must block");
         assert_eq!(err.error.code, "tier_tool_use_destructive_blocked");
     }

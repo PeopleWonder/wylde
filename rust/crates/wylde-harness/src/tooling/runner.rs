@@ -75,6 +75,7 @@ pub async fn dispatch_tool(
     tool_name: &str,
     device_tier: &str,
     args: Value,
+    confirm: bool,
 ) -> DispatchOutcome {
     let started = Instant::now();
 
@@ -103,7 +104,7 @@ pub async fn dispatch_tool(
         };
     }
 
-    if let Some(block) = check_consent_gate(&entry) {
+    if let Some(block) = check_consent_gate(&entry, confirm) {
         return DispatchOutcome {
             canonical_id,
             elapsed_ms: duration_ms(started),
@@ -125,7 +126,14 @@ pub async fn dispatch_tool(
 /// `GateOutcome::Allow` (proceed to handler); otherwise returns the
 /// shaped `DispatchError` the turn loop will surface to the model and
 /// the GUI.
-fn check_consent_gate(entry: &ToolEntry) -> Option<DispatchError> {
+///
+/// `confirm` is a per-call, non-persisted confirmation (the MCP surface
+/// sets it from an explicit `confirm: true`). It satisfies an **undecided**
+/// gate (`Pending`) for this one dispatch only — it never writes a stored
+/// decision, and it deliberately does **not** override a stored
+/// `Deny`: a caller can confirm a not-yet-decided tool, but can never
+/// override the user's explicit "deny". A stored `Allow` needs no confirm.
+fn check_consent_gate(entry: &ToolEntry, confirm: bool) -> Option<DispatchError> {
     if global_bypass_active() {
         return None;
     }
@@ -139,6 +147,10 @@ fn check_consent_gate(entry: &ToolEntry) -> Option<DispatchError> {
     });
     match outcome {
         GateOutcome::Allow => None,
+        // A per-call confirmation clears an undecided gate — but only an
+        // undecided one. The `Deny` arm below is intentionally NOT reached
+        // by confirm, so an explicit deny always wins.
+        GateOutcome::Pending { .. } if confirm => None,
         GateOutcome::Pending { prompt } => {
             // Phase 12.6: also record the prompt in the pending
             // registry so the `consent.stream_pending` subscribers
@@ -339,7 +351,7 @@ mod tests {
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let reg = Registry::with_only(vec![]);
-        let outcome = dispatch_tool(&reg, cfg, "no.such.tool", TIER_TOOL_USE, json!({})).await;
+        let outcome = dispatch_tool(&reg, cfg, "no.such.tool", TIER_TOOL_USE, json!({}), false).await;
         let err = outcome.result.expect_err("should fail");
         assert_eq!(err.error.code, "not_found");
         assert_eq!(err.reason, Some(ToolErrorReason::ToolCallTextUnrecognised));
@@ -357,6 +369,7 @@ mod tests {
             "fs.read_file",
             TIER_TOOL_USE,
             json!({"path": "x"}),
+            false,
         )
         .await;
         let ok = outcome.result.expect("active handler succeeds");
@@ -370,7 +383,7 @@ mod tests {
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let reg = Registry::with_only(vec![make_deferred_entry()]);
-        let outcome = dispatch_tool(&reg, cfg, "memory_search", TIER_TOOL_USE, json!({})).await;
+        let outcome = dispatch_tool(&reg, cfg, "memory_search", TIER_TOOL_USE, json!({}), false).await;
         let err = outcome.result.expect_err("should fail");
         assert_eq!(err.error.code, "phase_7_deferred");
         assert!(err.error.message.contains("Phase 7"));
@@ -382,7 +395,7 @@ mod tests {
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let reg = Registry::with_only(vec![make_active_read_only_entry()]);
-        let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_READ_ONLY, json!({})).await;
+        let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_READ_ONLY, json!({}), false).await;
         let err = outcome.result.expect_err("should block");
         assert_eq!(err.reason, Some(ToolErrorReason::TierReadOnly));
         assert_eq!(err.error.code, "tier_read_only");
@@ -394,7 +407,7 @@ mod tests {
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let reg = Registry::with_only(vec![make_active_destructive_entry()]);
-        let outcome = dispatch_tool(&reg, cfg, "fs.write_file", TIER_TOOL_USE, json!({})).await;
+        let outcome = dispatch_tool(&reg, cfg, "fs.write_file", TIER_TOOL_USE, json!({}), false).await;
         let err = outcome.result.expect_err("should block");
         assert_eq!(err.reason, Some(ToolErrorReason::TierReadOnly));
         assert_eq!(err.error.code, "tier_tool_use_destructive_blocked");
@@ -412,6 +425,7 @@ mod tests {
             "fs.write_file",
             TIER_DESTRUCTIVE,
             json!({"a": 1}),
+            false,
         )
         .await;
         let ok = outcome.result.expect("destructive tier permits");
@@ -458,7 +472,7 @@ mod tests {
             let cfg = Config::default_for_tests();
             let cfg: &'static Config = Box::leak(Box::new(cfg));
             let reg = Registry::with_only(vec![make_active_read_only_entry()]);
-            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({})).await;
+            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({}), false).await;
             let err = outcome.result.expect_err("gate should block");
             assert_eq!(err.error.code, "consent_required");
             assert_eq!(err.reason, Some(ToolErrorReason::ConsentRequired));
@@ -484,7 +498,8 @@ mod tests {
                 "fs.read_file",
                 TIER_TOOL_USE,
                 json!({"path": "x"}),
-            )
+            false,
+        )
             .await;
             let ok = outcome.result.expect("approved tool dispatches");
             assert_eq!(ok["echo"]["path"], "x");
@@ -501,10 +516,119 @@ mod tests {
             let cfg = Config::default_for_tests();
             let cfg: &'static Config = Box::leak(Box::new(cfg));
             let reg = Registry::with_only(vec![make_active_read_only_entry()]);
-            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({})).await;
+            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({}), false).await;
             let err = outcome.result.expect_err("denied gate blocks");
             assert_eq!(err.error.code, "consent_denied");
             assert_eq!(err.reason, Some(ToolErrorReason::ConsentDenied));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_confirm_satisfies_undecided_gate() {
+        // Per-call confirm on an undecided destructive tool (with the
+        // destructive tier) executes it end-to-end — no GUI consent step.
+        gate_test_scope(|_td| async {
+            let cfg = Config::default_for_tests();
+            let cfg: &'static Config = Box::leak(Box::new(cfg));
+            let reg = Registry::with_only(vec![make_active_destructive_entry()]);
+            let outcome = dispatch_tool(
+                &reg,
+                cfg,
+                "fs.write_file",
+                TIER_DESTRUCTIVE,
+                json!({"a": 1}),
+                true,
+            )
+            .await;
+            let ok = outcome.result.expect("confirm clears the undecided gate");
+            assert_eq!(ok["wrote"]["a"], 1);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_confirm_never_overrides_a_stored_deny() {
+        // The critical guardrail: a stored explicit deny wins over a
+        // per-call confirm. A remote/MCP caller can never override the
+        // user's local "deny".
+        gate_test_scope(|_td| async {
+            consent::store()
+                .set("write_file", Decision::Denied)
+                .expect("set denied");
+            let cfg = Config::default_for_tests();
+            let cfg: &'static Config = Box::leak(Box::new(cfg));
+            let reg = Registry::with_only(vec![make_active_destructive_entry()]);
+            let outcome = dispatch_tool(
+                &reg,
+                cfg,
+                "fs.write_file",
+                TIER_DESTRUCTIVE,
+                json!({"a": 1}),
+                true,
+            )
+            .await;
+            let err = outcome.result.expect_err("deny must win over confirm");
+            assert_eq!(err.error.code, "consent_denied");
+            assert_eq!(err.reason, Some(ToolErrorReason::ConsentDenied));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_confirm_is_per_call_not_persisted() {
+        // A confirmed call does not record a standing decision: the next
+        // call WITHOUT confirm hits the undecided gate again.
+        gate_test_scope(|_td| async {
+            let cfg = Config::default_for_tests();
+            let cfg: &'static Config = Box::leak(Box::new(cfg));
+            let reg = Registry::with_only(vec![make_active_destructive_entry()]);
+            // First call confirms and runs.
+            let ok = dispatch_tool(
+                &reg,
+                cfg,
+                "fs.write_file",
+                TIER_DESTRUCTIVE,
+                json!({"a": 1}),
+                true,
+            )
+            .await;
+            assert!(ok.result.is_ok(), "confirmed call runs");
+            // Second call, no confirm → gate is still undecided.
+            let outcome = dispatch_tool(
+                &reg,
+                cfg,
+                "fs.write_file",
+                TIER_DESTRUCTIVE,
+                json!({"a": 2}),
+                false,
+            )
+            .await;
+            let err = outcome.result.expect_err("confirm was not persisted");
+            assert_eq!(err.error.code, "consent_required");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_confirm_does_not_bypass_the_tier_gate() {
+        // Confirm satisfies consent, never the tier gate: a destructive
+        // tool on the tool_use tier is still blocked even with confirm.
+        gate_test_scope(|_td| async {
+            let cfg = Config::default_for_tests();
+            let cfg: &'static Config = Box::leak(Box::new(cfg));
+            let reg = Registry::with_only(vec![make_active_destructive_entry()]);
+            let outcome = dispatch_tool(
+                &reg,
+                cfg,
+                "fs.write_file",
+                TIER_TOOL_USE,
+                json!({"a": 1}),
+                true,
+            )
+            .await;
+            let err = outcome.result.expect_err("tier blocks before consent");
+            assert_eq!(err.error.code, "tier_tool_use_destructive_blocked");
         })
         .await;
     }
@@ -516,7 +640,7 @@ mod tests {
             let cfg = Config::default_for_tests();
             let cfg: &'static Config = Box::leak(Box::new(cfg));
             let reg = Registry::with_only(vec![make_active_read_only_entry()]);
-            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({})).await;
+            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({}), false).await;
             let ok = outcome.result.expect("no_auth skips the gate");
             assert_eq!(ok["echo"], json!({}));
         })
@@ -534,7 +658,7 @@ mod tests {
             let cfg = Config::default_for_tests();
             let cfg: &'static Config = Box::leak(Box::new(cfg));
             let reg = Registry::with_only(vec![make_active_read_only_entry()]);
-            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_READ_ONLY, json!({})).await;
+            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_READ_ONLY, json!({}), false).await;
             let err = outcome.result.expect_err("tier blocks first");
             assert_eq!(err.error.code, "tier_read_only");
         })

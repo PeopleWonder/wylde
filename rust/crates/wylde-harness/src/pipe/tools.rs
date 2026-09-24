@@ -36,10 +36,12 @@ pub(super) fn install(api: &Arc<dyn HarnessApi>) {
             async move { a.tools_run(p).await }
         },
         "Invoke one tool by id/alias. Payload {name, args?, \
-         device_tier?}. Returns the dispatch outcome flattened: \
+         device_tier?, confirm?}. Returns the dispatch outcome flattened: \
          {ok, data} on success, {ok: false, error: {code, message}} \
          on failure. The tier gate runs against the supplied \
-         device_tier (default `tool_use`).",
+         device_tier (default `tool_use`). `confirm: true` is a per-call, \
+         non-persisted confirmation that satisfies an UNDECIDED consent \
+         gate for this dispatch only; it never overrides a stored deny.",
         HANDLER_MODULE_TOOLS,
     );
 }
