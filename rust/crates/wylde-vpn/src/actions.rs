@@ -31,7 +31,6 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use base64::Engine;
-use rand_core::OsRng;
 use serde_json::{json, Value};
 use wylde_shared::ipc::{IpcError, Reply};
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -111,7 +110,7 @@ pub async fn handle_vpn_status(_payload: Value) -> Reply {
 }
 
 pub async fn handle_vpn_keygen(_payload: Value) -> Reply {
-    let secret = StaticSecret::random_from_rng(OsRng);
+    let secret = StaticSecret::random();
     let public = PublicKey::from(&secret);
     let priv_b64 = base64::engine::general_purpose::STANDARD.encode(secret.to_bytes());
     let pub_b64 = base64::engine::general_purpose::STANDARD.encode(public.as_bytes());

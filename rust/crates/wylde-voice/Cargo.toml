@@ -103,7 +103,7 @@ async-trait = "0.1"
 # done in-tree (`synth::wav::encode_base64`); the decode path uses the
 # established `base64` crate (same version wylde-shared / wylde-gateway
 # / wylde-vpn use, so there's no extra build cost).
-base64 = "0.22"
+base64 = "0.23"
 
 # Grapheme-to-phoneme (G2P) for the TTS text path (Slice 2 —
 # `docs/plans/voice-rust-port.md`). `misaki-rs` is the Rust port of
