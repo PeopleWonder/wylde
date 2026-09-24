@@ -258,8 +258,7 @@ fn sample_cpu() -> CpuInfo {
         })
         .unwrap_or_default();
     let logical_cores = cpus.len() as u32;
-    let physical_cores = sys
-        .physical_core_count()
+    let physical_cores = sysinfo::System::physical_core_count()
         .map(|n| n as u32)
         .unwrap_or(logical_cores);
     CpuInfo {

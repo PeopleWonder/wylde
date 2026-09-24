@@ -111,7 +111,7 @@ impl TunnelManager {
             Some(k) => k,
             None => {
                 // Mirror Python `_wg_genkey`: generate fresh if blank.
-                StaticSecret::random_from_rng(rand_core::OsRng).to_bytes()
+                StaticSecret::random().to_bytes()
             }
         };
         let peer_public = match decode_key(&req.peer_pubkey)? {
@@ -419,7 +419,7 @@ mod tests {
     }
 
     fn fake_keypair() -> (String, String) {
-        let secret = StaticSecret::random_from_rng(rand_core::OsRng);
+        let secret = StaticSecret::random();
         let public = PublicKey::from(&secret);
         (
             base64_encode(&secret.to_bytes()),
