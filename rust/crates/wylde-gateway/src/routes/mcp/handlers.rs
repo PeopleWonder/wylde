@@ -43,10 +43,15 @@ pub const INTERNAL_ERROR: i64 = -32603;
 
 // ── Server-defined errors (JSON-RPC reserves -32000..=-32099) ───────────
 
-/// A `tools/call` for a tool that is not on the MCP allow-list. Distinct
-/// from `METHOD_NOT_FOUND` (which is about JSON-RPC *methods*) so a client
-/// can tell "no such MCP method" from "that tool is not exposed here".
+/// A `tools/call` for a tool that is not exposed to this caller — an
+/// unknown/hidden tool, or a destructive tool the caller's tier may not
+/// run. Distinct from `METHOD_NOT_FOUND` (about JSON-RPC *methods*).
 pub const TOOL_NOT_PERMITTED: i64 = -32001;
+
+/// A `tools/call` for a destructive tool the caller's tier *may* run, but
+/// without the explicit `confirm: true` argument. The client should
+/// resend with confirmation — it must never be run silently.
+pub const CONFIRMATION_REQUIRED: i64 = -32002;
 
 /// A JSON-RPC error the transport serialises into an `error` response.
 #[derive(Debug)]
@@ -168,6 +173,28 @@ fn require_str(params: &Value, key: &str) -> Result<String, McpError> {
     }
 }
 
+/// Decide whether a classified `tools/call` may proceed. Pure policy over
+/// the resolved access class + the client's `confirm` flag:
+///
+/// * `Allowed` → run.
+/// * `Destructive` + `confirm` → run.
+/// * `Destructive` without `confirm` → `CONFIRMATION_REQUIRED`.
+/// * `NotExposed` → `TOOL_NOT_PERMITTED`.
+fn decide(access: &adapters::ToolAccess, name: &str, confirm: bool) -> Result<(), McpError> {
+    match access {
+        adapters::ToolAccess::Allowed => Ok(()),
+        adapters::ToolAccess::Destructive if confirm => Ok(()),
+        adapters::ToolAccess::Destructive => Err(McpError::new(
+            CONFIRMATION_REQUIRED,
+            format!("tool {name:?} is destructive; resend the call with arguments.confirm = true to run it"),
+        )),
+        adapters::ToolAccess::NotExposed => Err(McpError::new(
+            TOOL_NOT_PERMITTED,
+            format!("tool {name:?} is not exposed over MCP"),
+        )),
+    }
+}
+
 /// Route one JSON-RPC method to its handler and return the `result`.
 ///
 /// `device` is the caller verified by `require_device`; its tier decides
@@ -184,16 +211,7 @@ pub async fn dispatch(device: &Device, method: &str, params: &Value) -> Result<V
         }
         "tools/call" => {
             let name = require_str(params, "name")?;
-            // Authorization: only allow-listed tools are reachable over
-            // MCP, regardless of the caller's tier. Refuse before the
-            // pipe is ever touched.
-            if !adapters::is_exposable(&name) {
-                return Err(McpError::new(
-                    TOOL_NOT_PERMITTED,
-                    format!("tool {name:?} is not exposed over MCP"),
-                ));
-            }
-            let arguments = params
+            let mut arguments = params
                 .get("arguments")
                 .cloned()
                 .unwrap_or_else(|| json!({}));
@@ -203,6 +221,34 @@ pub async fn dispatch(device: &Device, method: &str, params: &Value) -> Result<V
                     "'arguments' must be an object",
                 ));
             }
+            // `confirm` is an MCP protocol flag, not a tool argument —
+            // read it, then strip it so it never reaches the tool.
+            let confirm = arguments
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if let Some(obj) = arguments.as_object_mut() {
+                obj.remove("confirm");
+            }
+
+            // Fast path: an allow-listed tool is known non-destructive, so
+            // it runs with no confirmation and no extra catalog round-trip.
+            if adapters::is_exposable(&name) {
+                return adapters::call_tool(&name, arguments, &device.tier)
+                    .await
+                    .map_err(bridge_to_mcp);
+            }
+
+            // Off the allow-list. A non-privileged tier can run nothing
+            // here, so refuse without a catalog round-trip (and without
+            // leaking whether the tool exists). Only a
+            // destructive_tool_access caller pays the classify lookup.
+            let access = if adapters::tier_allows_destructive(&device.tier) {
+                adapters::classify_tool(&name).await.map_err(bridge_to_mcp)?
+            } else {
+                adapters::ToolAccess::NotExposed
+            };
+            decide(&access, &name, confirm)?;
             adapters::call_tool(&name, arguments, &device.tier)
                 .await
                 .map_err(bridge_to_mcp)
@@ -327,8 +373,8 @@ mod tests {
     #[tokio::test]
     async fn dispatch_tools_call_refuses_non_allowlisted_tool() {
         // A tool that exists in the harness but is NOT on the MCP
-        // allow-list must be refused before the pipe is touched — this is
-        // the C1 authorization gate.
+        // allow-list, called by a non-privileged (tool_use) device, must be
+        // refused before the pipe is touched — the authorization gate.
         let err = dispatch(
             &device(),
             "tools/call",
@@ -337,6 +383,39 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.code, TOOL_NOT_PERMITTED);
+    }
+
+    #[tokio::test]
+    async fn dispatch_tools_call_tier_wins_over_confirm() {
+        // A non-privileged device cannot run an off-list (destructive)
+        // tool even if it sets confirm:true — refused pre-pipe, tier wins.
+        let err = dispatch(
+            &device(),
+            "tools/call",
+            &json!({ "name": "write_file", "arguments": { "confirm": true, "path": "/x" } }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, TOOL_NOT_PERMITTED);
+    }
+
+    #[test]
+    fn decide_matrix() {
+        use adapters::ToolAccess::*;
+        // Non-destructive allow-listed → run.
+        assert!(decide(&Allowed, "read_file", false).is_ok());
+        // Destructive + confirm → run.
+        assert!(decide(&Destructive, "write_file", true).is_ok());
+        // Destructive without confirm → confirmation required.
+        assert_eq!(
+            decide(&Destructive, "write_file", false).unwrap_err().code,
+            CONFIRMATION_REQUIRED
+        );
+        // Not exposed → authorization refusal (confirm is irrelevant).
+        assert_eq!(
+            decide(&NotExposed, "secret", true).unwrap_err().code,
+            TOOL_NOT_PERMITTED
+        );
     }
 
     #[tokio::test]

@@ -264,11 +264,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tools_call_refuses_destructive_even_for_destructive_tier() {
-        // Even a `destructive_tool_access` caller cannot reach a
-        // destructive tool over MCP — the allow-list, not the tier, is the
-        // MCP exposure boundary.
-        let v = tools_call_body("mcp-auth-dtier", "destructive_tool_access", "write_file").await;
+    async fn tools_call_tier_wins_over_confirm_via_router() {
+        // A non-privileged (tool_use) device cannot run an off-list
+        // destructive tool even with confirm:true — refused pre-pipe, so
+        // the assertion is deterministic without a harness. (The
+        // destructive_tool_access + confirm path needs a live catalog and
+        // is covered by handlers::decide_matrix instead.)
+        let token = "mcp-auth-confirm-tierwins";
+        token_cache()
+            .insert(
+                token.to_owned(),
+                Device {
+                    device_id: "dev-confirm".to_owned(),
+                    tier: "tool_use".to_owned(),
+                },
+            )
+            .await;
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"confirm":true,"path":"/x"}}}"#;
+        let resp = router()
+            .oneshot(post_request(Some(token), body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 8 * 1024).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["error"]["code"], handlers::TOOL_NOT_PERMITTED);
     }
 

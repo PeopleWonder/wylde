@@ -58,10 +58,65 @@ pub const MCP_TOOL_ALLOWLIST: &[&str] = &[
     "tool_search",
 ];
 
-/// Whether `name` is an MCP-exposable tool. Gates both `tools/list`
-/// (filter) and `tools/call` (refuse) so the two can never disagree.
+/// Whether `name` is on the non-destructive read/query allow-list.
 pub fn is_exposable(name: &str) -> bool {
     MCP_TOOL_ALLOWLIST.contains(&name)
+}
+
+/// The device tier that may run destructive tools. Mirrors the harness
+/// `destructive_tool_access` tier — the harness tier gate is the final
+/// backstop, this is the MCP-layer mirror so a lower tier is refused
+/// before the pipe is touched.
+pub const TIER_DESTRUCTIVE: &str = "destructive_tool_access";
+
+/// Whether `tier` may run destructive tools over MCP.
+pub fn tier_allows_destructive(tier: &str) -> bool {
+    tier == TIER_DESTRUCTIVE
+}
+
+/// How a named tool may be reached over MCP, resolved against the live
+/// harness catalog — the `destructive` flag is the source of truth.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ToolAccess {
+    /// Non-destructive and allow-listed — runnable with no confirmation.
+    Allowed,
+    /// Destructive — runnable only by a `destructive_tool_access` caller
+    /// that explicitly confirms.
+    Destructive,
+    /// Unknown tool, or a non-destructive tool that is not allow-listed.
+    NotExposed,
+}
+
+/// The `destructive` flag on a raw catalog entry (default `false`).
+fn entry_destructive(entry: &Value) -> bool {
+    entry
+        .get("destructive")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Pure classification of a catalog entry (or its absence) for `name`.
+/// Destructive tools are `Destructive`; a non-destructive tool is
+/// `Allowed` only when allow-listed, else `NotExposed`; a missing entry is
+/// `NotExposed`.
+fn classify_entry(entry: Option<&Value>, name: &str) -> ToolAccess {
+    match entry {
+        None => ToolAccess::NotExposed,
+        Some(e) if entry_destructive(e) => ToolAccess::Destructive,
+        Some(_) if is_exposable(name) => ToolAccess::Allowed,
+        Some(_) => ToolAccess::NotExposed,
+    }
+}
+
+/// Classify how `name` may be reached over MCP by consulting the live
+/// catalog. Only called for a privileged (`destructive_tool_access`)
+/// caller asking for a non-allow-listed tool, so the extra `tools.list`
+/// round-trip is paid only on that path.
+pub async fn classify_tool(name: &str) -> Result<ToolAccess, BridgeError> {
+    let data = harness("tools.list", json!({})).await?;
+    let all = entries(&data, "tools");
+    let entry = all.iter().find(|e| entry_name(e) == name);
+    Ok(classify_entry(entry, name))
 }
 
 /// A harness pipe action failed. Carries a human-readable `message` and
