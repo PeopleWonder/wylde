@@ -32,17 +32,21 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::from_fn;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::Router;
+use axum::{Extension, Router};
 
-use crate::auth::require_device;
+use crate::auth::{require_device, Device};
 
 /// `POST /mcp` — client → server JSON-RPC over the Streamable HTTP
 /// transport.
-async fn mcp_post(headers: HeaderMap, body: Bytes) -> Response {
+///
+/// `require_device` runs first (route layer) and inserts the verified
+/// [`Device`]; we read it here so the dispatcher can authorize per caller
+/// rather than trusting any authenticated device with the full surface.
+async fn mcp_post(Extension(device): Extension<Device>, headers: HeaderMap, body: Bytes) -> Response {
     let session_id = headers
         .get(transport::SESSION_HEADER)
         .and_then(|v| v.to_str().ok());
-    let outcome = transport::process_post(&body, session_id).await;
+    let outcome = transport::process_post(&device, &body, session_id).await;
 
     let mut builder = Response::builder().status(outcome.status);
     if let Some(sid) = &outcome.new_session {

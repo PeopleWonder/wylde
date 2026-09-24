@@ -32,6 +32,38 @@ pub const HARNESS_PIPE: &str = "wylde-harness";
 /// URI scheme for the Wylde resource namespace.
 pub const URI_SCHEME: &str = "wylde://";
 
+/// Tools exposed over MCP — a curated allow-list, not the full harness
+/// catalog. Every entry is verified non-`destructive` in the harness
+/// registry AND is a pure read/query with no execution or egress side
+/// effect (so `wylde_execute`, `wylde_create`, `voice_*`, model-management
+/// and every `destructive` tool are deliberately absent). MCP is an
+/// unattended surface: a tool that mutates, deletes, executes, or reaches
+/// the network does not belong here regardless of its `destructive` flag.
+///
+/// This is defence in depth over the harness tier gate — even a caller on
+/// the `destructive_tool_access` tier only ever sees these tools through
+/// MCP. Widen it deliberately; a new entry is a new remote capability.
+pub const MCP_TOOL_ALLOWLIST: &[&str] = &[
+    "read_file",
+    "list_files",
+    "code_search",
+    "code_search_files",
+    "graph_query",
+    "memory_search",
+    "memory_workspace_search",
+    "memory_workspace_list",
+    "show_diff",
+    "time_now",
+    "time_format",
+    "tool_search",
+];
+
+/// Whether `name` is an MCP-exposable tool. Gates both `tools/list`
+/// (filter) and `tools/call` (refuse) so the two can never disagree.
+pub fn is_exposable(name: &str) -> bool {
+    MCP_TOOL_ALLOWLIST.contains(&name)
+}
+
 /// A harness pipe action failed. Carries a human-readable `message` and
 /// optional structured `details`; [`super::handlers`] folds it into a
 /// JSON-RPC error.
@@ -98,10 +130,16 @@ fn entries(data: &Value, key: &str) -> Vec<Value> {
 
 // ── tools ──────────────────────────────────────────────────────────────
 
-/// Return the harness tool catalog in MCP `Tool` shape.
+/// Return the harness tool catalog in MCP `Tool` shape, filtered to the
+/// [`MCP_TOOL_ALLOWLIST`]. A tool the catalog offers but MCP does not
+/// expose is dropped here so `tools/list` and `tools/call` agree.
 pub async fn list_tools() -> Result<Value, BridgeError> {
     let data = harness("tools.list", json!({})).await?;
-    let tools: Vec<Value> = entries(&data, "tools").iter().map(tool_to_mcp).collect();
+    let tools: Vec<Value> = entries(&data, "tools")
+        .iter()
+        .map(tool_to_mcp)
+        .filter(|t| t.get("name").and_then(Value::as_str).is_some_and(is_exposable))
+        .collect();
     Ok(Value::Array(tools))
 }
 
@@ -130,16 +168,26 @@ pub fn tool_to_mcp(entry: &Value) -> Value {
 
 /// Run one tool through the harness `tools.run` action.
 ///
-/// `tools.run` calls `tool_runner.run_tool(name, args, confirm=…)` — the
-/// same dispatch path an in-process turn uses. The runner envelope is
-/// serialised into a single MCP text-content block; `isError` mirrors
-/// the envelope's `ok` flag.
-pub async fn call_tool(name: &str, arguments: Value) -> Result<Value, BridgeError> {
-    let reply = harness(
-        "tools.run",
-        json!({ "name": name, "args": arguments, "confirm": false }),
-    )
-    .await?;
+/// `tools.run`'s contract is `{name, args?, device_tier?}` and it runs the
+/// registry **tier gate** against `device_tier` (Rust port note in
+/// `pipe/tools.rs`). We pass the *caller's* real tier — resolved by
+/// `require_device` — so a `tool_use` device is held to `tool_use` and
+/// only a `destructive_tool_access` device can reach a destructive tool,
+/// exactly as an interactive turn would be gated. An empty tier lets the
+/// harness apply its `tool_use` default.
+///
+/// (The old `confirm: false` field was a no-op — it is not part of the
+/// `tools.run` contract — and is dropped; destructive gating is the tier
+/// gate's job, not a client-supplied flag.)
+///
+/// The runner envelope is serialised into a single MCP text-content
+/// block; `isError` mirrors the envelope's `ok` flag.
+pub async fn call_tool(name: &str, arguments: Value, device_tier: &str) -> Result<Value, BridgeError> {
+    let mut payload = json!({ "name": name, "args": arguments });
+    if !device_tier.is_empty() {
+        payload["device_tier"] = json!(device_tier);
+    }
+    let reply = harness("tools.run", payload).await?;
     Ok(tool_result_to_mcp(&reply))
 }
 

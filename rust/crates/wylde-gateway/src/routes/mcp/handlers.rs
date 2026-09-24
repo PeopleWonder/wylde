@@ -22,6 +22,7 @@
 use serde_json::{json, Value};
 
 use super::adapters::{self, BridgeError};
+use crate::auth::Device;
 
 // ── Protocol identity ──────────────────────────────────────────────────
 
@@ -39,6 +40,13 @@ pub const INVALID_REQUEST: i64 = -32600;
 pub const METHOD_NOT_FOUND: i64 = -32601;
 pub const INVALID_PARAMS: i64 = -32602;
 pub const INTERNAL_ERROR: i64 = -32603;
+
+// ── Server-defined errors (JSON-RPC reserves -32000..=-32099) ───────────
+
+/// A `tools/call` for a tool that is not on the MCP allow-list. Distinct
+/// from `METHOD_NOT_FOUND` (which is about JSON-RPC *methods*) so a client
+/// can tell "no such MCP method" from "that tool is not exposed here".
+pub const TOOL_NOT_PERMITTED: i64 = -32001;
 
 /// A JSON-RPC error the transport serialises into an `error` response.
 #[derive(Debug)]
@@ -96,9 +104,12 @@ fn require_str(params: &Value, key: &str) -> Result<String, McpError> {
 
 /// Route one JSON-RPC method to its handler and return the `result`.
 ///
+/// `device` is the caller verified by `require_device`; its tier decides
+/// what `tools/call` may run (threaded down to the harness tier gate).
+///
 /// Returns `Err(McpError)` for any failure the transport must render as
 /// a JSON-RPC `error`.
-pub async fn dispatch(method: &str, params: &Value) -> Result<Value, McpError> {
+pub async fn dispatch(device: &Device, method: &str, params: &Value) -> Result<Value, McpError> {
     match method {
         "initialize" => Ok(initialize()),
         "tools/list" => {
@@ -107,6 +118,15 @@ pub async fn dispatch(method: &str, params: &Value) -> Result<Value, McpError> {
         }
         "tools/call" => {
             let name = require_str(params, "name")?;
+            // Authorization: only allow-listed tools are reachable over
+            // MCP, regardless of the caller's tier. Refuse before the
+            // pipe is ever touched.
+            if !adapters::is_exposable(&name) {
+                return Err(McpError::new(
+                    TOOL_NOT_PERMITTED,
+                    format!("tool {name:?} is not exposed over MCP"),
+                ));
+            }
             let arguments = params
                 .get("arguments")
                 .cloned()
@@ -117,7 +137,7 @@ pub async fn dispatch(method: &str, params: &Value) -> Result<Value, McpError> {
                     "'arguments' must be an object",
                 ));
             }
-            adapters::call_tool(&name, arguments)
+            adapters::call_tool(&name, arguments, &device.tier)
                 .await
                 .map_err(bridge_to_mcp)
         }
@@ -152,6 +172,14 @@ pub async fn dispatch(method: &str, params: &Value) -> Result<Value, McpError> {
 mod tests {
     use super::*;
 
+    /// A `tool_use`-tier caller for the dispatch tests.
+    fn device() -> Device {
+        Device {
+            device_id: "dev-test".to_owned(),
+            tier: "tool_use".to_owned(),
+        }
+    }
+
     #[test]
     fn initialize_advertises_protocol_and_capabilities() {
         let result = initialize();
@@ -165,19 +193,21 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_initialize_needs_no_pipe() {
-        let result = dispatch("initialize", &json!({})).await.unwrap();
+        let result = dispatch(&device(), "initialize", &json!({})).await.unwrap();
         assert_eq!(result["protocolVersion"], MCP_PROTOCOL_VERSION);
     }
 
     #[tokio::test]
     async fn dispatch_unknown_method_is_method_not_found() {
-        let err = dispatch("does/not/exist", &json!({})).await.unwrap_err();
+        let err = dispatch(&device(), "does/not/exist", &json!({}))
+            .await
+            .unwrap_err();
         assert_eq!(err.code, METHOD_NOT_FOUND);
     }
 
     #[tokio::test]
     async fn dispatch_notification_is_accepted_as_empty_result() {
-        let result = dispatch("notifications/initialized", &json!({}))
+        let result = dispatch(&device(), "notifications/initialized", &json!({}))
             .await
             .unwrap();
         assert_eq!(result, json!({}));
@@ -185,21 +215,46 @@ mod tests {
 
     #[tokio::test]
     async fn dispatch_tools_call_rejects_missing_name() {
-        let err = dispatch("tools/call", &json!({})).await.unwrap_err();
-        assert_eq!(err.code, INVALID_PARAMS);
-    }
-
-    #[tokio::test]
-    async fn dispatch_tools_call_rejects_non_object_arguments() {
-        let err = dispatch("tools/call", &json!({ "name": "t", "arguments": 5 }))
+        let err = dispatch(&device(), "tools/call", &json!({}))
             .await
             .unwrap_err();
         assert_eq!(err.code, INVALID_PARAMS);
     }
 
     #[tokio::test]
+    async fn dispatch_tools_call_refuses_non_allowlisted_tool() {
+        // A tool that exists in the harness but is NOT on the MCP
+        // allow-list must be refused before the pipe is touched — this is
+        // the C1 authorization gate.
+        let err = dispatch(
+            &device(),
+            "tools/call",
+            &json!({ "name": "write_file", "arguments": { "path": "/x", "content": "y" } }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, TOOL_NOT_PERMITTED);
+    }
+
+    #[tokio::test]
+    async fn dispatch_tools_call_rejects_non_object_arguments() {
+        // Use an allow-listed name so the check reached is the argument
+        // shape, not the allow-list gate.
+        let err = dispatch(
+            &device(),
+            "tools/call",
+            &json!({ "name": "read_file", "arguments": 5 }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, INVALID_PARAMS);
+    }
+
+    #[tokio::test]
     async fn dispatch_resources_read_rejects_missing_uri() {
-        let err = dispatch("resources/read", &json!({})).await.unwrap_err();
+        let err = dispatch(&device(), "resources/read", &json!({}))
+            .await
+            .unwrap_err();
         assert_eq!(err.code, INVALID_PARAMS);
     }
 
@@ -207,7 +262,9 @@ mod tests {
     async fn dispatch_tools_list_bridges_to_unreachable_harness_as_internal_error() {
         // No harness pipe in the unit-test sandbox — the bridge failure
         // must surface as a JSON-RPC internal error, not a panic.
-        let err = dispatch("tools/list", &json!({})).await.unwrap_err();
+        let err = dispatch(&device(), "tools/list", &json!({}))
+            .await
+            .unwrap_err();
         assert_eq!(err.code, INTERNAL_ERROR);
     }
 }
