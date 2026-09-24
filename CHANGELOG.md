@@ -1984,6 +1984,24 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Security
 
+- **The MCP server (`/mcp`) is hardened from a full-catalog remote surface into a
+  scoped, unattended-safe one.** Previously the gateway resolved the caller's device
+  via `require_device` but never *read* it: any authenticated device could invoke any
+  tool (with a dead `confirm: false` that `tools.run` ignored), and read any conversation
+  or any workspace file with no size or type bound. The MCP path now (a) threads the
+  verified `Device` through `mod → transport → handlers → adapters` and restricts
+  `tools/list`/`tools/call` to a curated `MCP_TOOL_ALLOWLIST` of non-destructive
+  read/query tools — anything else is refused with JSON-RPC `-32001` before the pipe is
+  touched; (b) passes the caller's *real* device tier to `tools.run` so the harness tier
+  gate applies per-caller, and filters the live catalog on its own `destructive` flag so a
+  destructive tool can never be advertised or run over MCP (there is no way to confirm a
+  destructive action on an unattended surface); (c) reads workspace files through
+  `tokio::fs` (no blocking the async runtime), capped at 1 MiB and required to be UTF-8, so
+  a huge or binary file cannot spike memory; and (d) stops leaking internal harness action
+  names / error codes / pipe status to clients (logged server-side instead), adds opaque
+  cursor pagination to the `*/list` methods, and negotiates the client's requested
+  `protocolVersion`. Docs: [`docs/mcp_surface.md`](docs/mcp_surface.md).
+
 - **Every third-party GitHub Action is now pinned to a commit SHA, and a CI gate
   keeps it that way (closes #127).** Every `uses:` across the seven workflows was
   pinned to a *mutable major tag* (`actions/checkout@v7`, `dependabot/fetch-metadata@v3`,

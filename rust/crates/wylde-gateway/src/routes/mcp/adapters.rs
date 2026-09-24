@@ -15,7 +15,7 @@
 //! |-------------------|--------------------------------------------|
 //! | `tools/list`      | `tools.list`                               |
 //! | `tools/call`      | `tools.run` (runs `tool_runner.run_tool`)   |
-//! | `resources/list`  | `conversations.list` + `rag.workspaces.list`|
+//! | `resources/list`  | `conversations.list` + `workspaces.list_mru` |
 //! | `resources/read`  | `conversations.get` \| workspace file store |
 //! | `prompts/list`    | `prompts.list` (catalog entries)            |
 //! | `prompts/get`     | `prompts.list` (override-or-default resolve)|
