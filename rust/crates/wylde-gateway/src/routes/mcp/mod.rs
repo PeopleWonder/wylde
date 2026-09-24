@@ -24,7 +24,9 @@
 //! See `docs/mcp_surface.md` for the exposed surface.
 
 mod adapters;
+mod authz;
 mod handlers;
+mod resources;
 mod transport;
 
 use axum::body::{Body, Bytes};

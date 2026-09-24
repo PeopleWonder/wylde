@@ -6,8 +6,8 @@
 //! * `initialize`      — protocol handshake; advertises capabilities.
 //! * `tools/list`      — [`adapters::list_tools`].
 //! * `tools/call`      — [`adapters::call_tool`].
-//! * `resources/list`  — [`adapters::list_resources`].
-//! * `resources/read`  — [`adapters::read_resource`].
+//! * `resources/list`  — [`resources::list_resources`].
+//! * `resources/read`  — [`resources::read_resource`].
 //! * `prompts/list`    — [`adapters::list_prompts`].
 //! * `prompts/get`     — [`adapters::get_prompt`].
 //! * `notifications/*` — accepted, no-op (v1 acts on no client
@@ -22,6 +22,8 @@
 use serde_json::{json, Value};
 
 use super::adapters::{self, BridgeError};
+use super::authz::{self, ToolAccess};
+use super::resources;
 use crate::auth::Device;
 
 // ── Protocol identity ──────────────────────────────────────────────────
@@ -183,15 +185,15 @@ fn require_str(params: &Value, key: &str) -> Result<String, McpError> {
 /// * `Destructive` + `confirm` → run.
 /// * `Destructive` without `confirm` → `CONFIRMATION_REQUIRED`.
 /// * `NotExposed` → `TOOL_NOT_PERMITTED`.
-fn decide(access: &adapters::ToolAccess, name: &str, confirm: bool) -> Result<(), McpError> {
+fn decide(access: &ToolAccess, name: &str, confirm: bool) -> Result<(), McpError> {
     match access {
-        adapters::ToolAccess::Allowed => Ok(()),
-        adapters::ToolAccess::Destructive if confirm => Ok(()),
-        adapters::ToolAccess::Destructive => Err(McpError::new(
+        ToolAccess::Allowed => Ok(()),
+        ToolAccess::Destructive if confirm => Ok(()),
+        ToolAccess::Destructive => Err(McpError::new(
             CONFIRMATION_REQUIRED,
             format!("tool {name:?} is destructive; resend the call with arguments.confirm = true to run it"),
         )),
-        adapters::ToolAccess::NotExposed => Err(McpError::new(
+        ToolAccess::NotExposed => Err(McpError::new(
             TOOL_NOT_PERMITTED,
             format!("tool {name:?} is not exposed over MCP"),
         )),
@@ -241,7 +243,7 @@ pub async fn dispatch(device: &Device, method: &str, params: &Value) -> Result<V
             // round-trip. We send confirm:true so a first-time call clears
             // the harness's undecided consent gate rather than returning
             // consent_required — a stored deny still wins downstream.
-            if adapters::is_exposable(&name) {
+            if authz::is_exposable(&name) {
                 return adapters::call_tool(&name, arguments, &device.tier, true)
                     .await
                     .map_err(bridge_to_mcp);
@@ -251,12 +253,12 @@ pub async fn dispatch(device: &Device, method: &str, params: &Value) -> Result<V
             // here, so refuse without a catalog round-trip (and without
             // leaking whether the tool exists). Only a
             // destructive_tool_access caller pays the classify lookup.
-            let access = if adapters::tier_allows_destructive(&device.tier) {
+            let access = if authz::tier_allows_destructive(&device.tier) {
                 adapters::classify_tool(&name)
                     .await
                     .map_err(bridge_to_mcp)?
             } else {
-                adapters::ToolAccess::NotExposed
+                ToolAccess::NotExposed
             };
             decide(&access, &name, confirm)?;
             // Reached only for a destructive tool the caller confirmed
@@ -267,12 +269,12 @@ pub async fn dispatch(device: &Device, method: &str, params: &Value) -> Result<V
                 .map_err(bridge_to_mcp)
         }
         "resources/list" => {
-            let resources = adapters::list_resources().await.map_err(bridge_to_mcp)?;
+            let resources = resources::list_resources().await.map_err(bridge_to_mcp)?;
             list_result("resources", as_items(resources), cursor_of(params))
         }
         "resources/read" => {
             let uri = require_str(params, "uri")?;
-            adapters::read_resource(&uri).await.map_err(bridge_to_mcp)
+            resources::read_resource(&uri).await.map_err(bridge_to_mcp)
         }
         "prompts/list" => {
             let prompts = adapters::list_prompts().await.map_err(bridge_to_mcp)?;
@@ -414,7 +416,7 @@ mod tests {
 
     #[test]
     fn decide_matrix() {
-        use adapters::ToolAccess::*;
+        use ToolAccess::*;
         // Non-destructive allow-listed → run.
         assert!(decide(&Allowed, "read_file", false).is_ok());
         // Destructive + confirm → run.
