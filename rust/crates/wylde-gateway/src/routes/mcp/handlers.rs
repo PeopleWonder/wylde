@@ -231,10 +231,13 @@ pub async fn dispatch(device: &Device, method: &str, params: &Value) -> Result<V
                 obj.remove("confirm");
             }
 
-            // Fast path: an allow-listed tool is known non-destructive, so
-            // it runs with no confirmation and no extra catalog round-trip.
+            // Fast path: an allow-listed tool is known non-destructive and
+            // pre-vetted for MCP, so it runs with no extra catalog
+            // round-trip. We send confirm:true so a first-time call clears
+            // the harness's undecided consent gate rather than returning
+            // consent_required — a stored deny still wins downstream.
             if adapters::is_exposable(&name) {
-                return adapters::call_tool(&name, arguments, &device.tier)
+                return adapters::call_tool(&name, arguments, &device.tier, true)
                     .await
                     .map_err(bridge_to_mcp);
             }
@@ -249,7 +252,10 @@ pub async fn dispatch(device: &Device, method: &str, params: &Value) -> Result<V
                 adapters::ToolAccess::NotExposed
             };
             decide(&access, &name, confirm)?;
-            adapters::call_tool(&name, arguments, &device.tier)
+            // Reached only for a destructive tool the caller confirmed
+            // (decide guarantees confirm == true here) — forward the
+            // confirmation so the harness runs it end-to-end.
+            adapters::call_tool(&name, arguments, &device.tier, confirm)
                 .await
                 .map_err(bridge_to_mcp)
         }

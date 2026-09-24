@@ -274,18 +274,29 @@ pub fn tool_to_mcp(entry: &Value) -> Value {
 ///
 /// The runner envelope is serialised into a single MCP text-content
 /// block; `isError` mirrors the envelope's `ok` flag.
-pub async fn call_tool(name: &str, arguments: Value, device_tier: &str) -> Result<Value, BridgeError> {
-    let reply = harness("tools.run", run_payload(name, arguments, device_tier)).await?;
+pub async fn call_tool(
+    name: &str,
+    arguments: Value,
+    device_tier: &str,
+    confirm: bool,
+) -> Result<Value, BridgeError> {
+    let reply = harness("tools.run", run_payload(name, arguments, device_tier, confirm)).await?;
     Ok(tool_result_to_mcp(&reply))
 }
 
-/// Build the `tools.run` payload: `{name, args, device_tier?}`. The tier
-/// is included only when non-empty (an empty tier lets the harness apply
-/// its `tool_use` default). There is deliberately no `confirm` key.
-fn run_payload(name: &str, arguments: Value, device_tier: &str) -> Value {
+/// Build the `tools.run` payload: `{name, args, device_tier?, confirm?}`.
+/// The tier is included only when non-empty (an empty tier lets the
+/// harness apply its `tool_use` default). `confirm` is included only when
+/// true — it is a per-call, non-persisted confirmation that satisfies an
+/// undecided harness consent gate for this dispatch (it never overrides a
+/// stored deny; that check is the harness's).
+fn run_payload(name: &str, arguments: Value, device_tier: &str, confirm: bool) -> Value {
     let mut payload = json!({ "name": name, "args": arguments });
     if !device_tier.is_empty() {
         payload["device_tier"] = json!(device_tier);
+    }
+    if confirm {
+        payload["confirm"] = json!(true);
     }
     payload
 }
@@ -666,18 +677,20 @@ mod tests {
     }
 
     #[test]
-    fn run_payload_threads_tier_and_never_confirms() {
-        let p = run_payload("read_file", json!({ "path": "a.txt" }), "tool_use");
+    fn run_payload_threads_tier_and_confirm() {
+        let p = run_payload("read_file", json!({ "path": "a.txt" }), "tool_use", true);
         assert_eq!(p["name"], "read_file");
         assert_eq!(p["device_tier"], "tool_use");
-        assert!(p.get("confirm").is_none(), "MCP must never send a confirm flag");
-        // Destructive-tier caller is passed through verbatim (the harness
-        // tier gate, not the gateway, decides what that permits).
-        let p2 = run_payload("read_file", json!({}), "destructive_tool_access");
+        assert_eq!(p["confirm"], true, "confirm:true must be forwarded to tools.run");
+        // confirm:false is omitted (the harness default), so it never
+        // appears in args and stays off unless explicitly set.
+        let p2 = run_payload("write_file", json!({}), "destructive_tool_access", false);
         assert_eq!(p2["device_tier"], "destructive_tool_access");
+        assert!(p2.get("confirm").is_none(), "confirm:false is omitted");
         // Empty tier is omitted so the harness applies its default.
-        let p3 = run_payload("read_file", json!({}), "");
+        let p3 = run_payload("read_file", json!({}), "", true);
         assert!(p3.get("device_tier").is_none());
+        assert_eq!(p3["confirm"], true);
     }
 
     #[test]
