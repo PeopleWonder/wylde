@@ -61,7 +61,7 @@ and, for destructive tools, an explicit **`confirm`** argument. The harness
 `destructive` flag is the source of truth for what counts as destructive.
 
 **Non-destructive tools** are a curated server-side allow-list
-(`MCP_TOOL_ALLOWLIST` in `adapters.rs`) of read/query tools. They are listed
+(`MCP_TOOL_ALLOWLIST` in `routes/mcp/authz.rs`) of read/query tools. They are listed
 and runnable for any authenticated device, with no confirmation. Tools that
 are non-destructive but *not* on the allow-list (e.g. `execute_bash`) stay
 hidden from every tier.
