@@ -132,7 +132,7 @@ The most important metadata field. `true` means the tool is **denied** on the
 anything that writes files, sends network requests, mutates persistent state,
 or triggers external side effects. `false` is the right default for pure reads.
 
-The tier gate (`tooling/runner.rs::check_registry_tier`) enforces this. The
+The tier gate (`tooling/runner/mod.rs::check_registry_tier`) enforces this. The
 GUI hides destructive tools from non-elevated UIs. Extensions that want to
 call destructive Wylde actions need their own elevated capability declaration.
 
