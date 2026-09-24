@@ -132,6 +132,6 @@ are never modified — the MCP surface is a read/run layer on top of them.
   pagination, negotiation, resource sandboxing).
 - Harness-side per-call confirm + consent guardrail:
   `dispatch_confirm_*` tests in
-  `rust/crates/wylde-harness/src/tooling/runner.rs`.
+  `rust/crates/wylde-harness/src/tooling/runner/mod.rs`.
 - The surface is Rust-only; there is no Python twin or cross-language
   parity gate for it.

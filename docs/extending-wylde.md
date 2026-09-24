@@ -150,7 +150,7 @@ see it:
 | `destructive: bool` | the registry tier gate checks against the turn's `device_tier` | the GUI hides destructive tools on read-only tiers | the extension bridge refuses destructive calls unless the extension declares the capability |
 | `kind: Active \| Deferred` | deferred → `phase_<n>_deferred` error returned to the model | deferred → GUI shows "coming soon" state | deferred actions are not advertised to MCP clients |
 
-Today the LLM dispatcher (`tooling/runner.rs`) is the most mature — it has the
+Today the LLM dispatcher (`tooling/runner/mod.rs`) is the most mature — it has the
 tier gate, the alias map, and the deferred-stub mechanism. The GUI dispatcher
 (`pipe/`) is thinner: it currently *just* re-projects the registry into the
 pipe envelope shape (`tools.list`, `tools.run`). The MCP dispatcher
@@ -178,7 +178,7 @@ actions to outside clients (which it doesn't today).
 
 | Dispatcher | Lives at | Wire format | Audience |
 | --- | --- | --- | --- |
-| LLM | `rust/crates/wylde-harness/src/tooling/runner.rs` + `tools/` | in-process `Value` | the model, called from the turn loop |
+| LLM | `rust/crates/wylde-harness/src/tooling/runner/mod.rs` + `tools/` | in-process `Value` | the model, called from the turn loop |
 | GUI (in-process) | `Core/GUI/Frontend/Pipe/src/` over `wylde_harness::HarnessApi` | in-process `Value` → `Reply` | the gpui shell + panels (unary verbs) |
 | GUI (over-the-wire) | `rust/crates/wylde-harness/src/pipe.rs` (registers the same trait) | msgpack-over-named-pipe | non-GUI pipe clients (MCP probes, CLI, parity tests) + streaming verbs |
 | MCP | `rust/crates/wylde-extension-bridge/src/` | JSON-RPC 2.0 over stdio | external MCP servers (Wylde is the client) |
