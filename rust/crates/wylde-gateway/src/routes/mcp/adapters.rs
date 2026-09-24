@@ -131,16 +131,44 @@ fn entries(data: &Value, key: &str) -> Vec<Value> {
 // ── tools ──────────────────────────────────────────────────────────────
 
 /// Return the harness tool catalog in MCP `Tool` shape, filtered to the
-/// [`MCP_TOOL_ALLOWLIST`]. A tool the catalog offers but MCP does not
+/// tools MCP may expose. A tool the catalog offers but MCP does not
 /// expose is dropped here so `tools/list` and `tools/call` agree.
 pub async fn list_tools() -> Result<Value, BridgeError> {
     let data = harness("tools.list", json!({})).await?;
     let tools: Vec<Value> = entries(&data, "tools")
         .iter()
+        .filter(|e| entry_is_exposable(e))
         .map(tool_to_mcp)
-        .filter(|t| t.get("name").and_then(Value::as_str).is_some_and(is_exposable))
         .collect();
     Ok(Value::Array(tools))
+}
+
+/// The canonical name for a catalog entry — `name`, else `id`. Kept in
+/// step with [`tool_to_mcp`] so the exposure filter and the emitted
+/// `Tool.name` always agree.
+fn entry_name(entry: &Value) -> &str {
+    entry
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or_else(|| entry.get("id").and_then(Value::as_str))
+        .unwrap_or("")
+}
+
+/// Whether a raw catalog entry may be exposed over MCP: it must be on the
+/// [`MCP_TOOL_ALLOWLIST`] **and** the harness must not mark it
+/// `destructive`. The destructive check is the confirm gate's defence in
+/// depth — MCP is an unattended surface with no way to prompt for
+/// confirmation, so a destructive tool must never be advertised or run,
+/// and this guarantees that even if one is mistakenly added to the
+/// hand-maintained allow-list it is still dropped here (and the caller's
+/// real tier is the further backstop at `tools.run`, per [`call_tool`]).
+fn entry_is_exposable(entry: &Value) -> bool {
+    is_exposable(entry_name(entry))
+        && !entry
+            .get("destructive")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
 }
 
 /// Map one canonical harness catalog entry to an MCP `Tool`.
@@ -428,6 +456,60 @@ pub fn resolve_prompt(data: &Value, name: &str) -> Result<Value, BridgeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn entry_is_exposable_requires_allowlist_and_non_destructive() {
+        // Allow-listed + non-destructive → exposed.
+        assert!(entry_is_exposable(
+            &json!({ "id": "read_file", "destructive": false })
+        ));
+        // Not on the allow-list → dropped.
+        assert!(!entry_is_exposable(
+            &json!({ "id": "write_file", "destructive": true })
+        ));
+        // On the allow-list but flagged destructive → dropped anyway
+        // (confirm-gate defence in depth against allow-list drift).
+        assert!(!entry_is_exposable(
+            &json!({ "id": "read_file", "destructive": true })
+        ));
+    }
+
+    #[test]
+    fn allowlist_contains_no_known_destructive_tool() {
+        // Drift guard: the hand-maintained allow-list must never gain a
+        // tool the harness classifies destructive. If a rename or a new
+        // entry trips this, the fix is to keep the allow-list read-only.
+        const KNOWN_DESTRUCTIVE: &[&str] = &[
+            "write_file",
+            "edit_file",
+            "apply_patch",
+            "memory_long_term_save",
+            "memory_update",
+            "memory_delete",
+            "memory_workspace_save",
+            "memory_workspace_update",
+            "memory_workspace_delete",
+            "preload_model",
+            "evict_model",
+            "auto_evict_lru",
+            "voice_mic_start",
+            "voice_mic_stop",
+            "voice_wakeword_start",
+            "voice_wakeword_stop",
+            "wylde_create",
+            "wylde_update",
+            "wylde_delete",
+            "wylde_list",
+            "wylde_search",
+            "wylde_execute",
+        ];
+        for name in MCP_TOOL_ALLOWLIST {
+            assert!(
+                !KNOWN_DESTRUCTIVE.contains(name),
+                "allow-listed tool {name:?} is destructive — MCP must not expose it"
+            );
+        }
+    }
 
     #[test]
     fn tool_to_mcp_prefers_name_then_id() {
