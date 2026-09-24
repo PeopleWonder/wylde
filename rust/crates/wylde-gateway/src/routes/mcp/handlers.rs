@@ -98,7 +98,10 @@ const PAGE_SIZE: usize = 100;
 /// server-defined opaque token (a decimal offset); a client MUST echo it
 /// verbatim. Returns the page plus the `nextCursor` for the following
 /// page, or `None` when the list is exhausted.
-fn paginate(items: Vec<Value>, cursor: Option<&str>) -> Result<(Vec<Value>, Option<String>), McpError> {
+fn paginate(
+    items: Vec<Value>,
+    cursor: Option<&str>,
+) -> Result<(Vec<Value>, Option<String>), McpError> {
     let start = match cursor {
         None => 0,
         Some(c) => c
@@ -206,7 +209,9 @@ pub async fn dispatch(device: &Device, method: &str, params: &Value) -> Result<V
     match method {
         "initialize" => Ok(initialize(params)),
         "tools/list" => {
-            let tools = adapters::list_tools(&device.tier).await.map_err(bridge_to_mcp)?;
+            let tools = adapters::list_tools(&device.tier)
+                .await
+                .map_err(bridge_to_mcp)?;
             list_result("tools", as_items(tools), cursor_of(params))
         }
         "tools/call" => {
@@ -247,7 +252,9 @@ pub async fn dispatch(device: &Device, method: &str, params: &Value) -> Result<V
             // leaking whether the tool exists). Only a
             // destructive_tool_access caller pays the classify lookup.
             let access = if adapters::tier_allows_destructive(&device.tier) {
-                adapters::classify_tool(&name).await.map_err(bridge_to_mcp)?
+                adapters::classify_tool(&name)
+                    .await
+                    .map_err(bridge_to_mcp)?
             } else {
                 adapters::ToolAccess::NotExposed
             };

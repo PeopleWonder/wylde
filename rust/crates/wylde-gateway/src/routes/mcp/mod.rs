@@ -42,7 +42,11 @@ use crate::auth::{require_device, Device};
 /// `require_device` runs first (route layer) and inserts the verified
 /// [`Device`]; we read it here so the dispatcher can authorize per caller
 /// rather than trusting any authenticated device with the full surface.
-async fn mcp_post(Extension(device): Extension<Device>, headers: HeaderMap, body: Bytes) -> Response {
+async fn mcp_post(
+    Extension(device): Extension<Device>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let session_id = headers
         .get(transport::SESSION_HEADER)
         .and_then(|v| v.to_str().ok());

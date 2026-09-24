@@ -351,7 +351,8 @@ mod tests {
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let reg = Registry::with_only(vec![]);
-        let outcome = dispatch_tool(&reg, cfg, "no.such.tool", TIER_TOOL_USE, json!({}), false).await;
+        let outcome =
+            dispatch_tool(&reg, cfg, "no.such.tool", TIER_TOOL_USE, json!({}), false).await;
         let err = outcome.result.expect_err("should fail");
         assert_eq!(err.error.code, "not_found");
         assert_eq!(err.reason, Some(ToolErrorReason::ToolCallTextUnrecognised));
@@ -383,7 +384,8 @@ mod tests {
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let reg = Registry::with_only(vec![make_deferred_entry()]);
-        let outcome = dispatch_tool(&reg, cfg, "memory_search", TIER_TOOL_USE, json!({}), false).await;
+        let outcome =
+            dispatch_tool(&reg, cfg, "memory_search", TIER_TOOL_USE, json!({}), false).await;
         let err = outcome.result.expect_err("should fail");
         assert_eq!(err.error.code, "phase_7_deferred");
         assert!(err.error.message.contains("Phase 7"));
@@ -395,7 +397,8 @@ mod tests {
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let reg = Registry::with_only(vec![make_active_read_only_entry()]);
-        let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_READ_ONLY, json!({}), false).await;
+        let outcome =
+            dispatch_tool(&reg, cfg, "fs.read_file", TIER_READ_ONLY, json!({}), false).await;
         let err = outcome.result.expect_err("should block");
         assert_eq!(err.reason, Some(ToolErrorReason::TierReadOnly));
         assert_eq!(err.error.code, "tier_read_only");
@@ -407,7 +410,8 @@ mod tests {
         let cfg = Config::default_for_tests();
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let reg = Registry::with_only(vec![make_active_destructive_entry()]);
-        let outcome = dispatch_tool(&reg, cfg, "fs.write_file", TIER_TOOL_USE, json!({}), false).await;
+        let outcome =
+            dispatch_tool(&reg, cfg, "fs.write_file", TIER_TOOL_USE, json!({}), false).await;
         let err = outcome.result.expect_err("should block");
         assert_eq!(err.reason, Some(ToolErrorReason::TierReadOnly));
         assert_eq!(err.error.code, "tier_tool_use_destructive_blocked");
@@ -472,7 +476,8 @@ mod tests {
             let cfg = Config::default_for_tests();
             let cfg: &'static Config = Box::leak(Box::new(cfg));
             let reg = Registry::with_only(vec![make_active_read_only_entry()]);
-            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({}), false).await;
+            let outcome =
+                dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({}), false).await;
             let err = outcome.result.expect_err("gate should block");
             assert_eq!(err.error.code, "consent_required");
             assert_eq!(err.reason, Some(ToolErrorReason::ConsentRequired));
@@ -498,8 +503,8 @@ mod tests {
                 "fs.read_file",
                 TIER_TOOL_USE,
                 json!({"path": "x"}),
-            false,
-        )
+                false,
+            )
             .await;
             let ok = outcome.result.expect("approved tool dispatches");
             assert_eq!(ok["echo"]["path"], "x");
@@ -516,7 +521,8 @@ mod tests {
             let cfg = Config::default_for_tests();
             let cfg: &'static Config = Box::leak(Box::new(cfg));
             let reg = Registry::with_only(vec![make_active_read_only_entry()]);
-            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({}), false).await;
+            let outcome =
+                dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({}), false).await;
             let err = outcome.result.expect_err("denied gate blocks");
             assert_eq!(err.error.code, "consent_denied");
             assert_eq!(err.reason, Some(ToolErrorReason::ConsentDenied));
@@ -640,7 +646,8 @@ mod tests {
             let cfg = Config::default_for_tests();
             let cfg: &'static Config = Box::leak(Box::new(cfg));
             let reg = Registry::with_only(vec![make_active_read_only_entry()]);
-            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({}), false).await;
+            let outcome =
+                dispatch_tool(&reg, cfg, "fs.read_file", TIER_TOOL_USE, json!({}), false).await;
             let ok = outcome.result.expect("no_auth skips the gate");
             assert_eq!(ok["echo"], json!({}));
         })
@@ -658,7 +665,8 @@ mod tests {
             let cfg = Config::default_for_tests();
             let cfg: &'static Config = Box::leak(Box::new(cfg));
             let reg = Registry::with_only(vec![make_active_read_only_entry()]);
-            let outcome = dispatch_tool(&reg, cfg, "fs.read_file", TIER_READ_ONLY, json!({}), false).await;
+            let outcome =
+                dispatch_tool(&reg, cfg, "fs.read_file", TIER_READ_ONLY, json!({}), false).await;
             let err = outcome.result.expect_err("tier blocks first");
             assert_eq!(err.error.code, "tier_read_only");
         })
