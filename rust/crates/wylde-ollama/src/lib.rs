@@ -16,6 +16,7 @@ pub mod actions;
 pub mod config;
 pub mod estimate;
 pub mod lease;
+pub mod load_opts;
 pub mod service;
 pub mod upstream;
 

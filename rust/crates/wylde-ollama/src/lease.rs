@@ -12,7 +12,22 @@
 //! Why a guard rather than `release()` at every exit path: streaming
 //! handlers have many error paths (network error mid-stream, decode
 //! failure, client cancel). RAII makes them all converge on one cleanup.
+//!
+//! ## Never preempts
+//!
+//! The reserve payload never sets the broker's `preempt` flag (it defaults
+//! to `false`), so a lease from this service is granted only if it fits,
+//! spills into DRAM, or is refused. It never evicts another holder's
+//! lease. FIM admission builds on this guarantee.
+//!
+//! ## The [`Leaser`] seam
+//!
+//! Handlers that need to prove lease lifecycle in tests take an
+//! `Arc<dyn Leaser>` instead of calling [`acquire`] directly: production
+//! passes [`broker`], tests pass a counting fake.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,7 +47,7 @@ pub enum Priority {
 }
 
 impl Priority {
-    fn resolve(self) -> i64 {
+    pub(crate) fn resolve(self) -> i64 {
         match self {
             Priority::Default => Config::get().default_chat_priority,
             Priority::Explicit(p) => p,
@@ -72,6 +87,9 @@ impl LeaseRequest {
 pub struct Lease {
     lease_id: String,
     model: String,
+    /// DRAM portion of the grant; non-zero means the broker could only
+    /// admit the model by spilling part of it out of VRAM.
+    dram_bytes: u64,
     heartbeat_stop: Arc<Notify>,
     released: bool,
 }
@@ -83,6 +101,11 @@ impl Lease {
 
     pub fn model(&self) -> &str {
         &self.model
+    }
+
+    /// Whether the grant spilled into DRAM (did not fit in free VRAM).
+    pub fn spilled(&self) -> bool {
+        self.dram_bytes > 0
     }
 
     /// Explicit release. Idempotent — re-calling after drop is a no-op.
@@ -136,18 +159,9 @@ pub async fn acquire(req: LeaseRequest) -> Result<Lease, IpcError> {
     let cfg = Config::get();
     let nonce = req
         .nonce
+        .clone()
         .unwrap_or_else(|| Uuid::new_v4().simple().to_string());
-
-    let mut payload = json!({
-        "service": "wylde-ollama",
-        "model": req.model,
-        "priority": req.priority.resolve(),
-        "ttl": cfg.lease_ttl_s,
-        "client_nonce": nonce,
-    });
-    if let Some(bytes) = req.bytes_hint {
-        payload["bytes"] = Value::from(bytes);
-    }
+    let payload = reserve_payload(&req, &nonce, cfg.lease_ttl_s);
 
     let lease_value = match call_action(&cfg.broker_service, "vram.reserve", payload).await {
         Ok(v) => v,
@@ -189,6 +203,10 @@ pub async fn acquire(req: LeaseRequest) -> Result<Lease, IpcError> {
             )
         })?
         .to_owned();
+    let dram_bytes = lease_value
+        .get("dram_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
 
     let heartbeat_stop = Arc::new(Notify::new());
     let stop_clone = heartbeat_stop.clone();
@@ -228,14 +246,171 @@ pub async fn acquire(req: LeaseRequest) -> Result<Lease, IpcError> {
     Ok(Lease {
         lease_id,
         model: req.model,
+        dram_bytes,
         heartbeat_stop,
         released: false,
     })
 }
 
+/// The `vram.reserve` payload. Deliberately carries no `preempt` key: the
+/// broker defaults it to `false`, so our leases never evict another holder.
+fn reserve_payload(req: &LeaseRequest, nonce: &str, ttl: f64) -> Value {
+    let mut payload = json!({
+        "service": "wylde-ollama",
+        "model": req.model,
+        "priority": req.priority.resolve(),
+        "ttl": ttl,
+        "client_nonce": nonce,
+    });
+    if let Some(bytes) = req.bytes_hint {
+        payload["bytes"] = Value::from(bytes);
+    }
+    payload
+}
+
+/// A held lease, as a handler sees it. Dropping it releases the lease.
+pub trait LeaseHold: Send {
+    /// Whether the grant spilled into DRAM (see [`Lease::spilled`]).
+    fn spilled(&self) -> bool;
+}
+
+impl LeaseHold for Lease {
+    fn spilled(&self) -> bool {
+        Lease::spilled(self)
+    }
+}
+
+/// Boxed future returned by [`Leaser::acquire`].
+pub type AcquireFuture = Pin<Box<dyn Future<Output = Result<Box<dyn LeaseHold>, IpcError>> + Send>>;
+
+/// Acquires leases. Production uses [`broker`]; tests substitute a fake to
+/// observe that every exit path releases what it acquired.
+pub trait Leaser: Send + Sync {
+    fn acquire(&self, req: LeaseRequest) -> AcquireFuture;
+}
+
+/// The real broker-backed [`Leaser`] — a thin wrapper over [`acquire`].
+pub struct BrokerLeaser;
+
+impl Leaser for BrokerLeaser {
+    fn acquire(&self, req: LeaseRequest) -> AcquireFuture {
+        Box::pin(async move {
+            acquire(req)
+                .await
+                .map(|l| Box::new(l) as Box<dyn LeaseHold>)
+        })
+    }
+}
+
+/// The process-wide broker-backed [`Leaser`].
+pub fn broker() -> Arc<dyn Leaser> {
+    Arc::new(BrokerLeaser)
+}
+
+/// Test doubles for the [`Leaser`] seam.
+#[cfg(test)]
+pub mod testing {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use wylde_shared::ipc::IpcError;
+
+    use super::{AcquireFuture, LeaseHold, LeaseRequest, Leaser};
+
+    /// What [`FakeLeaser::acquire`] does.
+    #[derive(Clone)]
+    pub enum Outcome {
+        /// Grant a lease; `spilled` marks it as a DRAM-spilled grant.
+        Grant { spilled: bool },
+        /// Fail with this error code (e.g. `broker_unreachable`).
+        Fail(&'static str),
+    }
+
+    /// Counts acquisitions and releases and records each request's model
+    /// and resolved priority.
+    pub struct FakeLeaser {
+        outcome: Outcome,
+        acquired: AtomicUsize,
+        released: Arc<AtomicUsize>,
+        requests: Mutex<Vec<(String, i64)>>,
+    }
+
+    impl FakeLeaser {
+        pub fn new(outcome: Outcome) -> Arc<Self> {
+            Arc::new(Self {
+                outcome,
+                acquired: AtomicUsize::new(0),
+                released: Arc::new(AtomicUsize::new(0)),
+                requests: Mutex::new(Vec::new()),
+            })
+        }
+        pub fn acquired(&self) -> usize {
+            self.acquired.load(Ordering::SeqCst)
+        }
+        pub fn released(&self) -> usize {
+            self.released.load(Ordering::SeqCst)
+        }
+        pub fn priorities(&self) -> Vec<i64> {
+            self.requests.lock().unwrap().iter().map(|r| r.1).collect()
+        }
+    }
+
+    struct FakeHold {
+        spilled: bool,
+        released: Arc<AtomicUsize>,
+    }
+
+    impl LeaseHold for FakeHold {
+        fn spilled(&self) -> bool {
+            self.spilled
+        }
+    }
+
+    impl Drop for FakeHold {
+        fn drop(&mut self) {
+            self.released.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl Leaser for FakeLeaser {
+        fn acquire(&self, req: LeaseRequest) -> AcquireFuture {
+            self.requests
+                .lock()
+                .unwrap()
+                .push((req.model.clone(), req.priority.resolve()));
+            let result: Result<Box<dyn LeaseHold>, IpcError> = match &self.outcome {
+                Outcome::Grant { spilled } => {
+                    self.acquired.fetch_add(1, Ordering::SeqCst);
+                    Ok(Box::new(FakeHold {
+                        spilled: *spilled,
+                        released: self.released.clone(),
+                    }))
+                }
+                Outcome::Fail(code) => Err(IpcError::new(*code, "fake leaser failure")),
+            };
+            Box::pin(async move { result })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reserve_payload_never_requests_preemption() {
+        let mut req = LeaseRequest::new("qwen");
+        req.bytes_hint = Some(1024);
+        req.priority = Priority::Explicit(90);
+        // A generated nonce, as in production (a literal trips CodeQL's
+        // hard-coded-crypto-value rule; this is an idempotency key).
+        let nonce = Uuid::new_v4().simple().to_string();
+        let p = reserve_payload(&req, &nonce, 60.0);
+        assert!(p.get("preempt").is_none(), "must never set preempt: {p}");
+        assert_eq!(p["priority"], 90);
+        assert_eq!(p["bytes"], 1024);
+        assert_eq!(p["client_nonce"], nonce.as_str());
+    }
 
     #[test]
     fn priority_resolution() {

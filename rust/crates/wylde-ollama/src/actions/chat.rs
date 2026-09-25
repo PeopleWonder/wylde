@@ -4,38 +4,25 @@
 //! call lands (per design doc §3); both release it on every exit path
 //! via the RAII guard.
 //!
-//! ## Cancellation propagation (design doc Q2)
-//!
-//! The open question is whether dropping a `reqwest` body stream
-//! propagates "stop generating" upstream to Ollama. The cancellation
-//! spike couldn't run in this session (no live Ollama daemon
-//! reachable). Conservative default until the spike is run:
-//!
-//!   * Rely on body-stream drop first (free, costs nothing if it works).
-//!   * On confirmed client-disconnect mid-stream, ALSO issue a
-//!     fire-and-forget POST /api/generate {model, keep_alive: 0} to
-//!     evict the model — this forces Ollama to drop whatever generation
-//!     was in flight even if drop didn't propagate.
-//!
-//! If the spike later confirms drop suffices, the explicit-evict path
-//! becomes redundant and can be deleted. Until then, both run.
+//! The streaming relay and the evict-on-cancel policy (design doc Q2,
+//! now behind the `evict_on_cancel` knob) live in
+//! [`super::stream_relay`], shared with `ollama.generate_stream`.
 
 use std::sync::Arc;
-use std::time::Duration;
 
-use futures::StreamExt;
 use reqwest::Method;
-use serde_json::{json, Value};
-use tokio::time::sleep;
-use wylde_shared::ipc::{IpcError, Reply, StreamSender};
+use serde_json::Value;
+use wylde_shared::ipc::{Reply, StreamSender};
 
 use crate::actions::error::{
     excerpt, invalid_request, model_not_found_err, ollama_http_err, ollama_unreachable_err,
     require_string,
 };
+use crate::actions::stream_relay::{self, RelayEnd};
 use crate::config::Config;
 use crate::estimate::{estimate_vram_bytes, VramEstimate};
 use crate::lease::{self, LeaseRequest, Priority};
+use crate::load_opts;
 use crate::upstream::Upstream;
 
 const BODY_EXCERPT_CAP: usize = 300;
@@ -67,6 +54,7 @@ pub async fn handle_chat(payload: Value, up: Arc<Upstream>) -> Reply {
         // Drop our pipe-only knobs before forwarding.
         obj.remove("priority");
     }
+    load_opts::apply(&up, &model, &mut body).await;
 
     // Design §3 step 2: compute the VRAM footprint ourselves so the broker
     // gets a positive `bytes` (the Python broker has no estimator and would
@@ -143,11 +131,10 @@ pub async fn handle_chat(payload: Value, up: Arc<Upstream>) -> Reply {
 /// with stream=true, parses NDJSON lines from the response body, emits
 /// one chunk per line to the [`StreamSender`].
 ///
-/// Cancellation: if the client drops the IPC stream, the
-/// `sender.send(...)` call below returns an error on the next chunk;
-/// the handler bails, drops the lease, and (conservative default per
-/// Q2) issues a fire-and-forget `/api/generate keep_alive=0` to ensure
-/// Ollama stops generating even if reqwest body-drop didn't propagate.
+/// Cancellation: if the client drops the IPC stream, the relay observes
+/// it on the next emit; the handler drops the lease and, unless the
+/// caller passed `evict_on_cancel: false`, fires the conservative
+/// `keep_alive: 0` eviction (see [`super::stream_relay`]).
 pub async fn handle_chat_stream(payload: Value, sender: StreamSender, up: Arc<Upstream>) {
     let model = match require_string(&payload, "model") {
         Ok(m) => m,
@@ -175,6 +162,8 @@ pub async fn handle_chat_stream(payload: Value, sender: StreamSender, up: Arc<Up
         obj.insert("messages".to_string(), messages);
         obj.remove("priority");
     }
+    let evict_on_cancel = stream_relay::take_evict_flag(&mut body);
+    load_opts::apply(&up, &model, &mut body).await;
 
     // Design §3 step 2: compute the footprint so the broker gets a positive
     // `bytes`; an absent model is surfaced as `model_not_found` up front.
@@ -241,109 +230,11 @@ pub async fn handle_chat_stream(payload: Value, sender: StreamSender, up: Arc<Up
         return;
     }
 
-    let mut stream = resp.bytes_stream();
-    let mut buf: Vec<u8> = Vec::with_capacity(4096);
-    let mut cancelled = false;
-
-    while let Some(chunk) = stream.next().await {
-        // The sender's `closed()` future resolves when the consumer side
-        // drops the receiver — which is what happens on IPC-stream
-        // cancellation. We could `select!` on it here; but every
-        // sender.send() also returns Err on a closed receiver, so we
-        // observe the cancel naturally on the next emit. Cheaper.
-        let chunk = match chunk {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = sender.send(Err(ollama_unreachable_err(&e))).await; // wylde-check: discard-result-ok
-                break;
-            }
-        };
-        buf.extend_from_slice(&chunk);
-        // Split on newline — Ollama emits one JSON object per line.
-        while let Some(nl) = buf.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = buf.drain(..=nl).collect();
-            let line = &line[..line.len() - 1]; // strip the trailing \n
-            if line.is_empty() {
-                continue;
-            }
-            let trimmed = trim_cr(line);
-            if trimmed.is_empty() {
-                continue;
-            }
-            match serde_json::from_slice::<Value>(trimmed) {
-                Ok(v) => {
-                    // Surface stream-level errors as Err frames.
-                    if let Some(err) = v.get("error").and_then(Value::as_str) {
-                        let _ = sender // wylde-check: discard-result-ok
-                            .send(Err(IpcError::new(
-                                "ollama_stream_error",
-                                err.to_string(),
-                            )))
-                            .await;
-                        // Terminate on stream error.
-                        drop(lease_guard);
-                        return;
-                    }
-                    if sender.send(Ok(v)).await.is_err() {
-                        // Client dropped the stream — observe + bail.
-                        cancelled = true;
-                        break;
-                    }
-                }
-                Err(_) => {
-                    // Non-JSON line — Ollama doesn't emit these but be
-                    // robust: skip silently rather than killing the stream.
-                    continue;
-                }
-            }
-        }
-        if cancelled {
-            break;
-        }
+    let end = stream_relay::relay_ndjson(resp, &sender).await;
+    if end == RelayEnd::Cancelled && evict_on_cancel {
+        stream_relay::spawn_evict(up.clone(), model.clone());
     }
-
-    // If there's a partial line left in the buffer at end-of-stream,
-    // try to parse it (last line may not have a trailing newline).
-    if !cancelled && !buf.is_empty() {
-        let trimmed = trim_cr(&buf);
-        if let Ok(v) = serde_json::from_slice::<Value>(trimmed) {
-            let _ = sender.send(Ok(v)).await; // wylde-check: discard-result-ok
-        }
-    }
-
-    // Cancellation cleanup: fire-and-forget eject (Q2 conservative
-    // default). Best-effort; failure to eject doesn't matter — the
-    // model will get evicted by Ollama's own keep_alive timer
-    // eventually.
-    if cancelled {
-        let model_for_evict = model.clone();
-        let up_clone = up.clone();
-        tokio::spawn(async move {
-            // Tiny delay so any in-flight final tokens land first.
-            sleep(Duration::from_millis(200)).await;
-            let body = json!({"model": model_for_evict, "keep_alive": 0});
-            // Fire-and-forget: if Ollama is gone or busy, the model
-            // will get evicted by its own keep_alive timer anyway.
-            let _ = up_clone // wylde-check: discard-result-ok
-                .client
-                .post(format!("{}/api/generate", up_clone.base_url))
-                .json(&body)
-                .timeout(Duration::from_secs(5))
-                .send()
-                .await;
-        });
-    }
-
     drop(lease_guard);
-}
-
-fn trim_cr(line: &[u8]) -> &[u8] {
-    if let Some(&last) = line.last() {
-        if last == b'\r' {
-            return &line[..line.len() - 1];
-        }
-    }
-    line
 }
 
 fn extract_priority(payload: &Value) -> Priority {
@@ -357,6 +248,7 @@ fn extract_priority(payload: &Value) -> Priority {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::time::Duration;
     use tokio::sync::mpsc;
     use wiremock::matchers::{method, path};
@@ -433,6 +325,47 @@ mod tests {
         assert!(r.ok, "format-bearing body must match upstream: {r:?}");
     }
 
+    /// `pin_load_options: true` pins `num_ctx` to the resident model's
+    /// context (so the request can't trigger a reload) and the knob itself
+    /// never reaches Ollama.
+    #[tokio::test]
+    async fn chat_pins_load_options_when_asked() {
+        let (server, up) = fake_upstream().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "models": [{"name": "qwen", "context_length": 16384}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"options": {"num_ctx": 16384}}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"done": true})))
+            .mount(&server)
+            .await;
+        let r = handle_chat(
+            json!({
+                "model": "qwen",
+                "messages": [{"role": "user", "content": "hi"}],
+                "options": {"num_ctx": 4096},
+                "pin_load_options": true
+            }),
+            up,
+        )
+        .await;
+        assert!(r.ok, "pinned num_ctx must reach upstream: {r:?}");
+        let sent = &server.received_requests().await.unwrap();
+        let chat_body: Value = sent
+            .iter()
+            .find(|q| q.url.path() == "/api/chat")
+            .map(|q| serde_json::from_slice(&q.body).unwrap())
+            .unwrap();
+        assert!(chat_body.get("pin_load_options").is_none());
+    }
+
     #[tokio::test]
     async fn chat_requires_model_and_messages() {
         let up = crate::upstream::for_test("http://127.0.0.1:1");
@@ -504,6 +437,58 @@ mod tests {
         assert_eq!(chunks[1]["message"]["content"], "llo");
         assert_eq!(chunks[2]["message"]["content"], "!");
         assert_eq!(chunks[3]["done"], true);
+    }
+
+    /// Drive a `chat_stream` whose client has already dropped the stream
+    /// (so the first emit fails → cancelled) and count the `keep_alive: 0`
+    /// evictions that reach Ollama.
+    async fn evictions_after_cancel(extra: Value) -> usize {
+        let (server, up) = fake_upstream().await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                "{\"message\":{\"content\":\"a\"},\"done\":false}\n{\"done\":true}\n",
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/generate"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"model": "qwen", "keep_alive": 0}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"done": true})))
+            .mount(&server)
+            .await;
+        let mut payload = json!({"model": "qwen", "messages": [{"role": "user", "content": "hi"}]});
+        if let (Some(p), Some(e)) = (payload.as_object_mut(), extra.as_object()) {
+            p.extend(e.clone());
+        }
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        handle_chat_stream(payload, tx, up).await;
+        // The eviction is spawned with a 200 ms delay.
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|q| q.url.path() == "/api/generate")
+            .count()
+    }
+
+    #[tokio::test]
+    async fn chat_stream_cancel_evicts_by_default() {
+        assert_eq!(evictions_after_cancel(json!({})).await, 1);
+    }
+
+    #[tokio::test]
+    async fn chat_stream_cancel_keeps_model_when_evict_on_cancel_false() {
+        assert_eq!(
+            evictions_after_cancel(json!({"evict_on_cancel": false})).await,
+            0,
+            "evict_on_cancel:false must not send keep_alive:0"
+        );
     }
 
     #[tokio::test]

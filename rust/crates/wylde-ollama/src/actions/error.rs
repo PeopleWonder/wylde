@@ -8,6 +8,8 @@
 //!   * `pull_failed`        — pull stream ended without success
 //!   * `vram_admission_denied` — broker said no
 //!   * `broker_unreachable` — broker pipe couldn't be reached
+//!   * `insufficient_vram`  — a FIM request's model isn't resident and can't be
+//!     loaded without displacing a loaded model (refused fast, never waits)
 
 use serde_json::{json, Value};
 use wylde_shared::ipc::IpcError;
@@ -42,6 +44,19 @@ pub fn model_not_found_err(model: &str) -> IpcError {
         "model_not_found",
         format!("model {model:?} not installed in Ollama"),
     )
+}
+
+/// A FIM request that would need VRAM held by other loaded models.
+/// Returned immediately (the autocomplete just shows no suggestion) instead
+/// of waiting for, or forcing, an eviction.
+pub fn insufficient_vram(model: &str, reason: impl Into<String>) -> IpcError {
+    let reason = reason.into();
+    let mut e = IpcError::new(
+        "insufficient_vram",
+        format!("FIM model {model:?} not admitted: {reason}"),
+    );
+    e.details = Some(json!({ "model": model, "reason": reason }));
+    e
 }
 
 /// Truncate `body` to at most `cap` characters (UTF-8 boundary safe).
