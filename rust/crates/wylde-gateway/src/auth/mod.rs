@@ -152,7 +152,44 @@ pub async fn require_device(mut req: Request, next: Next) -> Response {
             req.extensions_mut().insert(device);
             next.run(req).await
         }
-        Err(resp) => *resp,
+        Err(e) => e.into_response(),
+    }
+}
+
+/// Why a Bearer token was rejected. [`require_device`] renders it as the
+/// Wylde `{ok:false,error}` envelope ([`AuthError::into_response`]); the
+/// OpenAI `/v1` gate renders the same verdict in OpenAI's error shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthError {
+    /// No `Authorization: Bearer <token>` header, or a garbled one.
+    MissingToken,
+    /// device-gate rejected the token or returned an empty record; the
+    /// payload is the human-readable reason.
+    InvalidToken(&'static str),
+    /// device-gate is unreachable or erroring (its HTTP status).
+    Unavailable(u16),
+}
+
+impl AuthError {
+    /// The Wylde-envelope response `require_device` has always returned:
+    /// `401 missing_token`, `401 invalid_token`, or
+    /// `503 device_gate_unavailable`.
+    pub fn into_response(self) -> Response {
+        match self {
+            AuthError::MissingToken => failure(
+                "missing_token",
+                "Bearer token required (Authorization: Bearer <token>)",
+                StatusCode::UNAUTHORIZED,
+            ),
+            AuthError::InvalidToken(reason) => {
+                failure("invalid_token", reason, StatusCode::UNAUTHORIZED)
+            }
+            AuthError::Unavailable(status) => failure(
+                "device_gate_unavailable",
+                &format!("device-gate returned {status}"),
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+        }
     }
 }
 
@@ -164,16 +201,10 @@ pub async fn require_device(mut req: Request, next: Next) -> Response {
 /// `401 missing_token`; a token device-gate rejects (`400`/`404`) is
 /// `401 invalid_token`; device-gate being unreachable is `503` (so the
 /// mobile app retries rather than clearing a still-valid token).
-async fn verify_bearer(headers: &HeaderMap) -> Result<Device, Box<Response>> {
+pub(crate) async fn verify_bearer(headers: &HeaderMap) -> Result<Device, AuthError> {
     let token = match extract_bearer(headers) {
         Some(t) => t,
-        None => {
-            return Err(Box::new(failure(
-                "missing_token",
-                "Bearer token required (Authorization: Bearer <token>)",
-                StatusCode::UNAUTHORIZED,
-            )));
-        }
+        None => return Err(AuthError::MissingToken),
     };
 
     if let Some(device) = token_cache_global().get(&token).await {
@@ -193,11 +224,9 @@ async fn verify_bearer(headers: &HeaderMap) -> Result<Device, Box<Response>> {
                 .unwrap_or("")
                 .to_owned();
             if device_id.is_empty() || tier.is_empty() {
-                return Err(Box::new(failure(
-                    "invalid_token",
+                return Err(AuthError::InvalidToken(
                     "device-gate returned an empty record",
-                    StatusCode::UNAUTHORIZED,
-                )));
+                ));
             }
             let device = Device { device_id, tier };
             token_cache_global().insert(token, device.clone()).await;
@@ -205,17 +234,9 @@ async fn verify_bearer(headers: &HeaderMap) -> Result<Device, Box<Response>> {
         }
         Err((status, _)) => {
             if status == StatusCode::NOT_FOUND || status == StatusCode::BAD_REQUEST {
-                Err(Box::new(failure(
-                    "invalid_token",
-                    "device token is not recognised",
-                    StatusCode::UNAUTHORIZED,
-                )))
+                Err(AuthError::InvalidToken("device token is not recognised"))
             } else {
-                Err(Box::new(failure(
-                    "device_gate_unavailable",
-                    &format!("device-gate returned {}", status.as_u16()),
-                    StatusCode::SERVICE_UNAVAILABLE,
-                )))
+                Err(AuthError::Unavailable(status.as_u16()))
             }
         }
     }
