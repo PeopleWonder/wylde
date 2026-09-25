@@ -38,6 +38,7 @@ pub mod link;
 pub mod mcp;
 pub mod memory;
 pub mod models;
+pub mod openai;
 pub mod prompts;
 pub mod rag;
 pub mod settings;
@@ -66,4 +67,5 @@ pub fn include_all(router: Router) -> Router {
         .merge(dev::router())
         .merge(tool_registry::router())
         .merge(mcp::router())
+        .merge(openai::router())
 }
