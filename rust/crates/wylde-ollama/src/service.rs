@@ -1,5 +1,5 @@
-//! Service entrypoint: register the 10 `ollama.*` actions on the shared
-//! IPC registry. Same shape as `wylde-vram-broker::service`.
+//! Service entrypoint: register every `ollama.*` action ([`ALL_ACTIONS`]) on
+//! the shared IPC registry. Same shape as `wylde-vram-broker::service`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -8,10 +8,10 @@ use wylde_shared::ipc::{
     register_action_with_meta, register_streaming_action_with_meta, unregister_action,
 };
 
-use crate::actions::{chat, embed, gc, models, pull};
-use crate::upstream;
+use crate::actions::{chat, embed, gc, generate, models, pull};
+use crate::{lease, upstream};
 
-const ALL_ACTIONS: [&str; 14] = [
+const ALL_ACTIONS: [&str; 16] = [
     "ollama.health",
     "ollama.list_models",
     "ollama.list_loaded",
@@ -23,6 +23,8 @@ const ALL_ACTIONS: [&str; 14] = [
     "ollama.pull",
     "ollama.chat",
     "ollama.chat_stream",
+    "ollama.generate",
+    "ollama.generate_stream",
     "ollama.embed",
     "ollama.gc",
     "ollama.store_usage",
@@ -37,7 +39,7 @@ pub fn install() {
         return;
     }
 
-    // ── Unary actions (9) ────────────────────────────────────────────
+    // ── Unary actions ────────────────────────────────────────────
     register_action_with_meta(
         "ollama.health",
         |payload: Value| async move { models::handle_health(payload, upstream::client()).await },
@@ -123,7 +125,20 @@ pub fn install() {
         "wylde_ollama::actions::chat",
     );
 
-    // ── Streaming actions (2) ────────────────────────────────────────
+    register_action_with_meta(
+        "ollama.generate",
+        |payload: Value| async move {
+            generate::handle_generate(payload, upstream::client(), lease::broker()).await
+        },
+        "POST /api/generate stream=false — completion / FIM. Payload passes \
+         through (prompt, suffix, raw, options, …). Knobs: priority, fim:true \
+         (FIM priority; an unloaded model that won't fit in free VRAM is \
+         refused with insufficient_vram instead of displacing a loaded model), \
+         pin_load_options:true. Acquires a VRAM lease for the duration.",
+        "wylde_ollama::actions::generate",
+    );
+
+    // ── Streaming actions ────────────────────────────────────────
     register_streaming_action_with_meta(
         "ollama.chat_stream",
         |payload: Value, sender| async move {
@@ -135,6 +150,17 @@ pub fn install() {
          passes evict_on_cancel:false. pin_load_options:true pins num_ctx to \
          the resident model's context.",
         "wylde_ollama::actions::chat",
+    );
+    register_streaming_action_with_meta(
+        "ollama.generate_stream",
+        |payload: Value, sender| async move {
+            generate::handle_generate_stream(payload, sender, upstream::client(), lease::broker())
+                .await;
+        },
+        "POST /api/generate stream=true — streaming completion / FIM. Same \
+         payload and knobs as ollama.generate, plus evict_on_cancel (default \
+         true; false keeps the model resident on a client disconnect).",
+        "wylde_ollama::actions::generate",
     );
     register_streaming_action_with_meta(
         "ollama.pull",

@@ -43,6 +43,12 @@ pub struct Config {
     /// callers typically override to 60 (interactive) or 30 (background).
     pub default_chat_priority: i64,
 
+    /// Lease priority for FIM (autocomplete) generate calls that pass
+    /// `fim: true` without an explicit `priority`. 70 sits above the
+    /// interactive-chat tier (60) so FIM is admitted first; leases from
+    /// this service never preempt, so it can never evict agent inference.
+    pub default_fim_priority: i64,
+
     /// Default lease TTL in seconds. 60s matches the broker's default
     /// and lines up with heartbeat-at-TTL/3 = 20s heartbeat cadence.
     pub lease_ttl_s: f64,
@@ -93,6 +99,7 @@ impl Config {
             embed_timeout_s: env_u64("WYLDE_OLLAMA_EMBED_TIMEOUT_S", 30),
             chat_timeout_s: env_u64("WYLDE_OLLAMA_CHAT_TIMEOUT_S", 120),
             default_chat_priority: env_i64("WYLDE_OLLAMA_CHAT_PRIORITY", 40),
+            default_fim_priority: env_i64("WYLDE_OLLAMA_FIM_PRIORITY", 70),
             lease_ttl_s: env_f64("WYLDE_OLLAMA_LEASE_TTL_S", 60.0),
             lease_heartbeat_s: env_u64("WYLDE_OLLAMA_LEASE_HEARTBEAT_S", 25),
             vram_estimate_multiplier: env_f64("WYLDE_OLLAMA_VRAM_ESTIMATE_MULT", 1.2),
