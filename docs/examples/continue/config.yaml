@@ -7,11 +7,19 @@
 #   * tab autocomplete (fill-in-middle) -> POST /v1/completions
 #   * codebase embeddings               -> POST /v1/embeddings
 #
-# ── Wylde side (set before starting Wylde) ─────────────────────────────────
-# 1. Short model names, so this file survives a model swap:
-#      WYLDE_OPENAI_MODEL_ALIASES=coder=hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-IQ3_XXS,embed=nomic-embed-text:latest
-#    (any installed Ollama model works; FIM needs a coder model with native
-#    `insert` or a known family: Qwen coder, Codestral, StarCoder, DeepSeek coder)
+# ── Wylde side ─────────────────────────────────────────────────────────────
+# 1. Short model names in Wylde's model registry, so this file survives a
+#    model swap. Add them with the harness `models.set_alias` verb, or write
+#    <data_dir>/model_aliases.json (data_dir: WYLDE_DATA_DIR, default
+#    <WYLDE_ROOT>/.wylde/data); changes apply within seconds, no restart:
+#      {"aliases": {
+#        "coder": "hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-IQ3_XXS",
+#        "embed": "nomic-embed-text:latest"}}
+#    An alias works only while its model is installed, and an installed model
+#    with the same name wins. Any installed Ollama model can be a target; FIM
+#    needs a coder model with native `insert` or a known family (Qwen coder,
+#    Codestral, StarCoder, DeepSeek coder). The old WYLDE_OPENAI_MODEL_ALIASES
+#    env var is deprecated but still honoured as a fallback.
 # 2. Two request slots, so autocomplete runs alongside an agent turn instead of
 #    queueing behind it. Wylde sets OLLAMA_NUM_PARALLEL=2 when it starts Ollama
 #    itself (override with WYLDE_OLLAMA_NUM_PARALLEL). If Ollama runs from its
