@@ -19,9 +19,13 @@ pub mod aliases;
 pub mod backend;
 pub mod embeddings;
 pub mod errors;
+pub mod fim;
 pub mod gate;
+pub mod lane;
 pub mod models;
+pub mod salvage;
 pub mod sse;
+pub mod translate;
 
 use std::sync::Arc;
 
