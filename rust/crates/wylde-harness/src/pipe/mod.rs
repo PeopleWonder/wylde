@@ -132,6 +132,10 @@ pub const ALL_PIPE_ACTIONS: &[&str] = &[
     "models.get_effective",
     // #235 — the star resolved against the live on-disk inventory.
     "models.resolve_default",
+    // #348 — model aliases (short name → model id), persisted.
+    "models.list_aliases",
+    "models.set_alias",
+    "models.remove_alias",
     // settings.ollama.* — per-model inference override store (4 verbs)
     "settings.ollama.get_overrides",
     "settings.ollama.set_overrides",

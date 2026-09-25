@@ -61,6 +61,7 @@ use crate::memory::long_term::{self, SaveError};
 use crate::memory::short_term::actions as short_term_actions;
 use crate::memory::workspace::actions as workspace_memory_actions;
 use crate::model_registry::actions as model_actions;
+use crate::model_registry::aliases;
 use crate::settings::actions as settings_actions;
 use crate::tooling::registry::global;
 use crate::tooling::runner::{catalog_payload, dispatch_tool};
@@ -131,6 +132,10 @@ pub trait HarnessApi: Send + Sync {
     async fn models_get_default(&self, payload: Value) -> Reply;
     async fn models_get_effective(&self, payload: Value) -> Reply;
     async fn models_resolve_default(&self, payload: Value) -> Reply;
+    // #348 — model aliases (short name → model id), persisted by the registry.
+    async fn models_list_aliases(&self, payload: Value) -> Reply;
+    async fn models_set_alias(&self, payload: Value) -> Reply;
+    async fn models_remove_alias(&self, payload: Value) -> Reply;
 
     // ── settings.ollama.* (4 verbs; per-model inference override store) ─
     async fn settings_ollama_get_overrides(&self, payload: Value) -> Reply;
@@ -400,6 +405,18 @@ impl HarnessApi for DefaultHarnessApi {
             service: Config::get().ollama_service.clone(),
         };
         crate::model_registry::default_model::handle_resolve_default(payload, &ollama).await
+    }
+
+    async fn models_list_aliases(&self, _payload: Value) -> Reply {
+        aliases::list_at(&aliases::store_path())
+    }
+
+    async fn models_set_alias(&self, payload: Value) -> Reply {
+        aliases::handle_set_at(&aliases::store_path(), &payload)
+    }
+
+    async fn models_remove_alias(&self, payload: Value) -> Reply {
+        aliases::handle_remove_at(&aliases::store_path(), &payload)
     }
 
     // ── settings.ollama.* ────────────────────────────────────────────
