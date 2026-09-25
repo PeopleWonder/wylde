@@ -1,0 +1,80 @@
+# Continue (VS Code / JetBrains) using Wylde as its model backend, through the
+# gateway's OpenAI-compatible /v1 API. Copy to ~/.continue/config.yaml, then
+# replace the two <placeholders>.
+#
+# What this gives you, all on your own GPU and all holding VRAM leases:
+#   * agent chat with tool calling      -> POST /v1/chat/completions
+#   * tab autocomplete (fill-in-middle) -> POST /v1/completions
+#   * codebase embeddings               -> POST /v1/embeddings
+#
+# ── Wylde side (set before starting Wylde) ─────────────────────────────────
+# 1. Short model names, so this file survives a model swap:
+#      WYLDE_OPENAI_MODEL_ALIASES=coder=hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-IQ3_XXS,embed=nomic-embed-text:latest
+#    (any installed Ollama model works; FIM needs a coder model with native
+#    `insert` or a known family: Qwen coder, Codestral, StarCoder, DeepSeek coder)
+# 2. Two request slots, so autocomplete runs alongside an agent turn instead of
+#    queueing behind it. Wylde sets OLLAMA_NUM_PARALLEL=2 when it starts Ollama
+#    itself (override with WYLDE_OLLAMA_NUM_PARALLEL). If Ollama runs from its
+#    tray app, set OLLAMA_NUM_PARALLEL=2 as a user environment variable and
+#    restart Ollama.
+# 3. A device token: pair this machine from Wylde's Devices panel. Any tier
+#    works for /v1 (the gateway never runs tools here; Continue does).
+#
+# ── Why contextLength is 8192 ──────────────────────────────────────────────
+# With two slots, Ollama splits the model's context across them. Measured on a
+# 16 GB RTX 5080 with the ~14 GB Qwen3-Coder-30B IQ3:
+#   1 slot  @ 16K: 100% GPU, 219 tok/s, but autocomplete waits ~3.3 s mid-turn
+#   2 slots @ 16K: 1.7 GB spills to CPU, ~37% slower (138 tok/s)
+#   2 slots @  8K: 100% GPU, 217 tok/s, autocomplete answers in ~0.13 s mid-turn
+# Wylde pins each request to the loaded context, so keep every role on the same
+# value; mixing sizes would otherwise force model reloads.
+
+name: Wylde (local)
+version: 1.0.0
+schema: v1
+
+models:
+  - name: Wylde coder (agent)
+    provider: openai
+    model: coder
+    apiBase: http://127.0.0.1:8005/v1
+    apiKey: <your Wylde device token>
+    capabilities:
+      - tool_use
+    defaultCompletionOptions:
+      contextLength: 8192
+    roles:
+      - chat
+      - edit
+      - apply
+
+  - name: Wylde coder (autocomplete)
+    provider: openai
+    model: coder
+    apiBase: http://127.0.0.1:8005/v1
+    apiKey: <your Wylde device token>
+    # Send autocomplete to /v1/completions. Continue renders the FIM prompt with
+    # this template; Wylde recognises a rendered FIM prompt, sends it to the
+    # model raw (never wrapped in the chat template) and adds the stop tokens.
+    # A client that sends `suffix` instead works too.
+    useLegacyCompletionsEndpoint: true
+    promptTemplates:
+      autocomplete: "<|fim_prefix|>{{{prefix}}}<|fim_suffix|>{{{suffix}}}<|fim_middle|>"
+    defaultCompletionOptions:
+      contextLength: 8192
+    roles:
+      - autocomplete
+
+  - name: Wylde embeddings
+    provider: openai
+    model: embed
+    apiBase: http://127.0.0.1:8005/v1
+    apiKey: <your Wylde device token>
+    roles:
+      - embed
+
+context:
+  - provider: code
+  - provider: diff
+  - provider: terminal
+  - provider: codebase
