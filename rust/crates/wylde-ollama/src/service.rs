@@ -131,7 +131,9 @@ pub fn install() {
         },
         "POST /api/chat stream=true — streaming chat. Lease acquired; client \
          disconnect triggers a fire-and-forget keep_alive=0 eject as a \
-         conservative cancel mechanism (design doc Q2).",
+         conservative cancel mechanism (design doc Q2) unless the payload \
+         passes evict_on_cancel:false. pin_load_options:true pins num_ctx to \
+         the resident model's context.",
         "wylde_ollama::actions::chat",
     );
     register_streaming_action_with_meta(

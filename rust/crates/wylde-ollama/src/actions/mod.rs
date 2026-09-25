@@ -2,6 +2,7 @@
 //!
 //! * [`models`] — health, list_models, list_loaded, show, delete, eject.
 //! * [`chat`] — chat (unary), chat_stream (streaming).
+//! * [`stream_relay`] — the NDJSON relay + evict-on-cancel policy shared by the streaming actions.
 //! * [`embed`] — embed (unary).
 //! * [`pull`] — pull (streaming, with retry-on-transient-error).
 //!
@@ -16,5 +17,6 @@ pub mod error;
 pub mod gc;
 pub mod models;
 pub mod pull;
+pub mod stream_relay;
 
 pub use error::{invalid_request, ollama_http_err, ollama_unreachable_err};
