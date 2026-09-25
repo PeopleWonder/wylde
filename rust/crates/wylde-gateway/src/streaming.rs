@@ -34,8 +34,9 @@ use axum::body::Body;
 use axum::http::{header, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use futures::stream::StreamExt;
+use futures::stream::{Stream, StreamExt};
 use serde_json::{json, Map, Value};
+use wylde_shared::ipc::IpcError;
 
 use crate::proxy_core::{streaming_client, HttpMethod};
 
@@ -214,15 +215,7 @@ pub async fn ndjson_to_sse(
                     }
                 };
 
-                let is_done = match &parsed {
-                    Value::Object(m) => match m.get(done_field_owned.as_str()) {
-                        Some(Value::Bool(b)) => *b,
-                        Some(Value::String(s)) => !s.is_empty(),
-                        Some(v) => !v.is_null(),
-                        None => false,
-                    },
-                    _ => false,
-                };
+                let is_done = is_done_line(&parsed, done_field_owned.as_str());
 
                 let envelope = build_event_payload(&parsed);
                 if is_done {
@@ -240,6 +233,104 @@ pub async fn ndjson_to_sse(
         .expect("static SSE response shape");
     apply_sse_headers(&mut response);
     response
+}
+
+/// Whether an upstream line is the terminal one: its `done_field` is set
+/// truthy (a `true` bool, a non-empty string, or any other non-null value).
+fn is_done_line(parsed: &Value, done_field: &str) -> bool {
+    match parsed {
+        Value::Object(m) => match m.get(done_field) {
+            Some(Value::Bool(b)) => *b,
+            Some(Value::String(s)) => !s.is_empty(),
+            Some(v) => !v.is_null(),
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+/// Stream pipe frames as SSE: the `wylde-ollama`-backed twin of
+/// [`ndjson_to_sse`], with the same event vocabulary and framing. Each
+/// `Ok` frame (one Ollama NDJSON object, e.g. from `ollama.chat_stream`)
+/// becomes an `event: <event_name>` frame, and the one whose `done_field`
+/// is set becomes `event: <done_event>`. An `Err` frame, or no frame within
+/// `chunk_timeout`, becomes `event: error` and closes the stream; a stream
+/// that ends without a done line gets a synthesized `done`. Dropping the
+/// response drops `frames`, which cancels the upstream action.
+pub fn ipc_to_sse<S>(
+    frames: S,
+    event_name: &'static str,
+    done_event: &'static str,
+    done_field: &'static str,
+    chunk_timeout: Duration,
+) -> Response
+where
+    S: Stream<Item = Result<Value, IpcError>> + Send + 'static,
+{
+    let stream = async_stream::stream! {
+        let mut frames = Box::pin(frames);
+        loop {
+            match tokio::time::timeout(chunk_timeout, frames.next()).await {
+                Ok(Some(Ok(v))) => {
+                    let envelope = build_event_payload(&v);
+                    if is_done_line(&v, done_field) {
+                        yield Ok::<Bytes, std::io::Error>(encode(done_event, &envelope));
+                        return;
+                    }
+                    yield Ok(encode(event_name, &envelope));
+                }
+                Ok(Some(Err(e))) => {
+                    yield Ok(encode(
+                        "error",
+                        &json!({"ok": false, "error": e.code, "message": e.message}),
+                    ));
+                    return;
+                }
+                Ok(None) => {
+                    yield Ok(encode(done_event, &json!({ "ok": true })));
+                    return;
+                }
+                Err(_) => {
+                    yield Ok(encode(
+                        "error",
+                        &json!({
+                            "ok": false,
+                            "error": "timeout",
+                            "message": format!(
+                                "upstream did not emit a chunk within {}s",
+                                chunk_timeout.as_secs_f64()
+                            ),
+                        }),
+                    ));
+                    return;
+                }
+            }
+        }
+    };
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::from_stream(stream))
+        .expect("static SSE response shape");
+    apply_sse_headers(&mut response);
+    response
+}
+
+/// A unary pipe reply as a one-frame SSE response: `event: <done_event>`
+/// with the reply on success, `event: error` on failure. For a
+/// `stream: false` request, which Ollama answers with a single done line.
+pub fn reply_to_sse(reply: Result<Value, IpcError>, done_event: &'static str) -> Response {
+    match reply {
+        Ok(v) => {
+            let mut response = (
+                StatusCode::OK,
+                Body::from(encode(done_event, &build_event_payload(&v))),
+            )
+                .into_response();
+            apply_sse_headers(&mut response);
+            response
+        }
+        Err(e) => single_error_sse(&e.code, &e.message),
+    }
 }
 
 /// Merge `{ok: true, ...}` into a JSON object, or wrap a scalar as
@@ -350,5 +441,124 @@ mod tests {
         let s = std::str::from_utf8(&bytes).unwrap();
         assert!(s.starts_with("event: error\n"), "got: {s:?}");
         assert!(s.contains("\"error\":\"transport\""), "got: {s:?}");
+    }
+
+    async fn sse_body(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), 8 * 1024)
+            .await
+            .unwrap();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn ipc_to_sse_emits_tokens_then_done_with_the_ok_envelope() {
+        let frames = futures::stream::iter(vec![
+            Ok(json!({"message": {"content": "Hi"}, "done": false})),
+            Ok(json!({"done": true, "eval_count": 2})),
+            Ok(json!({"never": "sent"})),
+        ]);
+        let resp = ipc_to_sse(frames, "token", "done", "done", Duration::from_secs(5));
+        assert_eq!(resp.headers()["content-type"], "text/event-stream");
+        let s = sse_body(resp).await;
+        assert!(
+            s.starts_with(
+                "event: token
+data: {"
+            ),
+            "got: {s:?}"
+        );
+        assert!(
+            s.contains(r#""content":"Hi""#) && s.contains(r#""ok":true"#),
+            "got: {s:?}"
+        );
+        assert!(
+            s.contains(
+                "event: done
+"
+            ),
+            "got: {s:?}"
+        );
+        assert!(
+            !s.contains("never"),
+            "frames after done are not relayed: {s:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn ipc_to_sse_maps_an_error_frame_and_closes() {
+        let frames = futures::stream::iter(vec![
+            Ok(json!({"message": {"content": "a"}, "done": false})),
+            Err(IpcError::new(
+                "model_not_found",
+                "model \"x\" not installed",
+            )),
+        ]);
+        let s = sse_body(ipc_to_sse(
+            frames,
+            "token",
+            "done",
+            "done",
+            Duration::from_secs(5),
+        ))
+        .await;
+        assert!(
+            s.contains(
+                "event: error
+"
+            ),
+            "got: {s:?}"
+        );
+        assert!(s.contains(r#""error":"model_not_found""#), "got: {s:?}");
+        assert!(!s.contains("event: done"), "got: {s:?}");
+    }
+
+    #[tokio::test]
+    async fn ipc_to_sse_synthesizes_done_when_frames_end_early() {
+        let frames = futures::stream::iter(vec![Ok(json!({"response": "a", "done": false}))]);
+        let s = sse_body(ipc_to_sse(
+            frames,
+            "token",
+            "done",
+            "done",
+            Duration::from_secs(5),
+        ))
+        .await;
+        assert!(
+            s.ends_with(
+                "event: done
+data: {\"ok\":true}
+
+"
+            ),
+            "got: {s:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reply_to_sse_is_one_done_or_error_frame() {
+        let ok = sse_body(reply_to_sse(
+            Ok(json!({"response": "x", "done": true})),
+            "done",
+        ))
+        .await;
+        assert!(
+            ok.starts_with(
+                "event: done
+"
+            ) && ok.contains(r#""response":"x""#),
+            "got: {ok:?}"
+        );
+        let err = sse_body(reply_to_sse(
+            Err(IpcError::new("ollama_unreachable", "down")),
+            "done",
+        ))
+        .await;
+        assert!(
+            err.starts_with(
+                "event: error
+"
+            ) && err.contains("ollama_unreachable"),
+            "got: {err:?}"
+        );
     }
 }

@@ -6,7 +6,11 @@
 //! prompt is rendered server-side from the model family's template
 //! ([`super::fim`]) and sent with `raw: true`. The family's special tokens
 //! are always added as stop sequences, whichever path is used. No template
-//! and no native support means a 400 `fim_unsupported`.
+//! and no native support means a 400 `fim_unsupported`. A prompt that is
+//! already a rendered FIM prompt for the model's family (no `suffix`; how
+//! Continue's OpenAI provider can send autocomplete) is FIM too: it goes
+//! out `raw: true` with the family's stops, so Ollama never wraps it in the
+//! chat template.
 //!
 //! FIM requests pass `fim: true` (FIM lease priority in `wylde-ollama`) and
 //! take a ticket in the per-device FIM lane ([`super::lane`]): a newer FIM
@@ -25,7 +29,7 @@ use wylde_shared::ipc::IpcError;
 use super::backend::BackendStream;
 use super::chat::Meta;
 use super::errors::OpenAiError;
-use super::fim::template_for;
+use super::fim::{template_for, FimTemplate};
 use super::lane::FimTicket;
 use super::translate::{finish_reason, stop_list, usage};
 use super::{sse, OpenAiState};
@@ -136,11 +140,28 @@ async fn supports_insert(state: &OpenAiState, model: &str) -> bool {
     }
 }
 
+/// Append `template`'s stop tokens to the caller's `stop` list (caller's
+/// first, no duplicates).
+fn add_template_stops(options: &mut Map<String, Value>, template: &FimTemplate) {
+    let mut stops: Vec<Value> = options
+        .get("stop")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for s in template.stops {
+        if !stops.iter().any(|x| x == s) {
+            stops.push(json!(s));
+        }
+    }
+    options.insert("stop".to_owned(), Value::Array(stops));
+}
+
 /// Build the `ollama.generate_stream` payload, choosing the FIM path.
+/// Returns the payload and whether the request is FIM.
 async fn upstream_payload(
     state: &OpenAiState,
     req: &CompletionRequest,
-) -> Result<Value, OpenAiError> {
+) -> Result<(Value, bool), OpenAiError> {
     let mut options = req.options.clone();
     let mut payload = json!({
         "model": req.target,
@@ -149,8 +170,8 @@ async fn upstream_payload(
         "evict_on_cancel": false,
         "pin_load_options": true,
     });
-    if let Some(suffix) = &req.suffix {
-        let template = template_for(&req.target);
+    let template = template_for(&req.target);
+    let fim = if let Some(suffix) = &req.suffix {
         if supports_insert(state, &req.target).await {
             payload["suffix"] = json!(suffix);
         } else if let Some(t) = template {
@@ -159,23 +180,22 @@ async fn upstream_payload(
         } else {
             return Err(OpenAiError::fim_unsupported(&req.model));
         }
+        true
+    } else if template.is_some_and(|t| t.is_rendered(&req.prompt)) {
+        // Already rendered by the client: send it untouched.
+        payload["raw"] = json!(true);
+        true
+    } else {
+        false
+    };
+    if fim {
         if let Some(t) = template {
-            let mut stops: Vec<Value> = options
-                .get("stop")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            for s in t.stops {
-                if !stops.iter().any(|x| x == s) {
-                    stops.push(json!(s));
-                }
-            }
-            options.insert("stop".to_owned(), Value::Array(stops));
+            add_template_stops(&mut options, t);
         }
         payload["fim"] = json!(true);
     }
     payload["options"] = Value::Object(options);
-    Ok(payload)
+    Ok((payload, fim))
 }
 
 /// Resolves when `ticket` is superseded; never, for a non-FIM request.
@@ -208,14 +228,11 @@ pub async fn create(
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
-    let payload = match upstream_payload(&state, &req).await {
+    let (payload, fim) = match upstream_payload(&state, &req).await {
         Ok(p) => p,
         Err(e) => return e.into_response(),
     };
-    let mut ticket = req
-        .suffix
-        .as_ref()
-        .map(|_| state.lane.begin(&device.device_id));
+    let mut ticket = fim.then(|| state.lane.begin(&device.device_id));
     let mut upstream = state.backend.generate_stream(payload);
     let first = match next_frame(&mut upstream, &mut ticket).await {
         None => return OpenAiError::request_superseded().into_response(),

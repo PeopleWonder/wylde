@@ -5,22 +5,26 @@
 //!
 //! | Python                    | Rust wave | Shape                     |
 //! |---------------------------|-----------|---------------------------|
-//! | `POST /api/chat`          | 2a.1      | Ollama proxy, NDJSON→SSE  |
-//! | `POST /api/chat/generate` | 2a.1      | Ollama proxy, NDJSON→SSE  |
+//! | `POST /api/chat`          | 2a.1      | brokered Ollama chat, SSE |
+//! | `POST /api/chat/generate` | 2a.1      | brokered generate, SSE    |
 //! | `POST /api/chat/run_turn` | 2a        | harness pipe driver, JSON |
 //!
-//! ## Ollama SSE proxies — `/api/chat` and `/api/chat/generate`
+//! ## Brokered chat routes — `/api/chat` and `/api/chat/generate`
 //!
-//! Neither route is pipe-backed: they stream NDJSON straight from the
-//! local Ollama daemon at `127.0.0.1:11434` and re-emit it as SSE via
-//! [`streaming::ndjson_to_sse`] — the same NDJSON→SSE bridge wave 2c's
-//! `POST /api/models/pull` rides. `/api/chat` proxies Ollama's
-//! `/api/chat` (multi-turn completion); `/api/chat/generate` proxies
-//! Ollama's `/api/generate` (raw single-prompt generation). Both parse
-//! the body through [`read_body`] (Python's `_read_body`), default its
-//! `stream` field to `true`, and emit `event: token` frames terminated
-//! by `event: done` — keyed off the `done` field Ollama sets on its
-//! final NDJSON line.
+//! Both run through the leased `wylde-ollama` actions over the pipe, so
+//! no gateway path loads a model without a VRAM lease (#345). They used
+//! to stream straight from Ollama at `127.0.0.1:11434`, around the
+//! broker. `/api/chat` drives `ollama.chat_stream` (multi-turn chat);
+//! `/api/chat/generate` drives `ollama.generate_stream` (single-prompt
+//! generation). The wire contract is unchanged: the body is parsed by
+//! [`read_body`] (Python's `_read_body`), `stream` defaults to `true`,
+//! and frames are `event: token` terminated by `event: done` (keyed off
+//! Ollama's `done` field), with `event: error` on failure, via
+//! [`streaming::ipc_to_sse`]. A `stream: false` request goes through the
+//! unary action and gets a single `done` frame, as Ollama's one-line reply
+//! did before. Streaming requests pass `evict_on_cancel: false`, so a
+//! client disconnect cancels generation but leaves the model loaded, the
+//! same as the direct proxy.
 //!
 //! Both Ollama SSE proxies gate on `require_local` (loopback +
 //! WyldeLink CGNAT allowlist) — the same tier the Python `chat.py`
@@ -49,59 +53,56 @@ use super::common::harness_dispatch;
 use crate::auth::{require_device, require_local, Device};
 use crate::envelopes::failure;
 use crate::middleware::{device_limiter, forward_device_events, per_device_rate_limit};
-use crate::proxy_core::HttpMethod;
-use crate::streaming::{ndjson_to_sse, DEFAULT_CHUNK_TIMEOUT};
-
-/// Local Ollama daemon URL. Mirrors Python's `chat.py::OLLAMA_URL` (and
-/// the identical constant in [`super::models`]). Hard-coded — Ollama
-/// always binds localhost in the Wylde launch script.
-const OLLAMA_URL: &str = "http://127.0.0.1:11434";
+use crate::services::ollama::ollama_service;
+use crate::streaming::{ipc_to_sse, reply_to_sse, DEFAULT_CHUNK_TIMEOUT};
+use wylde_shared::ipc::{call_action, send_action_stream};
 
 const FORWARDED_OPTIONAL_KEYS: [&str; 5] =
     ["model", "workspace_id", "modality", "turn_id", "timeout"];
 
-/// `POST /api/chat` — SSE-streamed chat completion.
-///
-/// Proxies Ollama's `/api/chat`. The request body matches Ollama's chat
-/// schema; `stream` defaults to `true` when the caller omits it. Each
-/// NDJSON line Ollama emits becomes an `event: token` SSE frame; the
-/// terminal line (the one carrying `done`) becomes `event: done`.
+/// `POST /api/chat` — SSE-streamed chat completion via `ollama.chat_stream`
+/// (brokered). The body is Ollama's chat schema; `stream` defaults to `true`.
 pub async fn chat(headers: HeaderMap, body: Bytes) -> Response {
-    let mut payload = read_body(&headers, &body);
-    payload
-        .entry("stream".to_owned())
-        .or_insert(Value::Bool(true));
-    ndjson_to_sse(
-        &format!("{OLLAMA_URL}/api/chat"),
-        Value::Object(payload),
-        HttpMethod::Post,
-        "token",
-        "done",
-        "done",
-        DEFAULT_CHUNK_TIMEOUT,
-    )
-    .await
+    brokered(&headers, &body, "ollama.chat", "ollama.chat_stream").await
 }
 
-/// `POST /api/chat/generate` — SSE-streamed raw single-prompt generation.
-///
-/// Proxies Ollama's `/api/generate`. Same body handling and SSE event
-/// vocabulary as [`chat`]; only the upstream path differs.
+/// `POST /api/chat/generate` — SSE-streamed single-prompt generation via
+/// `ollama.generate_stream` (brokered). Same body handling and SSE event
+/// vocabulary as [`chat`].
 pub async fn generate(headers: HeaderMap, body: Bytes) -> Response {
-    let mut payload = read_body(&headers, &body);
-    payload
-        .entry("stream".to_owned())
-        .or_insert(Value::Bool(true));
-    ndjson_to_sse(
-        &format!("{OLLAMA_URL}/api/generate"),
-        Value::Object(payload),
-        HttpMethod::Post,
+    brokered(&headers, &body, "ollama.generate", "ollama.generate_stream").await
+}
+
+/// Run one request through `wylde-ollama`: the streaming action as
+/// `token`/`done` SSE, or (for `stream: false`) the unary action as a
+/// single `done` frame.
+async fn brokered(
+    headers: &HeaderMap,
+    body: &Bytes,
+    unary: &'static str,
+    streaming: &'static str,
+) -> Response {
+    let mut payload = read_body(headers, body);
+    let stream = payload
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let service = ollama_service();
+    if !stream {
+        return reply_to_sse(
+            call_action(&service, unary, Value::Object(payload)).await,
+            "done",
+        );
+    }
+    payload.insert("stream".to_owned(), Value::Bool(true));
+    payload.insert("evict_on_cancel".to_owned(), Value::Bool(false));
+    ipc_to_sse(
+        send_action_stream(&service, streaming, Value::Object(payload)),
         "token",
         "done",
         "done",
         DEFAULT_CHUNK_TIMEOUT,
     )
-    .await
 }
 
 /// Parse a request body into a JSON object — Rust port of
@@ -350,6 +351,10 @@ mod tests {
 
     #[tokio::test]
     async fn ndjson_chat_stream_emits_token_then_done() {
+        // The NDJSON→SSE bridge (still used by `/api/models/pull`) shares
+        // the token/done vocabulary the brokered routes emit.
+        use crate::proxy_core::HttpMethod;
+        use crate::streaming::ndjson_to_sse;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         // One-shot mock Ollama: emit two NDJSON lines — the second

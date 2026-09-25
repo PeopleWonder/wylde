@@ -7,3 +7,4 @@
 //! `docs/r3_gateway_deferred.md`.
 
 pub mod device_gate;
+pub mod ollama;

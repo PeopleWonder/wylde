@@ -36,6 +36,7 @@
 //! *attach* to it rather than spawn/teardown a sibling's stack.
 
 pub mod memgraph;
+pub mod openai;
 pub mod pipe;
 
 use std::path::{Path, PathBuf};
@@ -234,6 +235,7 @@ pub fn run(opts: &SmokeOpts) -> SmokeOutcome {
     checks.push(check_vram_broker());
     checks.push(check_ollama_models());
     checks.push(check_memgraph_has_data());
+    checks.push(openai::check(&opts.repo_root));
 
     // ── L5 shipped-config assertion (issue #27) ───────────────────────────
     // Not behind `--skip-functional`: it's a single cheap pipe read, and a

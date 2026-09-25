@@ -15,17 +15,14 @@ use futures::Stream;
 use serde_json::{json, Value};
 use wylde_shared::ipc::{call_action, send_action_stream, IpcError};
 
+use crate::services::ollama::{harness_service, ollama_service};
+
 /// Boxed future returned by unary [`Backend`] calls.
 pub type BackendFuture = Pin<Box<dyn Future<Output = Result<Value, IpcError>> + Send>>;
 
 /// Boxed frame stream returned by streaming [`Backend`] calls: one Ollama
 /// NDJSON object per item.
 pub type BackendStream = Pin<Box<dyn Stream<Item = Result<Value, IpcError>> + Send>>;
-
-/// Pipe service hosting the model registry (`models.list`).
-pub const HARNESS_SERVICE: &str = "wylde-harness";
-/// Pipe service hosting the `ollama.*` actions.
-pub const OLLAMA_SERVICE: &str = "wylde-ollama";
 
 pub trait Backend: Send + Sync {
     /// Harness `models.list` reply: `{models: [ModelEntry…], count, kind}`.
@@ -45,40 +42,42 @@ pub trait Backend: Send + Sync {
     fn generate_stream(&self, payload: Value) -> BackendStream;
 }
 
-/// The production backend: named-pipe calls to the live services.
+/// The production backend: named-pipe calls to the live services (names
+/// from [`crate::services::ollama`], overridable for integration tests).
 pub struct PipeBackend;
+
+/// One unary pipe call, owning its service name.
+fn unary(service: String, action: &'static str, payload: Value) -> BackendFuture {
+    Box::pin(async move { call_action(&service, action, payload).await })
+}
 
 impl Backend for PipeBackend {
     fn registry_models(&self) -> BackendFuture {
-        Box::pin(call_action(HARNESS_SERVICE, "models.list", json!({})))
+        unary(harness_service(), "models.list", json!({}))
     }
     fn ollama_models(&self) -> BackendFuture {
-        Box::pin(call_action(OLLAMA_SERVICE, "ollama.list_models", json!({})))
+        unary(ollama_service(), "ollama.list_models", json!({}))
     }
     fn embed(&self, model: String, input: Value) -> BackendFuture {
-        Box::pin(call_action(
-            OLLAMA_SERVICE,
+        unary(
+            ollama_service(),
             "ollama.embed",
             json!({"model": model, "input": input}),
-        ))
+        )
     }
     fn show(&self, model: String) -> BackendFuture {
-        Box::pin(call_action(
-            OLLAMA_SERVICE,
-            "ollama.show",
-            json!({"model": model}),
-        ))
+        unary(ollama_service(), "ollama.show", json!({"model": model}))
     }
     fn chat_stream(&self, payload: Value) -> BackendStream {
         Box::pin(send_action_stream(
-            OLLAMA_SERVICE,
+            &ollama_service(),
             "ollama.chat_stream",
             payload,
         ))
     }
     fn generate_stream(&self, payload: Value) -> BackendStream {
         Box::pin(send_action_stream(
-            OLLAMA_SERVICE,
+            &ollama_service(),
             "ollama.generate_stream",
             payload,
         ))
