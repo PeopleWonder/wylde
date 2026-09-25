@@ -8,18 +8,26 @@
 #   * codebase embeddings               -> POST /v1/embeddings
 #
 # ── Wylde side ─────────────────────────────────────────────────────────────
-# 1. Short model names in Wylde's model registry, so this file survives a
-#    model swap. Add them with the harness `models.set_alias` verb, or write
-#    <data_dir>/model_aliases.json (data_dir: WYLDE_DATA_DIR, default
-#    <WYLDE_ROOT>/.wylde/data); changes apply within seconds, no restart:
-#      {"aliases": {
-#        "coder": "hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-IQ3_XXS",
-#        "embed": "nomic-embed-text:latest"}}
-#    An alias works only while its model is installed, and an installed model
-#    with the same name wins. Any installed Ollama model can be a target; FIM
-#    needs a coder model with native `insert` or a known family (Qwen coder,
-#    Codestral, StarCoder, DeepSeek coder). The old WYLDE_OPENAI_MODEL_ALIASES
-#    env var is deprecated but still honoured as a fallback.
+# 1. Create the `coder` and `embed` model aliases this file uses. Aliases live
+#    in Wylde's model registry, so this file survives a model swap: re-point
+#    the alias, not the config. Wylde ships no default aliases (your models
+#    are yours to choose). Pick any installed Ollama models (`ollama list`) and
+#    either:
+#    a) edit <data_dir>/model_aliases.json, where data_dir is WYLDE_DATA_DIR,
+#       default <WYLDE_ROOT>/.wylde/data. Create the file if it doesn't exist:
+#         {"aliases": {
+#           "coder": "hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-IQ3_XXS",
+#           "embed": "nomic-embed-text:latest"}}
+#       It's read on every lookup; the gateway picks changes up within ~5 s,
+#       with no restart; or
+#    b) call the harness pipe verb `models.set_alias` with
+#       {"alias": "coder", "target": "<model id>"} (also `models.list_aliases`
+#       and `models.remove_alias`); this is the path for tools and the GUI.
+#    An alias works only while its target model is installed, and an installed
+#    model with the same name as an alias always wins. If the harness is
+#    unreachable, aliases don't resolve (use the full model ids meanwhile). For
+#    FIM, `coder` must point at a coder model with native `insert` or a known
+#    family (Qwen coder, Codestral, StarCoder, DeepSeek coder).
 # 2. Two request slots, so autocomplete runs alongside an agent turn instead of
 #    queueing behind it. Wylde sets OLLAMA_NUM_PARALLEL=2 when it starts Ollama
 #    itself (override with WYLDE_OLLAMA_NUM_PARALLEL). If Ollama runs from its
