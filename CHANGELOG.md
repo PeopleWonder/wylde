@@ -48,6 +48,11 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Added
 
+- **Use Wylde from Continue: sample config, two Ollama slots, and a `/v1` launch check (refs #345, completes the OpenAI API in #88).**
+  - **Sample config:** [`docs/examples/continue/config.yaml`](docs/examples/continue/config.yaml) points Continue at Wylde's `/v1` for agent chat, tab autocomplete and embeddings, with a device token as the API key.
+  - **Two Ollama slots:** when Wylde starts Ollama it now allows two requests per model at once (`OLLAMA_NUM_PARALLEL=2`; your own setting wins, and `WYLDE_OLLAMA_NUM_PARALLEL` changes Wylde's default), so autocomplete no longer waits behind an agent turn. On a 16 GB RTX 5080 with the ~14 GB Qwen3-Coder-30B, an autocomplete arriving mid-turn went from a 3.3 s wait to 0.13 s. The model stays fully on the GPU at an 8K context per request; at 16K per request it spills to the CPU and runs about 37% slower, so the sample config uses 8K.
+  - **Launch check:** `wylde-release preflight --launch` gains an `openai-v1` check. By default it confirms `/v1` is served and rejects unauthenticated calls. With `WYLDE_OPENAI_SMOKE_TOKEN` set, it drives the official `openai` client through models, chat, a tool call, streaming, embeddings and autocomplete.
+  - **Pre-rendered autocomplete prompts:** `/v1/completions` now recognises an autocomplete prompt the client has already rendered, and sends it to the model as-is.
 - **OpenAI-compatible `/v1/chat/completions` and `/v1/completions` with fill-in-the-middle autocomplete (refs #344, part of #88).** Continue, or any OpenAI client, can now use Wylde for agent chat and tab autocomplete through one endpoint, with every request holding a VRAM lease. Chat supports text messages, tool calling in both directions (OpenAI tool calls in, Ollama tool calls translated back out), sampling options, `max_tokens`, `stop`, `seed`, and `response_format` (JSON mode or a JSON schema), streamed or not, with token usage.
   - **Tool-call salvage:** when a model writes a tool call as text instead of a structured call (as qwen2.5-coder does), Wylde recovers it into a real tool call so agent mode still works. It only recovers tools the request offered, and while streaming it holds the text back until the reply is complete. Configurable per model with `WYLDE_OPENAI_TOOL_SALVAGE`.
   - **Autocomplete (FIM):** `/v1/completions` with a `suffix` uses the model's native fill-in-the-middle support where Ollama has it. Otherwise Wylde renders the right template itself (Qwen coder, Codestral, StarCoder or DeepSeek coder) and always stops at the template's markers, so a suggestion doesn't run past the gap.
@@ -544,6 +549,7 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Changed
 
+- **Wylde's own `/api/chat` and `/api/chat/generate` now hold VRAM leases (refs #345).** They used to call Ollama directly, outside the VRAM broker. They now run through `wylde-ollama` like every other inference path, so no gateway route loads a model without a lease. Their responses are unchanged, and a client disconnect still leaves the model loaded.
 - **ComfyUI is out of Wylde. The `wylde-images` Service is parked to its own repo, preserved but
   not maintained and not planned for revival (#234).** Image generation was extracted from Core to
   a standalone Service in 2026-06; that Service — the only ComfyUI integration Wylde ever had — is
