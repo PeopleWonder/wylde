@@ -1,6 +1,6 @@
-//! `/v1` aliases come from the harness model registry (#348): every route
-//! resolves through it, with installed-only / real-id-wins semantics, and
-//! the deprecated env var is only a fallback.
+//! `/v1` aliases come only from the harness model registry (#348): every
+//! route resolves through it, with installed-only / real-id-wins semantics;
+//! with the harness unreachable there are no aliases and names pass through.
 
 use std::sync::atomic::Ordering;
 
@@ -9,18 +9,10 @@ use serde_json::{json, Value};
 use wylde_shared::ipc::IpcError;
 
 use super::backend::testing::FakeBackend;
-use super::tests::{registry, send, token};
+use super::tests::{registry, registry_aliases, send, token};
 use super::*;
 
 const CODER: &str = "hf.co/u/Coder-GGUF:IQ3";
-
-fn registry_aliases(pairs: &[(&str, &str)]) -> Result<Value, IpcError> {
-    let aliases: Vec<Value> = pairs
-        .iter()
-        .map(|(a, t)| json!({"alias": a, "target": t}))
-        .collect();
-    Ok(json!({"count": aliases.len(), "aliases": aliases}))
-}
 
 fn fake(aliases: Result<Value, IpcError>) -> FakeBackend {
     let mut f = FakeBackend::new(Ok(registry()));
@@ -32,9 +24,9 @@ fn fake(aliases: Result<Value, IpcError>) -> FakeBackend {
     f
 }
 
-fn app(fake: Arc<FakeBackend>, env: &str) -> Router {
+fn app(fake: Arc<FakeBackend>) -> Router {
     router_from(
-        OpenAiState::new(fake, Aliases::parse(env), SalvagePolicy::parse("")),
+        OpenAiState::new(fake, SalvagePolicy::parse("")),
         RateLimiter::new(1000),
     )
 }
@@ -76,7 +68,7 @@ async fn every_route_resolves_aliases_from_the_registry() {
         ("coder", CODER),
         ("embed", "nomic-embed-text:latest"),
     ])));
-    let app = app(fake.clone(), "");
+    let app = app(fake.clone());
     let t = token().await;
 
     let ids = model_ids(&app, &t).await;
@@ -117,7 +109,7 @@ async fn every_route_resolves_aliases_from_the_registry() {
 #[tokio::test]
 async fn an_alias_to_a_model_that_is_not_installed_is_neither_listed_nor_resolved() {
     let fake = Arc::new(fake(registry_aliases(&[("ghost", "deleted:1")])));
-    let app = app(fake.clone(), "");
+    let app = app(fake.clone());
     let t = token().await;
     assert!(!model_ids(&app, &t)
         .await
@@ -134,7 +126,7 @@ async fn an_alias_to_a_model_that_is_not_installed_is_neither_listed_nor_resolve
 async fn a_real_model_id_beats_an_alias_of_the_same_name() {
     // `whisper` is an installed model (kind stt) in the fake registry.
     let fake = Arc::new(fake(registry_aliases(&[("whisper", CODER)])));
-    let app = app(fake.clone(), "");
+    let app = app(fake.clone());
     let t = token().await;
     assert!(!model_ids(&app, &t)
         .await
@@ -144,35 +136,32 @@ async fn a_real_model_id_beats_an_alias_of_the_same_name() {
 }
 
 #[tokio::test]
-async fn the_env_var_is_only_a_fallback_under_registry_aliases() {
-    // Registry defines coder; env defines coder (loses) and embed (fills in).
-    let fake = Arc::new(fake(registry_aliases(&[("coder", CODER)])));
-    let app = app(
-        fake.clone(),
-        "coder=nomic-embed-text:latest,embed=nomic-embed-text:latest",
-    );
+async fn with_the_harness_unreachable_names_pass_through_and_real_ids_work() {
+    let mut f = FakeBackend::new(Err(IpcError::new("pipe_unavailable", "harness down")));
+    f.aliases = Err(IpcError::new("pipe_unavailable", "harness down"));
+    f.ollama = Ok(json!({"models": [{"name": CODER}]}));
+    f.stream_frames = vec![Ok(json!({"message": {"content": "ok"}, "done": true}))];
+    let fake = Arc::new(f);
+    let app = app(fake.clone());
     let t = token().await;
     let ids = model_ids(&app, &t).await;
-    assert!(
-        ids.contains(&("coder".into(), Some(CODER.into()))),
-        "registry wins: {ids:?}"
+    assert_eq!(ids, vec![(CODER.to_owned(), None)], "no aliases listed");
+    assert_eq!(
+        chat_model_sent(&app, &fake, &t, "coder").await,
+        "coder",
+        "unresolved, unchanged"
     );
-    assert!(ids.contains(&("embed".into(), Some("nomic-embed-text:latest".into()))));
-    assert_eq!(chat_model_sent(&app, &fake, &t, "coder").await, CODER);
-}
-
-#[tokio::test]
-async fn env_aliases_still_work_when_the_registry_aliases_are_unreachable() {
-    let fake = Arc::new(fake(Err(IpcError::new("no_action", "old harness"))));
-    let app = app(fake.clone(), &format!("coder={CODER}"));
-    let t = token().await;
-    assert_eq!(chat_model_sent(&app, &fake, &t, "coder").await, CODER);
+    assert_eq!(
+        chat_model_sent(&app, &fake, &t, CODER).await,
+        CODER,
+        "real ids still work"
+    );
 }
 
 #[tokio::test]
 async fn the_registry_view_is_cached_between_requests() {
     let fake = Arc::new(fake(registry_aliases(&[("coder", CODER)])));
-    let app = app(fake.clone(), "");
+    let app = app(fake.clone());
     let t = token().await;
     model_ids(&app, &t).await;
     chat_model_sent(&app, &fake, &t, "coder").await;

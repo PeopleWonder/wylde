@@ -8,18 +8,15 @@
 //!   aliases are live;
 //! * **aliases**: the *effective* aliases.
 //!
-//! Aliases come from the harness registry (`models.list_aliases`), filtered
-//! by the registry's own rules
+//! Aliases come only from the harness registry (`models.list_aliases`),
+//! filtered by the registry's own rules
 //! (`wylde_harness::model_registry::aliases::effective`): the target must be
-//! installed, and a real model id beats an alias of the same name. The
-//! deprecated `WYLDE_OPENAI_MODEL_ALIASES` env var is only a fallback: its
-//! entries apply where the registry doesn't define that alias, and cover
-//! everything when the harness can't be reached.
+//! installed, and a real model id beats an alias of the same name.
 //!
 //! If the harness is down, the catalog falls back to Ollama's installed
-//! list (`ollama.list_models`). If both are down, the catalog is an error
-//! for `/v1/models`, but inference still resolves aliases best-effort
-//! (unfiltered, since installation can't be checked).
+//! list (`ollama.list_models`) and there are no aliases: names pass through
+//! unchanged, so real model ids keep working. If Ollama is down too,
+//! `/v1/models` is an error.
 //!
 //! The snapshot is cached for [`REGISTRY_TTL`], so autocomplete doesn't pay
 //! a registry round-trip per keystroke. An alias change is live within that
@@ -122,28 +119,17 @@ async fn build(state: &OpenAiState) -> RegistryView {
             }
         }
     };
-    let mut map = match state.backend.registry_aliases().await {
+    let map = match state.backend.registry_aliases().await {
         Ok(reply) => stored_aliases(&reply),
         Err(e) => {
             tracing::warn!("openai: models.list_aliases unavailable ({})", e.code);
             AliasMap::new()
         }
     };
-    // Deprecated env stopgap: only where the registry has no such alias.
-    for (alias, target) in state.env_aliases.iter() {
-        map.entry(alias.to_owned())
-            .or_insert_with(|| target.to_owned());
-    }
-    let pairs = if installed.is_empty() {
-        // Nothing to check installation against: resolve best-effort.
-        map.into_iter().collect()
-    } else {
-        effective(&map, &installed)
-    };
     RegistryView {
+        aliases: Aliases::from_pairs(effective(&map, &installed)),
         listed,
         installed,
-        aliases: Aliases::from_pairs(pairs),
         catalog_error,
     }
 }

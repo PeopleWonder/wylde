@@ -40,7 +40,6 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use crate::middleware::rate_limit::{openai_limiter, RateLimiter};
-use aliases::Aliases;
 use backend::Backend;
 use lane::FimLane;
 use registry::RegistryCache;
@@ -50,9 +49,6 @@ use salvage::SalvagePolicy;
 #[derive(Clone)]
 pub struct OpenAiState {
     pub backend: Arc<dyn Backend>,
-    /// Deprecated `WYLDE_OPENAI_MODEL_ALIASES` entries: a fallback under the
-    /// registry's aliases (see [`registry`]).
-    pub env_aliases: Arc<Aliases>,
     /// The cached registry view (catalog + effective aliases).
     pub registry: Arc<RegistryCache>,
     /// Which models get tool-call salvage.
@@ -63,28 +59,26 @@ pub struct OpenAiState {
     pub insert_cache: Arc<Mutex<HashMap<String, bool>>>,
 }
 
-/// The production `/v1` router: live pipes, the deprecated env aliases as a
-/// fallback, the process-wide `/v1` limiter.
+/// The production `/v1` router: live pipes and the process-wide `/v1`
+/// limiter.
 pub fn router() -> Router {
-    router_with(backend::pipe(), Aliases::from_env(), openai_limiter())
+    router_with(backend::pipe(), openai_limiter())
 }
 
-/// Build the `/v1` router over an explicit backend, fallback (env) alias map
-/// and limiter. The salvage setting is read from the environment.
-pub fn router_with(backend: Arc<dyn Backend>, aliases: Aliases, limiter: RateLimiter) -> Router {
+/// Build the `/v1` router over an explicit backend and limiter. The
+/// salvage setting is read from the environment.
+pub fn router_with(backend: Arc<dyn Backend>, limiter: RateLimiter) -> Router {
     router_from(
-        OpenAiState::new(backend, aliases, SalvagePolicy::from_env()),
+        OpenAiState::new(backend, SalvagePolicy::from_env()),
         limiter,
     )
 }
 
 impl OpenAiState {
     /// Fresh state: empty registry/`insert` caches and FIM lane.
-    /// `env_aliases` are the deprecated fallback aliases.
-    pub fn new(backend: Arc<dyn Backend>, env_aliases: Aliases, salvage: SalvagePolicy) -> Self {
+    pub fn new(backend: Arc<dyn Backend>, salvage: SalvagePolicy) -> Self {
         Self {
             backend,
-            env_aliases: Arc::new(env_aliases),
             registry: Arc::new(RegistryCache::default()),
             salvage: Arc::new(salvage),
             lane: Arc::new(FimLane::default()),

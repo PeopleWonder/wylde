@@ -37,7 +37,6 @@ use tokio::sync::{Mutex as AsyncMutex, OnceCell};
 use tower::ServiceExt;
 use wylde_gateway::auth::token_cache::{global as token_cache, Device};
 use wylde_gateway::middleware::rate_limit::RateLimiter;
-use wylde_gateway::routes::openai::aliases::Aliases;
 use wylde_gateway::routes::openai::{backend, router_with};
 use wylde_shared::ipc;
 
@@ -76,8 +75,8 @@ async fn mock() -> &'static Mock {
                 ]}))
             }
         });
-        // The registry is the alias source (#348): `coder`/`embed` come from
-        // `models.list_aliases`, not from WYLDE_OPENAI_MODEL_ALIASES.
+        // Aliases come only from the registry (#348): `coder`/`embed` are
+        // served by `models.list_aliases`.
         let c = calls.clone();
         ipc::register_action("models.list_aliases", move |p: Value| {
             record(&c, "models.list_aliases", &p);
@@ -172,9 +171,9 @@ async fn guard() -> tokio::sync::MutexGuard<'static, ()> {
     LOCK.lock().await
 }
 
-/// No env aliases: `coder`/`embed` must resolve through the registry.
+/// `coder`/`embed` resolve through the (mock) registry over the pipe.
 fn v1() -> Router {
-    router_with(backend::pipe(), Aliases::default(), RateLimiter::new(1000))
+    router_with(backend::pipe(), RateLimiter::new(1000))
 }
 
 fn last(m: &Mock, action: &str) -> Value {
