@@ -19,6 +19,13 @@ pub struct FimTemplate {
 }
 
 impl FimTemplate {
+    /// Whether `prompt` is already a rendered FIM prompt for this family
+    /// (it carries both the prefix and suffix markers). Continue's OpenAI
+    /// provider can send autocomplete this way, with no `suffix` field.
+    pub fn is_rendered(&self, prompt: &str) -> bool {
+        prompt.contains(self.prefix) && prompt.contains(self.suffix)
+    }
+
     /// The raw FIM prompt for the gap between `prefix` and `suffix`.
     pub fn render(&self, prefix: &str, suffix: &str) -> String {
         if self.suffix_first {
@@ -138,6 +145,14 @@ mod tests {
             "<|fim_prefix|>def f():\n    <|fim_suffix|>\n<|fim_middle|>"
         );
         assert_eq!(CODESTRAL.render("A", "B"), "[SUFFIX]B[PREFIX]A");
+    }
+
+    #[test]
+    fn recognises_an_already_rendered_fim_prompt() {
+        assert!(QWEN.is_rendered(&QWEN.render("a", "b")));
+        assert!(CODESTRAL.is_rendered(&CODESTRAL.render("a", "b")));
+        assert!(!QWEN.is_rendered("def add(a, b):"));
+        assert!(!QWEN.is_rendered("<|fim_prefix|> only one marker"));
     }
 
     #[test]

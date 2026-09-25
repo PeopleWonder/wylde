@@ -148,6 +148,32 @@ async fn plain_completion_is_not_fim() {
     assert!(sent.get("fim").is_none() && sent.get("raw").is_none());
 }
 
+/// Continue's OpenAI provider can send autocomplete as an already-rendered
+/// FIM prompt with no `suffix`: it must go out raw (never wrapped in the
+/// chat template), as FIM, with the family's stop tokens.
+#[tokio::test]
+async fn a_pre_rendered_fim_prompt_without_suffix_is_sent_raw_as_fim() {
+    let fake = Arc::new(fake_with(json!(["completion"])));
+    let app = app(fake.clone());
+    let t = token().await;
+    let prompt = "<|fim_prefix|>fn f() {<|fim_suffix|>}<|fim_middle|>";
+    let (status, v) = complete(
+        &app,
+        &t,
+        json!({"model": "qwen2.5-coder:7b", "prompt": prompt}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let sent = &fake.payloads("generate_stream")[0];
+    assert_eq!(sent["prompt"], prompt, "sent untouched");
+    assert_eq!(sent["raw"], true);
+    assert_eq!(sent["fim"], true);
+    assert!(sent["options"]["stop"]
+        .as_array()
+        .unwrap()
+        .contains(&json!("<|fim_middle|>")));
+}
+
 #[tokio::test]
 async fn stream_sends_text_chunks_finish_and_done() {
     let fake = Arc::new(fake_with(json!(["completion", "insert"])));
