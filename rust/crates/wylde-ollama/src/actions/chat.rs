@@ -36,6 +36,7 @@ use crate::actions::error::{
 use crate::config::Config;
 use crate::estimate::{estimate_vram_bytes, VramEstimate};
 use crate::lease::{self, LeaseRequest, Priority};
+use crate::load_opts;
 use crate::upstream::Upstream;
 
 const BODY_EXCERPT_CAP: usize = 300;
@@ -67,6 +68,7 @@ pub async fn handle_chat(payload: Value, up: Arc<Upstream>) -> Reply {
         // Drop our pipe-only knobs before forwarding.
         obj.remove("priority");
     }
+    load_opts::apply(&up, &model, &mut body).await;
 
     // Design §3 step 2: compute the VRAM footprint ourselves so the broker
     // gets a positive `bytes` (the Python broker has no estimator and would
@@ -175,6 +177,7 @@ pub async fn handle_chat_stream(payload: Value, sender: StreamSender, up: Arc<Up
         obj.insert("messages".to_string(), messages);
         obj.remove("priority");
     }
+    load_opts::apply(&up, &model, &mut body).await;
 
     // Design §3 step 2: compute the footprint so the broker gets a positive
     // `bytes`; an absent model is surfaced as `model_not_found` up front.
@@ -431,6 +434,47 @@ mod tests {
         )
         .await;
         assert!(r.ok, "format-bearing body must match upstream: {r:?}");
+    }
+
+    /// `pin_load_options: true` pins `num_ctx` to the resident model's
+    /// context (so the request can't trigger a reload) and the knob itself
+    /// never reaches Ollama.
+    #[tokio::test]
+    async fn chat_pins_load_options_when_asked() {
+        let (server, up) = fake_upstream().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ps"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "models": [{"name": "qwen", "context_length": 16384}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({"options": {"num_ctx": 16384}}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"done": true})))
+            .mount(&server)
+            .await;
+        let r = handle_chat(
+            json!({
+                "model": "qwen",
+                "messages": [{"role": "user", "content": "hi"}],
+                "options": {"num_ctx": 4096},
+                "pin_load_options": true
+            }),
+            up,
+        )
+        .await;
+        assert!(r.ok, "pinned num_ctx must reach upstream: {r:?}");
+        let sent = &server.received_requests().await.unwrap();
+        let chat_body: Value = sent
+            .iter()
+            .find(|q| q.url.path() == "/api/chat")
+            .map(|q| serde_json::from_slice(&q.body).unwrap())
+            .unwrap();
+        assert!(chat_body.get("pin_load_options").is_none());
     }
 
     #[tokio::test]

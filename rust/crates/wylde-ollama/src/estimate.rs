@@ -125,7 +125,7 @@ async fn on_disk_size(up: &Upstream, model: &str) -> TagsLookup {
 /// `nomic-embed-text` matches a listed `nomic-embed-text:latest` (and vice
 /// versa). Explicit sized tags are kept verbatim, so `:7b` and `:14b` never
 /// collide and neither is mistaken for `:latest`.
-fn model_matches(entry: &Value, want: &str) -> bool {
+pub(crate) fn model_matches(entry: &Value, want: &str) -> bool {
     let want = with_implicit_latest(want.trim());
     ["name", "model"].iter().any(|k| {
         entry
