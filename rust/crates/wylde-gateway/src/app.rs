@@ -1,10 +1,10 @@
 //! Router builder + middleware wiring.
 //!
-//! Rust port of `Gateway/app.py::create_app`. Wave 1 mounted `/health`;
-//! wave 2a adds the chat-adjacent surface (`chat.run_turn`,
-//! conversations CRUD, prompts CRUD). The rag / voice / models /
-//! memory / workspaces / training / push / link routes plus the Ollama
-//! SSE proxy are queued for wave 2a.1 / 2b+.
+//! Rust port of `Gateway/app.py::create_app`. The route surface itself is
+//! assembled in [`crate::routes::include_all`] (health, chat incl. the
+//! Ollama SSE proxies, conversations, prompts, memory, workspaces, rag,
+//! models, devices, link, settings, egress, extensions, dev, tool
+//! registry, `/mcp` and the OpenAI-compatible `/v1`).
 //!
 //! Middleware order (outer → inner):
 //! `CORS → Trace → AuditLog → RateLimit → routes`. Tower composes layers
