@@ -280,7 +280,11 @@ pub async fn call_tool(
     device_tier: &str,
     confirm: bool,
 ) -> Result<Value, BridgeError> {
-    let reply = harness("tools.run", run_payload(name, arguments, device_tier, confirm)).await?;
+    let reply = harness(
+        "tools.run",
+        run_payload(name, arguments, device_tier, confirm),
+    )
+    .await?;
     Ok(tool_result_to_mcp(&reply))
 }
 
@@ -586,16 +590,25 @@ mod tests {
     #[test]
     fn classify_entry_maps_catalog_to_access() {
         assert_eq!(
-            classify_entry(Some(&json!({ "id": "read_file", "destructive": false })), "read_file"),
+            classify_entry(
+                Some(&json!({ "id": "read_file", "destructive": false })),
+                "read_file"
+            ),
             ToolAccess::Allowed
         );
         assert_eq!(
-            classify_entry(Some(&json!({ "id": "write_file", "destructive": true })), "write_file"),
+            classify_entry(
+                Some(&json!({ "id": "write_file", "destructive": true })),
+                "write_file"
+            ),
             ToolAccess::Destructive
         );
         // Non-destructive off-list tool → not exposed.
         assert_eq!(
-            classify_entry(Some(&json!({ "id": "execute_bash", "destructive": false })), "execute_bash"),
+            classify_entry(
+                Some(&json!({ "id": "execute_bash", "destructive": false })),
+                "execute_bash"
+            ),
             ToolAccess::NotExposed
         );
         // Missing entry → not exposed.
@@ -681,7 +694,10 @@ mod tests {
         let p = run_payload("read_file", json!({ "path": "a.txt" }), "tool_use", true);
         assert_eq!(p["name"], "read_file");
         assert_eq!(p["device_tier"], "tool_use");
-        assert_eq!(p["confirm"], true, "confirm:true must be forwarded to tools.run");
+        assert_eq!(
+            p["confirm"], true,
+            "confirm:true must be forwarded to tools.run"
+        );
         // confirm:false is omitted (the harness default), so it never
         // appears in args and stays off unless explicitly set.
         let p2 = run_payload("write_file", json!({}), "destructive_tool_access", false);

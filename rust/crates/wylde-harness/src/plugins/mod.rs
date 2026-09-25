@@ -285,8 +285,15 @@ mod tests {
         let cfg: &'static Config = Box::leak(Box::new(cfg));
         let mut reg = Registry::empty();
         register_plugin(&mut reg, Arc::new(Fixture));
-        let outcome =
-            dispatch_tool(&reg, cfg, "plugin.fixture.wipe", TIER_TOOL_USE, json!({}), false).await;
+        let outcome = dispatch_tool(
+            &reg,
+            cfg,
+            "plugin.fixture.wipe",
+            TIER_TOOL_USE,
+            json!({}),
+            false,
+        )
+        .await;
         let err = outcome.result.expect_err("tier gate must block");
         assert_eq!(err.error.code, "tier_tool_use_destructive_blocked");
     }
