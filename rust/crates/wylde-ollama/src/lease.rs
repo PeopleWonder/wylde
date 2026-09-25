@@ -402,11 +402,14 @@ mod tests {
         let mut req = LeaseRequest::new("qwen");
         req.bytes_hint = Some(1024);
         req.priority = Priority::Explicit(90);
-        let p = reserve_payload(&req, "n1", 60.0);
+        // A generated nonce, as in production (a literal trips CodeQL's
+        // hard-coded-crypto-value rule; this is an idempotency key).
+        let nonce = Uuid::new_v4().simple().to_string();
+        let p = reserve_payload(&req, &nonce, 60.0);
         assert!(p.get("preempt").is_none(), "must never set preempt: {p}");
         assert_eq!(p["priority"], 90);
         assert_eq!(p["bytes"], 1024);
-        assert_eq!(p["client_nonce"], "n1");
+        assert_eq!(p["client_nonce"], nonce.as_str());
     }
 
     #[test]
