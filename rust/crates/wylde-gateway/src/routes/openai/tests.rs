@@ -14,7 +14,7 @@ use super::*;
 use crate::auth::token_cache::{global as token_cache, Device};
 
 /// A fresh verified token (unique per call so tests never share buckets).
-async fn token() -> String {
+pub(super) async fn token() -> String {
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
     let t = format!("openai-test-token-{n}-{}", std::process::id());
@@ -30,7 +30,7 @@ async fn token() -> String {
     t
 }
 
-fn registry() -> Value {
+pub(super) fn registry() -> Value {
     json!({"models": [
         {"id": "hf.co/u/Coder-GGUF:IQ3", "kind": "llm", "chat_visible": true},
         {"id": "hidden:1", "kind": "llm", "chat_visible": false},
@@ -49,7 +49,7 @@ fn app(backend: FakeBackend, limit: u32) -> Router {
     )
 }
 
-async fn send(
+pub(super) async fn send(
     app: &Router,
     method: &str,
     uri: &str,
@@ -76,7 +76,7 @@ async fn send(
     (status, v, headers)
 }
 
-fn assert_openai_error(v: &Value, code: &str) {
+pub(super) fn assert_openai_error(v: &Value, code: &str) {
     assert_eq!(v["error"]["code"], code, "body: {v}");
     assert!(v["error"]["type"].is_string(), "body: {v}");
     assert!(
