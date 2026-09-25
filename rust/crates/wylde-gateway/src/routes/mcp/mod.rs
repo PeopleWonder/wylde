@@ -24,7 +24,9 @@
 //! See `docs/mcp_surface.md` for the exposed surface.
 
 mod adapters;
+mod authz;
 mod handlers;
+mod resources;
 mod transport;
 
 use axum::body::{Body, Bytes};
@@ -32,17 +34,25 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::from_fn;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::Router;
+use axum::{Extension, Router};
 
-use crate::auth::require_device;
+use crate::auth::{require_device, Device};
 
 /// `POST /mcp` — client → server JSON-RPC over the Streamable HTTP
 /// transport.
-async fn mcp_post(headers: HeaderMap, body: Bytes) -> Response {
+///
+/// `require_device` runs first (route layer) and inserts the verified
+/// [`Device`]; we read it here so the dispatcher can authorize per caller
+/// rather than trusting any authenticated device with the full surface.
+async fn mcp_post(
+    Extension(device): Extension<Device>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let session_id = headers
         .get(transport::SESSION_HEADER)
         .and_then(|v| v.to_str().ok());
-    let outcome = transport::process_post(&body, session_id).await;
+    let outcome = transport::process_post(&device, &body, session_id).await;
 
     let mut builder = Response::builder().status(outcome.status);
     if let Some(sid) = &outcome.new_session {
@@ -217,5 +227,83 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
         let body = to_bytes(resp.into_body(), 1024).await.unwrap();
         assert!(body.is_empty(), "a notification gets no response body");
+    }
+
+    /// Seed a device token of the given tier and POST a `tools/call` for
+    /// `tool` through the full router; return the parsed JSON-RPC body.
+    async fn tools_call_body(token: &str, tier: &str, tool: &str) -> Value {
+        token_cache()
+            .insert(
+                token.to_owned(),
+                Device {
+                    device_id: format!("dev-{token}"),
+                    tier: tier.to_owned(),
+                },
+            )
+            .await;
+        let req_body = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{tool}","arguments":{{}}}}}}"#
+        );
+        let resp = router()
+            .oneshot(post_request(Some(token), &req_body))
+            .await
+            .unwrap();
+        // A JSON-RPC application error rides a 200.
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = to_bytes(resp.into_body(), 8 * 1024).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn tools_call_refuses_a_non_allowlisted_tool_over_the_router() {
+        // `execute_bash` is a real harness tool but not MCP-exposable.
+        let v = tools_call_body("mcp-auth-nonlisted", "tool_use", "execute_bash").await;
+        assert_eq!(v["error"]["code"], handlers::TOOL_NOT_PERMITTED);
+    }
+
+    #[tokio::test]
+    async fn tools_call_refuses_a_destructive_tool_over_the_router() {
+        // Destructive tools are never exposed — refused before the pipe,
+        // even though this device authenticated fine.
+        let v = tools_call_body("mcp-auth-destructive", "tool_use", "write_file").await;
+        assert_eq!(v["error"]["code"], handlers::TOOL_NOT_PERMITTED);
+    }
+
+    #[tokio::test]
+    async fn tools_call_tier_wins_over_confirm_via_router() {
+        // A non-privileged (tool_use) device cannot run an off-list
+        // destructive tool even with confirm:true — refused pre-pipe, so
+        // the assertion is deterministic without a harness. (The
+        // destructive_tool_access + confirm path needs a live catalog and
+        // is covered by handlers::decide_matrix instead.)
+        let token = "mcp-auth-confirm-tierwins";
+        token_cache()
+            .insert(
+                token.to_owned(),
+                Device {
+                    device_id: "dev-confirm".to_owned(),
+                    tier: "tool_use".to_owned(),
+                },
+            )
+            .await;
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file","arguments":{"confirm":true,"path":"/x"}}}"#;
+        let resp = router()
+            .oneshot(post_request(Some(token), body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), 8 * 1024).await.unwrap();
+        let v: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"]["code"], handlers::TOOL_NOT_PERMITTED);
+    }
+
+    #[tokio::test]
+    async fn tools_call_allows_an_allowlisted_tool_past_authorization() {
+        // An allow-listed tool clears the authorization gate and reaches
+        // the bridge; with no harness pipe in the test sandbox that
+        // surfaces as INTERNAL_ERROR — crucially NOT the TOOL_NOT_PERMITTED
+        // authorization refusal.
+        let v = tools_call_body("mcp-auth-allowed", "tool_use", "read_file").await;
+        assert_eq!(v["error"]["code"], handlers::INTERNAL_ERROR);
     }
 }

@@ -15,22 +15,41 @@
 //! |-------------------|--------------------------------------------|
 //! | `tools/list`      | `tools.list`                               |
 //! | `tools/call`      | `tools.run` (runs `tool_runner.run_tool`)   |
-//! | `resources/list`  | `conversations.list` + `rag.workspaces.list`|
+//! | `resources/list`  | `conversations.list` + `workspaces.list_mru` |
 //! | `resources/read`  | `conversations.get` \| workspace file store |
 //! | `prompts/list`    | `prompts.list` (catalog entries)            |
 //! | `prompts/get`     | `prompts.list` (override-or-default resolve)|
 //!
 //! The harness pipe actions are NOT modified — this is a read/run
 //! surface layered on top of them.
+//!
+//! Tool-exposure policy lives in [`super::authz`]; the `resources/*`
+//! reshape lives in [`super::resources`]. This module keeps the shared
+//! harness bridge ([`harness`], [`entries`], [`BridgeError`]) plus the
+//! tools and prompts reshapes.
 
 use serde_json::{json, Value};
 
+use super::authz::{
+    classify_entry, entry_destructive, is_exposable, tier_allows_destructive, ToolAccess,
+};
 use crate::proxy_core::pipe_action;
 
 /// Harness pipe service name — every action dispatches here.
 pub const HARNESS_PIPE: &str = "wylde-harness";
 /// URI scheme for the Wylde resource namespace.
 pub const URI_SCHEME: &str = "wylde://";
+
+/// Classify how `name` may be reached over MCP by consulting the live
+/// catalog. Only called for a privileged (`destructive_tool_access`)
+/// caller asking for a non-allow-listed tool, so the extra `tools.list`
+/// round-trip is paid only on that path.
+pub async fn classify_tool(name: &str) -> Result<ToolAccess, BridgeError> {
+    let data = harness("tools.list", json!({})).await?;
+    let all = entries(&data, "tools");
+    let entry = all.iter().find(|e| entry_name(e) == name);
+    Ok(classify_entry(entry, name))
+}
 
 /// A harness pipe action failed. Carries a human-readable `message` and
 /// optional structured `details`; [`super::handlers`] folds it into a
@@ -52,7 +71,7 @@ impl BridgeError {
 }
 
 /// Invoke a harness pipe action and return its reply `data`.
-async fn harness(action: &str, payload: Value) -> Result<Value, BridgeError> {
+pub(super) async fn harness(action: &str, payload: Value) -> Result<Value, BridgeError> {
     match pipe_action(HARNESS_PIPE, action, payload).await {
         Ok(data) => Ok(data),
         Err((status, body)) => {
@@ -82,7 +101,7 @@ async fn harness(action: &str, payload: Value) -> Result<Value, BridgeError> {
 
 /// Pull a list of object entries out of a harness reply that is either
 /// `{<key>: [...]}`, `{<key>: {...}}`, or a bare list.
-fn entries(data: &Value, key: &str) -> Vec<Value> {
+pub(super) fn entries(data: &Value, key: &str) -> Vec<Value> {
     if let Some(inner) = data.get(key) {
         return match inner {
             Value::Array(a) => a.iter().filter(|v| v.is_object()).cloned().collect(),
@@ -98,11 +117,44 @@ fn entries(data: &Value, key: &str) -> Vec<Value> {
 
 // ── tools ──────────────────────────────────────────────────────────────
 
-/// Return the harness tool catalog in MCP `Tool` shape.
-pub async fn list_tools() -> Result<Value, BridgeError> {
+/// Return the harness tool catalog in MCP `Tool` shape, scoped to what the
+/// caller's `device_tier` may reach. Non-destructive allow-listed tools are
+/// always listed; destructive tools are listed **only** for a
+/// `destructive_tool_access` caller, and carry `annotations.destructiveHint`
+/// so the client knows a `confirm` is required. `tools/list` and
+/// `tools/call` therefore agree on what a given caller may run.
+pub async fn list_tools(device_tier: &str) -> Result<Value, BridgeError> {
     let data = harness("tools.list", json!({})).await?;
-    let tools: Vec<Value> = entries(&data, "tools").iter().map(tool_to_mcp).collect();
+    let allow_destructive = tier_allows_destructive(device_tier);
+    let tools: Vec<Value> = entries(&data, "tools")
+        .iter()
+        .filter(|e| entry_listable(e, allow_destructive))
+        .map(tool_to_mcp)
+        .collect();
     Ok(Value::Array(tools))
+}
+
+/// The canonical name for a catalog entry — `name`, else `id`. Kept in
+/// step with [`tool_to_mcp`] so the exposure filter and the emitted
+/// `Tool.name` always agree.
+fn entry_name(entry: &Value) -> &str {
+    entry
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or_else(|| entry.get("id").and_then(Value::as_str))
+        .unwrap_or("")
+}
+
+/// Whether a catalog entry is listable for a caller: a destructive tool is
+/// listed only when `allow_destructive`; a non-destructive tool is listed
+/// only when allow-listed. Pure.
+fn entry_listable(entry: &Value, allow_destructive: bool) -> bool {
+    if entry_destructive(entry) {
+        allow_destructive
+    } else {
+        is_exposable(entry_name(entry))
+    }
 }
 
 /// Map one canonical harness catalog entry to an MCP `Tool`.
@@ -125,22 +177,64 @@ pub fn tool_to_mcp(entry: &Value) -> Value {
         .filter(|v| v.is_object())
         .cloned()
         .unwrap_or_else(|| json!({ "type": "object" }));
-    json!({ "name": name, "description": description, "inputSchema": schema })
+    // MCP tool annotations (spec `ToolAnnotations`): advertise the
+    // destructive/read-only hints so a client knows which tools need a
+    // `confirm`. Derived from the harness `destructive` flag, the source
+    // of truth.
+    let destructive = entry_destructive(entry);
+    json!({
+        "name": name,
+        "description": description,
+        "inputSchema": schema,
+        "annotations": { "readOnlyHint": !destructive, "destructiveHint": destructive },
+    })
 }
 
 /// Run one tool through the harness `tools.run` action.
 ///
-/// `tools.run` calls `tool_runner.run_tool(name, args, confirm=…)` — the
-/// same dispatch path an in-process turn uses. The runner envelope is
-/// serialised into a single MCP text-content block; `isError` mirrors
-/// the envelope's `ok` flag.
-pub async fn call_tool(name: &str, arguments: Value) -> Result<Value, BridgeError> {
+/// `tools.run`'s contract is `{name, args?, device_tier?}` and it runs the
+/// registry **tier gate** against `device_tier` (Rust port note in
+/// `pipe/tools.rs`). We pass the *caller's* real tier — resolved by
+/// `require_device` — so a `tool_use` device is held to `tool_use` and
+/// only a `destructive_tool_access` device can reach a destructive tool,
+/// exactly as an interactive turn would be gated. An empty tier lets the
+/// harness apply its `tool_use` default.
+///
+/// (The old `confirm: false` field was a no-op — it is not part of the
+/// `tools.run` contract — and is dropped; destructive gating is the tier
+/// gate's job, not a client-supplied flag.)
+///
+/// The runner envelope is serialised into a single MCP text-content
+/// block; `isError` mirrors the envelope's `ok` flag.
+pub async fn call_tool(
+    name: &str,
+    arguments: Value,
+    device_tier: &str,
+    confirm: bool,
+) -> Result<Value, BridgeError> {
     let reply = harness(
         "tools.run",
-        json!({ "name": name, "args": arguments, "confirm": false }),
+        run_payload(name, arguments, device_tier, confirm),
     )
     .await?;
     Ok(tool_result_to_mcp(&reply))
+}
+
+/// Build the `tools.run` payload: `{name, args, device_tier?, confirm?}`.
+/// The tier is included only when non-empty (an empty tier lets the
+/// harness apply its `tool_use` default). `confirm` is included only when
+/// true — it is a per-call, non-persisted confirmation that satisfies an
+/// undecided harness consent gate for this dispatch (it never overrides a
+/// stored deny; that check is the harness's).
+fn run_payload(name: &str, arguments: Value, device_tier: &str, confirm: bool) -> Value {
+    let mut payload = json!({ "name": name, "args": arguments });
+    if !device_tier.is_empty() {
+        payload["device_tier"] = json!(device_tier);
+    }
+    if confirm {
+        payload["confirm"] = json!(true);
+    }
+    payload
 }
 
 /// Wrap a `tool_runner` envelope into an MCP `CallToolResult`.
@@ -151,162 +245,6 @@ pub fn tool_result_to_mcp(reply: &Value) -> Value {
         "content": [{ "type": "text", "text": text }],
         "isError": is_error,
     })
-}
-
-// ── resources ──────────────────────────────────────────────────────────
-
-/// Enumerate readable resources: recent conversations + workspaces.
-///
-/// Conversations are listed first, then workspaces — the Python side
-/// keeps the same order so a bridge failure surfaces identically.
-pub async fn list_resources() -> Result<Value, BridgeError> {
-    let mut out: Vec<Value> = Vec::new();
-    let convs = harness("conversations.list", json!({})).await?;
-    for conv in entries(&convs, "conversations") {
-        let cid = conv.get("id").and_then(Value::as_str).unwrap_or("");
-        if cid.is_empty() {
-            continue;
-        }
-        let name = conv
-            .get("title")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(cid);
-        out.push(json!({
-            "uri": format!("{URI_SCHEME}conversation/{cid}"),
-            "name": name,
-            "mimeType": "application/json",
-        }));
-    }
-    let wss = harness("workspaces.list_mru", json!({})).await?;
-    for ws in entries(&wss, "workspaces") {
-        let wid = ws.get("id").and_then(Value::as_str).unwrap_or("");
-        if wid.is_empty() {
-            continue;
-        }
-        let name = ws
-            .get("folder")
-            .or_else(|| ws.get("path"))
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .unwrap_or(wid);
-        out.push(json!({
-            "uri": format!("{URI_SCHEME}workspace/{wid}/"),
-            "name": name,
-            "mimeType": "inode/directory",
-        }));
-    }
-    Ok(Value::Array(out))
-}
-
-/// A parsed `wylde://` resource URI.
-#[derive(Debug, PartialEq, Eq)]
-pub enum ResourceRef {
-    Conversation(String),
-    Workspace { id: String, path: String },
-}
-
-/// Split a `wylde://` URI into a [`ResourceRef`].
-///
-/// * `wylde://conversation/<id>`             → `Conversation(id)`
-/// * `wylde://workspace/<workspace_id>/<p>`  → `Workspace { id, path }`
-///
-/// Returns `None` for any other shape.
-pub fn parse_uri(uri: &str) -> Option<ResourceRef> {
-    let rest = uri.strip_prefix(URI_SCHEME)?;
-    let mut parts = rest.splitn(3, '/');
-    match parts.next()? {
-        "conversation" => {
-            let id = parts.next().filter(|s| !s.is_empty())?;
-            Some(ResourceRef::Conversation(id.to_owned()))
-        }
-        "workspace" => {
-            let id = parts.next().filter(|s| !s.is_empty())?;
-            let path = parts.next().unwrap_or("");
-            Some(ResourceRef::Workspace {
-                id: id.to_owned(),
-                path: path.to_owned(),
-            })
-        }
-        _ => None,
-    }
-}
-
-/// Resolve a `wylde://` URI to its MCP `contents` block.
-pub async fn read_resource(uri: &str) -> Result<Value, BridgeError> {
-    match parse_uri(uri) {
-        None => Err(BridgeError::msg(format!(
-            "unsupported resource uri: {uri:?}"
-        ))),
-        Some(ResourceRef::Conversation(id)) => {
-            let doc = harness("conversations.get", json!({ "id": id })).await?;
-            let text = serde_json::to_string(&doc).unwrap_or_else(|_| "null".to_owned());
-            Ok(json!({
-                "contents": [{
-                    "uri": uri,
-                    "mimeType": "application/json",
-                    "text": text,
-                }]
-            }))
-        }
-        Some(ResourceRef::Workspace { id, path }) => {
-            if path.is_empty() {
-                return Err(BridgeError::msg(format!(
-                    "workspace resource uri needs a file path: {uri:?}"
-                )));
-            }
-            let text = read_workspace_file(&id, &path).await?;
-            Ok(json!({
-                "contents": [{
-                    "uri": uri,
-                    "mimeType": "text/plain",
-                    "text": text,
-                }]
-            }))
-        }
-    }
-}
-
-/// Read a file under a workspace's folder. The workspace root comes from
-/// the `workspaces.list_mru` registry.
-async fn read_workspace_file(workspace_id: &str, rel_path: &str) -> Result<String, BridgeError> {
-    let wss = harness("workspaces.list_mru", json!({})).await?;
-    let workspace = entries(&wss, "workspaces")
-        .into_iter()
-        .find(|w| w.get("id").and_then(Value::as_str) == Some(workspace_id))
-        .ok_or_else(|| BridgeError::msg(format!("workspace not found: {workspace_id:?}")))?;
-    let root = workspace
-        .get("folder")
-        .or_else(|| workspace.get("path"))
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    if root.is_empty() {
-        return Err(BridgeError::msg(format!(
-            "workspace {workspace_id:?} has no indexed path"
-        )));
-    }
-    resolve_and_read(root, rel_path)
-}
-
-/// Resolve `rel_path` against `root`, confine it to the workspace, and
-/// read it. A `../` that escapes the workspace root is rejected.
-pub fn resolve_and_read(root: &str, rel_path: &str) -> Result<String, BridgeError> {
-    let base = std::fs::canonicalize(root)
-        .map_err(|exc| BridgeError::msg(format!("workspace root unavailable: {exc}")))?;
-    let target = std::fs::canonicalize(base.join(rel_path))
-        .map_err(|_| BridgeError::msg(format!("file not found in workspace: {rel_path:?}")))?;
-    if !target.starts_with(&base) {
-        return Err(BridgeError::msg(format!(
-            "path escapes workspace root: {rel_path:?}"
-        )));
-    }
-    if !target.is_file() {
-        return Err(BridgeError::msg(format!(
-            "file not found in workspace: {rel_path:?}"
-        )));
-    }
-    std::fs::read_to_string(&target)
-        .map_err(|exc| BridgeError::msg(format!("could not read workspace file: {exc}")))
 }
 
 // ── prompts ────────────────────────────────────────────────────────────
@@ -382,6 +320,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn entry_listable_scopes_destructive_tools_to_the_privileged_tier() {
+        let safe = json!({ "id": "read_file", "destructive": false });
+        let danger = json!({ "id": "write_file", "destructive": true });
+        // Non-destructive allow-listed tool: listed for everyone.
+        assert!(entry_listable(&safe, false));
+        assert!(entry_listable(&safe, true));
+        // Destructive tool: listed only when destructive is allowed.
+        assert!(!entry_listable(&danger, false));
+        assert!(entry_listable(&danger, true));
+        // Non-destructive but NOT allow-listed: never listed.
+        let hidden = json!({ "id": "execute_bash", "destructive": false });
+        assert!(!entry_listable(&hidden, false));
+        assert!(!entry_listable(&hidden, true));
+    }
+
+    #[test]
+    fn tool_to_mcp_annotates_destructive_hint() {
+        let safe = tool_to_mcp(&json!({ "id": "read_file", "destructive": false }));
+        assert_eq!(safe["annotations"]["destructiveHint"], false);
+        assert_eq!(safe["annotations"]["readOnlyHint"], true);
+        let danger = tool_to_mcp(&json!({ "id": "write_file", "destructive": true }));
+        assert_eq!(danger["annotations"]["destructiveHint"], true);
+        assert_eq!(danger["annotations"]["readOnlyHint"], false);
+    }
+
+    #[test]
     fn tool_to_mcp_prefers_name_then_id() {
         let entry = json!({ "id": "git_status", "name": "git.status", "description": "d" });
         let mapped = tool_to_mcp(&entry);
@@ -409,50 +373,32 @@ mod tests {
     }
 
     #[test]
+    fn run_payload_threads_tier_and_confirm() {
+        let p = run_payload("read_file", json!({ "path": "a.txt" }), "tool_use", true);
+        assert_eq!(p["name"], "read_file");
+        assert_eq!(p["device_tier"], "tool_use");
+        assert_eq!(
+            p["confirm"], true,
+            "confirm:true must be forwarded to tools.run"
+        );
+        // confirm:false is omitted (the harness default), so it never
+        // appears in args and stays off unless explicitly set.
+        let p2 = run_payload("write_file", json!({}), "destructive_tool_access", false);
+        assert_eq!(p2["device_tier"], "destructive_tool_access");
+        assert!(p2.get("confirm").is_none(), "confirm:false is omitted");
+        // Empty tier is omitted so the harness applies its default.
+        let p3 = run_payload("read_file", json!({}), "", true);
+        assert!(p3.get("device_tier").is_none());
+        assert_eq!(p3["confirm"], true);
+    }
+
+    #[test]
     fn tool_result_marks_error_when_envelope_not_ok() {
         let ok = tool_result_to_mcp(&json!({ "ok": true, "data": 1 }));
         assert_eq!(ok["isError"], false);
         let bad = tool_result_to_mcp(&json!({ "ok": false, "error": {"code": "x"} }));
         assert_eq!(bad["isError"], true);
         assert_eq!(bad["content"][0]["type"], "text");
-    }
-
-    #[test]
-    fn parse_uri_handles_conversation() {
-        assert_eq!(
-            parse_uri("wylde://conversation/abc-123"),
-            Some(ResourceRef::Conversation("abc-123".to_owned()))
-        );
-    }
-
-    #[test]
-    fn parse_uri_handles_workspace_with_nested_path() {
-        assert_eq!(
-            parse_uri("wylde://workspace/ws-9/src/main.rs"),
-            Some(ResourceRef::Workspace {
-                id: "ws-9".to_owned(),
-                path: "src/main.rs".to_owned(),
-            })
-        );
-    }
-
-    #[test]
-    fn parse_uri_workspace_root_has_empty_path() {
-        assert_eq!(
-            parse_uri("wylde://workspace/ws-9/"),
-            Some(ResourceRef::Workspace {
-                id: "ws-9".to_owned(),
-                path: String::new(),
-            })
-        );
-    }
-
-    #[test]
-    fn parse_uri_rejects_foreign_scheme_and_unknown_kind() {
-        assert_eq!(parse_uri("https://example.test/x"), None);
-        assert_eq!(parse_uri("wylde://memory/abc"), None);
-        assert_eq!(parse_uri("wylde://conversation/"), None);
-        assert_eq!(parse_uri("wylde://"), None);
     }
 
     #[test]
@@ -501,33 +447,5 @@ mod tests {
         assert_eq!(entries(&keyed_dict, "tools").len(), 1);
         let bare = json!([{ "id": "a" }]);
         assert_eq!(entries(&bare, "tools").len(), 1);
-    }
-
-    #[test]
-    fn resolve_and_read_reads_a_file_inside_the_workspace() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("note.txt");
-        std::fs::write(&file, "hello workspace").unwrap();
-        let root = dir.path().to_str().unwrap();
-        assert_eq!(
-            resolve_and_read(root, "note.txt").unwrap(),
-            "hello workspace"
-        );
-    }
-
-    #[test]
-    fn resolve_and_read_rejects_traversal_outside_the_workspace() {
-        let outer = tempfile::tempdir().unwrap();
-        std::fs::write(outer.path().join("secret.txt"), "top secret").unwrap();
-        let inner = outer.path().join("workspace");
-        std::fs::create_dir(&inner).unwrap();
-        let root = inner.to_str().unwrap();
-        // `../secret.txt` resolves outside the workspace root.
-        let err = resolve_and_read(root, "../secret.txt").unwrap_err();
-        assert!(
-            err.message.contains("escapes") || err.message.contains("not found"),
-            "unexpected message: {}",
-            err.message
-        );
     }
 }

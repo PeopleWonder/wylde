@@ -1984,6 +1984,49 @@ tagged on the maintainer's say-so (`docs/branch-and-release-policy.md` §5).
 
 ### Security
 
+- **The MCP server (`/mcp`) is hardened from a full-catalog remote surface into a
+  scoped, unattended-safe one.** Previously the gateway resolved the caller's device
+  via `require_device` but never *read* it: any authenticated device could invoke any
+  tool (with a dead `confirm: false` that `tools.run` ignored), and read any conversation
+  or any workspace file with no size or type bound. The MCP path now (a) threads the
+  verified `Device` through `mod → transport → handlers → adapters` and restricts
+  `tools/list`/`tools/call` to a curated `MCP_TOOL_ALLOWLIST` of non-destructive
+  read/query tools — anything else is refused with JSON-RPC `-32001` before the pipe is
+  touched; (b) passes the caller's *real* device tier to `tools.run` so the harness tier
+  gate applies per-caller, and filters the live catalog on its own `destructive` flag so a
+  destructive tool can never be advertised or run over MCP (there is no way to confirm a
+  destructive action on an unattended surface); (c) reads workspace files through
+  `tokio::fs` (no blocking the async runtime), capped at 1 MiB and required to be UTF-8, so
+  a huge or binary file cannot spike memory; and (d) stops leaking internal harness action
+  names / error codes / pipe status to clients (logged server-side instead), adds opaque
+  cursor pagination to the `*/list` methods, and negotiates the client's requested
+  `protocolVersion`. Docs: [`docs/mcp_surface.md`](docs/mcp_surface.md).
+
+- **MCP gains an explicit-confirm path for destructive tools, safe by default.** Building
+  on the hardening above, a properly-tiered device can now run destructive tools over MCP
+  when it explicitly confirms, without weakening the default posture. A `destructive_tool_access`
+  device sees destructive tools in `tools/list` (annotated `destructiveHint: true`) and may run
+  one by resending `tools/call` with `arguments.confirm: true`; without confirm it gets
+  `-32002 CONFIRMATION_REQUIRED` (never a silent run or no-op). A `tool_use` (default) device
+  still cannot see or run any destructive or off-allow-list tool — it is refused with `-32001`
+  before the pipe is touched, without even acknowledging the tool exists. The `confirm` flag is
+  read for the gate then stripped from the tool's arguments.
+
+- **A confirmed MCP destructive call now executes end-to-end, with the local deny still
+  supreme.** `tools.run` / `dispatch_tool` gained a per-call `confirm` parameter that the
+  gateway forwards from the MCP `confirm`. On an **undecided** consent gate (`Pending`),
+  `confirm: true` lets the dispatch run for that one call — **not persisted**, so a later call
+  without confirm prompts again. Crucially, `confirm` **never** overrides a stored explicit
+  **deny**: a `consent_denied` tool stays blocked no matter what a remote/MCP caller sends —
+  the user's local consent gate is the ultimate authority. It also runs after the tier gate,
+  so tier still gates first. The interactive turn loop is unchanged (it never auto-confirms;
+  it uses the normal prompt → `consent.respond` flow). Allow-listed non-destructive MCP tools
+  are sent with `confirm: true` too, so a first call clears an undecided gate instead of
+  returning `consent_required` (a stored deny still blocks them). This path is Rust-only —
+  the Python gateway was removed in the full-Rust cutover. Docs:
+  [`docs/mcp_surface.md`](docs/mcp_surface.md),
+  [`docs/extensions/harness-api-reference.md`](docs/extensions/harness-api-reference.md).
+
 - **Every third-party GitHub Action is now pinned to a commit SHA, and a CI gate
   keeps it that way (closes #127).** Every `uses:` across the seven workflows was
   pinned to a *mutable major tag* (`actions/checkout@v7`, `dependabot/fetch-metadata@v3`,

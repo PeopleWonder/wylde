@@ -28,6 +28,7 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 
 use super::handlers;
+use crate::auth::Device;
 
 /// Request header carrying the session id (lookup is case-insensitive).
 pub const SESSION_HEADER: &str = "mcp-session-id";
@@ -122,8 +123,12 @@ impl PostOutcome {
     }
 }
 
-/// Process one `POST /mcp` body.
-pub async fn process_post(raw_body: &[u8], session_id: Option<&str>) -> PostOutcome {
+/// Process one `POST /mcp` body on behalf of the verified `device`.
+pub async fn process_post(
+    device: &Device,
+    raw_body: &[u8],
+    session_id: Option<&str>,
+) -> PostOutcome {
     let payload: Value = match serde_json::from_slice(raw_body) {
         Ok(v) => v,
         Err(_) => {
@@ -194,7 +199,7 @@ pub async fn process_post(raw_body: &[u8], session_id: Option<&str>) -> PostOutc
         touch_session(sid);
     }
 
-    let dispatched = handlers::dispatch(&method, &params).await;
+    let dispatched = handlers::dispatch(device, &method, &params).await;
     if is_notification {
         return PostOutcome {
             body: None,
@@ -220,6 +225,13 @@ pub async fn process_post(raw_body: &[u8], session_id: Option<&str>) -> PostOutc
 mod tests {
     use super::*;
 
+    fn device() -> Device {
+        Device {
+            device_id: "dev-test".to_owned(),
+            tier: "tool_use".to_owned(),
+        }
+    }
+
     #[test]
     fn create_session_mints_unique_ids() {
         let a = create_session();
@@ -238,7 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn process_post_rejects_non_json_body() {
-        let outcome = process_post(b"not json at all", None).await;
+        let outcome = process_post(&device(), b"not json at all", None).await;
         assert_eq!(outcome.status, StatusCode::BAD_REQUEST);
         let body = outcome.body.unwrap();
         assert_eq!(body["error"]["code"], handlers::PARSE_ERROR);
@@ -247,7 +259,7 @@ mod tests {
 
     #[tokio::test]
     async fn process_post_rejects_json_rpc_batch_array() {
-        let outcome = process_post(b"[{\"jsonrpc\":\"2.0\"}]", None).await;
+        let outcome = process_post(&device(), b"[{\"jsonrpc\":\"2.0\"}]", None).await;
         assert_eq!(outcome.status, StatusCode::BAD_REQUEST);
         assert_eq!(
             outcome.body.unwrap()["error"]["code"],
@@ -258,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn process_post_rejects_request_without_method() {
         let raw = br#"{"jsonrpc":"2.0","id":7}"#;
-        let outcome = process_post(raw, None).await;
+        let outcome = process_post(&device(), raw, None).await;
         assert_eq!(outcome.status, StatusCode::BAD_REQUEST);
         let body = outcome.body.unwrap();
         assert_eq!(body["error"]["code"], handlers::INVALID_REQUEST);
@@ -268,7 +280,7 @@ mod tests {
     #[tokio::test]
     async fn process_post_initialize_returns_result_and_mints_session() {
         let raw = br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#;
-        let outcome = process_post(raw, None).await;
+        let outcome = process_post(&device(), raw, None).await;
         assert_eq!(outcome.status, StatusCode::OK);
         assert!(outcome.new_session.is_some());
         let body = outcome.body.unwrap();
@@ -283,7 +295,7 @@ mod tests {
     #[tokio::test]
     async fn process_post_notification_yields_202_and_no_body() {
         let raw = br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
-        let outcome = process_post(raw, None).await;
+        let outcome = process_post(&device(), raw, None).await;
         assert_eq!(outcome.status, StatusCode::ACCEPTED);
         assert!(outcome.body.is_none());
     }
@@ -291,7 +303,7 @@ mod tests {
     #[tokio::test]
     async fn process_post_unknown_method_is_a_200_json_rpc_error() {
         let raw = br#"{"jsonrpc":"2.0","id":"x","method":"bogus"}"#;
-        let outcome = process_post(raw, None).await;
+        let outcome = process_post(&device(), raw, None).await;
         // JSON-RPC application errors ride a 200 — the request was
         // well-formed, the method just isn't one we serve.
         assert_eq!(outcome.status, StatusCode::OK);
