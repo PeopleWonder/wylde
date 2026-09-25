@@ -105,6 +105,13 @@ impl RateLimiter {
         self.limit
     }
 
+    /// Register one request against `key` in the current window; `true`
+    /// when it is within the cap. For limits enforced inside a handler's
+    /// own middleware (the `/v1` gate) rather than as a layer here.
+    pub fn allow(&self, key: &str) -> bool {
+        self.check(key, current_minute())
+    }
+
     /// Register one request against `key` for calendar minute `now_min`.
     /// Returns `true` when the request is within the cap. Port of
     /// `RateLimitMiddleware._allow` — `now_min` is taken as a parameter
@@ -164,11 +171,20 @@ fn bucket_key(req: &Request) -> String {
 /// Current calendar minute — `unix_secs / 60`. Port of Python's
 /// `int(time.time() // 60)`.
 fn current_minute() -> i64 {
-    let secs = SystemTime::now()
+    (unix_secs() / 60) as i64
+}
+
+fn unix_secs() -> u64 {
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
-    (secs / 60) as i64
+        .unwrap_or(0)
+}
+
+/// Seconds until the current fixed window resets (1..=60) — the
+/// `Retry-After` for a request rejected in this window.
+pub fn seconds_until_window_reset() -> u64 {
+    60 - unix_secs() % 60
 }
 
 // ── Per-device tier ────────────────────────────────────────────────────
@@ -200,6 +216,33 @@ pub fn device_limiter() -> RateLimiter {
     static LIMITER: OnceLock<RateLimiter> = OnceLock::new();
     LIMITER
         .get_or_init(|| RateLimiter::new(device_rate_limit_per_min()))
+        .clone()
+}
+
+// ── OpenAI `/v1` tier ──────────────────────────────────────────────────
+
+/// Default `/v1` cap per device when [`OPENAI_RATE_LIMIT_ENV`] is unset.
+/// Well above the 60/min per-device tier: debounced autocomplete alone can
+/// send dozens of requests a minute.
+const DEFAULT_OPENAI_PER_MIN: u32 = 600;
+
+/// Env var overriding the `/v1` per-device cap.
+const OPENAI_RATE_LIMIT_ENV: &str = "WYLDE_RATE_LIMIT_OPENAI_PER_MIN";
+
+/// Process-wide `/v1` limiter, keyed `dev:<device_id>` by the `/v1` gate.
+/// Separate from [`device_limiter`] so OpenAI traffic (autocomplete in
+/// particular) never uses up a device's `chat/run_turn` budget.
+pub fn openai_limiter() -> RateLimiter {
+    static LIMITER: OnceLock<RateLimiter> = OnceLock::new();
+    LIMITER
+        .get_or_init(|| {
+            RateLimiter::new(
+                std::env::var(OPENAI_RATE_LIMIT_ENV)
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(DEFAULT_OPENAI_PER_MIN),
+            )
+        })
         .clone()
 }
 
@@ -245,6 +288,43 @@ mod tests {
     use axum::Router;
     use serde_json::Value;
     use tower::ServiceExt;
+
+    #[test]
+    fn allow_counts_against_the_current_window() {
+        // `allow` reads the wall clock; retry if a minute boundary lands
+        // mid-test (the window would reset and the cap assert would flake).
+        for _ in 0..3 {
+            let minute = current_minute();
+            let limiter = RateLimiter::new(2);
+            let got = [
+                limiter.allow("dev:a"),
+                limiter.allow("dev:a"),
+                limiter.allow("dev:a"),
+                limiter.allow("dev:b"),
+            ];
+            if current_minute() == minute {
+                assert_eq!(
+                    got,
+                    [true, true, false, true],
+                    "cap per key, keys independent"
+                );
+                return;
+            }
+        }
+        panic!("minute boundary crossed on every attempt");
+    }
+
+    #[test]
+    fn window_reset_is_within_a_minute() {
+        let secs = seconds_until_window_reset();
+        assert!((1..=60).contains(&secs), "got {secs}");
+    }
+
+    #[test]
+    fn openai_default_cap_exceeds_the_device_tier() {
+        // Autocomplete must fit in the /v1 budget without the 60/min tier.
+        const { assert!(DEFAULT_OPENAI_PER_MIN > DEFAULT_DEVICE_PER_MIN) };
+    }
 
     fn req(uri: &str) -> Request {
         Request::builder().uri(uri).body(Body::empty()).unwrap()
