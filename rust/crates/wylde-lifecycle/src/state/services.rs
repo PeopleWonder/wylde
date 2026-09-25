@@ -1126,12 +1126,48 @@ pub fn spawn_ollama_serve() -> Result<PathBuf> {
 /// (the user's `~/.ollama` or their own `OLLAMA_MODELS`) keeps discovery
 /// (`/api/tags`) version-independent by construction.
 ///
-/// Returns empty today; kept as a guarded seam so any future daemon env
-/// (a log level, a host binding) is added here and screened by
+/// Any daemon env is added here and screened by
 /// [`tests::ollama_serve_env_never_relocates_the_store`] rather than being
-/// sprinkled onto the spawn ad hoc.
+/// sprinkled onto the spawn ad hoc. Today that is only
+/// `OLLAMA_NUM_PARALLEL` (see [`ollama_serve_env_overrides_from`]).
 pub fn ollama_serve_env_overrides() -> Vec<(&'static str, String)> {
-    Vec::new()
+    ollama_serve_env_overrides_from(
+        std::env::var("OLLAMA_NUM_PARALLEL").ok(),
+        std::env::var(WYLDE_OLLAMA_NUM_PARALLEL_ENV).ok(),
+    )
+}
+
+/// Default Ollama request slots per loaded model when Wylde spawns the
+/// daemon (#345). Two slots let an autocomplete (FIM) request run
+/// alongside an agent turn on the same model instead of queueing behind it.
+/// Measured on the RTX 5080 (16 GB) with the ~14 GB Qwen3-Coder-30B IQ3:
+/// one slot at 16K made a mid-generation FIM request wait 3.25 s; two slots
+/// at 8K each served it in 0.13 s with the model still 100% on the GPU
+/// (14.37 GB) and chat at full speed. The slots split the same total
+/// context (2 x 8K ~ 1 x 16K); two slots at 16K each spilled 1.7 GB to the
+/// CPU and cut throughput ~37%.
+const DEFAULT_OLLAMA_NUM_PARALLEL: u32 = 2;
+
+/// Wylde-side override for the spawned daemon's `OLLAMA_NUM_PARALLEL`.
+const WYLDE_OLLAMA_NUM_PARALLEL_ENV: &str = "WYLDE_OLLAMA_NUM_PARALLEL";
+
+/// Pure core of [`ollama_serve_env_overrides`]. A user's own
+/// `OLLAMA_NUM_PARALLEL` (`ambient_num_parallel`) always wins: it is
+/// inherited as-is and nothing is added. Otherwise the daemon gets
+/// `WYLDE_OLLAMA_NUM_PARALLEL` when that is a positive integer, else
+/// [`DEFAULT_OLLAMA_NUM_PARALLEL`].
+fn ollama_serve_env_overrides_from(
+    ambient_num_parallel: Option<String>,
+    wylde_num_parallel: Option<String>,
+) -> Vec<(&'static str, String)> {
+    if ambient_num_parallel.is_some_and(|v| !v.trim().is_empty()) {
+        return Vec::new();
+    }
+    let slots = wylde_num_parallel
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(DEFAULT_OLLAMA_NUM_PARALLEL);
+    vec![("OLLAMA_NUM_PARALLEL", slots.to_string())]
 }
 
 // ── Tree-sitter sidecar ─────────────────────────────────────────────────
@@ -1500,6 +1536,37 @@ mod tests {
                  OLLAMA_MODELS"
             );
         }
+    }
+
+    #[test]
+    fn ollama_serve_gets_two_request_slots_by_default() {
+        assert_eq!(
+            ollama_serve_env_overrides_from(None, None),
+            vec![("OLLAMA_NUM_PARALLEL", "2".to_owned())]
+        );
+        // Blank values count as unset.
+        assert_eq!(
+            ollama_serve_env_overrides_from(Some(" ".into()), Some(String::new())),
+            vec![("OLLAMA_NUM_PARALLEL", "2".to_owned())]
+        );
+    }
+
+    #[test]
+    fn ollama_serve_slots_follow_the_wylde_knob_and_never_override_the_user() {
+        assert_eq!(
+            ollama_serve_env_overrides_from(None, Some("1".into())),
+            vec![("OLLAMA_NUM_PARALLEL", "1".to_owned())]
+        );
+        // Garbage or zero falls back to the default.
+        for bad in ["0", "two", "-1"] {
+            assert_eq!(
+                ollama_serve_env_overrides_from(None, Some(bad.into())),
+                vec![("OLLAMA_NUM_PARALLEL", "2".to_owned())],
+                "{bad}"
+            );
+        }
+        // The user's own OLLAMA_NUM_PARALLEL is inherited untouched.
+        assert!(ollama_serve_env_overrides_from(Some("4".into()), Some("1".into())).is_empty());
     }
 
     // Regression: the Neo4j supervisor MUST spawn with absolute paths. When
