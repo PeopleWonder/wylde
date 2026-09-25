@@ -119,6 +119,31 @@ impl OpenAiError {
         e
     }
 
+    /// 400 — FIM (`suffix`) asked of a model with neither native `insert`
+    /// support nor a known FIM template.
+    pub fn fim_unsupported(model: &str) -> Self {
+        let mut e = Self::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "fim_unsupported",
+            format!("The model '{model}' does not support fill-in-the-middle (suffix)"),
+        );
+        e.param = Some("suffix".to_owned());
+        e
+    }
+
+    /// 409 — a FIM request cancelled because a newer one from the same
+    /// device arrived (latest request wins). The client has usually
+    /// abandoned it already.
+    pub fn request_superseded() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "invalid_request_error",
+            "request_superseded",
+            "Superseded by a newer completion request from this device".to_owned(),
+        )
+    }
+
     /// 500 — anything unexpected (details stay in the log).
     pub fn internal() -> Self {
         Self::new(
