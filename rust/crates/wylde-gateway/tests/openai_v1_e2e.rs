@@ -76,6 +76,18 @@ async fn mock() -> &'static Mock {
                 ]}))
             }
         });
+        // The registry is the alias source (#348): `coder`/`embed` come from
+        // `models.list_aliases`, not from WYLDE_OPENAI_MODEL_ALIASES.
+        let c = calls.clone();
+        ipc::register_action("models.list_aliases", move |p: Value| {
+            record(&c, "models.list_aliases", &p);
+            async move {
+                ipc::Reply::ok(json!({"count": 2, "aliases": [
+                    {"alias": "coder", "target": "mock-coder"},
+                    {"alias": "embed", "target": "mock-embed"}
+                ]}))
+            }
+        });
         let c = calls.clone();
         ipc::register_action("ollama.show", move |p: Value| {
             record(&c, "ollama.show", &p);
@@ -160,12 +172,9 @@ async fn guard() -> tokio::sync::MutexGuard<'static, ()> {
     LOCK.lock().await
 }
 
+/// No env aliases: `coder`/`embed` must resolve through the registry.
 fn v1() -> Router {
-    router_with(
-        backend::pipe(),
-        Aliases::parse("coder=mock-coder,embed=mock-embed"),
-        RateLimiter::new(1000),
-    )
+    router_with(backend::pipe(), Aliases::default(), RateLimiter::new(1000))
 }
 
 fn last(m: &Mock, action: &str) -> Value {

@@ -1,14 +1,20 @@
 //! Short model aliases for `/v1` (e.g. `coder` → a long HF GGUF id), so a
 //! client config survives a model swap.
 //!
-//! The harness model registry has no alias concept yet, so v1 reads them
-//! from `WYLDE_OPENAI_MODEL_ALIASES`: comma-separated `alias=model_id`
-//! pairs, e.g.
-//! `coder=hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-IQ3_XXS,embed=nomic-embed-text:latest`.
+//! The source of truth is the harness model registry (`models.set_alias`,
+//! #348). [`super::registry`] turns it into the effective [`Aliases`] every
+//! route resolves with: target installed, and a real model id beats an
+//! alias of the same name.
+//!
+//! **Deprecated stopgap:** `WYLDE_OPENAI_MODEL_ALIASES` (comma-separated
+//! `alias=model_id` pairs, e.g.
+//! `coder=hf.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:UD-IQ3_XXS,embed=nomic-embed-text:latest`)
+//! still works during the migration, but only as a fallback: an env alias
+//! applies where the registry doesn't define that name, or when the harness
+//! is unreachable. Move entries into the registry with `models.set_alias`.
 //! Malformed pairs are skipped and the first definition of an alias wins.
-//! `/v1/models` lists an alias only when its target is actually installed.
 
-/// Env var holding the alias pairs.
+/// Env var holding the deprecated alias pairs.
 pub const ALIASES_ENV: &str = "WYLDE_OPENAI_MODEL_ALIASES";
 
 /// Alias → real model id, in definition order.
@@ -32,9 +38,22 @@ impl Aliases {
         Self(pairs)
     }
 
-    /// Read [`ALIASES_ENV`] (empty when unset).
+    /// Read the deprecated [`ALIASES_ENV`] (empty when unset), warning when
+    /// it is still in use.
     pub fn from_env() -> Self {
-        Self::parse(&std::env::var(ALIASES_ENV).unwrap_or_default())
+        let aliases = Self::parse(&std::env::var(ALIASES_ENV).unwrap_or_default());
+        if !aliases.0.is_empty() {
+            tracing::warn!(
+                "{ALIASES_ENV} is deprecated: model aliases now live in the model \
+                 registry (models.set_alias); the env entries are only a fallback"
+            );
+        }
+        aliases
+    }
+
+    /// Aliases from already-resolved `(alias, target)` pairs.
+    pub fn from_pairs(pairs: Vec<(String, String)>) -> Self {
+        Self(pairs)
     }
 
     /// The real model id for `id`: its target when `id` is an alias,

@@ -14,7 +14,7 @@ fn app_with(fake: Arc<FakeBackend>, salvage: &str) -> Router {
     router_from(
         OpenAiState::new(
             fake,
-            Aliases::parse("coder=real:1"),
+            Aliases::parse("coder=hf.co/u/Coder-GGUF:IQ3"),
             SalvagePolicy::parse(salvage),
         ),
         RateLimiter::new(1000),
@@ -102,7 +102,7 @@ async fn non_stream_text_reply_with_usage() {
         json!({"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7})
     );
     let sent = &fake.payloads("chat_stream")[0];
-    assert_eq!(sent["model"], "real:1", "alias resolved");
+    assert_eq!(sent["model"], "hf.co/u/Coder-GGUF:IQ3", "alias resolved");
     assert_eq!(sent["stream"], true);
     assert_eq!(sent["evict_on_cancel"], false);
     assert_eq!(sent["pin_load_options"], true);

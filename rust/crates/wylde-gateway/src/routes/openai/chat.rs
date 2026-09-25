@@ -24,7 +24,7 @@ use super::backend::BackendStream;
 use super::errors::OpenAiError;
 use super::salvage::salvage;
 use super::translate::{finish_reason, parse_chat, tool_calls_to_openai, usage, ChatRequest};
-use super::{sse, OpenAiState};
+use super::{registry, sse, OpenAiState};
 
 /// Identity shared by every chunk of one completion.
 #[derive(Clone)]
@@ -109,7 +109,8 @@ fn chunk(meta: &Meta, delta: Value, finish: Option<&str>) -> Value {
 
 /// `POST /v1/chat/completions`
 pub async fn create(State(state): State<OpenAiState>, body: Bytes) -> Response {
-    let req = match parse_chat(&body, &state.aliases) {
+    let view = registry::view(&state).await;
+    let req = match parse_chat(&body, &view.aliases) {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };
