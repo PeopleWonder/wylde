@@ -50,6 +50,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "rust -> target"
+          # Tag runs restore from the default branch's caches but never save:
+          # a tag-scoped cache is unreadable elsewhere and would only evict
+          # develop's under the 10 GB repo cap.
+          save-if: false
       - run: cargo build --workspace --locked
         working-directory: rust
       - run: cargo test --workspace --locked
@@ -66,6 +70,10 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "Core/GUI -> target"
+          # Tag runs restore from the default branch's caches but never save:
+          # a tag-scoped cache is unreadable elsewhere and would only evict
+          # develop's under the 10 GB repo cap.
+          save-if: false
       - run: cargo build --workspace --locked
         working-directory: Core/GUI
 
