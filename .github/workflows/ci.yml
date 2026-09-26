@@ -56,6 +56,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "rust -> target"
+          # Only the default branch (develop) and main SAVE caches; PRs only
+          # restore them. A PR-scoped cache is readable by that PR alone, and
+          # each PR's ~7.5 GB set evicted develop's under the 10 GB repo cap,
+          # so every PR built cold ("No cache found").
+          save-if: ${{ github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' }}
       - name: cargo build
         working-directory: rust
         run: cargo build --workspace --locked
@@ -100,6 +105,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "rust -> target"
+          # Only the default branch (develop) and main SAVE caches; PRs only
+          # restore them. A PR-scoped cache is readable by that PR alone, and
+          # each PR's ~7.5 GB set evicted develop's under the 10 GB repo cap,
+          # so every PR built cold ("No cache found").
+          save-if: ${{ github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' }}
       - name: Install vendored Neo4j + JDK (checksum-pinned)
         shell: pwsh
         run: ./tools/install-neo4j.ps1
@@ -209,6 +219,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "Core/GUI -> target"
+          # Only the default branch (develop) and main SAVE caches; PRs only
+          # restore them. A PR-scoped cache is readable by that PR alone, and
+          # each PR's ~7.5 GB set evicted develop's under the 10 GB repo cap,
+          # so every PR built cold ("No cache found").
+          save-if: ${{ github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' }}
       - name: cargo build
         working-directory: Core/GUI
         run: cargo build --workspace --locked
@@ -255,6 +270,11 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "Core/GUI -> target"
+          # Only the default branch (develop) and main SAVE caches; PRs only
+          # restore them. A PR-scoped cache is readable by that PR alone, and
+          # each PR's ~7.5 GB set evicted develop's under the 10 GB repo cap,
+          # so every PR built cold ("No cache found").
+          save-if: ${{ github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' }}
       - name: cargo panel-walk (panel-walk + behavioural, headless windowed gpui tests)
         working-directory: Core/GUI
         run: cargo panel-walk --locked
@@ -414,6 +434,11 @@ jobs:
             Core/GUI -> target
             tools/xtask -> target
             tools/wylde-release -> target
+          # Only the default branch (develop) and main SAVE caches; PRs only
+          # restore them. A PR-scoped cache is readable by that PR alone, and
+          # each PR's ~7.5 GB set evicted develop's under the 10 GB repo cap,
+          # so every PR built cold ("No cache found").
+          save-if: ${{ github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' }}
       - name: cargo fmt --check (G6)
         shell: bash
         run: |
@@ -445,6 +470,11 @@ jobs:
           workspaces: |
             tools/xtask -> target
             tools/wylde-release -> target
+          # Only the default branch (develop) and main SAVE caches; PRs only
+          # restore them. A PR-scoped cache is readable by that PR alone, and
+          # each PR's ~7.5 GB set evicted develop's under the 10 GB repo cap,
+          # so every PR built cold ("No cache found").
+          save-if: ${{ github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' }}
       - name: build xtask
         working-directory: tools/xtask
         run: cargo build --locked
