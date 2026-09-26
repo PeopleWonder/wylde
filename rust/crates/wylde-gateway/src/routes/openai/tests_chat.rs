@@ -7,16 +7,12 @@ use tower::ServiceExt;
 use wylde_shared::ipc::IpcError;
 
 use super::backend::testing::FakeBackend;
-use super::tests::{assert_openai_error, registry, send, token};
+use super::tests::{assert_openai_error, registry, registry_aliases, send, token};
 use super::*;
 
 fn app_with(fake: Arc<FakeBackend>, salvage: &str) -> Router {
     router_from(
-        OpenAiState::new(
-            fake,
-            Aliases::parse("coder=real:1"),
-            SalvagePolicy::parse(salvage),
-        ),
+        OpenAiState::new(fake, SalvagePolicy::parse(salvage)),
         RateLimiter::new(1000),
     )
 }
@@ -71,6 +67,7 @@ fn sse_events(body: &str) -> (Vec<Value>, bool) {
 #[tokio::test]
 async fn non_stream_text_reply_with_usage() {
     let mut fake = FakeBackend::new(Ok(registry()));
+    fake.aliases = registry_aliases(&[("coder", "hf.co/u/Coder-GGUF:IQ3")]);
     fake.stream_frames = frames(vec![
         json!({"message": {"role": "assistant", "content": "Hel"}, "done": false}),
         json!({"message": {"role": "assistant", "content": "lo"}, "done": false}),
@@ -102,7 +99,7 @@ async fn non_stream_text_reply_with_usage() {
         json!({"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7})
     );
     let sent = &fake.payloads("chat_stream")[0];
-    assert_eq!(sent["model"], "real:1", "alias resolved");
+    assert_eq!(sent["model"], "hf.co/u/Coder-GGUF:IQ3", "alias resolved");
     assert_eq!(sent["stream"], true);
     assert_eq!(sent["evict_on_cancel"], false);
     assert_eq!(sent["pin_load_options"], true);

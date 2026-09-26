@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Json, Response};
 use serde_json::{json, Value};
 
 use super::errors::OpenAiError;
-use super::OpenAiState;
+use super::{registry, OpenAiState};
 
 /// A validated request: `(model, input)`.
 fn parse(body: &[u8]) -> Result<(String, Value), OpenAiError> {
@@ -89,7 +89,11 @@ pub async fn create(State(state): State<OpenAiState>, body: Bytes) -> Response {
         Ok(p) => p,
         Err(e) => return e.into_response(),
     };
-    let target = state.aliases.resolve(&model).to_owned();
+    let target = registry::view(&state)
+        .await
+        .aliases
+        .resolve(&model)
+        .to_owned();
     let reply = match state.backend.embed(target, input).await {
         Ok(r) => r,
         Err(e) => return OpenAiError::from_ipc(&e, &model).into_response(),

@@ -40,6 +40,7 @@
 //! `wylde-ollama` during Phase 1 per the master plan.
 
 pub mod actions;
+pub mod aliases;
 pub mod api;
 pub mod default_model;
 pub mod heuristics;

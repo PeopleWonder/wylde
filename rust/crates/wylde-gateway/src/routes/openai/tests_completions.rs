@@ -15,7 +15,7 @@ use super::*;
 
 fn app(fake: Arc<FakeBackend>) -> Router {
     router_from(
-        OpenAiState::new(fake, Aliases::default(), SalvagePolicy::parse("")),
+        OpenAiState::new(fake, SalvagePolicy::parse("")),
         RateLimiter::new(1000),
     )
 }

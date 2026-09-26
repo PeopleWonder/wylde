@@ -27,6 +27,8 @@ pub type BackendStream = Pin<Box<dyn Stream<Item = Result<Value, IpcError>> + Se
 pub trait Backend: Send + Sync {
     /// Harness `models.list` reply: `{models: [ModelEntry…], count, kind}`.
     fn registry_models(&self) -> BackendFuture;
+    /// Harness `models.list_aliases` reply: `{aliases: [{alias, target}], count}`.
+    fn registry_aliases(&self) -> BackendFuture;
     /// `ollama.list_models` reply (Ollama `/api/tags`): `{models: [{name, …}]}`.
     fn ollama_models(&self) -> BackendFuture;
     /// `ollama.embed` with `{model, input}`; reply is Ollama `/api/embed`.
@@ -54,6 +56,9 @@ fn unary(service: String, action: &'static str, payload: Value) -> BackendFuture
 impl Backend for PipeBackend {
     fn registry_models(&self) -> BackendFuture {
         unary(harness_service(), "models.list", json!({}))
+    }
+    fn registry_aliases(&self) -> BackendFuture {
+        unary(harness_service(), "models.list_aliases", json!({}))
     }
     fn ollama_models(&self) -> BackendFuture {
         unary(ollama_service(), "ollama.list_models", json!({}))
@@ -102,6 +107,11 @@ pub mod testing {
     /// stream yields nothing and stays pending until dropped.
     pub struct FakeBackend {
         pub registry: Result<Value, IpcError>,
+        /// `models.list_aliases` reply; unreachable by default, so the env
+        /// stopgap aliases apply.
+        pub aliases: Result<Value, IpcError>,
+        /// How many times the registry (`models.list`) was asked.
+        pub registry_calls: AtomicUsize,
         pub ollama: Result<Value, IpcError>,
         pub embed: Result<Value, IpcError>,
         pub show: Result<Value, IpcError>,
@@ -120,6 +130,8 @@ pub mod testing {
             let unfaked = || Err(IpcError::new("pipe_unavailable", "not faked"));
             Self {
                 registry,
+                aliases: unfaked(),
+                registry_calls: AtomicUsize::new(0),
                 ollama: unfaked(),
                 embed: unfaked(),
                 show: Ok(json!({"capabilities": ["completion"]})),
@@ -169,7 +181,12 @@ pub mod testing {
 
     impl Backend for FakeBackend {
         fn registry_models(&self) -> BackendFuture {
+            self.registry_calls.fetch_add(1, Ordering::SeqCst);
             let r = self.registry.clone();
+            Box::pin(async move { r })
+        }
+        fn registry_aliases(&self) -> BackendFuture {
+            let r = self.aliases.clone();
             Box::pin(async move { r })
         }
         fn ollama_models(&self) -> BackendFuture {

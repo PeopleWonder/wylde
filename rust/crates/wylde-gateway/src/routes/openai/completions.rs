@@ -26,13 +26,14 @@ use futures::StreamExt;
 use serde_json::{json, Map, Value};
 use wylde_shared::ipc::IpcError;
 
+use super::aliases::Aliases;
 use super::backend::BackendStream;
 use super::chat::Meta;
 use super::errors::OpenAiError;
 use super::fim::{template_for, FimTemplate};
 use super::lane::FimTicket;
 use super::translate::{finish_reason, stop_list, usage};
-use super::{sse, OpenAiState};
+use super::{registry, sse, OpenAiState};
 use crate::auth::Device;
 
 /// A validated `/v1/completions` request.
@@ -50,7 +51,7 @@ fn bad(msg: &str, param: &str) -> OpenAiError {
     OpenAiError::invalid_request(msg, Some(param))
 }
 
-fn parse(body: &[u8], state: &OpenAiState) -> Result<CompletionRequest, OpenAiError> {
+fn parse(body: &[u8], aliases: &Aliases) -> Result<CompletionRequest, OpenAiError> {
     let req: Value = serde_json::from_slice(body)
         .ok()
         .filter(Value::is_object)
@@ -104,7 +105,7 @@ fn parse(body: &[u8], state: &OpenAiState) -> Result<CompletionRequest, OpenAiEr
         options.insert("stop".to_owned(), json!(stop));
     }
     Ok(CompletionRequest {
-        target: state.aliases.resolve(&model).to_owned(),
+        target: aliases.resolve(&model).to_owned(),
         model,
         prompt,
         suffix,
@@ -224,7 +225,8 @@ pub async fn create(
     Extension(device): Extension<Device>,
     body: Bytes,
 ) -> Response {
-    let req = match parse(&body, &state) {
+    let view = registry::view(&state).await;
+    let req = match parse(&body, &view.aliases) {
         Ok(r) => r,
         Err(e) => return e.into_response(),
     };

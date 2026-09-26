@@ -39,14 +39,26 @@ pub(super) fn registry() -> Value {
     ], "count": 4, "kind": "all"})
 }
 
-fn app(backend: FakeBackend, limit: u32) -> Router {
-    router_with(
-        Arc::new(backend),
-        Aliases::parse(
-            "coder=hf.co/u/Coder-GGUF:IQ3,embed=nomic-embed-text:latest,ghost=missing:1",
-        ),
-        RateLimiter::new(limit),
-    )
+/// A `models.list_aliases` reply holding `pairs`.
+pub(super) fn registry_aliases(pairs: &[(&str, &str)]) -> Result<Value, IpcError> {
+    let aliases: Vec<Value> = pairs
+        .iter()
+        .map(|(a, t)| json!({"alias": a, "target": t}))
+        .collect();
+    Ok(json!({"count": aliases.len(), "aliases": aliases}))
+}
+
+/// When the fake harness is reachable it also serves these registry
+/// aliases (`ghost` points at a model that isn't installed).
+fn app(mut backend: FakeBackend, limit: u32) -> Router {
+    if backend.registry.is_ok() && backend.aliases.is_err() {
+        backend.aliases = registry_aliases(&[
+            ("coder", "hf.co/u/Coder-GGUF:IQ3"),
+            ("embed", "nomic-embed-text:latest"),
+            ("ghost", "missing:1"),
+        ]);
+    }
+    router_with(Arc::new(backend), RateLimiter::new(limit))
 }
 
 pub(super) async fn send(
@@ -188,7 +200,11 @@ async fn models_falls_back_to_ollama_when_harness_is_down() {
         .iter()
         .map(|m| m["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, vec!["nomic-embed-text:latest", "llama3.2:3b", "embed"]);
+    assert_eq!(
+        ids,
+        vec!["nomic-embed-text:latest", "llama3.2:3b"],
+        "harness down: Ollama's list, and no aliases"
+    );
 }
 
 #[tokio::test]
@@ -223,12 +239,9 @@ async fn embeddings_happy_path_resolves_alias_and_reshapes() {
         "embeddings": [[0.1, 0.2], [0.3, 0.4]],
         "prompt_eval_count": 7
     }));
+    fake.aliases = registry_aliases(&[("embed", "nomic-embed-text:latest")]);
     let fake = Arc::new(fake);
-    let app = router_with(
-        fake.clone(),
-        Aliases::parse("embed=nomic-embed-text:latest"),
-        RateLimiter::new(100),
-    );
+    let app = router_with(fake.clone(), RateLimiter::new(100));
     let t = token().await;
     let (status, v, _) = send(
         &app,

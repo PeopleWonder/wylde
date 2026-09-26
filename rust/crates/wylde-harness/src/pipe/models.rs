@@ -153,4 +153,45 @@ pub(super) fn install(api: &Arc<dyn HarnessApi>) {
          default|first_available|recommend.",
         HANDLER_MODULE_MODELS,
     );
+
+    // ── models.* aliases (#348) ──────────────────────────────────────
+    let a = Arc::clone(api);
+    register_action_with_meta(
+        "models.list_aliases",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.models_list_aliases(p).await }
+        },
+        "Stored model aliases (short name → model id), from \
+         <data_dir>/model_aliases.json. No payload. Returns {aliases: \
+         [{alias, target}], count}. Every stored alias is returned; an alias \
+         is only effective when its target is installed and no installed \
+         model has the alias's name (model_registry::aliases::effective).",
+        HANDLER_MODULE_MODELS,
+    );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
+        "models.set_alias",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.models_set_alias(p).await }
+        },
+        "Create or re-point a model alias. Payload {alias, target}; alias is \
+         1-64 of letters, digits, '.', '_', '-'. Persisted immediately. \
+         Returns the updated {aliases, count}.",
+        HANDLER_MODULE_MODELS,
+    );
+
+    let a = Arc::clone(api);
+    register_action_with_meta(
+        "models.remove_alias",
+        move |p: Value| {
+            let a = Arc::clone(&a);
+            async move { a.models_remove_alias(p).await }
+        },
+        "Delete a model alias. Payload {alias}. Returns the updated \
+         {aliases, count, removed}; removing an unknown alias is a no-op.",
+        HANDLER_MODULE_MODELS,
+    );
 }

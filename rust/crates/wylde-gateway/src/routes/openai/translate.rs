@@ -303,7 +303,8 @@ mod tests {
     use super::*;
 
     fn parse(body: Value) -> Result<ChatRequest, OpenAiError> {
-        parse_chat(body.to_string().as_bytes(), &Aliases::parse("coder=real:1"))
+        let aliases = Aliases::from_pairs(vec![("coder".into(), "real:1".into())]);
+        parse_chat(body.to_string().as_bytes(), &aliases)
     }
 
     #[test]
