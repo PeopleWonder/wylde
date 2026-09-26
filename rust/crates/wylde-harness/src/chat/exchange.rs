@@ -21,14 +21,7 @@ use wylde_workspaces_client::{ClientError, WorkspacesClient};
 
 use crate::memory::conversations::store as conv_store;
 
-/// The service name override hook the search module also honours.
-fn workspaces_service() -> String {
-    std::env::var("WYLDE_WORKSPACES_SERVICE")
-        .ok()
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "wylde-workspaces".to_owned())
-}
+use crate::turn::workspace_context::workspaces_service;
 
 fn opt_string(payload: &Value, key: &str) -> Option<String> {
     payload

@@ -1,20 +1,56 @@
 //! Resources — `resources/list` + `resources/read` over the `wylde://` namespace.
 //!
-//! Conversations resolve through the harness `conversations.*` actions;
-//! workspace files are read straight off disk under the workspace root, confined
-//! to that root, size-capped (H2) and read with `tokio::fs` (H1).
+//! Conversations resolve through the harness `conversations.*` actions. The
+//! workspace registry (`workspaces.list_mru`) lives on the `wylde-workspaces`
+//! service: the harness retired `workspaces.*` in Slice 0d and answers
+//! `no_action`. Workspace files are read straight off disk under the workspace
+//! root, confined to that root, size-capped (H2) and read with `tokio::fs` (H1).
 
 use serde_json::{json, Value};
 
-use super::adapters::{entries, harness, BridgeError, URI_SCHEME};
+use super::adapters::{call, entries, BridgeError, URI_SCHEME};
+use crate::services::ollama::{harness_service, workspaces_service};
+
+/// The pipe services resources resolve against. Production resolves both from
+/// env (with the shipped defaults); tests pass unique mock pipe names.
+struct Services {
+    harness: String,
+    workspaces: String,
+}
+
+impl Services {
+    fn resolve() -> Self {
+        Self {
+            harness: harness_service(),
+            workspaces: workspaces_service(),
+        }
+    }
+}
 
 /// Enumerate readable resources: recent conversations + workspaces.
 ///
-/// Conversations are listed first, then workspaces — the Python side
-/// keeps the same order so a bridge failure surfaces identically.
+/// Conversations are listed first, then workspaces. Each source is
+/// best-effort: one unreachable service drops only its own entries, and the
+/// call fails only when neither answers.
 pub async fn list_resources() -> Result<Value, BridgeError> {
+    list_resources_via(&Services::resolve()).await
+}
+
+async fn list_resources_via(svc: &Services) -> Result<Value, BridgeError> {
     let mut out: Vec<Value> = Vec::new();
-    let convs = harness("conversations.list", json!({})).await?;
+    let convs = call(&svc.harness, "conversations.list", json!({})).await;
+    let wss = call(&svc.workspaces, "workspaces.list_mru", json!({})).await;
+    let (convs, wss) = match (convs, wss) {
+        (Err(e), Err(_)) => return Err(e),
+        (c, w) => {
+            for (what, r) in [("conversations", &c), ("workspaces", &w)] {
+                if let Err(e) = r {
+                    tracing::warn!(error = %e.message, "mcp resources/list: {what} unavailable");
+                }
+            }
+            (c.unwrap_or(Value::Null), w.unwrap_or(Value::Null))
+        }
+    };
     for conv in entries(&convs, "conversations") {
         let cid = conv.get("id").and_then(Value::as_str).unwrap_or("");
         if cid.is_empty() {
@@ -31,7 +67,6 @@ pub async fn list_resources() -> Result<Value, BridgeError> {
             "mimeType": "application/json",
         }));
     }
-    let wss = harness("workspaces.list_mru", json!({})).await?;
     for ws in entries(&wss, "workspaces") {
         let wid = ws.get("id").and_then(Value::as_str).unwrap_or("");
         if wid.is_empty() {
@@ -87,12 +122,16 @@ pub fn parse_uri(uri: &str) -> Option<ResourceRef> {
 
 /// Resolve a `wylde://` URI to its MCP `contents` block.
 pub async fn read_resource(uri: &str) -> Result<Value, BridgeError> {
+    read_resource_via(&Services::resolve(), uri).await
+}
+
+async fn read_resource_via(svc: &Services, uri: &str) -> Result<Value, BridgeError> {
     match parse_uri(uri) {
         None => Err(BridgeError::msg(format!(
             "unsupported resource uri: {uri:?}"
         ))),
         Some(ResourceRef::Conversation(id)) => {
-            let doc = harness("conversations.get", json!({ "id": id })).await?;
+            let doc = call(&svc.harness, "conversations.get", json!({ "id": id })).await?;
             let text = serde_json::to_string(&doc).unwrap_or_else(|_| "null".to_owned());
             Ok(json!({
                 "contents": [{
@@ -108,7 +147,7 @@ pub async fn read_resource(uri: &str) -> Result<Value, BridgeError> {
                     "workspace resource uri needs a file path: {uri:?}"
                 )));
             }
-            let text = read_workspace_file(&id, &path).await?;
+            let text = read_workspace_file(&svc.workspaces, &id, &path).await?;
             Ok(json!({
                 "contents": [{
                     "uri": uri,
@@ -121,9 +160,13 @@ pub async fn read_resource(uri: &str) -> Result<Value, BridgeError> {
 }
 
 /// Read a file under a workspace's folder. The workspace root comes from
-/// the `workspaces.list_mru` registry.
-async fn read_workspace_file(workspace_id: &str, rel_path: &str) -> Result<String, BridgeError> {
-    let wss = harness("workspaces.list_mru", json!({})).await?;
+/// the `workspaces.list_mru` registry on the workspaces service.
+async fn read_workspace_file(
+    workspaces: &str,
+    workspace_id: &str,
+    rel_path: &str,
+) -> Result<String, BridgeError> {
+    let wss = call(workspaces, "workspaces.list_mru", json!({})).await?;
     let workspace = entries(&wss, "workspaces")
         .into_iter()
         .find(|w| w.get("id").and_then(Value::as_str) == Some(workspace_id))
@@ -230,6 +273,79 @@ mod tests {
         assert_eq!(parse_uri("wylde://memory/abc"), None);
         assert_eq!(parse_uri("wylde://conversation/"), None);
         assert_eq!(parse_uri("wylde://"), None);
+    }
+
+    /// A mock `wylde-workspaces` pipe (unique name, never the production one)
+    /// serving `workspaces.list_mru` with one workspace rooted at a tempdir
+    /// holding `note.txt`. The harness name points at a pipe nobody serves, so
+    /// any workspace data that comes back can only have come from the
+    /// workspaces service (#357: the harness answers `no_action`).
+    async fn mock_services() -> &'static (Services, tempfile::TempDir) {
+        use tokio::sync::OnceCell;
+        use wylde_shared::ipc;
+        static M: OnceCell<(Services, tempfile::TempDir)> = OnceCell::const_new();
+        M.get_or_init(|| async {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("note.txt"), "from the workspace").unwrap();
+            let folder = dir.path().to_string_lossy().into_owned();
+            ipc::register_action("workspaces.list_mru", move |_p: Value| {
+                let folder = folder.clone();
+                async move {
+                    ipc::Reply::ok(json!({"workspaces": [{"id": "ws-mock", "folder": folder}]}))
+                }
+            });
+            let id = uuid::Uuid::new_v4().simple();
+            let workspaces = format!("mcp-res-ws-{id}");
+            let server = std::sync::Arc::new(ipc::PipeServer::new(&workspaces));
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("server runtime");
+                let _ = rt.block_on(server.accept_loop()); // wylde-check: discard-result-ok
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let svc = Services {
+                harness: format!("mcp-res-no-harness-{id}"),
+                workspaces,
+            };
+            (svc, dir)
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn list_resolves_workspaces_from_the_workspaces_service() {
+        let (svc, _) = mock_services().await;
+        // The harness is unreachable: conversations drop out, the call still
+        // succeeds with the workspace from the workspaces service.
+        let list = list_resources_via(svc).await.expect("workspaces answered");
+        let uris: Vec<&str> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["uri"].as_str())
+            .collect();
+        assert_eq!(uris, ["wylde://workspace/ws-mock/"]);
+    }
+
+    #[tokio::test]
+    async fn read_resolves_the_workspace_root_from_the_workspaces_service() {
+        let (svc, _) = mock_services().await;
+        let got = read_resource_via(svc, "wylde://workspace/ws-mock/note.txt")
+            .await
+            .expect("read through the workspaces service");
+        assert_eq!(got["contents"][0]["text"], "from the workspace");
+    }
+
+    #[tokio::test]
+    async fn list_fails_only_when_both_services_are_unreachable() {
+        let id = uuid::Uuid::new_v4().simple();
+        let svc = Services {
+            harness: format!("mcp-res-none-h-{id}"),
+            workspaces: format!("mcp-res-none-w-{id}"),
+        };
+        assert!(list_resources_via(&svc).await.is_err());
     }
 
     #[tokio::test]

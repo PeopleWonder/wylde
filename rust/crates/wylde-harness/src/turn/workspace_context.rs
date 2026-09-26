@@ -39,13 +39,32 @@ const PERSONA_MAX_CHARS: usize = 8_000;
 /// to `wylde-workspaces`; overridable via `WYLDE_HARNESS_WORKSPACES_SERVICE`
 /// so tests can point it at a guaranteed-dead pipe and exercise the
 /// degraded path deterministically (never a real running service).
+///
+/// The ONE resolver for every harness → workspaces call. The chat-export path
+/// used to read `WYLDE_WORKSPACES_SERVICE` instead, so the two overrides could
+/// point different verbs at different services; that name is still honoured
+/// as an alias when the canonical one is unset.
 pub(crate) fn workspaces_service() -> String {
-    std::env::var("WYLDE_HARNESS_WORKSPACES_SERVICE")
-        .ok()
+    resolve_service(
+        std::env::var(WORKSPACES_SERVICE_ENV).ok(),
+        std::env::var(WORKSPACES_SERVICE_ENV_ALIAS).ok(),
+    )
+}
+
+/// Canonical override → alias → `wylde-workspaces`; blank values don't count.
+fn resolve_service(canonical: Option<String>, alias: Option<String>) -> String {
+    [canonical, alias]
+        .into_iter()
+        .flatten()
         .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
+        .find(|s| !s.is_empty())
         .unwrap_or_else(|| "wylde-workspaces".to_owned())
 }
+
+/// Canonical env override for [`workspaces_service`].
+pub(crate) const WORKSPACES_SERVICE_ENV: &str = "WYLDE_HARNESS_WORKSPACES_SERVICE";
+/// Legacy alias for [`WORKSPACES_SERVICE_ENV`] (was read only by chat export).
+pub(crate) const WORKSPACES_SERVICE_ENV_ALIAS: &str = "WYLDE_WORKSPACES_SERVICE";
 
 /// The outcome of gathering a turn's workspace prompt context. Since B6
 /// the parts arrive STRUCTURED — persona / notes / RAG map onto separate
@@ -242,6 +261,16 @@ mod tests {
             Some(v) => std::env::set_var("WYLDE_HARNESS_WORKSPACES_SERVICE", v),
             None => std::env::remove_var("WYLDE_HARNESS_WORKSPACES_SERVICE"),
         }
+    }
+
+    #[test]
+    fn service_name_prefers_canonical_then_alias_then_default() {
+        let s = |v: &str| Some(v.to_owned());
+        assert_eq!(resolve_service(s("canon"), s("alias")), "canon");
+        assert_eq!(resolve_service(None, s("alias")), "alias");
+        assert_eq!(resolve_service(s("  "), s("alias")), "alias");
+        assert_eq!(resolve_service(None, None), "wylde-workspaces");
+        assert_eq!(resolve_service(s(""), s(" ")), "wylde-workspaces");
     }
 
     #[test]
