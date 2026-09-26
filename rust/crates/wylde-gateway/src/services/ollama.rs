@@ -33,3 +33,14 @@ pub fn ollama_service() -> String {
 pub fn harness_service() -> String {
     from_env(HARNESS_SERVICE_ENV, DEFAULT_HARNESS_SERVICE)
 }
+
+/// Default `wylde-workspaces` pipe service. The `workspaces.*` verbs live
+/// there; the harness retired them in Slice 0d and answers `no_action`.
+pub const DEFAULT_WORKSPACES_SERVICE: &str = "wylde-workspaces";
+/// Env override for the `wylde-workspaces` pipe service name.
+pub const WORKSPACES_SERVICE_ENV: &str = "WYLDE_GATEWAY_WORKSPACES_SERVICE";
+
+/// The `wylde-workspaces` pipe service to call.
+pub fn workspaces_service() -> String {
+    from_env(WORKSPACES_SERVICE_ENV, DEFAULT_WORKSPACES_SERVICE)
+}

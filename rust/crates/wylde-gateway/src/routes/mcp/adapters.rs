@@ -72,7 +72,16 @@ impl BridgeError {
 
 /// Invoke a harness pipe action and return its reply `data`.
 pub(super) async fn harness(action: &str, payload: Value) -> Result<Value, BridgeError> {
-    match pipe_action(HARNESS_PIPE, action, payload).await {
+    call(HARNESS_PIPE, action, payload).await
+}
+
+/// Invoke `action` on the `service` pipe and return its reply `data`.
+pub(super) async fn call(
+    service: &str,
+    action: &str,
+    payload: Value,
+) -> Result<Value, BridgeError> {
+    match pipe_action(service, action, payload).await {
         Ok(data) => Ok(data),
         Err((status, body)) => {
             let code = body
@@ -86,7 +95,7 @@ pub(super) async fn harness(action: &str, payload: Value) -> Result<Value, Bridg
                 .and_then(|e| e.get("message"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
-                .unwrap_or_else(|| format!("harness action {action:?} failed"));
+                .unwrap_or_else(|| format!("{service} action {action:?} failed"));
             Err(BridgeError {
                 message,
                 details: Some(json!({

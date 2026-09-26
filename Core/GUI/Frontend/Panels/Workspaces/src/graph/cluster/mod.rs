@@ -702,12 +702,13 @@ mod tests {
         assert_eq!(cluster_id_from_node("plain"), None);
     }
 
-    #[test]
-    fn display_transform_scales_inside_frame_budget() {
-        // Perf sanity (§2.5): 1500 nodes / 3000 edges, 20 folded clusters.
+    /// The §2.5 perf shape: `n_clusters` × 50 nodes, one cluster per 50-node
+    /// column, a chain + binary-tree edge set (~2 edges per node).
+    fn perf_graph(n_clusters: usize) -> (WorkspaceGraph, Layout) {
+        let n = n_clusters * 50;
         let mut g = WorkspaceGraph::default();
         let mut pos = HashMap::new();
-        for ci in 0..30 {
+        for ci in 0..n_clusters {
             let mut members = Vec::new();
             for i in 0..50 {
                 let id = format!("c{ci}-n{i}");
@@ -729,7 +730,7 @@ mod tests {
                 zoom_threshold: 1.0,
             });
         }
-        for i in 1..1500usize {
+        for i in 1..n {
             g.edges.push(edge(
                 &format!("c{}-n{}", (i - 1) / 50, (i - 1) % 50),
                 &format!("c{}-n{}", i / 50, i % 50),
@@ -739,19 +740,65 @@ mod tests {
                 &format!("c{}-n{}", i / 50, i % 50),
             ));
         }
-        let layout = Layout::from_positions(pos);
+        (g, Layout::from_positions(pos))
+    }
+
+    /// Fastest of `runs` `apply` calls after one warm-up. Scheduler noise only
+    /// ever ADDS time, so the minimum is the noise-robust cost estimate.
+    fn min_apply_time(cv: &ClusterView, g: &WorkspaceGraph, l: &Layout, runs: usize) -> Duration {
+        let _ = cv.apply(g, l);
+        (0..runs)
+            .map(|_| {
+                let start = Instant::now();
+                let _ = cv.apply(g, l).expect("folded");
+                start.elapsed()
+            })
+            .min()
+            .expect("runs > 0")
+    }
+
+    #[test]
+    fn display_transform_scales_inside_frame_budget() {
+        // Perf sanity (§2.5): 1500 nodes / 3000 edges, folded clusters, plus a
+        // 2× graph for the scaling check. This used to assert ONE wall-clock
+        // sample < 16 ms and flaked on a shared CI runner at 18 ms (#352), so:
+        // min-of-N timing, a structural scaling bound, and a CI-relaxed budget.
+        let (g, layout) = perf_graph(30);
+        let (g2, layout2) = perf_graph(60);
         let mut cv = ClusterView::default(); // defaults: arms at >300 nodes
         cv.rebuild(&g, 0.5);
         assert!(cv.is_active());
         assert!(cv.folded_count() > 0);
+        let mut cv2 = ClusterView::default();
+        cv2.rebuild(&g2, 0.5);
+        assert!(cv2.folded_count() > 0);
 
-        let start = Instant::now();
         let derived = cv.apply(&g, &layout).expect("folded");
-        let took = start.elapsed();
         assert!(derived.0.nodes.len() < g.nodes.len());
+
+        let t1 = min_apply_time(&cv, &g, &layout, 7);
+        let t2 = min_apply_time(&cv2, &g2, &layout2, 7);
+
+        // Structural: the transform is linear in nodes + edges, so doubling the
+        // graph should ~double the cost; an O(n²) regression ~quadruples it.
+        let ratio = t2.as_secs_f64() / t1.as_secs_f64();
         assert!(
-            took.as_millis() < 16,
-            "display transform inside the 16 ms frame budget (got {took:?})"
+            ratio < 3.0,
+            "display transform must scale ~linearly: 2× graph took {ratio:.2}× \
+             ({t1:?} → {t2:?}); ≥3× suggests an O(n²) regression"
+        );
+
+        // Absolute: the 16 ms frame budget locally. Shared CI runners (debug
+        // build, 4 vCPU, the whole suite in parallel) run several times slower,
+        // so there the budget only guards against gross blow-ups.
+        let budget = Duration::from_millis(if std::env::var_os("CI").is_some() {
+            64
+        } else {
+            16
+        });
+        assert!(
+            t1 < budget,
+            "display transform inside the {budget:?} frame budget (fastest of 7: {t1:?})"
         );
     }
 }

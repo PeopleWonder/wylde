@@ -35,16 +35,10 @@ const DEFAULT_LIST_LIMIT: usize = 20;
 /// Medium budget on a pathologically large workspace. Drops are logged.
 const MAX_WORKSPACE_FETCH: usize = 500;
 
-/// The service name the workspace backend forwards to. Mirrors
-/// [`crate::turn::workspace_context`] so the same env override points tests
-/// at a guaranteed-dead pipe and exercises the degraded path.
-pub(crate) fn workspaces_service() -> String {
-    std::env::var("WYLDE_HARNESS_WORKSPACES_SERVICE")
-        .ok()
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "wylde-workspaces".to_owned())
-}
+/// The service name the workspace backend forwards to: the harness-wide
+/// resolver, so one env override points every workspaces call (and tests'
+/// guaranteed-dead pipe) at the same service.
+pub(crate) use crate::turn::workspace_context::workspaces_service;
 
 /// True when a client error means the service didn't answer authoritatively
 /// — unreachable transport or the breaker is open. Those degrade; a genuine
