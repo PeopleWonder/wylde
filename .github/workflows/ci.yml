@@ -21,6 +21,13 @@ on:
       # Keep the old name here until the rename lands, then drop this line.
       - "feat/thought-bubble-system"
   workflow_dispatch:
+  # Nightly run on the default branch (develop). Auto-merges land through
+  # GITHUB_TOKEN, and GitHub starts no workflows from GITHUB_TOKEN-driven
+  # pushes, so `push: develop` above never fires after an auto-merge. This run
+  # is what refreshes develop's Rust caches (which every PR restores from) and
+  # re-verifies develop itself.
+  schedule:
+    - cron: "17 6 * * *"
 
 # One in-flight run per ref; a new push cancels the previous.
 concurrency:
