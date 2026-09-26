@@ -49,12 +49,63 @@ env:
   WYLDE_PREBUILD_GUARD_SKIP: "1"
 
 jobs:
+  # --- Docs-only detector. PRs that touch nothing but docs skip the six heavy
+  # Windows jobs below. Those jobs keep their exact names (they are required
+  # checks) and are skipped at JOB level, which GitHub reports as success for a
+  # required check. A workflow-level `paths:` filter would instead leave the
+  # context missing and hang the PR forever, so never use one here.
+  #
+  # FAILS OPEN: `code` is "false" only when the changed-file list was read and
+  # every file is docs. Any other outcome (push / schedule / dispatch, an API
+  # error, 3000+ files, this job failing) leaves the heavy jobs running.
+  # CHANGELOG.md is NOT docs: the GUI embeds it (`include_str!` in
+  # Core/GUI/Frontend/Changelog) and a test parses it.
+  changes:
+    name: changes (docs-only detector)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - id: detect
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          code=true
+          if [ "$EVENT" = "pull_request" ] && [ -n "$PR" ]; then
+            if files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename'); then
+              count=$(printf '%s\n' "$files" | grep -c . || true)
+              # Docs: docs/**, any *.md, LICENSE, issue templates, images.
+              non_docs=$(printf '%s\n' "$files" | grep -Ev '^(docs/.+|LICENSE|\.github/ISSUE_TEMPLATE/.+|.+\.(md|png|jpe?g|gif|svg))$' || true)
+              # ...except CHANGELOG.md, which the GUI build embeds.
+              if printf '%s\n' "$files" | grep -qx 'CHANGELOG.md'; then
+                non_docs="$non_docs CHANGELOG.md"
+              fi
+              if [ "$count" -gt 0 ] && [ "$count" -lt 3000 ] && [ -z "$(echo "$non_docs" | tr -d '[:space:]')" ]; then
+                code=false
+              fi
+              echo "changed files: $count; non-docs: $(printf '%s\n' "$non_docs" | grep -c . || true)"
+            else
+              echo "::warning::could not list PR files; running every job (fail-open)"
+            fi
+          fi
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
   # --- Backend workspace (rust/) — build AND test. This is the suite with the
   # 1167-test lib baseline + the reasoning_plan e2e (mock-pipe, offline). Live
   # tests that need Ollama/Memgraph are `#[ignore]`-marked and skip here.
   backend:
     name: backend (rust/) build + test
     runs-on: windows-latest
+    needs: changes
+    # Skipped (reported as success) only for docs-only PRs; see `changes`.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (stable, honoring rust-toolchain.toml)
@@ -104,6 +155,9 @@ jobs:
   live-graph:
     name: live-graph (Neo4j Bolt) tests
     runs-on: windows-latest
+    needs: changes
+    # Skipped (reported as success) only for docs-only PRs; see `changes`.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (stable, honoring rust-toolchain.toml)
@@ -215,6 +269,9 @@ jobs:
   gui:
     name: gui (Core/GUI/) build
     runs-on: windows-latest
+    needs: changes
+    # Skipped (reported as success) only for docs-only PRs; see `changes`.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (stable) + rustfmt
@@ -270,6 +327,9 @@ jobs:
   gui-panel-walk:
     name: gui panel-walk (L7)
     runs-on: windows-latest
+    needs: changes
+    # Skipped (reported as success) only for docs-only PRs; see `changes`.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (stable)
@@ -430,6 +490,9 @@ jobs:
   lint:
     name: clippy (G4) + fmt (G6)
     runs-on: windows-latest
+    needs: changes
+    # Skipped (reported as success) only for docs-only PRs; see `changes`.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install clippy + rustfmt (stable)
@@ -468,6 +531,9 @@ jobs:
   tools:
     name: tools build
     runs-on: windows-latest
+    needs: changes
+    # Skipped (reported as success) only for docs-only PRs; see `changes`.
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust (stable)
