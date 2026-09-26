@@ -151,6 +151,26 @@ async fn shared_graph(cfg: &BoltConfig) -> Result<Graph, IpcError> {
     let graph = Graph::connect(neo_cfg)
         .await
         .map_err(|e| IpcError::new(error_codes::CONNECT, format!("{}: {}", cfg.uri, e)))?;
+    // `Graph::connect` is lazy: it dials nothing. Against a DOWN Neo4j the
+    // first real query then retries "connection refused" with backoff until
+    // the 60s write timeout, so every fail-soft concept projection / ingest
+    // upsert stalled ~60s. Prove the server answers within `connect_timeout`
+    // before caching the pool; a failed probe caches nothing.
+    match tokio::time::timeout(cfg.connect_timeout, graph.run(neo4rs::query("RETURN 1"))).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            return Err(IpcError::new(
+                error_codes::CONNECT,
+                format!("{}: {}", cfg.uri, e),
+            ))
+        }
+        Err(_) => {
+            return Err(IpcError::new(
+                error_codes::CONNECT,
+                format!("{}: no answer within {:?}", cfg.uri, cfg.connect_timeout),
+            ))
+        }
+    }
     guard.insert(key, graph.clone());
     Ok(graph)
 }
@@ -912,6 +932,30 @@ mod tests {
     fn client_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<BoltClient>();
+    }
+
+    /// A down Neo4j must fail a write within `connect_timeout`, not after
+    /// neo4rs's ~50s retry backoff (which stalled every concept build).
+    #[tokio::test]
+    async fn write_to_down_server_fails_within_connect_timeout() {
+        let client = BoltClient::with_config(BoltConfig {
+            uri: "bolt://127.0.0.1:1".to_owned(),
+            user: "down-server-test".to_owned(),
+            password: String::new(),
+            connect_timeout: Duration::from_millis(500),
+            write_timeout: DEFAULT_WRITE_TIMEOUT,
+        });
+        let started = std::time::Instant::now();
+        let reply = client
+            .project_concepts("ws", vec![json!({"id": "c1", "label": "x"})])
+            .await;
+        assert!(!reply.ok);
+        assert_eq!(reply.error.as_ref().unwrap().code, error_codes::CONNECT);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "connect was not bounded: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
