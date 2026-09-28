@@ -33,7 +33,7 @@ chrono.workspace = true
 # APR1 implementation in auth.rs (no first-class crate for apr_md5_crypt).
 bcrypt = "0.19"
 sha-crypt = "0.6"
-md-5 = "0.10"
+md-5 = "0.11"
 
 # Token + pairing code generation route through `wylde_shared::rng` (the
 # workspace's single direct `rand` dep) — see #290.
