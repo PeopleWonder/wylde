@@ -50,7 +50,7 @@ tree-sitter-typescript = "0.23"
 # Markdown's block grammar (MDeiml/tree-sitter-markdown, published as
 # `tree-sitter-md`). The companion inline grammar is unused — chunking/outline
 # work off the block tree's `section`/heading structure.
-tree-sitter-md = "0.3"
+tree-sitter-md = "0.5"
 # TBS Slice K — the plan's remaining recommended set (config + shell). All
 # entity-less (markdown precedent): they chunk, outline, and highlight. The
 # maintained TOML grammar is published as `tree-sitter-toml-ng` (the original
