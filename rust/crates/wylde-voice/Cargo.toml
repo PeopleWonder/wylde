@@ -81,7 +81,7 @@ tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 # already pulls `ndarray` (matched version in workspace lockfile via the
 # `ort` "ndarray" feature); declaring it here makes the dependency explicit
 # so `transcribe::decoder` can use `Array*` types directly.
-ndarray = "0.16"
+ndarray = "0.17"
 
 # Cross-platform audio capture (Slice 11.D) + playback (Slice 11.E).
 # Used by `mic` to open the default input device (for both stand-alone
