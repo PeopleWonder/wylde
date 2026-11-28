@@ -127,6 +127,5 @@ for the `expires` key — there is no registry to update.
 
 | doc | origin | subject |
 |---|---|---|
-| [`self-collision-class.md`](self-collision-class.md) | #83 | tests that assert against production/shared resources <!-- tracker-ref: self-collision-class --> |
 
 *(Rows are marked, so an expiring tracker removes its own row from this table.)*
